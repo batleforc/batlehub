@@ -1,0 +1,28 @@
+[package]
+name = "proxy-cache-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "proxy-cache"
+path = "src/main.rs"
+
+[dependencies]
+proxy-cache-core = { path = "../crates/core" }
+proxy-cache-config = { path = "../crates/config" }
+proxy-cache-adapters = { path = "../crates/adapters" }
+proxy-cache-web = { path = "../crates/web" }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-actix-web.workspace = true
+tracing-opentelemetry.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
+utoipa.workspace = true
+utoipa-swagger-ui.workspace = true
+anyhow.workspace = true
+actix-web.workspace = true
+clap.workspace = true

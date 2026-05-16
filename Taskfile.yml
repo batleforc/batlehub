@@ -1,0 +1,104 @@
+version: "3"
+
+tasks:
+
+  # ── Rust ─────────────────────────────────────────────────────────────────────
+
+  build:
+    desc: Build the entire workspace
+    cmds:
+      - cargo build --workspace
+
+  check:
+    desc: Type-check the entire workspace without building
+    cmds:
+      - cargo check --workspace
+
+  test:
+    desc: Run all workspace tests
+    cmds:
+      - cargo test --workspace
+
+  lint:
+    desc: Run clippy lints across the workspace
+    cmds:
+      - cargo clippy --workspace -- -D warnings
+
+  fmt:
+    desc: Format all Rust source files
+    cmds:
+      - cargo fmt --all
+
+  run:
+    desc: Start the server with the example config (requires postgres)
+    cmds:
+      - cargo run -p proxy-cache-server -- --config config.example.toml
+
+  dump-spec:
+    desc: Dump the OpenAPI spec to ui/openapi.json
+    cmds:
+      - cargo run -p proxy-cache-server -- --config config.example.toml dump-spec > ui/openapi.json
+
+  # ── Frontend ──────────────────────────────────────────────────────────────────
+
+  ui:install:
+    desc: Install frontend npm dependencies
+    dir: ui
+    cmds:
+      - npm install
+
+  ui:generate:
+    desc: Generate TypeScript client from the OpenAPI spec (run dump-spec first)
+    dir: ui
+    cmds:
+      - npm run generate
+
+  ui:dev:
+    desc: Start the Vite dev server (proxies /api and /proxy to localhost:8080)
+    dir: ui
+    cmds:
+      - npm run dev
+
+  ui:build:
+    desc: Build the frontend SPA for production
+    dir: ui
+    cmds:
+      - npm run build
+
+  dev:
+    desc: Start Rust backend and Vite frontend in parallel (requires postgres)
+    deps:
+      - task: run
+      - task: ui:dev
+
+  # ── Podman Compose ────────────────────────────────────────────────────────────
+
+  compose:up:
+    desc: Start postgres + server via Podman Compose
+    cmds:
+      - podman compose up -d
+
+  compose:down:
+    desc: Stop and remove compose containers
+    cmds:
+      - podman compose down
+
+  compose:logs:
+    desc: Tail server logs
+    cmds:
+      - podman compose logs -f server
+
+  compose:db:
+    desc: Start only postgres (for local cargo run)
+    cmds:
+      - podman compose up -d postgres
+
+  compose:build:
+    desc: (Re)build the server image
+    cmds:
+      - podman compose build
+
+  compose:otel:
+    desc: Start all services including Jaeger
+    cmds:
+      - podman compose --profile otel up -d

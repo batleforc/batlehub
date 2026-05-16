@@ -1,0 +1,17 @@
+# Rust
+target/
+
+# Config (contains secrets)
+config.toml
+
+# Frontend
+ui/node_modules/
+ui/dist/
+ui/src/client/
+ui/openapi.json
+
+# Logs
+*.log
+
+# Temp Storage
+/tmp/

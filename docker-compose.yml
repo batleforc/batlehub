@@ -1,0 +1,58 @@
+services:
+
+  # ── PostgreSQL ───────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       proxy_cache
+      POSTGRES_USER:     proxy_cache
+      POSTGRES_PASSWORD: changeme
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U proxy_cache"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    user: "postgres"
+
+  # ── proxy-cache server ────────────────────────────────────────────────────────
+  server:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.example.toml:/etc/proxy-cache/config.toml:ro
+      - artifact_cache:/var/cache/proxy-cache
+    environment:
+      # Override the DB URL so the server reaches the compose-internal hostname.
+      PROXY_CACHE__DATABASE__URL: "postgresql://proxy_cache:changeme@postgres:5432/proxy_cache"
+      # Serve the built SPA from the image.
+      PROXY_CACHE__SERVER__STATIC_DIR: "/app/ui/dist"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/api/openapi.json || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── OpenTelemetry collector + Jaeger (optional) ───────────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    restart: unless-stopped
+    profiles: ["otel"]
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "16686:16686" # Jaeger UI
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
+volumes:
+  postgres_data:
+  artifact_cache:

@@ -1,0 +1,7 @@
+target/
+ui/node_modules/
+ui/dist/
+ui/src/client/
+ui/openapi.json
+.git/
+*.md

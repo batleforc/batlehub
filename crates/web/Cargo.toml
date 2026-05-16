@@ -1,0 +1,29 @@
+[package]
+name = "proxy-cache-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+proxy-cache-core = { path = "../core" }
+proxy-cache-config = { path = "../config" }
+actix-web.workspace = true
+actix-files.workspace = true
+utoipa.workspace = true
+utoipa-actix-web.workspace = true
+utoipa-swagger-ui.workspace = true
+tracing.workspace = true
+tracing-actix-web.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+bytes.workspace = true
+futures.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+proxy-cache-adapters = { path = "../adapters" }
+actix-http = "3"

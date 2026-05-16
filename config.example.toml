@@ -1,0 +1,143 @@
+# proxy-cache — example configuration
+# Copy this file to config.toml and edit as needed.
+
+[server]
+host = "0.0.0.0"
+port = 8080
+# Serve the built SPA from this directory (optional).
+# static_dir = "./ui/dist"
+
+[database]
+type = "postgresql"
+url = "postgresql://proxy_cache:changeme@localhost:5432/proxy_cache"
+max_connections = 10
+
+# ── Auth providers (evaluated in order; first match wins) ─────────────────────
+
+[[auth]]
+type = "token"
+
+[[auth.tokens]]
+value = "change-me-admin-token"
+role = "admin"
+user_id = "admin"
+
+[[auth.tokens]]
+value = "change-me-user-token"
+role = "user"
+user_id = "user-1"
+
+# Unauthenticated requests automatically receive the "anonymous" role.
+
+# OIDC provider example (acts as a resource server — validates incoming Bearer JWTs):
+# [[auth]]
+# type = "oidc"
+# issuer_url = "https://accounts.example.com"   # discovery doc fetched from issuer_url/.well-known/openid-configuration
+# client_id  = "proxy-cache"                    # informational only — audience validation is skipped
+#
+# # JWT claim used as the user's identifier (default: "sub").
+# user_id_claim = "sub"
+#
+# # JWT claim inspected for role mapping (default: "role").
+# # The value may be a string or an array of strings; the highest matching role wins.
+# role_claim = "groups"
+#
+# # Map claim values to proxy roles.  Values not listed here default to "anonymous".
+# [auth.role_mappings]
+# "platform-admins" = "admin"
+# "developers"      = "user"
+
+# Kubernetes service account token provider (in-cluster use).
+# Validates Bearer tokens via the Kubernetes TokenReview API.
+#
+# [[auth]]
+# type = "kubernetes"
+#
+# # Defaults come from the standard in-cluster mounted secrets and env vars.
+# # api_server   = "https://kubernetes.default.svc"
+# # ca_cert_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+# # token_path   = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+#
+# # Audiences passed to the TokenReview API (defaults to ["proxy-cache"]).
+# audiences = ["proxy-cache"]
+#
+# # Map Kubernetes usernames or group names to proxy roles.
+# # Kubernetes sets:
+# #   username: "system:serviceaccount:<namespace>:<name>"
+# #   groups:   ["system:serviceaccounts", "system:serviceaccounts:<namespace>", ...]
+# # The highest matching role wins when multiple keys match.
+# [auth.role_mappings]
+# "system:serviceaccount:prod:ci-deployer"  = "admin"
+# "system:serviceaccounts:dev"              = "user"
+# "system:serviceaccounts"                  = "anonymous"
+
+# ── Storage backend ────────────────────────────────────────────────────────────
+
+[storage]
+type = "filesystem"
+path = "./tmp/storage-cache"
+
+# S3 example:
+# [storage]
+# type = "s3"
+# bucket = "my-proxy-cache-bucket"
+# region = "us-east-1"
+# prefix = "artifacts/"
+# endpoint_url = "http://localhost:9000"   # override for MinIO / localstack
+
+# ── Registries ────────────────────────────────────────────────────────────────
+
+[[registries]]
+type = "github"
+name = "github"
+# upstreams defaults to ["https://api.github.com"] when omitted.
+
+[[registries]]
+type = "npm"
+name = "npm"
+# Single upstream (explicit):
+# upstreams = ["https://registry.npmjs.org"]
+#
+# Fanout — private first, public fallback on 404:
+# upstreams = [
+#   "https://my-private-npm.example.com",
+#   "https://registry.npmjs.org",
+# ]
+
+[[registries]]
+type = "cargo"
+name = "cargo"
+# upstreams defaults to ["https://crates.io"] when omitted.
+
+[registries.cache]
+# How long to cache release metadata (seconds). Default: 300 (5 min).
+metadata_ttl_secs = 300
+# "permanent" = once an artifact is cached it is never re-fetched.
+artifact_strategy = "permanent"
+
+[registries.rbac]
+# Permissions available:
+#   releases:read  — list releases and download release assets
+#   source:read    — download source tarballs
+#   actions:read   — access Actions artifacts (future)
+anonymous = ["releases:read"]
+user      = ["releases:read", "source:read"]
+admin     = ["*"]
+
+# Release age gate: block downloads for releases published less than 1 hour ago,
+# unless the caller holds an admin token.
+[[registries.rules]]
+kind = "release_age_gate"
+min_age_secs = 3600
+bypass_roles = ["admin"]
+
+# Signed-release gate (disabled by default):
+# [[registries.rules]]
+# kind = "require_signed_release"
+# enabled = true
+
+# ── OpenTelemetry (optional) ──────────────────────────────────────────────────
+
+# [otel]
+# endpoint = "http://localhost:4317"
+# service_name = "proxy-cache"

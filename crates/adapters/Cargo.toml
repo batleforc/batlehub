@@ -1,0 +1,42 @@
+[package]
+name = "proxy-cache-adapters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["auth-token", "auth-oidc", "auth-kubernetes", "storage-fs", "registry-github", "registry-npm", "registry-cargo", "db-postgres"]
+auth-token = []
+auth-oidc = ["dep:jsonwebtoken"]
+auth-kubernetes = []
+storage-fs = []
+storage-s3 = ["dep:aws-sdk-s3", "dep:aws-config"]
+registry-github = []
+registry-cargo = []
+registry-npm = []
+registry-pypi = []
+registry-composer = []
+db-postgres = []
+
+[dependencies]
+proxy-cache-core = { path = "../core" }
+proxy-cache-config = { path = "../config" }
+async-trait.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+bytes.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+sqlx.workspace = true
+tracing.workspace = true
+jsonwebtoken = { version = "9", optional = true }
+aws-sdk-s3 = { workspace = true, optional = true }
+aws-config = { workspace = true, optional = true }
+
+[dev-dependencies]
+mockito = "1"

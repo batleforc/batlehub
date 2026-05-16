@@ -1,0 +1,174 @@
+use async_trait::async_trait;
+use chrono::DateTime;
+use futures::TryStreamExt;
+use serde::Deserialize;
+
+use proxy_cache_core::{
+    entities::{PackageId, PackageMetadata},
+    error::CoreError,
+    ports::{ArtifactStream, RegistryClient},
+};
+
+/// crates.io (or compatible) registry client.
+///
+/// Supported `PackageId` conventions:
+/// - `version = "latest"`   → resolve via crates.io API (max_version)
+/// - `version = "1.2.3"`    → specific version metadata
+/// - `artifact = Some("dl")` → stream the `.crate` file for that version
+pub struct CargoRegistryClient {
+    http: reqwest::Client,
+    base_url: String,
+}
+
+impl CargoRegistryClient {
+    pub fn new(base_url: impl Into<String>) -> Self {
+        let http = reqwest::Client::builder()
+            .user_agent("proxy-cache/0.1")
+            // crates.io requires a User-Agent; follow redirects for downloads.
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .build()
+            .expect("failed to build Cargo HTTP client");
+        Self { http, base_url: base_url.into() }
+    }
+}
+
+// ── Serde types ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct CratesIoResponse {
+    #[serde(rename = "crate")]
+    krate: CrateInfo,
+    versions: Vec<CrateVersion>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CrateInfo {
+    max_version: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CrateVersion {
+    num: String,
+    #[serde(rename = "dl_path")]
+    dl_path: String,
+    checksum: Option<String>,
+    created_at: Option<String>,
+    yanked: bool,
+}
+
+// ── RegistryClient impl ───────────────────────────────────────────────────────
+
+#[async_trait]
+impl RegistryClient for CargoRegistryClient {
+    fn registry_type(&self) -> &str {
+        "cargo"
+    }
+
+    async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
+        let resp = self.fetch_crate_info(&pkg.name).await?;
+
+        let resolved_version = if pkg.version == "latest" {
+            resp.krate.max_version.clone()
+        } else {
+            pkg.version.clone()
+        };
+
+        let version = resp
+            .versions
+            .iter()
+            .find(|v| v.num == resolved_version && !v.yanked)
+            .ok_or_else(|| CoreError::NotFound(format!(
+                "crate {}@{} not found or yanked",
+                pkg.name, resolved_version
+            )))?;
+
+        let download_url = if pkg.artifact.as_deref() == Some("dl") {
+            // dl_path is a relative path like /api/v1/crates/serde/1.0.0/download
+            Some(format!("{}{}", self.base_url, version.dl_path))
+        } else {
+            None
+        };
+
+        let published_at = version
+            .created_at
+            .as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc));
+
+        let extra = serde_json::json!({
+            "resolved_version": resolved_version,
+            "dl_path": version.dl_path,
+            "yanked": version.yanked,
+        });
+
+        Ok(PackageMetadata {
+            id: PackageId {
+                version: resolved_version,
+                ..pkg.clone()
+            },
+            published_at,
+            download_url,
+            checksum: version.checksum.clone(),
+            is_signed: None,
+            extra,
+        })
+    }
+
+    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<ArtifactStream, CoreError> {
+        let resp = self.fetch_crate_info(&pkg.name).await?;
+
+        let resolved_version = if pkg.version == "latest" {
+            resp.krate.max_version.clone()
+        } else {
+            pkg.version.clone()
+        };
+
+        let version = resp
+            .versions
+            .iter()
+            .find(|v| v.num == resolved_version && !v.yanked)
+            .ok_or_else(|| CoreError::NotFound(format!(
+                "crate {}@{} not found or yanked",
+                pkg.name, resolved_version
+            )))?;
+
+        let url = format!("{}{}", self.base_url, version.dl_path);
+        tracing::debug!(url = %url, "fetching cargo crate");
+
+        let response = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        let stream = response
+            .bytes_stream()
+            .map_err(|e| CoreError::Registry(e.to_string()));
+
+        Ok(Box::pin(stream))
+    }
+}
+
+impl CargoRegistryClient {
+    async fn fetch_crate_info(&self, name: &str) -> Result<CratesIoResponse, CoreError> {
+        let url = format!("{}/api/v1/crates/{}", self.base_url, name);
+        let resp = self.http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(CoreError::NotFound(format!("crate {name} not found")));
+        }
+
+        resp.error_for_status()
+            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .json::<CratesIoResponse>()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))
+    }
+}

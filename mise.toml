@@ -1,0 +1,6 @@
+[tools]
+claude = "latest"
+cocogitto = "latest"
+node = "24"
+rust = "latest"
+task = "latest"
