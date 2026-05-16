@@ -2,6 +2,7 @@
 import { ref } from "vue";
 import { checkAccess } from "@/client/sdk.gen";
 import type { AccessCheckResponse } from "@/client/types.gen";
+import { API_BASE_URL } from "@/config";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,24 +14,13 @@ const name = ref("");
 const version = ref("");
 const artifact = ref("");
 const result = ref<AccessCheckResponse | null>(null);
-const proxyPath = ref<string | null>(null);
 const error = ref<string | null>(null);
 const loading = ref(false);
-
-function buildProxyPath(reg: string, n: string, v: string, a: string): string | null {
-  if (reg !== "github" || !n || !v) return null;
-  if (v === "releases" && !a) return `/proxy/github/${n}/releases`;
-  if (a.startsWith("tarball/")) return `/proxy/github/${n}/tarball/${v}`;
-  if (a && /^\d+$/.test(a)) return `/proxy/github/${n}/releases/assets/${a}?tag=${v}`;
-  if (!a) return `/proxy/github/${n}/releases/tags/${v}`;
-  return null;
-}
 
 async function check() {
   loading.value = true;
   error.value = null;
   result.value = null;
-  proxyPath.value = buildProxyPath(registry.value, name.value, version.value, artifact.value);
   try {
     const { data, error: apiErr } = await checkAccess({
       query: {
@@ -93,8 +83,13 @@ async function check() {
             {{ result.reason ?? "no reason given" }}
           </span>
         </div>
-        <p v-if="proxyPath" class="text-xs text-muted-foreground">
-          Proxy path: <code class="font-mono">{{ proxyPath }}</code>
+        <p v-if="result.proxy_url" class="text-xs text-muted-foreground break-all">
+          URL: <a
+            :href="`${API_BASE_URL}${result.proxy_url}`"
+            target="_blank"
+            rel="noopener"
+            class="font-mono underline underline-offset-2 hover:text-foreground"
+          >{{ API_BASE_URL }}{{ result.proxy_url }}</a>
         </p>
       </div>
     </CardContent>

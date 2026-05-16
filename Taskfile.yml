@@ -1,7 +1,6 @@
 version: "3"
 
 tasks:
-
   # ── Rust ─────────────────────────────────────────────────────────────────────
 
   build:
@@ -77,6 +76,19 @@ tasks:
     desc: Start postgres + server via Podman Compose
     cmds:
       - podman compose up -d
+
+  compose:auth:
+    desc: Start the optional Authentik OIDC provider (requires compose:up)
+    cmds:
+      - podman compose --profile authentik up -d authentik-postgres
+      - podman compose --profile authentik up -d authentik-redis
+      - podman compose --profile authentik up -d authentik-server
+      - podman compose --profile authentik up -d authentik-worker
+
+  compose:auth:pwd:
+    desc: "Set admin password for the Authentik identity provider (default: akadmin)"
+    cmds:
+      - podman compose exec -T authentik-server ak shell -c "from authentik.core.models import User; u=User.objects.get(username='akadmin'); u.set_password('akadmin'); u.save(); print('password reset for', u.username)"
 
   compose:down:
     desc: Stop and remove compose containers

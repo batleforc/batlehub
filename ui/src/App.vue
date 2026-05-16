@@ -1,36 +1,43 @@
 <script setup lang="ts">
-import { RouterView, RouterLink, useRoute } from "vue-router";
+import { computed } from "vue";
+import { RouterView, RouterLink, useRoute, useRouter } from "vue-router";
 import { useAuth } from "@/composables/useAuth";
-import { useApi } from "@/composables/useApi";
-import { me } from "@/client/sdk.gen";
-import type { MeResponse } from "@/client/types.gen";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { watch } from "vue";
+import { Button } from "@/components/ui/button";
 
-const { token } = useAuth();
+const { identity, isAdmin, isAuthenticated, logout } = useAuth();
 const route = useRoute();
+const router = useRouter();
 
-const { data: identity, reload: reloadIdentity } = useApi<MeResponse>(
-  () => me() as Promise<{ data?: unknown; error?: unknown }>,
-  [token],
-);
+const navLinks = computed(() => {
+  const links: { to: string; label: string }[] = [
+    { to: "/packages", label: "Packages" },
+    { to: "/access-check", label: "Access Check" },
+    { to: "/path-mapper", label: "URL Mapper" },
+    { to: "/setup", label: "Setup" },
+  ];
+  if (isAdmin.value) {
+    links.push(
+      { to: "/admin/packages", label: "Admin — Packages" },
+      { to: "/admin/audit-log", label: "Admin — Audit Log" },
+    );
+  }
+  return links;
+});
 
-watch(token, () => reloadIdentity());
-
-const navLinks = [
-  { to: "/packages", label: "Packages" },
-  { to: "/access-check", label: "Access Check" },
-  { to: "/admin/packages", label: "Admin — Packages" },
-  { to: "/admin/audit-log", label: "Admin — Audit Log" },
-];
+function handleLogout() {
+  logout();
+  router.push("/login");
+}
 </script>
 
 <template>
   <div class="min-h-screen bg-background">
     <header class="border-b bg-card">
       <div class="container mx-auto flex h-14 items-center gap-6 px-4">
-        <span class="font-semibold text-sm">Proxy Cache</span>
+        <RouterLink to="/packages" class="font-semibold text-sm hover:text-foreground/80">
+          Proxy Cache
+        </RouterLink>
 
         <nav class="flex items-center gap-4 text-sm">
           <RouterLink
@@ -49,16 +56,22 @@ const navLinks = [
         </nav>
 
         <div class="ml-auto flex items-center gap-3">
-          <Input
-            v-model="token"
-            type="password"
-            placeholder="Bearer token (optional)"
-            class="h-8 w-64 text-xs"
-          />
-          <div v-if="identity" class="flex items-center gap-2 text-xs text-muted-foreground">
-            <span>{{ identity.user_id ?? "anonymous" }}</span>
-            <Badge variant="secondary">{{ identity.role }}</Badge>
-          </div>
+          <template v-if="isAuthenticated">
+            <span class="text-sm font-medium">
+              {{ identity?.user_id }}
+            </span>
+            <Badge v-if="!isAdmin" variant="secondary">{{ identity?.role }}</Badge>
+            <Button variant="ghost" size="sm" @click="handleLogout">
+              Sign out
+            </Button>
+          </template>
+          <RouterLink
+            v-else
+            to="/login"
+            class="text-sm text-muted-foreground hover:text-foreground transition-colors"
+          >
+            Sign in
+          </RouterLink>
         </div>
       </div>
     </header>

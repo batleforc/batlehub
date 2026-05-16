@@ -103,6 +103,29 @@ impl PackageRepository for PgPackageRepository {
         .await
         .map_err(|e| CoreError::Database(e.to_string()))?;
 
+        // Ensure the package appears in list_packages by creating an 'available' status
+        // row on first access. DO NOTHING preserves any existing blocked status.
+        if matches!(event.result, AccessResult::Allowed) {
+            sqlx::query(
+                r#"
+                INSERT INTO package_statuses
+                    (id, registry, package_name, package_version, package_artifact,
+                     status, updated_at)
+                VALUES ($1, $2, $3, $4, $5, 'available', NOW())
+                ON CONFLICT (registry, package_name, package_version, COALESCE(package_artifact, ''))
+                DO NOTHING
+                "#,
+            )
+            .bind(Uuid::new_v4())
+            .bind(&event.package_id.registry)
+            .bind(&event.package_id.name)
+            .bind(&event.package_id.version)
+            .bind(&event.package_id.artifact)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| CoreError::Database(e.to_string()))?;
+        }
+
         Ok(())
     }
 
@@ -200,7 +223,17 @@ impl PackageRepository for PgPackageRepository {
                 ps.blocked_by,
                 ps.blocked_at,
                 COUNT(ae.id) AS access_count,
-                MAX(ae.created_at) AS last_accessed
+                MAX(ae.created_at) AS last_accessed,
+                (
+                    SELECT ae2.user_id
+                    FROM access_events ae2
+                    WHERE ae2.registry = ps.registry
+                      AND ae2.package_name = ps.package_name
+                      AND ae2.package_version = ps.package_version
+                      AND ae2.outcome = 'allowed'
+                    ORDER BY ae2.created_at DESC
+                    LIMIT 1
+                ) AS last_accessed_by
             FROM package_statuses ps
             LEFT JOIN access_events ae
                 ON ae.registry = ps.registry
@@ -209,6 +242,7 @@ impl PackageRepository for PgPackageRepository {
             WHERE ($1::text IS NULL OR ps.registry = $1)
               AND ($2::text IS NULL OR ps.package_name ILIKE '%' || $2 || '%')
               AND ($3::boolean = false OR ps.status = 'blocked')
+              AND ($6::text IS NULL OR ps.package_name = $6)
             GROUP BY ps.id, ps.registry, ps.package_name, ps.package_version,
                      ps.package_artifact, ps.status, ps.block_reason, ps.blocked_by, ps.blocked_at
             ORDER BY ps.registry, ps.package_name, ps.package_version
@@ -220,6 +254,7 @@ impl PackageRepository for PgPackageRepository {
         .bind(filter.blocked_only)
         .bind(filter.limit as i64)
         .bind(filter.offset as i64)
+        .bind(&filter.name_exact)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| CoreError::Database(e.to_string()))?;
@@ -251,6 +286,7 @@ impl PackageRepository for PgPackageRepository {
                     },
                     status: pkg_status,
                     last_accessed: r.get("last_accessed"),
+                    last_accessed_by: r.get("last_accessed_by"),
                     access_count: count.unwrap_or(0) as u64,
                 }
             })
@@ -271,6 +307,7 @@ impl PackageRepository for PgPackageRepository {
               AND ($3::timestamptz IS NULL OR created_at >= $3)
               AND ($4::timestamptz IS NULL OR created_at <= $4)
               AND ($5::boolean = false OR outcome = 'denied')
+              AND ($8::text IS NULL OR package_name = $8)
             ORDER BY created_at DESC
             LIMIT $6 OFFSET $7
             "#,
@@ -282,6 +319,7 @@ impl PackageRepository for PgPackageRepository {
         .bind(filter.denied_only)
         .bind(filter.limit as i64)
         .bind(filter.offset as i64)
+        .bind(&filter.package_name)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| CoreError::Database(e.to_string()))?;

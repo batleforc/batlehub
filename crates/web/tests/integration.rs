@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use actix_web::test::{call_service, init_service, read_body_json, TestRequest};
 use actix_web::App;
+use utoipa_actix_web::AppExt;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Utc;
@@ -64,6 +65,7 @@ impl PackageRepository for InMemoryRepo {
             package_id: event.package_id.clone(),
             status: PackageStatus::Available,
             last_accessed: None,
+            last_accessed_by: None,
             access_count: 0,
         });
         entry.access_count += 1;
@@ -89,6 +91,7 @@ impl PackageRepository for InMemoryRepo {
             package_id: pkg.clone(),
             status: PackageStatus::Available,
             last_accessed: None,
+            last_accessed_by: None,
             access_count: 0,
         });
         entry.status = status;
@@ -302,10 +305,13 @@ async fn make_app(
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
 
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(proxy_svc, admin_svc))
+        .split_for_parts();
+
     init_service(
-        App::new()
-            .wrap(AuthMiddlewareFactory::new(test_auth_providers()))
-            .configure(configure_app(proxy_svc, admin_svc, None)),
+        app.wrap(AuthMiddlewareFactory::new(test_auth_providers())),
     )
     .await
 }

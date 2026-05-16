@@ -72,6 +72,7 @@ impl AccessEvent {
 #[derive(Debug, Clone, Default)]
 pub struct EventFilter {
     pub registry: Option<String>,
+    pub package_name: Option<String>,
     pub user_id: Option<String>,
     pub from: Option<DateTime<Utc>>,
     pub to: Option<DateTime<Utc>>,

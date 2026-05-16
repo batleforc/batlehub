@@ -53,6 +53,7 @@ pub async fn audit_log(
 
     let filter = EventFilter {
         registry: query.registry.clone(),
+        package_name: None,
         user_id: query.user_id.clone(),
         from: query.from,
         to: query.to,

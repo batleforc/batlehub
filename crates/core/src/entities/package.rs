@@ -87,6 +87,8 @@ pub struct PackageSummary {
     pub package_id: PackageId,
     pub status: PackageStatus,
     pub last_accessed: Option<DateTime<Utc>>,
+    /// User who last successfully downloaded this package. `None` means anonymous.
+    pub last_accessed_by: Option<String>,
     pub access_count: u64,
 }
 
@@ -95,6 +97,8 @@ pub struct PackageSummary {
 pub struct PackageFilter {
     pub registry: Option<String>,
     pub name_contains: Option<String>,
+    /// Exact match on `package_name` — takes priority over `name_contains`.
+    pub name_exact: Option<String>,
     pub blocked_only: bool,
     pub limit: u64,
     pub offset: u64,

@@ -154,6 +154,19 @@ pub struct OidcAuthConfig {
     pub issuer_url: String,
     pub client_id: String,
     pub client_secret: Option<String>,
+    /// Redirect URI registered with the OIDC provider.
+    /// Required for the browser-based SSO login flow.
+    /// Example: `"https://proxy-cache.example.com/api/v1/auth/oidc/callback"`.
+    pub redirect_uri: Option<String>,
+    /// Base URL of the SPA frontend.  After a successful OIDC callback the
+    /// browser is redirected to `{frontend_url}/?oidc_access_token=...`.
+    /// Defaults to `""` (same origin as the backend — correct for production).
+    /// In development set this to `"http://localhost:5173"`.
+    #[serde(default)]
+    pub frontend_url: String,
+    /// OAuth2 scopes to request.  Defaults to `["openid", "profile", "email"]`.
+    #[serde(default = "default_oidc_scopes")]
+    pub scopes: Vec<String>,
     /// JWT claim used as `user_id` (default: `"sub"`).
     #[serde(default = "default_sub")]
     pub user_id_claim: String,
@@ -166,6 +179,10 @@ pub struct OidcAuthConfig {
     /// Claim values not present here default to the `anonymous` role.
     #[serde(default)]
     pub role_mappings: std::collections::HashMap<String, String>,
+}
+
+fn default_oidc_scopes() -> Vec<String> {
+    vec!["openid".to_owned(), "profile".to_owned(), "email".to_owned()]
 }
 
 fn default_sub() -> String {
@@ -238,6 +255,11 @@ pub struct RegistryConfig {
     /// When empty the adapter's built-in default (e.g. registry.npmjs.org) is used.
     #[serde(default)]
     pub upstreams: Vec<String>,
+    /// Cargo only: URL of the sparse crate index.
+    /// Defaults to `https://index.crates.io` when the upstream is crates.io.
+    /// Set this for self-hosted registries (e.g. Gitea/Forgejo package feeds).
+    #[serde(default)]
+    pub index_url: Option<String>,
     #[serde(default)]
     pub cache: CachePolicy,
     #[serde(default)]

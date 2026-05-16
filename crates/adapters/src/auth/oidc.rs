@@ -20,6 +20,119 @@ const JWKS_MIN_REFRESH: Duration = Duration::from_secs(300);
 #[derive(Deserialize)]
 struct OidcDiscovery {
     jwks_uri: String,
+    authorization_endpoint: String,
+    token_endpoint: String,
+}
+
+// ── SSO flow (Authorization Code) ────────────────────────────────────────────
+
+/// Tokens returned by the OIDC provider after a successful code exchange or refresh.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OidcTokens {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    /// Lifetime of the access token in seconds as reported by the provider.
+    pub expires_in: Option<u64>,
+}
+
+/// Holds everything the web layer needs to initiate and complete the browser-based
+/// OIDC Authorization Code flow.  Cloneable so it can be stored in `web::Data`.
+#[derive(Clone)]
+pub struct OidcSsoFlow {
+    pub client_id: String,
+    client_secret: Option<String>,
+    pub redirect_uri: String,
+    pub scopes: Vec<String>,
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    /// Base URL of the SPA — used to build the post-callback redirect.
+    pub frontend_url: String,
+    http: reqwest::Client,
+}
+
+impl OidcSsoFlow {
+    /// Build the provider's authorization URL for a given CSRF `state` value.
+    pub fn authorization_url(&self, state: &str) -> String {
+        let scope = self.scopes.join(" ");
+        let params = [
+            ("response_type", "code"),
+            ("client_id", &self.client_id),
+            ("redirect_uri", &self.redirect_uri),
+            ("scope", &scope),
+            ("state", state),
+        ];
+        let qs = params
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, percent_encode(v)))
+            .collect::<Vec<_>>()
+            .join("&");
+        format!("{}?{}", self.authorization_endpoint, qs)
+    }
+
+    /// Exchange an authorization `code` for tokens.
+    pub async fn exchange_code(&self, code: &str) -> anyhow::Result<OidcTokens> {
+        let mut params = vec![
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("client_id", &self.client_id),
+            ("redirect_uri", &self.redirect_uri),
+        ];
+        if let Some(ref secret) = self.client_secret {
+            params.push(("client_secret", secret.as_str()));
+        }
+        self.token_request(&params).await
+    }
+
+    /// Use a refresh token to obtain a fresh access token (and possibly a new refresh token).
+    pub async fn refresh(&self, refresh_token: &str) -> anyhow::Result<OidcTokens> {
+        let mut params = vec![
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+            ("client_id", &self.client_id),
+        ];
+        if let Some(ref secret) = self.client_secret {
+            params.push(("client_secret", secret.as_str()));
+        }
+        self.token_request(&params).await
+    }
+
+    async fn token_request(&self, params: &[(&str, &str)]) -> anyhow::Result<OidcTokens> {
+        let resp: serde_json::Value = self
+            .http
+            .post(&self.token_endpoint)
+            .form(params)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+
+        let access_token = resp["access_token"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow::anyhow!("token response missing access_token"))?;
+
+        Ok(OidcTokens {
+            access_token,
+            refresh_token: resp["refresh_token"].as_str().map(str::to_owned),
+            expires_in: resp["expires_in"].as_u64(),
+        })
+    }
+}
+
+fn percent_encode(s: &str) -> String {
+    s.chars()
+        .flat_map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
+                vec![c]
+            } else {
+                c.to_string()
+                    .bytes()
+                    .flat_map(|b| format!("%{b:02X}").chars().collect::<Vec<_>>())
+                    .collect()
+            }
+        })
+        .collect()
 }
 
 struct JwksCache {
@@ -34,6 +147,7 @@ pub struct OidcAuthProvider {
     http: reqwest::Client,
     jwks_uri: String,
     cache: Arc<RwLock<JwksCache>>,
+    sso: Option<OidcSsoFlow>,
 }
 
 impl OidcAuthProvider {
@@ -57,6 +171,17 @@ impl OidcAuthProvider {
             .await
             .map_err(|e| anyhow::anyhow!("fetching initial JWKS from {}: {e}", discovery.jwks_uri))?;
 
+        let sso = cfg.redirect_uri.as_ref().map(|redirect_uri| OidcSsoFlow {
+            client_id: cfg.client_id.clone(),
+            client_secret: cfg.client_secret.clone(),
+            redirect_uri: redirect_uri.clone(),
+            scopes: cfg.scopes.clone(),
+            authorization_endpoint: discovery.authorization_endpoint.clone(),
+            token_endpoint: discovery.token_endpoint.clone(),
+            frontend_url: cfg.frontend_url.clone(),
+            http: http.clone(),
+        });
+
         Ok(Self {
             user_id_claim: cfg.user_id_claim.clone(),
             role_claim: cfg.role_claim.clone(),
@@ -67,7 +192,13 @@ impl OidcAuthProvider {
                 keys,
                 fetched_at: Instant::now(),
             })),
+            sso,
         })
+    }
+
+    /// Returns the SSO flow helper if `redirect_uri` was configured, `None` otherwise.
+    pub fn sso_flow(&self) -> Option<&OidcSsoFlow> {
+        self.sso.as_ref()
     }
 
     async fn get_decoding_key(&self, kid: Option<&str>) -> Result<DecodingKey, CoreError> {
@@ -139,6 +270,7 @@ impl OidcAuthProvider {
                 keys: jwks,
                 fetched_at: Instant::now(),
             })),
+            sso: None,
         }
     }
 }

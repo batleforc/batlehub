@@ -5,50 +5,133 @@ services:
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB:       proxy_cache
-      POSTGRES_USER:     proxy_cache
+      POSTGRES_DB: proxy_cache
+      POSTGRES_USER: proxy_cache
       POSTGRES_PASSWORD: changeme
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U proxy_cache"]
+      test: [ "CMD-SHELL", "pg_isready -U proxy_cache" ]
       interval: 5s
       timeout: 5s
       retries: 10
     user: "postgres"
 
   # ── proxy-cache server ────────────────────────────────────────────────────────
-  server:
-    build: .
+  # server:
+  #   build: .
+  #   restart: unless-stopped
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   ports:
+  #     - "8080:8080"
+  #   volumes:
+  #     - ./config.example.toml:/etc/proxy-cache/config.toml:ro
+  #     - artifact_cache:/var/cache/proxy-cache
+  #   environment:
+  #     # Override the DB URL so the server reaches the compose-internal hostname.
+  #     PROXY_CACHE__DATABASE__URL: "postgresql://proxy_cache:changeme@postgres:5432/proxy_cache"
+  #     # Serve the built SPA from the image.
+  #     PROXY_CACHE__SERVER__STATIC_DIR: "/app/ui/dist"
+  #   healthcheck:
+  #     test: [ "CMD-SHELL", "curl -sf http://localhost:8080/api/openapi.json || exit 1" ]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 10
+
+  # ── Authentik (optional OIDC provider) ───────────────────────────────────────
+  # Start with: docker compose --profile authentik up
+  # UI: http://localhost:9000  (user: akadmin / pass: akadmin)
+  # ⚠ Credentials below are for LOCAL development only.
+  authentik-postgres:
+    image: postgres:16-alpine
     restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./config.example.toml:/etc/proxy-cache/config.toml:ro
-      - artifact_cache:/var/cache/proxy-cache
+    profiles: [ "authentik" ]
+    user: "postgres"
     environment:
-      # Override the DB URL so the server reaches the compose-internal hostname.
-      PROXY_CACHE__DATABASE__URL: "postgresql://proxy_cache:changeme@postgres:5432/proxy_cache"
-      # Serve the built SPA from the image.
-      PROXY_CACHE__SERVER__STATIC_DIR: "/app/ui/dist"
+      POSTGRES_DB: authentik
+      POSTGRES_USER: authentik
+      POSTGRES_PASSWORD: authentik
+    volumes:
+      - authentik_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8080/api/openapi.json || exit 1"]
-      interval: 10s
+      test: [ "CMD-SHELL", "pg_isready -U authentik" ]
+      interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 5
+
+  authentik-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    profiles: [ "authentik" ]
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --stop-writes-on-bgsave-error
+      - "no"
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server:2026.2.2
+    restart: unless-stopped
+    profiles: [ "authentik" ]
+    command: server
+    environment:
+      AUTHENTIK_REDIS__HOST: authentik-redis
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: authentik
+      AUTHENTIK_SECRET_KEY: proxy-cache-local-insecure-secret-key
+      AUTHENTIK_BOOTSTRAP_PASSWORD: akadmin
+      AUTHENTIK_BOOTSTRAP_TOKEN: akadmin-token
+    ports:
+      - "9000:9000"
+    depends_on:
+      authentik-postgres:
+        condition: service_healthy
+      authentik-redis:
+        condition: service_healthy
+    volumes:
+      - ./deploy/auth/proxy-cache.yaml:/blueprints/custom/proxy-cache.yaml:ro
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:2026.2.2
+    restart: unless-stopped
+    profiles: [ "authentik" ]
+    command: worker
+    environment:
+      AUTHENTIK_REDIS__HOST: authentik-redis
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: authentik
+      AUTHENTIK_SECRET_KEY: proxy-cache-local-insecure-secret-key
+    depends_on:
+      authentik-postgres:
+        condition: service_healthy
+      authentik-redis:
+        condition: service_healthy
+    volumes:
+      - ./deploy/auth/proxy-cache.yaml:/blueprints/custom/proxy-cache.yaml:ro
 
   # ── OpenTelemetry collector + Jaeger (optional) ───────────────────────────────
   jaeger:
     image: jaegertracing/all-in-one:1.57
     restart: unless-stopped
-    profiles: ["otel"]
+    profiles: [ "otel" ]
     ports:
-      - "4317:4317"   # OTLP gRPC
+      - "4317:4317" # OTLP gRPC
       - "16686:16686" # Jaeger UI
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
@@ -56,3 +139,5 @@ services:
 volumes:
   postgres_data:
   artifact_cache:
+  authentik_postgres_data:
+  authentik_redis_data:

@@ -14,11 +14,18 @@ use proxy_cache_core::{
 /// Supported `PackageId` conventions:
 /// - `version = "releases"` → list releases (metadata only, no artifact)
 /// - `version = "v1.80.0"` → release by tag (metadata for age-gate rule)
-/// - `artifact = Some("12345678")` → specific release asset download
-/// - `artifact = Some("tarball/v1.80.0")` → source tarball download
+/// - `artifact = Some("12345678")` → specific release asset download (by ID)
+/// - `artifact = Some("filename/{name}")` → release asset download (by filename)
+/// - `artifact = Some("tarball/{ref}")` → source tarball (github.com/archive/)
+/// - `artifact = Some("zipball")` → zip archive (github.com/archive/)
+/// - `artifact = Some("raw/{path}")` → raw file (raw.githubusercontent.com)
 pub struct GithubRegistryClient {
     http: reqwest::Client,
     base_url: String,
+    /// Base URL for raw file downloads (default: `https://raw.githubusercontent.com`).
+    raw_base_url: String,
+    /// Base URL for archive downloads (default: `https://github.com`).
+    archive_base_url: String,
 }
 
 impl GithubRegistryClient {
@@ -44,10 +51,22 @@ impl GithubRegistryClient {
             .build()
             .expect("failed to build GitHub HTTP client");
 
-        Self {
-            http,
-            base_url: base_url.into(),
-        }
+        let base_url = base_url.into();
+
+        // Derive content URLs from the API base URL.
+        // api.github.com → raw.githubusercontent.com / github.com
+        // GitHub Enterprise → same host, no /api/v3 prefix
+        let (raw_base_url, archive_base_url) = if base_url.contains("api.github.com") {
+            (
+                "https://raw.githubusercontent.com".to_owned(),
+                "https://github.com".to_owned(),
+            )
+        } else {
+            let host = base_url.trim_end_matches('/').trim_end_matches("/api/v3");
+            (host.to_owned(), host.to_owned())
+        };
+
+        Self { http, base_url, raw_base_url, archive_base_url }
     }
 }
 
@@ -81,6 +100,24 @@ impl RegistryClient for GithubRegistryClient {
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
         // `name` is expected to be "owner/repo".
         let owner_repo = &pkg.name;
+
+        // Raw file and archive downloads use a branch/SHA as the version, not a
+        // release tag. Skip the releases API entirely and return minimal metadata.
+        if let Some(ref artifact) = pkg.artifact {
+            if artifact.starts_with("raw/")
+                || artifact.starts_with("tarball/")
+                || artifact == "zipball"
+            {
+                return Ok(PackageMetadata {
+                    id: pkg.clone(),
+                    published_at: None,
+                    download_url: None,
+                    checksum: None,
+                    is_signed: None,
+                    extra: serde_json::Value::Null,
+                });
+            }
+        }
 
         match pkg.version.as_str() {
             "releases" => {
@@ -132,16 +169,21 @@ impl RegistryClient for GithubRegistryClient {
                 let asset_names: Vec<&str> = release.assets.iter().map(|a| a.name.as_str()).collect();
                 let is_signed = asset_names.iter().any(|n| n.ends_with(".asc") || n.ends_with(".sig"));
 
-                // If an artifact ID was requested, find the download URL.
-                let download_url = if let Some(asset_id_str) = &pkg.artifact {
-                    let asset_id: u64 = asset_id_str
-                        .parse()
-                        .map_err(|_| CoreError::Registry(format!("invalid asset id: {asset_id_str}")))?;
-                    release
-                        .assets
-                        .iter()
-                        .find(|a| a.id == asset_id)
-                        .map(|a| a.browser_download_url.clone())
+                // If an artifact was requested, resolve the download URL.
+                let download_url = if let Some(artifact_str) = &pkg.artifact {
+                    if let Some(filename) = artifact_str.strip_prefix("filename/") {
+                        // Lookup by filename (used by the releases/download/{tag}/{file} route).
+                        release.assets.iter()
+                            .find(|a| a.name == filename)
+                            .map(|a| a.browser_download_url.clone())
+                    } else {
+                        let asset_id: u64 = artifact_str
+                            .parse()
+                            .map_err(|_| CoreError::Registry(format!("invalid asset id: {artifact_str}")))?;
+                        release.assets.iter()
+                            .find(|a| a.id == asset_id)
+                            .map(|a| a.browser_download_url.clone())
+                    }
                 } else {
                     None
                 };
@@ -170,11 +212,27 @@ impl RegistryClient for GithubRegistryClient {
 
     async fn fetch_artifact(&self, pkg: &PackageId) -> Result<ArtifactStream, CoreError> {
         let owner_repo = &pkg.name;
+        let git_ref = &pkg.version;
 
         let download_url = if let Some(artifact) = &pkg.artifact {
             if artifact.starts_with("tarball/") {
-                let r#ref = artifact.strip_prefix("tarball/").unwrap();
-                format!("{}/repos/{}/tarball/{}", self.base_url, owner_repo, r#ref)
+                // github.com/{owner}/{repo}/archive/{ref}.tar.gz — no API involved
+                format!("{}/{}/archive/{}.tar.gz", self.archive_base_url, owner_repo, git_ref)
+            } else if artifact == "zipball" {
+                // github.com/{owner}/{repo}/archive/{ref}.zip — no API involved
+                format!("{}/{}/archive/{}.zip", self.archive_base_url, owner_repo, git_ref)
+            } else if let Some(file_path) = artifact.strip_prefix("raw/") {
+                // raw.githubusercontent.com/{owner}/{repo}/{ref}/{path} — no API involved
+                format!("{}/{}/{}/{}", self.raw_base_url, owner_repo, git_ref, file_path)
+            } else if let Some(filename) = artifact.strip_prefix("filename/") {
+                // Resolve asset by filename against the release tag.
+                let release = self.fetch_release_by_tag(owner_repo, git_ref).await?;
+                release.assets.iter()
+                    .find(|a| a.name == filename)
+                    .map(|a| a.browser_download_url.clone())
+                    .ok_or_else(|| CoreError::NotFound(
+                        format!("no asset named '{filename}' in {owner_repo}@{git_ref}")
+                    ))?
             } else {
                 // asset ID — first resolve the download URL via API
                 let asset_id: u64 = artifact
@@ -211,8 +269,7 @@ impl RegistryClient for GithubRegistryClient {
 
         tracing::debug!(url = %download_url, "fetching GitHub artifact");
 
-        let response = self
-            .http
+        let response = self.http
             .get(&download_url)
             .send()
             .await

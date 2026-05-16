@@ -29,23 +29,34 @@ user_id = "user-1"
 
 # Unauthenticated requests automatically receive the "anonymous" role.
 
-# OIDC provider example (acts as a resource server — validates incoming Bearer JWTs):
-# [[auth]]
-# type = "oidc"
-# issuer_url = "https://accounts.example.com"   # discovery doc fetched from issuer_url/.well-known/openid-configuration
-# client_id  = "proxy-cache"                    # informational only — audience validation is skipped
+# OIDC provider — JWT validation + browser SSO login.
+# Works with any standards-compliant provider (Authentik, Keycloak, Dex, …).
 #
-# # JWT claim used as the user's identifier (default: "sub").
-# user_id_claim = "sub"
-#
-# # JWT claim inspected for role mapping (default: "role").
-# # The value may be a string or an array of strings; the highest matching role wins.
-# role_claim = "groups"
-#
-# # Map claim values to proxy roles.  Values not listed here default to "anonymous".
-# [auth.role_mappings]
-# "platform-admins" = "admin"
-# "developers"      = "user"
+# Local Authentik (docker compose --profile authentik up):
+[[auth]]
+type = "oidc"
+issuer_url = "http://localhost:9000/application/o/proxy-auth/"
+client_id = "proxy-auth"
+client_secret = "proxy-auth-secret"                              # from Authentik app settings
+redirect_uri = "http://localhost:8080/api/v1/auth/oidc/callback"
+scopes = ["openid", "profile", "email", "groups"]
+# Where to redirect after the OIDC callback. Defaults to "" (same origin as the
+# backend). Set this when running the Vite dev server separately.
+frontend_url = "http://localhost:5173"
+
+# JWT claim used as the user's identifier (default: "sub").
+# "preferred_username" gives a human-readable name (e.g. "akadmin") instead of a UUID.
+user_id_claim = "preferred_username"
+
+# JWT claim inspected for role mapping (default: "role").
+# The value may be a string or an array of strings; the highest matching role wins.
+role_claim = "groups"
+
+# Map Authentik group names (JWT claim values) → proxy roles.
+# Keys are group names as they appear in the "groups" JWT claim.
+[auth.role_mappings]
+"authentik Admins" = "admin"
+"proxy-users" = "user"
 
 # Kubernetes service account token provider (in-cluster use).
 # Validates Bearer tokens via the Kubernetes TokenReview API.
@@ -87,10 +98,20 @@ path = "./tmp/storage-cache"
 
 # ── Registries ────────────────────────────────────────────────────────────────
 
+# Permissions available:
+#   releases:read  — list releases and download release assets
+#   source:read    — download source tarballs
+#   actions:read   — access Actions artifacts (future)
+
 [[registries]]
 type = "github"
 name = "github"
 # upstreams defaults to ["https://api.github.com"] when omitted.
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
 
 [[registries]]
 type = "npm"
@@ -104,6 +125,11 @@ name = "npm"
 #   "https://registry.npmjs.org",
 # ]
 
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
+
 [[registries]]
 type = "cargo"
 name = "cargo"
@@ -116,13 +142,9 @@ metadata_ttl_secs = 300
 artifact_strategy = "permanent"
 
 [registries.rbac]
-# Permissions available:
-#   releases:read  — list releases and download release assets
-#   source:read    — download source tarballs
-#   actions:read   — access Actions artifacts (future)
-anonymous = ["releases:read"]
-user      = ["releases:read", "source:read"]
-admin     = ["*"]
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
 
 # Release age gate: block downloads for releases published less than 1 hour ago,
 # unless the caller holds an admin token.

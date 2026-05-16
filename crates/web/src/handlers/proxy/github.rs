@@ -114,6 +114,39 @@ pub async fn download_asset(
     proxy_stream(svc, pkg, identity, "releases:read").await
 }
 
+/// Download a GitHub release asset by filename.
+///
+/// Mirrors the `github.com/{owner}/{repo}/releases/download/{tag}/{filename}` URL
+/// so mise URL replacements can redirect binary asset downloads through the proxy.
+#[utoipa::path(
+    get,
+    path = "/proxy/github/{owner}/{repo}/releases/download/{tag}/{filename}",
+    tag = "proxy",
+    params(
+        ("owner"    = String, Path, description = "Repository owner"),
+        ("repo"     = String, Path, description = "Repository name"),
+        ("tag"      = String, Path, description = "Release tag"),
+        ("filename" = String, Path, description = "Asset filename"),
+    ),
+    responses(
+        (status = 200, description = "Asset binary stream"),
+        (status = 404, description = "Asset not found"),
+        (status = 403, description = "Access denied"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[get("/proxy/github/{owner}/{repo}/releases/download/{tag}/{filename}")]
+pub async fn download_asset_by_name(
+    params: web::Path<(String, String, String, String)>,
+    identity: AuthIdentity,
+    svc: web::Data<Arc<ProxyService>>,
+) -> Result<impl Responder, AppError> {
+    let (owner, repo, tag, filename) = params.into_inner();
+    let pkg = PackageId::new("github", format!("{owner}/{repo}"), tag)
+        .with_artifact(format!("filename/{filename}"));
+    proxy_stream(svc, pkg, identity, "releases:read").await
+}
+
 /// Download a GitHub source tarball.
 #[utoipa::path(
     get,
@@ -135,6 +168,64 @@ pub async fn download_tarball(
     let pkg =
         PackageId::new("github", format!("{}/{}", path.owner, path.repo), &path.tag)
             .with_artifact(format!("tarball/{}", path.tag));
+
+    proxy_stream(svc, pkg, identity, "source:read").await
+}
+
+/// Download a GitHub zip archive of a repository at a given ref.
+#[utoipa::path(
+    get,
+    path = "/proxy/github/{owner}/{repo}/zipball/{tag}",
+    tag = "proxy",
+    params(OwnerRepoTagParts),
+    responses(
+        (status = 200, description = "Zip archive stream"),
+        (status = 403, description = "Access denied"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[get("/proxy/github/{owner}/{repo}/zipball/{tag}")]
+pub async fn download_zipball(
+    path: web::Path<OwnerRepoTagParts>,
+    identity: AuthIdentity,
+    svc: web::Data<Arc<ProxyService>>,
+) -> Result<impl Responder, AppError> {
+    let pkg =
+        PackageId::new("github", format!("{}/{}", path.owner, path.repo), &path.tag)
+            .with_artifact("zipball");
+
+    proxy_stream(svc, pkg, identity, "source:read").await
+}
+
+/// Download a raw file from a GitHub repository at a given ref.
+///
+/// Equivalent to `raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}`.
+#[utoipa::path(
+    get,
+    path = "/proxy/github/{owner}/{repo}/raw/{git_ref}/{path}",
+    tag = "proxy",
+    params(
+        ("owner" = String, Path, description = "Repository owner"),
+        ("repo"  = String, Path, description = "Repository name"),
+        ("git_ref" = String, Path, description = "Branch, tag, or commit SHA"),
+        ("path"  = String, Path, description = "File path within the repository"),
+    ),
+    responses(
+        (status = 200, description = "Raw file content"),
+        (status = 404, description = "File not found"),
+        (status = 403, description = "Access denied"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[get("/proxy/github/{owner}/{repo}/raw/{git_ref}/{path:.*}")]
+pub async fn download_raw(
+    params: web::Path<(String, String, String, String)>,
+    identity: AuthIdentity,
+    svc: web::Data<Arc<ProxyService>>,
+) -> Result<impl Responder, AppError> {
+    let (owner, repo, git_ref, file_path) = params.into_inner();
+    let pkg = PackageId::new("github", format!("{owner}/{repo}"), git_ref)
+        .with_artifact(format!("raw/{file_path}"));
 
     proxy_stream(svc, pkg, identity, "source:read").await
 }

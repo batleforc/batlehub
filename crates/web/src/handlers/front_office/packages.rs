@@ -73,6 +73,7 @@ pub async fn list_packages(
     let filter = PackageFilter {
         registry: query.registry.clone(),
         name_contains: query.name.clone(),
+        name_exact: None,
         blocked_only: false,
         limit: query.per_page,
         offset: query.page * query.per_page,
@@ -117,6 +118,8 @@ pub struct AccessCheckResponse {
     pub package: PackageIdentifierDto,
     pub can_access: bool,
     pub reason: Option<String>,
+    /// The proxy path for this package (e.g. `/proxy/npm/lodash/4.17.21/tarball`).
+    pub proxy_url: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -158,6 +161,8 @@ pub async fn check_access(
         PackageStatus::Blocked { reason, .. } => (false, Some(reason.clone())),
     };
 
+    let proxy_url = build_proxy_url(&pkg.registry, &pkg.name, &pkg.version, pkg.artifact.as_deref());
+
     Ok(web::Json(AccessCheckResponse {
         package: PackageIdentifierDto {
             registry: pkg.registry,
@@ -167,5 +172,31 @@ pub async fn check_access(
         },
         can_access,
         reason,
+        proxy_url,
     }))
+}
+
+fn build_proxy_url(registry: &str, name: &str, version: &str, artifact: Option<&str>) -> Option<String> {
+    match registry {
+        "github" => Some(match (version, artifact) {
+            ("releases", _)                  => format!("/proxy/github/{name}/releases"),
+            (v, Some(art)) if art.starts_with("tarball") => format!("/proxy/github/{name}/tarball/{v}"),
+            (v, Some("zipball"))             => format!("/proxy/github/{name}/zipball/{v}"),
+            (v, Some(art)) if art.starts_with("raw/") => {
+                let path = art.strip_prefix("raw/").unwrap_or("");
+                format!("/proxy/github/{name}/raw/{v}/{path}")
+            }
+            (_, Some(art))                   => format!("/proxy/github/{name}/releases/assets/{art}"),
+            (v, None)                        => format!("/proxy/github/{name}/releases/tags/{v}"),
+        }),
+        "npm" => Some(match artifact {
+            Some("tarball")    => format!("/proxy/npm/{name}/{version}/tarball"),
+            _                  => format!("/proxy/npm/{name}/{version}"),
+        }),
+        "cargo" => Some(match artifact {
+            Some("download")   => format!("/proxy/cargo/{name}/{version}/download"),
+            _                  => format!("/proxy/cargo/{name}/{version}"),
+        }),
+        _ => None,
+    }
 }

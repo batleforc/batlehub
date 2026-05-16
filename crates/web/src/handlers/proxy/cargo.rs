@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actix_web::{HttpResponse, Responder, get, web};
+use actix_web::{HttpRequest, HttpResponse, Responder, get, web};
 use bytes::Bytes;
 use futures::StreamExt;
 use serde::Deserialize;
@@ -12,6 +12,94 @@ use proxy_cache_core::{
 };
 
 use crate::{error::AppError, extractors::AuthIdentity};
+
+// ── Sparse index proxy ────────────────────────────────────────────────────────
+
+/// Holds the HTTP client and index URL for proxying the cargo sparse index.
+#[derive(Clone)]
+pub struct CargoIndexProxy {
+    pub http: reqwest::Client,
+    /// Base URL of the upstream sparse index, e.g. `https://index.crates.io`.
+    pub index_url: String,
+}
+
+/// Cargo sparse registry config.json.
+///
+/// Tells cargo where to download `.crate` files and resolves the `dl` template
+/// against the request's own host so the URL works in any environment.
+#[utoipa::path(
+    get,
+    path = "/proxy/cargo/registry/config.json",
+    tag = "proxy",
+    responses(
+        (status = 200, description = "Sparse registry configuration"),
+        (status = 404, description = "No cargo registry configured"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[get("/proxy/cargo/registry/config.json")]
+pub async fn cargo_registry_config(
+    index: Option<web::Data<CargoIndexProxy>>,
+    req: HttpRequest,
+) -> HttpResponse {
+    if index.is_none() {
+        return HttpResponse::NotFound().body("no cargo registry configured");
+    }
+    let (scheme, host) = {
+        let info = req.connection_info();
+        (info.scheme().to_owned(), info.host().to_owned())
+    };
+    let dl = format!("{scheme}://{host}/proxy/cargo/{{crate}}/{{version}}/download");
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .json(serde_json::json!({ "dl": dl }))
+}
+
+/// Cargo sparse registry index entries.
+///
+/// Proxies `{index_url}/{path}` (e.g. `index.crates.io/se/rd/serde`) and
+/// streams the newline-delimited JSON directly to the cargo client.
+#[utoipa::path(
+    get,
+    path = "/proxy/cargo/registry/{path}",
+    tag = "proxy",
+    params(("path" = String, Path, description = "Crate index path, e.g. se/rd/serde")),
+    responses(
+        (status = 200, description = "Sparse index entry (newline-delimited JSON)"),
+        (status = 404, description = "Crate not found in index"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[get("/proxy/cargo/registry/{path:.*}")]
+pub async fn cargo_registry_index(
+    path: web::Path<String>,
+    index: Option<web::Data<CargoIndexProxy>>,
+    _identity: AuthIdentity,
+) -> HttpResponse {
+    let Some(index) = index else {
+        return HttpResponse::NotFound().body("no cargo registry configured");
+    };
+    let url = format!("{}/{}", index.index_url.trim_end_matches('/'), path.as_ref());
+    tracing::debug!(url = %url, "fetching cargo sparse index entry");
+
+    let resp = match index.http.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(url = %url, error = %e, "cargo index fetch failed");
+            return HttpResponse::BadGateway().body(e.to_string());
+        }
+    };
+
+    let status = actix_web::http::StatusCode::from_u16(resp.status().as_u16())
+        .unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR);
+
+    match resp.bytes().await {
+        Ok(bytes) => HttpResponse::build(status)
+            .content_type("text/plain; charset=utf-8")
+            .body(bytes),
+        Err(e) => HttpResponse::BadGateway().body(e.to_string()),
+    }
+}
 
 // ── Path extractors ───────────────────────────────────────────────────────────
 

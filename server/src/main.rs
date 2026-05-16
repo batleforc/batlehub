@@ -2,18 +2,24 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use actix_web::{App, HttpServer};
+use actix_cors::Cors;
+use actix_web::{http, web, App, HttpServer};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::{Resource, trace as sdktrace};
+use opentelemetry_sdk::{trace as sdktrace, Resource};
+use tracing::info;
 use tracing_actix_web::TracingLogger;
-use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use utoipa::OpenApi as _;
+use utoipa_actix_web::AppExt;
 
 use proxy_cache_adapters::{
-    auth::{KubernetesAuthProvider, OidcAuthProvider, StaticTokenAuthProvider},
+    auth::{KubernetesAuthProvider, OidcAuthProvider, OidcSsoFlow, StaticTokenAuthProvider},
     db::PgPackageRepository,
-    registry::{CargoRegistryClient, FanoutRegistryClient, GithubRegistryClient, NpmRegistryClient},
+    registry::{
+        CargoRegistryClient, FanoutRegistryClient, GithubRegistryClient, NpmRegistryClient,
+    },
     storage::FilesystemStorageBackend,
 };
 use proxy_cache_config::{
@@ -26,12 +32,15 @@ use proxy_cache_core::{
     rules::{BlockListRule, RbacRule, ReleaseAgeGateRule},
     services::{AdminService, ProxyService, RegistryPolicy},
 };
-use proxy_cache_web::{configure_app, openapi_spec};
+use proxy_cache_web::{configure_app, openapi_spec, ApiDoc, CargoIndexProxy};
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "proxy-cache", about = "Smart proxy cache for package registries")]
+#[command(
+    name = "proxy-cache",
+    about = "Smart proxy cache for package registries"
+)]
 struct Cli {
     #[arg(short, long, default_value = "config.toml")]
     config: String,
@@ -51,15 +60,16 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let config = load(&cli.config)
-        .with_context(|| format!("loading config from '{}'", cli.config))?;
 
-    // Handle subcommands before initialising anything heavy.
+    // Handle subcommands before loading config or initialising anything heavy.
     if let Some(Command::DumpSpec) = cli.command {
         let spec = openapi_spec();
         println!("{}", spec.to_pretty_json().expect("serialize openapi spec"));
         return Ok(());
     }
+
+    let config =
+        load(&cli.config).with_context(|| format!("loading config from '{}'", cli.config))?;
 
     // ── Tracing ───────────────────────────────────────────────────────────────
     let _tracer_provider = init_tracing(config.otel.as_ref());
@@ -88,6 +98,8 @@ async fn main() -> Result<()> {
 
     // ── Auth providers ────────────────────────────────────────────────────────
     let mut auth_providers: Vec<Arc<dyn AuthProvider>> = Vec::new();
+    let mut oidc_sso: Option<OidcSsoFlow> = None;
+
     for auth_cfg in &config.auth {
         match auth_cfg {
             AuthConfig::Token(tok) => {
@@ -96,18 +108,38 @@ async fn main() -> Result<()> {
                     (t.value.clone(), t.user_id.clone(), role)
                 });
                 auth_providers.push(Arc::new(StaticTokenAuthProvider::new(entries)));
+                info!("configured static token auth provider");
             }
             AuthConfig::Oidc(oidc_cfg) => {
-                let provider = OidcAuthProvider::new(oidc_cfg)
-                    .await
-                    .context("initialising OIDC auth provider")?;
-                auth_providers.push(Arc::new(provider));
+                match OidcAuthProvider::new(oidc_cfg).await {
+                    Ok(provider) => {
+                        if oidc_sso.is_none() {
+                            oidc_sso = provider.sso_flow().cloned();
+                        }
+                        auth_providers.push(Arc::new(provider));
+                        tracing::info!(issuer = %oidc_cfg.issuer_url, "OIDC auth provider ready");
+                    }
+                    Err(e) => {
+                        // Non-fatal: server starts without OIDC. The /auth/oidc/login
+                        // endpoint will return 503 until the provider becomes reachable
+                        // and the server is restarted.
+                        tracing::warn!(
+                            issuer = %oidc_cfg.issuer_url,
+                            error = %e,
+                            "OIDC provider unreachable at startup — continuing without it"
+                        );
+                    }
+                }
             }
             AuthConfig::Kubernetes(k8s_cfg) => {
                 let provider = KubernetesAuthProvider::new(k8s_cfg)
                     .await
                     .context("initialising Kubernetes auth provider")?;
                 auth_providers.push(Arc::new(provider));
+                info!(
+                    "configured Kubernetes auth provider for service account '{}'",
+                    k8s_cfg.audiences.join(", ")
+                );
             }
         }
     }
@@ -117,6 +149,7 @@ async fn main() -> Result<()> {
     let mut registry_clients: HashMap<String, Arc<dyn proxy_cache_core::ports::RegistryClient>> =
         HashMap::new();
     let mut policies: HashMap<String, RegistryPolicy> = HashMap::new();
+    let mut cargo_index: Option<CargoIndexProxy> = None;
 
     for reg in &config.registries {
         let client = build_registry_client(reg);
@@ -127,6 +160,10 @@ async fn main() -> Result<()> {
             repo.clone() as Arc<dyn proxy_cache_core::ports::PackageRepository>,
         );
         policies.insert(reg.name.clone(), policy);
+
+        if reg.registry_type == "cargo" && cargo_index.is_none() {
+            cargo_index = Some(build_cargo_index(reg));
+        }
     }
 
     // ── Services ──────────────────────────────────────────────────────────────
@@ -139,7 +176,7 @@ async fn main() -> Result<()> {
     });
 
     let admin_svc = Arc::new(AdminService::new(
-        repo.clone() as Arc<dyn proxy_cache_core::ports::PackageRepository>,
+        repo.clone() as Arc<dyn proxy_cache_core::ports::PackageRepository>
     ));
 
     // ── HTTP server ───────────────────────────────────────────────────────────
@@ -149,17 +186,56 @@ async fn main() -> Result<()> {
     tracing::info!(addr = %bind_addr, "listening");
 
     HttpServer::new(move || {
-        App::new()
-            .wrap(TracingLogger::default())
+        let configure = configure_app(proxy_svc.clone(), admin_svc.clone());
+        let static_dir_inner = static_dir.clone();
+        let oidc_sso_inner = oidc_sso.clone();
+        let cargo_index_inner = cargo_index.clone();
+
+        let (app, openapi) = App::new()
+            .into_utoipa_app()
+            .openapi(ApiDoc::openapi())
+            .configure(configure)
+            .split_for_parts();
+
+        // Register the OIDC SSO flow so the login/callback handlers can use it.
+        let app = if let Some(sso) = oidc_sso_inner {
+            app.app_data(web::Data::new(sso))
+        } else {
+            app
+        };
+
+        // Register the cargo sparse index proxy if a cargo registry is configured.
+        let app = if let Some(idx) = cargo_index_inner {
+            app.app_data(web::Data::new(idx))
+        } else {
+            app
+        };
+
+        let cors = Cors::default()
+            .allow_any_origin()
+            .allowed_methods(vec!["GET", "POST", "HEAD", "OPTIONS"])
+            .allowed_headers(vec![
+                http::header::AUTHORIZATION,
+                http::header::CONTENT_TYPE,
+                http::header::ACCEPT,
+            ])
+            .max_age(3600);
+
+        app.wrap(TracingLogger::default())
             .wrap(proxy_cache_web::AuthMiddlewareFactory::new(
                 auth_providers.clone(),
             ))
-            .service(proxy_cache_web::swagger_ui())
-            .configure(configure_app(
-                proxy_svc.clone(),
-                admin_svc.clone(),
-                static_dir.clone(),
-            ))
+            .wrap(cors)
+            .service(proxy_cache_web::swagger_ui(openapi))
+            .configure(move |cfg| {
+                if let Some(ref dir) = static_dir_inner {
+                    cfg.service(
+                        actix_files::Files::new("/", dir)
+                            .index_file("index.html")
+                            .use_last_modified(true),
+                    );
+                }
+            })
     })
     .bind(&bind_addr)
     .with_context(|| format!("binding to {bind_addr}"))?
@@ -180,31 +256,60 @@ fn parse_role(s: &str) -> Role {
     }
 }
 
+fn build_cargo_index(reg: &RegistryConfig) -> CargoIndexProxy {
+    let index_url = if let Some(ref url) = reg.index_url {
+        url.clone()
+    } else {
+        let upstream = reg.upstreams.first().map(|s| s.as_str()).unwrap_or("https://crates.io");
+        if upstream.contains("crates.io") {
+            "https://index.crates.io".to_owned()
+        } else {
+            upstream.to_owned()
+        }
+    };
+    let http = reqwest::Client::builder()
+        .user_agent("proxy-cache/0.1")
+        .build()
+        .expect("failed to build cargo index HTTP client");
+    tracing::info!(index_url = %index_url, "cargo sparse index proxy configured");
+    CargoIndexProxy { http, index_url }
+}
+
 fn build_registry_client(reg: &RegistryConfig) -> Arc<dyn proxy_cache_core::ports::RegistryClient> {
     fn resolve_urls(configured: &[String], default: &str) -> Vec<String> {
-        if configured.is_empty() { vec![default.to_owned()] } else { configured.to_vec() }
+        if configured.is_empty() {
+            vec![default.to_owned()]
+        } else {
+            configured.to_vec()
+        }
     }
 
-    fn make_one(registry_type: &str, url: &str) -> Arc<dyn proxy_cache_core::ports::RegistryClient> {
+    fn make_one(
+        registry_type: &str,
+        url: &str,
+    ) -> Arc<dyn proxy_cache_core::ports::RegistryClient> {
         match registry_type {
             "github" => Arc::new(GithubRegistryClient::new(url, None)),
-            "npm"    => Arc::new(NpmRegistryClient::new(url)),
-            "cargo"  => Arc::new(CargoRegistryClient::new(url)),
-            other    => panic!("registry type '{other}' is configured but no adapter is compiled in"),
+            "npm" => Arc::new(NpmRegistryClient::new(url)),
+            "cargo" => Arc::new(CargoRegistryClient::new(url)),
+            other => panic!("registry type '{other}' is configured but no adapter is compiled in"),
         }
     }
 
     let urls = match reg.registry_type.as_str() {
         "github" => resolve_urls(&reg.upstreams, "https://api.github.com"),
-        "npm"    => resolve_urls(&reg.upstreams, "https://registry.npmjs.org"),
-        "cargo"  => resolve_urls(&reg.upstreams, "https://crates.io"),
-        other    => panic!("registry type '{other}' is configured but no adapter is compiled in"),
+        "npm" => resolve_urls(&reg.upstreams, "https://registry.npmjs.org"),
+        "cargo" => resolve_urls(&reg.upstreams, "https://crates.io"),
+        other => panic!("registry type '{other}' is configured but no adapter is compiled in"),
     };
 
     if urls.len() == 1 {
         make_one(&reg.registry_type, &urls[0])
     } else {
-        let clients = urls.iter().map(|u| make_one(&reg.registry_type, u)).collect();
+        let clients = urls
+            .iter()
+            .map(|u| make_one(&reg.registry_type, u))
+            .collect();
         Arc::new(FanoutRegistryClient::new(&reg.registry_type, clients))
     }
 }
@@ -255,8 +360,7 @@ fn build_policy(
 /// Initialise tracing.  Returns the `TracerProvider` when OTLP is configured
 /// so the caller can keep it alive for the process lifetime and flush on exit.
 fn init_tracing(otel_cfg: Option<&OtelConfig>) -> Option<sdktrace::SdkTracerProvider> {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     let (otel_layer, provider) = match otel_cfg {
         Some(cfg) => {

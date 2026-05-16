@@ -1,0 +1,273 @@
+<script setup lang="ts">
+import { computed } from "vue";
+import { useRoute, useRouter } from "vue-router";
+import { blockPackage, unblockPackage } from "@/client/sdk.gen";
+import { useApi } from "@/composables/useApi";
+import { useAuth } from "@/composables/useAuth";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import {
+  Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
+} from "@/components/ui/table";
+
+interface VersionStatus {
+  status: "available";
+}
+interface BlockedStatus {
+  status: "blocked";
+  reason: string;
+  blocked_by: string;
+  blocked_at: string;
+}
+interface PackageVersionDetail {
+  id: string;
+  version: string;
+  artifact: string | null;
+  status: VersionStatus | BlockedStatus;
+  storage_key: string;
+  cached: boolean;
+  access_count: number;
+  last_accessed: string | null;
+  last_accessed_by: string | null;
+}
+interface PackageEventDto {
+  id: string;
+  user_id: string | null;
+  user_role: string;
+  version: string;
+  artifact: string | null;
+  action: string;
+  outcome: string;
+  deny_reason: string | null;
+  timestamp: string;
+}
+interface PackageDetailResponse {
+  registry: string;
+  name: string;
+  versions: PackageVersionDetail[];
+  recent_events: PackageEventDto[];
+}
+
+const route = useRoute();
+const router = useRouter();
+const { token } = useAuth();
+
+const registry = computed(() => String(route.query.registry ?? ""));
+const name = computed(() => String(route.query.name ?? ""));
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+
+const { data, error, loading, reload } = useApi<PackageDetailResponse>(
+  () =>
+    fetch(
+      `${API_BASE}/api/v1/admin/packages/detail?registry=${encodeURIComponent(registry.value)}&name=${encodeURIComponent(name.value)}`,
+      { headers: token.value ? { Authorization: `Bearer ${token.value}` } : {} },
+    ).then(async (r) => {
+      if (!r.ok) throw new Error(await r.text());
+      return { data: await r.json() };
+    }) as Promise<{ data?: unknown; error?: unknown }>,
+  [token, registry, name],
+);
+
+const upstreamUrl = computed(() => {
+  if (!registry.value || !name.value) return null;
+  switch (registry.value) {
+    case "github": return `https://github.com/${name.value}`;
+    case "npm":    return `https://www.npmjs.com/package/${name.value}`;
+    case "cargo":  return `https://crates.io/crates/${name.value}`;
+    default:       return null;
+  }
+});
+
+function fmtDate(iso: string | null) {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString();
+}
+
+function fmtAction(action: string) {
+  return { download: "Download", view_metadata: "View metadata", block: "Block", unblock: "Unblock" }[action] ?? action;
+}
+
+async function doBlock(v: PackageVersionDetail) {
+  const reason = window.prompt("Block reason:");
+  if (!reason) return;
+  await blockPackage({
+    body: {
+      registry: registry.value,
+      name: name.value,
+      version: v.version,
+      artifact: v.artifact ?? undefined,
+      reason,
+    },
+  });
+  reload();
+}
+
+async function doUnblock(v: PackageVersionDetail) {
+  await unblockPackage({
+    body: {
+      registry: registry.value,
+      name: name.value,
+      version: v.version,
+      artifact: v.artifact ?? undefined,
+    },
+  });
+  reload();
+}
+</script>
+
+<template>
+  <div class="space-y-4">
+    <!-- Back -->
+    <div class="flex items-center gap-3">
+      <Button variant="ghost" size="sm" @click="router.back()">← Back</Button>
+      <span class="text-muted-foreground text-sm">/</span>
+      <span class="font-mono text-sm">{{ registry }}/{{ name }}</span>
+    </div>
+
+    <p v-if="loading" class="text-sm text-muted-foreground">Loading…</p>
+    <p v-else-if="error" class="text-sm text-destructive">{{ error }}</p>
+
+    <template v-else-if="data">
+      <!-- Header card -->
+      <Card>
+        <CardHeader>
+          <CardTitle class="text-xl font-mono">{{ data.name }}</CardTitle>
+        </CardHeader>
+        <CardContent class="space-y-1 text-sm">
+          <div><span class="text-muted-foreground w-28 inline-block">Registry</span><Badge variant="outline">{{ data.registry }}</Badge></div>
+          <div>
+            <span class="text-muted-foreground w-28 inline-block">Upstream</span>
+            <a v-if="upstreamUrl" :href="upstreamUrl" target="_blank" rel="noopener noreferrer"
+               class="text-primary underline-offset-2 hover:underline font-mono text-xs">
+              {{ upstreamUrl }}
+            </a>
+            <span v-else class="text-muted-foreground">—</span>
+          </div>
+          <div><span class="text-muted-foreground w-28 inline-block">Versions</span>{{ data.versions.length }}</div>
+        </CardContent>
+      </Card>
+
+      <!-- Versions table -->
+      <Card>
+        <CardHeader>
+          <CardTitle class="text-base">Versions &amp; artifacts</CardTitle>
+        </CardHeader>
+        <CardContent class="p-0">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Version</TableHead>
+                <TableHead>Artifact</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Cached</TableHead>
+                <TableHead>Downloads</TableHead>
+                <TableHead>Last accessed</TableHead>
+                <TableHead>Last pulled by</TableHead>
+                <TableHead class="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <TableRow
+                v-for="v in data.versions"
+                :key="v.id"
+                :class="v.status.status === 'blocked' ? 'bg-destructive/5' : ''"
+              >
+                <TableCell class="font-mono text-xs">{{ v.version }}</TableCell>
+                <TableCell class="font-mono text-xs text-muted-foreground">{{ v.artifact ?? "—" }}</TableCell>
+                <TableCell>
+                  <div class="space-y-0.5">
+                    <Badge :variant="v.status.status === 'blocked' ? 'destructive' : 'secondary'">
+                      {{ v.status.status === "blocked" ? "Blocked" : "Available" }}
+                    </Badge>
+                    <p v-if="v.status.status === 'blocked'" class="text-xs text-muted-foreground max-w-[180px] truncate" :title="(v.status as BlockedStatus).reason">
+                      {{ (v.status as BlockedStatus).reason }}
+                    </p>
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <Badge :variant="v.cached ? 'default' : 'outline'" class="text-xs">
+                    {{ v.cached ? "Cached" : "Not cached" }}
+                  </Badge>
+                  <p class="text-xs text-muted-foreground font-mono mt-0.5">{{ v.storage_key }}</p>
+                </TableCell>
+                <TableCell class="text-right tabular-nums">{{ v.access_count }}</TableCell>
+                <TableCell class="text-xs">{{ fmtDate(v.last_accessed) }}</TableCell>
+                <TableCell class="text-sm">
+                  <span v-if="v.last_accessed_by" class="font-medium">{{ v.last_accessed_by }}</span>
+                  <span v-else-if="v.access_count > 0" class="text-muted-foreground italic">anonymous</span>
+                  <span v-else class="text-muted-foreground">—</span>
+                </TableCell>
+                <TableCell class="text-right">
+                  <Button
+                    v-if="v.status.status === 'blocked'"
+                    variant="outline"
+                    size="sm"
+                    @click="doUnblock(v)"
+                  >
+                    Unblock
+                  </Button>
+                  <Button
+                    v-else
+                    variant="destructive"
+                    size="sm"
+                    @click="doBlock(v)"
+                  >
+                    Block
+                  </Button>
+                </TableCell>
+              </TableRow>
+            </TableBody>
+          </Table>
+          <p v-if="data.versions.length === 0" class="p-6 text-sm text-muted-foreground text-center">No versions tracked yet.</p>
+        </CardContent>
+      </Card>
+
+      <!-- Recent events -->
+      <Card>
+        <CardHeader>
+          <CardTitle class="text-base">Recent access events</CardTitle>
+        </CardHeader>
+        <CardContent class="p-0">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>When</TableHead>
+                <TableHead>User</TableHead>
+                <TableHead>Role</TableHead>
+                <TableHead>Version</TableHead>
+                <TableHead>Artifact</TableHead>
+                <TableHead>Action</TableHead>
+                <TableHead>Outcome</TableHead>
+                <TableHead>Reason</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <TableRow v-for="ev in data.recent_events" :key="ev.id">
+                <TableCell class="text-xs tabular-nums whitespace-nowrap">{{ fmtDate(ev.timestamp) }}</TableCell>
+                <TableCell class="text-sm">
+                  <span v-if="ev.user_id">{{ ev.user_id }}</span>
+                  <span v-else class="text-muted-foreground italic">anonymous</span>
+                </TableCell>
+                <TableCell><Badge variant="outline" class="text-xs capitalize">{{ ev.user_role }}</Badge></TableCell>
+                <TableCell class="font-mono text-xs">{{ ev.version }}</TableCell>
+                <TableCell class="font-mono text-xs text-muted-foreground">{{ ev.artifact ?? "—" }}</TableCell>
+                <TableCell class="text-xs">{{ fmtAction(ev.action) }}</TableCell>
+                <TableCell>
+                  <Badge :variant="ev.outcome === 'denied' ? 'destructive' : 'secondary'" class="text-xs">
+                    {{ ev.outcome }}
+                  </Badge>
+                </TableCell>
+                <TableCell class="text-xs text-muted-foreground max-w-[200px] truncate" :title="ev.deny_reason ?? ''">
+                  {{ ev.deny_reason ?? "—" }}
+                </TableCell>
+              </TableRow>
+            </TableBody>
+          </Table>
+          <p v-if="data.recent_events.length === 0" class="p-6 text-sm text-muted-foreground text-center">No events recorded yet.</p>
+        </CardContent>
+      </Card>
+    </template>
+  </div>
+</template>

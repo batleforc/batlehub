@@ -7,8 +7,10 @@ license.workspace = true
 [dependencies]
 proxy-cache-core = { path = "../core" }
 proxy-cache-config = { path = "../config" }
+proxy-cache-adapters = { path = "../adapters" }
 actix-web.workspace = true
 actix-files.workspace = true
+reqwest.workspace = true
 utoipa.workspace = true
 utoipa-actix-web.workspace = true
 utoipa-swagger-ui.workspace = true
