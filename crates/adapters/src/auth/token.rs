@@ -11,6 +11,7 @@ use proxy_cache_core::{
 struct TokenRecord {
     user_id: Option<String>,
     role: Role,
+    groups: Vec<String>,
 }
 
 /// Authenticates requests via static Bearer tokens configured in `config.toml`.
@@ -24,9 +25,20 @@ impl StaticTokenAuthProvider {
     pub fn new(entries: impl IntoIterator<Item = (String, Option<String>, Role)>) -> Self {
         let tokens = entries
             .into_iter()
-            .map(|(value, user_id, role)| (value, TokenRecord { user_id, role }))
+            .map(|(value, user_id, role)| (value, TokenRecord { user_id, role, groups: vec![] }))
             .collect();
         Self { tokens }
+    }
+
+    /// Add entries that carry explicit group memberships (e.g. for testing OIDC group flows).
+    pub fn with_group_entries(
+        mut self,
+        entries: impl IntoIterator<Item = (String, Option<String>, Role, Vec<String>)>,
+    ) -> Self {
+        for (value, user_id, role, groups) in entries {
+            self.tokens.insert(value, TokenRecord { user_id, role, groups });
+        }
+        self
     }
 }
 
@@ -59,6 +71,7 @@ impl AuthProvider for StaticTokenAuthProvider {
                 user_id: record.user_id.clone(),
                 role: record.role.clone(),
                 auth_provider: Some("static-token".to_owned()),
+                groups: record.groups.clone(),
             })),
             None => Ok(None),
         }

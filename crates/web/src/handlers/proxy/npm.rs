@@ -3,95 +3,122 @@ use std::sync::Arc;
 use actix_web::{HttpResponse, Responder, get, web};
 use bytes::Bytes;
 use futures::StreamExt;
-use serde::Deserialize;
-use utoipa::IntoParams;
 
 use proxy_cache_core::{
     entities::PackageId,
     services::{ProxyRequest, ProxyResponse, ProxyService},
 };
 
-use crate::{error::AppError, extractors::AuthIdentity};
+use crate::{RegistryMap, error::AppError, extractors::AuthIdentity};
 
-// ── Path extractors ───────────────────────────────────────────────────────────
-
-#[derive(Deserialize, IntoParams)]
-pub struct NpmPackageParts {
-    package: String,
+fn require_npm_or_cargo(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
+    match map.type_of(registry) {
+        Some("npm") | Some("cargo") => Ok(()),
+        Some(_) => Err(AppError::not_found(format!(
+            "registry '{registry}' is not an npm or cargo registry"
+        ))),
+        None => Err(AppError::not_found(format!("unknown registry '{registry}'"))),
+    }
 }
 
-#[derive(Deserialize, IntoParams)]
-pub struct NpmPackageVersionParts {
-    package: String,
-    version: String,
+fn require_npm(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
+    match map.type_of(registry) {
+        Some("npm") => Ok(()),
+        Some(_) => Err(AppError::not_found(format!("registry '{registry}' is not an npm registry"))),
+        None => Err(AppError::not_found(format!("unknown registry '{registry}'"))),
+    }
 }
 
-// ── Handlers ──────────────────────────────────────────────────────────────────
-
-/// Fetch npm package packument (all versions + dist-tags).
+/// Fetch package metadata (all versions / packument for npm, crate info for cargo).
+///
+/// Shared handler for npm and cargo registries.
 #[utoipa::path(
     get,
-    path = "/proxy/npm/{package}",
-    tag = "proxy",
-    params(NpmPackageParts),
+    path = "/proxy/{registry}/{package}",
+    tag = "proxy/npm",
+    params(
+        ("registry" = String, Path, description = "Registry name"),
+        ("package"  = String, Path, description = "Package / crate name"),
+    ),
     responses(
-        (status = 200, description = "npm packument JSON"),
+        (status = 200, description = "Package metadata JSON"),
         (status = 403, description = "Access denied"),
+        (status = 404, description = "Unknown registry"),
     ),
     security(("bearer_token" = [])),
 )]
-#[get("/proxy/npm/{package}")]
+#[get("/proxy/{registry}/{package}")]
 pub async fn get_packument(
-    path: web::Path<NpmPackageParts>,
+    path: web::Path<(String, String)>,
     identity: AuthIdentity,
     svc: web::Data<Arc<ProxyService>>,
+    map: web::Data<RegistryMap>,
 ) -> Result<impl Responder, AppError> {
-    let pkg = PackageId::new("npm", &path.package, "latest");
+    let (registry, package) = path.into_inner();
+    require_npm_or_cargo(&registry, &map)?;
+    let pkg = PackageId::new(&registry, &package, "latest");
     proxy_stream(svc, pkg, identity, "releases:read").await
 }
 
-/// Fetch npm package metadata for a specific version.
+/// Fetch package version metadata.
+///
+/// Shared handler for npm and cargo registries.
 #[utoipa::path(
     get,
-    path = "/proxy/npm/{package}/{version}",
-    tag = "proxy",
-    params(NpmPackageVersionParts),
+    path = "/proxy/{registry}/{package}/{version}",
+    tag = "proxy/npm",
+    params(
+        ("registry" = String, Path, description = "Registry name"),
+        ("package"  = String, Path, description = "Package / crate name"),
+        ("version"  = String, Path, description = "Version"),
+    ),
     responses(
-        (status = 200, description = "npm version metadata JSON"),
+        (status = 200, description = "Version metadata JSON"),
         (status = 403, description = "Access denied"),
+        (status = 404, description = "Unknown registry"),
     ),
     security(("bearer_token" = [])),
 )]
-#[get("/proxy/npm/{package}/{version}")]
+#[get("/proxy/{registry}/{package}/{version}")]
 pub async fn get_version(
-    path: web::Path<NpmPackageVersionParts>,
+    path: web::Path<(String, String, String)>,
     identity: AuthIdentity,
     svc: web::Data<Arc<ProxyService>>,
+    map: web::Data<RegistryMap>,
 ) -> Result<impl Responder, AppError> {
-    let pkg = PackageId::new("npm", &path.package, &path.version);
+    let (registry, package, version) = path.into_inner();
+    require_npm_or_cargo(&registry, &map)?;
+    let pkg = PackageId::new(&registry, &package, &version);
     proxy_stream(svc, pkg, identity, "releases:read").await
 }
 
 /// Download npm package tarball for a specific version.
 #[utoipa::path(
     get,
-    path = "/proxy/npm/{package}/{version}/tarball",
-    tag = "proxy",
-    params(NpmPackageVersionParts),
+    path = "/proxy/{registry}/{package}/{version}/tarball",
+    tag = "proxy/npm",
+    params(
+        ("registry" = String, Path, description = "Registry name"),
+        ("package"  = String, Path, description = "Package name"),
+        ("version"  = String, Path, description = "Version"),
+    ),
     responses(
         (status = 200, description = "npm .tgz tarball"),
         (status = 403, description = "Access denied"),
+        (status = 404, description = "Unknown registry"),
     ),
     security(("bearer_token" = [])),
 )]
-#[get("/proxy/npm/{package}/{version}/tarball")]
+#[get("/proxy/{registry}/{package}/{version}/tarball")]
 pub async fn download_tarball(
-    path: web::Path<NpmPackageVersionParts>,
+    path: web::Path<(String, String, String)>,
     identity: AuthIdentity,
     svc: web::Data<Arc<ProxyService>>,
+    map: web::Data<RegistryMap>,
 ) -> Result<impl Responder, AppError> {
-    let pkg = PackageId::new("npm", &path.package, &path.version)
-        .with_artifact("tarball");
+    let (registry, package, version) = path.into_inner();
+    require_npm(&registry, &map)?;
+    let pkg = PackageId::new(&registry, &package, &version).with_artifact("tarball");
     proxy_stream(svc, pkg, identity, "source:read").await
 }
 
@@ -108,7 +135,6 @@ async fn proxy_stream(
         identity: identity.0.clone(),
         resource_type: resource_type.to_owned(),
     };
-
     match svc.handle(req).await.map_err(AppError::from)? {
         ProxyResponse::Denied { reason } => Err(AppError::forbidden(reason)),
         ProxyResponse::Stream(stream) => {

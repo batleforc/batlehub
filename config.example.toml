@@ -58,6 +58,32 @@ role_claim = "groups"
 "authentik Admins" = "admin"
 "proxy-users" = "user"
 
+[[auth]]
+name = "oidc2"
+type = "oidc"
+issuer_url = "http://localhost:9000/application/o/proxy-auth/"
+client_id = "proxy-auth"
+client_secret = "proxy-auth-secret"                               # from Authentik app settings
+redirect_uri = "http://localhost:8080/api/v1/auth/oidc2/callback"
+scopes = ["openid", "profile", "email", "groups"]
+# Where to redirect after the OIDC callback. Defaults to "" (same origin as the
+# backend). Set this when running the Vite dev server separately.
+frontend_url = "http://localhost:5173"
+
+# JWT claim used as the user's identifier (default: "sub").
+# "preferred_username" gives a human-readable name (e.g. "akadmin") instead of a UUID.
+user_id_claim = "preferred_username"
+
+# JWT claim inspected for role mapping (default: "role").
+# The value may be a string or an array of strings; the highest matching role wins.
+role_claim = "groups"
+
+# Map Authentik group names (JWT claim values) → proxy roles.
+# Keys are group names as they appear in the "groups" JWT claim.
+[auth.role_mappings]
+"authentik Admins" = "admin"
+"proxy-users" = "user"
+
 # Kubernetes service account token provider (in-cluster use).
 # Validates Bearer tokens via the Kubernetes TokenReview API.
 #
@@ -118,6 +144,12 @@ path = "./tmp/storage-cache"
 #   releases:read  — list releases and download release assets
 #   source:read    — download source tarballs
 #   actions:read   — access Actions artifacts (future)
+#
+# Dynamic groups (from OIDC providers like Authentik):
+#   [registries.rbac.groups]
+#   "team-a" = ["releases:read", "source:read"]
+#   "team-b" = ["releases:read"]
+# A user belonging to a group sees the union of their role's registries and all their groups'.
 
 [[registries]]
 type = "github"
@@ -128,6 +160,24 @@ name = "github"
 anonymous = []
 user = ["releases:read", "source:read"]
 admin = ["*"]
+
+# Optional: grant access to this registry for specific OIDC groups.
+# [registries.rbac.groups]
+# "team-a" = ["releases:read", "source:read"]
+
+[[registries]]
+type = "github"
+name = "github2"
+# upstreams defaults to ["https://api.github.com"] when omitted.
+
+[registries.rbac]
+anonymous = []
+user = []
+admin = ["*"]
+
+# Optional: only team-b members can access this registry.
+# [registries.rbac.groups]
+# "team-b" = ["releases:read", "source:read"]
 
 [[registries]]
 type = "npm"

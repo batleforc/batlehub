@@ -12,8 +12,9 @@ const route = useRoute();
 const router = useRouter();
 const mobileOpen = ref(false);
 
+// Any non-null auth_provider means the session came through OIDC or Kubernetes.
 const isOidcUser = computed(
-  () => isAuthenticated.value && identity.value?.auth_provider === "oidc"
+  () => isAuthenticated.value && !!identity.value?.auth_provider
 );
 
 const userLinks = [
@@ -87,6 +88,20 @@ function isActive(to: string) {
             ]"
           >
             My Tokens
+          </RouterLink>
+
+          <!-- My Profile link for authenticated users -->
+          <RouterLink
+            v-if="isAuthenticated"
+            to="/profile"
+            :class="[
+              'px-3 py-1.5 rounded-md transition-colors hover:bg-accent hover:text-accent-foreground',
+              isActive('/profile')
+                ? 'bg-accent text-accent-foreground font-medium'
+                : 'text-muted-foreground',
+            ]"
+          >
+            My Profile
           </RouterLink>
         </nav>
 
@@ -185,6 +200,19 @@ function isActive(to: string) {
           @click="mobileOpen = false"
         >
           My Tokens
+        </RouterLink>
+        <RouterLink
+          v-if="isAuthenticated"
+          to="/profile"
+          :class="[
+            'block px-3 py-2 rounded-md text-sm transition-colors',
+            isActive('/profile')
+              ? 'bg-accent text-accent-foreground font-medium'
+              : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+          ]"
+          @click="mobileOpen = false"
+        >
+          My Profile
         </RouterLink>
         <template v-if="isAdmin">
           <div class="pt-2 pb-1 px-3 text-xs text-muted-foreground font-medium flex items-center gap-1">

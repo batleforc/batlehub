@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{bail, Result};
 use serde::Deserialize;
 
@@ -153,6 +155,12 @@ pub struct TokenEntry {
 
 #[derive(Debug, Deserialize)]
 pub struct OidcAuthConfig {
+    /// Unique name for this provider instance.
+    /// Used as the prefix for unmapped groups: e.g. `name = "oidc1"` → group `"oidc1:team-a"`.
+    /// Also used as `"*:team-a"` wildcard target in `[registries.rbac.groups]`.
+    /// Defaults to `"oidc"`.
+    #[serde(default = "default_oidc_name")]
+    pub name: String,
     pub issuer_url: String,
     pub client_id: String,
     pub client_secret: Option<String>,
@@ -183,6 +191,10 @@ pub struct OidcAuthConfig {
     pub role_mappings: std::collections::HashMap<String, String>,
 }
 
+fn default_oidc_name() -> String {
+    "oidc".to_owned()
+}
+
 fn default_oidc_scopes() -> Vec<String> {
     vec!["openid".to_owned(), "profile".to_owned(), "email".to_owned()]
 }
@@ -197,6 +209,11 @@ fn default_role_claim() -> String {
 
 #[derive(Debug, Deserialize)]
 pub struct KubernetesAuthConfig {
+    /// Unique name for this provider instance.
+    /// Used as the prefix for unmapped groups: e.g. `name = "k8s-prod"` → group `"k8s-prod:team-a"`.
+    /// Defaults to `"kubernetes"`.
+    #[serde(default = "default_kubernetes_name")]
+    pub name: String,
     /// Kubernetes API server URL.
     /// Defaults to `https://<KUBERNETES_SERVICE_HOST>:<KUBERNETES_SERVICE_PORT>`
     /// (the env vars injected by Kubernetes for in-cluster use).
@@ -222,6 +239,10 @@ pub struct KubernetesAuthConfig {
     /// When a token matches multiple keys, the highest role wins.
     #[serde(default)]
     pub role_mappings: std::collections::HashMap<String, String>,
+}
+
+fn default_kubernetes_name() -> String {
+    "kubernetes".to_owned()
 }
 
 // ── Storage ───────────────────────────────────────────────────────────────────
@@ -356,6 +377,10 @@ pub struct RbacConfig {
     pub user: Vec<String>,
     #[serde(default)]
     pub admin: Vec<String>,
+    /// Dynamic groups from external identity providers (e.g. Authentik).
+    /// Maps group name → list of permitted resource types for this registry.
+    #[serde(default)]
+    pub groups: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]

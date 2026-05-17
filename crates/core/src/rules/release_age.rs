@@ -77,7 +77,7 @@ mod tests {
     }
 
     fn make_identity(role: Role) -> Identity {
-        Identity { user_id: None, role, auth_provider: None }
+        Identity { user_id: None, role, auth_provider: None, groups: vec![] }
     }
 
     #[tokio::test]

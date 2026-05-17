@@ -6,6 +6,7 @@ import type { MeResponse, RefreshResponse } from "@/client/types.gen";
 const ACCESS_TOKEN_KEY = "proxy_cache_access_token";
 const REFRESH_TOKEN_KEY = "proxy_cache_refresh_token";
 const EXPIRES_AT_KEY = "proxy_cache_token_expires_at"; // unix ms
+const OIDC_PROVIDER_KEY = "proxy_cache_oidc_provider";
 
 // ── Singleton state ────────────────────────────────────────────────────────────
 
@@ -14,6 +15,7 @@ const refreshToken = ref<string>(localStorage.getItem(REFRESH_TOKEN_KEY) ?? "");
 const expiresAt = ref<number>(
   Number(localStorage.getItem(EXPIRES_AT_KEY) ?? "0"),
 );
+const oidcProvider = ref<string>(localStorage.getItem(OIDC_PROVIDER_KEY) ?? "");
 const identity = ref<MeResponse | null>(null);
 const identityReady = ref(false);
 
@@ -33,6 +35,11 @@ watch(refreshToken, (val) => {
 watch(expiresAt, (val) => {
   if (val) localStorage.setItem(EXPIRES_AT_KEY, String(val));
   else localStorage.removeItem(EXPIRES_AT_KEY);
+});
+
+watch(oidcProvider, (val) => {
+  if (val) localStorage.setItem(OIDC_PROVIDER_KEY, val);
+  else localStorage.removeItem(OIDC_PROVIDER_KEY);
 });
 
 // ── Identity fetch ─────────────────────────────────────────────────────────────
@@ -76,13 +83,19 @@ function scheduleRefresh() {
 async function doRefresh() {
   if (!refreshToken.value) return;
   try {
-    const result = await oidcRefresh({ body: { refresh_token: refreshToken.value } });
+    const result = await oidcRefresh({
+      body: {
+        refresh_token: refreshToken.value,
+        provider: oidcProvider.value || undefined,
+      },
+    });
     if (!result.data) throw new Error("empty refresh response");
     const data = result.data as RefreshResponse;
     storeTokens(
       data.access_token,
       data.refresh_token ?? refreshToken.value,
       data.expires_in,
+      oidcProvider.value || undefined,
     );
   } catch (e) {
     console.warn("[auth] token refresh failed:", e);
@@ -98,9 +111,11 @@ export function storeTokens(
   accessToken: string,
   newRefreshToken?: string | null,
   expiresInSeconds?: number | null,
+  provider?: string | null,
 ) {
   token.value = accessToken;
   if (newRefreshToken) refreshToken.value = newRefreshToken;
+  if (provider != null) oidcProvider.value = provider;
   if (expiresInSeconds) {
     expiresAt.value = Date.now() + expiresInSeconds * 1000;
     scheduleRefresh();
@@ -119,6 +134,7 @@ function logout() {
   token.value = "";
   refreshToken.value = "";
   expiresAt.value = 0;
+  oidcProvider.value = "";
   identity.value = null;
 }
 
@@ -134,6 +150,7 @@ export function useAuth() {
     token,
     refreshToken,
     expiresAt,
+    oidcProvider,
     identity,
     identityReady,
     isAdmin,

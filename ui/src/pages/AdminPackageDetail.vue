@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { blockPackage, unblockPackage } from "@/client/sdk.gen";
+import { blockPackage, unblockPackage, listRegistries } from "@/client/sdk.gen";
+import type { RegistryInfo } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
 import { Button } from "@/components/ui/button";
@@ -59,6 +60,15 @@ const name = computed(() => String(route.query.name ?? ""));
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
+const { data: registriesList } = useApi<RegistryInfo[]>(
+  () => listRegistries() as Promise<{ data?: unknown; error?: unknown }>,
+  [token],
+);
+
+const registryType = computed(() => {
+  return registriesList.value?.find(r => r.name === registry.value)?.type ?? null;
+});
+
 const { data, error, loading, reload } = useApi<PackageDetailResponse>(
   () =>
     fetch(
@@ -73,7 +83,7 @@ const { data, error, loading, reload } = useApi<PackageDetailResponse>(
 
 const upstreamUrl = computed(() => {
   if (!registry.value || !name.value) return null;
-  switch (registry.value) {
+  switch (registryType.value) {
     case "github": return `https://github.com/${name.value}`;
     case "npm":    return `https://www.npmjs.com/package/${name.value}`;
     case "cargo":  return `https://crates.io/crates/${name.value}`;

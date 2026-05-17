@@ -10,6 +10,7 @@ import LoginPage from "@/pages/LoginPage.vue";
 import PathMapper from "@/pages/PathMapper.vue";
 import SetupGuide from "@/pages/SetupGuide.vue";
 import TokensPage from "@/pages/TokensPage.vue";
+import MyProfile from "@/pages/MyProfile.vue";
 
 const OIDC_STATE_KEY = "oidc_state";
 
@@ -26,6 +27,11 @@ export const router = createRouter({
       path: "/tokens",
       component: TokensPage,
       meta: { requiresOidcAuth: true },
+    },
+    {
+      path: "/profile",
+      component: MyProfile,
+      meta: { requiresAuth: true },
     },
     {
       path: "/admin/packages",
@@ -46,7 +52,7 @@ export const router = createRouter({
 });
 
 router.beforeEach(async (to) => {
-  const { isAdmin, identity, identityReady } = useAuth();
+  const { isAdmin, isAuthenticated, identity, identityReady } = useAuth();
 
   // ── OIDC callback: tokens arrive via query params on "/" ───────────────────
   if (to.query.oidc_access_token) {
@@ -64,10 +70,13 @@ router.beforeEach(async (to) => {
 
     sessionStorage.removeItem(OIDC_STATE_KEY);
 
+    const provider = to.query.oidc_provider ? String(to.query.oidc_provider) : null;
+
     storeTokens(
       String(to.query.oidc_access_token),
       to.query.oidc_refresh_token ? String(to.query.oidc_refresh_token) : null,
       to.query.oidc_expires_in ? Number(to.query.oidc_expires_in) : null,
+      provider,
     );
 
     return { path: "/packages" };
@@ -100,9 +109,18 @@ router.beforeEach(async (to) => {
     return { path: "/login" };
   }
 
-  // ── OIDC-only route guard ─────────────────────────────────────────────────
+  // ── Authenticated-user route guard ───────────────────────────────────────
+  if (to.meta.requiresAuth) {
+    if (!isAuthenticated.value) {
+      return { path: "/login", query: { redirect: to.fullPath } };
+    }
+    return;
+  }
+
+  // ── OIDC-only route guard (tokens page requires any OIDC provider) ────────
   if (to.meta.requiresOidcAuth) {
-    if (identity.value?.auth_provider !== "oidc") {
+    // Any non-null auth_provider means the session came through OIDC or Kubernetes.
+    if (!identity.value?.auth_provider) {
       return { path: "/login", query: { redirect: to.fullPath } };
     }
     return;

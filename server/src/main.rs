@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -35,7 +35,7 @@ use proxy_cache_core::{
     rules::{BlockListRule, RbacRule, ReleaseAgeGateRule},
     services::{AdminService, ProxyService, RegistryPolicy},
 };
-use proxy_cache_web::{configure_app, openapi_spec, AccessConfig, ApiDoc, CargoIndexProxy};
+use proxy_cache_web::{configure_app, openapi_spec, AccessConfig, ApiDoc, CargoIndexProxy, RegistryMap};
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -118,7 +118,7 @@ async fn main() -> Result<()> {
 
     // ── Auth providers ────────────────────────────────────────────────────────
     let mut auth_providers: Vec<Arc<dyn AuthProvider>> = Vec::new();
-    let mut oidc_sso: Option<OidcSsoFlow> = None;
+    let mut oidc_sso_flows: Vec<OidcSsoFlow> = Vec::new();
 
     for auth_cfg in &config.auth {
         match auth_cfg {
@@ -133,8 +133,8 @@ async fn main() -> Result<()> {
             AuthConfig::Oidc(oidc_cfg) => {
                 match OidcAuthProvider::new(oidc_cfg).await {
                     Ok(provider) => {
-                        if oidc_sso.is_none() {
-                            oidc_sso = provider.sso_flow().cloned();
+                        if let Some(flow) = provider.sso_flow().cloned() {
+                            oidc_sso_flows.push(flow);
                         }
                         auth_providers.push(Arc::new(provider));
                         tracing::info!(issuer = %oidc_cfg.issuer_url, "OIDC auth provider ready");
@@ -174,7 +174,8 @@ async fn main() -> Result<()> {
     let mut registry_clients: HashMap<String, Arc<dyn proxy_cache_core::ports::RegistryClient>> =
         HashMap::new();
     let mut policies: HashMap<String, RegistryPolicy> = HashMap::new();
-    let mut cargo_index: Option<CargoIndexProxy> = None;
+    let mut cargo_indexes: HashMap<String, CargoIndexProxy> = HashMap::new();
+    let mut registry_type_map: HashMap<String, String> = HashMap::new();
 
     for reg in &config.registries {
         let client = build_registry_client(reg);
@@ -186,8 +187,10 @@ async fn main() -> Result<()> {
         );
         policies.insert(reg.name.clone(), policy);
 
-        if reg.registry_type == "cargo" && cargo_index.is_none() {
-            cargo_index = Some(build_cargo_index(reg));
+        registry_type_map.insert(reg.name.clone(), reg.registry_type.clone());
+
+        if reg.registry_type == "cargo" {
+            cargo_indexes.insert(reg.name.clone(), build_cargo_index(reg));
         }
     }
 
@@ -206,6 +209,14 @@ async fn main() -> Result<()> {
 
     // ── Access config ─────────────────────────────────────────────────────────
     // Respects role inheritance: user inherits anonymous, admin inherits both.
+    // Dynamic groups are additive on top of role-based access.
+    let mut group_access: HashMap<String, HashSet<String>> = HashMap::new();
+    for r in &config.registries {
+        for group_name in r.rbac.groups.keys() {
+            group_access.entry(group_name.clone()).or_default().insert(r.name.clone());
+        }
+    }
+
     let access_config = AccessConfig {
         anonymous: config.registries.iter()
             .filter(|r| !r.rbac.anonymous.is_empty())
@@ -219,7 +230,10 @@ async fn main() -> Result<()> {
             .filter(|r| !r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty() || !r.rbac.admin.is_empty())
             .map(|r| r.name.clone())
             .collect(),
+        groups: group_access,
     };
+
+    let registry_map = RegistryMap(registry_type_map);
 
     // ── HTTP server ───────────────────────────────────────────────────────────
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
@@ -229,10 +243,17 @@ async fn main() -> Result<()> {
     tracing::info!(addr = %bind_addr, "listening");
 
     HttpServer::new(move || {
-        let configure = configure_app(proxy_svc.clone(), admin_svc.clone(), token_repo.clone(), Some(db_pool.clone()), access_config.clone());
+        let configure = configure_app(
+            proxy_svc.clone(),
+            admin_svc.clone(),
+            token_repo.clone(),
+            Some(db_pool.clone()),
+            access_config.clone(),
+            registry_map.clone(),
+            oidc_sso_flows.clone(),
+        );
         let static_dir_inner = static_dir.clone();
-        let oidc_sso_inner = oidc_sso.clone();
-        let cargo_index_inner = cargo_index.clone();
+        let cargo_indexes_inner = cargo_indexes.clone();
 
         let (app, openapi) = App::new()
             .into_utoipa_app()
@@ -240,19 +261,8 @@ async fn main() -> Result<()> {
             .configure(configure)
             .split_for_parts();
 
-        // Register the OIDC SSO flow so the login/callback handlers can use it.
-        let app = if let Some(sso) = oidc_sso_inner {
-            app.app_data(web::Data::new(sso))
-        } else {
-            app
-        };
-
-        // Register the cargo sparse index proxy if a cargo registry is configured.
-        let app = if let Some(idx) = cargo_index_inner {
-            app.app_data(web::Data::new(idx))
-        } else {
-            app
-        };
+        // Register all cargo sparse index proxies (keyed by registry name).
+        let app = app.app_data(web::Data::new(cargo_indexes_inner));
 
         let cors = Cors::default()
             .allow_any_origin()
@@ -394,7 +404,9 @@ fn build_policy(
         (Role::User, reg.rbac.user.clone()),
         (Role::Admin, reg.rbac.admin.clone()),
     ]);
-    rules.push(Box::new(RbacRule::new(rbac_perms)));
+    rules.push(Box::new(
+        RbacRule::new(rbac_perms).with_groups(reg.rbac.groups.clone()),
+    ));
 
     // 2. Block list rule (always second)
     rules.push(Box::new(BlockListRule::new(repo)));

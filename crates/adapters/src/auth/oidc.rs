@@ -19,6 +19,7 @@ const JWKS_MIN_REFRESH: Duration = Duration::from_secs(300);
 
 #[derive(Deserialize)]
 struct OidcDiscovery {
+    issuer: String,
     jwks_uri: String,
     authorization_endpoint: String,
     token_endpoint: String,
@@ -39,6 +40,8 @@ pub struct OidcTokens {
 /// OIDC Authorization Code flow.  Cloneable so it can be stored in `web::Data`.
 #[derive(Clone)]
 pub struct OidcSsoFlow {
+    /// Provider name — matches the `name` field in `[[auth]]` config (default: `"oidc"`).
+    pub name: String,
     pub client_id: String,
     client_secret: Option<String>,
     pub redirect_uri: String,
@@ -141,6 +144,11 @@ struct JwksCache {
 }
 
 pub struct OidcAuthProvider {
+    name: String,
+    /// Canonical issuer identifier from the OIDC discovery document (`issuer` field).
+    /// Used to validate the `iss` claim so that two providers with different issuers
+    /// cannot validate each other's tokens.
+    issuer: String,
     user_id_claim: String,
     role_claim: String,
     role_mappings: HashMap<String, String>,
@@ -172,6 +180,7 @@ impl OidcAuthProvider {
             .map_err(|e| anyhow::anyhow!("fetching initial JWKS from {}: {e}", discovery.jwks_uri))?;
 
         let sso = cfg.redirect_uri.as_ref().map(|redirect_uri| OidcSsoFlow {
+            name: cfg.name.clone(),
             client_id: cfg.client_id.clone(),
             client_secret: cfg.client_secret.clone(),
             redirect_uri: redirect_uri.clone(),
@@ -183,6 +192,8 @@ impl OidcAuthProvider {
         });
 
         Ok(Self {
+            name: cfg.name.clone(),
+            issuer: discovery.issuer,
             user_id_claim: cfg.user_id_claim.clone(),
             role_claim: cfg.role_claim.clone(),
             role_mappings: cfg.role_mappings.clone(),
@@ -255,12 +266,15 @@ impl OidcAuthProvider {
 #[cfg(test)]
 impl OidcAuthProvider {
     fn for_testing(
+        name: impl Into<String>,
         user_id_claim: impl Into<String>,
         role_claim: impl Into<String>,
         role_mappings: HashMap<String, String>,
         jwks: JwkSet,
     ) -> Self {
         Self {
+            name: name.into(),
+            issuer: String::new(), // no issuer validation in tests
             user_id_claim: user_id_claim.into(),
             role_claim: role_claim.into(),
             role_mappings,
@@ -291,7 +305,7 @@ async fn fetch_jwks(http: &reqwest::Client, uri: &str) -> Result<JwkSet, reqwest
 #[async_trait]
 impl AuthProvider for OidcAuthProvider {
     fn name(&self) -> &str {
-        "oidc"
+        &self.name
     }
 
     async fn authenticate(&self, req: &RawAuthRequest) -> Result<Option<Identity>, CoreError> {
@@ -316,10 +330,15 @@ impl AuthProvider for OidcAuthProvider {
 
         let decoding_key = self.get_decoding_key(header.kid.as_deref()).await?;
 
-        // We are a resource server: skip audience validation since the audience
-        // value is deployment-specific and not standardised across providers.
+        // Validate the issuer so each provider only accepts tokens from its own issuer.
+        // This prevents two providers that share JWKS keys (e.g. same identity server,
+        // different client apps) from processing each other's tokens.
+        // Audience validation is skipped — it's deployment-specific and not standardised.
         let mut validation = Validation::new(header.alg);
         validation.validate_aud = false;
+        if !self.issuer.is_empty() {
+            validation.set_issuer(&[&self.issuer]);
+        }
 
         let token_data = decode::<serde_json::Map<String, serde_json::Value>>(
             token,
@@ -335,15 +354,36 @@ impl AuthProvider for OidcAuthProvider {
             .and_then(|v| v.as_str())
             .map(str::to_owned);
 
-        let role = claims
-            .get(&self.role_claim)
+        let role_claim_value = claims.get(&self.role_claim);
+
+        let role = role_claim_value
             .map(|v| self.map_role(v))
             .unwrap_or(Role::Anonymous);
+
+        // Extract raw strings from the claim, then namespace-prefix any value that is
+        // not explicitly in role_mappings so groups from different providers stay distinct.
+        let raw_groups: Vec<String> = role_claim_value
+            .map(|v| match v {
+                serde_json::Value::String(s) => vec![s.clone()],
+                serde_json::Value::Array(arr) => {
+                    arr.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()
+                }
+                _ => vec![],
+            })
+            .unwrap_or_default();
+
+        let groups: Vec<String> = raw_groups
+            .into_iter()
+            .map(|s| {
+                if self.role_mappings.contains_key(&s) { s } else { format!("{}:{s}", self.name) }
+            })
+            .collect();
 
         Ok(Some(Identity {
             user_id,
             role,
-            auth_provider: Some("oidc".to_owned()),
+            auth_provider: Some(self.name.clone()),
+            groups,
         }))
     }
 }
@@ -391,15 +431,17 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
     }
 
     fn make_provider(
+        name: &str,
         user_id_claim: &str,
         role_claim: &str,
         role_mappings: HashMap<String, String>,
     ) -> OidcAuthProvider {
-        OidcAuthProvider::for_testing(user_id_claim, role_claim, role_mappings, test_jwks())
+        OidcAuthProvider::for_testing(name, user_id_claim, role_claim, role_mappings, test_jwks())
     }
 
     fn default_provider() -> OidcAuthProvider {
         make_provider(
+            "oidc",
             "sub",
             "role",
             [
@@ -529,6 +571,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
     #[tokio::test]
     async fn custom_user_id_claim_is_extracted() {
         let p = make_provider(
+            "oidc",
             "email",
             "role",
             [("admin".to_owned(), "admin".to_owned())].into(),
@@ -592,18 +635,82 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
     // ── Identity metadata ─────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn auth_provider_name_is_oidc() {
+    async fn auth_provider_name_defaults_to_oidc() {
         assert_eq!(default_provider().name(), "oidc");
     }
 
     #[tokio::test]
-    async fn identity_has_oidc_provider_field() {
+    async fn auth_provider_name_is_configurable() {
+        let p = make_provider("authentik", "sub", "role", HashMap::new());
+        assert_eq!(p.name(), "authentik");
+    }
+
+    #[tokio::test]
+    async fn identity_auth_provider_reflects_configured_name() {
+        let p = make_provider("oidc1", "sub", "role", HashMap::new());
+        let token = signed_token(
+            Some("test-kid"),
+            json!({ "sub": "iris", "exp": future_exp() }),
+        );
+        let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
+        assert_eq!(id.auth_provider.as_deref(), Some("oidc1"));
+    }
+
+    #[tokio::test]
+    async fn array_role_claim_populates_groups_with_provider_name_prefix() {
+        let p = default_provider(); // name="oidc", role_mappings: admin/developer/viewer
+        let token = signed_token(
+            Some("test-kid"),
+            json!({ "sub": "alice", "role": ["team-a", "team-b"], "exp": future_exp() }),
+        );
+        let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
+        // Neither "team-a" nor "team-b" is in role_mappings → prefixed with provider name
+        assert!(id.groups.contains(&"oidc:team-a".to_owned()));
+        assert!(id.groups.contains(&"oidc:team-b".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn named_provider_uses_its_name_as_prefix() {
+        let p = make_provider("oidc2", "sub", "role", HashMap::new());
+        let token = signed_token(
+            Some("test-kid"),
+            json!({ "sub": "alice", "role": "team-a", "exp": future_exp() }),
+        );
+        let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
+        assert_eq!(id.groups, vec!["oidc2:team-a".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn mapped_role_claim_values_have_no_prefix() {
+        let p = default_provider(); // "admin" is in role_mappings
+        let token = signed_token(
+            Some("test-kid"),
+            json!({ "sub": "alice", "role": ["admin", "team-a"], "exp": future_exp() }),
+        );
+        let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
+        assert!(id.groups.contains(&"admin".to_owned()), "mapped value stored without prefix");
+        assert!(id.groups.contains(&"oidc:team-a".to_owned()), "unmapped value stored with provider name prefix");
+    }
+
+    #[tokio::test]
+    async fn string_role_claim_populates_single_group_with_prefix() {
         let p = default_provider();
         let token = signed_token(
             Some("test-kid"),
-            json!({ "sub": "iris", "role": "admin", "exp": future_exp() }),
+            json!({ "sub": "alice", "role": "team-a", "exp": future_exp() }),
         );
         let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
-        assert_eq!(id.auth_provider.as_deref(), Some("oidc"));
+        assert_eq!(id.groups, vec!["oidc:team-a".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn missing_role_claim_yields_empty_groups() {
+        let p = default_provider();
+        let token = signed_token(
+            Some("test-kid"),
+            json!({ "sub": "alice", "exp": future_exp() }),
+        );
+        let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
+        assert!(id.groups.is_empty());
     }
 }

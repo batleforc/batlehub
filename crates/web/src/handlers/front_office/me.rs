@@ -11,8 +11,10 @@ pub struct MeResponse {
     pub user_id: Option<String>,
     pub role: Role,
     pub auth_provider: Option<String>,
-    /// Whether the current user's role has access to at least one configured registry.
+    /// Whether the current user has access to at least one configured registry.
     pub has_registry_access: bool,
+    /// Dynamic groups the user belongs to (populated by OIDC providers).
+    pub groups: Vec<String>,
 }
 
 /// Return the current caller's identity and role.
@@ -31,6 +33,7 @@ pub async fn me(identity: AuthIdentity, access: web::Data<AccessConfig>) -> impl
         user_id: identity.user_id.clone(),
         role: identity.role.clone(),
         auth_provider: identity.auth_provider.clone(),
-        has_registry_access: access.has_registry_access(&identity.role),
+        has_registry_access: access.has_registry_access(&identity),
+        groups: identity.groups.clone(),
     })
 }

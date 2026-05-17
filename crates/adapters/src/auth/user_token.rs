@@ -59,6 +59,7 @@ impl AuthProvider for UserTokenAuthProvider {
                 user_id: Some(tok.user_id),
                 role: tok.role,
                 auth_provider: Some("user-token".to_owned()),
+                groups: vec![],
             })),
         }
     }

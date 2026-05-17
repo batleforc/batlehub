@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import { useRouter } from "vue-router";
 import { Package } from "@lucide/vue";
-import { listPackages, blockPackage, unblockPackage } from "@/client/sdk.gen";
+import { listPackages, listRegistries, blockPackage, unblockPackage } from "@/client/sdk.gen";
+import type { RegistryInfo } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
 import { Button } from "@/components/ui/button";
@@ -33,6 +34,11 @@ const router = useRouter();
 
 const { data: packages, error, loading, reload } = useApi<AdminPackageSummary[]>(
   () => listPackages() as Promise<{ data?: unknown; error?: unknown }>,
+  [token],
+);
+
+const { data: registries } = useApi<RegistryInfo[]>(
+  () => listRegistries() as Promise<{ data?: unknown; error?: unknown }>,
   [token],
 );
 
@@ -82,7 +88,7 @@ async function unblock(pkg: AdminPackageSummary) {
 
 const showPreBlock = ref(false);
 const preBlock = ref({
-  registry: "github",
+  registry: "",
   name: "",
   version: "",
   artifact: "",
@@ -90,6 +96,12 @@ const preBlock = ref({
 });
 const preBlockError = ref<string | null>(null);
 const preBlockLoading = ref(false);
+
+watch(registries, (regs) => {
+  if (regs && regs.length > 0 && !preBlock.value.registry) {
+    preBlock.value.registry = regs[0].name;
+  }
+});
 
 async function submitPreBlock() {
   if (!preBlock.value.name || !preBlock.value.version || !preBlock.value.reason) {
@@ -108,7 +120,8 @@ async function submitPreBlock() {
         reason: preBlock.value.reason,
       },
     });
-    preBlock.value = { registry: "github", name: "", version: "", artifact: "", reason: "" };
+    const firstReg = registries.value?.[0]?.name ?? "";
+    preBlock.value = { registry: firstReg, name: "", version: "", artifact: "", reason: "" };
     showPreBlock.value = false;
     reload();
   } catch (e: unknown) {
@@ -142,11 +155,11 @@ async function submitPreBlock() {
             <select
               id="pb-registry"
               v-model="preBlock.registry"
-              class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring font-mono"
             >
-              <option value="github">github</option>
-              <option value="npm">npm</option>
-              <option value="cargo">cargo</option>
+              <option v-for="reg in registries" :key="reg.name" :value="reg.name">
+                {{ reg.name }} <template v-if="reg.type !== reg.name">({{ reg.type }})</template>
+              </option>
             </select>
           </div>
           <div class="space-y-1 sm:col-span-2">

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import { API_BASE_URL } from "@/config";
+import { listRegistries } from "@/client/sdk.gen";
+import { useApi } from "@/composables/useApi";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -13,6 +15,30 @@ import {
 
 const pastedUrl = ref("");
 const registry  = ref<"npm" | "cargo" | "github">("github");
+
+// Registry name overrides (default to type name for backward compat)
+const githubRegistryName = ref("github");
+const npmRegistryName    = ref("npm");
+const cargoRegistryName  = ref("cargo");
+
+const { data: registries } = useApi<Array<{ name: string; type: string }>>(
+  () => listRegistries() as Promise<{ data?: unknown; error?: unknown }>,
+  [],
+);
+
+watch(registries, (regs) => {
+  if (!regs) return;
+  const gh = regs.find(r => r.type === "github");
+  const np = regs.find(r => r.type === "npm");
+  const cg = regs.find(r => r.type === "cargo");
+  if (gh) githubRegistryName.value = gh.name;
+  if (np) npmRegistryName.value = np.name;
+  if (cg) cargoRegistryName.value = cg.name;
+});
+
+const githubRegistries = computed(() => registries.value?.filter(r => r.type === "github") ?? []);
+const npmRegistries    = computed(() => registries.value?.filter(r => r.type === "npm") ?? []);
+const cargoRegistries  = computed(() => registries.value?.filter(r => r.type === "cargo") ?? []);
 
 // npm fields
 const npmPackage = ref("");
@@ -108,28 +134,32 @@ interface ProxyPath {
 }
 
 const npmPaths = computed<ProxyPath[]>(() => {
+  const reg = npmRegistryName.value.trim() || "npm";
   const pkg = npmPackage.value.trim();
   const ver = npmVersion.value.trim();
   if (!pkg) return [];
   return [
-    { label: "Packument (all versions)",  url: `/proxy/npm/${pkg}`,               available: true },
-    { label: "Version metadata",          url: `/proxy/npm/${pkg}/${ver}`,         available: !!ver },
-    { label: "Tarball download",          url: `/proxy/npm/${pkg}/${ver}/tarball`, available: !!ver },
+    { label: "Packument (all versions)",  url: `/proxy/${reg}/${pkg}`,               available: true },
+    { label: "Version metadata",          url: `/proxy/${reg}/${pkg}/${ver}`,         available: !!ver },
+    { label: "Tarball download",          url: `/proxy/${reg}/${pkg}/${ver}/tarball`, available: !!ver },
   ];
 });
 
 const cargoPaths = computed<ProxyPath[]>(() => {
+  const reg  = cargoRegistryName.value.trim() || "cargo";
   const name = cargoName.value.trim();
   const ver  = cargoVersion.value.trim();
   if (!name) return [];
   return [
-    { label: "Crate metadata (all versions)", url: `/proxy/cargo/${name}`,                  available: true },
-    { label: "Version metadata",              url: `/proxy/cargo/${name}/${ver}`,            available: !!ver },
-    { label: ".crate download",               url: `/proxy/cargo/${name}/${ver}/download`,   available: !!ver },
+    { label: "Crate metadata (all versions)", url: `/proxy/${reg}/${name}`,                  available: true },
+    { label: "Version metadata",              url: `/proxy/${reg}/${name}/${ver}`,            available: !!ver },
+    { label: ".crate download",               url: `/proxy/${reg}/${name}/${ver}/download`,   available: !!ver },
+    { label: "Sparse index config",           url: `/proxy/${reg}/registry/config.json`,      available: true },
   ];
 });
 
 const githubPaths = computed<ProxyPath[]>(() => {
+  const reg      = githubRegistryName.value.trim() || "github";
   const owner    = ghOwner.value.trim();
   const repo     = ghRepo.value.trim();
   const ref      = ghRef.value.trim();
@@ -139,13 +169,13 @@ const githubPaths = computed<ProxyPath[]>(() => {
   if (!owner || !repo) return [];
   const base = `${owner}/${repo}`;
   return [
-    { label: "List releases",        url: `/proxy/github/${base}/releases`,                          available: true },
-    { label: "Release by tag",       url: `/proxy/github/${base}/releases/tags/${ref}`,              available: !!ref },
-    { label: "Source tarball",       url: `/proxy/github/${base}/tarball/${ref}`,                    available: !!ref },
-    { label: "Zip archive",          url: `/proxy/github/${base}/zipball/${ref}`,                    available: !!ref },
-    { label: "Asset by filename",    url: `/proxy/github/${base}/releases/download/${ref}/${filename}`, available: !!ref && !!filename },
-    { label: "Asset by ID",          url: `/proxy/github/${base}/releases/assets/${asset}`,          available: !!asset },
-    { label: "Raw file",             url: `/proxy/github/${base}/raw/${ref}/${file}`,                available: !!ref && !!file },
+    { label: "List releases",        url: `/proxy/${reg}/${base}/releases`,                          available: true },
+    { label: "Release by tag",       url: `/proxy/${reg}/${base}/releases/tags/${ref}`,              available: !!ref },
+    { label: "Source tarball",       url: `/proxy/${reg}/${base}/tarball/${ref}`,                    available: !!ref },
+    { label: "Zip archive",          url: `/proxy/${reg}/${base}/zipball/${ref}`,                    available: !!ref },
+    { label: "Asset by filename",    url: `/proxy/${reg}/${base}/releases/download/${ref}/${filename}`, available: !!ref && !!filename },
+    { label: "Asset by ID",          url: `/proxy/${reg}/${base}/releases/assets/${asset}`,          available: !!asset },
+    { label: "Raw file",             url: `/proxy/${reg}/${base}/raw/${ref}/${file}`,                available: !!ref && !!file },
   ];
 });
 
@@ -210,6 +240,13 @@ function fullUrl(path: string) {
 
     <!-- GitHub fields -->
     <div v-if="registry === 'github'" class="space-y-4">
+      <div class="space-y-1">
+        <Label for="gh-registry">Registry name</Label>
+        <Input id="gh-registry" v-model="githubRegistryName" list="pm-github-list" placeholder="github" class="font-mono" />
+        <datalist id="pm-github-list">
+          <option v-for="r in githubRegistries" :key="r.name" :value="r.name" />
+        </datalist>
+      </div>
       <div class="grid grid-cols-2 gap-3">
         <div class="space-y-1">
           <Label for="gh-owner">Owner</Label>
@@ -242,6 +279,13 @@ function fullUrl(path: string) {
 
     <!-- npm fields -->
     <div v-else-if="registry === 'npm'" class="space-y-4">
+      <div class="space-y-1">
+        <Label for="npm-registry">Registry name</Label>
+        <Input id="npm-registry" v-model="npmRegistryName" list="pm-npm-list" placeholder="npm" class="font-mono" />
+        <datalist id="pm-npm-list">
+          <option v-for="r in npmRegistries" :key="r.name" :value="r.name" />
+        </datalist>
+      </div>
       <div class="grid grid-cols-2 gap-3">
         <div class="space-y-1">
           <Label for="npm-pkg">Package</Label>
@@ -256,6 +300,13 @@ function fullUrl(path: string) {
 
     <!-- Cargo fields -->
     <div v-else class="space-y-4">
+      <div class="space-y-1">
+        <Label for="cargo-registry">Registry name</Label>
+        <Input id="cargo-registry" v-model="cargoRegistryName" list="pm-cargo-list" placeholder="cargo" class="font-mono" />
+        <datalist id="pm-cargo-list">
+          <option v-for="r in cargoRegistries" :key="r.name" :value="r.name" />
+        </datalist>
+      </div>
       <div class="grid grid-cols-2 gap-3">
         <div class="space-y-1">
           <Label for="cargo-name">Crate</Label>

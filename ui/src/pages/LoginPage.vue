@@ -2,8 +2,8 @@
 import { ref, onMounted, computed } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { client } from "@/client/client.gen";
-import { me } from "@/client/sdk.gen";
-import type { MeResponse } from "@/client/types.gen";
+import { me, listOidcProviders } from "@/client/sdk.gen";
+import type { MeResponse, OidcProviderInfo } from "@/client/types.gen";
 import { useAuth, storeTokens } from "@/composables/useAuth";
 import { generateOidcState } from "@/router";
 import { API_BASE_URL } from "@/config";
@@ -24,8 +24,8 @@ const error = ref<string | null>(
   typeof route.query.error === "string" ? route.query.error : null,
 );
 const loading = ref(false);
-const oidcLoading = ref(false);
-const oidcAvailable = ref<boolean | null>(null); // null = checking
+const oidcLoadingProvider = ref<string | null>(null);
+const oidcProviders = ref<OidcProviderInfo[]>([]);
 
 const redirect = computed(() =>
   typeof route.query.redirect === "string" ? route.query.redirect : "/packages",
@@ -37,16 +37,12 @@ onMounted(async () => {
     router.replace(redirect.value);
     return;
   }
-  // Probe whether the OIDC login endpoint is reachable.
-  // Use GET (not HEAD) — actix-web doesn't automatically handle HEAD on GET routes.
-  // state is omitted → server returns 200 (configured) or 503 (not configured).
+  // Fetch the list of available OIDC providers.
   try {
-    const res = await fetch(`${API_BASE_URL}/api/v1/auth/oidc/login`, {
-      redirect: "manual",
-    });
-    oidcAvailable.value = res.ok;
+    const result = await listOidcProviders();
+    oidcProviders.value = (result.data as OidcProviderInfo[] | undefined) ?? [];
   } catch {
-    oidcAvailable.value = false;
+    oidcProviders.value = [];
   }
 });
 
@@ -80,17 +76,25 @@ async function submit() {
   }
 }
 
-function signInWithOidc() {
-  oidcLoading.value = true;
+function signInWithOidc(providerName: string) {
+  oidcLoadingProvider.value = providerName;
   // Generate a random state, store in sessionStorage for CSRF validation,
   // then hand off to the backend which threads it through to the provider.
   const state = generateOidcState();
-  window.location.href = `${API_BASE_URL}/api/v1/auth/oidc/login?state=${encodeURIComponent(state)}`;
+  const params = new URLSearchParams({ state, provider: providerName });
+  window.location.href = `${API_BASE_URL}/api/v1/auth/oidc/login?${params}`;
 }
 
 function continueAnonymously() {
   const dest = redirect.value === "/login" ? "/packages" : redirect.value;
   router.push(dest);
+}
+
+function providerLabel(name: string): string {
+  // Capitalise and replace dashes/underscores with spaces for display.
+  return name
+    .replace(/[-_]/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 </script>
 
@@ -105,27 +109,36 @@ function continueAnonymously() {
       </CardHeader>
 
       <CardContent class="space-y-4">
-        <!-- OIDC sign-in (shown once the probe resolves) -->
-        <Button
-          v-if="oidcAvailable"
-          type="button"
-          variant="outline"
-          class="w-full"
-          :disabled="oidcLoading"
-          @click="signInWithOidc"
-        >
-          {{ oidcLoading ? "Redirecting…" : "Sign in with OIDC" }}
-        </Button>
+        <!-- OIDC sign-in buttons (one per configured provider) -->
+        <template v-if="oidcProviders.length > 0">
+          <Button
+            v-for="p in oidcProviders"
+            :key="p.name"
+            type="button"
+            variant="outline"
+            class="w-full"
+            :disabled="oidcLoadingProvider !== null"
+            @click="signInWithOidc(p.name)"
+          >
+            {{
+              oidcLoadingProvider === p.name
+                ? "Redirecting…"
+                : oidcProviders.length === 1
+                  ? "Sign in with OIDC"
+                  : `Sign in with ${providerLabel(p.name)}`
+            }}
+          </Button>
 
-        <!-- Divider between OIDC and token form -->
-        <div v-if="oidcAvailable" class="relative">
-          <div class="absolute inset-0 flex items-center">
-            <span class="w-full border-t" />
+          <!-- Divider between OIDC and token form -->
+          <div class="relative">
+            <div class="absolute inset-0 flex items-center">
+              <span class="w-full border-t" />
+            </div>
+            <div class="relative flex justify-center text-xs uppercase">
+              <span class="bg-card px-2 text-muted-foreground">or use a token</span>
+            </div>
           </div>
-          <div class="relative flex justify-center text-xs uppercase">
-            <span class="bg-card px-2 text-muted-foreground">or use a token</span>
-          </div>
-        </div>
+        </template>
 
         <!-- Static-token form -->
         <form @submit.prevent="submit" class="space-y-4">

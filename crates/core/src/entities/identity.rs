@@ -24,6 +24,8 @@ pub struct Identity {
     pub user_id: Option<String>,
     pub role: Role,
     pub auth_provider: Option<String>,
+    #[serde(default)]
+    pub groups: Vec<String>,
 }
 
 impl Identity {
@@ -32,6 +34,7 @@ impl Identity {
             user_id: None,
             role: Role::Anonymous,
             auth_provider: None,
+            groups: vec![],
         }
     }
 

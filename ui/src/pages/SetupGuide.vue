@@ -1,14 +1,41 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import { API_BASE_URL } from "@/config";
+import { listRegistries } from "@/client/sdk.gen";
+import { useApi } from "@/composables/useApi";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Card, CardHeader, CardTitle, CardDescription, CardContent,
 } from "@/components/ui/card";
 
 const base = computed(() => API_BASE_URL || window.location.origin);
 const copied = ref<string | null>(null);
+
+const githubRegistryName = ref("github");
+const npmRegistryName    = ref("npm");
+const cargoRegistryName  = ref("cargo");
+
+const { data: registries } = useApi<Array<{ name: string; type: string }>>(
+  () => listRegistries() as Promise<{ data?: unknown; error?: unknown }>,
+  [],
+);
+
+watch(registries, (regs) => {
+  if (!regs) return;
+  const gh = regs.find(r => r.type === "github");
+  const np = regs.find(r => r.type === "npm");
+  const cg = regs.find(r => r.type === "cargo");
+  if (gh) githubRegistryName.value = gh.name;
+  if (np) npmRegistryName.value = np.name;
+  if (cg) cargoRegistryName.value = cg.name;
+});
+
+const githubRegistries = computed(() => registries.value?.filter(r => r.type === "github") ?? []);
+const npmRegistries    = computed(() => registries.value?.filter(r => r.type === "npm") ?? []);
+const cargoRegistries  = computed(() => registries.value?.filter(r => r.type === "cargo") ?? []);
 
 async function copy(key: string, text: string) {
   await navigator.clipboard.writeText(text);
@@ -19,49 +46,53 @@ async function copy(key: string, text: string) {
 // ── Config snippets ───────────────────────────────────────────────────────────
 
 const miseSnippet = computed(() => {
-  const b = base.value;
+  const b  = base.value;
+  const gh = githubRegistryName.value || "github";
+  const np = npmRegistryName.value || "npm";
+  const cg = cargoRegistryName.value || "cargo";
   return [
     `[settings.url_replacements]`,
     ``,
-    `# ── GitHub ──────────────────────────────────────────────────────────────────`,
+    `# ── GitHub (registry: ${gh}) ─────────────────────────────────────────────────`,
     `# API (release listings, tag metadata, asset lists)`,
-    `"regex:^https://api\\.github\\.com/repos/(.+)" = "${b}/proxy/github/$1"`,
+    `"regex:^https://api\\.github\\.com/repos/(.+)" = "${b}/proxy/${gh}/$1"`,
     ``,
     `# Release asset binaries (browser_download_url from API responses)`,
-    `"regex:^https://github\\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/(.+)" = "${b}/proxy/github/$1/$2/releases/download/$3/$4"`,
+    `"regex:^https://github\\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/(.+)" = "${b}/proxy/${gh}/$1/$2/releases/download/$3/$4"`,
     ``,
     `# Source tarballs`,
-    `"regex:^https://github\\.com/([^/]+)/([^/]+)/archive/(?:refs/tags/)?(.+?)\\.tar\\.gz" = "${b}/proxy/github/$1/$2/tarball/$3"`,
-    `"regex:^https://codeload\\.github\\.com/([^/]+)/([^/]+)/tar\\.gz/(?:refs/tags/)?(.+)" = "${b}/proxy/github/$1/$2/tarball/$3"`,
+    `"regex:^https://github\\.com/([^/]+)/([^/]+)/archive/(?:refs/tags/)?(.+?)\\.tar\\.gz" = "${b}/proxy/${gh}/$1/$2/tarball/$3"`,
+    `"regex:^https://codeload\\.github\\.com/([^/]+)/([^/]+)/tar\\.gz/(?:refs/tags/)?(.+)" = "${b}/proxy/${gh}/$1/$2/tarball/$3"`,
     ``,
     `# Zip archives`,
-    `"regex:^https://github\\.com/([^/]+)/([^/]+)/archive/(?:refs/tags/)?(.+?)\\.zip" = "${b}/proxy/github/$1/$2/zipball/$3"`,
+    `"regex:^https://github\\.com/([^/]+)/([^/]+)/archive/(?:refs/tags/)?(.+?)\\.zip" = "${b}/proxy/${gh}/$1/$2/zipball/$3"`,
     ``,
     `# Raw files (install scripts, manifests, …)`,
-    `"regex:^https://raw\\.githubusercontent\\.com/([^/]+)/([^/]+)/([^/]+)/(.+)" = "${b}/proxy/github/$1/$2/raw/$3/$4"`,
+    `"regex:^https://raw\\.githubusercontent\\.com/([^/]+)/([^/]+)/([^/]+)/(.+)" = "${b}/proxy/${gh}/$1/$2/raw/$3/$4"`,
     ``,
-    `# ── npm ─────────────────────────────────────────────────────────────────────`,
-    `"regex:^https://registry\\.npmjs\\.org/(.+)" = "${b}/proxy/npm/$1"`,
+    `# ── npm (registry: ${np}) ───────────────────────────────────────────────────`,
+    `"regex:^https://registry\\.npmjs\\.org/(.+)" = "${b}/proxy/${np}/$1"`,
     ``,
-    `# ── Cargo (downloads only — use .cargo/config.toml for full support) ────────`,
-    `"regex:^https://static\\.crates\\.io/crates/([^/]+)/([^/]+)/.+\\.crate" = "${b}/proxy/cargo/$1/$2/download"`,
+    `# ── Cargo (registry: ${cg}) — downloads only, use .cargo/config.toml for full support`,
+    `"regex:^https://static\\.crates\\.io/crates/([^/]+)/([^/]+)/.+\\.crate" = "${b}/proxy/${cg}/$1/$2/download"`,
   ].join("\n");
 });
 
-const npmrcSnippet = computed(() => `registry=${base.value}/proxy/npm/`);
+const npmrcSnippet = computed(() => `registry=${base.value}/proxy/${npmRegistryName.value || "npm"}/`);
 
-const yarnSnippet = computed(() => `npmRegistryServer: "${base.value}/proxy/npm/"`);
+const yarnSnippet = computed(() => `npmRegistryServer: "${base.value}/proxy/${npmRegistryName.value || "npm"}/"`);
 
-const pnpmSnippet = computed(() => `registry=${base.value}/proxy/npm/`);
+const pnpmSnippet = computed(() => `registry=${base.value}/proxy/${npmRegistryName.value || "npm"}/`);
 
 const cargoSnippet = computed(() => {
-  const b = base.value;
+  const b   = base.value;
+  const reg = cargoRegistryName.value || "cargo";
   return [
     `[source.crates-io]`,
     `replace-with = "proxy-cache"`,
     ``,
     `[source.proxy-cache]`,
-    `registry = "sparse+${b}/proxy/cargo/registry/"`,
+    `registry = "sparse+${b}/proxy/${reg}/registry/"`,
   ].join("\n");
 });
 </script>
@@ -75,6 +106,42 @@ const cargoSnippet = computed(() => {
         Snippets are pre-filled with this server's address.
       </p>
     </div>
+
+    <!-- ── Registry names ── -->
+    <Card>
+      <CardHeader>
+        <CardTitle>Registry names</CardTitle>
+        <CardDescription class="mt-1">
+          Enter the registry names from your <code class="text-xs font-mono bg-muted px-1 rounded">config.toml</code>.
+          All snippets below update automatically.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div class="grid grid-cols-3 gap-3">
+          <div class="space-y-1">
+            <Label for="sg-github">GitHub registry</Label>
+            <Input id="sg-github" v-model="githubRegistryName" list="sg-github-list" placeholder="github" class="font-mono text-sm" />
+            <datalist id="sg-github-list">
+              <option v-for="r in githubRegistries" :key="r.name" :value="r.name" />
+            </datalist>
+          </div>
+          <div class="space-y-1">
+            <Label for="sg-npm">npm registry</Label>
+            <Input id="sg-npm" v-model="npmRegistryName" list="sg-npm-list" placeholder="npm" class="font-mono text-sm" />
+            <datalist id="sg-npm-list">
+              <option v-for="r in npmRegistries" :key="r.name" :value="r.name" />
+            </datalist>
+          </div>
+          <div class="space-y-1">
+            <Label for="sg-cargo">Cargo registry</Label>
+            <Input id="sg-cargo" v-model="cargoRegistryName" list="sg-cargo-list" placeholder="cargo" class="font-mono text-sm" />
+            <datalist id="sg-cargo-list">
+              <option v-for="r in cargoRegistries" :key="r.name" :value="r.name" />
+            </datalist>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
 
     <!-- ── mise ── -->
     <Card>

@@ -1,21 +1,20 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use actix_web::{HttpRequest, HttpResponse, Responder, get, web};
 use bytes::Bytes;
 use futures::StreamExt;
-use serde::Deserialize;
-use utoipa::IntoParams;
 
 use proxy_cache_core::{
     entities::PackageId,
     services::{ProxyRequest, ProxyResponse, ProxyService},
 };
 
-use crate::{error::AppError, extractors::AuthIdentity};
+use crate::{RegistryMap, error::AppError, extractors::AuthIdentity};
 
 // ── Sparse index proxy ────────────────────────────────────────────────────────
 
-/// Holds the HTTP client and index URL for proxying the cargo sparse index.
+/// HTTP client + upstream index URL for one cargo sparse index.
 #[derive(Clone)]
 pub struct CargoIndexProxy {
     pub http: reqwest::Client,
@@ -23,65 +22,81 @@ pub struct CargoIndexProxy {
     pub index_url: String,
 }
 
-/// Cargo sparse registry config.json.
-///
-/// Tells cargo where to download `.crate` files and resolves the `dl` template
-/// against the request's own host so the URL works in any environment.
+fn require_cargo(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
+    match map.type_of(registry) {
+        Some("cargo") => Ok(()),
+        Some(_) => Err(AppError::not_found(format!("registry '{registry}' is not a cargo registry"))),
+        None => Err(AppError::not_found(format!("unknown registry '{registry}'"))),
+    }
+}
+
+/// Cargo sparse registry `config.json`.
 #[utoipa::path(
     get,
-    path = "/proxy/cargo/registry/config.json",
-    tag = "proxy",
+    path = "/proxy/{registry}/registry/config.json",
+    tag = "proxy/cargo",
+    params(("registry" = String, Path, description = "Registry name")),
     responses(
         (status = 200, description = "Sparse registry configuration"),
         (status = 404, description = "No cargo registry configured"),
     ),
     security(("bearer_token" = [])),
 )]
-#[get("/proxy/cargo/registry/config.json")]
+#[get("/proxy/{registry}/registry/config.json")]
 pub async fn cargo_registry_config(
-    index: Option<web::Data<CargoIndexProxy>>,
+    path: web::Path<String>,
+    indexes: web::Data<HashMap<String, CargoIndexProxy>>,
+    map: web::Data<RegistryMap>,
     req: HttpRequest,
 ) -> HttpResponse {
-    if index.is_none() {
-        return HttpResponse::NotFound().body("no cargo registry configured");
+    let registry = path.into_inner();
+    if !map.is_type(&registry, "cargo") {
+        return HttpResponse::NotFound().body(format!("unknown cargo registry '{registry}'"));
     }
+    let Some(_) = indexes.get(&registry) else {
+        return HttpResponse::NotFound().body("no cargo registry configured");
+    };
     let (scheme, host) = {
         let info = req.connection_info();
         (info.scheme().to_owned(), info.host().to_owned())
     };
-    let dl = format!("{scheme}://{host}/proxy/cargo/{{crate}}/{{version}}/download");
+    let dl = format!("{scheme}://{host}/proxy/{registry}/{{crate}}/{{version}}/download");
     HttpResponse::Ok()
         .content_type("application/json")
         .json(serde_json::json!({ "dl": dl }))
 }
 
 /// Cargo sparse registry index entries.
-///
-/// Proxies `{index_url}/{path}` (e.g. `index.crates.io/se/rd/serde`) and
-/// streams the newline-delimited JSON directly to the cargo client.
 #[utoipa::path(
     get,
-    path = "/proxy/cargo/registry/{path}",
-    tag = "proxy",
-    params(("path" = String, Path, description = "Crate index path, e.g. se/rd/serde")),
+    path = "/proxy/{registry}/registry/{path}",
+    tag = "proxy/cargo",
+    params(
+        ("registry" = String, Path, description = "Registry name"),
+        ("path"     = String, Path, description = "Crate index path, e.g. se/rd/serde"),
+    ),
     responses(
         (status = 200, description = "Sparse index entry (newline-delimited JSON)"),
         (status = 404, description = "Crate not found in index"),
     ),
     security(("bearer_token" = [])),
 )]
-#[get("/proxy/cargo/registry/{path:.*}")]
+#[get("/proxy/{registry}/registry/{path:.*}")]
 pub async fn cargo_registry_index(
-    path: web::Path<String>,
-    index: Option<web::Data<CargoIndexProxy>>,
+    path: web::Path<(String, String)>,
+    indexes: web::Data<HashMap<String, CargoIndexProxy>>,
+    map: web::Data<RegistryMap>,
     _identity: AuthIdentity,
 ) -> HttpResponse {
-    let Some(index) = index else {
+    let (registry, index_path) = path.into_inner();
+    if !map.is_type(&registry, "cargo") {
+        return HttpResponse::NotFound().body(format!("unknown cargo registry '{registry}'"));
+    }
+    let Some(index) = indexes.get(&registry) else {
         return HttpResponse::NotFound().body("no cargo registry configured");
     };
-    let url = format!("{}/{}", index.index_url.trim_end_matches('/'), path.as_ref());
+    let url = format!("{}/{}", index.index_url.trim_end_matches('/'), index_path);
     tracing::debug!(url = %url, "fetching cargo sparse index entry");
-
     let resp = match index.http.get(&url).send().await {
         Ok(r) => r,
         Err(e) => {
@@ -89,10 +104,8 @@ pub async fn cargo_registry_index(
             return HttpResponse::BadGateway().body(e.to_string());
         }
     };
-
     let status = actix_web::http::StatusCode::from_u16(resp.status().as_u16())
         .unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR);
-
     match resp.bytes().await {
         Ok(bytes) => HttpResponse::build(status)
             .content_type("text/plain; charset=utf-8")
@@ -101,85 +114,33 @@ pub async fn cargo_registry_index(
     }
 }
 
-// ── Path extractors ───────────────────────────────────────────────────────────
-
-#[derive(Deserialize, IntoParams)]
-pub struct CrateParts {
-    name: String,
-}
-
-#[derive(Deserialize, IntoParams)]
-pub struct CrateVersionParts {
-    name: String,
-    version: String,
-}
-
-// ── Handlers ──────────────────────────────────────────────────────────────────
-
-/// Fetch crate metadata (all versions).
-#[utoipa::path(
-    get,
-    path = "/proxy/cargo/{name}",
-    tag = "proxy",
-    params(CrateParts),
-    responses(
-        (status = 200, description = "Crate info JSON (crates.io format)"),
-        (status = 403, description = "Access denied"),
-    ),
-    security(("bearer_token" = [])),
-)]
-#[get("/proxy/cargo/{name}")]
-pub async fn get_crate(
-    path: web::Path<CrateParts>,
-    identity: AuthIdentity,
-    svc: web::Data<Arc<ProxyService>>,
-) -> Result<impl Responder, AppError> {
-    let pkg = PackageId::new("cargo", &path.name, "latest");
-    proxy_stream(svc, pkg, identity, "releases:read").await
-}
-
-/// Fetch metadata for a specific crate version.
-#[utoipa::path(
-    get,
-    path = "/proxy/cargo/{name}/{version}",
-    tag = "proxy",
-    params(CrateVersionParts),
-    responses(
-        (status = 200, description = "Crate version metadata JSON"),
-        (status = 403, description = "Access denied"),
-    ),
-    security(("bearer_token" = [])),
-)]
-#[get("/proxy/cargo/{name}/{version}")]
-pub async fn get_version(
-    path: web::Path<CrateVersionParts>,
-    identity: AuthIdentity,
-    svc: web::Data<Arc<ProxyService>>,
-) -> Result<impl Responder, AppError> {
-    let pkg = PackageId::new("cargo", &path.name, &path.version);
-    proxy_stream(svc, pkg, identity, "releases:read").await
-}
-
 /// Download a `.crate` file for a specific version.
 #[utoipa::path(
     get,
-    path = "/proxy/cargo/{name}/{version}/download",
-    tag = "proxy",
-    params(CrateVersionParts),
+    path = "/proxy/{registry}/{name}/{version}/download",
+    tag = "proxy/cargo",
+    params(
+        ("registry" = String, Path, description = "Registry name"),
+        ("name"     = String, Path, description = "Crate name"),
+        ("version"  = String, Path, description = "Version"),
+    ),
     responses(
         (status = 200, description = ".crate file stream"),
         (status = 403, description = "Access denied"),
+        (status = 404, description = "Unknown registry"),
     ),
     security(("bearer_token" = [])),
 )]
-#[get("/proxy/cargo/{name}/{version}/download")]
+#[get("/proxy/{registry}/{name}/{version}/download")]
 pub async fn download_crate(
-    path: web::Path<CrateVersionParts>,
+    path: web::Path<(String, String, String)>,
     identity: AuthIdentity,
     svc: web::Data<Arc<ProxyService>>,
+    map: web::Data<RegistryMap>,
 ) -> Result<impl Responder, AppError> {
-    let pkg = PackageId::new("cargo", &path.name, &path.version)
-        .with_artifact("dl");
+    let (registry, name, version) = path.into_inner();
+    require_cargo(&registry, &map)?;
+    let pkg = PackageId::new(&registry, &name, &version).with_artifact("dl");
     proxy_stream(svc, pkg, identity, "source:read").await
 }
 
@@ -196,7 +157,6 @@ async fn proxy_stream(
         identity: identity.0.clone(),
         resource_type: resource_type.to_owned(),
     };
-
     match svc.handle(req).await.map_err(AppError::from)? {
         ProxyResponse::Denied { reason } => Err(AppError::forbidden(reason)),
         ProxyResponse::Stream(stream) => {

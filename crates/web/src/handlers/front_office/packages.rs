@@ -71,7 +71,7 @@ pub async fn list_packages(
     admin_svc: web::Data<Arc<AdminService>>,
     access: web::Data<AccessConfig>,
 ) -> Result<impl Responder, AppError> {
-    let accessible = access.accessible_registries(&identity.role);
+    let accessible = access.accessible_registries_for(&identity);
 
     // If the caller requested a specific registry they can't access, return empty.
     if let Some(ref reg) = query.registry {
