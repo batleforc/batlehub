@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { blockPackage, unblockPackage, listRegistries } from "@/client/sdk.gen";
+import { blockPackage, unblockPackage, bulkBlockPackages, bulkUnblockPackages, listRegistries } from "@/client/sdk.gen";
 import type { RegistryInfo } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
@@ -126,6 +126,86 @@ async function doUnblock(v: PackageVersionDetail) {
   });
   reload();
 }
+
+// ── Multi-select ──────────────────────────────────────────────────────────────
+
+const selectedVersionIds = ref<Set<string>>(new Set());
+const bulkLoading = ref(false);
+const bulkResultMsg = ref<string | null>(null);
+
+const allVersionsSelected = computed(
+  () =>
+    (data.value?.versions.length ?? 0) > 0 &&
+    (data.value?.versions ?? []).every((v) => selectedVersionIds.value.has(v.id)),
+);
+
+function toggleAllVersions() {
+  if (allVersionsSelected.value) {
+    selectedVersionIds.value = new Set();
+  } else {
+    selectedVersionIds.value = new Set((data.value?.versions ?? []).map((v) => v.id));
+  }
+}
+
+function toggleVersion(v: PackageVersionDetail) {
+  if (selectedVersionIds.value.has(v.id)) selectedVersionIds.value.delete(v.id);
+  else selectedVersionIds.value.add(v.id);
+  selectedVersionIds.value = new Set(selectedVersionIds.value);
+}
+
+const selectedVersions = computed(() =>
+  (data.value?.versions ?? []).filter((v) => selectedVersionIds.value.has(v.id)),
+);
+
+async function bulkBlockVersions() {
+  const reason = window.prompt(`Block reason for ${selectedVersionIds.value.size} version(s):`);
+  if (!reason) return;
+  bulkLoading.value = true;
+  bulkResultMsg.value = null;
+  try {
+    const res = await bulkBlockPackages({
+      body: {
+        items: selectedVersions.value.map((v) => ({
+          registry: registry.value,
+          name: name.value,
+          version: v.version,
+          artifact: v.artifact ?? null,
+          reason,
+        })),
+      },
+    });
+    const r = res.data;
+    if (r) bulkResultMsg.value = `Blocked ${r.succeeded_count} version(s)${r.failed_count ? `, ${r.failed_count} failed` : ""}.`;
+  } finally {
+    bulkLoading.value = false;
+    selectedVersionIds.value = new Set();
+    reload();
+  }
+}
+
+async function bulkUnblockVersions() {
+  if (!confirm(`Unblock ${selectedVersionIds.value.size} selected version(s)?`)) return;
+  bulkLoading.value = true;
+  bulkResultMsg.value = null;
+  try {
+    const res = await bulkUnblockPackages({
+      body: {
+        items: selectedVersions.value.map((v) => ({
+          registry: registry.value,
+          name: name.value,
+          version: v.version,
+          artifact: v.artifact ?? null,
+        })),
+      },
+    });
+    const r = res.data;
+    if (r) bulkResultMsg.value = `Unblocked ${r.succeeded_count} version(s)${r.failed_count ? `, ${r.failed_count} failed` : ""}.`;
+  } finally {
+    bulkLoading.value = false;
+    selectedVersionIds.value = new Set();
+    reload();
+  }
+}
 </script>
 
 <template>
@@ -160,6 +240,22 @@ async function doUnblock(v: PackageVersionDetail) {
         </CardContent>
       </Card>
 
+      <!-- Bulk action bar for versions -->
+      <div
+        v-if="selectedVersionIds.size > 0"
+        class="sticky top-16 z-30 flex items-center gap-3 rounded-lg border bg-card px-4 py-2.5 shadow-sm"
+      >
+        <span class="text-sm font-medium">{{ selectedVersionIds.size }} version(s) selected</span>
+        <Button size="sm" variant="destructive" :disabled="bulkLoading" @click="bulkBlockVersions">
+          Block selected
+        </Button>
+        <Button size="sm" variant="outline" :disabled="bulkLoading" @click="bulkUnblockVersions">
+          Unblock selected
+        </Button>
+        <Button size="sm" variant="ghost" @click="selectedVersionIds = new Set()">Clear</Button>
+        <span v-if="bulkResultMsg" class="text-xs text-muted-foreground ml-auto">{{ bulkResultMsg }}</span>
+      </div>
+
       <!-- Versions table -->
       <Card>
         <CardHeader>
@@ -169,6 +265,9 @@ async function doUnblock(v: PackageVersionDetail) {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead class="w-8">
+                  <input type="checkbox" :checked="allVersionsSelected" @change="toggleAllVersions" class="cursor-pointer" />
+                </TableHead>
                 <TableHead>Version</TableHead>
                 <TableHead>Artifact</TableHead>
                 <TableHead>Status</TableHead>
@@ -186,6 +285,14 @@ async function doUnblock(v: PackageVersionDetail) {
                 :key="v.id"
                 :class="v.status.status === 'blocked' ? 'bg-destructive/5' : ''"
               >
+                <TableCell class="w-8">
+                  <input
+                    type="checkbox"
+                    :checked="selectedVersionIds.has(v.id)"
+                    @change="toggleVersion(v)"
+                    class="cursor-pointer"
+                  />
+                </TableCell>
                 <TableCell class="font-mono text-xs">{{ v.version }}</TableCell>
                 <TableCell class="font-mono text-xs text-muted-foreground">{{ v.artifact ?? "—" }}</TableCell>
                 <TableCell>

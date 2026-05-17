@@ -18,6 +18,8 @@ pub struct RegistryPolicy {
     pub metadata_ttl: Option<Duration>,
     /// Rules evaluated in order for every request to this registry.
     pub rules: Vec<Box<dyn Rule>>,
+    /// When `true`, skip artifact storage entirely and stream directly from upstream.
+    pub firewall_only: bool,
 }
 
 pub struct ProxyRequest {
@@ -109,7 +111,28 @@ impl ProxyService {
             return Ok(ProxyResponse::Denied { reason });
         }
 
-        // ── 3. Check artifact cache ────────────────────────────────────────────
+        // ── 3. Firewall-only: stream directly from upstream, skip all caching ──
+        let firewall_only = self
+            .policies
+            .get(registry_name)
+            .map(|p| p.firewall_only)
+            .unwrap_or(false);
+
+        if firewall_only {
+            tracing::debug!(registry = %registry_name, "firewall-only mode, streaming from upstream");
+            let upstream = client.fetch_artifact(&req.package_id).await?;
+            self.repo
+                .record_access(AccessEvent::allowed_download(
+                    req.package_id,
+                    req.identity.user_id,
+                    req.identity.role,
+                ))
+                .await
+                .unwrap_or_else(|e| tracing::warn!(error = %e, "failed to record access"));
+            return Ok(ProxyResponse::Stream(upstream));
+        }
+
+        // ── 4. Check artifact cache ────────────────────────────────────────────
         let artifact_key = format!("artifact:{}", req.package_id.cache_key());
 
         if self.storage.exists(&artifact_key).await? {
@@ -335,7 +358,7 @@ mod tests {
         let mut registries = HashMap::new();
         registries.insert(registry_name.to_owned(), client);
         let mut policies = HashMap::new();
-        policies.insert(registry_name.to_owned(), RegistryPolicy { metadata_ttl: None, rules });
+        policies.insert(registry_name.to_owned(), RegistryPolicy { metadata_ttl: None, firewall_only: false, rules });
         ProxyService {
             registries,
             storage: MemStorage::new(),
@@ -370,7 +393,7 @@ mod tests {
             repo: repo.clone(),
             policies: {
                 let mut m = HashMap::new();
-                m.insert("npm".to_owned(), RegistryPolicy { metadata_ttl: Some(Duration::from_secs(300)), rules: vec![] });
+                m.insert("npm".to_owned(), RegistryPolicy { metadata_ttl: Some(Duration::from_secs(300)), firewall_only: false, rules: vec![] });
                 m
             },
             max_artifact_size_bytes: None,
@@ -420,7 +443,7 @@ mod tests {
             repo: repo.clone(),
             policies: {
                 let mut m = HashMap::new();
-                m.insert("npm".to_owned(), RegistryPolicy { metadata_ttl: None, rules: vec![] });
+                m.insert("npm".to_owned(), RegistryPolicy { metadata_ttl: None, firewall_only: false, rules: vec![] });
                 m
             },
             max_artifact_size_bytes: None,
@@ -465,7 +488,7 @@ mod tests {
             repo: repo.clone(),
             policies: {
                 let mut m = HashMap::new();
-                m.insert("npm".to_owned(), RegistryPolicy { metadata_ttl: None, rules: vec![] });
+                m.insert("npm".to_owned(), RegistryPolicy { metadata_ttl: None, firewall_only: false, rules: vec![] });
                 m
             },
             max_artifact_size_bytes: Some(5), // FixedRegistry sends >5 bytes
@@ -493,5 +516,35 @@ mod tests {
 
         let resp = svc.handle(req("npm")).await.unwrap();
         assert!(matches!(resp, ProxyResponse::Stream(_)));
+    }
+
+    #[tokio::test]
+    async fn firewall_only_streams_without_storing() {
+        let storage = MemStorage::new();
+        let repo = SpyRepo::new();
+        let svc = ProxyService {
+            registries: {
+                let mut m = HashMap::new();
+                m.insert("npm".to_owned(), Arc::new(FixedRegistry) as Arc<dyn RegistryClient>);
+                m
+            },
+            storage: storage.clone(),
+            cache: Arc::new(InMemoryCacheStore::new()),
+            repo: repo.clone(),
+            policies: {
+                let mut m = HashMap::new();
+                m.insert("npm".to_owned(), RegistryPolicy { metadata_ttl: None, firewall_only: true, rules: vec![] });
+                m
+            },
+            max_artifact_size_bytes: None,
+        };
+
+        let pkg = PackageId::new("npm", "test-pkg", "1.0.0");
+        let artifact_key = format!("artifact:{}", pkg.cache_key());
+
+        let resp = svc.handle(req("npm")).await.unwrap();
+        assert!(matches!(resp, ProxyResponse::Stream(_)));
+        assert!(!storage.exists(&artifact_key).await.unwrap(), "firewall-only: artifact must not be stored");
+        assert!(!repo.events().is_empty(), "access event should be recorded");
     }
 }

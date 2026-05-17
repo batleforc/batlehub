@@ -256,11 +256,12 @@ pub use middleware::AuthMiddlewareFactory;
 #[derive(OpenApi)]
 #[openapi(
     tags(
-        (name = "proxy/github", description = "GitHub proxy — releases, assets, tarballs, raw files"),
-        (name = "proxy/npm",    description = "npm proxy — packuments, version metadata, tarballs"),
-        (name = "proxy/cargo",  description = "Cargo proxy — sparse index, crate metadata, .crate downloads"),
-        (name = "front-office", description = "User-facing package information"),
-        (name = "back-office",  description = "Admin management (requires Admin role)"),
+        (name = "proxy/github",   description = "GitHub proxy — releases, assets, tarballs, raw files"),
+        (name = "proxy/npm",      description = "npm proxy — packuments, version metadata, tarballs"),
+        (name = "proxy/cargo",    description = "Cargo proxy — sparse index, crate metadata, .crate downloads"),
+        (name = "proxy/openvsx",  description = "OpenVSX proxy — VS Code extension metadata and VSIX packages"),
+        (name = "front-office",   description = "User-facing package information"),
+        (name = "back-office",    description = "Admin management (requires Admin role)"),
     ),
     modifiers(&SecurityAddon),
 )]
@@ -291,7 +292,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
         },
         back_office::{
             audit::audit_log,
-            packages::{block_package, list_packages as admin_list_packages, package_detail, unblock_package},
+            packages::{block_package, bulk_block_packages, bulk_unblock_packages, list_packages as admin_list_packages, package_detail, unblock_package},
         },
         front_office::{
             me::me,
@@ -301,11 +302,12 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
         proxy::{
             // Register most-specific patterns first so actix-web resolves correctly:
             // cargo index (literal "registry" segment) > github (owner/repo/verb) >
-            // cargo download (literal "download") > npm tarball (literal "tarball") >
-            // shared version metadata > shared packument
+            // cargo download (literal "download") > openvsx vsix (literal "vsix") >
+            // npm tarball (literal "tarball") > shared version metadata > shared packument
             cargo::{cargo_registry_config, cargo_registry_index, download_crate},
             github::{download_asset, download_asset_by_name, download_raw, download_tarball, download_zipball, get_release, list_releases},
             npm::{download_tarball as npm_download_tarball, get_packument, get_version},
+            openvsx::download_vsix,
         },
     };
 
@@ -329,6 +331,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(download_raw);
     // Cargo download (literal "download" suffix)
     cfg.service(download_crate);
+    // OpenVSX VSIX download (literal "vsix" suffix)
+    cfg.service(download_vsix);
     // npm tarball (literal "tarball" suffix)
     cfg.service(npm_download_tarball);
     // Shared npm/cargo: version metadata then packument (more specific first)
@@ -342,6 +346,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(package_detail);
     cfg.service(block_package);
     cfg.service(unblock_package);
+    cfg.service(bulk_block_packages);
+    cfg.service(bulk_unblock_packages);
     cfg.service(audit_log);
 }
 

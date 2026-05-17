@@ -26,6 +26,7 @@ const userLinks = [
 
 const adminLinks = [
   { to: "/admin/packages", label: "Packages" },
+  { to: "/admin/bulk", label: "Bulk Import" },
   { to: "/admin/audit-log", label: "Audit Log" },
 ];
 

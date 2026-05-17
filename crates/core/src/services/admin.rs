@@ -9,6 +9,16 @@ use crate::entities::{
 use crate::error::CoreError;
 use crate::ports::PackageRepository;
 
+pub struct BulkBlockItem {
+    pub package_id: PackageId,
+    pub reason: String,
+}
+
+pub struct BulkActionResult {
+    pub succeeded: Vec<PackageId>,
+    pub failed: Vec<(PackageId, String)>,
+}
+
 pub struct AdminService {
     pub repo: Arc<dyn PackageRepository>,
 }
@@ -79,6 +89,36 @@ impl AdminService {
 
         tracing::info!(package = %pkg, "package unblocked");
         Ok(())
+    }
+
+    pub async fn bulk_block_packages(
+        &self,
+        items: Vec<BulkBlockItem>,
+        by_identity: &Identity,
+    ) -> BulkActionResult {
+        let mut result = BulkActionResult { succeeded: vec![], failed: vec![] };
+        for item in items {
+            match self.block_package(&item.package_id, item.reason, by_identity).await {
+                Ok(()) => result.succeeded.push(item.package_id),
+                Err(e) => result.failed.push((item.package_id, e.to_string())),
+            }
+        }
+        result
+    }
+
+    pub async fn bulk_unblock_packages(
+        &self,
+        items: Vec<PackageId>,
+        by_identity: &Identity,
+    ) -> BulkActionResult {
+        let mut result = BulkActionResult { succeeded: vec![], failed: vec![] };
+        for pkg in items {
+            match self.unblock_package(&pkg, by_identity).await {
+                Ok(()) => result.succeeded.push(pkg),
+                Err(e) => result.failed.push((pkg, e.to_string())),
+            }
+        }
+        result
     }
 
     pub async fn list_packages(&self, filter: PackageFilter) -> Result<Vec<PackageSummary>, CoreError> {
@@ -276,5 +316,36 @@ mod tests {
 
         let events = svc.list_events(EventFilter::new()).await.unwrap();
         assert!(!events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bulk_block_succeeds_for_all_valid_packages() {
+        let repo = MemRepo::new();
+        let svc = AdminService::new(repo.clone());
+        let items = vec![
+            BulkBlockItem { package_id: PackageId::new("npm", "a", "1.0.0"), reason: "r1".into() },
+            BulkBlockItem { package_id: PackageId::new("npm", "b", "2.0.0"), reason: "r2".into() },
+        ];
+        let result = svc.bulk_block_packages(items, &admin_identity("alice")).await;
+        assert_eq!(result.succeeded.len(), 2);
+        assert_eq!(result.failed.len(), 0);
+        assert!(repo.get_status(&PackageId::new("npm", "a", "1.0.0")).await.unwrap().is_blocked());
+        assert!(repo.get_status(&PackageId::new("npm", "b", "2.0.0")).await.unwrap().is_blocked());
+    }
+
+    #[tokio::test]
+    async fn bulk_unblock_succeeds_for_all_packages() {
+        let repo = MemRepo::new();
+        let svc = AdminService::new(repo.clone());
+        let pkg_a = PackageId::new("npm", "a", "1.0.0");
+        let pkg_b = PackageId::new("npm", "b", "2.0.0");
+        svc.block_package(&pkg_a, "r".into(), &admin_identity("alice")).await.unwrap();
+        svc.block_package(&pkg_b, "r".into(), &admin_identity("alice")).await.unwrap();
+
+        let result = svc.bulk_unblock_packages(vec![pkg_a.clone(), pkg_b.clone()], &admin_identity("alice")).await;
+        assert_eq!(result.succeeded.len(), 2);
+        assert_eq!(result.failed.len(), 0);
+        assert!(!repo.get_status(&pkg_a).await.unwrap().is_blocked());
+        assert!(!repo.get_status(&pkg_b).await.unwrap().is_blocked());
     }
 }

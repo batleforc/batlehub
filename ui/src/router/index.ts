@@ -5,6 +5,7 @@ import PackageList from "@/pages/PackageList.vue";
 import AccessCheck from "@/pages/AccessCheck.vue";
 import AdminPackages from "@/pages/AdminPackages.vue";
 import AdminPackageDetail from "@/pages/AdminPackageDetail.vue";
+import AdminBulk from "@/pages/AdminBulk.vue";
 import AuditLog from "@/pages/AuditLog.vue";
 import LoginPage from "@/pages/LoginPage.vue";
 import PathMapper from "@/pages/PathMapper.vue";
@@ -41,6 +42,11 @@ export const router = createRouter({
     {
       path: "/admin/packages/detail",
       component: AdminPackageDetail,
+      meta: { requiresAdmin: true },
+    },
+    {
+      path: "/admin/bulk",
+      component: AdminBulk,
       meta: { requiresAdmin: true },
     },
     {

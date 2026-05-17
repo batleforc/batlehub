@@ -15,3 +15,8 @@ pub use npm::NpmRegistryClient;
 pub mod cargo;
 #[cfg(feature = "registry-cargo")]
 pub use cargo::CargoRegistryClient;
+
+#[cfg(feature = "registry-openvsx")]
+pub mod openvsx;
+#[cfg(feature = "registry-openvsx")]
+pub use openvsx::OpenVsxRegistryClient;

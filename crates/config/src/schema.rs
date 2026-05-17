@@ -25,7 +25,7 @@ impl AppConfig {
                 bail!("registry is missing a 'name' field");
             }
             match registry.registry_type.as_str() {
-                "github" | "cargo" | "npm" | "pypi" | "composer" => {}
+                "github" | "cargo" | "npm" | "openvsx" | "pypi" | "composer" => {}
                 other => bail!("unknown registry type: '{other}'"),
             }
         }
@@ -354,6 +354,11 @@ pub struct RegistryConfig {
     /// When absent, the default backend is used.
     #[serde(default)]
     pub storage: Option<String>,
+    /// When `true` the registry acts as a pure firewall: rules are evaluated but
+    /// artifacts are never cached. Requests that pass rules are streamed directly
+    /// from upstream with nothing written to storage.
+    #[serde(default)]
+    pub firewall_only: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]

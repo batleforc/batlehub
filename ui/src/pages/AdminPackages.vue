@@ -2,7 +2,7 @@
 import { ref, computed, watch } from "vue";
 import { useRouter } from "vue-router";
 import { Package } from "@lucide/vue";
-import { listPackages, listRegistries, blockPackage, unblockPackage } from "@/client/sdk.gen";
+import { listPackages, listRegistries, blockPackage, unblockPackage, bulkBlockPackages, bulkUnblockPackages } from "@/client/sdk.gen";
 import type { RegistryInfo } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
@@ -82,6 +82,90 @@ async function unblock(pkg: AdminPackageSummary) {
     },
   });
   reload();
+}
+
+// ── Multi-select + bulk actions ───────────────────────────────────────────────
+
+const selected = ref<Set<string>>(new Set());
+const bulkLoading = ref(false);
+const bulkResultMsg = ref<string | null>(null);
+
+function pkgKey(pkg: AdminPackageSummary) {
+  return `${pkg.package_id.registry}:${pkg.package_id.name}:${pkg.package_id.version}:${pkg.package_id.artifact ?? ""}`;
+}
+
+const allSelected = computed(
+  () => filteredPackages.value.length > 0 && filteredPackages.value.every((p) => selected.value.has(pkgKey(p))),
+);
+
+function toggleAll() {
+  if (allSelected.value) {
+    filteredPackages.value.forEach((p) => selected.value.delete(pkgKey(p)));
+  } else {
+    filteredPackages.value.forEach((p) => selected.value.add(pkgKey(p)));
+  }
+  selected.value = new Set(selected.value);
+}
+
+function toggleOne(pkg: AdminPackageSummary) {
+  const k = pkgKey(pkg);
+  if (selected.value.has(k)) selected.value.delete(k);
+  else selected.value.add(k);
+  selected.value = new Set(selected.value);
+}
+
+const selectedPackages = computed(() =>
+  (packages.value ?? []).filter((p) => selected.value.has(pkgKey(p))),
+);
+
+async function bulkBlock() {
+  const reason = window.prompt(`Block reason for ${selected.value.size} package(s):`);
+  if (!reason) return;
+  bulkLoading.value = true;
+  bulkResultMsg.value = null;
+  try {
+    const res = await bulkBlockPackages({
+      body: {
+        items: selectedPackages.value.map((p) => ({
+          registry: p.package_id.registry,
+          name: p.package_id.name,
+          version: p.package_id.version,
+          artifact: p.package_id.artifact ?? null,
+          reason,
+        })),
+      },
+    });
+    const r = res.data;
+    if (r) bulkResultMsg.value = `Blocked ${r.succeeded_count} package(s)${r.failed_count ? `, ${r.failed_count} failed` : ""}.`;
+  } finally {
+    bulkLoading.value = false;
+    selected.value = new Set();
+    reload();
+  }
+}
+
+async function bulkUnblock() {
+  if (!confirm(`Unblock ${selected.value.size} selected package(s)?`)) return;
+  bulkLoading.value = true;
+  bulkResultMsg.value = null;
+  try {
+    const res = await bulkUnblockPackages({
+      body: {
+        items: selectedPackages.value.map((p) => ({
+          registry: p.package_id.registry,
+          name: p.package_id.name,
+          version: p.package_id.version,
+          artifact: p.package_id.artifact ?? null,
+        })),
+      },
+    });
+    const r = res.data;
+    if (r) bulkResultMsg.value = `Unblocked ${r.succeeded_count} package(s)${r.failed_count ? `, ${r.failed_count} failed` : ""}.`;
+  } finally {
+    bulkLoading.value = false;
+    selected.value = new Set();
+    reload();
+  }
 }
 
 // ── Pre-block form ────────────────────────────────────────────────────────────
@@ -191,6 +275,22 @@ async function submitPreBlock() {
       </CardContent>
     </Card>
 
+    <!-- Bulk action bar -->
+    <div
+      v-if="selected.size > 0"
+      class="sticky top-16 z-30 flex items-center gap-3 rounded-lg border bg-card px-4 py-2.5 shadow-sm"
+    >
+      <span class="text-sm font-medium">{{ selected.size }} selected</span>
+      <Button size="sm" variant="destructive" :disabled="bulkLoading" @click="bulkBlock">
+        Block selected
+      </Button>
+      <Button size="sm" variant="outline" :disabled="bulkLoading" @click="bulkUnblock">
+        Unblock selected
+      </Button>
+      <Button size="sm" variant="ghost" @click="selected = new Set()">Clear</Button>
+      <span v-if="bulkResultMsg" class="text-xs text-muted-foreground ml-auto">{{ bulkResultMsg }}</span>
+    </div>
+
     <!-- Package list -->
     <Card>
       <CardHeader class="space-y-3 pb-3">
@@ -214,6 +314,9 @@ async function submitPreBlock() {
         <Table v-else-if="filteredPackages.length">
           <TableHeader>
             <TableRow>
+              <TableHead class="w-8">
+                <input type="checkbox" :checked="allSelected" @change="toggleAll" class="cursor-pointer" />
+              </TableHead>
               <TableHead>Registry</TableHead>
               <TableHead>Name</TableHead>
               <TableHead>Version</TableHead>
@@ -231,6 +334,14 @@ async function submitPreBlock() {
               :key="i"
               :class="pkg.status.status === 'blocked' ? 'bg-destructive/5' : ''"
             >
+              <TableCell class="w-8">
+                <input
+                  type="checkbox"
+                  :checked="selected.has(pkgKey(pkg))"
+                  @change="toggleOne(pkg)"
+                  class="cursor-pointer"
+                />
+              </TableCell>
               <TableCell class="font-mono text-xs">{{ pkg.package_id.registry }}</TableCell>
               <TableCell class="font-medium">{{ pkg.package_id.name }}</TableCell>
               <TableCell class="font-mono text-xs">{{ pkg.package_id.version }}</TableCell>

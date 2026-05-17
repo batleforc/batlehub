@@ -81,7 +81,7 @@ curl -H "Authorization: Bearer my-admin-token" http://localhost:8080/...
 
 1. The TOML file at the path given to `--config` is parsed (default: `config.toml` in the working directory).
 2. Environment variables matching `PROXY_CACHE__<SECTION>__<FIELD>` are applied on top of the file values.
-3. The config is validated: registry names must not be empty and registry types must be one of `github`, `npm`, `cargo`, `pypi`, `composer`.
+3. The config is validated: registry names must not be empty and registry types must be one of `github`, `npm`, `cargo`, `openvsx`, `pypi`, `composer`.
 
 ### Auth evaluation order
 
@@ -347,7 +347,7 @@ bypass_roles = ["admin"]
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `type` | string | yes | `"github"`, `"npm"`, `"cargo"`, `"pypi"`, `"composer"` |
+| `type` | string | yes | `"github"`, `"npm"`, `"cargo"`, `"openvsx"`, `"pypi"`, `"composer"` |
 | `name` | string | yes | Unique identifier; used in proxy URL paths |
 | `upstreams` | string[] | no | Upstream URLs tried in order on cache miss; 404 from one falls through to the next. Defaults to the registry's built-in URL. |
 | `index_url` | string | no | Cargo only: sparse crate index URL. Defaults to `https://index.crates.io`. Required for self-hosted Gitea/Forgejo registries. |

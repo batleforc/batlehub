@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = ["auth-token", "auth-oidc", "auth-kubernetes", "storage-fs", "registry-github", "registry-npm", "registry-cargo", "db-postgres"]
+default = ["auth-token", "auth-oidc", "auth-kubernetes", "storage-fs", "registry-github", "registry-npm", "registry-cargo", "registry-openvsx", "db-postgres"]
 auth-token = []
 auth-oidc = ["dep:jsonwebtoken"]
 auth-kubernetes = []
@@ -14,6 +14,7 @@ storage-s3 = ["dep:aws-sdk-s3", "dep:aws-config"]
 registry-github = []
 registry-cargo = []
 registry-npm = []
+registry-openvsx = []
 registry-pypi = []
 registry-composer = []
 db-postgres = []
@@ -37,6 +38,7 @@ tracing.workspace = true
 jsonwebtoken = { version = "9", optional = true }
 aws-sdk-s3 = { workspace = true, optional = true }
 aws-config = { workspace = true, optional = true }
+base64 = "0.22"
 sha2 = "0.10"
 rand = "0.8"
 hex = "0.4"

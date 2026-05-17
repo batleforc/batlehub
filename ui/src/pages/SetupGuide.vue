@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
+import { RouterLink } from "vue-router";
 import { API_BASE_URL } from "@/config";
 import { listRegistries } from "@/client/sdk.gen";
 import { useApi } from "@/composables/useApi";
+import { useAuth } from "@/composables/useAuth";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -10,13 +12,26 @@ import { Label } from "@/components/ui/label";
 import {
   Card, CardHeader, CardTitle, CardDescription, CardContent,
 } from "@/components/ui/card";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 
 const base = computed(() => API_BASE_URL || window.location.origin);
 const copied = ref<string | null>(null);
 
-const githubRegistryName = ref("github");
-const npmRegistryName    = ref("npm");
-const cargoRegistryName  = ref("cargo");
+const { token, identity, isAuthenticated, expiresAt } = useAuth();
+
+const netrcHost = computed(() => {
+  try { return new URL(base.value).hostname; } catch { return base.value; }
+});
+const netrcLogin = computed(() => identity.value?.user_id ?? "token");
+const netrcSnippet = computed(() =>
+  `machine ${netrcHost.value}\nlogin ${netrcLogin.value}\npassword ${token.value}`
+);
+const isOidc = computed(() => expiresAt.value > 0);
+
+const githubRegistryName  = ref("github");
+const npmRegistryName     = ref("npm");
+const cargoRegistryName   = ref("cargo");
+const openvsxRegistryName = ref("openvsx");
 
 const { data: registries } = useApi<Array<{ name: string; type: string }>>(
   () => listRegistries() as Promise<{ data?: unknown; error?: unknown }>,
@@ -25,17 +40,20 @@ const { data: registries } = useApi<Array<{ name: string; type: string }>>(
 
 watch(registries, (regs) => {
   if (!regs) return;
-  const gh = regs.find(r => r.type === "github");
-  const np = regs.find(r => r.type === "npm");
-  const cg = regs.find(r => r.type === "cargo");
-  if (gh) githubRegistryName.value = gh.name;
-  if (np) npmRegistryName.value = np.name;
-  if (cg) cargoRegistryName.value = cg.name;
+  const gh  = regs.find(r => r.type === "github");
+  const np  = regs.find(r => r.type === "npm");
+  const cg  = regs.find(r => r.type === "cargo");
+  const ovx = regs.find(r => r.type === "openvsx");
+  if (gh)  githubRegistryName.value = gh.name;
+  if (np)  npmRegistryName.value = np.name;
+  if (cg)  cargoRegistryName.value = cg.name;
+  if (ovx) openvsxRegistryName.value = ovx.name;
 });
 
-const githubRegistries = computed(() => registries.value?.filter(r => r.type === "github") ?? []);
-const npmRegistries    = computed(() => registries.value?.filter(r => r.type === "npm") ?? []);
-const cargoRegistries  = computed(() => registries.value?.filter(r => r.type === "cargo") ?? []);
+const githubRegistries  = computed(() => registries.value?.filter(r => r.type === "github")  ?? []);
+const npmRegistries     = computed(() => registries.value?.filter(r => r.type === "npm")      ?? []);
+const cargoRegistries   = computed(() => registries.value?.filter(r => r.type === "cargo")    ?? []);
+const openvsxRegistries = computed(() => registries.value?.filter(r => r.type === "openvsx") ?? []);
 
 async function copy(key: string, text: string) {
   await navigator.clipboard.writeText(text);
@@ -95,6 +113,40 @@ const cargoSnippet = computed(() => {
     `registry = "sparse+${b}/proxy/${reg}/registry/"`,
   ].join("\n");
 });
+
+const openvsxMiseSnippet = computed(() => {
+  const b   = base.value;
+  const reg = openvsxRegistryName.value || "openvsx";
+  return [
+    `[settings.url_replacements]`,
+    ``,
+    `# ── OpenVSX VSIX downloads ────────────────────────────────────────────────────`,
+    `# Intercepts VSIX file downloads from open-vsx.org and routes them through the proxy.`,
+    `# The extension ID is joined as publisher.name to match the proxy convention.`,
+    `"regex:^https://open-vsx\\.org/api/([^/]+)/([^/]+)/([^/]+)/file/.+\\.vsix$" = "${b}/proxy/${reg}/$1.$2/$3/vsix"`,
+  ].join("\n");
+});
+
+const openvsxDirectSnippet = computed(() => {
+  const b   = base.value;
+  const reg = openvsxRegistryName.value || "openvsx";
+  return `${b}/proxy/${reg}/{publisher}.{extension}/{version}/vsix`;
+});
+
+const openvsxVscodiumSnippet = computed(() => {
+  const b   = base.value;
+  const reg = openvsxRegistryName.value || "openvsx";
+  return [
+    `// ~/.config/VSCodium/User/product.json  (or merge into existing product.json)`,
+    `{`,
+    `  "extensionGallery": {`,
+    `    "serviceUrl": "${b}/proxy/${reg}/vscode/gallery",`,
+    `    "itemUrl": "${b}/proxy/${reg}/vscode/item",`,
+    `    "resourceUrlTemplate": "${b}/proxy/${reg}/vscode/unpkg/{publisher}/{name}/{version}/{path}"`,
+    `  }`,
+    `}`,
+  ].join("\n");
+});
 </script>
 
 <template>
@@ -117,7 +169,7 @@ const cargoSnippet = computed(() => {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <div class="grid grid-cols-3 gap-3">
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div class="space-y-1">
             <Label for="sg-github">GitHub registry</Label>
             <Input id="sg-github" v-model="githubRegistryName" list="sg-github-list" placeholder="github" class="font-mono text-sm" />
@@ -139,149 +191,223 @@ const cargoSnippet = computed(() => {
               <option v-for="r in cargoRegistries" :key="r.name" :value="r.name" />
             </datalist>
           </div>
+          <div class="space-y-1">
+            <Label for="sg-openvsx">OpenVSX registry</Label>
+            <Input id="sg-openvsx" v-model="openvsxRegistryName" list="sg-openvsx-list" placeholder="openvsx" class="font-mono text-sm" />
+            <datalist id="sg-openvsx-list">
+              <option v-for="r in openvsxRegistries" :key="r.name" :value="r.name" />
+            </datalist>
+          </div>
         </div>
       </CardContent>
     </Card>
 
-    <!-- ── mise ── -->
-    <Card>
-      <CardHeader>
-        <div class="flex items-center justify-between">
-          <div>
-            <CardTitle>mise</CardTitle>
-            <CardDescription class="mt-1">
-              URL replacements intercept all HTTP requests made by mise
-              (aqua, ubi, and other backends). Add to your global
-              <code class="text-xs font-mono bg-muted px-1 rounded">~/.config/mise/config.toml</code>
-              or a project-local <code class="text-xs font-mono bg-muted px-1 rounded">mise.toml</code>.
-            </CardDescription>
-          </div>
-          <Badge variant="outline" class="shrink-0 font-mono text-xs">mise.toml</Badge>
-        </div>
-      </CardHeader>
-      <CardContent class="space-y-2">
-        <div class="relative">
-          <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto leading-relaxed">{{ miseSnippet }}</pre>
-          <Button
-            size="sm"
-            variant="ghost"
-            class="absolute top-2 right-2 h-7 px-2 text-xs"
-            @click="copy('mise', miseSnippet)"
-          >
-            {{ copied === 'mise' ? 'Copied!' : 'Copy' }}
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
+    <!-- ── Tool config tabs ── -->
+    <Tabs default-value="mise">
+      <TabsList :class="isAuthenticated ? 'grid grid-cols-5' : 'grid grid-cols-4'">
+        <TabsTrigger value="mise">mise</TabsTrigger>
+        <TabsTrigger value="npm">npm</TabsTrigger>
+        <TabsTrigger value="cargo">Cargo</TabsTrigger>
+        <TabsTrigger value="openvsx">OpenVSX</TabsTrigger>
+        <TabsTrigger v-if="isAuthenticated" value="netrc">.netrc</TabsTrigger>
+      </TabsList>
 
-    <!-- ── npm ── -->
-    <Card>
-      <CardHeader>
-        <div class="flex items-center justify-between">
-          <div>
-            <CardTitle>npm</CardTitle>
-            <CardDescription class="mt-1">
-              Sets the registry for all packages. Place in your project root or
-              <code class="text-xs font-mono bg-muted px-1 rounded">~/.npmrc</code>
-              for global use.
-            </CardDescription>
-          </div>
-          <Badge variant="outline" class="shrink-0 font-mono text-xs">.npmrc</Badge>
-        </div>
-      </CardHeader>
-      <CardContent class="space-y-4">
-        <div>
-          <p class="text-xs text-muted-foreground mb-1.5">npm / npm workspaces</p>
-          <div class="relative">
-            <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto">{{ npmrcSnippet }}</pre>
-            <Button
-              size="sm"
-              variant="ghost"
-              class="absolute top-2 right-2 h-7 px-2 text-xs"
-              @click="copy('npmrc', npmrcSnippet)"
-            >
-              {{ copied === 'npmrc' ? 'Copied!' : 'Copy' }}
-            </Button>
-          </div>
-        </div>
-        <div>
-          <p class="text-xs text-muted-foreground mb-1.5">Yarn Berry — <code class="font-mono">.yarnrc.yml</code></p>
-          <div class="relative">
-            <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto">{{ yarnSnippet }}</pre>
-            <Button
-              size="sm"
-              variant="ghost"
-              class="absolute top-2 right-2 h-7 px-2 text-xs"
-              @click="copy('yarn', yarnSnippet)"
-            >
-              {{ copied === 'yarn' ? 'Copied!' : 'Copy' }}
-            </Button>
-          </div>
-        </div>
-        <div>
-          <p class="text-xs text-muted-foreground mb-1.5">pnpm — <code class="font-mono">.npmrc</code></p>
-          <div class="relative">
-            <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto">{{ pnpmSnippet }}</pre>
-            <Button
-              size="sm"
-              variant="ghost"
-              class="absolute top-2 right-2 h-7 px-2 text-xs"
-              @click="copy('pnpm', pnpmSnippet)"
-            >
-              {{ copied === 'pnpm' ? 'Copied!' : 'Copy' }}
-            </Button>
-          </div>
-        </div>
-        <p class="text-xs text-muted-foreground">
-          To route only a specific scope through the proxy, use
-          <code class="font-mono bg-muted px-1 rounded">@myorg:registry={{ base }}/proxy/npm/</code> instead.
-        </p>
-      </CardContent>
-    </Card>
+      <!-- mise -->
+      <TabsContent value="mise">
+        <Card>
+          <CardHeader>
+            <div class="flex items-center justify-between">
+              <CardDescription>
+                URL replacements intercept all HTTP requests made by mise
+                (aqua, ubi, and other backends). Add to your global
+                <code class="text-xs font-mono bg-muted px-1 rounded">~/.config/mise/config.toml</code>
+                or a project-local <code class="text-xs font-mono bg-muted px-1 rounded">mise.toml</code>.
+              </CardDescription>
+              <Badge variant="outline" class="shrink-0 font-mono text-xs ml-4">mise.toml</Badge>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div class="relative">
+              <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto leading-relaxed">{{ miseSnippet }}</pre>
+              <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('mise', miseSnippet)">
+                {{ copied === 'mise' ? 'Copied!' : 'Copy' }}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </TabsContent>
 
-    <!-- ── Cargo ── -->
-    <Card>
-      <CardHeader>
-        <div class="flex items-center justify-between">
-          <div>
-            <CardTitle>Cargo</CardTitle>
-            <CardDescription class="mt-1">
-              Replaces crates.io as the default source. Cargo fetches the sparse
-              index and <code class="text-xs font-mono bg-muted px-1 rounded">.crate</code>
-              files through the proxy. Add to your project's
-              <code class="text-xs font-mono bg-muted px-1 rounded">.cargo/config.toml</code>
-              or the global
-              <code class="text-xs font-mono bg-muted px-1 rounded">~/.cargo/config.toml</code>.
-            </CardDescription>
-          </div>
-          <Badge variant="outline" class="shrink-0 font-mono text-xs">.cargo/config.toml</Badge>
-        </div>
-      </CardHeader>
-      <CardContent class="space-y-3">
-        <div class="relative">
-          <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto leading-relaxed">{{ cargoSnippet }}</pre>
-          <Button
-            size="sm"
-            variant="ghost"
-            class="absolute top-2 right-2 h-7 px-2 text-xs"
-            @click="copy('cargo', cargoSnippet)"
-          >
-            {{ copied === 'cargo' ? 'Copied!' : 'Copy' }}
-          </Button>
-        </div>
-        <p class="text-xs text-muted-foreground">
-          The proxy implements the
-          <a
-            href="https://doc.rust-lang.org/cargo/reference/registry-protocols.html#sparse-protocol"
-            target="_blank"
-            rel="noopener"
-            class="underline underline-offset-2 hover:text-foreground transition-colors"
-          >sparse registry protocol</a>.
-          Checksums from the index match the cached
-          <code class="font-mono bg-muted px-1 rounded">.crate</code> files,
-          so <code class="font-mono bg-muted px-1 rounded">cargo verify-project</code> continues to work.
-        </p>
-      </CardContent>
-    </Card>
+      <!-- npm / yarn / pnpm -->
+      <TabsContent value="npm">
+        <Card>
+          <CardHeader>
+            <div class="flex items-center justify-between">
+              <CardDescription>
+                Sets the registry for all packages. Place in your project root or
+                <code class="text-xs font-mono bg-muted px-1 rounded">~/.npmrc</code>
+                for global use.
+              </CardDescription>
+              <Badge variant="outline" class="shrink-0 font-mono text-xs ml-4">.npmrc</Badge>
+            </div>
+          </CardHeader>
+          <CardContent class="space-y-4">
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">npm / npm workspaces</p>
+              <div class="relative">
+                <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto">{{ npmrcSnippet }}</pre>
+                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('npmrc', npmrcSnippet)">
+                  {{ copied === 'npmrc' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </div>
+            </div>
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">Yarn Berry — <code class="font-mono">.yarnrc.yml</code></p>
+              <div class="relative">
+                <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto">{{ yarnSnippet }}</pre>
+                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('yarn', yarnSnippet)">
+                  {{ copied === 'yarn' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </div>
+            </div>
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">pnpm — <code class="font-mono">.npmrc</code></p>
+              <div class="relative">
+                <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto">{{ pnpmSnippet }}</pre>
+                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('pnpm', pnpmSnippet)">
+                  {{ copied === 'pnpm' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </div>
+            </div>
+            <p class="text-xs text-muted-foreground">
+              To route only a specific scope through the proxy, use
+              <code class="font-mono bg-muted px-1 rounded">@myorg:registry={{ base }}/proxy/npm/</code> instead.
+            </p>
+          </CardContent>
+        </Card>
+      </TabsContent>
+
+      <!-- Cargo -->
+      <TabsContent value="cargo">
+        <Card>
+          <CardHeader>
+            <div class="flex items-center justify-between">
+              <CardDescription>
+                Replaces crates.io as the default source. Cargo fetches the sparse
+                index and <code class="text-xs font-mono bg-muted px-1 rounded">.crate</code>
+                files through the proxy. Add to your project's
+                <code class="text-xs font-mono bg-muted px-1 rounded">.cargo/config.toml</code>
+                or the global
+                <code class="text-xs font-mono bg-muted px-1 rounded">~/.cargo/config.toml</code>.
+              </CardDescription>
+              <Badge variant="outline" class="shrink-0 font-mono text-xs ml-4">.cargo/config.toml</Badge>
+            </div>
+          </CardHeader>
+          <CardContent class="space-y-3">
+            <div class="relative">
+              <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto leading-relaxed">{{ cargoSnippet }}</pre>
+              <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('cargo', cargoSnippet)">
+                {{ copied === 'cargo' ? 'Copied!' : 'Copy' }}
+              </Button>
+            </div>
+            <p class="text-xs text-muted-foreground">
+              The proxy implements the
+              <a
+                href="https://doc.rust-lang.org/cargo/reference/registry-protocols.html#sparse-protocol"
+                target="_blank"
+                rel="noopener"
+                class="underline underline-offset-2 hover:text-foreground transition-colors"
+              >sparse registry protocol</a>.
+              Checksums from the index match the cached
+              <code class="font-mono bg-muted px-1 rounded">.crate</code> files,
+              so <code class="font-mono bg-muted px-1 rounded">cargo verify-project</code> continues to work.
+            </p>
+          </CardContent>
+        </Card>
+      </TabsContent>
+
+      <!-- OpenVSX -->
+      <TabsContent value="openvsx">
+        <Card>
+          <CardHeader>
+            <div class="flex items-center justify-between">
+              <CardDescription>
+                Proxy VS Code extension downloads from
+                <a href="https://open-vsx.org" target="_blank" rel="noopener" class="underline underline-offset-2 hover:text-foreground transition-colors">open-vsx.org</a>.
+                Extension IDs follow the <code class="text-xs font-mono bg-muted px-1 rounded">publisher.name</code> convention.
+              </CardDescription>
+              <Badge variant="outline" class="shrink-0 font-mono text-xs ml-4">OpenVSX</Badge>
+            </div>
+          </CardHeader>
+          <CardContent class="space-y-4">
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">Direct VSIX download URL</p>
+              <div class="relative">
+                <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto">{{ openvsxDirectSnippet }}</pre>
+                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('openvsx-direct', openvsxDirectSnippet)">
+                  {{ copied === 'openvsx-direct' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </div>
+              <p class="text-xs text-muted-foreground mt-1.5">
+                Example: download and install via CLI —
+                <code class="font-mono bg-muted px-1 rounded">curl -L {proxy}/ms-python.python/2024.0.0/vsix -o ext.vsix &amp;&amp; code --install-extension ext.vsix</code>
+              </p>
+            </div>
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">mise — URL replacement to intercept VSIX downloads</p>
+              <div class="relative">
+                <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto leading-relaxed">{{ openvsxMiseSnippet }}</pre>
+                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('openvsx-mise', openvsxMiseSnippet)">
+                  {{ copied === 'openvsx-mise' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </div>
+            </div>
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">VSCodium / Code - OSS — extension gallery (<code class="font-mono">product.json</code>)</p>
+              <div class="relative">
+                <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto leading-relaxed">{{ openvsxVscodiumSnippet }}</pre>
+                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('openvsx-vscodium', openvsxVscodiumSnippet)">
+                  {{ copied === 'openvsx-vscodium' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </div>
+              <p class="text-xs text-muted-foreground mt-1.5">
+                Requires the proxy to implement the VS Code gallery protocol
+                (<code class="font-mono bg-muted px-1 rounded">/vscode/gallery</code> endpoints). Only VSIX proxying is supported today.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      </TabsContent>
+
+      <!-- .netrc (authenticated only) -->
+      <TabsContent v-if="isAuthenticated" value="netrc">
+        <Card>
+          <CardHeader>
+            <div class="flex items-center justify-between">
+              <CardDescription>
+                Credentials for tools that use HTTP Basic Auth (curl, wget, …).
+                Place in <code class="text-xs font-mono bg-muted px-1 rounded">~/.netrc</code>
+                and restrict permissions with
+                <code class="text-xs font-mono bg-muted px-1 rounded">chmod 600 ~/.netrc</code>.
+              </CardDescription>
+              <Badge variant="outline" class="shrink-0 font-mono text-xs ml-4">~/.netrc</Badge>
+            </div>
+          </CardHeader>
+          <CardContent class="space-y-3">
+            <div class="relative">
+              <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto">{{ netrcSnippet }}</pre>
+              <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('netrc', netrcSnippet)">
+                {{ copied === 'netrc' ? 'Copied!' : 'Copy' }}
+              </Button>
+            </div>
+            <p v-if="isOidc" class="text-xs text-muted-foreground">
+              Your current token is a short-lived OIDC session token.
+              For long-lived automation, create a
+              <RouterLink to="/tokens" class="underline underline-offset-2 hover:text-foreground transition-colors">personal API token</RouterLink>
+              and use that as the password.
+            </p>
+          </CardContent>
+        </Card>
+      </TabsContent>
+    </Tabs>
   </div>
 </template>

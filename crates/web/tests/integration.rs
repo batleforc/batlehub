@@ -289,6 +289,7 @@ fn rbac_policy(
     ]);
     RegistryPolicy {
         metadata_ttl: Some(Duration::from_secs(300)),
+        firewall_only: false,
         rules: vec![
             Box::new(RbacRule::new(perms)),
             Box::new(BlockListRule::new(repo)),
@@ -894,6 +895,7 @@ fn rbac_policy_group_registry(repo: Arc<dyn PackageRepository>) -> RegistryPolic
     ]);
     RegistryPolicy {
         metadata_ttl: Some(Duration::from_secs(300)),
+        firewall_only: false,
         rules: vec![
             Box::new(RbacRule::new(perms).with_groups(group_perms)),
             Box::new(BlockListRule::new(repo)),

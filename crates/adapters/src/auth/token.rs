@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use base64::Engine as _;
 
 use proxy_cache_core::{
     entities::{Identity, Role},
@@ -58,15 +59,23 @@ impl AuthProvider for StaticTokenAuthProvider {
             return Ok(None);
         };
 
-        let token = value
-            .strip_prefix("Bearer ")
-            .or_else(|| value.strip_prefix("bearer "));
-
-        let Some(token) = token else {
+        let token = if let Some(t) = value.strip_prefix("Bearer ").or_else(|| value.strip_prefix("bearer ")) {
+            t.to_owned()
+        } else if let Some(encoded) = value.strip_prefix("Basic ").or_else(|| value.strip_prefix("basic ")) {
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(encoded.trim())
+                .ok()
+                .and_then(|b| String::from_utf8(b).ok());
+            let Some(decoded) = decoded else {
+                return Ok(None);
+            };
+            // user:token — split at first `:` only, token may contain `:`
+            decoded.splitn(2, ':').nth(1).unwrap_or("").to_owned()
+        } else {
             return Ok(None);
         };
 
-        match self.tokens.get(token) {
+        match self.tokens.get(token.as_str()) {
             Some(record) => Ok(Some(Identity {
                 user_id: record.user_id.clone(),
                 role: record.role.clone(),

@@ -13,9 +13,9 @@ use crate::{RegistryMap, error::AppError, extractors::AuthIdentity};
 
 fn require_npm_or_cargo(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry) {
-        Some("npm") | Some("cargo") => Ok(()),
+        Some("npm") | Some("cargo") | Some("openvsx") => Ok(()),
         Some(_) => Err(AppError::not_found(format!(
-            "registry '{registry}' is not an npm or cargo registry"
+            "registry '{registry}' is not an npm, cargo, or openvsx registry"
         ))),
         None => Err(AppError::not_found(format!("unknown registry '{registry}'"))),
     }
