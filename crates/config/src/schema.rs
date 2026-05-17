@@ -105,6 +105,11 @@ pub struct ServerConfig {
     pub port: u16,
     /// Directory from which to serve the built SPA (optional).
     pub static_dir: Option<String>,
+    /// Allowed CORS origins. When set, only the listed origins receive
+    /// Access-Control-Allow-Origin headers. When absent, all origins are
+    /// allowed (suitable for development; restrict in production).
+    #[serde(default)]
+    pub cors_allowed_origins: Option<Vec<String>>,
 }
 
 fn default_host() -> String {

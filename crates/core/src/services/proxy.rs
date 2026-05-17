@@ -40,6 +40,10 @@ pub struct ProxyService {
     pub cache: Arc<dyn CacheStore>,
     pub repo: Arc<dyn PackageRepository>,
     pub policies: HashMap<String, RegistryPolicy>,
+    /// Maximum artifact size allowed when buffering from upstream before writing
+    /// to storage. Requests that exceed this limit return a 413 error rather than
+    /// exhausting server memory. Defaults to 500 MiB when `None`.
+    pub max_artifact_size_bytes: Option<u64>,
 }
 
 impl ProxyService {
@@ -132,9 +136,17 @@ impl ProxyService {
         tracing::debug!(key = %artifact_key, "artifact not cached, fetching from upstream");
         let mut upstream = client.fetch_artifact(&req.package_id).await?;
 
+        let limit = self.max_artifact_size_bytes.unwrap_or(500 * 1024 * 1024);
         let mut buf: Vec<u8> = Vec::new();
         while let Some(chunk) = upstream.next().await {
-            buf.extend_from_slice(&chunk?);
+            let chunk = chunk?;
+            if buf.len() as u64 + chunk.len() as u64 > limit {
+                return Err(CoreError::PayloadTooLarge(format!(
+                    "artifact exceeds the {} byte limit",
+                    limit
+                )));
+            }
+            buf.extend_from_slice(&chunk);
         }
         let data = Bytes::from(buf);
 
@@ -160,5 +172,326 @@ impl ProxyService {
 
         let stream = futures::stream::once(async move { Ok(data) });
         Ok(ProxyResponse::Stream(Box::pin(stream)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+    use bytes::Bytes;
+    use chrono::Utc;
+    use futures::stream;
+
+    use super::*;
+    use crate::entities::{
+        AccessEvent, AccessResult, EventFilter, Identity, PackageFilter, PackageId, PackageMetadata,
+        PackageStatus, PackageSummary,
+    };
+    use crate::ports::{
+        ArtifactStream, CacheStore, InMemoryCacheStore, PackageRepository,
+        RegistryClient, StorageBackend, StorageMeta, StoredArtifact,
+    };
+    use crate::ports::ByteStream;
+
+    // ── Minimal in-memory mocks ───────────────────────────────────────────────
+
+    struct SpyRepo {
+        events: Mutex<Vec<AccessEvent>>,
+    }
+
+    impl SpyRepo {
+        fn new() -> Arc<Self> {
+            Arc::new(Self { events: Mutex::new(vec![]) })
+        }
+
+        fn events(&self) -> Vec<AccessEvent> {
+            self.events.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl PackageRepository for SpyRepo {
+        async fn record_access(&self, event: AccessEvent) -> Result<(), CoreError> {
+            self.events.lock().unwrap().push(event);
+            Ok(())
+        }
+        async fn get_status(&self, _pkg: &PackageId) -> Result<PackageStatus, CoreError> {
+            Ok(PackageStatus::Available)
+        }
+        async fn set_status(&self, _pkg: &PackageId, _status: PackageStatus) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn list_packages(&self, _filter: PackageFilter) -> Result<Vec<PackageSummary>, CoreError> {
+            Ok(vec![])
+        }
+        async fn list_events(&self, _filter: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
+            Ok(self.events.lock().unwrap().clone())
+        }
+    }
+
+    struct MemStorage {
+        data: Mutex<HashMap<String, Bytes>>,
+    }
+
+    impl MemStorage {
+        fn new() -> Arc<Self> {
+            Arc::new(Self { data: Mutex::new(HashMap::new()) })
+        }
+    }
+
+    #[async_trait]
+    impl StorageBackend for MemStorage {
+        async fn store(&self, key: &str, data: Bytes, _meta: StorageMeta) -> Result<(), CoreError> {
+            self.data.lock().unwrap().insert(key.to_owned(), data);
+            Ok(())
+        }
+        async fn retrieve(&self, key: &str) -> Result<Option<StoredArtifact>, CoreError> {
+            let lock = self.data.lock().unwrap();
+            Ok(lock.get(key).map(|bytes| {
+                let b = bytes.clone();
+                let s: ByteStream = Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(b) }));
+                StoredArtifact { stream: s, meta: StorageMeta::default() }
+            }))
+        }
+        async fn exists(&self, key: &str) -> Result<bool, CoreError> {
+            Ok(self.data.lock().unwrap().contains_key(key))
+        }
+        async fn delete(&self, key: &str) -> Result<(), CoreError> {
+            self.data.lock().unwrap().remove(key);
+            Ok(())
+        }
+    }
+
+    struct FixedRegistry;
+
+    #[async_trait]
+    impl RegistryClient for FixedRegistry {
+        fn registry_type(&self) -> &str { "test" }
+
+        async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
+            Ok(PackageMetadata {
+                id: pkg.clone(),
+                published_at: Some(Utc::now() - chrono::Duration::days(30)),
+                download_url: None,
+                checksum: None,
+                is_signed: None,
+                extra: serde_json::json!({}),
+            })
+        }
+
+        async fn fetch_artifact(&self, pkg: &PackageId) -> Result<ArtifactStream, CoreError> {
+            let data = Bytes::from(format!("artifact:{}", pkg.cache_key()));
+            Ok(Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(data) })))
+        }
+    }
+
+    struct DenyRegistry;
+
+    #[async_trait]
+    impl RegistryClient for DenyRegistry {
+        fn registry_type(&self) -> &str { "test" }
+        async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
+            Ok(PackageMetadata {
+                id: pkg.clone(),
+                published_at: Some(Utc::now() - chrono::Duration::days(30)),
+                download_url: None,
+                checksum: None,
+                is_signed: None,
+                extra: serde_json::json!({}),
+            })
+        }
+        async fn fetch_artifact(&self, _pkg: &PackageId) -> Result<ArtifactStream, CoreError> {
+            Err(CoreError::Registry("should not be called".into()))
+        }
+    }
+
+    struct AlwaysDenyRule;
+
+    #[async_trait]
+    impl crate::rules::Rule for AlwaysDenyRule {
+        fn name(&self) -> &str { "always_deny" }
+        async fn evaluate(&self, _ctx: &crate::rules::RuleContext<'_>) -> crate::rules::RuleDecision {
+            crate::rules::RuleDecision::Deny { reason: "test denial".to_owned() }
+        }
+    }
+
+    fn req(registry: &str) -> ProxyRequest {
+        ProxyRequest {
+            package_id: PackageId::new(registry, "test-pkg", "1.0.0"),
+            identity: Identity::anonymous(),
+            resource_type: "releases:read".to_owned(),
+        }
+    }
+
+    fn proxy(
+        registry_name: &str,
+        client: Arc<dyn RegistryClient>,
+        repo: Arc<dyn PackageRepository>,
+        rules: Vec<Box<dyn crate::rules::Rule>>,
+    ) -> ProxyService {
+        let mut registries = HashMap::new();
+        registries.insert(registry_name.to_owned(), client);
+        let mut policies = HashMap::new();
+        policies.insert(registry_name.to_owned(), RegistryPolicy { metadata_ttl: None, rules });
+        ProxyService {
+            registries,
+            storage: MemStorage::new(),
+            cache: Arc::new(InMemoryCacheStore::new()),
+            repo,
+            policies,
+            max_artifact_size_bytes: None,
+        }
+    }
+
+    // ── Tests ─────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn unknown_registry_returns_error() {
+        let svc = proxy("npm", Arc::new(FixedRegistry), SpyRepo::new(), vec![]);
+        let result = svc.handle(req("unknown")).await;
+        assert!(matches!(result, Err(CoreError::UnknownRegistry(_))));
+    }
+
+    #[tokio::test]
+    async fn metadata_cache_miss_then_hit() {
+        let repo = SpyRepo::new();
+        let cache = Arc::new(InMemoryCacheStore::new());
+        let svc = ProxyService {
+            registries: {
+                let mut m = HashMap::new();
+                m.insert("npm".to_owned(), Arc::new(FixedRegistry) as Arc<dyn RegistryClient>);
+                m
+            },
+            storage: MemStorage::new(),
+            cache: cache.clone(),
+            repo: repo.clone(),
+            policies: {
+                let mut m = HashMap::new();
+                m.insert("npm".to_owned(), RegistryPolicy { metadata_ttl: Some(Duration::from_secs(300)), rules: vec![] });
+                m
+            },
+            max_artifact_size_bytes: None,
+        };
+
+        let cache_key = format!("meta:{}", req("npm").package_id.cache_key());
+
+        // First call: cache miss — metadata is fetched and stored
+        assert!(cache.get(&cache_key).await.unwrap().is_none());
+        let resp = svc.handle(req("npm")).await.unwrap();
+        assert!(matches!(resp, ProxyResponse::Stream(_)));
+        assert!(cache.get(&cache_key).await.unwrap().is_some(), "metadata should be cached after first call");
+    }
+
+    #[tokio::test]
+    async fn rule_denial_returns_denied_and_records_event() {
+        let repo = SpyRepo::new();
+        let svc = proxy("npm", Arc::new(DenyRegistry), repo.clone(), vec![Box::new(AlwaysDenyRule)]);
+
+        let resp = svc.handle(req("npm")).await.unwrap();
+        assert!(
+            matches!(resp, ProxyResponse::Denied { reason } if reason == "test denial"),
+            "expected Denied response"
+        );
+        let events = repo.events();
+        assert_eq!(events.len(), 1, "one denied event should be recorded");
+        assert!(matches!(events[0].result, AccessResult::Denied { .. }));
+    }
+
+    #[tokio::test]
+    async fn artifact_cache_hit_returns_stored_bytes() {
+        let storage = MemStorage::new();
+        let pkg = PackageId::new("npm", "test-pkg", "1.0.0");
+        let artifact_key = format!("artifact:{}", pkg.cache_key());
+        // Pre-populate storage
+        storage.store(&artifact_key, Bytes::from("cached!"), StorageMeta::default()).await.unwrap();
+
+        let repo = SpyRepo::new();
+        let svc = ProxyService {
+            registries: {
+                let mut m = HashMap::new();
+                m.insert("npm".to_owned(), Arc::new(FixedRegistry) as Arc<dyn RegistryClient>);
+                m
+            },
+            storage: storage.clone(),
+            cache: Arc::new(InMemoryCacheStore::new()),
+            repo: repo.clone(),
+            policies: {
+                let mut m = HashMap::new();
+                m.insert("npm".to_owned(), RegistryPolicy { metadata_ttl: None, rules: vec![] });
+                m
+            },
+            max_artifact_size_bytes: None,
+        };
+
+        let resp = svc.handle(req("npm")).await.unwrap();
+        assert!(matches!(resp, ProxyResponse::Stream(_)));
+        // Access event should be recorded for the cache hit
+        assert!(!repo.events().is_empty(), "access event should be recorded");
+    }
+
+    #[tokio::test]
+    async fn artifact_cache_miss_fetches_from_upstream() {
+        let repo = SpyRepo::new();
+        let svc = proxy("npm", Arc::new(FixedRegistry), repo.clone(), vec![]);
+
+        let pkg = PackageId::new("npm", "test-pkg", "1.0.0");
+        let artifact_key = format!("artifact:{}", pkg.cache_key());
+
+        // Storage is empty — must fetch from upstream
+        assert!(!svc.storage.exists(&artifact_key).await.unwrap());
+
+        let resp = svc.handle(req("npm")).await.unwrap();
+        assert!(matches!(resp, ProxyResponse::Stream(_)));
+
+        // Artifact should now be stored
+        assert!(svc.storage.exists(&artifact_key).await.unwrap(), "artifact should be stored after fetch");
+        assert!(!repo.events().is_empty(), "access event should be recorded");
+    }
+
+    #[tokio::test]
+    async fn payload_too_large_returns_error() {
+        let repo = SpyRepo::new();
+        let svc = ProxyService {
+            registries: {
+                let mut m = HashMap::new();
+                m.insert("npm".to_owned(), Arc::new(FixedRegistry) as Arc<dyn RegistryClient>);
+                m
+            },
+            storage: MemStorage::new(),
+            cache: Arc::new(InMemoryCacheStore::new()),
+            repo: repo.clone(),
+            policies: {
+                let mut m = HashMap::new();
+                m.insert("npm".to_owned(), RegistryPolicy { metadata_ttl: None, rules: vec![] });
+                m
+            },
+            max_artifact_size_bytes: Some(5), // FixedRegistry sends >5 bytes
+        };
+
+        let result = svc.handle(req("npm")).await;
+        assert!(matches!(result, Err(CoreError::PayloadTooLarge(_))));
+    }
+
+    #[tokio::test]
+    async fn unused_registry_id_in_policies_does_not_panic() {
+        let repo = SpyRepo::new();
+        let svc = ProxyService {
+            registries: {
+                let mut m = HashMap::new();
+                m.insert("npm".to_owned(), Arc::new(FixedRegistry) as Arc<dyn RegistryClient>);
+                m
+            },
+            storage: MemStorage::new(),
+            cache: Arc::new(InMemoryCacheStore::new()),
+            repo: repo.clone(),
+            policies: HashMap::new(), // no policy for "npm" — should use empty rule set
+            max_artifact_size_bytes: None,
+        };
+
+        let resp = svc.handle(req("npm")).await.unwrap();
+        assert!(matches!(resp, ProxyResponse::Stream(_)));
     }
 }

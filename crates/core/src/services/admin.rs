@@ -93,3 +93,188 @@ impl AdminService {
         self.repo.get_status(pkg).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+
+    use super::*;
+    use crate::entities::{
+        AccessEvent, AccessResult, EventFilter, Identity, PackageFilter, PackageId, PackageStatus,
+        PackageSummary, Role,
+    };
+    use crate::error::CoreError;
+    use crate::ports::PackageRepository;
+
+    struct MemRepo {
+        statuses: Mutex<HashMap<String, PackageStatus>>,
+        events: Mutex<Vec<AccessEvent>>,
+    }
+
+    impl MemRepo {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                statuses: Mutex::new(HashMap::new()),
+                events: Mutex::new(vec![]),
+            })
+        }
+
+        fn events(&self) -> Vec<AccessEvent> {
+            self.events.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl PackageRepository for MemRepo {
+        async fn record_access(&self, event: AccessEvent) -> Result<(), CoreError> {
+            self.events.lock().unwrap().push(event);
+            Ok(())
+        }
+        async fn get_status(&self, pkg: &PackageId) -> Result<PackageStatus, CoreError> {
+            Ok(self
+                .statuses
+                .lock()
+                .unwrap()
+                .get(&pkg.cache_key())
+                .cloned()
+                .unwrap_or(PackageStatus::Available))
+        }
+        async fn set_status(&self, pkg: &PackageId, status: PackageStatus) -> Result<(), CoreError> {
+            self.statuses.lock().unwrap().insert(pkg.cache_key(), status);
+            Ok(())
+        }
+        async fn list_packages(&self, _f: PackageFilter) -> Result<Vec<PackageSummary>, CoreError> {
+            Ok(vec![])
+        }
+        async fn list_events(&self, _f: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
+            Ok(self.events.lock().unwrap().clone())
+        }
+    }
+
+    fn admin_identity(user_id: &str) -> Identity {
+        Identity { user_id: Some(user_id.to_owned()), role: Role::Admin, auth_provider: None, groups: vec![] }
+    }
+
+    fn anon_identity() -> Identity {
+        Identity::anonymous()
+    }
+
+    #[tokio::test]
+    async fn block_package_sets_blocked_status() {
+        let repo = MemRepo::new();
+        let svc = AdminService::new(repo.clone());
+        let pkg = PackageId::new("npm", "evil", "1.0.0");
+
+        svc.block_package(&pkg, "supply chain risk".to_owned(), &admin_identity("alice"))
+            .await
+            .unwrap();
+
+        let status = repo.get_status(&pkg).await.unwrap();
+        assert!(status.is_blocked());
+    }
+
+    #[tokio::test]
+    async fn block_package_uses_user_id_as_blocked_by() {
+        let repo = MemRepo::new();
+        let svc = AdminService::new(repo.clone());
+        let pkg = PackageId::new("npm", "evil", "1.0.0");
+
+        svc.block_package(&pkg, "reason".to_owned(), &admin_identity("alice")).await.unwrap();
+
+        let status = repo.get_status(&pkg).await.unwrap();
+        match status {
+            PackageStatus::Blocked { blocked_by, .. } => assert_eq!(blocked_by, "alice"),
+            PackageStatus::Available => panic!("expected Blocked"),
+        }
+    }
+
+    #[tokio::test]
+    async fn block_package_falls_back_to_role_when_no_user_id() {
+        let repo = MemRepo::new();
+        let svc = AdminService::new(repo.clone());
+        let pkg = PackageId::new("npm", "evil", "1.0.0");
+
+        svc.block_package(&pkg, "reason".to_owned(), &anon_identity()).await.unwrap();
+
+        let status = repo.get_status(&pkg).await.unwrap();
+        match status {
+            PackageStatus::Blocked { blocked_by, .. } => assert_eq!(blocked_by, "anonymous"),
+            PackageStatus::Available => panic!("expected Blocked"),
+        }
+    }
+
+    #[tokio::test]
+    async fn block_package_records_audit_event() {
+        let repo = MemRepo::new();
+        let svc = AdminService::new(repo.clone());
+        let pkg = PackageId::new("npm", "evil", "1.0.0");
+
+        svc.block_package(&pkg, "reason".to_owned(), &admin_identity("alice")).await.unwrap();
+
+        let events = repo.events();
+        assert_eq!(events.len(), 1, "one event expected");
+        assert!(matches!(events[0].result, AccessResult::Allowed));
+    }
+
+    #[tokio::test]
+    async fn unblock_package_sets_available_status() {
+        let repo = MemRepo::new();
+        let svc = AdminService::new(repo.clone());
+        let pkg = PackageId::new("npm", "evil", "1.0.0");
+
+        // Block first, then unblock
+        svc.block_package(&pkg, "r".to_owned(), &admin_identity("a")).await.unwrap();
+        svc.unblock_package(&pkg, &admin_identity("a")).await.unwrap();
+
+        let status = repo.get_status(&pkg).await.unwrap();
+        assert!(!status.is_blocked());
+    }
+
+    #[tokio::test]
+    async fn unblock_package_records_audit_event() {
+        let repo = MemRepo::new();
+        let svc = AdminService::new(repo.clone());
+        let pkg = PackageId::new("npm", "evil", "1.0.0");
+
+        svc.block_package(&pkg, "r".to_owned(), &admin_identity("a")).await.unwrap();
+        svc.unblock_package(&pkg, &admin_identity("a")).await.unwrap();
+
+        let events = repo.events();
+        assert_eq!(events.len(), 2, "block + unblock events expected");
+    }
+
+    #[tokio::test]
+    async fn get_package_status_delegates_to_repo() {
+        let repo = MemRepo::new();
+        let svc = AdminService::new(repo.clone());
+        let pkg = PackageId::new("npm", "serde", "1.0.0");
+
+        // Fresh package defaults to Available
+        let status = svc.get_package_status(&pkg).await.unwrap();
+        assert!(!status.is_blocked());
+    }
+
+    #[tokio::test]
+    async fn list_packages_returns_repo_results() {
+        let repo = MemRepo::new();
+        let svc = AdminService::new(repo.clone());
+
+        let result = svc.list_packages(PackageFilter::new()).await.unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_events_returns_repo_results() {
+        let repo = MemRepo::new();
+        let svc = AdminService::new(repo.clone());
+        let pkg = PackageId::new("npm", "pkg", "1.0.0");
+
+        svc.block_package(&pkg, "r".to_owned(), &admin_identity("a")).await.unwrap();
+
+        let events = svc.list_events(EventFilter::new()).await.unwrap();
+        assert!(!events.is_empty());
+    }
+}

@@ -53,7 +53,17 @@ impl UserTokenRepository for PgPackageRepository {
         .bind(expires_at)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .map_err(|e| {
+            if let sqlx::Error::Database(ref db_err) = e {
+                if db_err.constraint() == Some("uq_user_token_name") {
+                    return CoreError::Conflict(format!(
+                        "a token named '{}' already exists",
+                        name
+                    ));
+                }
+            }
+            CoreError::Database(e.to_string())
+        })?;
 
         Ok(UserToken {
             id: row.get("id"),

@@ -201,6 +201,7 @@ async fn main() -> Result<()> {
         cache: cache.clone(),
         repo: repo.clone() as Arc<dyn proxy_cache_core::ports::PackageRepository>,
         policies,
+        max_artifact_size_bytes: None,
     });
 
     let admin_svc = Arc::new(AdminService::new(
@@ -238,6 +239,7 @@ async fn main() -> Result<()> {
     // ── HTTP server ───────────────────────────────────────────────────────────
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
     let static_dir = config.server.static_dir.clone();
+    let cors_allowed_origins = config.server.cors_allowed_origins.clone().unwrap_or_default();
     let db_pool = repo.pool();
 
     tracing::info!(addr = %bind_addr, "listening");
@@ -264,15 +266,19 @@ async fn main() -> Result<()> {
         // Register all cargo sparse index proxies (keyed by registry name).
         let app = app.app_data(web::Data::new(cargo_indexes_inner));
 
-        let cors = Cors::default()
-            .allow_any_origin()
-            .allowed_methods(vec!["GET", "POST", "HEAD", "OPTIONS"])
+        let cors_base = Cors::default()
+            .allowed_methods(vec!["GET", "POST", "HEAD", "OPTIONS", "DELETE"])
             .allowed_headers(vec![
                 http::header::AUTHORIZATION,
                 http::header::CONTENT_TYPE,
                 http::header::ACCEPT,
             ])
             .max_age(3600);
+        let cors = if cors_allowed_origins.is_empty() {
+            cors_base.allow_any_origin()
+        } else {
+            cors_allowed_origins.iter().fold(cors_base, |c, origin| c.allowed_origin(origin))
+        };
 
         app.wrap(TracingLogger::default())
             .wrap(proxy_cache_web::AuthMiddlewareFactory::new(

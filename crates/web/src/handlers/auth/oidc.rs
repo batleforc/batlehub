@@ -168,6 +168,13 @@ pub async fn oidc_callback(
 
     match sso.exchange_code(&code).await {
         Ok(tokens) => {
+            // SECURITY: tokens are passed as URL query params, which are visible in
+            // browser history and server logs. Mitigations in place:
+            //   1. The frontend (router/index.ts) immediately removes them from the
+            //      address bar and moves them to localStorage before any navigation.
+            //   2. CSRF is prevented by the `state` parameter validated above.
+            // A proper fix would use a server-side one-time code exchange instead of
+            // query params, but that requires a stateful session layer.
             let mut location = format!(
                 "{base}/?oidc_access_token={}&oidc_state={}&oidc_provider={}",
                 url_encode(&tokens.access_token),

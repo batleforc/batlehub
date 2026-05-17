@@ -31,6 +31,10 @@ impl AppError {
     pub fn internal(msg: impl Into<String>) -> Self {
         Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: msg.into() }
     }
+
+    pub fn conflict(msg: impl Into<String>) -> Self {
+        Self { status: StatusCode::CONFLICT, message: msg.into() }
+    }
 }
 
 impl actix_web::ResponseError for AppError {
@@ -65,10 +69,63 @@ impl From<CoreError> for AppError {
             CoreError::NotFound(msg) => Self::not_found(msg),
             CoreError::AccessDenied(msg) => Self::forbidden(msg),
             CoreError::UnknownRegistry(name) => Self::bad_request(format!("unknown registry: {name}")),
+            CoreError::Conflict(msg) => Self::conflict(msg),
+            CoreError::PayloadTooLarge(msg) => Self {
+                status: StatusCode::PAYLOAD_TOO_LARGE,
+                message: msg,
+            },
             other => {
                 tracing::error!(error = %other, "internal error");
                 Self::internal("internal server error")
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_format() {
+        let e = AppError::not_found("pkg missing");
+        assert!(format!("{e}").contains("pkg missing"));
+    }
+
+    #[test]
+    fn debug_format() {
+        let e = AppError::forbidden("denied");
+        assert!(format!("{e:?}").contains("403"));
+    }
+
+    #[test]
+    fn internal_method() {
+        let e = AppError::internal("oops");
+        assert_eq!(e.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(e.message, "oops");
+    }
+
+    #[test]
+    fn from_core_payload_too_large() {
+        let e = AppError::from(CoreError::PayloadTooLarge("too big".into()));
+        assert_eq!(e.status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[test]
+    fn from_core_database_error_maps_to_internal() {
+        let e = AppError::from(CoreError::Database("db error".into()));
+        assert_eq!(e.status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn from_core_not_found() {
+        let e = AppError::from(CoreError::NotFound("missing".into()));
+        assert_eq!(e.status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn from_core_conflict() {
+        let e = AppError::from(CoreError::Conflict("dup".into()));
+        assert_eq!(e.status, StatusCode::CONFLICT);
     }
 }

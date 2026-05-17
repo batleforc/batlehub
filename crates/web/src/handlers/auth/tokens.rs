@@ -91,13 +91,7 @@ pub async fn create_token(
     let tok = repo
         .create_token(id, user_id, name, &token_hash, requested_role.clone(), expires_at)
         .await
-        .map_err(|e| {
-            if e.to_string().contains("uq_user_token_name") || e.to_string().contains("unique") {
-                AppError::bad_request(format!("a token named '{}' already exists", name))
-            } else {
-                AppError::from(e)
-            }
-        })?;
+        .map_err(AppError::from)?;
 
     Ok(HttpResponse::Created().json(CreateTokenResponse {
         id: tok.id,

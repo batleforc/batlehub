@@ -316,7 +316,6 @@ async fn make_app(
     ]
     .into();
 
-    let policy = rbac_policy(repo_dyn.clone());
     let policies: HashMap<String, RegistryPolicy> = [
         ("github".to_owned(), rbac_policy(repo_dyn.clone())),
         ("npm".to_owned(), rbac_policy(repo_dyn.clone())),
@@ -324,14 +323,13 @@ async fn make_app(
     ]
     .into();
 
-    let _ = policy; // suppress unused warning
-
     let proxy_svc = Arc::new(ProxyService {
         registries,
         storage,
         cache,
         repo: repo_dyn.clone(),
         policies,
+        max_artifact_size_bytes: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
 
@@ -932,6 +930,7 @@ async fn make_group_app(
         cache,
         repo: repo_dyn.clone(),
         policies,
+        max_artifact_size_bytes: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -1164,4 +1163,871 @@ async fn group_proxy_access_is_recorded_in_audit_log() {
     assert!(!events.is_empty(), "group access event should be recorded");
     assert_eq!(events[0]["result"]["outcome"], "allowed");
     assert_eq!(events[0]["package_id"]["registry"], "github2");
+}
+
+// ── InMemoryTokenRepository ───────────────────────────────────────────────────
+
+struct InMemoryTokenRepository {
+    tokens: Mutex<Vec<UserToken>>,
+}
+
+impl InMemoryTokenRepository {
+    fn new() -> Arc<Self> {
+        Arc::new(Self { tokens: Mutex::new(vec![]) })
+    }
+}
+
+#[async_trait]
+impl UserTokenRepository for InMemoryTokenRepository {
+    async fn create_token(
+        &self,
+        id: Uuid,
+        user_id: &str,
+        name: &str,
+        _token_hash: &str,
+        role: Role,
+        expires_at: chrono::DateTime<Utc>,
+    ) -> Result<UserToken, CoreError> {
+        // Check uniqueness by name per user
+        let mut tokens = self.tokens.lock().unwrap();
+        if tokens.iter().any(|t| t.user_id == user_id && t.name == name && t.revoked_at.is_none()) {
+            return Err(CoreError::Conflict(format!("a token named '{}' already exists", name)));
+        }
+        let tok = UserToken {
+            id,
+            user_id: user_id.to_owned(),
+            name: name.to_owned(),
+            role,
+            expires_at,
+            created_at: Utc::now(),
+            revoked_at: None,
+        };
+        tokens.push(tok);
+        Ok(tokens.last().unwrap().clone_token())
+    }
+
+    async fn find_by_hash(&self, _token_hash: &str) -> Result<Option<UserToken>, CoreError> {
+        Ok(None)
+    }
+
+    async fn list_for_user(&self, user_id: &str) -> Result<Vec<UserToken>, CoreError> {
+        let tokens = self.tokens.lock().unwrap();
+        Ok(tokens.iter()
+            .filter(|t| t.user_id == user_id && t.revoked_at.is_none())
+            .map(|t| t.clone_token())
+            .collect())
+    }
+
+    async fn revoke(&self, id: Uuid, user_id: &str) -> Result<bool, CoreError> {
+        let mut tokens = self.tokens.lock().unwrap();
+        for t in tokens.iter_mut() {
+            if t.id == id && t.user_id == user_id && t.revoked_at.is_none() {
+                t.revoked_at = Some(Utc::now());
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+// UserToken doesn't derive Clone; add a helper method instead.
+trait CloneToken {
+    fn clone_token(&self) -> UserToken;
+}
+
+impl CloneToken for UserToken {
+    fn clone_token(&self) -> UserToken {
+        UserToken {
+            id: self.id,
+            user_id: self.user_id.clone(),
+            name: self.name.clone(),
+            role: self.role.clone(),
+            expires_at: self.expires_at,
+            created_at: self.created_at,
+            revoked_at: self.revoked_at,
+        }
+    }
+}
+
+// ── OIDC-style test auth provider ─────────────────────────────────────────────
+// The token endpoint only accepts identities whose auth_provider == "oidc".
+// StaticTokenAuthProvider sets "static-token", so we use a thin wrapper.
+
+use proxy_cache_core::ports::RawAuthRequest;
+
+const OIDC_USER_TOKEN: &str = "oidc-user-token";
+const OIDC_ADMIN_TOKEN: &str = "oidc-admin-token";
+
+struct OidcStyleAuthProvider;
+
+#[async_trait]
+impl AuthProvider for OidcStyleAuthProvider {
+    fn name(&self) -> &str { "oidc" }
+
+    async fn authenticate(&self, req: &RawAuthRequest) -> Result<Option<proxy_cache_core::entities::Identity>, CoreError> {
+        use proxy_cache_core::entities::Identity;
+        let auth = req.headers.get("authorization")
+            .or_else(|| req.headers.get("Authorization"))
+            .and_then(|v| v.strip_prefix("Bearer "));
+        match auth {
+            Some(OIDC_USER_TOKEN) => Ok(Some(Identity {
+                user_id: Some("oidc-user".to_owned()),
+                role: Role::User,
+                auth_provider: Some("oidc".to_owned()),
+                groups: vec![],
+            })),
+            Some(OIDC_ADMIN_TOKEN) => Ok(Some(Identity {
+                user_id: Some("oidc-admin".to_owned()),
+                role: Role::Admin,
+                auth_provider: Some("oidc".to_owned()),
+                groups: vec![],
+            })),
+            _ => Ok(None),
+        }
+    }
+}
+
+/// Build an app wired with both static + OIDC-style providers and an in-memory token repo.
+async fn make_app_with_tokens(
+    repo: Arc<InMemoryRepo>,
+    token_repo: Arc<InMemoryTokenRepository>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [
+        ("npm".to_owned(), FixedRegistry::new("npm") as Arc<dyn RegistryClient>),
+    ].into();
+    let policies: HashMap<String, RegistryPolicy> = [
+        ("npm".to_owned(), rbac_policy(repo_dyn.clone())),
+    ].into();
+
+    let proxy_svc = Arc::new(ProxyService {
+        registries,
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        policies,
+        max_artifact_size_bytes: None,
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let tok_repo: Arc<dyn UserTokenRepository> = token_repo;
+    let access_config = proxy_cache_web::AccessConfig {
+        anonymous: ["npm"].iter().map(|s| s.to_string()).collect(),
+        user: ["npm"].iter().map(|s| s.to_string()).collect(),
+        admin: ["npm"].iter().map(|s| s.to_string()).collect(),
+        groups: std::collections::HashMap::new(),
+    };
+    let registry_map = proxy_cache_web::RegistryMap(
+        [("npm", "npm")].iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+    );
+    let cargo_indexes: std::collections::HashMap<String, proxy_cache_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(proxy_svc, admin_svc, tok_repo, None, access_config, registry_map, vec![]))
+        .split_for_parts();
+    let app = app.app_data(actix_web::web::Data::new(cargo_indexes));
+
+    let providers: Vec<Arc<dyn AuthProvider>> = vec![
+        Arc::new(StaticTokenAuthProvider::new([
+            (ADMIN_TOKEN.to_owned(), Some("admin".to_owned()), Role::Admin),
+            (USER_TOKEN.to_owned(), Some("user-1".to_owned()), Role::User),
+        ])),
+        Arc::new(OidcStyleAuthProvider),
+    ];
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(providers))).await
+}
+
+// ── Token API tests ───────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn create_token_returns_403_for_anonymous() {
+    let app = make_app_with_tokens(InMemoryRepo::new(), InMemoryTokenRepository::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .set_json(serde_json::json!({"name": "ci", "expires_in_days": 7, "role": "user"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn create_token_returns_403_for_static_token_user() {
+    // Static token provider sets auth_provider = "static-token", not "oidc"
+    let app = make_app_with_tokens(InMemoryRepo::new(), InMemoryTokenRepository::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_json(serde_json::json!({"name": "ci", "expires_in_days": 7, "role": "user"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn create_token_succeeds_for_oidc_user() {
+    let app = make_app_with_tokens(InMemoryRepo::new(), InMemoryTokenRepository::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .set_json(serde_json::json!({"name": "ci-token", "expires_in_days": 30, "role": "user"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 201);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["name"], "ci-token");
+    assert!(body["token"].is_string(), "raw token should be returned");
+}
+
+#[actix_web::test]
+async fn create_token_rejects_zero_days() {
+    let app = make_app_with_tokens(InMemoryRepo::new(), InMemoryTokenRepository::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .set_json(serde_json::json!({"name": "bad", "expires_in_days": 0, "role": "user"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
+async fn create_token_rejects_91_days() {
+    let app = make_app_with_tokens(InMemoryRepo::new(), InMemoryTokenRepository::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .set_json(serde_json::json!({"name": "bad", "expires_in_days": 91, "role": "user"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
+async fn create_token_rejects_empty_name() {
+    let app = make_app_with_tokens(InMemoryRepo::new(), InMemoryTokenRepository::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .set_json(serde_json::json!({"name": "   ", "expires_in_days": 7, "role": "user"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
+async fn create_token_rejects_invalid_role() {
+    let app = make_app_with_tokens(InMemoryRepo::new(), InMemoryTokenRepository::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .set_json(serde_json::json!({"name": "t", "expires_in_days": 7, "role": "superadmin"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
+async fn create_token_user_cannot_escalate_to_admin_role() {
+    let app = make_app_with_tokens(InMemoryRepo::new(), InMemoryTokenRepository::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .set_json(serde_json::json!({"name": "escalate", "expires_in_days": 7, "role": "admin"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn list_tokens_returns_created_tokens() {
+    let tok_repo = InMemoryTokenRepository::new();
+    let app = make_app_with_tokens(InMemoryRepo::new(), tok_repo).await;
+
+    // Create a token
+    let create_req = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .set_json(serde_json::json!({"name": "my-token", "expires_in_days": 7, "role": "user"}))
+        .to_request();
+    let create_resp = call_service(&app, create_req).await;
+    assert_eq!(create_resp.status(), 201);
+
+    // List tokens
+    let list_req = TestRequest::get()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .to_request();
+    let list_resp = call_service(&app, list_req).await;
+    assert_eq!(list_resp.status(), 200);
+    let body: Value = read_body_json(list_resp).await;
+    let items = body.as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["name"], "my-token");
+}
+
+#[actix_web::test]
+async fn revoke_token_returns_204() {
+    let tok_repo = InMemoryTokenRepository::new();
+    let app = make_app_with_tokens(InMemoryRepo::new(), tok_repo).await;
+
+    let create_req = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .set_json(serde_json::json!({"name": "to-revoke", "expires_in_days": 7, "role": "user"}))
+        .to_request();
+    let create_resp = call_service(&app, create_req).await;
+    assert_eq!(create_resp.status(), 201);
+    let created: Value = read_body_json(create_resp).await;
+    let id = created["id"].as_str().unwrap();
+
+    let revoke_req = TestRequest::delete()
+        .uri(&format!("/api/v1/auth/tokens/{id}"))
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .to_request();
+    let revoke_resp = call_service(&app, revoke_req).await;
+    assert_eq!(revoke_resp.status(), 204);
+}
+
+#[actix_web::test]
+async fn revoke_nonexistent_token_returns_404() {
+    let app = make_app_with_tokens(InMemoryRepo::new(), InMemoryTokenRepository::new()).await;
+    let fake_id = Uuid::new_v4();
+    let req = TestRequest::delete()
+        .uri(&format!("/api/v1/auth/tokens/{fake_id}"))
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn duplicate_token_name_returns_conflict() {
+    let tok_repo = InMemoryTokenRepository::new();
+    let app = make_app_with_tokens(InMemoryRepo::new(), tok_repo).await;
+
+    for _ in 0..2 {
+        let req = TestRequest::post()
+            .uri("/api/v1/auth/tokens")
+            .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+            .set_json(serde_json::json!({"name": "dup", "expires_in_days": 7, "role": "user"}))
+            .to_request();
+        let _ = call_service(&app, req).await;
+    }
+
+    let req = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .set_json(serde_json::json!({"name": "dup", "expires_in_days": 7, "role": "user"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 409);
+}
+
+// ── Pagination / Filtering tests ──────────────────────────────────────────────
+
+#[actix_web::test]
+async fn admin_packages_list_blocked_only_filter() {
+    let repo = InMemoryRepo::new();
+
+    let available = PackageId::new("npm", "lodash", "4.17.21");
+    let blocked = PackageId::new("npm", "evil-pkg", "1.0.0");
+
+    repo.record_access(AccessEvent::allowed_download(available, Some("u".to_owned()), Role::User))
+        .await.unwrap();
+    repo.set_status(
+        &blocked,
+        PackageStatus::Blocked { reason: "vuln".to_owned(), blocked_by: "admin".to_owned(), blocked_at: Utc::now() },
+    ).await.unwrap();
+
+    let app = make_app(repo).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/packages?blocked_only=true")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let items = body.as_array().unwrap();
+    assert!(items.iter().all(|i| i["status"]["status"] == "blocked"), "only blocked packages expected");
+}
+
+#[actix_web::test]
+async fn audit_log_denied_only_filter() {
+    let repo = InMemoryRepo::new();
+    let app = make_app(repo.clone()).await;
+
+    // Cause a denied event (anonymous accessing tarball = source:read denied)
+    let req = TestRequest::get()
+        .uri("/proxy/npm/lodash/4.17.21/tarball")
+        .to_request();
+    let _ = call_service(&app, req).await;
+
+    // Also cause an allowed event
+    let req = TestRequest::get()
+        .uri("/proxy/npm/lodash")
+        .to_request();
+    let _ = call_service(&app, req).await;
+
+    let audit_req = TestRequest::get()
+        .uri("/api/v1/admin/audit-log?denied_only=true")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, audit_req).await;
+    assert_eq!(resp.status(), 200);
+    let events: Value = read_body_json(resp).await;
+    let events = events.as_array().unwrap();
+    assert!(!events.is_empty(), "at least one denied event expected");
+    assert!(events.iter().all(|e| e["result"]["outcome"] == "denied"), "only denied events expected");
+}
+
+#[actix_web::test]
+async fn registries_endpoint_returns_list_for_anonymous() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get().uri("/api/v1/registries").to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let registries = body.as_array().unwrap();
+    // Anonymous has access to github, npm, cargo in make_app
+    assert!(!registries.is_empty(), "should see at least one registry");
+    let names: Vec<&str> = registries.iter().filter_map(|r| r["name"].as_str()).collect();
+    assert!(names.contains(&"npm"));
+}
+
+#[actix_web::test]
+async fn registries_endpoint_returns_200_for_admin() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/registries")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let registries = body.as_array().unwrap();
+    assert!(registries.len() >= 3, "admin should see github, npm, cargo");
+}
+
+// ── Cargo sparse registry config ─────────────────────────────────────────────
+
+/// Build a test app with a wired-up CargoIndexProxy so we can test the
+/// `cargo_registry_config` handler's happy path.
+async fn make_app_with_cargo_index(
+    repo: Arc<InMemoryRepo>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [
+        ("cargo".to_owned(), FixedRegistry::new("cargo") as Arc<dyn RegistryClient>),
+    ].into();
+    let policies: HashMap<String, RegistryPolicy> = [
+        ("cargo".to_owned(), rbac_policy(repo_dyn.clone())),
+    ].into();
+
+    let proxy_svc = Arc::new(ProxyService {
+        registries,
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        policies,
+        max_artifact_size_bytes: None,
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = proxy_cache_web::AccessConfig {
+        anonymous: ["cargo"].iter().map(|s| s.to_string()).collect(),
+        user: ["cargo"].iter().map(|s| s.to_string()).collect(),
+        admin: ["cargo"].iter().map(|s| s.to_string()).collect(),
+        groups: std::collections::HashMap::new(),
+    };
+    let registry_map = proxy_cache_web::RegistryMap(
+        [("cargo", "cargo")].iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+    );
+
+    // Wire up a real CargoIndexProxy entry so cargo_registry_config can return a config
+    let mut cargo_indexes: std::collections::HashMap<String, proxy_cache_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+    cargo_indexes.insert("cargo".to_owned(), proxy_cache_web::CargoIndexProxy {
+        http: reqwest::Client::new(),
+        index_url: "https://index.crates.io".to_owned(),
+    });
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, vec![]))
+        .split_for_parts();
+    let app = app.app_data(actix_web::web::Data::new(cargo_indexes));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+}
+
+#[actix_web::test]
+async fn cargo_registry_config_returns_dl_url() {
+    let app = make_app_with_cargo_index(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/cargo/registry/config.json")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert!(body["dl"].as_str().unwrap().contains("/proxy/cargo/{crate}/{version}/download"));
+}
+
+#[actix_web::test]
+async fn cargo_registry_config_returns_404_for_unknown_registry() {
+    let app = make_app(InMemoryRepo::new()).await;
+    // 'npm' is not a cargo registry
+    let req = TestRequest::get()
+        .uri("/proxy/npm/registry/config.json")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn cargo_registry_config_returns_404_when_no_index_configured() {
+    // make_app uses empty cargo_indexes, so the cargo registry exists but has no index
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/cargo/registry/config.json")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn cargo_registry_index_returns_404_for_non_cargo_registry() {
+    // npm is not a cargo registry — cargo_registry_index should return 404
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/npm/registry/se/rd/serde")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn cargo_registry_index_returns_404_when_no_index_configured() {
+    // cargo registry exists in the map but cargo_indexes is empty
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/cargo/registry/se/rd/serde")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+// ── front_office packages: registry filter + proxy_url ───────────────────────
+
+#[actix_web::test]
+async fn packages_list_filters_out_inaccessible_registry() {
+    let repo = InMemoryRepo::new();
+    // Record a package in an inaccessible registry
+    let pkg_npm = PackageId::new("npm", "lodash", "4.17.21");
+    let pkg_github = PackageId::new("github", "rust-lang/rust", "v1.80.0");
+    repo.record_access(AccessEvent::allowed_download(pkg_npm, Some("u".to_owned()), Role::User)).await.unwrap();
+    repo.record_access(AccessEvent::allowed_download(pkg_github, Some("u".to_owned()), Role::User)).await.unwrap();
+
+    let app = make_app(repo).await;
+
+    // Filter by npm — should only return npm package
+    let req = TestRequest::get()
+        .uri("/api/v1/packages?registry=npm")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let items = body["items"].as_array().unwrap();
+    assert!(items.iter().all(|i| i["registry"] == "npm"));
+}
+
+#[actix_web::test]
+async fn access_check_returns_proxy_url_for_npm_tarball() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/packages/access?registry=npm&name=lodash&version=4.17.21&artifact=tarball")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["can_access"], true);
+    let proxy_url = body["proxy_url"].as_str().unwrap();
+    assert!(proxy_url.contains("/proxy/npm/lodash/4.17.21/tarball"));
+}
+
+#[actix_web::test]
+async fn access_check_returns_proxy_url_for_cargo_download() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/packages/access?registry=cargo&name=serde&version=1.0.0&artifact=download")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let proxy_url = body["proxy_url"].as_str().unwrap();
+    assert!(proxy_url.contains("/proxy/cargo/serde/1.0.0/download"));
+}
+
+#[actix_web::test]
+async fn access_check_returns_proxy_url_for_github_releases() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/packages/access?registry=github&name=rust-lang%2Frust&version=releases")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let proxy_url = body["proxy_url"].as_str().unwrap();
+    assert!(proxy_url.contains("/proxy/github/rust-lang/rust/releases"));
+}
+
+#[actix_web::test]
+async fn access_check_returns_proxy_url_for_github_tag() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/packages/access?registry=github&name=rust-lang%2Frust&version=v1.80.0")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let proxy_url = body["proxy_url"].as_str().unwrap();
+    assert!(proxy_url.contains("/proxy/github/rust-lang/rust/releases/tags/v1.80.0"));
+}
+
+#[actix_web::test]
+async fn packages_list_returns_empty_for_inaccessible_registry_filter() {
+    // When a user asks for packages from a registry they can't access, they get empty results
+    let repo = InMemoryRepo::new();
+    let pkg = PackageId::new("github", "rust-lang/rust", "v1.80.0");
+    repo.record_access(AccessEvent::allowed_download(pkg, Some("u".to_owned()), Role::User)).await.unwrap();
+
+    // make_app gives anonymous access to github, so anon CAN see it normally.
+    // But filtering for a completely unknown registry should return empty.
+    let app = make_app(repo).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/packages?registry=pypi")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["total"], 0);
+}
+
+// ── Cargo download (source:read) ──────────────────────────────────────────────
+
+#[actix_web::test]
+async fn proxy_cargo_download_accessible_by_user() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/cargo/serde/1.0.0/download")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body = actix_web::test::read_body(resp).await;
+    assert!(std::str::from_utf8(&body).unwrap().contains("serde"));
+}
+
+// ── npm tarball (source:read) ─────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn proxy_npm_tarball_accessible_by_user() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/npm/lodash/4.17.21/tarball")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body = actix_web::test::read_body(resp).await;
+    assert!(std::str::from_utf8(&body).unwrap().contains("lodash"));
+}
+
+// ── GitHub download routes ────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn proxy_github_zipball_accessible_by_user() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/github/rust-lang/rust/zipball/v1.80.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn proxy_github_zipball_blocked_for_anonymous() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/github/rust-lang/rust/zipball/v1.80.0")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn proxy_github_asset_by_name_accessible_by_user() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/github/rust-lang/rust/releases/download/v1.80.0/rustc-1.80.0-x86_64-unknown-linux-gnu.tar.gz")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    // source:read required — user has it
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn proxy_github_asset_by_name_accessible_anonymously() {
+    // releases/download uses releases:read which anonymous users have
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/github/rust-lang/rust/releases/download/v1.80.0/rust.tar.gz")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn proxy_github_raw_file_accessible_by_user() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/github/rust-lang/rust/raw/main/README.md")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn proxy_github_raw_file_blocked_for_anonymous() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/github/rust-lang/rust/raw/main/README.md")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn proxy_github_asset_by_id_accessible_by_user() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/github/rust-lang/rust/releases/assets/12345678?tag=v1.80.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+// ── /api/v1/admin/packages/detail ────────────────────────────────────────────
+
+#[actix_web::test]
+async fn package_detail_returns_403_for_anonymous() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/packages/detail?registry=npm&name=lodash")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn package_detail_returns_200_for_admin_with_no_packages() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/packages/detail?registry=npm&name=lodash")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["registry"], "npm");
+    assert_eq!(body["name"], "lodash");
+    assert!(body["versions"].as_array().unwrap().is_empty());
+    assert!(body["recent_events"].as_array().unwrap().is_empty());
+}
+
+#[actix_web::test]
+async fn package_detail_shows_versions_and_events_after_access() {
+    let repo = InMemoryRepo::new();
+
+    // Record a download event so the package appears in summaries and events
+    let pkg = PackageId::new("npm", "lodash", "4.17.21");
+    repo.record_access(AccessEvent::allowed_download(
+        pkg.clone(),
+        Some("user-1".to_owned()),
+        Role::User,
+    ))
+    .await
+    .unwrap();
+
+    let app = make_app(repo).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/packages/detail?registry=npm&name=lodash")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["registry"], "npm");
+    let versions = body["versions"].as_array().unwrap();
+    assert!(!versions.is_empty(), "should list the recorded version");
+    assert_eq!(versions[0]["version"], "4.17.21");
+    let events = body["recent_events"].as_array().unwrap();
+    assert!(!events.is_empty(), "should list the recent events");
+    assert_eq!(events[0]["outcome"], "allowed");
+}
+
+#[actix_web::test]
+async fn package_detail_shows_blocked_status() {
+    let repo = InMemoryRepo::new();
+
+    let pkg = PackageId::new("npm", "evil-pkg", "1.0.0");
+    repo.record_access(AccessEvent::allowed_download(
+        pkg.clone(),
+        Some("user-1".to_owned()),
+        Role::User,
+    ))
+    .await
+    .unwrap();
+    repo.set_status(
+        &pkg,
+        PackageStatus::Blocked {
+            reason: "vuln".to_owned(),
+            blocked_by: "admin".to_owned(),
+            blocked_at: Utc::now(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let app = make_app(repo).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/packages/detail?registry=npm&name=evil-pkg")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let versions = body["versions"].as_array().unwrap();
+    assert!(!versions.is_empty());
+    assert_eq!(versions[0]["status"]["status"], "blocked");
+    assert_eq!(versions[0]["status"]["reason"], "vuln");
 }

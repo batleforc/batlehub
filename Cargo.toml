@@ -13,6 +13,10 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+[workspace.metadata.llvm-cov]
+# Exclude server startup wiring from coverage — it's integration-tested separately.
+exclude = ["server/src/main.rs"]
+
 [workspace.dependencies]
 # Async
 tokio = { version = "1", features = ["full"] }

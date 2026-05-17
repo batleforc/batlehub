@@ -18,6 +18,20 @@ tasks:
     cmds:
       - cargo test --workspace
 
+  coverage:
+    desc: Generate HTML coverage report (opens coverage/html/index.html)
+    cmds:
+      - cargo llvm-cov --workspace --html --output-dir coverage/html --ignore-filename-regex "{{.COVERAGE_EXCLUDE}}"
+    vars:
+      COVERAGE_EXCLUDE: "server/src/main\\.rs|crates/web/src/handlers/auth/oidc\\.rs|crates/adapters/src/db/|crates/adapters/src/registry/(cargo|github|npm)\\.rs|crates/adapters/src/storage/"
+
+  coverage-check:
+    desc: Fail if line coverage is below 80%
+    cmds:
+      - cargo llvm-cov --workspace --fail-under-lines 80 --ignore-filename-regex "{{.COVERAGE_EXCLUDE}}"
+    vars:
+      COVERAGE_EXCLUDE: "server/src/main\\.rs|crates/web/src/handlers/auth/oidc\\.rs|crates/adapters/src/db/|crates/adapters/src/registry/(cargo|github|npm)\\.rs|crates/adapters/src/storage/"
+
   lint:
     desc: Run clippy lints across the workspace
     cmds:

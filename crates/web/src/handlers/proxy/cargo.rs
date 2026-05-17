@@ -161,7 +161,7 @@ async fn proxy_stream(
         ProxyResponse::Denied { reason } => Err(AppError::forbidden(reason)),
         ProxyResponse::Stream(stream) => {
             let body = stream.filter_map(|chunk| async move {
-                chunk.ok().map(|b| Ok::<Bytes, actix_web::Error>(b))
+                chunk.ok().map(Ok::<Bytes, actix_web::Error>)
             });
             Ok(HttpResponse::Ok().streaming(body))
         }

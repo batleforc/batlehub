@@ -26,6 +26,12 @@ pub enum CoreError {
     #[error("Access denied: {0}")]
     AccessDenied(String),
 
+    #[error("Conflict: {0}")]
+    Conflict(String),
+
+    #[error("Payload too large: {0}")]
+    PayloadTooLarge(String),
+
     #[error("Invalid configuration: {0}")]
     Config(String),
 

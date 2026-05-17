@@ -141,7 +141,7 @@ impl RegistryClient for GithubRegistryClient {
                     .await
                     .map_err(|e| CoreError::Registry(e.to_string()))?;
 
-                let extra = serde_json::to_value(&releases.iter().map(|r| {
+                let extra = serde_json::to_value(releases.iter().map(|r| {
                     serde_json::json!({ "id": r.id, "tag_name": r.tag_name, "published_at": r.published_at })
                 }).collect::<Vec<_>>()).unwrap_or_default();
 

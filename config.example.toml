@@ -6,6 +6,9 @@ host = "0.0.0.0"
 port = 8080
 # Serve the built SPA from this directory (optional).
 # static_dir = "./ui/dist"
+# Restrict CORS to specific frontend origins in production.
+# When absent, all origins are allowed (fine for local dev).
+# cors_allowed_origins = ["https://proxy-cache.example.com"]
 
 [database]
 type = "postgresql"
