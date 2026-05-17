@@ -260,6 +260,7 @@ pub use middleware::AuthMiddlewareFactory;
         (name = "proxy/npm",      description = "npm proxy — packuments, version metadata, tarballs"),
         (name = "proxy/cargo",    description = "Cargo proxy — sparse index, crate metadata, .crate downloads"),
         (name = "proxy/openvsx",  description = "OpenVSX proxy — VS Code extension metadata and VSIX packages"),
+        (name = "proxy/goproxy",  description = "Go module proxy — version info, go.mod, and zip downloads"),
         (name = "front-office",   description = "User-facing package information"),
         (name = "back-office",    description = "Admin management (requires Admin role)"),
     ),
@@ -308,6 +309,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             github::{download_asset, download_asset_by_name, download_raw, download_tarball, download_zipball, get_release, list_releases},
             npm::{download_tarball as npm_download_tarball, get_packument, get_version},
             openvsx::download_vsix,
+            goproxy::{goproxy_file, goproxy_latest, goproxy_list},
         },
     };
 
@@ -331,6 +333,10 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(download_raw);
     // Cargo download (literal "download" suffix)
     cfg.service(download_crate);
+    // Go module proxy (multi-segment module paths — must precede generic packument routes)
+    cfg.service(goproxy_latest);
+    cfg.service(goproxy_list);
+    cfg.service(goproxy_file);
     // OpenVSX VSIX download (literal "vsix" suffix)
     cfg.service(download_vsix);
     // npm tarball (literal "tarball" suffix)

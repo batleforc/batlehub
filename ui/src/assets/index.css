@@ -59,3 +59,27 @@
     font-feature-settings: "rlig" 1, "calt" 1;
   }
 }
+
+/* Shiki highlighted code blocks — dual-theme with Tailwind class-based dark mode */
+.shiki-wrapper .shiki {
+  border-radius: 0.375rem;
+  padding: 1rem;
+  font-size: 0.75rem;
+  line-height: 1.625;
+  overflow-x: auto;
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+}
+
+.shiki-wrapper .shiki,
+.shiki-wrapper .shiki span {
+  color: var(--shiki-light);
+  background-color: var(--shiki-light-bg);
+}
+
+.dark .shiki-wrapper .shiki,
+.dark .shiki-wrapper .shiki span {
+  color: var(--shiki-dark);
+  background-color: var(--shiki-dark-bg);
+}

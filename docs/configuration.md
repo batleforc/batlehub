@@ -81,7 +81,7 @@ curl -H "Authorization: Bearer my-admin-token" http://localhost:8080/...
 
 1. The TOML file at the path given to `--config` is parsed (default: `config.toml` in the working directory).
 2. Environment variables matching `PROXY_CACHE__<SECTION>__<FIELD>` are applied on top of the file values.
-3. The config is validated: registry names must not be empty and registry types must be one of `github`, `npm`, `cargo`, `openvsx`, `pypi`, `composer`.
+3. The config is validated: registry names must not be empty and registry types must be one of `github`, `npm`, `cargo`, `openvsx`, `goproxy`, `pypi`, `composer`.
 
 ### Auth evaluation order
 
@@ -347,11 +347,45 @@ bypass_roles = ["admin"]
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `type` | string | yes | `"github"`, `"npm"`, `"cargo"`, `"openvsx"`, `"pypi"`, `"composer"` |
+| `type` | string | yes | `"github"`, `"npm"`, `"cargo"`, `"openvsx"`, `"goproxy"`, `"pypi"`, `"composer"` |
 | `name` | string | yes | Unique identifier; used in proxy URL paths |
 | `upstreams` | string[] | no | Upstream URLs tried in order on cache miss; 404 from one falls through to the next. Defaults to the registry's built-in URL. |
 | `index_url` | string | no | Cargo only: sparse crate index URL. Defaults to `https://index.crates.io`. Required for self-hosted Gitea/Forgejo registries. |
 | `storage` | string | no | Name of the storage backend. Must match a `[[storage.backends]]` name. Omit to use the default backend. |
+
+#### Registry-type notes
+
+**`github`** — proxies the GitHub REST API (releases, assets, source tarballs, raw files). Requires `upstreams` to point at `https://api.github.com` (the default).
+
+**`npm`** — proxies the full npm registry protocol: packuments, version metadata, and `.tgz` tarballs. Works with npm, yarn, pnpm, and any tool that speaks the npm registry protocol.
+
+**`cargo`** — proxies the Cargo sparse index and `.crate` downloads. Set `index_url` for self-hosted Gitea/Forgejo registries.
+
+**`openvsx`** — proxies VS Code extension VSIX downloads from [open-vsx.org](https://open-vsx.org) or a compatible host. Extension IDs use the `{publisher}.{name}` convention.
+
+**`goproxy`** — implements the [GOPROXY protocol](https://go.dev/ref/mod#goproxy-protocol) for Go module proxying. Supports all five endpoints:
+
+| Endpoint | Description |
+|----------|-------------|
+| `/{module}/@latest` | Latest version metadata JSON |
+| `/{module}/@v/list` | Newline-separated list of known versions |
+| `/{module}/@v/{version}.info` | Version metadata JSON |
+| `/{module}/@v/{version}.mod` | Raw `go.mod` file |
+| `/{module}/@v/{version}.zip` | Module source zip archive |
+
+Module paths may contain slashes (e.g. `golang.org/x/text`). Uppercase-encoded paths (`!{lowercase}` convention) are passed through to the upstream unchanged.
+
+> **Caching note:** `@latest` and `@v/list` responses are cached permanently after the first request, just like other artifacts. They may become stale if new versions are published. Clear the proxy storage (or configure a shorter `metadata_ttl_secs`) to pick up new versions immediately.
+
+Configure the go toolchain to use the proxy:
+
+```sh
+export GONOSUMCHECK="*"
+export GONOSUMDB="*"
+export GOPROXY="http://proxy-cache.example.com/proxy/go,direct"
+```
+
+---
 
 **`[registries.cache]` fields:**
 
@@ -374,8 +408,12 @@ bypass_roles = ["admin"]
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `kind` | string | — | Must be `"release_age_gate"` |
-| `min_age_secs` | u64 | `3600` | Releases younger than this are blocked. If a release has no publish timestamp the gate is skipped (allow). |
+| `min_age_secs` | u64 | `3600` | Releases younger than this are blocked. If the adapter returns no publish timestamp the gate is skipped (allow). |
 | `bypass_roles` | string[] | `[]` | Roles that skip the gate (e.g. `["admin"]`) |
+
+> **Timestamp support by registry type:** The gate is only enforced when the upstream provides a publish timestamp.
+> - **npm**, **Cargo**, **OpenVSX**, **Go** — timestamp always populated; gate is fully enforced.
+> - **GitHub** — timestamp populated only for specific-tag release requests (asset downloads). Raw files, source tarballs, and release listings return no timestamp and the gate is skipped for those requests.
 
 **`[[registries.rules]]` — Require signed release:**
 
@@ -644,7 +682,61 @@ subjects:
     namespace: proxy-cache
 ```
 
-### 6.4 Multi-Backend Storage
+### 6.4 Go Module Proxy
+
+Proxy Go modules through `proxy.golang.org` with a release age gate and admin-only bypass. All five GOPROXY endpoints (`.info`, `.mod`, `.zip`, `@latest`, `@v/list`) are served transparently.
+
+```toml
+[server]
+port = 8080
+
+[database]
+type = "postgresql"
+url = "postgresql://proxy_cache:changeme@localhost:5432/proxy_cache"
+
+[[auth]]
+type = "token"
+
+[[auth.tokens]]
+value = "admin-token"
+role  = "admin"
+user_id = "admin"
+
+[storage]
+type = "filesystem"
+path = "./cache"
+
+[[registries]]
+type     = "goproxy"
+name     = "go"
+# Default upstream is https://proxy.golang.org.
+# For an air-gapped environment, point at an internal mirror:
+# upstreams = ["https://goproxy.internal.example.com"]
+
+[registries.rbac]
+anonymous = []
+user      = ["releases:read", "source:read"]
+admin     = ["*"]
+
+# Block modules published within the last hour (supply-chain delay window).
+[[registries.rules]]
+kind         = "release_age_gate"
+min_age_secs = 3600
+bypass_roles = ["admin"]
+```
+
+Configure the go toolchain:
+
+```sh
+export GONOSUMCHECK="*"
+export GONOSUMDB="*"
+export GOPROXY="http://localhost:8080/proxy/go,direct"
+
+# Fetch a specific version — served from cache after the first download
+go get golang.org/x/text@v0.3.7
+```
+
+### 6.5 Multi-Backend Storage
 
 Default filesystem backend for all registries, dedicated S3 backend for large GitHub release artifacts.
 

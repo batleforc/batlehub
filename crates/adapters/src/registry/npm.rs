@@ -1,6 +1,8 @@
 use async_trait::async_trait;
+use chrono::DateTime;
 use futures::TryStreamExt;
 use serde::Deserialize;
+use std::collections::HashMap;
 
 use proxy_cache_core::{
     entities::{PackageId, PackageMetadata},
@@ -34,8 +36,14 @@ impl NpmRegistryClient {
 #[derive(Debug, Deserialize)]
 struct NpmPackument {
     #[serde(rename = "dist-tags")]
-    dist_tags: std::collections::HashMap<String, String>,
-    versions: std::collections::HashMap<String, NpmVersionMeta>,
+    dist_tags: HashMap<String, String>,
+    versions: HashMap<String, NpmVersionMeta>,
+    /// Per-version publish timestamps from the full packument.
+    /// Keys are version strings (e.g. `"1.2.3"`) plus the special keys
+    /// `"created"` and `"modified"`. Only present in the full packument
+    /// (`application/json`); absent in the abbreviated install manifest.
+    #[serde(default)]
+    time: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,12 +115,18 @@ impl RegistryClient for NpmRegistryClient {
             "publisher": version_meta.npm_user.as_ref().and_then(|u| u.name.as_deref()),
         });
 
+        let published_at = packument
+            .time
+            .get(&resolved_version)
+            .and_then(|ts| DateTime::parse_from_rfc3339(ts).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc));
+
         Ok(PackageMetadata {
             id: PackageId {
                 version: resolved_version,
                 ..pkg.clone()
             },
-            published_at: None,
+            published_at,
             download_url,
             checksum,
             is_signed: None,
@@ -165,7 +179,7 @@ impl NpmRegistryClient {
 
         let resp = self.http
             .get(&url)
-            .header("Accept", "application/vnd.npm.install-v1+json")
+            .header("Accept", "application/json")
             .send()
             .await
             .map_err(|e| CoreError::Registry(e.to_string()))?;

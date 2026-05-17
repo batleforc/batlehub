@@ -21,8 +21,8 @@ use proxy_cache_adapters::{
     },
     db::PgPackageRepository,
     registry::{
-        CargoRegistryClient, FanoutRegistryClient, GithubRegistryClient, NpmRegistryClient,
-        OpenVsxRegistryClient,
+        CargoRegistryClient, FanoutRegistryClient, GoProxyRegistryClient, GithubRegistryClient,
+        NpmRegistryClient, OpenVsxRegistryClient,
     },
     storage::{FilesystemStorageBackend, StorageRouter},
 };
@@ -378,6 +378,7 @@ fn build_registry_client(reg: &RegistryConfig) -> Arc<dyn proxy_cache_core::port
             "npm" => Arc::new(NpmRegistryClient::new(url)),
             "cargo" => Arc::new(CargoRegistryClient::new(url)),
             "openvsx" => Arc::new(OpenVsxRegistryClient::new(url)),
+            "goproxy" => Arc::new(GoProxyRegistryClient::new(url)),
             other => panic!("registry type '{other}' is configured but no adapter is compiled in"),
         }
     }
@@ -387,6 +388,7 @@ fn build_registry_client(reg: &RegistryConfig) -> Arc<dyn proxy_cache_core::port
         "npm" => resolve_urls(&reg.upstreams, "https://registry.npmjs.org"),
         "cargo" => resolve_urls(&reg.upstreams, "https://crates.io"),
         "openvsx" => resolve_urls(&reg.upstreams, "https://open-vsx.org"),
+        "goproxy" => resolve_urls(&reg.upstreams, "https://proxy.golang.org"),
         other => panic!("registry type '{other}' is configured but no adapter is compiled in"),
     };
 

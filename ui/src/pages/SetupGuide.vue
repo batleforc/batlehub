@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import CodeBlock from "@/components/ui/code-block/CodeBlock.vue";
 import {
   Card, CardHeader, CardTitle, CardDescription, CardContent,
 } from "@/components/ui/card";
@@ -32,6 +33,7 @@ const githubRegistryName  = ref("github");
 const npmRegistryName     = ref("npm");
 const cargoRegistryName   = ref("cargo");
 const openvsxRegistryName = ref("openvsx");
+const goRegistryName      = ref("go");
 
 const { data: registries } = useApi<Array<{ name: string; type: string }>>(
   () => listRegistries() as Promise<{ data?: unknown; error?: unknown }>,
@@ -44,16 +46,19 @@ watch(registries, (regs) => {
   const np  = regs.find(r => r.type === "npm");
   const cg  = regs.find(r => r.type === "cargo");
   const ovx = regs.find(r => r.type === "openvsx");
+  const go  = regs.find(r => r.type === "goproxy");
   if (gh)  githubRegistryName.value = gh.name;
   if (np)  npmRegistryName.value = np.name;
   if (cg)  cargoRegistryName.value = cg.name;
   if (ovx) openvsxRegistryName.value = ovx.name;
+  if (go)  goRegistryName.value = go.name;
 });
 
-const githubRegistries  = computed(() => registries.value?.filter(r => r.type === "github")  ?? []);
-const npmRegistries     = computed(() => registries.value?.filter(r => r.type === "npm")      ?? []);
-const cargoRegistries   = computed(() => registries.value?.filter(r => r.type === "cargo")    ?? []);
-const openvsxRegistries = computed(() => registries.value?.filter(r => r.type === "openvsx") ?? []);
+const githubRegistries  = computed(() => registries.value?.filter(r => r.type === "github")   ?? []);
+const npmRegistries     = computed(() => registries.value?.filter(r => r.type === "npm")       ?? []);
+const cargoRegistries   = computed(() => registries.value?.filter(r => r.type === "cargo")     ?? []);
+const openvsxRegistries = computed(() => registries.value?.filter(r => r.type === "openvsx")   ?? []);
+const goRegistries      = computed(() => registries.value?.filter(r => r.type === "goproxy")   ?? []);
 
 async function copy(key: string, text: string) {
   await navigator.clipboard.writeText(text);
@@ -133,6 +138,17 @@ const openvsxDirectSnippet = computed(() => {
   return `${b}/proxy/${reg}/{publisher}.{extension}/{version}/vsix`;
 });
 
+const goSnippet = computed(() => {
+  const b   = base.value;
+  const reg = goRegistryName.value || "go";
+  return [
+    `# Shell / CI environment — set before running go commands`,
+    `export GONOSUMCHECK="*"`,
+    `export GONOSUMDB="*"`,
+    `export GOPROXY="${b}/proxy/${reg},direct"`,
+  ].join("\n");
+});
+
 const openvsxVscodiumSnippet = computed(() => {
   const b   = base.value;
   const reg = openvsxRegistryName.value || "openvsx";
@@ -169,7 +185,7 @@ const openvsxVscodiumSnippet = computed(() => {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-5">
           <div class="space-y-1">
             <Label for="sg-github">GitHub registry</Label>
             <Input id="sg-github" v-model="githubRegistryName" list="sg-github-list" placeholder="github" class="font-mono text-sm" />
@@ -198,17 +214,25 @@ const openvsxVscodiumSnippet = computed(() => {
               <option v-for="r in openvsxRegistries" :key="r.name" :value="r.name" />
             </datalist>
           </div>
+          <div class="space-y-1">
+            <Label for="sg-go">Go registry</Label>
+            <Input id="sg-go" v-model="goRegistryName" list="sg-go-list" placeholder="go" class="font-mono text-sm" />
+            <datalist id="sg-go-list">
+              <option v-for="r in goRegistries" :key="r.name" :value="r.name" />
+            </datalist>
+          </div>
         </div>
       </CardContent>
     </Card>
 
     <!-- ── Tool config tabs ── -->
     <Tabs default-value="mise">
-      <TabsList :class="isAuthenticated ? 'grid grid-cols-5' : 'grid grid-cols-4'">
+      <TabsList :class="isAuthenticated ? 'grid grid-cols-6' : 'grid grid-cols-5'">
         <TabsTrigger value="mise">mise</TabsTrigger>
         <TabsTrigger value="npm">npm</TabsTrigger>
         <TabsTrigger value="cargo">Cargo</TabsTrigger>
         <TabsTrigger value="openvsx">OpenVSX</TabsTrigger>
+        <TabsTrigger value="go">Go</TabsTrigger>
         <TabsTrigger v-if="isAuthenticated" value="netrc">.netrc</TabsTrigger>
       </TabsList>
 
@@ -227,12 +251,11 @@ const openvsxVscodiumSnippet = computed(() => {
             </div>
           </CardHeader>
           <CardContent>
-            <div class="relative">
-              <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto leading-relaxed">{{ miseSnippet }}</pre>
+            <CodeBlock :code="miseSnippet" lang="toml">
               <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('mise', miseSnippet)">
                 {{ copied === 'mise' ? 'Copied!' : 'Copy' }}
               </Button>
-            </div>
+            </CodeBlock>
           </CardContent>
         </Card>
       </TabsContent>
@@ -253,30 +276,27 @@ const openvsxVscodiumSnippet = computed(() => {
           <CardContent class="space-y-4">
             <div>
               <p class="text-xs text-muted-foreground mb-1.5">npm / npm workspaces</p>
-              <div class="relative">
-                <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto">{{ npmrcSnippet }}</pre>
+              <CodeBlock :code="npmrcSnippet" lang="ini">
                 <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('npmrc', npmrcSnippet)">
                   {{ copied === 'npmrc' ? 'Copied!' : 'Copy' }}
                 </Button>
-              </div>
+              </CodeBlock>
             </div>
             <div>
               <p class="text-xs text-muted-foreground mb-1.5">Yarn Berry — <code class="font-mono">.yarnrc.yml</code></p>
-              <div class="relative">
-                <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto">{{ yarnSnippet }}</pre>
+              <CodeBlock :code="yarnSnippet" lang="yaml">
                 <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('yarn', yarnSnippet)">
                   {{ copied === 'yarn' ? 'Copied!' : 'Copy' }}
                 </Button>
-              </div>
+              </CodeBlock>
             </div>
             <div>
               <p class="text-xs text-muted-foreground mb-1.5">pnpm — <code class="font-mono">.npmrc</code></p>
-              <div class="relative">
-                <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto">{{ pnpmSnippet }}</pre>
+              <CodeBlock :code="pnpmSnippet" lang="ini">
                 <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('pnpm', pnpmSnippet)">
                   {{ copied === 'pnpm' ? 'Copied!' : 'Copy' }}
                 </Button>
-              </div>
+              </CodeBlock>
             </div>
             <p class="text-xs text-muted-foreground">
               To route only a specific scope through the proxy, use
@@ -303,12 +323,11 @@ const openvsxVscodiumSnippet = computed(() => {
             </div>
           </CardHeader>
           <CardContent class="space-y-3">
-            <div class="relative">
-              <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto leading-relaxed">{{ cargoSnippet }}</pre>
+            <CodeBlock :code="cargoSnippet" lang="toml">
               <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('cargo', cargoSnippet)">
                 {{ copied === 'cargo' ? 'Copied!' : 'Copy' }}
               </Button>
-            </div>
+            </CodeBlock>
             <p class="text-xs text-muted-foreground">
               The proxy implements the
               <a
@@ -341,12 +360,11 @@ const openvsxVscodiumSnippet = computed(() => {
           <CardContent class="space-y-4">
             <div>
               <p class="text-xs text-muted-foreground mb-1.5">Direct VSIX download URL</p>
-              <div class="relative">
-                <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto">{{ openvsxDirectSnippet }}</pre>
+              <CodeBlock :code="openvsxDirectSnippet" lang="text">
                 <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('openvsx-direct', openvsxDirectSnippet)">
                   {{ copied === 'openvsx-direct' ? 'Copied!' : 'Copy' }}
                 </Button>
-              </div>
+              </CodeBlock>
               <p class="text-xs text-muted-foreground mt-1.5">
                 Example: download and install via CLI —
                 <code class="font-mono bg-muted px-1 rounded">curl -L {proxy}/ms-python.python/2024.0.0/vsix -o ext.vsix &amp;&amp; code --install-extension ext.vsix</code>
@@ -354,26 +372,64 @@ const openvsxVscodiumSnippet = computed(() => {
             </div>
             <div>
               <p class="text-xs text-muted-foreground mb-1.5">mise — URL replacement to intercept VSIX downloads</p>
-              <div class="relative">
-                <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto leading-relaxed">{{ openvsxMiseSnippet }}</pre>
+              <CodeBlock :code="openvsxMiseSnippet" lang="toml">
                 <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('openvsx-mise', openvsxMiseSnippet)">
                   {{ copied === 'openvsx-mise' ? 'Copied!' : 'Copy' }}
                 </Button>
-              </div>
+              </CodeBlock>
             </div>
             <div>
               <p class="text-xs text-muted-foreground mb-1.5">VSCodium / Code - OSS — extension gallery (<code class="font-mono">product.json</code>)</p>
-              <div class="relative">
-                <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto leading-relaxed">{{ openvsxVscodiumSnippet }}</pre>
+              <CodeBlock :code="openvsxVscodiumSnippet" lang="jsonc">
                 <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('openvsx-vscodium', openvsxVscodiumSnippet)">
                   {{ copied === 'openvsx-vscodium' ? 'Copied!' : 'Copy' }}
                 </Button>
-              </div>
+              </CodeBlock>
               <p class="text-xs text-muted-foreground mt-1.5">
                 Requires the proxy to implement the VS Code gallery protocol
                 (<code class="font-mono bg-muted px-1 rounded">/vscode/gallery</code> endpoints). Only VSIX proxying is supported today.
               </p>
             </div>
+          </CardContent>
+        </Card>
+      </TabsContent>
+
+      <!-- Go -->
+      <TabsContent value="go">
+        <Card>
+          <CardHeader>
+            <div class="flex items-center justify-between">
+              <CardDescription>
+                Set <code class="text-xs font-mono bg-muted px-1 rounded">GOPROXY</code> to route
+                Go module downloads through this proxy. Modules are cached after the first download.
+                Append <code class="text-xs font-mono bg-muted px-1 rounded">,direct</code> so the
+                go tool falls back to the original source when the proxy returns 404.
+              </CardDescription>
+              <Badge variant="outline" class="shrink-0 font-mono text-xs ml-4">Go</Badge>
+            </div>
+          </CardHeader>
+          <CardContent class="space-y-4">
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">Environment variables</p>
+              <CodeBlock :code="goSnippet" lang="bash">
+                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('go', goSnippet)">
+                  {{ copied === 'go' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </CodeBlock>
+            </div>
+            <p class="text-xs text-muted-foreground">
+              The proxy implements the
+              <a
+                href="https://go.dev/ref/mod#goproxy-protocol"
+                target="_blank"
+                rel="noopener"
+                class="underline underline-offset-2 hover:text-foreground transition-colors"
+              >GOPROXY protocol</a>.
+              Module zip archives are cached permanently after first download.
+              <code class="font-mono bg-muted px-1 rounded">@latest</code> and
+              <code class="font-mono bg-muted px-1 rounded">@v/list</code> responses are also cached —
+              clear the proxy storage if you need to pick up newly published versions immediately.
+            </p>
           </CardContent>
         </Card>
       </TabsContent>
@@ -393,12 +449,11 @@ const openvsxVscodiumSnippet = computed(() => {
             </div>
           </CardHeader>
           <CardContent class="space-y-3">
-            <div class="relative">
-              <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto">{{ netrcSnippet }}</pre>
+            <CodeBlock :code="netrcSnippet" lang="text">
               <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('netrc', netrcSnippet)">
                 {{ copied === 'netrc' ? 'Copied!' : 'Copy' }}
               </Button>
-            </div>
+            </CodeBlock>
             <p v-if="isOidc" class="text-xs text-muted-foreground">
               Your current token is a short-lived OIDC session token.
               For long-lived automation, create a

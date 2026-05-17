@@ -20,3 +20,8 @@ pub use cargo::CargoRegistryClient;
 pub mod openvsx;
 #[cfg(feature = "registry-openvsx")]
 pub use openvsx::OpenVsxRegistryClient;
+
+#[cfg(feature = "registry-goproxy")]
+pub mod goproxy;
+#[cfg(feature = "registry-goproxy")]
+pub use goproxy::GoProxyRegistryClient;

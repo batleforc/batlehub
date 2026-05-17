@@ -227,6 +227,36 @@ bypass_roles = ["admin"]
 # kind = "require_signed_release"
 # enabled = true
 
+[[registries]]
+type = "goproxy"
+name = "go"
+# upstreams defaults to ["https://proxy.golang.org"] when omitted.
+# For air-gapped environments, point at an internal GOPROXY mirror:
+# upstreams = ["https://goproxy.internal.example.com"]
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
+
+
+[[registries]]
+type = "openvsx"
+name = "openvsx"
+# upstreams defaults to ["https://open-vsx.org"] when omitted.
+# For air-gapped environments, point at an internal OpenVSX mirror:
+# upstreams = ["https://openvsx.internal.example.com"]
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
+
+# Configure the Go toolchain to use this proxy:
+#   export GONOSUMCHECK="*"
+#   export GONOSUMDB="*"
+#   export GOPROXY="http://localhost:8080/proxy/go,direct"
+
 # ── OpenTelemetry (optional) ──────────────────────────────────────────────────
 
 # [otel]
