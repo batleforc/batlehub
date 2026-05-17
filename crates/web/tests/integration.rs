@@ -333,9 +333,14 @@ async fn make_app(
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
 
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = proxy_cache_web::AccessConfig {
+        anonymous: ["github", "npm", "cargo"].iter().map(|s| s.to_string()).collect(),
+        user: ["github", "npm", "cargo"].iter().map(|s| s.to_string()).collect(),
+        admin: ["github", "npm", "cargo"].iter().map(|s| s.to_string()).collect(),
+    };
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None))
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config))
         .split_for_parts();
 
     init_service(

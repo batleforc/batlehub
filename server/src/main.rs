@@ -35,7 +35,7 @@ use proxy_cache_core::{
     rules::{BlockListRule, RbacRule, ReleaseAgeGateRule},
     services::{AdminService, ProxyService, RegistryPolicy},
 };
-use proxy_cache_web::{configure_app, openapi_spec, ApiDoc, CargoIndexProxy};
+use proxy_cache_web::{configure_app, openapi_spec, AccessConfig, ApiDoc, CargoIndexProxy};
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -204,6 +204,23 @@ async fn main() -> Result<()> {
         repo.clone() as Arc<dyn proxy_cache_core::ports::PackageRepository>
     ));
 
+    // ── Access config ─────────────────────────────────────────────────────────
+    // Respects role inheritance: user inherits anonymous, admin inherits both.
+    let access_config = AccessConfig {
+        anonymous: config.registries.iter()
+            .filter(|r| !r.rbac.anonymous.is_empty())
+            .map(|r| r.name.clone())
+            .collect(),
+        user: config.registries.iter()
+            .filter(|r| !r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty())
+            .map(|r| r.name.clone())
+            .collect(),
+        admin: config.registries.iter()
+            .filter(|r| !r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty() || !r.rbac.admin.is_empty())
+            .map(|r| r.name.clone())
+            .collect(),
+    };
+
     // ── HTTP server ───────────────────────────────────────────────────────────
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
     let static_dir = config.server.static_dir.clone();
@@ -212,7 +229,7 @@ async fn main() -> Result<()> {
     tracing::info!(addr = %bind_addr, "listening");
 
     HttpServer::new(move || {
-        let configure = configure_app(proxy_svc.clone(), admin_svc.clone(), token_repo.clone(), Some(db_pool.clone()));
+        let configure = configure_app(proxy_svc.clone(), admin_svc.clone(), token_repo.clone(), Some(db_pool.clone()), access_config.clone());
         let static_dir_inner = static_dir.clone();
         let oidc_sso_inner = oidc_sso.clone();
         let cargo_index_inner = cargo_index.clone();

@@ -82,15 +82,26 @@ router.beforeEach(async (to) => {
     };
   }
 
+  // ── Wait for identity (needed by all subsequent guards) ───────────────────
+  if (!identityReady.value) {
+    await new Promise<void>((resolve) => {
+      const stop = watch(identityReady, (ready) => {
+        if (ready) { stop(); resolve(); }
+      });
+    });
+  }
+
+  // ── Force login when anonymous has no access to any registry ──────────────
+  if (
+    to.path !== "/login" &&
+    identity.value?.role === "anonymous" &&
+    identity.value?.has_registry_access === false
+  ) {
+    return { path: "/login" };
+  }
+
   // ── OIDC-only route guard ─────────────────────────────────────────────────
   if (to.meta.requiresOidcAuth) {
-    if (!identityReady.value) {
-      await new Promise<void>((resolve) => {
-        const stop = watch(identityReady, (ready) => {
-          if (ready) { stop(); resolve(); }
-        });
-      });
-    }
     if (identity.value?.auth_provider !== "oidc") {
       return { path: "/login", query: { redirect: to.fullPath } };
     }
@@ -99,18 +110,6 @@ router.beforeEach(async (to) => {
 
   // ── Admin route guard ──────────────────────────────────────────────────────
   if (!to.meta.requiresAdmin) return;
-
-  // On a hard page reload the me() call may still be in-flight — wait for it.
-  if (!identityReady.value) {
-    await new Promise<void>((resolve) => {
-      const stop = watch(identityReady, (ready) => {
-        if (ready) {
-          stop();
-          resolve();
-        }
-      });
-    });
-  }
 
   if (!isAdmin.value) {
     return { path: "/login", query: { redirect: to.fullPath } };

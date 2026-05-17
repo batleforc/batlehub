@@ -125,7 +125,7 @@ name = "github"
 # upstreams defaults to ["https://api.github.com"] when omitted.
 
 [registries.rbac]
-anonymous = ["releases:read", "source:read"]
+anonymous = []
 user = ["releases:read", "source:read"]
 admin = ["*"]
 

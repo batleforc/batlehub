@@ -3,7 +3,35 @@ pub mod extractors;
 pub mod handlers;
 pub mod middleware;
 
+use std::collections::HashSet;
 use std::sync::Arc;
+
+use proxy_cache_core::entities::Role;
+
+/// Maps each role to the set of registry names it can access.
+///
+/// Respects role inheritance: user inherits anonymous permissions,
+/// admin inherits both user and anonymous permissions.
+#[derive(Clone)]
+pub struct AccessConfig {
+    pub anonymous: HashSet<String>,
+    pub user: HashSet<String>,
+    pub admin: HashSet<String>,
+}
+
+impl AccessConfig {
+    pub fn accessible_registries(&self, role: &Role) -> &HashSet<String> {
+        match role {
+            Role::Admin => &self.admin,
+            Role::User => &self.user,
+            Role::Anonymous => &self.anonymous,
+        }
+    }
+
+    pub fn has_registry_access(&self, role: &Role) -> bool {
+        !self.accessible_registries(role).is_empty()
+    }
+}
 
 use actix_web::web;
 use utoipa::OpenApi;
@@ -127,11 +155,13 @@ pub fn configure_app(
     admin_svc: Arc<AdminService>,
     token_repo: Arc<dyn UserTokenRepository>,
     pool: Option<PgPool>,
+    access_config: AccessConfig,
 ) -> impl Fn(&mut UtoipaServiceConfig) + Clone + 'static {
     move |cfg| {
         cfg.app_data(web::Data::new(proxy_svc.clone()));
         cfg.app_data(web::Data::new(admin_svc.clone()));
         cfg.app_data(web::Data::new(token_repo.clone()));
+        cfg.app_data(web::Data::new(access_config.clone()));
         if let Some(ref p) = pool {
             cfg.app_data(web::Data::new(p.clone()));
         }

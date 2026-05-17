@@ -39,11 +39,6 @@ watch(expiresAt, (val) => {
 
 async function refreshIdentity() {
   identityReady.value = false;
-  if (!token.value) {
-    identity.value = null;
-    identityReady.value = true;
-    return;
-  }
   try {
     const result = await me();
     identity.value = (result.data as MeResponse | undefined) ?? null;

@@ -9,7 +9,7 @@ use proxy_cache_core::{
     services::AdminService,
 };
 
-use crate::{error::AppError, extractors::AuthIdentity};
+use crate::{AccessConfig, error::AppError, extractors::AuthIdentity};
 
 #[derive(Deserialize, IntoParams)]
 pub struct PackageQuery {
@@ -52,8 +52,8 @@ pub enum PackageStatusDto {
 
 /// List packages visible to the current user.
 ///
-/// Anonymous users see all available packages. Blocked packages are shown
-/// with their block reason so the caller knows why access would be denied.
+/// Only packages from registries the caller's role can access are returned.
+/// Blocked packages are shown with their block reason.
 #[utoipa::path(
     get,
     path = "/api/v1/packages",
@@ -67,9 +67,24 @@ pub enum PackageStatusDto {
 #[get("/api/v1/packages")]
 pub async fn list_packages(
     query: web::Query<PackageQuery>,
-    _identity: AuthIdentity,
+    identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
+    access: web::Data<AccessConfig>,
 ) -> Result<impl Responder, AppError> {
+    let accessible = access.accessible_registries(&identity.role);
+
+    // If the caller requested a specific registry they can't access, return empty.
+    if let Some(ref reg) = query.registry {
+        if !accessible.contains(reg) {
+            return Ok(web::Json(PackageListResponse {
+                items: vec![],
+                total: 0,
+                page: query.page,
+                per_page: query.per_page,
+            }));
+        }
+    }
+
     let filter = PackageFilter {
         registry: query.registry.clone(),
         name_contains: query.name.clone(),
@@ -83,6 +98,7 @@ pub async fn list_packages(
 
     let items: Vec<PackageSummaryDto> = packages
         .into_iter()
+        .filter(|p| accessible.contains(&p.package_id.registry))
         .map(|p| PackageSummaryDto {
             registry: p.package_id.registry,
             name: p.package_id.name,
