@@ -20,6 +20,7 @@ proxy-cache is configured with a single TOML file. This document covers every op
 6. [Worked Examples](#6-worked-examples)
 7. [CLI Reference](#7-cli-reference)
 8. [User-Generated API Tokens](#8-user-generated-api-tokens)
+9. [Self-Hosted / Private Registries](#9-self-hosted--private-registries)
 
 ---
 
@@ -352,6 +353,8 @@ bypass_roles = ["admin"]
 | `upstreams` | string[] | no | Upstream URLs tried in order on cache miss; 404 from one falls through to the next. Defaults to the registry's built-in URL. |
 | `index_url` | string | no | Cargo only: sparse crate index URL. Defaults to `https://index.crates.io`. Required for self-hosted Gitea/Forgejo registries. |
 | `storage` | string | no | Name of the storage backend. Must match a `[[storage.backends]]` name. Omit to use the default backend. |
+| `upstream_auth` | table | no | Credentials sent on every upstream request. See [upstream auth](#upstream_auth). |
+| `tls` | table | no | TLS settings for upstream connections. See [upstream TLS](#upstream_tls). |
 
 #### Registry-type notes
 
@@ -421,6 +424,62 @@ export GOPROXY="http://proxy-cache.example.com/proxy/go,direct"
 |---|---|---|---|
 | `kind` | string | — | Must be `"require_signed_release"` |
 | `enabled` | bool | `false` | When true, blocks releases that do not have a verified signature |
+
+#### `[registries.upstream_auth]` {#upstream_auth}
+
+Credentials to send on every upstream request for this registry. Three schemes are supported; choose one.
+
+**Bearer token** — adds `Authorization: Bearer <token>`. Accepted by Gitea, Forgejo, Nexus (npm token), JFrog Artifactory, and GitHub Enterprise.
+
+```toml
+[registries.upstream_auth]
+type  = "bearer"
+token = "npat-xxxx"
+```
+
+**Basic auth** — standard HTTP Basic authentication.
+
+```toml
+[registries.upstream_auth]
+type     = "basic"
+username = "deploy"
+password = "s3cr3t"
+```
+
+**Custom header** — sends an arbitrary header on every request. Useful for registries that use `X-API-Key` or similar schemes.
+
+```toml
+[registries.upstream_auth]
+type  = "header"
+name  = "X-API-Key"
+value = "my-api-key"
+```
+
+| Field | Type | Schemes | Notes |
+|---|---|---|---|
+| `type` | string | all | `"bearer"`, `"basic"`, or `"header"` |
+| `token` | string | bearer | Bearer token value |
+| `username` | string | basic | HTTP Basic username |
+| `password` | string | basic | HTTP Basic password |
+| `name` | string | header | HTTP header name (e.g. `"X-API-Key"`) |
+| `value` | string | header | HTTP header value |
+
+> **Security:** Credentials are stored in plaintext in the config file. In production, inject sensitive values through environment variable substitution or a secrets manager.
+
+#### `[registries.tls]` {#upstream_tls}
+
+TLS settings for upstream connections. Use this when the upstream registry serves a certificate signed by a private or self-hosted CA that is not in the system trust store.
+
+```toml
+[registries.tls]
+ca_cert_path = "/etc/ssl/corp-ca.pem"
+```
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `ca_cert_path` | string | no | Path to a PEM-encoded CA certificate to add as a trusted root for this registry's upstream connections |
+
+> The certificate is loaded once at startup. To rotate a CA certificate, restart the server.
 
 ---
 
@@ -736,7 +795,80 @@ export GOPROXY="http://localhost:8080/proxy/go,direct"
 go get golang.org/x/text@v0.3.7
 ```
 
-### 6.5 Multi-Backend Storage
+### 6.5 Self-Hosted Private Registries
+
+Proxy a private Gitea npm registry with a Bearer token and a self-signed CA certificate. Identical pattern works for Cargo, Go, and OpenVSX.
+
+```toml
+[server]
+port = 8080
+
+[database]
+type = "postgresql"
+url  = "postgresql://proxy_cache:changeme@localhost:5432/proxy_cache"
+
+[[auth]]
+type = "token"
+
+[[auth.tokens]]
+value   = "admin-token"
+role    = "admin"
+user_id = "admin"
+
+[storage]
+type = "filesystem"
+path = "./cache"
+
+# Public npm registry (no auth needed)
+[[registries]]
+type = "npm"
+name = "npm-public"
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user      = ["releases:read", "source:read"]
+admin     = ["*"]
+
+# Private Gitea npm registry
+[[registries]]
+type      = "npm"
+name      = "npm-internal"
+upstreams = ["https://gitea.corp.example.com/api/packages/myorg/npm"]
+
+[registries.upstream_auth]
+type  = "bearer"
+token = "npat-xxxx"
+
+[registries.tls]
+ca_cert_path = "/etc/ssl/corp-ca.pem"
+
+[registries.rbac]
+anonymous = []
+user      = ["releases:read", "source:read"]
+admin     = ["*"]
+
+# Private Cargo registry on Nexus with Basic auth
+[[registries]]
+type      = "cargo"
+name      = "cargo-internal"
+upstreams = ["https://nexus.corp.example.com/repository/cargo-proxy/"]
+index_url = "https://nexus.corp.example.com/repository/cargo-index/"
+
+[registries.upstream_auth]
+type     = "basic"
+username = "deploy"
+password = "s3cr3t"
+
+[registries.tls]
+ca_cert_path = "/etc/ssl/corp-ca.pem"
+
+[registries.rbac]
+anonymous = []
+user      = ["releases:read", "source:read"]
+admin     = ["*"]
+```
+
+### 6.6 Multi-Backend Storage
 
 Default filesystem backend for all registries, dedicated S3 backend for large GitHub release artifacts.
 
@@ -831,3 +963,63 @@ Key properties:
 - Token values are shown **once** at creation time; store them securely.
 - A token's role cannot exceed the role of the user who created it.
 - Token auth (`type = "token"`) in the config file and user-generated tokens are two separate mechanisms; user-generated tokens are always available to OIDC-authenticated users with no extra `[[auth]]` entry needed.
+
+---
+
+## 9. Self-Hosted / Private Registries
+
+Any registry can proxy a self-hosted or private upstream by combining `upstream_auth` and `tls` fields. Both are optional and independent of each other.
+
+### Upstream authentication
+
+Three schemes are available via `[registries.upstream_auth]`:
+
+| `type` | Use case | Required fields |
+|--------|----------|-----------------|
+| `bearer` | Gitea, Forgejo, GitHub Enterprise, Artifactory API tokens | `token` |
+| `basic` | Nexus, Artifactory (password), most HTTP-authenticated feeds | `username`, `password` |
+| `header` | Any registry using a custom header (e.g. `X-API-Key`) | `name`, `value` |
+
+Bearer tokens are sent as `Authorization: Bearer <token>`. Basic credentials are attached per-request as HTTP Basic auth. Custom headers are injected as default headers on every upstream request.
+
+### Custom CA certificates
+
+When the upstream serves a certificate signed by a private CA, add the CA certificate to the system trust store **or** point `tls.ca_cert_path` at a PEM file:
+
+```toml
+[registries.tls]
+ca_cert_path = "/etc/ssl/corp-ca.pem"
+```
+
+This setting is per-registry, so you can mix public registries (no TLS config needed) with private registries that use a corporate CA — all in the same `config.toml`.
+
+### Using `upstream_auth` and `tls` together
+
+Both fields can appear on the same registry block:
+
+```toml
+[[registries]]
+type      = "npm"
+name      = "npm-private"
+upstreams = ["https://nexus.corp.example.com/repository/npm-proxy/"]
+
+[registries.upstream_auth]
+type  = "header"
+name  = "X-API-Key"
+value = "my-api-key"
+
+[registries.tls]
+ca_cert_path = "/etc/ssl/corp-ca.pem"
+```
+
+### Supported registry types
+
+All registry types support `upstream_auth` and `tls`: `github`, `npm`, `cargo`, `openvsx`, `goproxy`. For `cargo`, the sparse index proxy (the `index_url` endpoint) also uses the same credentials and TLS settings.
+
+### Secret management
+
+Credential values (`token`, `password`, `value`) are stored in the TOML config file. In production:
+- Use a secrets manager (Vault, AWS Secrets Manager, Kubernetes Secrets) to inject values at runtime.
+- Many deployment tools (Helm, Kustomize, systemd `EnvironmentFile`) support substituting environment variable references into config files before the process starts.
+
+See [Worked Example 6.5](#65-self-hosted-private-registries) for a full multi-registry config.

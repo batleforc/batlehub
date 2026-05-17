@@ -10,6 +10,8 @@ use proxy_cache_core::{
     ports::{ArtifactStream, RegistryClient},
 };
 
+use super::http_client::{apply_upstream_options, UpstreamHttpOptions};
+
 /// npm registry client (registry.npmjs.org or compatible).
 ///
 /// Supported `PackageId` conventions:
@@ -19,15 +21,23 @@ use proxy_cache_core::{
 pub struct NpmRegistryClient {
     http: reqwest::Client,
     base_url: String,
+    basic_auth: Option<(String, String)>,
 }
 
 impl NpmRegistryClient {
-    pub fn new(base_url: impl Into<String>) -> Self {
-        let http = reqwest::Client::builder()
-            .user_agent("proxy-cache/0.1")
-            .build()
+    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Self {
+        let builder = reqwest::Client::builder().user_agent("proxy-cache/0.1");
+        let http = apply_upstream_options(builder, opts)
             .expect("failed to build npm HTTP client");
-        Self { http, base_url: base_url.into() }
+        Self { http, base_url: base_url.into(), basic_auth: opts.basic_auth.clone() }
+    }
+
+    fn get(&self, url: &str) -> reqwest::RequestBuilder {
+        let rb = self.http.get(url);
+        match &self.basic_auth {
+            Some((u, p)) => rb.basic_auth(u, Some(p)),
+            None => rb,
+        }
     }
 }
 
@@ -155,7 +165,6 @@ impl RegistryClient for NpmRegistryClient {
         tracing::debug!(url = %tarball_url, "fetching npm tarball");
 
         let response = self
-            .http
             .get(tarball_url)
             .send()
             .await
@@ -177,8 +186,7 @@ impl NpmRegistryClient {
         let encoded = name.replace('/', "%2F");
         let url = format!("{}/{}", self.base_url, encoded);
 
-        let resp = self.http
-            .get(&url)
+        let resp = self.get(&url)
             .header("Accept", "application/json")
             .send()
             .await

@@ -39,6 +39,7 @@ Multiple instances of the same registry type can run in parallel (e.g. a private
 - **RBAC** — per-registry permissions for `anonymous`, `user`, and `admin` roles, plus group-based access from OIDC or Kubernetes claims.
 - **Release age gate** — block packages published less than N seconds ago (supply-chain delay window).
 - **Fanout / failover** — list multiple upstreams per registry; 404 from one falls through to the next.
+- **Self-hosted registry support** — upstream auth (Bearer token, Basic, or custom header) and custom CA certificates per registry, for air-gapped or corporate environments.
 - **Auth providers** — static tokens, OIDC (Authentik, Keycloak, Dex, …), Kubernetes service account tokens.
 - **Storage backends** — filesystem or S3-compatible (AWS S3, MinIO, RustFS). Different registries can use different backends.
 - **Audit log** — every allow and deny decision is recorded in PostgreSQL.
@@ -138,6 +139,30 @@ anonymous = ["releases:read", "source:read"]
 ```
 
 Then point the go toolchain at the proxy:
+
+### Self-hosted / private registry example
+
+Bearer token and custom CA for a corporate Gitea instance:
+
+```toml
+[[registries]]
+type      = "npm"
+name      = "npm-internal"
+upstreams = ["https://gitea.corp.example.com/api/packages/myorg/npm"]
+
+[registries.upstream_auth]
+type  = "bearer"
+token = "npat-xxxx"
+
+[registries.tls]
+ca_cert_path = "/etc/ssl/corp-ca.pem"
+
+[registries.rbac]
+user  = ["releases:read", "source:read"]
+admin = ["*"]
+```
+
+Three auth schemes are supported: `bearer`, `basic`, and `header` (custom header such as `X-API-Key`). See [docs/configuration.md § Self-Hosted / Private Registries](docs/configuration.md#9-self-hosted--private-registries) for the full reference.
 
 ```sh
 export GONOSUMCHECK="*"
@@ -285,5 +310,6 @@ Full list in [`docs/configuration.md § Environment Variable Overrides`](docs/co
 | Document | Contents |
 |----------|---------|
 | [`docs/configuration.md`](docs/configuration.md) | Full TOML reference, permissions, worked examples |
+| [`docs/configuration.md § Self-Hosted`](docs/configuration.md#9-self-hosted--private-registries) | Upstream auth (Bearer / Basic / header) and custom CA certificates |
 | [`docs/adding-a-registry.md`](docs/adding-a-registry.md) | Step-by-step guide for implementing a new registry adapter |
 | `/swagger-ui/` (runtime) | Interactive API docs |

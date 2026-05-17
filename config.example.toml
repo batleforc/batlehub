@@ -257,6 +257,49 @@ admin = ["*"]
 #   export GONOSUMDB="*"
 #   export GOPROXY="http://localhost:8080/proxy/go,direct"
 
+# ── Self-hosted / private registry auth + TLS ────────────────────────────────
+#
+# Any registry block may include an [upstream_auth] table and/or a [tls] table.
+# These are evaluated independently; you can use auth without custom TLS and
+# vice-versa.
+#
+# --- Bearer token (Gitea, Forgejo, npm token, GitHub PAT, …) ---
+# [[registries]]
+# type = "npm"
+# name = "internal-npm"
+# upstreams = ["https://gitea.corp.example.com/api/packages/myorg/npm"]
+#
+# [registries.upstream_auth]
+# type = "bearer"
+# token = "npat-xxxx"
+#
+# --- Basic auth (Nexus, Artifactory, …) ---
+# [[registries]]
+# type = "cargo"
+# name = "internal-cargo"
+# upstreams = ["https://nexus.corp.example.com/repository/cargo-proxy/"]
+#
+# [registries.upstream_auth]
+# type = "basic"
+# username = "deploy"
+# password = "s3cr3t"
+#
+# --- Custom header (X-API-Key or any header-based auth scheme) ---
+# [[registries]]
+# type = "npm"
+# name = "internal-npm-key"
+# upstreams = ["https://nexus.corp.example.com/repository/npm-proxy/"]
+#
+# [registries.upstream_auth]
+# type = "header"
+# name = "X-API-Key"
+# value = "my-api-key"
+#
+# --- Custom CA certificate for self-signed TLS ---
+# (combine with any of the auth variants above, or use standalone)
+# [registries.tls]
+# ca_cert_path = "/etc/ssl/corp-ca.pem"   # PEM-encoded CA certificate
+
 # ── OpenTelemetry (optional) ──────────────────────────────────────────────────
 
 # [otel]

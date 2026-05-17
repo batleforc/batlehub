@@ -22,13 +22,13 @@ use proxy_cache_adapters::{
     db::PgPackageRepository,
     registry::{
         CargoRegistryClient, FanoutRegistryClient, GoProxyRegistryClient, GithubRegistryClient,
-        NpmRegistryClient, OpenVsxRegistryClient,
+        NpmRegistryClient, OpenVsxRegistryClient, UpstreamHttpOptions,
     },
     storage::{FilesystemStorageBackend, StorageRouter},
 };
 use proxy_cache_config::{
     load,
-    schema::{AuthConfig, OtelConfig, RegistryConfig, RuleConfig, StorageBackendConfig, StoragesConfig},
+    schema::{AuthConfig, OtelConfig, RegistryConfig, RuleConfig, StorageBackendConfig, StoragesConfig, UpstreamAuthConfig},
 };
 use proxy_cache_core::{
     entities::Role,
@@ -341,6 +341,21 @@ fn parse_role(s: &str) -> Role {
     }
 }
 
+fn upstream_options(reg: &RegistryConfig) -> UpstreamHttpOptions {
+    let (bearer_token, basic_auth, custom_header) = match &reg.upstream_auth {
+        Some(UpstreamAuthConfig::Bearer(b)) => (Some(b.token.clone()), None, None),
+        Some(UpstreamAuthConfig::Basic(b)) => (None, Some((b.username.clone(), b.password.clone())), None),
+        Some(UpstreamAuthConfig::Header(h)) => (None, None, Some((h.name.clone(), h.value.clone()))),
+        None => (None, None, None),
+    };
+    UpstreamHttpOptions {
+        bearer_token,
+        basic_auth,
+        custom_header,
+        ca_cert_path: reg.tls.as_ref().and_then(|t| t.ca_cert_path.clone()),
+    }
+}
+
 fn build_cargo_index(reg: &RegistryConfig) -> CargoIndexProxy {
     let index_url = if let Some(ref url) = reg.index_url {
         url.clone()
@@ -352,10 +367,12 @@ fn build_cargo_index(reg: &RegistryConfig) -> CargoIndexProxy {
             upstream.to_owned()
         }
     };
-    let http = reqwest::Client::builder()
-        .user_agent("proxy-cache/0.1")
-        .build()
-        .expect("failed to build cargo index HTTP client");
+    let opts = upstream_options(reg);
+    let http = proxy_cache_adapters::registry::apply_upstream_options(
+        reqwest::Client::builder().user_agent("proxy-cache/0.1"),
+        &opts,
+    )
+    .expect("failed to build cargo index HTTP client");
     tracing::info!(index_url = %index_url, "cargo sparse index proxy configured");
     CargoIndexProxy { http, index_url }
 }
@@ -372,16 +389,19 @@ fn build_registry_client(reg: &RegistryConfig) -> Arc<dyn proxy_cache_core::port
     fn make_one(
         registry_type: &str,
         url: &str,
+        opts: &UpstreamHttpOptions,
     ) -> Arc<dyn proxy_cache_core::ports::RegistryClient> {
         match registry_type {
-            "github" => Arc::new(GithubRegistryClient::new(url, None)),
-            "npm" => Arc::new(NpmRegistryClient::new(url)),
-            "cargo" => Arc::new(CargoRegistryClient::new(url)),
-            "openvsx" => Arc::new(OpenVsxRegistryClient::new(url)),
-            "goproxy" => Arc::new(GoProxyRegistryClient::new(url)),
+            "github" => Arc::new(GithubRegistryClient::new(url, opts)),
+            "npm" => Arc::new(NpmRegistryClient::new(url, opts)),
+            "cargo" => Arc::new(CargoRegistryClient::new(url, opts)),
+            "openvsx" => Arc::new(OpenVsxRegistryClient::new(url, opts)),
+            "goproxy" => Arc::new(GoProxyRegistryClient::new(url, opts)),
             other => panic!("registry type '{other}' is configured but no adapter is compiled in"),
         }
     }
+
+    let opts = upstream_options(reg);
 
     let urls = match reg.registry_type.as_str() {
         "github" => resolve_urls(&reg.upstreams, "https://api.github.com"),
@@ -393,11 +413,11 @@ fn build_registry_client(reg: &RegistryConfig) -> Arc<dyn proxy_cache_core::port
     };
 
     if urls.len() == 1 {
-        make_one(&reg.registry_type, &urls[0])
+        make_one(&reg.registry_type, &urls[0], &opts)
     } else {
         let clients = urls
             .iter()
-            .map(|u| make_one(&reg.registry_type, u))
+            .map(|u| make_one(&reg.registry_type, u, &opts))
             .collect();
         Arc::new(FanoutRegistryClient::new(&reg.registry_type, clients))
     }

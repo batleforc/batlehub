@@ -1,3 +1,6 @@
+pub mod http_client;
+pub use http_client::{UpstreamHttpOptions, apply_upstream_options, apply_upstream_tls, upstream_auth_headers};
+
 pub mod fanout;
 pub use fanout::FanoutRegistryClient;
 
