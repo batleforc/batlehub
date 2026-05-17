@@ -15,20 +15,23 @@ use utoipa::OpenApi as _;
 use utoipa_actix_web::AppExt;
 
 use proxy_cache_adapters::{
-    auth::{KubernetesAuthProvider, OidcAuthProvider, OidcSsoFlow, StaticTokenAuthProvider},
+    auth::{
+        KubernetesAuthProvider, OidcAuthProvider, OidcSsoFlow, StaticTokenAuthProvider,
+        UserTokenAuthProvider,
+    },
     db::PgPackageRepository,
     registry::{
         CargoRegistryClient, FanoutRegistryClient, GithubRegistryClient, NpmRegistryClient,
     },
-    storage::FilesystemStorageBackend,
+    storage::{FilesystemStorageBackend, StorageRouter},
 };
 use proxy_cache_config::{
     load,
-    schema::{AuthConfig, OtelConfig, RegistryConfig, RuleConfig, StorageConfig},
+    schema::{AuthConfig, OtelConfig, RegistryConfig, RuleConfig, StorageBackendConfig, StoragesConfig},
 };
 use proxy_cache_core::{
     entities::Role,
-    ports::{AuthProvider, CacheStore, InMemoryCacheStore},
+    ports::{AuthProvider, CacheStore, InMemoryCacheStore, UserTokenRepository},
     rules::{BlockListRule, RbacRule, ReleaseAgeGateRule},
     services::{AdminService, ProxyService, RegistryPolicy},
 };
@@ -86,13 +89,30 @@ async fn main() -> Result<()> {
 
     // ── Storage ───────────────────────────────────────────────────────────────
     let storage: Arc<dyn proxy_cache_core::ports::StorageBackend> = match &config.storage {
-        StorageConfig::Filesystem(fs) => Arc::new(
-            FilesystemStorageBackend::new(&fs.path)
-                .await
-                .with_context(|| format!("initialising filesystem storage at '{}'", fs.path))?,
-        ),
-        StorageConfig::S3(_s3) => {
-            anyhow::bail!("S3 storage adapter not yet compiled; enable the 'storage-s3' feature");
+        StoragesConfig::Single(backend_cfg) => build_single_backend(backend_cfg).await?,
+        StoragesConfig::Multi(multi) => {
+            let mut backends = HashMap::new();
+            for named in &multi.backends {
+                let backend = build_single_backend(&named.config).await?;
+                backends.insert(named.name.clone(), backend);
+            }
+            if !backends.contains_key(&multi.default) {
+                anyhow::bail!(
+                    "storage default '{}' does not match any backend name in [[storage.backends]]",
+                    multi.default
+                );
+            }
+            let registry_assignments: HashMap<String, String> = config
+                .registries
+                .iter()
+                .filter_map(|r| r.storage.as_ref().map(|s| (r.name.clone(), s.clone())))
+                .collect();
+            Arc::new(StorageRouter::new(
+                backends,
+                multi.default.clone(),
+                registry_assignments,
+                repo.pool(),
+            ))
         }
     };
 
@@ -144,6 +164,11 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Add user-token provider (after OIDC so JWTs are validated first)
+    let token_repo = repo.clone() as Arc<dyn UserTokenRepository>;
+    auth_providers.push(Arc::new(UserTokenAuthProvider::new(token_repo.clone())));
+    info!("configured user-token auth provider");
+
     // ── Registries + policies ─────────────────────────────────────────────────
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
     let mut registry_clients: HashMap<String, Arc<dyn proxy_cache_core::ports::RegistryClient>> =
@@ -182,11 +207,12 @@ async fn main() -> Result<()> {
     // ── HTTP server ───────────────────────────────────────────────────────────
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
     let static_dir = config.server.static_dir.clone();
+    let db_pool = repo.pool();
 
     tracing::info!(addr = %bind_addr, "listening");
 
     HttpServer::new(move || {
-        let configure = configure_app(proxy_svc.clone(), admin_svc.clone());
+        let configure = configure_app(proxy_svc.clone(), admin_svc.clone(), token_repo.clone(), Some(db_pool.clone()));
         let static_dir_inner = static_dir.clone();
         let oidc_sso_inner = oidc_sso.clone();
         let cargo_index_inner = cargo_index.clone();
@@ -247,6 +273,31 @@ async fn main() -> Result<()> {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+async fn build_single_backend(
+    cfg: &StorageBackendConfig,
+) -> Result<Arc<dyn proxy_cache_core::ports::StorageBackend>> {
+    match cfg {
+        StorageBackendConfig::Filesystem(fs) => {
+            let backend = FilesystemStorageBackend::new(&fs.path)
+                .await
+                .with_context(|| format!("initialising filesystem storage at '{}'", fs.path))?;
+            Ok(Arc::new(backend))
+        }
+        StorageBackendConfig::S3(_s3) => {
+            #[cfg(feature = "storage-s3")]
+            {
+                use proxy_cache_adapters::storage::S3StorageBackend;
+                let backend = S3StorageBackend::new(_s3)
+                    .await
+                    .with_context(|| format!("initialising S3 storage for bucket '{}'", _s3.bucket))?;
+                return Ok(Arc::new(backend));
+            }
+            #[cfg(not(feature = "storage-s3"))]
+            anyhow::bail!("S3 storage requires the 'storage-s3' feature flag at compile time");
+        }
+    }
+}
 
 fn parse_role(s: &str) -> Role {
     match s {

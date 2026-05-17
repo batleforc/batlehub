@@ -9,6 +9,7 @@ import AuditLog from "@/pages/AuditLog.vue";
 import LoginPage from "@/pages/LoginPage.vue";
 import PathMapper from "@/pages/PathMapper.vue";
 import SetupGuide from "@/pages/SetupGuide.vue";
+import TokensPage from "@/pages/TokensPage.vue";
 
 const OIDC_STATE_KEY = "oidc_state";
 
@@ -21,6 +22,11 @@ export const router = createRouter({
     { path: "/access-check", component: AccessCheck },
     { path: "/path-mapper", component: PathMapper },
     { path: "/setup", component: SetupGuide },
+    {
+      path: "/tokens",
+      component: TokensPage,
+      meta: { requiresOidcAuth: true },
+    },
     {
       path: "/admin/packages",
       component: AdminPackages,
@@ -40,7 +46,7 @@ export const router = createRouter({
 });
 
 router.beforeEach(async (to) => {
-  const { isAdmin, identityReady } = useAuth();
+  const { isAdmin, identity, identityReady } = useAuth();
 
   // ── OIDC callback: tokens arrive via query params on "/" ───────────────────
   if (to.query.oidc_access_token) {
@@ -74,6 +80,21 @@ router.beforeEach(async (to) => {
       path: "/login",
       query: { error: String(to.query.oidc_error) },
     };
+  }
+
+  // ── OIDC-only route guard ─────────────────────────────────────────────────
+  if (to.meta.requiresOidcAuth) {
+    if (!identityReady.value) {
+      await new Promise<void>((resolve) => {
+        const stop = watch(identityReady, (ready) => {
+          if (ready) { stop(); resolve(); }
+        });
+      });
+    }
+    if (identity.value?.auth_provider !== "oidc") {
+      return { path: "/login", query: { redirect: to.fullPath } };
+    }
+    return;
   }
 
   // ── Admin route guard ──────────────────────────────────────────────────────

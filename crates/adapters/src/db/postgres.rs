@@ -13,7 +13,7 @@ use proxy_cache_core::{
 };
 
 pub struct PgPackageRepository {
-    pool: PgPool,
+    pub(super) pool: PgPool,
 }
 
 impl PgPackageRepository {
@@ -30,6 +30,10 @@ impl PgPackageRepository {
             .await
             .map_err(|e| CoreError::Database(format!("migration failed: {e}")))?;
         Ok(())
+    }
+
+    pub fn pool(&self) -> PgPool {
+        self.pool.clone()
     }
 }
 

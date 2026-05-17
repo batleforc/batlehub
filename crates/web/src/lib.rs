@@ -11,7 +11,12 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa_actix_web::{AppExt, service_config::ServiceConfig as UtoipaServiceConfig};
 use utoipa_swagger_ui::SwaggerUi;
 
-use proxy_cache_core::services::{AdminService, ProxyService};
+use sqlx::PgPool;
+
+use proxy_cache_core::{
+    ports::UserTokenRepository,
+    services::{AdminService, ProxyService},
+};
 
 pub use handlers::proxy::cargo::CargoIndexProxy;
 pub use middleware::AuthMiddlewareFactory;
@@ -46,7 +51,10 @@ impl utoipa::Modify for SecurityAddon {
 
 fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     use handlers::{
-        auth::oidc::{oidc_callback, oidc_login, oidc_refresh},
+        auth::{
+            oidc::{oidc_callback, oidc_login, oidc_refresh},
+            tokens::{create_token, list_tokens, revoke_token},
+        },
         back_office::{
             audit::audit_log,
             packages::{block_package, list_packages as admin_list_packages, package_detail, unblock_package},
@@ -65,6 +73,9 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(oidc_login);
     cfg.service(oidc_callback);
     cfg.service(oidc_refresh);
+    cfg.service(create_token);
+    cfg.service(list_tokens);
+    cfg.service(revoke_token);
     cfg.service(list_releases);
     cfg.service(get_release);
     cfg.service(download_asset);
@@ -114,10 +125,16 @@ pub fn swagger_ui(openapi: utoipa::openapi::OpenApi) -> SwaggerUi {
 pub fn configure_app(
     proxy_svc: Arc<ProxyService>,
     admin_svc: Arc<AdminService>,
+    token_repo: Arc<dyn UserTokenRepository>,
+    pool: Option<PgPool>,
 ) -> impl Fn(&mut UtoipaServiceConfig) + Clone + 'static {
     move |cfg| {
         cfg.app_data(web::Data::new(proxy_svc.clone()));
         cfg.app_data(web::Data::new(admin_svc.clone()));
+        cfg.app_data(web::Data::new(token_repo.clone()));
+        if let Some(ref p) = pool {
+            cfg.app_data(web::Data::new(p.clone()));
+        }
         collect_routes(cfg);
     }
 }

@@ -12,3 +12,6 @@ pub use oidc::{OidcAuthProvider, OidcSsoFlow, OidcTokens};
 pub mod kubernetes;
 #[cfg(feature = "auth-kubernetes")]
 pub use kubernetes::KubernetesAuthProvider;
+
+pub mod user_token;
+pub use user_token::{UserTokenAuthProvider, generate_token, hash_token};

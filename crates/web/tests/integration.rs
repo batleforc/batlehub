@@ -33,6 +33,7 @@ use proxy_cache_core::{
     ports::{
         ArtifactStream, AuthProvider, ByteStream, CacheStore, InMemoryCacheStore,
         PackageRepository, RegistryClient, StorageBackend, StoredArtifact, StorageMeta,
+        UserToken, UserTokenRepository,
     },
     rules::{BlockListRule, RbacRule},
     services::{AdminService, ProxyService, RegistryPolicy},
@@ -249,6 +250,32 @@ fn test_auth_providers() -> Vec<Arc<dyn AuthProvider>> {
     ]))]
 }
 
+struct NullTokenRepository;
+
+#[async_trait]
+impl UserTokenRepository for NullTokenRepository {
+    async fn create_token(
+        &self,
+        _id: uuid::Uuid,
+        _user_id: &str,
+        _name: &str,
+        _token_hash: &str,
+        _role: Role,
+        _expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<UserToken, CoreError> {
+        Err(CoreError::Database("not implemented".into()))
+    }
+    async fn find_by_hash(&self, _token_hash: &str) -> Result<Option<UserToken>, CoreError> {
+        Ok(None)
+    }
+    async fn list_for_user(&self, _user_id: &str) -> Result<Vec<UserToken>, CoreError> {
+        Ok(vec![])
+    }
+    async fn revoke(&self, _id: uuid::Uuid, _user_id: &str) -> Result<bool, CoreError> {
+        Ok(false)
+    }
+}
+
 fn rbac_policy(
     repo: Arc<dyn PackageRepository>,
 ) -> RegistryPolicy {
@@ -305,9 +332,10 @@ async fn make_app(
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
 
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc))
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None))
         .split_for_parts();
 
     init_service(

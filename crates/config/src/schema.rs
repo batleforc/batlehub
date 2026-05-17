@@ -9,7 +9,7 @@ pub struct AppConfig {
     pub database: DatabaseConfig,
     #[serde(default)]
     pub auth: Vec<AuthConfig>,
-    pub storage: StorageConfig,
+    pub storage: StoragesConfig,
     #[serde(default)]
     pub registries: Vec<RegistryConfig>,
     #[serde(default)]
@@ -42,10 +42,10 @@ impl AppConfig {
     /// | `PROXY_CACHE__SERVER__STATIC_DIR`     | `server.static_dir`          |
     /// | `PROXY_CACHE__DATABASE__URL`          | `database.url`               |
     /// | `PROXY_CACHE__DATABASE__MAX_CONNECTIONS` | `database.max_connections` |
-    /// | `PROXY_CACHE__STORAGE__PATH`          | `storage.path` (filesystem)  |
-    /// | `PROXY_CACHE__STORAGE__BUCKET`        | `storage.bucket` (s3)        |
-    /// | `PROXY_CACHE__STORAGE__REGION`        | `storage.region` (s3)        |
-    /// | `PROXY_CACHE__STORAGE__ENDPOINT_URL`  | `storage.endpoint_url` (s3)  |
+    /// | `PROXY_CACHE__STORAGE__PATH`          | `storage.path` (single filesystem backend only)  |
+    /// | `PROXY_CACHE__STORAGE__BUCKET`        | `storage.bucket` (single S3 backend only)        |
+    /// | `PROXY_CACHE__STORAGE__REGION`        | `storage.region` (single S3 backend only)        |
+    /// | `PROXY_CACHE__STORAGE__ENDPOINT_URL`  | `storage.endpoint_url` (single S3 backend only)  |
     /// | `PROXY_CACHE__OTEL__ENDPOINT`         | `otel.endpoint`              |
     /// | `PROXY_CACHE__OTEL__SERVICE_NAME`     | `otel.service_name`          |
     pub fn apply_env_overrides(&mut self) {
@@ -64,18 +64,20 @@ impl AppConfig {
             if let Ok(n) = v.parse() { self.database.max_connections = n; }
         }
 
-        // storage (type must come from the config file)
-        if let Some(v) = env("PROXY_CACHE__STORAGE__PATH") {
-            if let StorageConfig::Filesystem(fs) = &mut self.storage { fs.path = v; }
-        }
-        if let Some(v) = env("PROXY_CACHE__STORAGE__BUCKET") {
-            if let StorageConfig::S3(s3) = &mut self.storage { s3.bucket = v; }
-        }
-        if let Some(v) = env("PROXY_CACHE__STORAGE__REGION") {
-            if let StorageConfig::S3(s3) = &mut self.storage { s3.region = v; }
-        }
-        if let Some(v) = env("PROXY_CACHE__STORAGE__ENDPOINT_URL") {
-            if let StorageConfig::S3(s3) = &mut self.storage { s3.endpoint_url = Some(v); }
+        // storage env overrides (only supported for legacy single-backend config)
+        if let StoragesConfig::Single(ref mut backend) = self.storage {
+            if let Some(v) = env("PROXY_CACHE__STORAGE__PATH") {
+                if let StorageBackendConfig::Filesystem(fs) = backend { fs.path = v; }
+            }
+            if let Some(v) = env("PROXY_CACHE__STORAGE__BUCKET") {
+                if let StorageBackendConfig::S3(s3) = backend { s3.bucket = v; }
+            }
+            if let Some(v) = env("PROXY_CACHE__STORAGE__REGION") {
+                if let StorageBackendConfig::S3(s3) = backend { s3.region = v; }
+            }
+            if let Some(v) = env("PROXY_CACHE__STORAGE__ENDPOINT_URL") {
+                if let StorageBackendConfig::S3(s3) = backend { s3.endpoint_url = Some(v); }
+            }
         }
 
         // otel — creates the section if not present in the file
@@ -224,9 +226,58 @@ pub struct KubernetesAuthConfig {
 
 // ── Storage ───────────────────────────────────────────────────────────────────
 
+/// Accepts both the legacy single-backend form and the new multi-backend form.
+///
+/// Legacy (single backend, backwards-compatible):
+/// ```toml
+/// [storage]
+/// type = "filesystem"
+/// path = "./tmp/cache"
+/// ```
+///
+/// Multi-backend:
+/// ```toml
+/// [storage]
+/// default = "primary"
+///
+/// [[storage.backends]]
+/// name = "primary"
+/// type = "filesystem"
+/// path = "./tmp/cache"
+///
+/// [[storage.backends]]
+/// name = "rustfs"
+/// type = "s3"
+/// bucket = "artifacts"
+/// region = "us-east-1"
+/// endpoint_url = "http://localhost:9900"
+/// force_path_style = true
+/// ```
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum StoragesConfig {
+    /// Legacy single backend (no `default` or `backends` keys).
+    Single(StorageBackendConfig),
+    /// New multi-backend with explicit default selection.
+    Multi(MultiStorageConfig),
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MultiStorageConfig {
+    pub default: String,
+    pub backends: Vec<NamedStorageConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NamedStorageConfig {
+    pub name: String,
+    #[serde(flatten)]
+    pub config: StorageBackendConfig,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub enum StorageConfig {
+pub enum StorageBackendConfig {
     Filesystem(FilesystemStorageConfig),
     S3(S3StorageConfig),
 }
@@ -242,7 +293,13 @@ pub struct S3StorageConfig {
     pub region: String,
     pub prefix: Option<String>,
     pub endpoint_url: Option<String>,
+    /// Use path-style URLs (required for RustFS, MinIO, and other S3-compatible stores).
+    pub force_path_style: Option<bool>,
 }
+
+// Keep the old name as an alias so existing code compiles during migration.
+#[allow(dead_code)]
+pub type StorageConfig = StoragesConfig;
 
 // ── Registries ────────────────────────────────────────────────────────────────
 
@@ -266,6 +323,11 @@ pub struct RegistryConfig {
     pub rbac: RbacConfig,
     #[serde(default)]
     pub rules: Vec<RuleConfig>,
+    /// Name of the storage backend to use for this registry's artifacts.
+    /// Must match one of the backend names in `[[storage.backends]]`.
+    /// When absent, the default backend is used.
+    #[serde(default)]
+    pub storage: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]

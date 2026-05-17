@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, computed } from "vue";
 import { useRouter } from "vue-router";
+import { Package } from "@lucide/vue";
 import { listPackages, blockPackage, unblockPackage } from "@/client/sdk.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
@@ -34,6 +35,19 @@ const { data: packages, error, loading, reload } = useApi<AdminPackageSummary[]>
   () => listPackages() as Promise<{ data?: unknown; error?: unknown }>,
   [token],
 );
+
+const search = ref("");
+
+const filteredPackages = computed(() => {
+  if (!packages.value) return [];
+  const q = search.value.toLowerCase().trim();
+  if (!q) return packages.value;
+  return packages.value.filter((p) =>
+    p.package_id.name.toLowerCase().includes(q) ||
+    p.package_id.registry.toLowerCase().includes(q) ||
+    p.package_id.version.toLowerCase().includes(q),
+  );
+});
 
 // ── Block existing package ────────────────────────────────────────────────────
 
@@ -166,15 +180,25 @@ async function submitPreBlock() {
 
     <!-- Package list -->
     <Card>
-      <CardHeader class="flex flex-row items-center justify-between space-y-0 pb-4">
-        <CardTitle class="text-lg">All packages</CardTitle>
-        <Button variant="outline" size="sm" @click="reload">Refresh</Button>
+      <CardHeader class="space-y-3 pb-3">
+        <div class="flex flex-row items-center justify-between space-y-0">
+          <CardTitle class="text-lg">
+            All packages
+            <span v-if="packages?.length" class="font-normal text-muted-foreground text-base ml-1">({{ packages.length }})</span>
+          </CardTitle>
+          <Button variant="outline" size="sm" @click="reload">Refresh</Button>
+        </div>
+        <Input
+          v-model="search"
+          placeholder="Filter by name, registry, or version…"
+          class="max-w-sm h-8 text-sm"
+        />
       </CardHeader>
       <CardContent class="p-0">
         <p v-if="loading" class="p-6 text-sm text-muted-foreground">Loading…</p>
         <p v-else-if="error" class="p-6 text-sm text-destructive">{{ error }}</p>
 
-        <Table v-else-if="packages">
+        <Table v-else-if="filteredPackages.length">
           <TableHeader>
             <TableRow>
               <TableHead>Registry</TableHead>
@@ -190,7 +214,7 @@ async function submitPreBlock() {
           </TableHeader>
           <TableBody>
             <TableRow
-              v-for="(pkg, i) in packages"
+              v-for="(pkg, i) in filteredPackages"
               :key="i"
               :class="pkg.status.status === 'blocked' ? 'bg-destructive/5' : ''"
             >
@@ -245,7 +269,15 @@ async function submitPreBlock() {
           </TableBody>
         </Table>
 
-        <p v-else class="p-6 text-sm text-muted-foreground text-center">No packages yet.</p>
+        <div v-else class="py-12 text-center space-y-2">
+          <Package class="h-8 w-8 mx-auto text-muted-foreground/50" />
+          <p class="text-sm text-muted-foreground">
+            {{ search ? "No packages match your filter." : "No packages yet." }}
+          </p>
+          <p v-if="search" class="text-xs text-muted-foreground">
+            Try clearing the filter.
+          </p>
+        </div>
       </CardContent>
     </Card>
   </div>

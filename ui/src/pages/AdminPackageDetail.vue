@@ -26,6 +26,7 @@ interface PackageVersionDetail {
   artifact: string | null;
   status: VersionStatus | BlockedStatus;
   storage_key: string;
+  storage_backend: string | null;
   cached: boolean;
   access_count: number;
   last_accessed: string | null;
@@ -163,6 +164,7 @@ async function doUnblock(v: PackageVersionDetail) {
                 <TableHead>Status</TableHead>
                 <TableHead>Cached</TableHead>
                 <TableHead>Downloads</TableHead>
+                <TableHead>Storage</TableHead>
                 <TableHead>Last accessed</TableHead>
                 <TableHead>Last pulled by</TableHead>
                 <TableHead class="text-right">Actions</TableHead>
@@ -193,6 +195,10 @@ async function doUnblock(v: PackageVersionDetail) {
                   <p class="text-xs text-muted-foreground font-mono mt-0.5">{{ v.storage_key }}</p>
                 </TableCell>
                 <TableCell class="text-right tabular-nums">{{ v.access_count }}</TableCell>
+                <TableCell>
+                  <Badge v-if="v.storage_backend" variant="outline" class="text-xs font-mono">{{ v.storage_backend }}</Badge>
+                  <span v-else class="text-muted-foreground text-sm">—</span>
+                </TableCell>
                 <TableCell class="text-xs">{{ fmtDate(v.last_accessed) }}</TableCell>
                 <TableCell class="text-sm">
                   <span v-if="v.last_accessed_by" class="font-medium">{{ v.last_accessed_by }}</span>

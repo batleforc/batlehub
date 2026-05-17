@@ -9,3 +9,6 @@ pub mod s3;
 
 #[cfg(feature = "storage-s3")]
 pub use s3::S3StorageBackend;
+
+pub mod router;
+pub use router::StorageRouter;

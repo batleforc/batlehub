@@ -3,6 +3,7 @@ use std::sync::Arc;
 use actix_web::{Responder, get, post, web};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx::{PgPool, Row};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
@@ -188,6 +189,8 @@ pub struct PackageVersionDetail {
     pub status: PackageStatusDetail,
     pub storage_key: String,
     pub cached: bool,
+    /// Name of the storage backend holding this artifact (null if not yet cached or pre-migration).
+    pub storage_backend: Option<String>,
     pub access_count: u64,
     pub last_accessed: Option<DateTime<Utc>>,
     pub last_accessed_by: Option<String>,
@@ -239,6 +242,7 @@ pub async fn package_detail(
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
     proxy_svc: web::Data<Arc<ProxyService>>,
+    pool: Option<web::Data<PgPool>>,
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
 
@@ -256,6 +260,17 @@ pub async fn package_detail(
     for s in summaries {
         let storage_key = format!("artifact:{}", s.package_id.cache_key());
         let cached = proxy_svc.storage.exists(&storage_key).await.unwrap_or(false);
+        let storage_backend = if let Some(ref p) = pool {
+            sqlx::query("SELECT backend_name FROM artifact_storage WHERE storage_key = $1")
+                .bind(&storage_key)
+                .fetch_optional(p.get_ref())
+                .await
+                .ok()
+                .flatten()
+                .and_then(|r| r.try_get::<String, _>("backend_name").ok())
+        } else {
+            None
+        };
         let status = match s.status {
             PackageStatus::Available => PackageStatusDetail::Available,
             PackageStatus::Blocked { reason, blocked_by, blocked_at } => {
@@ -269,6 +284,7 @@ pub async fn package_detail(
             status,
             storage_key,
             cached,
+            storage_backend,
             access_count: s.access_count,
             last_accessed: s.last_accessed,
             last_accessed_by: s.last_accessed_by,

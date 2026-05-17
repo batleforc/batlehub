@@ -8,6 +8,9 @@ license.workspace = true
 name = "proxy-cache"
 path = "src/main.rs"
 
+[features]
+storage-s3 = ["proxy-cache-adapters/storage-s3"]
+
 [dependencies]
 proxy-cache-core = { path = "../crates/core" }
 proxy-cache-config = { path = "../crates/config" }

@@ -84,17 +84,33 @@ role_claim = "groups"
 
 # ── Storage backend ────────────────────────────────────────────────────────────
 
+# Single backend (legacy format — still supported):
 [storage]
 type = "filesystem"
 path = "./tmp/storage-cache"
 
-# S3 example:
+# Multi-backend example with RustFS (S3-compatible):
 # [storage]
+# default = "primary"
+#
+# [[storage.backends]]
+# name = "primary"
+# type = "filesystem"
+# path = "./tmp/storage-cache"
+#
+# [[storage.backends]]
+# name = "rustfs"
 # type = "s3"
-# bucket = "my-proxy-cache-bucket"
+# bucket = "artifacts"
 # region = "us-east-1"
-# prefix = "artifacts/"
-# endpoint_url = "http://localhost:9000"   # override for MinIO / localstack
+# endpoint_url = "http://localhost:9900"
+# force_path_style = true   # required for RustFS and MinIO
+#
+# Then assign registries to a specific backend:
+# [[registries]]
+# type = "github"
+# name = "github"
+# storage = "rustfs"   # GitHub artifacts go to RustFS; others use the default
 
 # ── Registries ────────────────────────────────────────────────────────────────
 

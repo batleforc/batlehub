@@ -1,67 +1,138 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { RouterView, RouterLink, useRoute, useRouter } from "vue-router";
+import { Menu, X, Package, ShieldCheck } from "@lucide/vue";
 import { useAuth } from "@/composables/useAuth";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import ThemeToggle from "@/components/ThemeToggle.vue";
 
 const { identity, isAdmin, isAuthenticated, logout } = useAuth();
 const route = useRoute();
 const router = useRouter();
+const mobileOpen = ref(false);
 
-const navLinks = computed(() => {
-  const links: { to: string; label: string }[] = [
-    { to: "/packages", label: "Packages" },
-    { to: "/access-check", label: "Access Check" },
-    { to: "/path-mapper", label: "URL Mapper" },
-    { to: "/setup", label: "Setup" },
-  ];
-  if (isAdmin.value) {
-    links.push(
-      { to: "/admin/packages", label: "Admin — Packages" },
-      { to: "/admin/audit-log", label: "Admin — Audit Log" },
-    );
-  }
-  return links;
+const isOidcUser = computed(
+  () => isAuthenticated.value && identity.value?.auth_provider === "oidc"
+);
+
+const userLinks = [
+  { to: "/packages", label: "Packages" },
+  { to: "/access-check", label: "Access Check" },
+  { to: "/path-mapper", label: "URL Mapper" },
+  { to: "/setup", label: "Setup" },
+];
+
+const adminLinks = [
+  { to: "/admin/packages", label: "Packages" },
+  { to: "/admin/audit-log", label: "Audit Log" },
+];
+
+const userInitials = computed(() => {
+  const uid = identity.value?.user_id;
+  if (!uid) return "?";
+  return uid.slice(0, 2).toUpperCase();
 });
 
 function handleLogout() {
   logout();
   router.push("/login");
+  mobileOpen.value = false;
+}
+
+function isActive(to: string) {
+  return route.path === to || route.path.startsWith(to + "/");
 }
 </script>
 
 <template>
   <div class="min-h-screen bg-background">
-    <header class="border-b bg-card">
-      <div class="container mx-auto flex h-14 items-center gap-6 px-4">
-        <RouterLink to="/packages" class="font-semibold text-sm hover:text-foreground/80">
+    <!-- Header -->
+    <header class="sticky top-0 z-40 border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/60">
+      <div class="container mx-auto flex h-14 items-center gap-4 px-4">
+        <!-- Logo -->
+        <RouterLink
+          to="/packages"
+          class="flex items-center gap-2 font-semibold text-sm hover:text-foreground/80 shrink-0"
+        >
+          <Package class="h-4 w-4 text-primary" />
           Proxy Cache
         </RouterLink>
 
-        <nav class="flex items-center gap-4 text-sm">
+        <!-- Desktop nav -->
+        <nav class="hidden md:flex items-center gap-1 text-sm">
           <RouterLink
-            v-for="link in navLinks"
+            v-for="link in userLinks"
             :key="link.to"
             :to="link.to"
             :class="[
-              'transition-colors hover:text-foreground/80',
-              route.path === link.to
-                ? 'text-foreground font-medium'
+              'px-3 py-1.5 rounded-md transition-colors hover:bg-accent hover:text-accent-foreground',
+              isActive(link.to)
+                ? 'bg-accent text-accent-foreground font-medium'
                 : 'text-muted-foreground',
             ]"
           >
             {{ link.label }}
           </RouterLink>
+
+          <!-- Tokens link for OIDC users -->
+          <RouterLink
+            v-if="isOidcUser"
+            to="/tokens"
+            :class="[
+              'px-3 py-1.5 rounded-md transition-colors hover:bg-accent hover:text-accent-foreground',
+              isActive('/tokens')
+                ? 'bg-accent text-accent-foreground font-medium'
+                : 'text-muted-foreground',
+            ]"
+          >
+            My Tokens
+          </RouterLink>
         </nav>
 
-        <div class="ml-auto flex items-center gap-3">
+        <!-- Admin section (desktop) -->
+        <div v-if="isAdmin" class="hidden md:flex items-center gap-1">
+          <div class="mx-2 h-4 w-px bg-border" />
+          <div class="flex items-center gap-1 text-xs text-muted-foreground mr-1">
+            <ShieldCheck class="h-3 w-3" />
+            Admin
+          </div>
+          <RouterLink
+            v-for="link in adminLinks"
+            :key="link.to"
+            :to="link.to"
+            :class="[
+              'px-3 py-1.5 rounded-md transition-colors text-sm hover:bg-accent hover:text-accent-foreground',
+              isActive(link.to)
+                ? 'bg-accent text-accent-foreground font-medium'
+                : 'text-muted-foreground',
+            ]"
+          >
+            {{ link.label }}
+          </RouterLink>
+        </div>
+
+        <!-- Right side -->
+        <div class="ml-auto flex items-center gap-2">
+          <ThemeToggle />
+
           <template v-if="isAuthenticated">
-            <span class="text-sm font-medium">
-              {{ identity?.user_id }}
-            </span>
-            <Badge v-if="!isAdmin" variant="secondary">{{ identity?.role }}</Badge>
-            <Button variant="ghost" size="sm" @click="handleLogout">
+            <!-- Avatar + user info -->
+            <div class="hidden sm:flex items-center gap-2">
+              <div
+                class="h-7 w-7 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-semibold"
+              >
+                {{ userInitials }}
+              </div>
+              <span class="text-sm text-muted-foreground hidden lg:inline">
+                {{ identity?.user_id }}
+              </span>
+              <Badge v-if="isAdmin" variant="secondary" class="text-xs">admin</Badge>
+              <Badge v-else-if="identity?.role !== 'anonymous'" variant="outline" class="text-xs">
+                {{ identity?.role }}
+              </Badge>
+            </div>
+            <Button variant="ghost" size="sm" @click="handleLogout" class="text-sm">
               Sign out
             </Button>
           </template>
@@ -72,6 +143,75 @@ function handleLogout() {
           >
             Sign in
           </RouterLink>
+
+          <!-- Mobile menu toggle -->
+          <Button
+            variant="ghost"
+            size="icon"
+            class="md:hidden"
+            @click="mobileOpen = !mobileOpen"
+          >
+            <X v-if="mobileOpen" class="h-4 w-4" />
+            <Menu v-else class="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+
+      <!-- Mobile nav -->
+      <div v-if="mobileOpen" class="md:hidden border-t bg-card px-4 py-3 space-y-1">
+        <RouterLink
+          v-for="link in userLinks"
+          :key="link.to"
+          :to="link.to"
+          :class="[
+            'block px-3 py-2 rounded-md text-sm transition-colors',
+            isActive(link.to)
+              ? 'bg-accent text-accent-foreground font-medium'
+              : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+          ]"
+          @click="mobileOpen = false"
+        >
+          {{ link.label }}
+        </RouterLink>
+        <RouterLink
+          v-if="isOidcUser"
+          to="/tokens"
+          :class="[
+            'block px-3 py-2 rounded-md text-sm transition-colors',
+            isActive('/tokens')
+              ? 'bg-accent text-accent-foreground font-medium'
+              : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+          ]"
+          @click="mobileOpen = false"
+        >
+          My Tokens
+        </RouterLink>
+        <template v-if="isAdmin">
+          <div class="pt-2 pb-1 px-3 text-xs text-muted-foreground font-medium flex items-center gap-1">
+            <ShieldCheck class="h-3 w-3" /> Admin
+          </div>
+          <RouterLink
+            v-for="link in adminLinks"
+            :key="link.to"
+            :to="link.to"
+            :class="[
+              'block px-3 py-2 rounded-md text-sm transition-colors',
+              isActive(link.to)
+                ? 'bg-accent text-accent-foreground font-medium'
+                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+            ]"
+            @click="mobileOpen = false"
+          >
+            {{ link.label }}
+          </RouterLink>
+        </template>
+        <div v-if="isAuthenticated" class="pt-2 border-t">
+          <button
+            class="block w-full text-left px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            @click="handleLogout"
+          >
+            Sign out
+          </button>
         </div>
       </div>
     </header>
