@@ -1,0 +1,133 @@
+schemaVersion: 2.3.0
+metadata:
+  name: compose-conversion
+parent:
+  uri: https://raw.githubusercontent.com/batleforc/WeeboDevImage/refs/heads/main/che-mise/devfile.yaml
+components:
+  - name: authentik-postgres
+    container:
+      image: postgres:16-alpine
+      env:
+        - name: POSTGRES_DB
+          value: authentik
+        - name: POSTGRES_PASSWORD
+          value: authentik
+        - name: POSTGRES_USER
+          value: authentik
+      volumeMounts:
+        - name: authentik-postgres-data
+          path: /var/lib/postgresql/data
+      mountSources: true
+  - name: authentik-redis
+    container:
+      image: redis:7-alpine
+      args:
+        - redis-server
+        - --save
+        - ""
+        - --appendonly
+        - no
+        - --stop-writes-on-bgsave-error
+        - no
+      mountSources: true
+  - name: authentik-server
+    container:
+      image: ghcr.io/goauthentik/server:2026.2.2
+      env:
+        - name: AUTHENTIK_BOOTSTRAP_PASSWORD
+          value: akadmin
+        - name: AUTHENTIK_BOOTSTRAP_TOKEN
+          value: akadmin-token
+        - name: AUTHENTIK_POSTGRESQL__HOST
+          value: authentik-postgres
+        - name: AUTHENTIK_POSTGRESQL__NAME
+          value: authentik
+        - name: AUTHENTIK_POSTGRESQL__PASSWORD
+          value: authentik
+        - name: AUTHENTIK_POSTGRESQL__USER
+          value: authentik
+        - name: AUTHENTIK_REDIS__HOST
+          value: authentik-redis
+        - name: AUTHENTIK_SECRET_KEY
+          value: proxy-cache-local-insecure-secret-key
+      endpoints:
+        - name: port-9000
+          targetPort: 9000
+          exposure: public
+      command:
+        - tail
+      args:
+        - -f
+        - /dev/null
+      mountSources: true
+  - name: authentik-worker
+    container:
+      image: ghcr.io/goauthentik/server:2026.2.2
+      env:
+        - name: AUTHENTIK_POSTGRESQL__HOST
+          value: authentik-postgres
+        - name: AUTHENTIK_POSTGRESQL__NAME
+          value: authentik
+        - name: AUTHENTIK_POSTGRESQL__PASSWORD
+          value: authentik
+        - name: AUTHENTIK_POSTGRESQL__USER
+          value: authentik
+        - name: AUTHENTIK_REDIS__HOST
+          value: authentik-redis
+        - name: AUTHENTIK_SECRET_KEY
+          value: proxy-cache-local-insecure-secret-key
+      command:
+        - tail
+      args:
+        - -f
+        - /dev/null
+      mountSources: true
+  - name: jaeger
+    container:
+      image: jaegertracing/all-in-one:1.57
+      env:
+        - name: COLLECTOR_OTLP_ENABLED
+          value: "true"
+      endpoints:
+        - name: port-4317
+          targetPort: 4317
+          exposure: public
+        - name: port-16686
+          targetPort: 16686
+          exposure: public
+      mountSources: true
+  - name: postgres
+    container:
+      image: postgres:17-alpine
+      env:
+        - name: POSTGRES_DB
+          value: proxy_cache
+        - name: POSTGRES_PASSWORD
+          value: changeme
+        - name: POSTGRES_USER
+          value: proxy_cache
+      endpoints:
+        - name: port-5432
+          targetPort: 5432
+          exposure: public
+      volumeMounts:
+        - name: postgres-data
+          path: /var/lib/postgresql/data
+      mountSources: true
+  - name: authentik-postgres-data
+    volume: {}
+  - name: postgres-data
+    volume: {}
+commands:
+  - id: run-authentik-server
+    exec:
+      component: authentik-server
+      commandLine: server
+  - id: run-authentik-worker
+    exec:
+      component: authentik-worker
+      commandLine: worker
+events:
+  postStart:
+    - run-authentik-server
+    - run-authentik-worker
