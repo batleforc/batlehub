@@ -96,6 +96,7 @@ impl ProxyService {
             package: &metadata,
             resource_type: &req.resource_type,
             cache_entry: None,
+            requested_version: Some(&req.package_id.version),
         };
 
         if let RuleDecision::Deny { reason } = evaluate_rules(rules, &ctx).await {

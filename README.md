@@ -29,6 +29,7 @@ Multiple instances of the same registry type can run in parallel (e.g. a private
 | Publish timestamp | ⚠ ² | ✓ | ✓ | ✓ | ✓ |
 | Signed release detection | — | — | — | ✓ | — |
 | Release age gate rule | ⚠ ² | ✓ | ✓ | ✓ | ✓ |
+| Deny latest tag rule | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Multi-upstream fanout | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 > ² **GitHub**: publish timestamp (and therefore the age gate) is only populated for specific-tag release requests. Raw file, source tarball, and release-listing requests return no timestamp and the rule is skipped.
@@ -38,6 +39,7 @@ Multiple instances of the same registry type can run in parallel (e.g. a private
 - **Artifact caching** — first download is fetched from upstream and stored; subsequent requests are served from local or S3 storage.
 - **RBAC** — per-registry permissions for `anonymous`, `user`, and `admin` roles, plus group-based access from OIDC or Kubernetes claims.
 - **Release age gate** — block packages published less than N seconds ago (supply-chain delay window).
+- **Deny latest tag** — reject requests that use `"latest"` as a version, forcing consumers to pin exact versions. Configurable bypass roles (e.g. admins may still use `latest`).
 - **Fanout / failover** — list multiple upstreams per registry; 404 from one falls through to the next.
 - **Self-hosted registry support** — upstream auth (Bearer token, Basic, or custom header) and custom CA certificates per registry, for air-gapped or corporate environments.
 - **Auth providers** — static tokens, OIDC (Authentik, Keycloak, Dex, …), Kubernetes service account tokens.
@@ -226,7 +228,7 @@ server/src/main.rs         — builds registry clients, policies, services
          ▼
 ProxyService               — orchestrates caching, rules, streaming
   ├── resolve_metadata()   → registry adapter (fetches version info from upstream)
-  ├── evaluate rules       → RBAC, block list, release age gate
+  ├── evaluate rules       → RBAC, block list, release age gate, deny latest
   ├── storage cache        → filesystem or S3
   └── fetch_artifact()     → registry adapter (streams bytes from upstream)
          │
@@ -269,6 +271,32 @@ task fmt          # cargo fmt --all
 task dump-spec    # regenerate ui/openapi.json
 task ui:generate  # regenerate TypeScript client from openapi.json
 ```
+
+### Fuzzing
+
+The `fuzz/` directory contains libFuzzer targets for the most security-sensitive code paths:
+
+| Target | What it covers |
+|--------|---------------|
+| `fuzz_rbac_evaluate` | RBAC group-string parsing (colon-based provider prefix splitting) |
+| `fuzz_package_id_cache_key` | `PackageId::cache_key()` with arbitrary registry/name/version strings |
+| `fuzz_deny_latest` | Version-string comparison — verifies only exact `"latest"` is blocked |
+| `fuzz_release_age` | Chrono timestamp arithmetic with arbitrary past/future dates |
+
+Requires a nightly Rust toolchain and `cargo-fuzz`:
+
+```sh
+rustup install nightly
+cargo install cargo-fuzz
+
+# Run a specific target (30 s by default)
+task fuzz TARGET=fuzz_deny_latest
+
+# Run longer or with a different target
+task fuzz TARGET=fuzz_rbac_evaluate MAX_TIME=300
+```
+
+Corpus and crash inputs are saved under `fuzz/corpus/<target>/` and `fuzz/artifacts/<target>/` respectively.
 
 ### Adding a new registry type
 

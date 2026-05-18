@@ -437,6 +437,7 @@ pub struct RbacConfig {
 pub enum RuleConfig {
     ReleaseAgeGate(ReleaseAgeGateConfig),
     RequireSignedRelease(RequireSignedReleaseConfig),
+    DenyLatest(DenyLatestConfig),
 }
 
 #[derive(Debug, Deserialize)]
@@ -457,6 +458,13 @@ fn default_min_age() -> u64 {
 pub struct RequireSignedReleaseConfig {
     #[serde(default)]
     pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DenyLatestConfig {
+    /// Roles that may bypass the restriction (e.g. `["admin"]`).
+    #[serde(default)]
+    pub bypass_roles: Vec<String>,
 }
 
 // ── OTEL ──────────────────────────────────────────────────────────────────────

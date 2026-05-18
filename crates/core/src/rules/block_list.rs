@@ -120,6 +120,7 @@ mod tests {
             package: pkg,
             resource_type: "releases:read",
             cache_entry: None,
+            requested_version: None,
         }
     }
 

@@ -1,0 +1,42 @@
+[workspace]
+
+[package]
+name = "proxy-cache-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+proxy-cache-core = { path = "../crates/core" }
+arbitrary = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt"] }
+chrono = "0.4"
+serde_json = "1"
+
+[[bin]]
+name = "fuzz_rbac_evaluate"
+path = "fuzz_targets/fuzz_rbac_evaluate.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_package_id_cache_key"
+path = "fuzz_targets/fuzz_package_id_cache_key.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_deny_latest"
+path = "fuzz_targets/fuzz_deny_latest.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_release_age"
+path = "fuzz_targets/fuzz_release_age.rs"
+test = false
+doc = false

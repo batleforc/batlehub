@@ -227,6 +227,12 @@ bypass_roles = ["admin"]
 # kind = "require_signed_release"
 # enabled = true
 
+# Deny "latest" version tag: force consumers to pin explicit versions.
+# Admins (or any listed role) may still use "latest".
+# [[registries.rules]]
+# kind = "deny_latest"
+# bypass_roles = ["admin"]
+
 [[registries]]
 type = "goproxy"
 name = "go"

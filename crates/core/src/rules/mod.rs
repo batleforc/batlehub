@@ -1,8 +1,10 @@
 pub mod block_list;
+pub mod deny_latest;
 pub mod rbac;
 pub mod release_age;
 
 pub use block_list::BlockListRule;
+pub use deny_latest::DenyLatestRule;
 pub use rbac::RbacRule;
 pub use release_age::ReleaseAgeGateRule;
 
@@ -17,6 +19,9 @@ pub struct RuleContext<'a> {
     /// The operation being requested, e.g. `"releases:read"`, `"source:read"`.
     pub resource_type: &'a str,
     pub cache_entry: Option<&'a CacheEntry>,
+    /// The version string from the original request, before upstream resolution.
+    /// For example `"latest"` even if the upstream resolved it to `"1.2.3"`.
+    pub requested_version: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]

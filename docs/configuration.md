@@ -425,6 +425,23 @@ export GOPROXY="http://proxy-cache.example.com/proxy/go,direct"
 | `kind` | string | — | Must be `"require_signed_release"` |
 | `enabled` | bool | `false` | When true, blocks releases that do not have a verified signature |
 
+**`[[registries.rules]]` — Deny latest:**
+
+Rejects any request that uses `"latest"` as the version tag, forcing consumers to pin explicit versions (supply-chain hygiene).
+
+```toml
+[[registries.rules]]
+kind = "deny_latest"
+bypass_roles = ["admin"]   # omit or leave empty for a hard block
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | string | — | Must be `"deny_latest"` |
+| `bypass_roles` | string[] | `[]` | Roles that may still request `"latest"` (e.g. `["admin"]`). When multiple roles are listed the least-privileged one sets the access floor. When empty, the block applies to all roles. |
+
+> This rule applies to all registry types. `"latest"` is the literal version string sent by the client — for npm it maps to the `latest` dist-tag, for Cargo and Go it triggers upstream `@latest` resolution, and for OpenVSX it fetches the current published version.
+
 #### `[registries.upstream_auth]` {#upstream_auth}
 
 Credentials to send on every upstream request for this registry. Three schemes are supported; choose one.
