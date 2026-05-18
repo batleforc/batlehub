@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{trace as sdktrace, Resource};
 use tracing::info;
-use tracing_actix_web::TracingLogger;
+use tracing_actix_web::{DefaultRootSpanBuilder, RootSpanBuilder, TracingLogger};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use utoipa::OpenApi as _;
 use utoipa_actix_web::AppExt;
@@ -37,6 +37,38 @@ use proxy_cache_core::{
     services::{AdminService, ProxyService, RegistryPolicy},
 };
 use proxy_cache_web::{configure_app, openapi_spec, AccessConfig, ApiDoc, CargoIndexProxy, RegistryMap};
+
+// ── Tracing span builder ──────────────────────────────────────────────────────
+
+/// Custom root span builder that separates upstream/client errors from backend faults:
+/// - 4xx → `INFO`  "upstream/client error (not a backend fault)"
+/// - 5xx → `WARN`  "backend error"
+struct ProxyCacheSpanBuilder;
+
+impl RootSpanBuilder for ProxyCacheSpanBuilder {
+    fn on_request_start(request: &actix_web::dev::ServiceRequest) -> tracing::Span {
+        tracing_actix_web::root_span!(level = tracing::Level::INFO, request)
+    }
+
+    fn on_request_end<B: actix_web::body::MessageBody>(
+        span: tracing::Span,
+        outcome: &Result<actix_web::dev::ServiceResponse<B>, actix_web::Error>,
+    ) {
+        let status = match outcome {
+            Ok(resp) => resp.status(),
+            Err(err) => err.as_response_error().status_code(),
+        };
+        if status.is_client_error() {
+            tracing::info!(
+                http.status_code = status.as_u16(),
+                "upstream/client error (not a backend fault)"
+            );
+        } else if status.is_server_error() {
+            tracing::warn!(http.status_code = status.as_u16(), "backend error");
+        }
+        DefaultRootSpanBuilder::on_request_end(span, outcome);
+    }
+}
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -281,7 +313,7 @@ async fn main() -> Result<()> {
             cors_allowed_origins.iter().fold(cors_base, |c, origin| c.allowed_origin(origin))
         };
 
-        app.wrap(TracingLogger::default())
+        app.wrap(TracingLogger::<ProxyCacheSpanBuilder>::new())
             .wrap(proxy_cache_web::AuthMiddlewareFactory::new(
                 auth_providers.clone(),
             ))
