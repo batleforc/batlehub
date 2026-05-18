@@ -1,0 +1,11 @@
+{
+  "recommendations": [
+    "hverlin.mise-vscode",
+    "rust-lang.rust-analyzer",
+    "vadimcn.vscode-lldb",
+    "nhoizey.gremlins",
+    "oderwat.indent-rainbow",
+    "shardulm94.trailing-spaces",
+    "pflannery.vscode-versionlens"
+  ]
+}

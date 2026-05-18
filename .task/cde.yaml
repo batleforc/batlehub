@@ -1,0 +1,34 @@
+version: "3"
+
+tasks:
+  init:
+    desc: "Init the Cloud Dev Environment"
+    cmds:
+      - echo "===================================="
+      - echo "Initializing the Cloud Dev Environment"
+      - echo "===================================="
+      - echo "This may take a few minutes..."
+      - echo "Provisioning database ..."
+      - task cde:db:init
+      - echo "Waiting for database to be ready..."
+      - echo "===================================="
+      - echo "Done!"
+  db:init:
+    desc: "Create two databases: proxy_cache and authentik"
+    silent: true
+    cmds:
+      - kubectl exec -c postgres -it $HOSTNAME -- PGPASSWORD=\$POSTGRES_PASSWORD psql -U \$POSTGRES_USER -c 'CREATE DATABASE proxy_cache;'
+      - kubectl exec -c postgres -it $HOSTNAME -- PGPASSWORD=\$POSTGRES_PASSWORD psql -U \$POSTGRES_USER -c 'CREATE DATABASE authentik;'
+  auth:start:
+    desc: "Start the Authentik identity provider (requires db:init)"
+    deps:
+      - task: auth:start:server
+      - task: auth:start:worker
+  auth:start:server:
+    desc: "Start the Authentik server"
+    cmds:
+      - kubectl exec -c authentik-server -it $HOSTNAME -- server
+  auth:start:worker:
+    desc: "Start the Authentik worker"
+    cmds:
+      - kubectl exec -c authentik-worker -it $HOSTNAME -- worker

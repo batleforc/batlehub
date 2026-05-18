@@ -92,18 +92,19 @@ components:
           value: changeme
         - name: POSTGRES_USER
           value: proxy_cache
+        - name: PGDATA
+          value: /data/pgdata
       endpoints:
         - name: port-5432
           targetPort: 5432
           exposure: public
       volumeMounts:
         - name: postgres-data
-          path: /var/lib/postgresql
+          path: /data/
       mountSources: true
-  - name: authentik-postgres-data
-    volume: {}
   - name: postgres-data
-    volume: {}
+    volume:
+      size: 10Gi
 commands:
   - id: run-authentik-server
     exec:

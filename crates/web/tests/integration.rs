@@ -314,6 +314,8 @@ async fn make_app(
         ("github".to_owned(), FixedRegistry::new("github") as Arc<dyn RegistryClient>),
         ("npm".to_owned(), FixedRegistry::new("npm") as Arc<dyn RegistryClient>),
         ("cargo".to_owned(), FixedRegistry::new("cargo") as Arc<dyn RegistryClient>),
+        ("openvsx".to_owned(), FixedRegistry::new("openvsx") as Arc<dyn RegistryClient>),
+        ("go".to_owned(), FixedRegistry::new("goproxy") as Arc<dyn RegistryClient>),
     ]
     .into();
 
@@ -321,6 +323,8 @@ async fn make_app(
         ("github".to_owned(), rbac_policy(repo_dyn.clone())),
         ("npm".to_owned(), rbac_policy(repo_dyn.clone())),
         ("cargo".to_owned(), rbac_policy(repo_dyn.clone())),
+        ("openvsx".to_owned(), rbac_policy(repo_dyn.clone())),
+        ("go".to_owned(), rbac_policy(repo_dyn.clone())),
     ]
     .into();
 
@@ -336,13 +340,13 @@ async fn make_app(
 
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
     let access_config = proxy_cache_web::AccessConfig {
-        anonymous: ["github", "npm", "cargo"].iter().map(|s| s.to_string()).collect(),
-        user: ["github", "npm", "cargo"].iter().map(|s| s.to_string()).collect(),
-        admin: ["github", "npm", "cargo"].iter().map(|s| s.to_string()).collect(),
+        anonymous: ["github", "npm", "cargo", "openvsx", "go"].iter().map(|s| s.to_string()).collect(),
+        user: ["github", "npm", "cargo", "openvsx", "go"].iter().map(|s| s.to_string()).collect(),
+        admin: ["github", "npm", "cargo", "openvsx", "go"].iter().map(|s| s.to_string()).collect(),
         groups: std::collections::HashMap::new(),
     };
     let registry_map = proxy_cache_web::RegistryMap(
-        [("github", "github"), ("npm", "npm"), ("cargo", "cargo")]
+        [("github", "github"), ("npm", "npm"), ("cargo", "cargo"), ("openvsx", "openvsx"), ("go", "goproxy")]
             .iter()
             .map(|(n, t)| (n.to_string(), t.to_string()))
             .collect(),
@@ -2032,4 +2036,138 @@ async fn package_detail_shows_blocked_status() {
     assert!(!versions.is_empty());
     assert_eq!(versions[0]["status"]["status"], "blocked");
     assert_eq!(versions[0]["status"]["reason"], "vuln");
+}
+
+// ── OpenVSX proxy handler ─────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn proxy_openvsx_vsix_blocked_for_anonymous() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/openvsx/ms-python.python/2023.20.0/vsix")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    // download_vsix uses source:read — anonymous only has releases:read
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn proxy_openvsx_vsix_accessible_by_user() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/openvsx/ms-python.python/2023.20.0/vsix")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn proxy_openvsx_wrong_registry_type_returns_404() {
+    let app = make_app(InMemoryRepo::new()).await;
+    // "npm" exists but is type "npm", not "openvsx" — require_openvsx rejects it
+    let req = TestRequest::get()
+        .uri("/proxy/npm/ms-python.python/2023.20.0/vsix")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn proxy_openvsx_unknown_registry_returns_404() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/unknown-reg/ms-python.python/2023.20.0/vsix")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+// ── GoProxy handler ───────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn proxy_goproxy_latest_accessible_anonymously() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/go/golang.org/x/text/@latest")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn proxy_goproxy_list_accessible_anonymously() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/go/golang.org/x/text/@v/list")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn proxy_goproxy_info_accessible_anonymously() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/go/golang.org/x/text/@v/v0.3.7.info")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn proxy_goproxy_mod_accessible_anonymously() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/go/golang.org/x/text/@v/v0.3.7.mod")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn proxy_goproxy_zip_blocked_for_anonymous() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/go/golang.org/x/text/@v/v0.3.7.zip")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    // zip uses source:read — anonymous only has releases:read
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn proxy_goproxy_zip_accessible_by_user() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/go/golang.org/x/text/@v/v0.3.7.zip")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn proxy_goproxy_unknown_file_extension_returns_404() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/go/golang.org/x/text/@v/v0.3.7.tar")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn proxy_goproxy_wrong_registry_type_returns_404() {
+    let app = make_app(InMemoryRepo::new()).await;
+    // "npm" exists but is type "npm", not "goproxy" — require_goproxy rejects it
+    let req = TestRequest::get()
+        .uri("/proxy/npm/golang.org/x/text/@latest")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
 }

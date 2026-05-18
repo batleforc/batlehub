@@ -26,7 +26,16 @@ impl StaticTokenAuthProvider {
     pub fn new(entries: impl IntoIterator<Item = (String, Option<String>, Role)>) -> Self {
         let tokens = entries
             .into_iter()
-            .map(|(value, user_id, role)| (value, TokenRecord { user_id, role, groups: vec![] }))
+            .map(|(value, user_id, role)| {
+                (
+                    value,
+                    TokenRecord {
+                        user_id,
+                        role,
+                        groups: vec![],
+                    },
+                )
+            })
             .collect();
         Self { tokens }
     }
@@ -37,7 +46,14 @@ impl StaticTokenAuthProvider {
         entries: impl IntoIterator<Item = (String, Option<String>, Role, Vec<String>)>,
     ) -> Self {
         for (value, user_id, role, groups) in entries {
-            self.tokens.insert(value, TokenRecord { user_id, role, groups });
+            self.tokens.insert(
+                value,
+                TokenRecord {
+                    user_id,
+                    role,
+                    groups,
+                },
+            );
         }
         self
     }
@@ -59,9 +75,15 @@ impl AuthProvider for StaticTokenAuthProvider {
             return Ok(None);
         };
 
-        let token = if let Some(t) = value.strip_prefix("Bearer ").or_else(|| value.strip_prefix("bearer ")) {
+        let token = if let Some(t) = value
+            .strip_prefix("Bearer ")
+            .or_else(|| value.strip_prefix("bearer "))
+        {
             t.to_owned()
-        } else if let Some(encoded) = value.strip_prefix("Basic ").or_else(|| value.strip_prefix("basic ")) {
+        } else if let Some(encoded) = value
+            .strip_prefix("Basic ")
+            .or_else(|| value.strip_prefix("basic "))
+        {
             let decoded = base64::engine::general_purpose::STANDARD
                 .decode(encoded.trim())
                 .ok()
@@ -70,7 +92,11 @@ impl AuthProvider for StaticTokenAuthProvider {
                 return Ok(None);
             };
             // user:token — split at first `:` only, token may contain `:`
-            decoded.splitn(2, ':').nth(1).unwrap_or("").to_owned()
+            decoded
+                .split_once(':')
+                .map(|x| x.1)
+                .unwrap_or("")
+                .to_owned()
         } else {
             return Ok(None);
         };

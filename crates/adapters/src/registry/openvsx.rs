@@ -191,3 +191,298 @@ impl OpenVsxRegistryClient {
             .map_err(|e| CoreError::Registry(e.to_string()))
     }
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::TryStreamExt;
+    use mockito::Server;
+
+    fn pkg(name: &str, version: &str) -> PackageId {
+        PackageId::new("openvsx", name, version)
+    }
+
+    const EXT_BODY: &str =
+        r#"{"namespace":"ms-python","name":"python","version":"2023.20.0"}"#;
+
+    // ── parse_id ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_id_valid() {
+        let (publisher, name) = OpenVsxRegistryClient::parse_id("ms-python.python").unwrap();
+        assert_eq!(publisher, "ms-python");
+        assert_eq!(name, "python");
+    }
+
+    #[test]
+    fn parse_id_multiple_dots() {
+        // split_once stops at the first dot, so extra dots go into the name segment
+        let (publisher, name) = OpenVsxRegistryClient::parse_id("pub.ext.extra").unwrap();
+        assert_eq!(publisher, "pub");
+        assert_eq!(name, "ext.extra");
+    }
+
+    #[test]
+    fn parse_id_no_dot() {
+        let result = OpenVsxRegistryClient::parse_id("nopublisher");
+        assert!(matches!(result, Err(CoreError::Registry(_))));
+    }
+
+    // ── resolve_metadata ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn resolve_metadata_latest() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/api/ms-python/python")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(EXT_BODY)
+            .create_async()
+            .await;
+
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let meta = client.resolve_metadata(&pkg("ms-python.python", "latest")).await.unwrap();
+
+        assert_eq!(meta.id.version, "2023.20.0");
+    }
+
+    #[tokio::test]
+    async fn resolve_metadata_specific_version() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/api/ms-python/python/2023.20.0")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(EXT_BODY)
+            .create_async()
+            .await;
+
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let meta =
+            client.resolve_metadata(&pkg("ms-python.python", "2023.20.0")).await.unwrap();
+
+        assert_eq!(meta.id.version, "2023.20.0");
+    }
+
+    #[tokio::test]
+    async fn resolve_metadata_no_artifact() {
+        let mut server = Server::new_async().await;
+        let body = r#"{"namespace":"ms-python","name":"python","version":"2023.20.0","files":{"download":"http://example.com/ext.vsix"}}"#;
+        let _mock = server
+            .mock("GET", "/api/ms-python/python/2023.20.0")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let meta =
+            client.resolve_metadata(&pkg("ms-python.python", "2023.20.0")).await.unwrap();
+
+        assert!(meta.download_url.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_metadata_vsix_artifact() {
+        let mut server = Server::new_async().await;
+        let body = r#"{"namespace":"ms-python","name":"python","version":"2023.20.0","files":{"download":"http://example.com/ext.vsix"}}"#;
+        let _mock = server
+            .mock("GET", "/api/ms-python/python/2023.20.0")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let p = pkg("ms-python.python", "2023.20.0").with_artifact("vsix");
+        let meta = client.resolve_metadata(&p).await.unwrap();
+
+        assert_eq!(meta.download_url.as_deref(), Some("http://example.com/ext.vsix"));
+    }
+
+    #[tokio::test]
+    async fn resolve_metadata_is_signed_true() {
+        let mut server = Server::new_async().await;
+        let body = r#"{"namespace":"ms-python","name":"python","version":"2023.20.0","files":{"signature":"http://example.com/ext.sigzip"}}"#;
+        let _mock = server
+            .mock("GET", "/api/ms-python/python/2023.20.0")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let meta =
+            client.resolve_metadata(&pkg("ms-python.python", "2023.20.0")).await.unwrap();
+
+        assert_eq!(meta.is_signed, Some(true));
+    }
+
+    #[tokio::test]
+    async fn resolve_metadata_is_signed_false() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/api/ms-python/python/2023.20.0")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(EXT_BODY)
+            .create_async()
+            .await;
+
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let meta =
+            client.resolve_metadata(&pkg("ms-python.python", "2023.20.0")).await.unwrap();
+
+        assert_eq!(meta.is_signed, Some(false));
+    }
+
+    #[tokio::test]
+    async fn resolve_metadata_timestamp_parsed() {
+        let mut server = Server::new_async().await;
+        let body = r#"{"namespace":"ms-python","name":"python","version":"2023.20.0","timestamp":"2023-11-09T18:25:45Z"}"#;
+        let _mock = server
+            .mock("GET", "/api/ms-python/python/2023.20.0")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let meta =
+            client.resolve_metadata(&pkg("ms-python.python", "2023.20.0")).await.unwrap();
+
+        assert!(meta.published_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn resolve_metadata_not_found() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/api/ms-python/python/9.9.9")
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let result = client.resolve_metadata(&pkg("ms-python.python", "9.9.9")).await;
+
+        assert!(matches!(result, Err(CoreError::NotFound(_))));
+    }
+
+    // ── fetch_artifact ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_artifact_streams_bytes() {
+        let mut server = Server::new_async().await;
+        let dl_path = "/files/ms-python/python/2023.20.0/python.vsix";
+        let dl_url = format!("{}{}", server.url(), dl_path);
+        let body = format!(
+            r#"{{"namespace":"ms-python","name":"python","version":"2023.20.0","files":{{"download":"{}"}}}}"#,
+            dl_url
+        );
+
+        let _mock_meta = server
+            .mock("GET", "/api/ms-python/python/2023.20.0")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+        let _mock_dl = server
+            .mock("GET", dl_path)
+            .with_status(200)
+            .with_body("fake vsix content")
+            .create_async()
+            .await;
+
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let stream =
+            client.fetch_artifact(&pkg("ms-python.python", "2023.20.0")).await.unwrap();
+        let chunks: Vec<bytes::Bytes> = stream.try_collect().await.unwrap();
+        let content: Vec<u8> = chunks.into_iter().flat_map(|b| b.to_vec()).collect();
+        assert_eq!(content, b"fake vsix content");
+    }
+
+    #[tokio::test]
+    async fn fetch_artifact_missing_download_url() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/api/ms-python/python/2023.20.0")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(EXT_BODY)
+            .create_async()
+            .await;
+
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let result = client.fetch_artifact(&pkg("ms-python.python", "2023.20.0")).await;
+
+        assert!(matches!(result, Err(CoreError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn fetch_artifact_extension_not_found() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/api/ms-python/python/9.9.9")
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let result = client.fetch_artifact(&pkg("ms-python.python", "9.9.9")).await;
+
+        assert!(matches!(result, Err(CoreError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn fetch_artifact_extension_server_error() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/api/ms-python/python/2023.20.0")
+            .with_status(500)
+            .create_async()
+            .await;
+
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let result = client.fetch_artifact(&pkg("ms-python.python", "2023.20.0")).await;
+
+        assert!(matches!(result, Err(CoreError::Registry(_))));
+    }
+
+    #[tokio::test]
+    async fn fetch_artifact_download_server_error() {
+        let mut server = Server::new_async().await;
+        let dl_path = "/files/ms-python/python/2023.20.0/python.vsix";
+        let dl_url = format!("{}{}", server.url(), dl_path);
+        let body = format!(
+            r#"{{"namespace":"ms-python","name":"python","version":"2023.20.0","files":{{"download":"{}"}}}}"#,
+            dl_url
+        );
+
+        let _mock_meta = server
+            .mock("GET", "/api/ms-python/python/2023.20.0")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+        let _mock_dl = server
+            .mock("GET", dl_path)
+            .with_status(500)
+            .create_async()
+            .await;
+
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let result = client.fetch_artifact(&pkg("ms-python.python", "2023.20.0")).await;
+
+        assert!(matches!(result, Err(CoreError::Registry(_))));
+    }
+}

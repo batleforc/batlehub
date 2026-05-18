@@ -5,6 +5,7 @@ target/
 fuzz/target/
 fuzz/corpus/
 fuzz/artifacts/
+coverage/
 
 # Config (contains secrets)
 config.toml
