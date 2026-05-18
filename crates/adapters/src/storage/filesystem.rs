@@ -12,8 +12,11 @@ use proxy_cache_core::{
 
 /// Stores cached artifacts on the local filesystem.
 ///
-/// Each artifact is stored as a single file. The key is sanitised to a path
-/// by replacing `:` and the path separator with `__` and `/` respectively.
+/// Each artifact is stored as a single `.dat` file. The key is sanitised:
+/// `:` → `__`, `/` stays as the path separator, and `.dat` is appended.
+/// The `.dat` suffix prevents a file at `…/v1.2.3.dat` from colliding with
+/// the directory `…/v1.2.3/` needed when a sub-artifact (e.g. `.mod`) is
+/// stored alongside the version info under the same version prefix.
 pub struct FilesystemStorageBackend {
     root: PathBuf,
 }
@@ -26,10 +29,8 @@ impl FilesystemStorageBackend {
     }
 
     fn key_to_path(&self, key: &str) -> PathBuf {
-        // key example: "artifact:github/rust-lang/rust/v1.80.0/12345"
-        // strip the "artifact:" prefix and use the rest as a relative path.
         let rel = key.replace(':', "__");
-        self.root.join(rel)
+        self.root.join(format!("{rel}.dat"))
     }
 }
 

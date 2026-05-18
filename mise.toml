@@ -1,6 +1,7 @@
 [tools]
 claude = "latest"
 cocogitto = "latest"
+go = "latest"
 node = "24"
 rust = "latest"
 task = "latest"
