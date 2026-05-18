@@ -98,7 +98,7 @@ components:
           exposure: public
       volumeMounts:
         - name: postgres-data
-          path: /var/lib/postgresql/data
+          path: /var/lib/postgresql
       mountSources: true
   - name: authentik-postgres-data
     volume: {}
