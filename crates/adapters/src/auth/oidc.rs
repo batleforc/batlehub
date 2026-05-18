@@ -340,12 +340,18 @@ impl AuthProvider for OidcAuthProvider {
             validation.set_issuer(&[&self.issuer]);
         }
 
-        let token_data = decode::<serde_json::Map<String, serde_json::Value>>(
+        let token_data = match decode::<serde_json::Map<String, serde_json::Value>>(
             token,
             &decoding_key,
             &validation,
-        )
-        .map_err(|e| CoreError::Auth(format!("JWT validation failed: {e}")))?;
+        ) {
+            Ok(data) => data,
+            Err(e) if matches!(e.kind(), jsonwebtoken::errors::ErrorKind::ExpiredSignature) => {
+                tracing::debug!(provider = %self.name, "JWT expired");
+                return Ok(None);
+            }
+            Err(e) => return Err(CoreError::Auth(format!("JWT validation failed: {e}"))),
+        };
 
         let claims = token_data.claims;
 
@@ -599,14 +605,13 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
     // ── JWT validation errors ─────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn expired_token_returns_auth_error() {
+    async fn expired_token_returns_none() {
         let p = default_provider();
         let token = signed_token(
             Some("test-kid"),
             json!({ "sub": "frank", "role": "admin", "exp": past_exp() }),
         );
-        let err = p.authenticate(&bearer(&token)).await.unwrap_err();
-        assert!(matches!(err, CoreError::Auth(_)));
+        assert!(p.authenticate(&bearer(&token)).await.unwrap().is_none());
     }
 
     #[tokio::test]

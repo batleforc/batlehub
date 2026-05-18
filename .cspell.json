@@ -1,0 +1,29 @@
+{
+  "version": "0.2",
+  "language": "en",
+  "words": [
+    "actix",
+    "CARGOCONF",
+    "coloured",
+    "goproxy",
+    "GOPROXY",
+    "GONOSUMCHECK",
+    "GONOSUMDB",
+    "GOFLAGS",
+    "linux",
+    "loglevel",
+    "mytoken",
+    "netrc",
+    "NETRC",
+    "openvsx",
+    "OPENVSX",
+    "packument",
+    "redhat",
+    "reqwest",
+    "serde",
+    "TMPDIR",
+    "utoipa",
+    "vsix",
+    "VSIX"
+  ]
+}

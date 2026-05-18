@@ -9,6 +9,8 @@ use proxy_cache_core::{
     ports::{ArtifactStream, RegistryClient},
 };
 
+use super::http_client::{apply_upstream_options, UpstreamHttpOptions};
+
 /// crates.io (or compatible) registry client.
 ///
 /// Supported `PackageId` conventions:
@@ -18,17 +20,25 @@ use proxy_cache_core::{
 pub struct CargoRegistryClient {
     http: reqwest::Client,
     base_url: String,
+    basic_auth: Option<(String, String)>,
 }
 
 impl CargoRegistryClient {
-    pub fn new(base_url: impl Into<String>) -> Self {
-        let http = reqwest::Client::builder()
+    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Self {
+        let builder = reqwest::Client::builder()
             .user_agent("proxy-cache/0.1")
-            // crates.io requires a User-Agent; follow redirects for downloads.
-            .redirect(reqwest::redirect::Policy::limited(10))
-            .build()
+            .redirect(reqwest::redirect::Policy::limited(10));
+        let http = apply_upstream_options(builder, opts)
             .expect("failed to build Cargo HTTP client");
-        Self { http, base_url: base_url.into() }
+        Self { http, base_url: base_url.into(), basic_auth: opts.basic_auth.clone() }
+    }
+
+    fn get(&self, url: &str) -> reqwest::RequestBuilder {
+        let rb = self.http.get(url);
+        match &self.basic_auth {
+            Some((u, p)) => rb.basic_auth(u, Some(p)),
+            None => rb,
+        }
     }
 }
 
@@ -136,7 +146,6 @@ impl RegistryClient for CargoRegistryClient {
         tracing::debug!(url = %url, "fetching cargo crate");
 
         let response = self
-            .http
             .get(&url)
             .send()
             .await
@@ -155,8 +164,7 @@ impl RegistryClient for CargoRegistryClient {
 impl CargoRegistryClient {
     async fn fetch_crate_info(&self, name: &str) -> Result<CratesIoResponse, CoreError> {
         let url = format!("{}/api/v1/crates/{}", self.base_url, name);
-        let resp = self.http
-            .get(&url)
+        let resp = self.get(&url)
             .send()
             .await
             .map_err(|e| CoreError::Registry(e.to_string()))?;

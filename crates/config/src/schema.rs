@@ -359,6 +359,45 @@ pub struct RegistryConfig {
     /// from upstream with nothing written to storage.
     #[serde(default)]
     pub firewall_only: bool,
+    /// Credentials to send on every upstream request for this registry.
+    #[serde(default)]
+    pub upstream_auth: Option<UpstreamAuthConfig>,
+    /// TLS settings for upstream connections (e.g. custom CA certificate).
+    #[serde(default)]
+    pub tls: Option<UpstreamTlsConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum UpstreamAuthConfig {
+    Bearer(BearerAuthConfig),
+    Basic(BasicAuthConfig),
+    Header(HeaderAuthConfig),
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BearerAuthConfig {
+    pub token: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BasicAuthConfig {
+    pub username: String,
+    pub password: String,
+}
+
+/// Sends a single custom HTTP header on every upstream request.
+/// Useful for registries that use `X-API-Key` or similar schemes.
+#[derive(Debug, Deserialize)]
+pub struct HeaderAuthConfig {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct UpstreamTlsConfig {
+    /// Path to a PEM-encoded CA certificate to trust for this registry's upstream.
+    pub ca_cert_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]

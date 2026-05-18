@@ -10,6 +10,8 @@ use proxy_cache_core::{
     ports::{ArtifactStream, RegistryClient},
 };
 
+use super::http_client::{apply_upstream_options, UpstreamHttpOptions};
+
 /// OpenVSX registry client (open-vsx.org or compatible).
 ///
 /// Supported `PackageId` conventions:
@@ -20,16 +22,25 @@ use proxy_cache_core::{
 pub struct OpenVsxRegistryClient {
     http: reqwest::Client,
     base_url: String,
+    basic_auth: Option<(String, String)>,
 }
 
 impl OpenVsxRegistryClient {
-    pub fn new(base_url: impl Into<String>) -> Self {
-        let http = reqwest::Client::builder()
+    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Self {
+        let builder = reqwest::Client::builder()
             .user_agent("proxy-cache/0.1")
-            .redirect(reqwest::redirect::Policy::limited(10))
-            .build()
+            .redirect(reqwest::redirect::Policy::limited(10));
+        let http = apply_upstream_options(builder, opts)
             .expect("failed to build OpenVSX HTTP client");
-        Self { http, base_url: base_url.into() }
+        Self { http, base_url: base_url.into(), basic_auth: opts.basic_auth.clone() }
+    }
+
+    fn get(&self, url: &str) -> reqwest::RequestBuilder {
+        let rb = self.http.get(url);
+        match &self.basic_auth {
+            Some((u, p)) => rb.basic_auth(u, Some(p)),
+            None => rb,
+        }
     }
 
     fn parse_id(name: &str) -> Result<(&str, &str), CoreError> {
@@ -133,7 +144,6 @@ impl RegistryClient for OpenVsxRegistryClient {
         tracing::debug!(url = %download_url, "fetching OpenVSX VSIX");
 
         let response = self
-            .http
             .get(&download_url)
             .send()
             .await
@@ -163,7 +173,6 @@ impl OpenVsxRegistryClient {
         };
 
         let resp = self
-            .http
             .get(&url)
             .send()
             .await

@@ -9,6 +9,8 @@ use proxy_cache_core::{
     ports::{ArtifactStream, RegistryClient},
 };
 
+use super::http_client::{apply_upstream_tls, upstream_auth_headers, UpstreamHttpOptions};
+
 /// GitHub REST API v3 registry client.
 ///
 /// Supported `PackageId` conventions:
@@ -26,10 +28,12 @@ pub struct GithubRegistryClient {
     raw_base_url: String,
     /// Base URL for archive downloads (default: `https://github.com`).
     archive_base_url: String,
+    basic_auth: Option<(String, String)>,
 }
 
 impl GithubRegistryClient {
-    pub fn new(base_url: impl Into<String>, token: Option<String>) -> Self {
+    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Self {
+        // GitHub-specific default headers merged with any auth headers from opts.
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             reqwest::header::ACCEPT,
@@ -39,17 +43,14 @@ impl GithubRegistryClient {
             "X-GitHub-Api-Version",
             "2022-11-28".parse().unwrap(),
         );
-        if let Some(tok) = token {
-            headers.insert(
-                reqwest::header::AUTHORIZATION,
-                format!("Bearer {tok}").parse().unwrap(),
-            );
-        }
-        let http = reqwest::Client::builder()
+        let auth_headers = upstream_auth_headers(opts).expect("invalid upstream auth config");
+        headers.extend(auth_headers);
+
+        let builder = reqwest::Client::builder()
             .user_agent("proxy-cache/0.1")
-            .default_headers(headers)
-            .build()
-            .expect("failed to build GitHub HTTP client");
+            .default_headers(headers);
+        let builder = apply_upstream_tls(builder, opts).expect("invalid upstream TLS config");
+        let http = builder.build().expect("failed to build GitHub HTTP client");
 
         let base_url = base_url.into();
 
@@ -66,7 +67,15 @@ impl GithubRegistryClient {
             (host.to_owned(), host.to_owned())
         };
 
-        Self { http, base_url, raw_base_url, archive_base_url }
+        Self { http, base_url, raw_base_url, archive_base_url, basic_auth: opts.basic_auth.clone() }
+    }
+
+    fn get(&self, url: &str) -> reqwest::RequestBuilder {
+        let rb = self.http.get(url);
+        match &self.basic_auth {
+            Some((u, p)) => rb.basic_auth(u, Some(p)),
+            None => rb,
+        }
     }
 }
 
@@ -124,7 +133,6 @@ impl RegistryClient for GithubRegistryClient {
                 // List releases — return minimal metadata (no artifact URL).
                 let url = format!("{}/repos/{}/releases", self.base_url, owner_repo);
                 let resp = self
-                    .http
                     .get(&url)
                     .send()
                     .await
@@ -243,7 +251,6 @@ impl RegistryClient for GithubRegistryClient {
                     self.base_url, owner_repo, asset_id
                 );
                 let resp = self
-                    .http
                     .get(&url)
                     .send()
                     .await
@@ -269,8 +276,7 @@ impl RegistryClient for GithubRegistryClient {
 
         tracing::debug!(url = %download_url, "fetching GitHub artifact");
 
-        let response = self.http
-            .get(&download_url)
+        let response = self.get(&download_url)
             .send()
             .await
             .map_err(|e| CoreError::Registry(e.to_string()))?
@@ -291,8 +297,7 @@ impl GithubRegistryClient {
             "{}/repos/{}/releases/tags/{}",
             self.base_url, owner_repo, tag
         );
-        let resp = self.http
-            .get(&url)
+        let resp = self.get(&url)
             .send()
             .await
             .map_err(|e| CoreError::Registry(e.to_string()))?;
