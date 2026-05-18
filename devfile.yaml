@@ -7,7 +7,9 @@ components:
   - name: authentik-postgres
     container:
       image: postgres:16-alpine
-      env:
+      env
+        - name: PGPORT
+          value: 5438
         - name: POSTGRES_DB
           value: authentik
         - name: POSTGRES_PASSWORD
