@@ -127,7 +127,3 @@ commands:
     exec:
       component: authentik-worker
       commandLine: worker
-events:
-  postStart:
-    - run-authentik-server
-    - run-authentik-worker
