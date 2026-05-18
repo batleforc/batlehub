@@ -1,6 +1,11 @@
 # Rust
 target/
 
+# Rust - Fuzzing
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
+
 # Config (contains secrets)
 config.toml
 

@@ -33,7 +33,7 @@ use proxy_cache_config::{
 use proxy_cache_core::{
     entities::Role,
     ports::{AuthProvider, CacheStore, InMemoryCacheStore, UserTokenRepository},
-    rules::{BlockListRule, RbacRule, ReleaseAgeGateRule},
+    rules::{BlockListRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule},
     services::{AdminService, ProxyService, RegistryPolicy},
 };
 use proxy_cache_web::{configure_app, openapi_spec, AccessConfig, ApiDoc, CargoIndexProxy, RegistryMap};
@@ -490,6 +490,10 @@ fn build_policy(
                         "require_signed_release rule is configured but not yet implemented"
                     );
                 }
+            }
+            RuleConfig::DenyLatest(cfg) => {
+                let bypass: Vec<Role> = cfg.bypass_roles.iter().map(|r| parse_role(r)).collect();
+                rules.push(Box::new(DenyLatestRule::new(bypass)));
             }
         }
     }

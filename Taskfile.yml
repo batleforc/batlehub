@@ -32,6 +32,15 @@ tasks:
     vars:
       COVERAGE_EXCLUDE: "server/src/main\\.rs|crates/web/src/handlers/auth/oidc\\.rs|crates/adapters/src/db/|crates/adapters/src/registry/(cargo|github|npm)\\.rs|crates/adapters/src/storage/"
 
+  fuzz:
+    desc: "Run a fuzz target for up to MAX_TIME seconds (default: 30). Set TARGET to pick one: fuzz_rbac_evaluate | fuzz_package_id_cache_key | fuzz_deny_latest | fuzz_release_age"
+    dir: fuzz
+    vars:
+      TARGET: '{{.TARGET | default "fuzz_deny_latest"}}'
+      MAX_TIME: '{{.MAX_TIME | default "30"}}'
+    cmds:
+      - cargo +nightly fuzz run {{.TARGET}} -- -max_total_time={{.MAX_TIME}}
+
   lint:
     desc: Run clippy lints across the workspace
     cmds:
