@@ -4,22 +4,6 @@ metadata:
 parent:
   uri: https://raw.githubusercontent.com/batleforc/WeeboDevImage/refs/heads/main/che-mise/devfile.yaml
 components:
-  - name: authentik-postgres
-    container:
-      image: postgres:16-alpine
-      env
-        - name: PGPORT
-          value: 5438
-        - name: POSTGRES_DB
-          value: authentik
-        - name: POSTGRES_PASSWORD
-          value: authentik
-        - name: POSTGRES_USER
-          value: authentik
-      volumeMounts:
-        - name: authentik-postgres-data
-          path: /var/lib/postgresql/data
-      mountSources: true
   - name: authentik-redis
     container:
       image: redis:7-alpine
