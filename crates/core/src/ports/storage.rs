@@ -36,4 +36,11 @@ pub trait StorageBackend: Send + Sync {
 
     /// Remove a cached artifact.
     async fn delete(&self, key: &str) -> Result<(), CoreError>;
+
+    /// Remove all artifacts whose keys start with `prefix` and return the count deleted.
+    async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError>;
+
+    /// Count artifacts and sum their sizes for keys starting with `prefix`.
+    /// Returns `(count, total_bytes)`.
+    async fn stat_by_prefix(&self, prefix: &str) -> Result<(u64, u64), CoreError>;
 }

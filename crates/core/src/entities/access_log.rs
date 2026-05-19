@@ -18,6 +18,8 @@ pub enum AccessAction {
 pub enum AccessResult {
     Allowed,
     Denied { reason: String },
+    #[serde(rename = "error")]
+    ProxyError { reason: String },
 }
 
 impl AccessResult {
@@ -63,6 +65,23 @@ impl AccessEvent {
             package_id,
             action: AccessAction::Download,
             result: AccessResult::Denied { reason },
+            timestamp: Utc::now(),
+        }
+    }
+
+    pub fn proxy_error(
+        package_id: PackageId,
+        user_id: Option<String>,
+        user_role: Role,
+        reason: String,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            user_id,
+            user_role,
+            package_id,
+            action: AccessAction::Download,
+            result: AccessResult::ProxyError { reason },
             timestamp: Utc::now(),
         }
     }

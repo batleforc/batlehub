@@ -68,16 +68,29 @@ impl StorageRouter {
             .and_then(|name| self.backends.get(&name))
     }
 
-    async fn record_backend(&self, key: &str, backend_name: &str) {
+    async fn lazy_update_size(&self, key: &str, size: u64) {
+        let _ = sqlx::query(
+            "UPDATE artifact_storage SET size_bytes = $1 WHERE storage_key = $2 AND size_bytes IS NULL",
+        )
+        .bind(size as i64)
+        .bind(key)
+        .execute(&self.pool)
+        .await;
+    }
+
+    async fn record_backend(&self, key: &str, backend_name: &str, size_bytes: Option<u64>) {
         let _ = sqlx::query(
             r#"
-            INSERT INTO artifact_storage (storage_key, backend_name, stored_at)
-            VALUES ($1, $2, NOW())
-            ON CONFLICT (storage_key) DO UPDATE SET backend_name = EXCLUDED.backend_name
+            INSERT INTO artifact_storage (storage_key, backend_name, stored_at, size_bytes)
+            VALUES ($1, $2, NOW(), $3)
+            ON CONFLICT (storage_key) DO UPDATE
+                SET backend_name = EXCLUDED.backend_name,
+                    size_bytes = EXCLUDED.size_bytes
             "#,
         )
         .bind(key)
         .bind(backend_name)
+        .bind(size_bytes.map(|s| s as i64))
         .execute(&self.pool)
         .await;
     }
@@ -104,17 +117,26 @@ impl StorageBackend for StorageRouter {
             .or_else(|| self.backends.get(&self.default_name))
             .expect("default storage backend must always be present");
 
+        let size_bytes = meta.size;
         backend.store(key, data, meta).await?;
-        self.record_backend(key, &backend_name).await;
+        self.record_backend(key, &backend_name, size_bytes).await;
         Ok(())
     }
 
     async fn retrieve(&self, key: &str) -> Result<Option<StoredArtifact>, CoreError> {
-        if let Some(backend) = self.recorded_backend_for_key(key).await {
-            return backend.retrieve(key).await;
+        // Clone the Arc so we don't hold a reference into self across the await.
+        let backend = match self.recorded_backend_for_key(key).await {
+            Some(b) => Arc::clone(b),
+            None => Arc::clone(self.resolve_backend_for_key(key)),
+        };
+
+        let artifact = backend.retrieve(key).await?;
+        if let Some(ref a) = artifact {
+            if let Some(size) = a.meta.size {
+                self.lazy_update_size(key, size).await;
+            }
         }
-        // Pre-migration artifact: fall back to default
-        self.resolve_backend_for_key(key).retrieve(key).await
+        Ok(artifact)
     }
 
     async fn exists(&self, key: &str) -> Result<bool, CoreError> {
@@ -139,5 +161,57 @@ impl StorageBackend for StorageRouter {
             .await;
 
         Ok(())
+    }
+
+    async fn stat_by_prefix(&self, prefix: &str) -> Result<(u64, u64), CoreError> {
+        let registry = prefix
+            .strip_prefix("artifact:")
+            .and_then(|k| k.split('/').next())
+            .unwrap_or("");
+
+        let backend = {
+            let backend_name = if registry.is_empty() {
+                self.default_name.as_str()
+            } else {
+                self.registry_assignments
+                    .get(registry)
+                    .map(|s| s.as_str())
+                    .unwrap_or(&self.default_name)
+            };
+            Arc::clone(
+                self.backends
+                    .get(backend_name)
+                    .or_else(|| self.backends.get(&self.default_name))
+                    .expect("default storage backend must always be present"),
+            )
+        };
+
+        backend.stat_by_prefix(prefix).await
+    }
+
+    async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError> {
+        let registry = prefix
+            .strip_prefix("artifact:")
+            .and_then(|k| k.split('/').next())
+            .unwrap_or("");
+
+        let backend = {
+            let backend_name = if registry.is_empty() {
+                self.default_name.as_str()
+            } else {
+                self.registry_assignments
+                    .get(registry)
+                    .map(|s| s.as_str())
+                    .unwrap_or(&self.default_name)
+            };
+            Arc::clone(
+                self.backends
+                    .get(backend_name)
+                    .or_else(|| self.backends.get(&self.default_name))
+                    .expect("default storage backend must always be present"),
+            )
+        };
+
+        backend.delete_by_prefix(prefix).await
     }
 }

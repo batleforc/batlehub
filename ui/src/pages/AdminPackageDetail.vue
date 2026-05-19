@@ -140,6 +140,27 @@ async function doUnblock(v: PackageVersionDetail) {
   reload();
 }
 
+async function doInvalidate(v: PackageVersionDetail) {
+  if (!confirm(`Purge cached artifact for v${v.version}? The next download will re-fetch from upstream.`)) return;
+  await fetch(
+    `${API_BASE}/api/v1/admin/packages/invalidate`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token.value ? { Authorization: `Bearer ${token.value}` } : {}),
+      },
+      body: JSON.stringify({
+        registry: registry.value,
+        name: name.value,
+        version: v.version,
+        artifact: v.artifact ?? undefined,
+      }),
+    },
+  );
+  reload();
+}
+
 // ── Multi-select ──────────────────────────────────────────────────────────────
 
 const selectedVersionIds = ref<Set<string>>(new Set());
@@ -339,6 +360,14 @@ async function bulkUnblockVersions() {
                 <TableCell class="text-right">
                   <div class="flex justify-end gap-2">
                     <Button variant="ghost" size="sm" @click="viewArtifact(v)">View</Button>
+                    <Button
+                      v-if="v.cached"
+                      variant="outline"
+                      size="sm"
+                      @click="doInvalidate(v)"
+                    >
+                      Purge cache
+                    </Button>
                     <Button
                       v-if="v.status.status === 'blocked'"
                       variant="outline"

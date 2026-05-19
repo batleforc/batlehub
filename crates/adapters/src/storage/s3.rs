@@ -170,4 +170,99 @@ impl StorageBackend for S3StorageBackend {
             }
         }
     }
+
+    async fn stat_by_prefix(&self, prefix: &str) -> Result<(u64, u64), CoreError> {
+        let s3_prefix = self.object_key(prefix);
+        let mut count = 0u64;
+        let mut total_bytes = 0u64;
+        let mut continuation_token: Option<String> = None;
+
+        loop {
+            let mut req = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(&s3_prefix);
+            if let Some(ref token) = continuation_token {
+                req = req.continuation_token(token);
+            }
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| CoreError::Storage(format!("S3 list_objects {s3_prefix}: {e}")))?;
+
+            for obj in resp.contents() {
+                count += 1;
+                total_bytes += obj.size().unwrap_or(0) as u64;
+            }
+
+            let is_truncated = resp.is_truncated().unwrap_or(false);
+            continuation_token = resp.next_continuation_token().map(str::to_owned);
+            if !is_truncated {
+                break;
+            }
+        }
+
+        Ok((count, total_bytes))
+    }
+
+    async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError> {
+        use aws_sdk_s3::types::{Delete, ObjectIdentifier};
+
+        let s3_prefix = self.object_key(prefix);
+        let configured_prefix_len = self.prefix.len();
+        let mut total = 0usize;
+        let mut continuation_token: Option<String> = None;
+
+        loop {
+            let mut req = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(&s3_prefix);
+            if let Some(ref token) = continuation_token {
+                req = req.continuation_token(token);
+            }
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| CoreError::Storage(format!("S3 list_objects {s3_prefix}: {e}")))?;
+
+            let object_keys: Vec<ObjectIdentifier> = resp
+                .contents()
+                .iter()
+                .filter_map(|o| o.key())
+                .filter_map(|k| {
+                    ObjectIdentifier::builder()
+                        .key(k[configured_prefix_len..].to_owned())
+                        .build()
+                        .ok()
+                })
+                .collect();
+
+            let batch_len = object_keys.len();
+            if batch_len > 0 {
+                let delete = Delete::builder()
+                    .set_objects(Some(object_keys))
+                    .build()
+                    .map_err(|e| CoreError::Storage(format!("S3 delete build: {e}")))?;
+                self.client
+                    .delete_objects()
+                    .bucket(&self.bucket)
+                    .delete(delete)
+                    .send()
+                    .await
+                    .map_err(|e| CoreError::Storage(format!("S3 delete_objects: {e}")))?;
+                total += batch_len;
+            }
+
+            let is_truncated = resp.is_truncated().unwrap_or(false);
+            continuation_token = resp.next_continuation_token().map(str::to_owned);
+            if !is_truncated {
+                break;
+            }
+        }
+
+        Ok(total)
+    }
 }

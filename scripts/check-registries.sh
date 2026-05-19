@@ -76,7 +76,7 @@ CURL_AUTH=()
 TMPDIR_ROOT=$(mktemp -d)
 cleanup() {
     local rc=$?
-    rm -rf "$TMPDIR_ROOT"
+    sudo rm -rf "$TMPDIR_ROOT"
     exit $rc
 }
 trap cleanup EXIT
@@ -338,11 +338,28 @@ CARGOCONF
     out=$(cd "$cargo_dir" && env "${cargo_env[@]}" cargo add serde \
         --registry "$name" 2>&1) || rc=$?
 
+    if (( rc != 0 )); then
+        print_fail "cargo:tool — cargo add serde (exit $rc)"
+        printf '%bOutput:%b\n%s\n' "$DIM" "$RESET" "$(printf '%s' "$out" | tail -10)"
+        record cargo tool FAIL
+        return
+    fi
+    print_pass "cargo:tool — cargo add serde"
+
+    # cargo add only resolves the index — it does not download the .crate file.
+    # Run cargo fetch so the actual artifact is downloaded through the proxy,
+    # which exercises the download endpoint, stores the artifact, and records
+    # an audit-log event.
+    rc=0
+    out=$(cd "$cargo_dir" && env "${cargo_env[@]}" \
+        CARGO_NET_OFFLINE=false \
+        cargo fetch 2>&1) || rc=$?
+
     if (( rc == 0 )); then
-        print_pass "cargo:tool — cargo add serde"
+        print_pass "cargo:tool — cargo fetch (crate downloaded via proxy)"
         record cargo tool PASS
     else
-        print_fail "cargo:tool — cargo add serde (exit $rc)"
+        print_fail "cargo:tool — cargo fetch (exit $rc)"
         printf '%bOutput:%b\n%s\n' "$DIM" "$RESET" "$(printf '%s' "$out" | tail -10)"
         record cargo tool FAIL
     fi

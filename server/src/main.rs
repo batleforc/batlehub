@@ -122,7 +122,19 @@ async fn main() -> Result<()> {
 
     // ── Storage ───────────────────────────────────────────────────────────────
     let storage: Arc<dyn proxy_cache_core::ports::StorageBackend> = match &config.storage {
-        StoragesConfig::Single(backend_cfg) => build_single_backend(backend_cfg).await?,
+        StoragesConfig::Single(backend_cfg) => {
+            // Wrap in StorageRouter so artifact_storage is always tracked in the DB,
+            // enabling the health endpoint to report accurate artifact counts and sizes.
+            let backend = build_single_backend(backend_cfg).await?;
+            let mut backends = HashMap::new();
+            backends.insert("default".to_string(), backend);
+            Arc::new(StorageRouter::new(
+                backends,
+                "default".to_string(),
+                HashMap::new(),
+                repo.pool(),
+            ))
+        }
         StoragesConfig::Multi(multi) => {
             let mut backends = HashMap::new();
             for named in &multi.backends {

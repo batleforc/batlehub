@@ -91,4 +91,73 @@ impl StorageBackend for FilesystemStorageBackend {
             ))),
         }
     }
+
+    async fn stat_by_prefix(&self, prefix: &str) -> Result<(u64, u64), CoreError> {
+        let fs_rel = prefix.replace(':', "__");
+        let dir = self.root.join(fs_rel.trim_end_matches('/'));
+
+        let mut count = 0u64;
+        let mut total_bytes = 0u64;
+        let mut stack = vec![dir];
+        while let Some(d) = stack.pop() {
+            let mut rd = match tokio::fs::read_dir(&d).await {
+                Ok(rd) => rd,
+                Err(_) => continue,
+            };
+            while let Ok(Some(entry)) = rd.next_entry().await {
+                let path = entry.path();
+                if let Ok(ftype) = entry.file_type().await {
+                    if ftype.is_dir() {
+                        stack.push(path);
+                    } else if path.extension().and_then(|e| e.to_str()) == Some("dat") {
+                        count += 1;
+                        if let Ok(meta) = tokio::fs::metadata(&path).await {
+                            total_bytes += meta.len();
+                        }
+                    }
+                }
+            }
+        }
+        Ok((count, total_bytes))
+    }
+
+    async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError> {
+        let fs_rel = prefix.replace(':', "__");
+        let dir = self.root.join(fs_rel.trim_end_matches('/'));
+
+        tracing::info!(dir = %dir.display(), prefix = %prefix, "delete_by_prefix: scanning directory");
+
+        // Count .dat files before removing so we can return a meaningful number.
+        let mut count = 0usize;
+        let mut stack = vec![dir.clone()];
+        while let Some(d) = stack.pop() {
+            let mut rd = match tokio::fs::read_dir(&d).await {
+                Ok(rd) => rd,
+                Err(e) => {
+                    tracing::warn!(dir = %d.display(), error = %e, "delete_by_prefix: read_dir failed");
+                    continue;
+                }
+            };
+            while let Ok(Some(entry)) = rd.next_entry().await {
+                if let Ok(ftype) = entry.file_type().await {
+                    if ftype.is_dir() {
+                        stack.push(entry.path());
+                    } else if entry.path().extension().and_then(|e| e.to_str()) == Some("dat") {
+                        count += 1;
+                    }
+                }
+            }
+        }
+
+        tracing::info!(dir = %dir.display(), count, "delete_by_prefix: removing directory");
+
+        match tokio::fs::remove_dir_all(&dir).await {
+            Ok(()) => Ok(count.max(1)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(e) => {
+                tracing::error!(dir = %dir.display(), error = %e, "delete_by_prefix: remove_dir_all failed");
+                Err(CoreError::Storage(e.to_string()))
+            }
+        }
+    }
 }

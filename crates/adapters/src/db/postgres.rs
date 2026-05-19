@@ -82,6 +82,7 @@ impl PackageRepository for PgPackageRepository {
         let (outcome, deny_reason): (&str, Option<String>) = match &event.result {
             AccessResult::Allowed => ("allowed", None),
             AccessResult::Denied { reason } => ("denied", Some(reason.clone())),
+            AccessResult::ProxyError { reason } => ("error", Some(reason.clone())),
         };
 
         sqlx::query(
@@ -343,14 +344,18 @@ impl PackageRepository for PgPackageRepository {
                         artifact: r.get("package_artifact"),
                     },
                     action: str_to_action(r.get::<&str, _>("action")),
-                    result: if outcome == "denied" {
-                        AccessResult::Denied {
+                    result: match outcome.as_str() {
+                        "denied" => AccessResult::Denied {
                             reason: r
                                 .get::<Option<String>, _>("deny_reason")
                                 .unwrap_or_default(),
-                        }
-                    } else {
-                        AccessResult::Allowed
+                        },
+                        "error" => AccessResult::ProxyError {
+                            reason: r
+                                .get::<Option<String>, _>("deny_reason")
+                                .unwrap_or_default(),
+                        },
+                        _ => AccessResult::Allowed,
                     },
                     timestamp: r.get("created_at"),
                 }

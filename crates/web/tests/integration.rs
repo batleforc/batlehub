@@ -195,6 +195,22 @@ impl StorageBackend for InMemoryStorage {
         self.data.lock().unwrap().remove(key);
         Ok(())
     }
+    async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError> {
+        let mut map = self.data.lock().unwrap();
+        let keys: Vec<String> = map.keys().filter(|k| k.starts_with(prefix)).cloned().collect();
+        let count = keys.len();
+        for k in keys { map.remove(&k); }
+        Ok(count)
+    }
+    async fn stat_by_prefix(&self, prefix: &str) -> Result<(u64, u64), CoreError> {
+        let map = self.data.lock().unwrap();
+        let (count, bytes) = map.iter()
+            .filter(|(k, _)| k.starts_with(prefix))
+            .fold((0u64, 0u64), |(c, b), (_, (data, meta))| {
+                (c + 1, b + meta.size.unwrap_or(data.len() as u64))
+            });
+        Ok((count, bytes))
+    }
 }
 
 // ── Fixed (deterministic) RegistryClient ─────────────────────────────────────

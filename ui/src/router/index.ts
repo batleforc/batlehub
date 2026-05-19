@@ -7,12 +7,14 @@ import AccessCheck from "@/pages/AccessCheck.vue";
 import AdminPackages from "@/pages/AdminPackages.vue";
 import AdminPackageDetail from "@/pages/AdminPackageDetail.vue";
 import AdminBulk from "@/pages/AdminBulk.vue";
+import AdminHealth from "@/pages/AdminHealth.vue";
 import AuditLog from "@/pages/AuditLog.vue";
 import LoginPage from "@/pages/LoginPage.vue";
 import PathMapper from "@/pages/PathMapper.vue";
 import SetupGuide from "@/pages/SetupGuide.vue";
 import TokensPage from "@/pages/TokensPage.vue";
 import MyProfile from "@/pages/MyProfile.vue";
+import AdminLayout from "@/layouts/AdminLayout.vue";
 
 const OIDC_STATE_KEY = "oidc_state";
 
@@ -37,24 +39,16 @@ export const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
-      path: "/admin/packages",
-      component: AdminPackages,
+      path: "/admin",
+      component: AdminLayout,
       meta: { requiresAdmin: true },
-    },
-    {
-      path: "/admin/packages/detail",
-      component: AdminPackageDetail,
-      meta: { requiresAdmin: true },
-    },
-    {
-      path: "/admin/bulk",
-      component: AdminBulk,
-      meta: { requiresAdmin: true },
-    },
-    {
-      path: "/admin/audit-log",
-      component: AuditLog,
-      meta: { requiresAdmin: true },
+      children: [
+        { path: "packages",        component: AdminPackages },
+        { path: "packages/detail", component: AdminPackageDetail },
+        { path: "bulk",            component: AdminBulk },
+        { path: "audit-log",       component: AuditLog },
+        { path: "health",          component: AdminHealth },
+      ],
     },
   ],
 });

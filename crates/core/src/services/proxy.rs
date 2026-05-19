@@ -69,7 +69,21 @@ impl ProxyService {
             entry.metadata
         } else {
             tracing::debug!(key = %cache_key, "metadata cache miss, fetching from upstream");
-            let meta = client.resolve_metadata(&req.package_id).await?;
+            let meta = match client.resolve_metadata(&req.package_id).await {
+                Ok(m) => m,
+                Err(e) => {
+                    self.repo
+                        .record_access(AccessEvent::proxy_error(
+                            req.package_id.clone(),
+                            req.identity.user_id.clone(),
+                            req.identity.role.clone(),
+                            e.to_string(),
+                        ))
+                        .await
+                        .unwrap_or_else(|re| tracing::warn!(error = %re, "failed to record proxy error"));
+                    return Err(e);
+                }
+            };
             self.cache
                 .set(
                     &cache_key,
@@ -121,7 +135,21 @@ impl ProxyService {
 
         if firewall_only {
             tracing::debug!(registry = %registry_name, "firewall-only mode, streaming from upstream");
-            let upstream = client.fetch_artifact(&req.package_id).await?;
+            let upstream = match client.fetch_artifact(&req.package_id).await {
+                Ok(s) => s,
+                Err(e) => {
+                    self.repo
+                        .record_access(AccessEvent::proxy_error(
+                            req.package_id.clone(),
+                            req.identity.user_id.clone(),
+                            req.identity.role.clone(),
+                            e.to_string(),
+                        ))
+                        .await
+                        .unwrap_or_else(|re| tracing::warn!(error = %re, "failed to record proxy error"));
+                    return Err(e);
+                }
+            };
             self.repo
                 .record_access(AccessEvent::allowed_download(
                     req.package_id,
@@ -158,7 +186,21 @@ impl ProxyService {
 
         // ── 4. Fetch from upstream and cache ──────────────────────────────────
         tracing::debug!(key = %artifact_key, "artifact not cached, fetching from upstream");
-        let mut upstream = client.fetch_artifact(&req.package_id).await?;
+        let mut upstream = match client.fetch_artifact(&req.package_id).await {
+            Ok(s) => s,
+            Err(e) => {
+                self.repo
+                    .record_access(AccessEvent::proxy_error(
+                        req.package_id.clone(),
+                        req.identity.user_id.clone(),
+                        req.identity.role.clone(),
+                        e.to_string(),
+                    ))
+                    .await
+                    .unwrap_or_else(|re| tracing::warn!(error = %re, "failed to record proxy error"));
+                return Err(e);
+            }
+        };
 
         let limit = self.max_artifact_size_bytes.unwrap_or(500 * 1024 * 1024);
         let mut buf: Vec<u8> = Vec::new();
@@ -286,6 +328,20 @@ mod tests {
         async fn delete(&self, key: &str) -> Result<(), CoreError> {
             self.data.lock().unwrap().remove(key);
             Ok(())
+        }
+        async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError> {
+            let mut map = self.data.lock().unwrap();
+            let keys: Vec<String> = map.keys().filter(|k| k.starts_with(prefix)).cloned().collect();
+            let count = keys.len();
+            for k in keys { map.remove(&k); }
+            Ok(count)
+        }
+        async fn stat_by_prefix(&self, prefix: &str) -> Result<(u64, u64), CoreError> {
+            let map = self.data.lock().unwrap();
+            let (count, bytes) = map.iter()
+                .filter(|(k, _)| k.starts_with(prefix))
+                .fold((0u64, 0u64), |(c, b), (_, v)| (c + 1, b + v.len() as u64));
+            Ok((count, bytes))
         }
     }
 

@@ -293,7 +293,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
         },
         back_office::{
             audit::audit_log,
-            packages::{block_package, bulk_block_packages, bulk_unblock_packages, list_packages as admin_list_packages, package_detail, unblock_package},
+            health::{clear_registry_cache, registry_health},
+            packages::{block_package, bulk_block_packages, bulk_unblock_packages, invalidate_package, list_packages as admin_list_packages, package_detail, unblock_package},
         },
         front_office::{
             me::me,
@@ -354,6 +355,9 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(unblock_package);
     cfg.service(bulk_block_packages);
     cfg.service(bulk_unblock_packages);
+    cfg.service(invalidate_package);
+    cfg.service(registry_health);
+    cfg.service(clear_registry_cache);
     cfg.service(audit_log);
 }
 

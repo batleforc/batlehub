@@ -323,6 +323,58 @@ pub async fn bulk_unblock_packages(
     }))
 }
 
+// ── Cache invalidation ────────────────────────────────────────────────────────
+
+#[derive(Deserialize, ToSchema)]
+pub struct InvalidateRequest {
+    pub registry: String,
+    pub name: String,
+    pub version: String,
+    pub artifact: Option<String>,
+}
+
+/// Purge the cached artifact for a specific package version (admin).
+///
+/// Deletes the artifact from storage and clears the in-memory metadata cache.
+/// The package block/unblock status is not changed.
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/packages/invalidate",
+    tag = "back-office",
+    request_body = InvalidateRequest,
+    responses(
+        (status = 200, description = "Cache purged", body = ActionResponse),
+        (status = 403, description = "Admin role required"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[post("/api/v1/admin/packages/invalidate")]
+pub async fn invalidate_package(
+    identity: AuthIdentity,
+    body: web::Json<InvalidateRequest>,
+    proxy_svc: web::Data<Arc<ProxyService>>,
+) -> Result<impl Responder, AppError> {
+    require_admin(&identity)?;
+
+    let pkg = PackageId {
+        registry: body.registry.clone(),
+        name: body.name.clone(),
+        version: body.version.clone(),
+        artifact: body.artifact.clone(),
+    };
+
+    let storage_key = format!("artifact:{}", pkg.cache_key());
+    let meta_key = format!("meta:{}", pkg.cache_key());
+
+    proxy_svc.storage.delete(&storage_key).await.map_err(AppError::from)?;
+    proxy_svc.cache.invalidate(&meta_key).await.map_err(AppError::from)?;
+
+    Ok(web::Json(ActionResponse {
+        success: true,
+        message: format!("cache purged for '{}'", pkg),
+    }))
+}
+
 // ── Package detail ────────────────────────────────────────────────────────────
 
 #[derive(Deserialize, IntoParams)]
@@ -466,6 +518,7 @@ pub async fn package_detail(
             let (outcome, deny_reason) = match e.result {
                 AccessResult::Allowed => ("allowed".to_string(), None),
                 AccessResult::Denied { reason } => ("denied".to_string(), Some(reason)),
+                AccessResult::ProxyError { reason } => ("error".to_string(), Some(reason)),
             };
             let action = match e.action {
                 AccessAction::Download => "download",

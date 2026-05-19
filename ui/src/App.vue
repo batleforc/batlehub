@@ -24,12 +24,6 @@ const userLinks = [
   { to: "/setup", label: "Setup" },
 ];
 
-const adminLinks = [
-  { to: "/admin/packages", label: "Packages" },
-  { to: "/admin/bulk", label: "Bulk Import" },
-  { to: "/admin/audit-log", label: "Audit Log" },
-];
-
 const userInitials = computed(() => {
   const uid = identity.value?.user_id;
   if (!uid) return "?";
@@ -106,25 +100,20 @@ function isActive(to: string) {
           </RouterLink>
         </nav>
 
-        <!-- Admin section (desktop) -->
+        <!-- Admin entry point (desktop) -->
         <div v-if="isAdmin" class="hidden md:flex items-center gap-1">
           <div class="mx-2 h-4 w-px bg-border" />
-          <div class="flex items-center gap-1 text-xs text-muted-foreground mr-1">
-            <ShieldCheck class="h-3 w-3" />
-            Admin
-          </div>
           <RouterLink
-            v-for="link in adminLinks"
-            :key="link.to"
-            :to="link.to"
+            to="/admin/packages"
             :class="[
-              'px-3 py-1.5 rounded-md transition-colors text-sm hover:bg-accent hover:text-accent-foreground',
-              isActive(link.to)
+              'flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors text-sm hover:bg-accent hover:text-accent-foreground',
+              isActive('/admin')
                 ? 'bg-accent text-accent-foreground font-medium'
                 : 'text-muted-foreground',
             ]"
           >
-            {{ link.label }}
+            <ShieldCheck class="h-3.5 w-3.5" />
+            Admin
           </RouterLink>
         </div>
 
@@ -215,25 +204,20 @@ function isActive(to: string) {
         >
           My Profile
         </RouterLink>
-        <template v-if="isAdmin">
-          <div class="pt-2 pb-1 px-3 text-xs text-muted-foreground font-medium flex items-center gap-1">
-            <ShieldCheck class="h-3 w-3" /> Admin
-          </div>
-          <RouterLink
-            v-for="link in adminLinks"
-            :key="link.to"
-            :to="link.to"
-            :class="[
-              'block px-3 py-2 rounded-md text-sm transition-colors',
-              isActive(link.to)
-                ? 'bg-accent text-accent-foreground font-medium'
-                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
-            ]"
-            @click="mobileOpen = false"
-          >
-            {{ link.label }}
-          </RouterLink>
-        </template>
+        <RouterLink
+          v-if="isAdmin"
+          to="/admin/packages"
+          :class="[
+            'flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors',
+            isActive('/admin')
+              ? 'bg-accent text-accent-foreground font-medium'
+              : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+          ]"
+          @click="mobileOpen = false"
+        >
+          <ShieldCheck class="h-4 w-4" />
+          Admin
+        </RouterLink>
         <div v-if="isAuthenticated" class="pt-2 border-t">
           <button
             class="block w-full text-left px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground"
