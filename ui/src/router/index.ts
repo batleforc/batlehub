@@ -2,6 +2,7 @@ import { watch } from "vue";
 import { createRouter, createWebHistory } from "vue-router";
 import { useAuth, storeTokens } from "@/composables/useAuth";
 import PackageList from "@/pages/PackageList.vue";
+import PackageDetail from "@/pages/PackageDetail.vue";
 import AccessCheck from "@/pages/AccessCheck.vue";
 import AdminPackages from "@/pages/AdminPackages.vue";
 import AdminPackageDetail from "@/pages/AdminPackageDetail.vue";
@@ -21,6 +22,7 @@ export const router = createRouter({
     { path: "/", redirect: "/packages" },
     { path: "/login", component: LoginPage },
     { path: "/packages", component: PackageList },
+    { path: "/packages/detail", component: PackageDetail },
     { path: "/access-check", component: AccessCheck },
     { path: "/path-mapper", component: PathMapper },
     { path: "/setup", component: SetupGuide },

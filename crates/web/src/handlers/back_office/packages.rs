@@ -341,6 +341,8 @@ pub struct PackageVersionDetail {
     pub cached: bool,
     /// Name of the storage backend holding this artifact (null if not yet cached or pre-migration).
     pub storage_backend: Option<String>,
+    /// When the artifact was first stored in the cache (null if not yet cached or pre-migration).
+    pub cached_at: Option<DateTime<Utc>>,
     pub access_count: u64,
     pub last_accessed: Option<DateTime<Utc>>,
     pub last_accessed_by: Option<String>,
@@ -410,16 +412,20 @@ pub async fn package_detail(
     for s in summaries {
         let storage_key = format!("artifact:{}", s.package_id.cache_key());
         let cached = proxy_svc.storage.exists(&storage_key).await.unwrap_or(false);
-        let storage_backend = if let Some(ref p) = pool {
-            sqlx::query("SELECT backend_name FROM artifact_storage WHERE storage_key = $1")
-                .bind(&storage_key)
-                .fetch_optional(p.get_ref())
-                .await
-                .ok()
-                .flatten()
-                .and_then(|r| r.try_get::<String, _>("backend_name").ok())
+        let (storage_backend, cached_at) = if let Some(ref p) = pool {
+            let row = sqlx::query(
+                "SELECT backend_name, stored_at FROM artifact_storage WHERE storage_key = $1",
+            )
+            .bind(&storage_key)
+            .fetch_optional(p.get_ref())
+            .await
+            .ok()
+            .flatten();
+            let backend = row.as_ref().and_then(|r| r.try_get::<String, _>("backend_name").ok());
+            let at = row.and_then(|r| r.try_get::<DateTime<Utc>, _>("stored_at").ok());
+            (backend, at)
         } else {
-            None
+            (None, None)
         };
         let status = match s.status {
             PackageStatus::Available => PackageStatusDetail::Available,
@@ -435,6 +441,7 @@ pub async fn package_detail(
             storage_key,
             cached,
             storage_backend,
+            cached_at,
             access_count: s.access_count,
             last_accessed: s.last_accessed,
             last_accessed_by: s.last_accessed_by,

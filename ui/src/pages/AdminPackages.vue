@@ -90,6 +90,11 @@ const selected = ref<Set<string>>(new Set());
 const bulkLoading = ref(false);
 const bulkResultMsg = ref<string | null>(null);
 
+function fmtDate(iso: string | null) {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString();
+}
+
 function pkgKey(pkg: AdminPackageSummary) {
   return `${pkg.package_id.registry}:${pkg.package_id.name}:${pkg.package_id.version}:${pkg.package_id.artifact ?? ""}`;
 }
@@ -322,6 +327,7 @@ async function submitPreBlock() {
               <TableHead>Version</TableHead>
               <TableHead>Artifact</TableHead>
               <TableHead>Status</TableHead>
+              <TableHead>Last pulled</TableHead>
               <TableHead>Last pulled by</TableHead>
               <TableHead class="text-right">Downloads</TableHead>
               <TableHead></TableHead>
@@ -356,6 +362,7 @@ async function submitPreBlock() {
                   </p>
                 </div>
               </TableCell>
+              <TableCell class="text-xs tabular-nums whitespace-nowrap">{{ fmtDate(pkg.last_accessed) }}</TableCell>
               <TableCell class="text-sm">
                 <span v-if="pkg.last_accessed_by" class="font-medium">{{ pkg.last_accessed_by }}</span>
                 <span v-else-if="pkg.access_count > 0" class="text-muted-foreground italic">anonymous</span>
@@ -363,13 +370,22 @@ async function submitPreBlock() {
               </TableCell>
               <TableCell class="text-right tabular-nums">{{ pkg.access_count }}</TableCell>
               <TableCell>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  @click="router.push({ path: '/admin/packages/detail', query: { registry: pkg.package_id.registry, name: pkg.package_id.name } })"
-                >
-                  Details
-                </Button>
+                <div class="flex gap-1">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    @click="router.push({ path: '/admin/packages/detail', query: { registry: pkg.package_id.registry, name: pkg.package_id.name } })"
+                  >
+                    Details
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    @click="router.push({ path: '/packages/detail', query: { registry: pkg.package_id.registry, name: pkg.package_id.name, version: pkg.package_id.version, ...(pkg.package_id.artifact ? { artifact: pkg.package_id.artifact } : {}) } })"
+                  >
+                    Artifact
+                  </Button>
+                </div>
               </TableCell>
               <TableCell class="text-right">
                 <Button

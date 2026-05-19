@@ -29,6 +29,7 @@ interface PackageVersionDetail {
   storage_key: string;
   storage_backend: string | null;
   cached: boolean;
+  cached_at: string | null;
   access_count: number;
   last_accessed: string | null;
   last_accessed_by: string | null;
@@ -53,6 +54,18 @@ interface PackageDetailResponse {
 
 const route = useRoute();
 const router = useRouter();
+
+function viewArtifact(v: PackageVersionDetail) {
+  router.push({
+    path: "/packages/detail",
+    query: {
+      registry: registry.value,
+      name: name.value,
+      version: v.version,
+      ...(v.artifact ? { artifact: v.artifact } : {}),
+    },
+  });
+}
 const { token } = useAuth();
 
 const registry = computed(() => String(route.query.registry ?? ""));
@@ -309,6 +322,7 @@ async function bulkUnblockVersions() {
                   <Badge :variant="v.cached ? 'default' : 'outline'" class="text-xs">
                     {{ v.cached ? "Cached" : "Not cached" }}
                   </Badge>
+                  <p v-if="v.cached_at" class="text-xs text-muted-foreground mt-0.5">{{ fmtDate(v.cached_at) }}</p>
                   <p class="text-xs text-muted-foreground font-mono mt-0.5">{{ v.storage_key }}</p>
                 </TableCell>
                 <TableCell class="text-right tabular-nums">{{ v.access_count }}</TableCell>
@@ -323,22 +337,25 @@ async function bulkUnblockVersions() {
                   <span v-else class="text-muted-foreground">—</span>
                 </TableCell>
                 <TableCell class="text-right">
-                  <Button
-                    v-if="v.status.status === 'blocked'"
-                    variant="outline"
-                    size="sm"
-                    @click="doUnblock(v)"
-                  >
-                    Unblock
-                  </Button>
-                  <Button
-                    v-else
-                    variant="destructive"
-                    size="sm"
-                    @click="doBlock(v)"
-                  >
-                    Block
-                  </Button>
+                  <div class="flex justify-end gap-2">
+                    <Button variant="ghost" size="sm" @click="viewArtifact(v)">View</Button>
+                    <Button
+                      v-if="v.status.status === 'blocked'"
+                      variant="outline"
+                      size="sm"
+                      @click="doUnblock(v)"
+                    >
+                      Unblock
+                    </Button>
+                    <Button
+                      v-else
+                      variant="destructive"
+                      size="sm"
+                      @click="doBlock(v)"
+                    >
+                      Block
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             </TableBody>

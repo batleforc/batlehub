@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
+import { useRouter } from "vue-router";
 import { Package } from "@lucide/vue";
 import { listPackages2 } from "@/client/sdk.gen";
 import type { PackageListResponse, PackageSummaryDto } from "@/client/types.gen";
@@ -14,6 +15,7 @@ import {
 } from "@/components/ui/table";
 
 const { token } = useAuth();
+const router = useRouter();
 
 const { data, error, loading, reload } = useApi<PackageListResponse>(
   () => listPackages2() as Promise<{ data?: unknown; error?: unknown }>,
@@ -78,7 +80,12 @@ function statusLabel(pkg: PackageSummaryDto) {
           </TableRow>
         </TableHeader>
         <TableBody>
-          <TableRow v-for="(pkg, i) in filteredItems" :key="i">
+          <TableRow
+            v-for="(pkg, i) in filteredItems"
+            :key="i"
+            class="cursor-pointer hover:bg-muted/50"
+            @click="router.push({ path: '/packages/detail', query: { registry: pkg.registry, name: pkg.name, version: pkg.version, ...(pkg.artifact ? { artifact: pkg.artifact } : {}) } })"
+          >
             <TableCell class="font-mono text-xs">{{ pkg.registry }}</TableCell>
             <TableCell class="font-medium">{{ pkg.name }}</TableCell>
             <TableCell class="font-mono text-xs">{{ pkg.version }}</TableCell>
