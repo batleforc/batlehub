@@ -15,7 +15,7 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [options]
 
-Validate that each configured registry in a running proxy-cache instance
+Validate that each configured registry in a running batlehub instance
 actually works end-to-end using real package manager tooling.
 
 Options:
@@ -279,7 +279,7 @@ test_npm() {
 
     # Audit HTTP check — POST a minimal package tree to /-/npm/v1/audit/quick,
     # expect any non-5xx response (proxy layer is healthy if no server error).
-    local audit_payload='{"name":"proxy-cache-check","version":"1.0.0","requires":{},"dependencies":{}}'
+    local audit_payload='{"name":"batlehub-check","version":"1.0.0","requires":{},"dependencies":{}}'
     local audit_body="${TMPDIR_ROOT}/npm_audit_${RANDOM}"
     local audit_code audit_rc=0
     audit_code=$(curl -sS --max-time 30 "${CURL_AUTH[@]}" \
@@ -312,11 +312,11 @@ test_npm() {
         mkdir -p "$audit_dir"
 
         cat > "$audit_dir/package.json" <<'PKGJSON'
-{"name":"proxy-cache-audit-check","version":"1.0.0","private":true,"dependencies":{"ms":"^2.1.3"}}
+{"name":"batlehub-audit-check","version":"1.0.0","private":true,"dependencies":{"ms":"^2.1.3"}}
 PKGJSON
         # Lockfile v3 (npm ≥ 7): npm audit reads this without fetching packages.
         cat > "$audit_dir/package-lock.json" <<'LOCKJSON'
-{"name":"proxy-cache-audit-check","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"proxy-cache-audit-check","version":"1.0.0","dependencies":{"ms":"^2.1.3"}},"node_modules/ms":{"version":"2.1.3","resolved":"https://registry.npmjs.org/ms/-/ms-2.1.3.tgz","integrity":"sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTg=="}}}
+{"name":"batlehub-audit-check","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"batlehub-audit-check","version":"1.0.0","dependencies":{"ms":"^2.1.3"}},"node_modules/ms":{"version":"2.1.3","resolved":"https://registry.npmjs.org/ms/-/ms-2.1.3.tgz","integrity":"sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTg=="}}}
 LOCKJSON
 
         local audit_out audit_exit=0
@@ -367,7 +367,7 @@ test_cargo() {
     local cargo_dir="${TMPDIR_ROOT}/cargo-${name}"
     local out rc=0
 
-    out=$(cargo new --quiet --name proxy-cache-check "$cargo_dir" 2>&1) || {
+    out=$(cargo new --quiet --name batlehub-check "$cargo_dir" 2>&1) || {
         print_fail "cargo:tool — cargo new failed: $out"
         record cargo tool FAIL
         return
@@ -487,7 +487,7 @@ test_go() {
     mkdir -p "$go_dir"
 
     local out rc=0
-    out=$(cd "$go_dir" && go mod init proxy-cache-check 2>&1) || {
+    out=$(cd "$go_dir" && go mod init batlehub-check 2>&1) || {
         print_fail "go:tool — go mod init failed: $out"
         record go tool FAIL
         return
@@ -775,7 +775,7 @@ print_summary_colored() {
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-printf "${BOLD}proxy-cache registry check${RESET}  ${DIM}%s${RESET}\n" "$BASE_URL"
+printf "${BOLD}batlehub registry check${RESET}  ${DIM}%s${RESET}\n" "$BASE_URL"
 [[ -n "$AUTH_TOKEN" ]] && printf "${DIM}(using bearer token auth)${RESET}\n"
 
 [[ -n "$NPM_NAME"                ]] && test_npm                "$NPM_NAME"

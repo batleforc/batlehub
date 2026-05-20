@@ -1,6 +1,6 @@
 # Registry Health Check
 
-`scripts/check-registries.sh` validates that a running proxy-cache instance is working correctly for each registry type. It goes beyond HTTP status codes by using real package manager tooling — `npm install`, `cargo add`, `go get` — so you catch misconfigurations that a simple `curl` would miss.
+`scripts/check-registries.sh` validates that a running batlehub instance is working correctly for each registry type. It goes beyond HTTP status codes by using real package manager tooling — `npm install`, `cargo add`, `go get` — so you catch misconfigurations that a simple `curl` would miss.
 
 ---
 

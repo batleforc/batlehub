@@ -5,7 +5,7 @@ use actix_web::{HttpRequest, HttpResponse, Responder, get, web};
 use bytes::Bytes;
 use futures::StreamExt;
 
-use proxy_cache_core::{
+use batlehub_core::{
     entities::PackageId,
     services::{ProxyRequest, ProxyResponse, ProxyService},
 };

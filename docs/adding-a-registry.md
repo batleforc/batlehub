@@ -1,6 +1,6 @@
 # Adding a New Registry
 
-This guide walks through every change needed to wire a new upstream registry into proxy-cache. The OpenVSX adapter (`crates/adapters/src/registry/openvsx.rs`) is used as the reference implementation throughout.
+This guide walks through every change needed to wire a new upstream registry into batlehub. The OpenVSX adapter (`crates/adapters/src/registry/openvsx.rs`) is used as the reference implementation throughout.
 
 ---
 
@@ -74,7 +74,7 @@ use async_trait::async_trait;
 use futures::TryStreamExt;
 use serde::Deserialize;
 
-use proxy_cache_core::{
+use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
     ports::{ArtifactStream, RegistryClient},
@@ -88,7 +88,7 @@ pub struct MyRegistryClient {
 impl MyRegistryClient {
     pub fn new(base_url: impl Into<String>) -> Self {
         let http = reqwest::Client::builder()
-            .user_agent("proxy-cache/0.1")
+            .user_agent("batlehub/0.1")
             .build()
             .expect("failed to build MyRegistry HTTP client");
         Self { http, base_url: base_url.into() }
@@ -215,7 +215,7 @@ match registry.registry_type.as_str() {
 **Import the client:**
 
 ```rust
-use proxy_cache_adapters::registry::{
+use batlehub_adapters::registry::{
     ...,
     MyRegistryClient,
 };
@@ -275,7 +275,7 @@ use std::sync::Arc;
 use actix_web::{HttpResponse, Responder, get, web};
 use bytes::Bytes;
 use futures::StreamExt;
-use proxy_cache_core::{entities::PackageId, services::{ProxyRequest, ProxyResponse, ProxyService}};
+use batlehub_core::{entities::PackageId, services::{ProxyRequest, ProxyResponse, ProxyService}};
 use crate::{RegistryMap, error::AppError, extractors::AuthIdentity};
 
 pub fn require_myregistry(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
@@ -446,7 +446,7 @@ Remember to update the `grid-cols-*` class on the registry names grid and the ta
 
 ### Unit tests for the adapter
 
-Add tests to `myregistry.rs` using `mockito` (already a dev-dependency in `proxy-cache-adapters`):
+Add tests to `myregistry.rs` using `mockito` (already a dev-dependency in `batlehub-adapters`):
 
 ```rust
 #[cfg(test)]

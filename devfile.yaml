@@ -35,7 +35,7 @@ components:
         - name: AUTHENTIK_REDIS__HOST
           value: authentik-redis
         - name: AUTHENTIK_SECRET_KEY
-          value: proxy-cache-local-insecure-secret-key
+          value: batlehub-local-insecure-secret-key
       endpoints:
         - name: port-9000
           targetPort: 9000
@@ -61,7 +61,7 @@ components:
         - name: AUTHENTIK_REDIS__HOST
           value: authentik-redis
         - name: AUTHENTIK_SECRET_KEY
-          value: proxy-cache-local-insecure-secret-key
+          value: batlehub-local-insecure-secret-key
       command:
         - tail
       args:
@@ -87,11 +87,11 @@ components:
       image: postgres:17-alpine
       env:
         - name: POSTGRES_DB
-          value: proxy_cache
+          value: batlehub
         - name: POSTGRES_PASSWORD
           value: changeme
         - name: POSTGRES_USER
-          value: proxy_cache
+          value: batlehub
         - name: PGDATA
           value: /data/pgdata
       endpoints:

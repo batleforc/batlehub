@@ -1,4 +1,4 @@
-# proxy-cache — example configuration
+# batlehub — example configuration
 # Copy this file to config.toml and edit as needed.
 
 [server]
@@ -8,11 +8,11 @@ port = 8080
 # static_dir = "./ui/dist"
 # Restrict CORS to specific frontend origins in production.
 # When absent, all origins are allowed (fine for local dev).
-# cors_allowed_origins = ["https://proxy-cache.example.com"]
+# cors_allowed_origins = ["https://batlehub.example.com"]
 
 [database]
 type = "postgresql"
-url = "postgresql://proxy_cache:changeme@localhost:5432/proxy_cache"
+url = "postgresql://batlehub:changeme@localhost:5432/batlehub"
 max_connections = 10
 
 # ── Auth providers (evaluated in order; first match wins) ─────────────────────
@@ -98,8 +98,8 @@ role_claim = "groups"
 # # ca_cert_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 # # token_path   = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 #
-# # Audiences passed to the TokenReview API (defaults to ["proxy-cache"]).
-# audiences = ["proxy-cache"]
+# # Audiences passed to the TokenReview API (defaults to ["batlehub"]).
+# audiences = ["batlehub"]
 #
 # # Map Kubernetes usernames or group names to proxy roles.
 # # Kubernetes sets:
@@ -310,4 +310,4 @@ admin = ["*"]
 
 # [otel]
 # endpoint = "http://localhost:4317"
-# service_name = "proxy-cache"
+# service_name = "batlehub"

@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use proxy_cache_adapters::auth::generate_token;
-use proxy_cache_core::{
+use batlehub_adapters::auth::generate_token;
+use batlehub_core::{
     entities::Role,
     ports::UserTokenRepository,
 };

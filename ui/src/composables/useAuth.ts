@@ -3,10 +3,10 @@ import { client } from "@/client/client.gen";
 import { me, oidcRefresh } from "@/client/sdk.gen";
 import type { MeResponse, RefreshResponse } from "@/client/types.gen";
 
-const ACCESS_TOKEN_KEY = "proxy_cache_access_token";
-const REFRESH_TOKEN_KEY = "proxy_cache_refresh_token";
-const EXPIRES_AT_KEY = "proxy_cache_token_expires_at"; // unix ms
-const OIDC_PROVIDER_KEY = "proxy_cache_oidc_provider";
+const ACCESS_TOKEN_KEY = "batlehub_access_token";
+const REFRESH_TOKEN_KEY = "batlehub_refresh_token";
+const EXPIRES_AT_KEY = "batlehub_token_expires_at"; // unix ms
+const OIDC_PROVIDER_KEY = "batlehub_oidc_provider";
 
 // ── Singleton state ────────────────────────────────────────────────────────────
 

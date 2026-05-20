@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use proxy_cache_core::{
+use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
     ports::{ArtifactStream, RegistryClient},

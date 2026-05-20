@@ -17,8 +17,8 @@
 use std::sync::Arc;
 
 use mockito::Matcher;
-use proxy_cache_adapters::registry::{GoProxyRegistryClient, UpstreamHttpOptions};
-use proxy_cache_core::{entities::PackageId, error::CoreError, ports::RegistryClient};
+use batlehub_adapters::registry::{GoProxyRegistryClient, UpstreamHttpOptions};
+use batlehub_core::{entities::PackageId, error::CoreError, ports::RegistryClient};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -180,7 +180,7 @@ async fn custom_ca_cert_enables_https_connection() {
 
     // 3. Write the CA cert (same as server cert for self-signed) to a temp file.
     let ca_path = std::env::temp_dir().join(format!(
-        "proxy-cache-test-ca-{}.pem",
+        "batlehub-test-ca-{}.pem",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

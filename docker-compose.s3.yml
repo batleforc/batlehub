@@ -1,4 +1,4 @@
-# proxy-cache — full development stack with RustFS (S3), Authentik (OIDC), and Jaeger
+# batlehub — full development stack with RustFS (S3), Authentik (OIDC), and Jaeger
 #
 # Standalone compose file; bring it up with:
 #   task compose:s3:up
@@ -22,20 +22,20 @@
 
 services:
 
-  # ── PostgreSQL (proxy-cache) ─────────────────────────────────────────────────
+  # ── PostgreSQL (batlehub) ─────────────────────────────────────────────────
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: proxy_cache
-      POSTGRES_USER: proxy_cache
+      POSTGRES_DB: batlehub
+      POSTGRES_USER: batlehub
       POSTGRES_PASSWORD: changeme
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U proxy_cache" ]
+      test: [ "CMD-SHELL", "pg_isready -U batlehub" ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -135,7 +135,7 @@ services:
       AUTHENTIK_POSTGRESQL__USER: authentik
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__PASSWORD: authentik
-      AUTHENTIK_SECRET_KEY: proxy-cache-local-insecure-secret-key
+      AUTHENTIK_SECRET_KEY: batlehub-local-insecure-secret-key
       AUTHENTIK_BOOTSTRAP_PASSWORD: akadmin
       AUTHENTIK_BOOTSTRAP_TOKEN: akadmin-token
     ports:
@@ -146,7 +146,7 @@ services:
       authentik-redis:
         condition: service_healthy
     volumes:
-      - ./deploy/auth/proxy-cache.yaml:/blueprints/custom/proxy-cache.yaml:ro
+      - ./deploy/auth/batlehub.yaml:/blueprints/custom/batlehub.yaml:ro
     healthcheck:
       test: [ "CMD-SHELL", "curl -sf http://localhost:9000/-/health/live/ || exit 1" ]
       interval: 10s
@@ -164,14 +164,14 @@ services:
       AUTHENTIK_POSTGRESQL__USER: authentik
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__PASSWORD: authentik
-      AUTHENTIK_SECRET_KEY: proxy-cache-local-insecure-secret-key
+      AUTHENTIK_SECRET_KEY: batlehub-local-insecure-secret-key
     depends_on:
       authentik-postgres:
         condition: service_healthy
       authentik-redis:
         condition: service_healthy
     volumes:
-      - ./deploy/auth/proxy-cache.yaml:/blueprints/custom/proxy-cache.yaml:ro
+      - ./deploy/auth/batlehub.yaml:/blueprints/custom/batlehub.yaml:ro
 
   # ── Jaeger (OpenTelemetry traces) ─────────────────────────────────────────────
   jaeger:

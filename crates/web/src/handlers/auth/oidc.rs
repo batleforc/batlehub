@@ -2,7 +2,7 @@ use actix_web::{HttpResponse, Responder, get, post, web};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use proxy_cache_adapters::auth::OidcSsoFlow;
+use batlehub_adapters::auth::OidcSsoFlow;
 
 // ── Provider list ──────────────────────────────────────────────────────────────
 

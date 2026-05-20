@@ -19,7 +19,7 @@ RUN for crate in crates/core crates/config crates/adapters crates/web; do \
     done && \
     mkdir -p server/src && echo "fn main() {}" > server/src/main.rs
 
-RUN cargo build --release -p proxy-cache-server 2>/dev/null; exit 0
+RUN cargo build --release -p batlehub-server 2>/dev/null; exit 0
 
 # Now copy real source and rebuild (only changed crates recompile).
 COPY crates/ crates/
@@ -28,7 +28,7 @@ COPY server/ server/
 # Touch lib/main files so cargo detects the change.
 RUN touch crates/*/src/lib.rs server/src/main.rs
 
-RUN cargo build --release -p proxy-cache-server
+RUN cargo build --release -p batlehub-server
 
 # ── Frontend build stage ───────────────────────────────────────────────────────
 FROM registry.access.redhat.com/hi/nodejs:latest AS ui-builder
@@ -40,21 +40,21 @@ RUN npm ci
 COPY ui/ ./
 
 # Generate the OpenAPI spec from the just-built binary and then the TS client.
-COPY --from=builder /build/target/release/proxy-cache /usr/local/bin/proxy-cache
-COPY config.example.toml /etc/proxy-cache/config.toml
-RUN proxy-cache --config /etc/proxy-cache/config.toml dump-spec > openapi.json && \
+COPY --from=builder /build/target/release/batlehub /usr/local/bin/batlehub
+COPY config.example.toml /etc/batlehub/config.toml
+RUN batlehub --config /etc/batlehub/config.toml dump-spec > openapi.json && \
     npm run generate && \
     npm run build
 
 # ── Runtime image ─────────────────────────────────────────────────────────────
 FROM registry.access.redhat.com/hi/core-runtime:latest AS runtime
 
-COPY --from=builder   /build/target/release/proxy-cache /usr/local/bin/proxy-cache
+COPY --from=builder   /build/target/release/batlehub /usr/local/bin/batlehub
 COPY --from=ui-builder /ui/dist                         /app/ui/dist
 
-RUN mkdir -p /var/cache/proxy-cache
+RUN mkdir -p /var/cache/batlehub
 
 EXPOSE 8080
 
-ENTRYPOINT ["proxy-cache"]
-CMD ["--config", "/etc/proxy-cache/config.toml"]
+ENTRYPOINT ["batlehub"]
+CMD ["--config", "/etc/batlehub/config.toml"]

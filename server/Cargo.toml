@@ -1,21 +1,21 @@
 [package]
-name = "proxy-cache-server"
+name = "batlehub-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "proxy-cache"
+name = "batlehub"
 path = "src/main.rs"
 
 [features]
-storage-s3 = ["proxy-cache-adapters/storage-s3"]
+storage-s3 = ["batlehub-adapters/storage-s3"]
 
 [dependencies]
-proxy-cache-core = { path = "../crates/core" }
-proxy-cache-config = { path = "../crates/config" }
-proxy-cache-adapters = { path = "../crates/adapters" }
-proxy-cache-web = { path = "../crates/web" }
+batlehub-core = { path = "../crates/core" }
+batlehub-config = { path = "../crates/config" }
+batlehub-adapters = { path = "../crates/adapters" }
+batlehub-web = { path = "../crates/web" }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

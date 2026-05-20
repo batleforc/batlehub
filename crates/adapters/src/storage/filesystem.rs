@@ -5,7 +5,7 @@ use bytes::Bytes;
 use futures::stream;
 use tokio::io::AsyncWriteExt;
 
-use proxy_cache_core::{
+use batlehub_core::{
     error::CoreError,
     ports::{ByteStream, StorageBackend, StorageMeta, StoredArtifact},
 };

@@ -886,6 +886,122 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "batlehub-adapters"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "aws-config",
+ "aws-sdk-s3",
+ "base64",
+ "batlehub-config",
+ "batlehub-core",
+ "bytes",
+ "chrono",
+ "futures",
+ "hex",
+ "jsonwebtoken",
+ "mockito",
+ "rand 0.8.6",
+ "rcgen",
+ "reqwest",
+ "rustls 0.23.40",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tokio-rustls 0.26.4",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "batlehub-config"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "batlehub-core",
+ "serde",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
+name = "batlehub-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
+name = "batlehub-server"
+version = "0.1.0"
+dependencies = [
+ "actix-cors",
+ "actix-files",
+ "actix-web",
+ "anyhow",
+ "batlehub-adapters",
+ "batlehub-config",
+ "batlehub-core",
+ "batlehub-web",
+ "clap",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "reqwest",
+ "tokio",
+ "tracing",
+ "tracing-actix-web",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "utoipa",
+ "utoipa-actix-web",
+ "utoipa-swagger-ui",
+]
+
+[[package]]
+name = "batlehub-web"
+version = "0.1.0"
+dependencies = [
+ "actix-files",
+ "actix-http",
+ "actix-web",
+ "async-trait",
+ "batlehub-adapters",
+ "batlehub-config",
+ "batlehub-core",
+ "bytes",
+ "chrono",
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-actix-web",
+ "utoipa",
+ "utoipa-actix-web",
+ "utoipa-swagger-ui",
+ "uuid",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2885,122 +3001,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "proxy-cache-adapters"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "aws-config",
- "aws-sdk-s3",
- "base64",
- "bytes",
- "chrono",
- "futures",
- "hex",
- "jsonwebtoken",
- "mockito",
- "proxy-cache-config",
- "proxy-cache-core",
- "rand 0.8.6",
- "rcgen",
- "reqwest",
- "rustls 0.23.40",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sqlx",
- "thiserror",
- "tokio",
- "tokio-rustls 0.26.4",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "proxy-cache-config"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "proxy-cache-core",
- "serde",
- "thiserror",
- "toml",
-]
-
-[[package]]
-name = "proxy-cache-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytes",
- "chrono",
- "futures",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tracing",
- "utoipa",
- "uuid",
-]
-
-[[package]]
-name = "proxy-cache-server"
-version = "0.1.0"
-dependencies = [
- "actix-cors",
- "actix-files",
- "actix-web",
- "anyhow",
- "clap",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "proxy-cache-adapters",
- "proxy-cache-config",
- "proxy-cache-core",
- "proxy-cache-web",
- "reqwest",
- "tokio",
- "tracing",
- "tracing-actix-web",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "utoipa",
- "utoipa-actix-web",
- "utoipa-swagger-ui",
-]
-
-[[package]]
-name = "proxy-cache-web"
-version = "0.1.0"
-dependencies = [
- "actix-files",
- "actix-http",
- "actix-web",
- "async-trait",
- "bytes",
- "chrono",
- "futures",
- "proxy-cache-adapters",
- "proxy-cache-config",
- "proxy-cache-core",
- "reqwest",
- "serde",
- "serde_json",
- "sqlx",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-actix-web",
- "utoipa",
- "utoipa-actix-web",
- "utoipa-swagger-ui",
- "uuid",
 ]
 
 [[package]]

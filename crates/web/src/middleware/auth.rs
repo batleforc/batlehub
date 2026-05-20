@@ -8,7 +8,7 @@ use actix_web::{
 };
 use futures::future::LocalBoxFuture;
 
-use proxy_cache_core::{entities::Identity, ports::AuthProvider};
+use batlehub_core::{entities::Identity, ports::AuthProvider};
 
 use crate::extractors::raw_auth_from_request;
 

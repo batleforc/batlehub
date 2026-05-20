@@ -4,8 +4,8 @@ use aws_sdk_s3::{Client, config::Builder as S3ConfigBuilder};
 use bytes::Bytes;
 use futures::stream;
 
-use proxy_cache_config::schema::S3StorageConfig;
-use proxy_cache_core::{
+use batlehub_config::schema::S3StorageConfig;
+use batlehub_core::{
     error::CoreError,
     ports::{ByteStream, StorageBackend, StorageMeta, StoredArtifact},
 };

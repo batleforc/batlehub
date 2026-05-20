@@ -2,7 +2,7 @@ use actix_web::HttpResponse;
 use actix_web::http::StatusCode;
 use serde::Serialize;
 
-use proxy_cache_core::error::CoreError;
+use batlehub_core::error::CoreError;
 
 #[derive(Debug, Serialize)]
 pub struct ErrorBody {

@@ -2,7 +2,7 @@ use actix_web::{Responder, get, web};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use proxy_cache_core::entities::Role;
+use batlehub_core::entities::Role;
 
 use crate::{AccessConfig, extractors::AuthIdentity};
 

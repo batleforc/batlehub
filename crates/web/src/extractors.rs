@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use actix_web::{FromRequest, HttpMessage, HttpRequest, dev::Payload};
 use futures::future::{Ready, ready};
 
-use proxy_cache_core::entities::Identity;
+use batlehub_core::entities::Identity;
 
 use crate::error::AppError;
 
@@ -35,7 +35,7 @@ impl std::ops::Deref for AuthIdentity {
 }
 
 /// Builds a `RawAuthRequest` from the actix-web `HttpRequest`.
-pub fn raw_auth_from_request(req: &HttpRequest) -> proxy_cache_core::ports::RawAuthRequest {
+pub fn raw_auth_from_request(req: &HttpRequest) -> batlehub_core::ports::RawAuthRequest {
     let headers = req
         .headers()
         .iter()
@@ -55,5 +55,5 @@ pub fn raw_auth_from_request(req: &HttpRequest) -> proxy_cache_core::ports::RawA
         })
         .collect::<HashMap<_, _>>();
 
-    proxy_cache_core::ports::RawAuthRequest { headers, query_params }
+    batlehub_core::ports::RawAuthRequest { headers, query_params }
 }

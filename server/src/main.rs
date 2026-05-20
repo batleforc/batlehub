@@ -14,7 +14,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 use utoipa::OpenApi as _;
 use utoipa_actix_web::AppExt;
 
-use proxy_cache_adapters::{
+use batlehub_adapters::{
     auth::{
         KubernetesAuthProvider, OidcAuthProvider, OidcSsoFlow, StaticTokenAuthProvider,
         UserTokenAuthProvider,
@@ -27,26 +27,26 @@ use proxy_cache_adapters::{
     },
     storage::{FilesystemStorageBackend, StorageRouter},
 };
-use proxy_cache_config::{
+use batlehub_config::{
     load,
     schema::{AuthConfig, OtelConfig, RegistryConfig, RuleConfig, StorageBackendConfig, StoragesConfig, UpstreamAuthConfig},
 };
-use proxy_cache_core::{
+use batlehub_core::{
     entities::Role,
     ports::{AuthProvider, CacheStore, InMemoryCacheStore, UserTokenRepository},
     rules::{BlockListRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule},
     services::{AdminService, ProxyService, RegistryPolicy},
 };
-use proxy_cache_web::{configure_app, openapi_spec, AccessConfig, ApiDoc, CargoIndexProxy, RegistryMap, UpstreamMap};
+use batlehub_web::{configure_app, openapi_spec, AccessConfig, ApiDoc, CargoIndexProxy, RegistryMap, UpstreamMap};
 
 // ── Tracing span builder ──────────────────────────────────────────────────────
 
 /// Custom root span builder that separates upstream/client errors from backend faults:
 /// - 4xx → `INFO`  "upstream/client error (not a backend fault)"
 /// - 5xx → `WARN`  "backend error"
-struct ProxyCacheSpanBuilder;
+struct BatleHubSpanBuilder;
 
-impl RootSpanBuilder for ProxyCacheSpanBuilder {
+impl RootSpanBuilder for BatleHubSpanBuilder {
     fn on_request_start(request: &actix_web::dev::ServiceRequest) -> tracing::Span {
         tracing_actix_web::root_span!(level = tracing::Level::INFO, request)
     }
@@ -75,8 +75,8 @@ impl RootSpanBuilder for ProxyCacheSpanBuilder {
 
 #[derive(Parser)]
 #[command(
-    name = "proxy-cache",
-    about = "Smart proxy cache for package registries"
+    name = "batlehub",
+    about = "BatleHub — smart artifact hub for package registries"
 )]
 struct Cli {
     #[arg(short, long, default_value = "config.toml")]
@@ -111,7 +111,7 @@ async fn main() -> Result<()> {
     // ── Tracing ───────────────────────────────────────────────────────────────
     let _tracer_provider = init_tracing(config.otel.as_ref());
 
-    tracing::info!(config = %cli.config, "proxy-cache starting");
+    tracing::info!(config = %cli.config, "batlehub starting");
 
     // ── Database ──────────────────────────────────────────────────────────────
     let repo = Arc::new(
@@ -122,7 +122,7 @@ async fn main() -> Result<()> {
     repo.run_migrations().await.context("running migrations")?;
 
     // ── Storage ───────────────────────────────────────────────────────────────
-    let storage: Arc<dyn proxy_cache_core::ports::StorageBackend> = match &config.storage {
+    let storage: Arc<dyn batlehub_core::ports::StorageBackend> = match &config.storage {
         StoragesConfig::Single(backend_cfg) => {
             // Wrap in StorageRouter so artifact_storage is always tracked in the DB,
             // enabling the health endpoint to report accurate artifact counts and sizes.
@@ -217,7 +217,7 @@ async fn main() -> Result<()> {
 
     // ── Registries + policies ─────────────────────────────────────────────────
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let mut registry_clients: HashMap<String, Arc<dyn proxy_cache_core::ports::RegistryClient>> =
+    let mut registry_clients: HashMap<String, Arc<dyn batlehub_core::ports::RegistryClient>> =
         HashMap::new();
     let mut policies: HashMap<String, RegistryPolicy> = HashMap::new();
     let mut cargo_indexes: HashMap<String, CargoIndexProxy> = HashMap::new();
@@ -231,7 +231,7 @@ async fn main() -> Result<()> {
 
         let policy = build_policy(
             reg,
-            repo.clone() as Arc<dyn proxy_cache_core::ports::PackageRepository>,
+            repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>,
         );
         policies.insert(reg.name.clone(), policy);
 
@@ -260,13 +260,13 @@ async fn main() -> Result<()> {
         registries: registry_clients,
         storage: storage.clone(),
         cache: cache.clone(),
-        repo: repo.clone() as Arc<dyn proxy_cache_core::ports::PackageRepository>,
+        repo: repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>,
         policies,
         max_artifact_size_bytes: None,
     });
 
     let admin_svc = Arc::new(AdminService::new(
-        repo.clone() as Arc<dyn proxy_cache_core::ports::PackageRepository>
+        repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>
     ));
 
     // ── Access config ─────────────────────────────────────────────────────────
@@ -342,12 +342,12 @@ async fn main() -> Result<()> {
             cors_allowed_origins.iter().fold(cors_base, |c, origin| c.allowed_origin(origin))
         };
 
-        app.wrap(TracingLogger::<ProxyCacheSpanBuilder>::new())
-            .wrap(proxy_cache_web::AuthMiddlewareFactory::new(
+        app.wrap(TracingLogger::<BatleHubSpanBuilder>::new())
+            .wrap(batlehub_web::AuthMiddlewareFactory::new(
                 auth_providers.clone(),
             ))
             .wrap(cors)
-            .service(proxy_cache_web::swagger_ui(openapi))
+            .service(batlehub_web::swagger_ui(openapi))
             .configure(move |cfg| {
                 if let Some(ref dir) = static_dir_inner {
                     cfg.service(
@@ -371,7 +371,7 @@ async fn main() -> Result<()> {
 
 async fn build_single_backend(
     cfg: &StorageBackendConfig,
-) -> Result<Arc<dyn proxy_cache_core::ports::StorageBackend>> {
+) -> Result<Arc<dyn batlehub_core::ports::StorageBackend>> {
     match cfg {
         StorageBackendConfig::Filesystem(fs) => {
             let backend = FilesystemStorageBackend::new(&fs.path)
@@ -382,7 +382,7 @@ async fn build_single_backend(
         StorageBackendConfig::S3(_s3) => {
             #[cfg(feature = "storage-s3")]
             {
-                use proxy_cache_adapters::storage::S3StorageBackend;
+                use batlehub_adapters::storage::S3StorageBackend;
                 let backend = S3StorageBackend::new(_s3)
                     .await
                     .with_context(|| format!("initialising S3 storage for bucket '{}'", _s3.bucket))?;
@@ -429,15 +429,15 @@ fn build_cargo_index(reg: &RegistryConfig) -> anyhow::Result<CargoIndexProxy> {
         }
     };
     let opts = upstream_options(reg);
-    let http = proxy_cache_adapters::registry::apply_upstream_options(
-        reqwest::Client::builder().user_agent("proxy-cache/0.1"),
+    let http = batlehub_adapters::registry::apply_upstream_options(
+        reqwest::Client::builder().user_agent("batlehub/0.1"),
         &opts,
     )?;
     tracing::info!(index_url = %index_url, "cargo sparse index proxy configured");
     Ok(CargoIndexProxy { http, index_url })
 }
 
-fn build_registry_client(reg: &RegistryConfig) -> anyhow::Result<Arc<dyn proxy_cache_core::ports::RegistryClient>> {
+fn build_registry_client(reg: &RegistryConfig) -> anyhow::Result<Arc<dyn batlehub_core::ports::RegistryClient>> {
     fn resolve_urls(configured: &[String], default: &str) -> Vec<String> {
         if configured.is_empty() {
             vec![default.to_owned()]
@@ -450,8 +450,8 @@ fn build_registry_client(reg: &RegistryConfig) -> anyhow::Result<Arc<dyn proxy_c
         registry_type: &str,
         url: &str,
         opts: &UpstreamHttpOptions,
-    ) -> anyhow::Result<Arc<dyn proxy_cache_core::ports::RegistryClient>> {
-        let client: Arc<dyn proxy_cache_core::ports::RegistryClient> = match registry_type {
+    ) -> anyhow::Result<Arc<dyn batlehub_core::ports::RegistryClient>> {
+        let client: Arc<dyn batlehub_core::ports::RegistryClient> = match registry_type {
             "github" => Arc::new(GithubRegistryClient::new(url, opts)?),
             "npm" => Arc::new(NpmRegistryClient::new(url, opts)?),
             "cargo" => Arc::new(CargoRegistryClient::new(url, opts)?),
@@ -488,9 +488,9 @@ fn build_registry_client(reg: &RegistryConfig) -> anyhow::Result<Arc<dyn proxy_c
 
 fn build_policy(
     reg: &RegistryConfig,
-    repo: Arc<dyn proxy_cache_core::ports::PackageRepository>,
+    repo: Arc<dyn batlehub_core::ports::PackageRepository>,
 ) -> RegistryPolicy {
-    let mut rules: Vec<Box<dyn proxy_cache_core::rules::Rule>> = Vec::new();
+    let mut rules: Vec<Box<dyn batlehub_core::rules::Rule>> = Vec::new();
 
     // 1. RBAC rule (always first)
     let rbac_perms = HashMap::from([

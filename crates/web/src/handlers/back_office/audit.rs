@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use utoipa::IntoParams;
 
-use proxy_cache_core::{
+use batlehub_core::{
     entities::{EventFilter, Role},
     services::AdminService,
 };

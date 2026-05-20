@@ -3,7 +3,7 @@ use chrono::DateTime;
 use futures::TryStreamExt;
 use serde::Deserialize;
 
-use proxy_cache_core::{
+use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
     ports::{ArtifactStream, RegistryClient},
@@ -26,7 +26,7 @@ pub struct CargoRegistryClient {
 impl CargoRegistryClient {
     pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
         let builder = reqwest::Client::builder()
-            .user_agent("proxy-cache/0.1")
+            .user_agent("batlehub/0.1")
             .redirect(reqwest::redirect::Policy::limited(10));
         let http = apply_upstream_options(builder, opts)?;
         Ok(Self { http, base_url: base_url.into(), basic_auth: opts.basic_auth.clone() })

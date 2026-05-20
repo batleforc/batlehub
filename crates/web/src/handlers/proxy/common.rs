@@ -4,7 +4,7 @@ use actix_web::{HttpResponse, web};
 use bytes::Bytes;
 use futures::StreamExt;
 
-use proxy_cache_core::{
+use batlehub_core::{
     entities::PackageId,
     services::{ProxyRequest, ProxyResponse, ProxyService},
 };

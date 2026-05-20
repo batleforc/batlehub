@@ -4,7 +4,7 @@ use actix_web::{Responder, get, web};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use proxy_cache_core::{
+use batlehub_core::{
     entities::{PackageFilter, PackageId, PackageStatus},
     services::AdminService,
 };

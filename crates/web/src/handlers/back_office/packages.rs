@@ -7,7 +7,7 @@ use sqlx::{PgPool, Row};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
-use proxy_cache_core::{
+use batlehub_core::{
     entities::{AccessAction, AccessResult, EventFilter, PackageFilter, PackageId, PackageStatus, Role},
     services::{AdminService, BulkBlockItem, ProxyService},
 };

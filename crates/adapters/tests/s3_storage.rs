@@ -8,14 +8,14 @@
 //!   S3_TEST_ENDPOINT=http://127.0.0.1:19000 \
 //!     AWS_ACCESS_KEY_ID=minioadmin \
 //!     AWS_SECRET_ACCESS_KEY=minioadmin \
-//!     cargo test -p proxy-cache-adapters --features storage-s3 --test s3_storage
+//!     cargo test -p batlehub-adapters --features storage-s3 --test s3_storage
 
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::{Client, config::Builder as S3ConfigBuilder};
 use bytes::Bytes;
 use futures::StreamExt;
-use proxy_cache_adapters::storage::S3StorageBackend;
-use proxy_cache_core::ports::{StorageBackend, StorageMeta, StoredArtifact};
+use batlehub_adapters::storage::S3StorageBackend;
+use batlehub_core::ports::{StorageBackend, StorageMeta, StoredArtifact};
 
 const BUCKET: &str = "test-artifacts";
 const REGION: &str = "us-east-1";

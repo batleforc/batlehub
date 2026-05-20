@@ -1,4 +1,4 @@
-# proxy-cache
+# batlehub
 
 A self-hosted smart proxy and cache for package registries. It sits between your build tools and the internet, caches artifacts after the first download, and enforces access-control rules before any package reaches a developer or CI pipeline.
 
@@ -48,7 +48,7 @@ Multiple instances of the same registry type can run in parallel (e.g. a private
 - **Audit log** — every allow and deny decision is recorded in PostgreSQL.
 - **OpenTelemetry** — optional distributed tracing via OTLP/gRPC.
 - **Web UI** — a Vue 3 SPA for browsing packages, managing blocks, and generating client config snippets.
-- **OpenAPI** — full Swagger UI at `/swagger-ui/` and spec dump via `proxy-cache dump-spec`.
+- **OpenAPI** — full Swagger UI at `/swagger-ui/` and spec dump via `batlehub dump-spec`.
 
 ---
 
@@ -58,8 +58,8 @@ Multiple instances of the same registry type can run in parallel (e.g. a private
 
 ```sh
 # Clone and start PostgreSQL + the server
-git clone https://github.com/your-org/proxy-cache
-cd proxy-cache
+git clone https://github.com/your-org/batlehub
+cd batlehub
 cp config.example.toml config.toml   # edit as needed
 podman compose up -d                 # or docker compose up -d
 ```
@@ -72,17 +72,17 @@ The server listens on `http://localhost:8080`. The admin token from `config.exam
 
 ```sh
 # Backend
-cargo build --release -p proxy-cache-server
+cargo build --release -p batlehub-server
 
 # Frontend (optional — embeds the SPA into the server)
 cd ui && npm ci && npm run build && cd ..
 
 # Generate the OpenAPI spec and TypeScript client
-cargo run -p proxy-cache-server -- --config config.example.toml dump-spec > ui/openapi.json
+cargo run -p batlehub-server -- --config config.example.toml dump-spec > ui/openapi.json
 cd ui && npm run generate && npm run build && cd ..
 
 # Run
-./target/release/proxy-cache --config config.toml
+./target/release/batlehub --config config.toml
 ```
 
 Or use the [Task](https://taskfile.dev) shortcuts:
@@ -108,7 +108,7 @@ port = 8080
 
 [database]
 type = "postgresql"
-url  = "postgresql://proxy_cache:changeme@localhost:5432/proxy_cache"
+url  = "postgresql://batlehub:changeme@localhost:5432/batlehub"
 
 [[auth]]
 type = "token"
@@ -192,9 +192,9 @@ registry=http://localhost:8080/proxy/npm/
 ```toml
 # .cargo/config.toml
 [source.crates-io]
-replace-with = "proxy-cache"
+replace-with = "batlehub"
 
-[source.proxy-cache]
+[source.batlehub]
 registry = "sparse+http://localhost:8080/proxy/cargo/registry/"
 ```
 
@@ -325,11 +325,11 @@ See [`docs/adding-a-registry.md`](docs/adding-a-registry.md) for a step-by-step 
 ### Docker image
 
 ```sh
-docker build -t proxy-cache .
+docker build -t batlehub .
 docker run -p 8080:8080 \
-  -v /path/to/config.toml:/etc/proxy-cache/config.toml \
-  -v /path/to/cache:/var/cache/proxy-cache \
-  proxy-cache
+  -v /path/to/config.toml:/etc/batlehub/config.toml \
+  -v /path/to/cache:/var/cache/batlehub \
+  batlehub
 ```
 
 The image uses a multi-stage build (Rust builder → Node UI builder → Debian slim runtime). The compiled binary and built SPA are copied into the final stage.

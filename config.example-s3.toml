@@ -1,4 +1,4 @@
-# proxy-cache — RustFS + Authentik + Jaeger example configuration
+# batlehub — RustFS + Authentik + Jaeger example configuration
 #
 # Use this file when running the server locally against the infrastructure
 # started with:
@@ -19,7 +19,7 @@ port = 8080
 
 [database]
 type            = "postgresql"
-url             = "postgresql://proxy_cache:changeme@localhost:5432/proxy_cache"
+url             = "postgresql://batlehub:changeme@localhost:5432/batlehub"
 max_connections = 10
 
 # ── Auth providers (evaluated in order; first match wins) ─────────────────────
@@ -39,7 +39,7 @@ user_id = "user-1"
 
 # Authentik OIDC — started by task compose:s3:db, UI at http://localhost:9000
 # Default credentials: akadmin / akadmin
-# Blueprint at deploy/auth/proxy-cache.yaml provisions the client app automatically.
+# Blueprint at deploy/auth/batlehub.yaml provisions the client app automatically.
 [[auth]]
 type          = "oidc"
 issuer_url    = "http://localhost:9000/application/o/proxy-auth/"
@@ -75,7 +75,7 @@ force_path_style = true   # required for RustFS and other non-AWS S3 stores
 
 [otel]
 endpoint     = "http://localhost:4317"
-service_name = "proxy-cache"
+service_name = "batlehub"
 
 # ── Registries ────────────────────────────────────────────────────────────────
 

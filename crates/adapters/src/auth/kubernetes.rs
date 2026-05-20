@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use proxy_cache_config::schema::KubernetesAuthConfig;
-use proxy_cache_core::{
+use batlehub_config::schema::KubernetesAuthConfig;
+use batlehub_core::{
     entities::{Identity, Role},
     error::CoreError,
     ports::{AuthProvider, RawAuthRequest},
@@ -90,12 +90,12 @@ impl KubernetesAuthProvider {
         // Verify the file is readable on startup so misconfiguration fails fast.
         tokio::fs::read_to_string(&self_token_path).await.map_err(|e| {
             anyhow::anyhow!(
-                "reading proxy-cache service account token from '{self_token_path}': {e}"
+                "reading batlehub service account token from '{self_token_path}': {e}"
             )
         })?;
 
         let audiences = if cfg.audiences.is_empty() {
-            vec!["proxy-cache".to_owned()]
+            vec!["batlehub".to_owned()]
         } else {
             cfg.audiences.clone()
         };
@@ -292,7 +292,7 @@ mod tests {
             reqwest::Client::new(),
             format!("{}/apis/authentication.k8s.io/v1/tokenreviews", server.url()),
             token_path.to_owned(),
-            vec!["proxy-cache".to_owned()],
+            vec!["batlehub".to_owned()],
             default_mappings(),
         )
     }
@@ -482,7 +482,7 @@ mod tests {
         let _m = server
             .mock("POST", "/apis/authentication.k8s.io/v1/tokenreviews")
             .match_body(mockito::Matcher::PartialJson(
-                serde_json::json!({"spec":{"audiences":["proxy-cache"]}}),
+                serde_json::json!({"spec":{"audiences":["batlehub"]}}),
             ))
             .with_status(200)
             .with_header("content-type", "application/json")

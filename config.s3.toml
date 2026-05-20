@@ -1,4 +1,4 @@
-# proxy-cache — RustFS + Authentik + Jaeger configuration
+# batlehub — RustFS + Authentik + Jaeger configuration
 # Mounted read-only into the server container by docker-compose.s3.yml.
 # Uses compose-internal hostnames (rustfs, authentik-server, jaeger).
 
@@ -9,7 +9,7 @@ static_dir = "/app/ui/dist"
 
 [database]
 type            = "postgresql"
-url             = "postgresql://proxy_cache:changeme@postgres:5432/proxy_cache"
+url             = "postgresql://batlehub:changeme@postgres:5432/batlehub"
 max_connections = 10
 
 # ── Auth providers (evaluated in order; first match wins) ─────────────────────
@@ -28,7 +28,7 @@ role    = "user"
 user_id = "user-1"
 
 # Authentik OIDC — JWT validation + browser SSO login.
-# Blueprint at deploy/auth/proxy-cache.yaml provisions client_id / client_secret.
+# Blueprint at deploy/auth/batlehub.yaml provisions client_id / client_secret.
 [[auth]]
 type         = "oidc"
 issuer_url   = "http://authentik-server:9000/application/o/proxy-auth/"
@@ -60,7 +60,7 @@ force_path_style = true
 
 [otel]
 endpoint     = "http://jaeger:4317"
-service_name = "proxy-cache"
+service_name = "batlehub"
 
 # ── Registries ────────────────────────────────────────────────────────────────
 

@@ -1,11 +1,11 @@
 [package]
-name = "proxy-cache-config"
+name = "batlehub-config"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-proxy-cache-core = { path = "../core" }
+batlehub-core = { path = "../core" }
 serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true

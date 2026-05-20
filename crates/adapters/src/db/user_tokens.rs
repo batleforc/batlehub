@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use sqlx::Row;
 use uuid::Uuid;
 
-use proxy_cache_core::{
+use batlehub_core::{
     entities::Role,
     error::CoreError,
     ports::{UserToken, UserTokenRepository},

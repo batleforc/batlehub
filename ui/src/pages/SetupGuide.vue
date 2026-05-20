@@ -112,9 +112,9 @@ const cargoSnippet = computed(() => {
   const reg = cargoRegistryName.value || "cargo";
   return [
     `[source.crates-io]`,
-    `replace-with = "proxy-cache"`,
+    `replace-with = "batlehub"`,
     ``,
-    `[source.proxy-cache]`,
+    `[source.batlehub]`,
     `registry = "sparse+${b}/proxy/${reg}/registry/"`,
   ].join("\n");
 });

@@ -1,13 +1,13 @@
 [package]
-name = "proxy-cache-web"
+name = "batlehub-web"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-proxy-cache-core = { path = "../core" }
-proxy-cache-config = { path = "../config" }
-proxy-cache-adapters = { path = "../adapters" }
+batlehub-core = { path = "../core" }
+batlehub-config = { path = "../config" }
+batlehub-adapters = { path = "../adapters" }
 actix-web.workspace = true
 actix-files.workspace = true
 reqwest.workspace = true
@@ -28,5 +28,5 @@ tokio.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
-proxy-cache-adapters = { path = "../adapters" }
+batlehub-adapters = { path = "../adapters" }
 actix-http = "3"

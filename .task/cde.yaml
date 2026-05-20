@@ -14,10 +14,10 @@ tasks:
       - echo "===================================="
       - echo "Done!"
   db:init:
-    desc: "Create two databases: proxy_cache and authentik"
+    desc: "Create two databases: batlehub and authentik"
     silent: true
     cmds:
-      - kubectl exec -c postgres -it $HOSTNAME -- PGPASSWORD=\$POSTGRES_PASSWORD psql -U \$POSTGRES_USER -c 'CREATE DATABASE proxy_cache;'
+      - kubectl exec -c postgres -it $HOSTNAME -- PGPASSWORD=\$POSTGRES_PASSWORD psql -U \$POSTGRES_USER -c 'CREATE DATABASE batlehub;'
       - kubectl exec -c postgres -it $HOSTNAME -- PGPASSWORD=\$POSTGRES_PASSWORD psql -U \$POSTGRES_USER -c 'CREATE DATABASE authentik;'
   auth:start:
     desc: "Start the Authentik identity provider (requires db:init)"

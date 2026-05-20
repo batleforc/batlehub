@@ -8,8 +8,8 @@ use jsonwebtoken::jwk::JwkSet;
 use serde::Deserialize;
 use tokio::sync::RwLock;
 
-use proxy_cache_config::schema::OidcAuthConfig;
-use proxy_cache_core::{
+use batlehub_config::schema::OidcAuthConfig;
+use batlehub_core::{
     entities::{Identity, Role},
     error::CoreError,
     ports::{AuthProvider, RawAuthRequest},

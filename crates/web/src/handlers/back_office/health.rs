@@ -6,7 +6,7 @@ use serde::Serialize;
 use sqlx::{PgPool, Row};
 use utoipa::ToSchema;
 
-use proxy_cache_core::{
+use batlehub_core::{
     entities::Role,
     services::{AdminService, ProxyService},
 };

@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use libfuzzer_sys::fuzz_target;
 use tokio::runtime::Runtime;
 
-use proxy_cache_core::{
+use batlehub_core::{
     entities::{Identity, PackageId, PackageMetadata, Role},
     rules::{RbacRule, Rule, RuleContext},
 };

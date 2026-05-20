@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use sqlx::PgPool;
 
-use proxy_cache_core::{
+use batlehub_core::{
     error::CoreError,
     ports::{StorageBackend, StorageMeta, StoredArtifact},
 };

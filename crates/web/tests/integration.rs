@@ -23,8 +23,8 @@ use futures::stream;
 use serde_json::Value;
 use uuid::Uuid;
 
-use proxy_cache_adapters::auth::StaticTokenAuthProvider;
-use proxy_cache_core::{
+use batlehub_adapters::auth::StaticTokenAuthProvider;
+use batlehub_core::{
     entities::{
         AccessEvent, EventFilter, PackageFilter, PackageId, PackageMetadata, PackageStatus,
         PackageSummary, Role,
@@ -38,7 +38,7 @@ use proxy_cache_core::{
     rules::{BlockListRule, RbacRule},
     services::{AdminService, ProxyService, RegistryPolicy},
 };
-use proxy_cache_web::{configure_app, AuthMiddlewareFactory};
+use batlehub_web::{configure_app, AuthMiddlewareFactory};
 
 // ── In-memory PackageRepository ────────────────────────────────────────────────
 
@@ -357,23 +357,23 @@ async fn make_app(
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
 
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = proxy_cache_web::AccessConfig {
+    let access_config = batlehub_web::AccessConfig {
         anonymous: ["github", "npm", "cargo", "openvsx", "go", "vscode"].iter().map(|s| s.to_string()).collect(),
         user: ["github", "npm", "cargo", "openvsx", "go", "vscode"].iter().map(|s| s.to_string()).collect(),
         admin: ["github", "npm", "cargo", "openvsx", "go", "vscode"].iter().map(|s| s.to_string()).collect(),
         groups: std::collections::HashMap::new(),
     };
-    let registry_map = proxy_cache_web::RegistryMap(
+    let registry_map = batlehub_web::RegistryMap(
         [("github", "github"), ("npm", "npm"), ("cargo", "cargo"), ("openvsx", "openvsx"), ("go", "goproxy"), ("vscode", "vscode-marketplace")]
             .iter()
             .map(|(n, t)| (n.to_string(), t.to_string()))
             .collect(),
     );
-    let cargo_indexes: std::collections::HashMap<String, proxy_cache_web::CargoIndexProxy> =
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
         std::collections::HashMap::new();
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, proxy_cache_web::UpstreamMap::default(), vec![]))
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![]))
         .split_for_parts();
     let app = app.app_data(actix_web::web::Data::new(cargo_indexes));
 
@@ -961,7 +961,7 @@ async fn make_group_app(
 
     // github: everyone can access (role-based)
     // github2: only accessible via group membership (no role-based access for anon/user)
-    let access_config = proxy_cache_web::AccessConfig {
+    let access_config = batlehub_web::AccessConfig {
         anonymous: ["github"].iter().map(|s| s.to_string()).collect(),
         user: ["github"].iter().map(|s| s.to_string()).collect(),
         admin: ["github", "github2"].iter().map(|s| s.to_string()).collect(),
@@ -978,17 +978,17 @@ async fn make_group_app(
         .into_iter()
         .collect(),
     };
-    let registry_map = proxy_cache_web::RegistryMap(
+    let registry_map = batlehub_web::RegistryMap(
         [("github", "github"), ("github2", "github")]
             .iter()
             .map(|(n, t)| (n.to_string(), t.to_string()))
             .collect(),
     );
-    let cargo_indexes: std::collections::HashMap<String, proxy_cache_web::CargoIndexProxy> =
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
         std::collections::HashMap::new();
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, proxy_cache_web::UpstreamMap::default(), vec![]))
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![]))
         .split_for_parts();
     let app = app.app_data(actix_web::web::Data::new(cargo_indexes));
 
@@ -1277,7 +1277,7 @@ impl CloneToken for UserToken {
 // The token endpoint only accepts identities whose auth_provider == "oidc".
 // StaticTokenAuthProvider sets "static-token", so we use a thin wrapper.
 
-use proxy_cache_core::ports::RawAuthRequest;
+use batlehub_core::ports::RawAuthRequest;
 
 const OIDC_USER_TOKEN: &str = "oidc-user-token";
 const OIDC_ADMIN_TOKEN: &str = "oidc-admin-token";
@@ -1288,8 +1288,8 @@ struct OidcStyleAuthProvider;
 impl AuthProvider for OidcStyleAuthProvider {
     fn name(&self) -> &str { "oidc" }
 
-    async fn authenticate(&self, req: &RawAuthRequest) -> Result<Option<proxy_cache_core::entities::Identity>, CoreError> {
-        use proxy_cache_core::entities::Identity;
+    async fn authenticate(&self, req: &RawAuthRequest) -> Result<Option<batlehub_core::entities::Identity>, CoreError> {
+        use batlehub_core::entities::Identity;
         let auth = req.headers.get("authorization")
             .or_else(|| req.headers.get("Authorization"))
             .and_then(|v| v.strip_prefix("Bearer "));
@@ -1341,21 +1341,21 @@ async fn make_app_with_tokens(
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let tok_repo: Arc<dyn UserTokenRepository> = token_repo;
-    let access_config = proxy_cache_web::AccessConfig {
+    let access_config = batlehub_web::AccessConfig {
         anonymous: ["npm"].iter().map(|s| s.to_string()).collect(),
         user: ["npm"].iter().map(|s| s.to_string()).collect(),
         admin: ["npm"].iter().map(|s| s.to_string()).collect(),
         groups: std::collections::HashMap::new(),
     };
-    let registry_map = proxy_cache_web::RegistryMap(
+    let registry_map = batlehub_web::RegistryMap(
         [("npm", "npm")].iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
     );
-    let cargo_indexes: std::collections::HashMap<String, proxy_cache_web::CargoIndexProxy> =
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
         std::collections::HashMap::new();
 
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, tok_repo, None, access_config, registry_map, proxy_cache_web::UpstreamMap::default(), vec![]))
+        .configure(configure_app(proxy_svc, admin_svc, tok_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![]))
         .split_for_parts();
     let app = app.app_data(actix_web::web::Data::new(cargo_indexes));
 
@@ -1673,27 +1673,27 @@ async fn make_app_with_cargo_index(
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = proxy_cache_web::AccessConfig {
+    let access_config = batlehub_web::AccessConfig {
         anonymous: ["cargo"].iter().map(|s| s.to_string()).collect(),
         user: ["cargo"].iter().map(|s| s.to_string()).collect(),
         admin: ["cargo"].iter().map(|s| s.to_string()).collect(),
         groups: std::collections::HashMap::new(),
     };
-    let registry_map = proxy_cache_web::RegistryMap(
+    let registry_map = batlehub_web::RegistryMap(
         [("cargo", "cargo")].iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
     );
 
     // Wire up a real CargoIndexProxy entry so cargo_registry_config can return a config
-    let mut cargo_indexes: std::collections::HashMap<String, proxy_cache_web::CargoIndexProxy> =
+    let mut cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
         std::collections::HashMap::new();
-    cargo_indexes.insert("cargo".to_owned(), proxy_cache_web::CargoIndexProxy {
+    cargo_indexes.insert("cargo".to_owned(), batlehub_web::CargoIndexProxy {
         http: reqwest::Client::new(),
         index_url: "https://index.crates.io".to_owned(),
     });
 
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, proxy_cache_web::UpstreamMap::default(), vec![]))
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![]))
         .split_for_parts();
     let app = app.app_data(actix_web::web::Data::new(cargo_indexes));
 

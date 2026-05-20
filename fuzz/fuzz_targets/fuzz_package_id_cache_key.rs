@@ -2,7 +2,7 @@
 
 use libfuzzer_sys::fuzz_target;
 
-use proxy_cache_core::entities::PackageId;
+use batlehub_core::entities::PackageId;
 
 fuzz_target!(|data: &[u8]| {
     let mut u = arbitrary::Unstructured::new(data);

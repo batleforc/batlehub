@@ -1,5 +1,5 @@
 [package]
-name = "proxy-cache-core"
+name = "batlehub-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use actix_web::{Responder, get, web};
 
-use proxy_cache_core::{
+use batlehub_core::{
     entities::PackageId,
     services::ProxyService,
 };

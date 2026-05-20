@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
-use proxy_cache_core::{
+use batlehub_core::{
     entities::Identity,
     error::CoreError,
     ports::{AuthProvider, RawAuthRequest, UserTokenRepository},

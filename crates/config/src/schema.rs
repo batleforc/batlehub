@@ -172,7 +172,7 @@ pub struct OidcAuthConfig {
     pub client_secret: Option<String>,
     /// Redirect URI registered with the OIDC provider.
     /// Required for the browser-based SSO login flow.
-    /// Example: `"https://proxy-cache.example.com/api/v1/auth/oidc/callback"`.
+    /// Example: `"https://batlehub.example.com/api/v1/auth/oidc/callback"`.
     pub redirect_uri: Option<String>,
     /// Base URL of the SPA frontend.  After a successful OIDC callback the
     /// browser is redirected to `{frontend_url}/?oidc_access_token=...`.
@@ -227,12 +227,12 @@ pub struct KubernetesAuthConfig {
     /// Path to the CA certificate PEM file for the Kubernetes API server.
     /// Defaults to `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt`.
     pub ca_cert_path: Option<String>,
-    /// Path to the proxy-cache's own service account token used to authenticate
+    /// Path to the batlehub's own service account token used to authenticate
     /// TokenReview API calls.
     /// Defaults to `/var/run/secrets/kubernetes.io/serviceaccount/token`.
     pub token_path: Option<String>,
     /// Audiences passed to the TokenReview API for bound-token validation.
-    /// Defaults to `["proxy-cache"]` when empty.
+    /// Defaults to `["batlehub"]` when empty.
     #[serde(default)]
     pub audiences: Vec<String>,
     /// Maps Kubernetes usernames or group names to proxy roles.
@@ -479,5 +479,5 @@ pub struct OtelConfig {
 }
 
 fn default_service_name() -> String {
-    "proxy-cache".to_owned()
+    "batlehub".to_owned()
 }

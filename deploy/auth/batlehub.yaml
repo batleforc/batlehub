@@ -24,9 +24,9 @@ entries:
   - id: groups-scope
     model: authentik_providers_oauth2.scopemapping
     identifiers:
-      name: proxy-cache groups
+      name: batlehub groups
     attrs:
-      name: proxy-cache groups
+      name: batlehub groups
       scope_name: groups
       expression: |
         return {"groups": [group.name for group in request.user.ak_groups.all()]}

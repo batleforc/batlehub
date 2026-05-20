@@ -3,7 +3,7 @@ use chrono::DateTime;
 use futures::TryStreamExt;
 use serde::Deserialize;
 
-use proxy_cache_core::{
+use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
     ports::{ArtifactStream, RegistryClient},
@@ -47,7 +47,7 @@ impl GithubRegistryClient {
         headers.extend(auth_headers);
 
         let builder = reqwest::Client::builder()
-            .user_agent("proxy-cache/0.1")
+            .user_agent("batlehub/0.1")
             .default_headers(headers);
         let builder = apply_upstream_tls(builder, opts)?;
         let http = builder.build()?;

@@ -4,7 +4,7 @@ use futures::TryStreamExt;
 use serde::Deserialize;
 use std::collections::HashMap;
 
-use proxy_cache_core::{
+use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
     ports::{ArtifactStream, RegistryClient},
@@ -26,7 +26,7 @@ pub struct NpmRegistryClient {
 
 impl NpmRegistryClient {
     pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
-        let builder = reqwest::Client::builder().user_agent("proxy-cache/0.1");
+        let builder = reqwest::Client::builder().user_agent("batlehub/0.1");
         let http = apply_upstream_options(builder, opts)?;
         Ok(Self { http, base_url: base_url.into(), basic_auth: opts.basic_auth.clone() })
     }

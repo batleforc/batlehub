@@ -1,5 +1,5 @@
 [package]
-name = "proxy-cache-adapters"
+name = "batlehub-adapters"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -22,8 +22,8 @@ registry-composer = []
 db-postgres = []
 
 [dependencies]
-proxy-cache-core = { path = "../core" }
-proxy-cache-config = { path = "../config" }
+batlehub-core = { path = "../core" }
+batlehub-config = { path = "../config" }
 async-trait.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true

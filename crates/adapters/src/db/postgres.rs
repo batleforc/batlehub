@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-use proxy_cache_core::{
+use batlehub_core::{
     entities::{
         AccessAction, AccessEvent, AccessResult, EventFilter, PackageFilter, PackageId,
         PackageStatus, PackageSummary, Role,

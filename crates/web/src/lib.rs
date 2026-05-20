@@ -6,7 +6,7 @@ pub mod middleware;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use proxy_cache_core::entities::{Identity, Role};
+use batlehub_core::entities::{Identity, Role};
 
 /// Maps each role (and each dynamic group) to the set of registry names it can access.
 ///
@@ -59,7 +59,7 @@ impl AccessConfig {
 #[cfg(test)]
 mod access_config_tests {
     use super::*;
-    use proxy_cache_core::entities::Identity;
+    use batlehub_core::entities::Identity;
 
     fn make_config() -> AccessConfig {
         AccessConfig {
@@ -254,8 +254,8 @@ use utoipa_swagger_ui::SwaggerUi;
 
 use sqlx::PgPool;
 
-use proxy_cache_adapters::auth::OidcSsoFlow;
-use proxy_cache_core::{
+use batlehub_adapters::auth::OidcSsoFlow;
+use batlehub_core::{
     ports::UserTokenRepository,
     services::{AdminService, ProxyService},
 };
@@ -407,7 +407,7 @@ pub fn configure_app(
     oidc_sso_flows: Vec<OidcSsoFlow>,
 ) -> impl Fn(&mut UtoipaServiceConfig) + Clone + 'static {
     let audit_client = reqwest::Client::builder()
-        .user_agent("proxy-cache/0.1")
+        .user_agent("batlehub/0.1")
         .build()
         .expect("audit HTTP client");
     move |cfg| {

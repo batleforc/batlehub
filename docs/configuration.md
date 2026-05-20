@@ -1,6 +1,6 @@
 # Configuration Reference
 
-proxy-cache is configured with a single TOML file. This document covers every option, how they interact, and includes copy-paste examples for common deployment scenarios.
+batlehub is configured with a single TOML file. This document covers every option, how they interact, and includes copy-paste examples for common deployment scenarios.
 
 ---
 
@@ -34,7 +34,7 @@ port = 8080
 
 [database]
 type = "postgresql"
-url = "postgresql://proxy_cache:changeme@localhost:5432/proxy_cache"
+url = "postgresql://batlehub:changeme@localhost:5432/batlehub"
 
 [[auth]]
 type = "token"
@@ -59,7 +59,7 @@ admin = ["*"]
 ```
 
 ```sh
-proxy-cache --config config.toml
+batlehub --config config.toml
 ```
 
 Verify the server is running:
@@ -113,12 +113,12 @@ port = 8080             # default
 
 ### 3.2 `[database]`
 
-proxy-cache uses PostgreSQL for storing registry metadata and user tokens.
+batlehub uses PostgreSQL for storing registry metadata and user tokens.
 
 ```toml
 [database]
 type = "postgresql"
-url = "postgresql://proxy_cache:changeme@localhost:5432/proxy_cache"
+url = "postgresql://batlehub:changeme@localhost:5432/batlehub"
 max_connections = 10    # default
 ```
 
@@ -171,10 +171,10 @@ Validates JWT Bearer tokens issued by any standards-compliant OIDC provider (Aut
 [[auth]]
 type = "oidc"
 # name = "oidc"           # default; must be unique when running multiple OIDC providers
-issuer_url = "https://sso.example.com/application/o/proxy-cache/"
-client_id = "proxy-cache"
+issuer_url = "https://sso.example.com/application/o/batlehub/"
+client_id = "batlehub"
 # client_secret = "..."   # required for confidential clients
-# redirect_uri = "https://proxy-cache.example.com/api/v1/auth/oidc/callback"
+# redirect_uri = "https://batlehub.example.com/api/v1/auth/oidc/callback"
 # frontend_url = ""       # default: same origin as the backend
 scopes = ["openid", "profile", "email", "groups"]
 user_id_claim = "preferred_username"   # default: "sub"
@@ -215,7 +215,7 @@ type = "kubernetes"
 # api_server   = "https://kubernetes.default.svc"
 # ca_cert_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 # token_path   = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-# audiences    = ["proxy-cache"]
+# audiences    = ["batlehub"]
 
 [auth.role_mappings]
 "system:serviceaccount:prod:ci-deployer" = "admin"
@@ -228,8 +228,8 @@ type = "kubernetes"
 | `name` | string | `"kubernetes"` | Provider name; becomes the group prefix |
 | `api_server` | string | from `KUBERNETES_SERVICE_HOST` / `KUBERNETES_SERVICE_PORT` env | Kubernetes API server URL |
 | `ca_cert_path` | string | `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt` | CA cert for API server TLS verification |
-| `token_path` | string | `/var/run/secrets/kubernetes.io/serviceaccount/token` | proxy-cache's own service account token for TokenReview calls; re-read each request to handle automatic rotation |
-| `audiences` | string[] | `["proxy-cache"]` | Audiences sent in the TokenReview request |
+| `token_path` | string | `/var/run/secrets/kubernetes.io/serviceaccount/token` | batlehub's own service account token for TokenReview calls; re-read each request to handle automatic rotation |
+| `audiences` | string[] | `["batlehub"]` | Audiences sent in the TokenReview request |
 | `role_mappings` | map | `{}` | Maps Kubernetes usernames or group names to proxy roles |
 
 **Role mapping keys:** Kubernetes sets `username: "system:serviceaccount:<namespace>:<name>"` and `groups: ["system:serviceaccounts", "system:serviceaccounts:<namespace>", ...]`. When a token matches multiple keys, the highest role wins.
@@ -253,7 +253,7 @@ path = "./cache"
 type = "s3"
 bucket = "my-artifacts"
 region = "us-east-1"
-prefix = "proxy-cache/"         # optional, default: none
+prefix = "batlehub/"         # optional, default: none
 endpoint_url = "http://minio:9000"  # optional: omit for real AWS
 force_path_style = true         # optional: required for MinIO and RustFS
 ```
@@ -412,7 +412,7 @@ Configure the go toolchain to use the proxy:
 ```sh
 export GONOSUMCHECK="*"
 export GONOSUMDB="*"
-export GOPROXY="http://proxy-cache.example.com/proxy/go,direct"
+export GOPROXY="http://batlehub.example.com/proxy/go,direct"
 ```
 
 ---
@@ -534,13 +534,13 @@ Enables OpenTelemetry distributed tracing via OTLP gRPC.
 ```toml
 [otel]
 endpoint = "http://localhost:4317"
-service_name = "proxy-cache"   # default
+service_name = "batlehub"   # default
 ```
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `endpoint` | string | — | OTLP gRPC endpoint |
-| `service_name` | string | `"proxy-cache"` | Service name reported in traces |
+| `service_name` | string | `"batlehub"` | Service name reported in traces |
 
 The entire section can be enabled without a config file change by setting `PROXY_CACHE__OTEL__ENDPOINT` — the section is created automatically if the env var is present.
 
@@ -619,7 +619,7 @@ port = 8080
 
 [database]
 type = "postgresql"
-url = "postgresql://proxy_cache:changeme@localhost:5432/proxy_cache"
+url = "postgresql://batlehub:changeme@localhost:5432/batlehub"
 
 [[auth]]
 type = "token"
@@ -664,14 +664,14 @@ static_dir = "/app/ui/dist"
 
 [database]
 type = "postgresql"
-url = "postgresql://proxy_cache:changeme@db:5432/proxy_cache"
+url = "postgresql://batlehub:changeme@db:5432/batlehub"
 
 [[auth]]
 type = "oidc"
-issuer_url = "https://sso.example.com/application/o/proxy-cache/"
-client_id = "proxy-cache"
+issuer_url = "https://sso.example.com/application/o/batlehub/"
+client_id = "batlehub"
 client_secret = "my-client-secret"
-redirect_uri = "https://proxy-cache.example.com/api/v1/auth/oidc/callback"
+redirect_uri = "https://batlehub.example.com/api/v1/auth/oidc/callback"
 scopes = ["openid", "profile", "email", "groups"]
 user_id_claim = "preferred_username"
 role_claim = "groups"
@@ -723,7 +723,7 @@ static_dir = "/app/ui/dist"
 
 [database]
 type = "postgresql"
-url = "postgresql://proxy_cache:changeme@postgres-svc:5432/proxy_cache"
+url = "postgresql://batlehub:changeme@postgres-svc:5432/batlehub"
 
 [[auth]]
 type = "kubernetes"
@@ -736,7 +736,7 @@ type = "kubernetes"
 
 [storage]
 type = "s3"
-bucket = "proxy-cache-artifacts"
+bucket = "batlehub-artifacts"
 region = "us-east-1"
 # AWS credentials come from the pod's IAM role or AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
 
@@ -759,13 +759,13 @@ user = ["releases:read"]
 admin = ["*"]
 ```
 
-proxy-cache's ServiceAccount needs permission to call the Kubernetes TokenReview API:
+batlehub's ServiceAccount needs permission to call the Kubernetes TokenReview API:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: proxy-cache-tokenreview
+  name: batlehub-tokenreview
 rules:
   - apiGroups: ["authentication.k8s.io"]
     resources: ["tokenreviews"]
@@ -774,15 +774,15 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: proxy-cache-tokenreview
+  name: batlehub-tokenreview
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: proxy-cache-tokenreview
+  name: batlehub-tokenreview
 subjects:
   - kind: ServiceAccount
-    name: proxy-cache
-    namespace: proxy-cache
+    name: batlehub
+    namespace: batlehub
 ```
 
 ### 6.4 Go Module Proxy
@@ -795,7 +795,7 @@ port = 8080
 
 [database]
 type = "postgresql"
-url = "postgresql://proxy_cache:changeme@localhost:5432/proxy_cache"
+url = "postgresql://batlehub:changeme@localhost:5432/batlehub"
 
 [[auth]]
 type = "token"
@@ -849,7 +849,7 @@ port = 8080
 
 [database]
 type = "postgresql"
-url  = "postgresql://proxy_cache:changeme@localhost:5432/proxy_cache"
+url  = "postgresql://batlehub:changeme@localhost:5432/batlehub"
 
 [[auth]]
 type = "token"
@@ -922,7 +922,7 @@ port = 8080
 
 [database]
 type = "postgresql"
-url = "postgresql://proxy_cache:changeme@localhost:5432/proxy_cache"
+url = "postgresql://batlehub:changeme@localhost:5432/batlehub"
 
 [[auth]]
 type = "token"
@@ -971,14 +971,14 @@ admin = ["*"]
 ## 7. CLI Reference
 
 ```
-proxy-cache --config config.toml          # start the server (default: config.toml)
-proxy-cache dump-spec                     # print the OpenAPI JSON spec to stdout
+batlehub --config config.toml          # start the server (default: config.toml)
+batlehub dump-spec                     # print the OpenAPI JSON spec to stdout
 ```
 
 Redirect the spec to a file for use with code generators:
 
 ```sh
-proxy-cache dump-spec > openapi.json
+batlehub dump-spec > openapi.json
 ```
 
 ---
@@ -989,17 +989,17 @@ Users authenticated via OIDC can create personal long-lived API tokens without g
 
 ```sh
 # Create a token (valid for 30 days, cannot exceed creator's role)
-curl -X POST https://proxy-cache.example.com/api/v1/auth/tokens \
+curl -X POST https://batlehub.example.com/api/v1/auth/tokens \
   -H "Authorization: Bearer <oidc-access-token>" \
   -H "Content-Type: application/json" \
   -d '{"name": "ci-token", "expires_in_days": 30}'
 
 # List active tokens
-curl https://proxy-cache.example.com/api/v1/auth/tokens \
+curl https://batlehub.example.com/api/v1/auth/tokens \
   -H "Authorization: Bearer <oidc-access-token>"
 
 # Revoke a token
-curl -X DELETE https://proxy-cache.example.com/api/v1/auth/tokens/<token-id> \
+curl -X DELETE https://batlehub.example.com/api/v1/auth/tokens/<token-id> \
   -H "Authorization: Bearer <oidc-access-token>"
 ```
 

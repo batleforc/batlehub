@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use base64::Engine as _;
 
-use proxy_cache_core::{
+use batlehub_core::{
     entities::{Identity, Role},
     error::CoreError,
     ports::{AuthProvider, RawAuthRequest},
