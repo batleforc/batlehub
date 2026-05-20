@@ -1,15 +1,14 @@
 use std::sync::Arc;
 
-use actix_web::{HttpResponse, Responder, get, web};
-use bytes::Bytes;
-use futures::StreamExt;
+use actix_web::{Responder, get, web};
 
 use proxy_cache_core::{
     entities::PackageId,
-    services::{ProxyRequest, ProxyResponse, ProxyService},
+    services::ProxyService,
 };
 
 use crate::{RegistryMap, error::AppError, extractors::AuthIdentity};
+use super::common::proxy_stream;
 
 pub fn require_openvsx(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry) {
@@ -50,19 +49,5 @@ pub async fn download_vsix(
     let (registry, extension_id, version) = path.into_inner();
     require_openvsx(&registry, &map)?;
     let pkg = PackageId::new(&registry, &extension_id, &version).with_artifact("vsix");
-
-    let req = ProxyRequest {
-        package_id: pkg,
-        identity: identity.0.clone(),
-        resource_type: "source:read".to_owned(),
-    };
-    match svc.handle(req).await.map_err(AppError::from)? {
-        ProxyResponse::Denied { reason } => Err(AppError::forbidden(reason)),
-        ProxyResponse::Stream(stream) => {
-            let body = stream.filter_map(|chunk| async move {
-                chunk.ok().map(Ok::<Bytes, actix_web::Error>)
-            });
-            Ok(HttpResponse::Ok().streaming(body))
-        }
-    }
+    proxy_stream(svc, pkg, identity, "source:read", None).await
 }

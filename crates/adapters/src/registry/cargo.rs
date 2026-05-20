@@ -24,13 +24,12 @@ pub struct CargoRegistryClient {
 }
 
 impl CargoRegistryClient {
-    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Self {
+    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
         let builder = reqwest::Client::builder()
             .user_agent("proxy-cache/0.1")
             .redirect(reqwest::redirect::Policy::limited(10));
-        let http = apply_upstream_options(builder, opts)
-            .expect("failed to build Cargo HTTP client");
-        Self { http, base_url: base_url.into(), basic_auth: opts.basic_auth.clone() }
+        let http = apply_upstream_options(builder, opts)?;
+        Ok(Self { http, base_url: base_url.into(), basic_auth: opts.basic_auth.clone() })
     }
 
     fn get(&self, url: &str) -> reqwest::RequestBuilder {
@@ -76,21 +75,8 @@ impl RegistryClient for CargoRegistryClient {
 
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
         let resp = self.fetch_crate_info(&pkg.name).await?;
-
-        let resolved_version = if pkg.version == "latest" {
-            resp.krate.max_version.clone()
-        } else {
-            pkg.version.clone()
-        };
-
-        let version = resp
-            .versions
-            .iter()
-            .find(|v| v.num == resolved_version && !v.yanked)
-            .ok_or_else(|| CoreError::NotFound(format!(
-                "crate {}@{} not found or yanked",
-                pkg.name, resolved_version
-            )))?;
+        let version = Self::resolve_version(&resp, pkg)?;
+        let resolved_version = version.num.clone();
 
         let download_url = if pkg.artifact.as_deref() == Some("dl") {
             // dl_path is a relative path like /api/v1/crates/serde/1.0.0/download
@@ -126,22 +112,7 @@ impl RegistryClient for CargoRegistryClient {
 
     async fn fetch_artifact(&self, pkg: &PackageId) -> Result<ArtifactStream, CoreError> {
         let resp = self.fetch_crate_info(&pkg.name).await?;
-
-        let resolved_version = if pkg.version == "latest" {
-            resp.krate.max_version.clone()
-        } else {
-            pkg.version.clone()
-        };
-
-        let version = resp
-            .versions
-            .iter()
-            .find(|v| v.num == resolved_version && !v.yanked)
-            .ok_or_else(|| CoreError::NotFound(format!(
-                "crate {}@{} not found or yanked",
-                pkg.name, resolved_version
-            )))?;
-
+        let version = Self::resolve_version(&resp, pkg)?;
         let url = format!("{}{}", self.base_url, version.dl_path);
         tracing::debug!(url = %url, "fetching cargo crate");
 
@@ -162,6 +133,24 @@ impl RegistryClient for CargoRegistryClient {
 }
 
 impl CargoRegistryClient {
+    fn resolve_version<'a>(
+        resp: &'a CratesIoResponse,
+        pkg: &PackageId,
+    ) -> Result<&'a CrateVersion, CoreError> {
+        let resolved = if pkg.version == "latest" {
+            resp.krate.max_version.as_str()
+        } else {
+            pkg.version.as_str()
+        };
+        resp.versions
+            .iter()
+            .find(|v| v.num == resolved && !v.yanked)
+            .ok_or_else(|| CoreError::NotFound(format!(
+                "crate {}@{} not found or yanked",
+                pkg.name, resolved
+            )))
+    }
+
     async fn fetch_crate_info(&self, name: &str) -> Result<CratesIoResponse, CoreError> {
         let url = format!("{}/api/v1/crates/{}", self.base_url, name);
         let resp = self.get(&url)

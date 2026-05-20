@@ -1,0 +1,125 @@
+# proxy-cache — RustFS + Authentik + Jaeger example configuration
+#
+# Use this file when running the server locally against the infrastructure
+# started with:
+#   task compose:s3:db
+#
+# RustFS credentials must be exported before running:
+#   export AWS_ACCESS_KEY_ID=rustfsadmin
+#   export AWS_SECRET_ACCESS_KEY=rustfsadmin
+#
+# Then start the server with:
+#   task run:s3          (backend only)
+#   task dev:s3          (backend + Vite frontend)
+
+[server]
+host = "0.0.0.0"
+port = 8080
+# static_dir = "./ui/dist"
+
+[database]
+type            = "postgresql"
+url             = "postgresql://proxy_cache:changeme@localhost:5432/proxy_cache"
+max_connections = 10
+
+# ── Auth providers (evaluated in order; first match wins) ─────────────────────
+
+[[auth]]
+type = "token"
+
+[[auth.tokens]]
+value   = "change-me-admin-token"
+role    = "admin"
+user_id = "admin"
+
+[[auth.tokens]]
+value   = "change-me-user-token"
+role    = "user"
+user_id = "user-1"
+
+# Authentik OIDC — started by task compose:s3:db, UI at http://localhost:9000
+# Default credentials: akadmin / akadmin
+# Blueprint at deploy/auth/proxy-cache.yaml provisions the client app automatically.
+[[auth]]
+type          = "oidc"
+issuer_url    = "http://localhost:9000/application/o/proxy-auth/"
+client_id     = "proxy-auth"
+client_secret = "proxy-auth-secret"
+redirect_uri  = "http://localhost:8080/api/v1/auth/oidc/callback"
+scopes        = ["openid", "profile", "email", "groups"]
+# Point at the Vite dev server when running ui separately.
+frontend_url  = "http://localhost:5173"
+
+user_id_claim = "preferred_username"
+role_claim    = "groups"
+
+[auth.role_mappings]
+"authentik Admins" = "admin"
+"proxy-users"      = "user"
+
+# ── Storage — RustFS (S3-compatible) ─────────────────────────────────────────
+#
+# RustFS is started by task compose:s3:db and exposes port 9900 on localhost.
+# Credentials are read from AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars.
+
+[storage]
+type             = "s3"
+bucket           = "artifacts"
+region           = "us-east-1"
+endpoint_url     = "http://localhost:9900"
+force_path_style = true   # required for RustFS and other non-AWS S3 stores
+
+# ── OpenTelemetry ─────────────────────────────────────────────────────────────
+# Jaeger UI: http://localhost:16686
+# Jaeger is started by task compose:s3:db.
+
+[otel]
+endpoint     = "http://localhost:4317"
+service_name = "proxy-cache"
+
+# ── Registries ────────────────────────────────────────────────────────────────
+
+[[registries]]
+type = "github"
+name = "github"
+
+[registries.rbac]
+anonymous = []
+user      = ["releases:read", "source:read"]
+admin     = ["*"]
+
+[[registries]]
+type = "npm"
+name = "npm"
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user      = ["releases:read", "source:read"]
+admin     = ["*"]
+
+[[registries]]
+type = "cargo"
+name = "cargo"
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user      = ["releases:read", "source:read"]
+admin     = ["*"]
+
+[[registries]]
+type = "goproxy"
+name = "go"
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user      = ["releases:read", "source:read"]
+admin     = ["*"]
+
+[[registries]]
+type = "openvsx"
+name = "openvsx"
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user      = ["releases:read", "source:read"]
+admin     = ["*"]

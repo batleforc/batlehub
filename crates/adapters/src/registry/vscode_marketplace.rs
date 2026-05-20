@@ -24,13 +24,12 @@ pub struct VsCodeMarketplaceRegistryClient {
 }
 
 impl VsCodeMarketplaceRegistryClient {
-    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Self {
+    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
         let builder = reqwest::Client::builder()
             .user_agent("proxy-cache/0.1")
             .redirect(reqwest::redirect::Policy::limited(10));
-        let http = apply_upstream_options(builder, opts)
-            .expect("failed to build VS Code Marketplace HTTP client");
-        Self { http, base_url: base_url.into() }
+        let http = apply_upstream_options(builder, opts)?;
+        Ok(Self { http, base_url: base_url.into() })
     }
 
     fn parse_id(name: &str) -> Result<(&str, &str), CoreError> {
@@ -340,7 +339,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default());
+        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
         let meta = client.resolve_metadata(&pkg("ms-python.python", "latest")).await.unwrap();
 
         assert_eq!(meta.id.version, "2024.2.1");
@@ -357,7 +356,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default());
+        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
         let meta =
             client.resolve_metadata(&pkg("ms-python.python", "2024.2.1")).await.unwrap();
 
@@ -375,7 +374,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default());
+        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
         let meta = client.resolve_metadata(&pkg("ms-python.python", "latest")).await.unwrap();
 
         assert!(meta.published_at.is_some());
@@ -392,7 +391,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default());
+        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
         let meta = client.resolve_metadata(&pkg("ms-python.python", "2024.2.1")).await.unwrap();
 
         assert!(meta.download_url.is_none());
@@ -409,7 +408,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default());
+        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
         let p = pkg("ms-python.python", "2024.2.1").with_artifact("vsix");
         let meta = client.resolve_metadata(&p).await.unwrap();
 
@@ -427,7 +426,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default());
+        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
         let meta = client.resolve_metadata(&pkg("ms-python.python", "2024.2.1")).await.unwrap();
 
         assert_eq!(meta.is_signed, Some(false));
@@ -444,7 +443,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default());
+        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
         let result = client.resolve_metadata(&pkg("ms-python.python", "9.9.9")).await;
 
         assert!(matches!(result, Err(CoreError::NotFound(_))));
@@ -459,7 +458,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default());
+        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
         let result = client.resolve_metadata(&pkg("ms-python.python", "2024.2.1")).await;
 
         assert!(matches!(result, Err(CoreError::Registry(_))));
@@ -479,7 +478,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default());
+        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
         let stream =
             client.fetch_artifact(&pkg("ms-python.python", "2024.2.1")).await.unwrap();
         let chunks: Vec<bytes::Bytes> = stream.try_collect().await.unwrap();
@@ -498,7 +497,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default());
+        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
         let result = client.fetch_artifact(&pkg("ms-python.python", "9.9.9")).await;
 
         assert!(matches!(result, Err(CoreError::NotFound(_))));
@@ -515,7 +514,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default());
+        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
         let result = client.fetch_artifact(&pkg("ms-python.python", "2024.2.1")).await;
 
         assert!(matches!(result, Err(CoreError::Registry(_))));

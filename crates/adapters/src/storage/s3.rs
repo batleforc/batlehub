@@ -61,6 +61,13 @@ impl S3StorageBackend {
     }
 }
 
+#[doc(hidden)]
+impl S3StorageBackend {
+    pub fn from_client(client: Client, bucket: String, prefix: String) -> Self {
+        Self { client, bucket, prefix }
+    }
+}
+
 #[async_trait]
 impl StorageBackend for S3StorageBackend {
     async fn store(&self, key: &str, data: Bytes, meta: StorageMeta) -> Result<(), CoreError> {
@@ -101,10 +108,11 @@ impl StorageBackend for S3StorageBackend {
             Ok(r) => r,
             Err(e) => {
                 let sdk_err = e.into_service_error();
+                let err_str = sdk_err.to_string();
                 if Self::is_not_found(&sdk_err.into()) {
                     return Ok(None);
                 }
-                return Err(CoreError::Storage(format!("S3 get_object {obj_key}: {sdk_err}")));
+                return Err(CoreError::Storage(format!("S3 get_object {obj_key}: {err_str}")));
             }
         };
 
@@ -140,10 +148,11 @@ impl StorageBackend for S3StorageBackend {
             Ok(_) => Ok(true),
             Err(e) => {
                 let sdk_err = e.into_service_error();
+                let err_str = sdk_err.to_string();
                 if Self::is_not_found(&sdk_err.into()) {
                     return Ok(false);
                 }
-                Err(CoreError::Storage(format!("S3 head_object {obj_key}: {sdk_err}")))
+                Err(CoreError::Storage(format!("S3 head_object {obj_key}: {err_str}")))
             }
         }
     }
@@ -162,11 +171,12 @@ impl StorageBackend for S3StorageBackend {
             Ok(_) => Ok(()),
             Err(e) => {
                 let sdk_err = e.into_service_error();
+                let err_str = sdk_err.to_string();
                 // NoSuchKey on delete is fine
                 if Self::is_not_found(&sdk_err.into()) {
                     return Ok(());
                 }
-                Err(CoreError::Storage(format!("S3 delete_object {obj_key}: {sdk_err}")))
+                Err(CoreError::Storage(format!("S3 delete_object {obj_key}: {err_str}")))
             }
         }
     }

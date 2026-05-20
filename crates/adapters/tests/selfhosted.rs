@@ -102,7 +102,7 @@ async fn bearer_token_forwarded_to_upstream() {
         bearer_token: Some("s3cr3t-t0k3n".to_owned()),
         ..Default::default()
     };
-    let client = GoProxyRegistryClient::new(server.url(), &opts);
+    let client = GoProxyRegistryClient::new(server.url(), &opts).unwrap();
 
     let result = client.resolve_metadata(&test_pkg()).await;
     assert!(result.is_ok(), "resolve_metadata failed: {:?}", result);
@@ -130,7 +130,7 @@ async fn basic_auth_forwarded_to_upstream() {
         basic_auth: Some(("alice".to_owned(), "hunter2".to_owned())),
         ..Default::default()
     };
-    let client = GoProxyRegistryClient::new(server.url(), &opts);
+    let client = GoProxyRegistryClient::new(server.url(), &opts).unwrap();
 
     let result = client.resolve_metadata(&test_pkg()).await;
     assert!(result.is_ok(), "resolve_metadata failed: {:?}", result);
@@ -154,7 +154,7 @@ async fn custom_header_forwarded_to_upstream() {
         custom_header: Some(("x-private-token".to_owned(), "tok-abc123".to_owned())),
         ..Default::default()
     };
-    let client = GoProxyRegistryClient::new(server.url(), &opts);
+    let client = GoProxyRegistryClient::new(server.url(), &opts).unwrap();
 
     let result = client.resolve_metadata(&test_pkg()).await;
     assert!(result.is_ok(), "resolve_metadata failed: {:?}", result);
@@ -198,7 +198,7 @@ async fn custom_ca_cert_enables_https_connection() {
     let client = GoProxyRegistryClient::new(
         format!("https://localhost:{}", addr.port()),
         &opts,
-    );
+    ).unwrap();
 
     // 5. Make a real HTTPS request through the registry client.
     let result = client.resolve_metadata(&test_pkg()).await;
@@ -228,7 +228,7 @@ async fn untrusted_ca_cert_rejects_https_connection() {
     let client = GoProxyRegistryClient::new(
         format!("https://localhost:{}", addr.port()),
         &Default::default(),
-    );
+    ).unwrap();
 
     let result = client.resolve_metadata(&test_pkg()).await;
 

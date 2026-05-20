@@ -1,4 +1,5 @@
 pub mod cargo;
+pub mod common;
 pub mod github;
 pub mod goproxy;
 pub mod npm;

@@ -170,7 +170,7 @@ impl ProxyService {
                 .storage
                 .retrieve(&artifact_key)
                 .await?
-                .expect("exists() returned true");
+                .ok_or_else(|| CoreError::Registry(format!("artifact '{artifact_key}' vanished between exists and retrieve")))?;
 
             self.repo
                 .record_access(AccessEvent::allowed_download(

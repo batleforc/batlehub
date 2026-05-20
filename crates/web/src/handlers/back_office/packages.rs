@@ -28,7 +28,8 @@ fn require_admin(identity: &AuthIdentity) -> Result<(), AppError> {
 pub struct AdminPackageQuery {
     pub registry: Option<String>,
     pub name: Option<String>,
-    pub blocked_only: Option<bool>,
+    #[serde(default)]
+    pub blocked_only: bool,
     #[serde(default)]
     pub page: u64,
     #[serde(default = "default_per_page")]
@@ -63,13 +64,26 @@ pub async fn list_packages(
         registry: query.registry.clone(),
         name_contains: query.name.clone(),
         name_exact: None,
-        blocked_only: query.blocked_only.unwrap_or(false),
+        blocked_only: query.blocked_only,
         limit: query.per_page,
         offset: query.page * query.per_page,
     };
 
     let packages = admin_svc.list_packages(filter).await.map_err(AppError::from)?;
     Ok(web::Json(packages))
+}
+
+fn map_bulk_failures(failed: Vec<(PackageId, String)>) -> Vec<BulkFailureDto> {
+    failed
+        .into_iter()
+        .map(|(pkg, error)| BulkFailureDto {
+            registry: pkg.registry,
+            name: pkg.name,
+            version: pkg.version,
+            artifact: pkg.artifact,
+            error,
+        })
+        .collect()
 }
 
 // ── Block / unblock ───────────────────────────────────────────────────────────
@@ -258,17 +272,7 @@ pub async fn bulk_block_packages(
     Ok(web::Json(BulkActionResponse {
         succeeded_count: result.succeeded.len(),
         failed_count: result.failed.len(),
-        failures: result
-            .failed
-            .into_iter()
-            .map(|(pkg, error)| BulkFailureDto {
-                registry: pkg.registry,
-                name: pkg.name,
-                version: pkg.version,
-                artifact: pkg.artifact,
-                error,
-            })
-            .collect(),
+        failures: map_bulk_failures(result.failed),
     }))
 }
 
@@ -309,17 +313,7 @@ pub async fn bulk_unblock_packages(
     Ok(web::Json(BulkActionResponse {
         succeeded_count: result.succeeded.len(),
         failed_count: result.failed.len(),
-        failures: result
-            .failed
-            .into_iter()
-            .map(|(pkg, error)| BulkFailureDto {
-                registry: pkg.registry,
-                name: pkg.name,
-                version: pkg.version,
-                artifact: pkg.artifact,
-                error,
-            })
-            .collect(),
+        failures: map_bulk_failures(result.failed),
     }))
 }
 

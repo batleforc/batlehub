@@ -1,15 +1,14 @@
 use std::sync::Arc;
 
-use actix_web::{HttpRequest, HttpResponse, Responder, get, web};
-use bytes::Bytes;
-use futures::StreamExt;
+use actix_web::{HttpRequest, Responder, get, web};
 
 use proxy_cache_core::{
     entities::PackageId,
-    services::{ProxyRequest, ProxyResponse, ProxyService},
+    services::ProxyService,
 };
 
 use crate::{RegistryMap, error::AppError, extractors::AuthIdentity};
+use super::common::proxy_stream;
 
 fn require_github(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry) {
@@ -47,7 +46,7 @@ pub async fn list_releases(
     let (registry, owner, repo) = path.into_inner();
     require_github(&registry, &map)?;
     let pkg = PackageId::new(&registry, format!("{owner}/{repo}"), "releases");
-    proxy_stream(svc, pkg, identity, "releases:read").await
+    proxy_stream(svc, pkg, identity, "releases:read", None).await
 }
 
 /// Get a specific GitHub release by tag.
@@ -78,7 +77,7 @@ pub async fn get_release(
     let (registry, owner, repo, tag) = path.into_inner();
     require_github(&registry, &map)?;
     let pkg = PackageId::new(&registry, format!("{owner}/{repo}"), tag);
-    proxy_stream(svc, pkg, identity, "releases:read").await
+    proxy_stream(svc, pkg, identity, "releases:read", None).await
 }
 
 /// Download a GitHub release asset by ID.
@@ -115,7 +114,7 @@ pub async fn download_asset(
         .unwrap_or_else(|| "unknown".to_owned());
     let pkg = PackageId::new(&registry, format!("{owner}/{repo}"), tag)
         .with_artifact(&asset_id);
-    proxy_stream(svc, pkg, identity, "releases:read").await
+    proxy_stream(svc, pkg, identity, "releases:read", None).await
 }
 
 /// Download a GitHub release asset by filename.
@@ -148,7 +147,7 @@ pub async fn download_asset_by_name(
     require_github(&registry, &map)?;
     let pkg = PackageId::new(&registry, format!("{owner}/{repo}"), tag)
         .with_artifact(format!("filename/{filename}"));
-    proxy_stream(svc, pkg, identity, "releases:read").await
+    proxy_stream(svc, pkg, identity, "releases:read", None).await
 }
 
 /// Download a GitHub source tarball.
@@ -180,7 +179,7 @@ pub async fn download_tarball(
     require_github(&registry, &map)?;
     let pkg = PackageId::new(&registry, format!("{owner}/{repo}"), &tag)
         .with_artifact(format!("tarball/{tag}"));
-    proxy_stream(svc, pkg, identity, "source:read").await
+    proxy_stream(svc, pkg, identity, "source:read", None).await
 }
 
 /// Download a GitHub zip archive.
@@ -212,7 +211,7 @@ pub async fn download_zipball(
     require_github(&registry, &map)?;
     let pkg = PackageId::new(&registry, format!("{owner}/{repo}"), &tag)
         .with_artifact("zipball");
-    proxy_stream(svc, pkg, identity, "source:read").await
+    proxy_stream(svc, pkg, identity, "source:read", None).await
 }
 
 /// Download a raw file from a GitHub repository.
@@ -245,29 +244,5 @@ pub async fn download_raw(
     require_github(&registry, &map)?;
     let pkg = PackageId::new(&registry, format!("{owner}/{repo}"), git_ref)
         .with_artifact(format!("raw/{file_path}"));
-    proxy_stream(svc, pkg, identity, "source:read").await
-}
-
-// ── Shared stream helper ──────────────────────────────────────────────────────
-
-async fn proxy_stream(
-    svc: web::Data<Arc<ProxyService>>,
-    pkg: PackageId,
-    identity: AuthIdentity,
-    resource_type: &str,
-) -> Result<HttpResponse, AppError> {
-    let req = ProxyRequest {
-        package_id: pkg,
-        identity: identity.0.clone(),
-        resource_type: resource_type.to_owned(),
-    };
-    match svc.handle(req).await.map_err(AppError::from)? {
-        ProxyResponse::Denied { reason } => Err(AppError::forbidden(reason)),
-        ProxyResponse::Stream(stream) => {
-            let body = stream.filter_map(|chunk| async move {
-                chunk.ok().map(Ok::<Bytes, actix_web::Error>)
-            });
-            Ok(HttpResponse::Ok().streaming(body))
-        }
-    }
+    proxy_stream(svc, pkg, identity, "source:read", None).await
 }

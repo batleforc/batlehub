@@ -25,11 +25,10 @@ pub struct NpmRegistryClient {
 }
 
 impl NpmRegistryClient {
-    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Self {
+    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
         let builder = reqwest::Client::builder().user_agent("proxy-cache/0.1");
-        let http = apply_upstream_options(builder, opts)
-            .expect("failed to build npm HTTP client");
-        Self { http, base_url: base_url.into(), basic_auth: opts.basic_auth.clone() }
+        let http = apply_upstream_options(builder, opts)?;
+        Ok(Self { http, base_url: base_url.into(), basic_auth: opts.basic_auth.clone() })
     }
 
     fn get(&self, url: &str) -> reqwest::RequestBuilder {

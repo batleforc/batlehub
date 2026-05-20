@@ -1,15 +1,14 @@
 use std::sync::Arc;
 
-use actix_web::{HttpResponse, Responder, get, web};
-use bytes::Bytes;
-use futures::StreamExt;
+use actix_web::{Responder, get, web};
 
 use proxy_cache_core::{
     entities::PackageId,
-    services::{ProxyRequest, ProxyResponse, ProxyService},
+    services::ProxyService,
 };
 
 use crate::{RegistryMap, error::AppError, extractors::AuthIdentity};
+use super::common::proxy_stream;
 
 pub fn require_goproxy(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry) {
@@ -52,7 +51,7 @@ pub async fn goproxy_latest(
     let module = raw_module.trim_end_matches('/');
     let pkg = PackageId::new(&registry, module, "latest");
 
-    proxy_stream_typed(svc, pkg, identity, "releases:read", "application/json").await
+    proxy_stream(svc, pkg, identity, "releases:read", Some("application/json")).await
 }
 
 /// List known versions for a Go module.
@@ -85,7 +84,7 @@ pub async fn goproxy_list(
     let module = raw_module.trim_end_matches('/');
     let pkg = PackageId::new(&registry, module, "latest").with_artifact("list");
 
-    proxy_stream_typed(svc, pkg, identity, "releases:read", "text/plain").await
+    proxy_stream(svc, pkg, identity, "releases:read", Some("text/plain")).await
 }
 
 /// Fetch a versioned Go module file: `.info`, `.mod`, or `.zip`.
@@ -149,30 +148,5 @@ pub async fn goproxy_file(
         }
     };
 
-    proxy_stream_typed(svc, pkg, identity, resource_type, content_type).await
-}
-
-// ── Shared helper ─────────────────────────────────────────────────────────────
-
-async fn proxy_stream_typed(
-    svc: web::Data<Arc<ProxyService>>,
-    pkg: PackageId,
-    identity: AuthIdentity,
-    resource_type: &str,
-    content_type: &str,
-) -> Result<HttpResponse, AppError> {
-    let req = ProxyRequest {
-        package_id: pkg,
-        identity: identity.0.clone(),
-        resource_type: resource_type.to_owned(),
-    };
-    match svc.handle(req).await.map_err(AppError::from)? {
-        ProxyResponse::Denied { reason } => Err(AppError::forbidden(reason)),
-        ProxyResponse::Stream(stream) => {
-            let body = stream.filter_map(|chunk| async move {
-                chunk.ok().map(Ok::<Bytes, actix_web::Error>)
-            });
-            Ok(HttpResponse::Ok().content_type(content_type).streaming(body))
-        }
-    }
+    proxy_stream(svc, pkg, identity, resource_type, Some(content_type)).await
 }

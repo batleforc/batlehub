@@ -26,13 +26,12 @@ pub struct OpenVsxRegistryClient {
 }
 
 impl OpenVsxRegistryClient {
-    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Self {
+    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
         let builder = reqwest::Client::builder()
             .user_agent("proxy-cache/0.1")
             .redirect(reqwest::redirect::Policy::limited(10));
-        let http = apply_upstream_options(builder, opts)
-            .expect("failed to build OpenVSX HTTP client");
-        Self { http, base_url: base_url.into(), basic_auth: opts.basic_auth.clone() }
+        let http = apply_upstream_options(builder, opts)?;
+        Ok(Self { http, base_url: base_url.into(), basic_auth: opts.basic_auth.clone() })
     }
 
     fn get(&self, url: &str) -> reqwest::RequestBuilder {
@@ -243,7 +242,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
         let meta = client.resolve_metadata(&pkg("ms-python.python", "latest")).await.unwrap();
 
         assert_eq!(meta.id.version, "2023.20.0");
@@ -260,7 +259,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
         let meta =
             client.resolve_metadata(&pkg("ms-python.python", "2023.20.0")).await.unwrap();
 
@@ -279,7 +278,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
         let meta =
             client.resolve_metadata(&pkg("ms-python.python", "2023.20.0")).await.unwrap();
 
@@ -298,7 +297,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
         let p = pkg("ms-python.python", "2023.20.0").with_artifact("vsix");
         let meta = client.resolve_metadata(&p).await.unwrap();
 
@@ -317,7 +316,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
         let meta =
             client.resolve_metadata(&pkg("ms-python.python", "2023.20.0")).await.unwrap();
 
@@ -335,7 +334,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
         let meta =
             client.resolve_metadata(&pkg("ms-python.python", "2023.20.0")).await.unwrap();
 
@@ -354,7 +353,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
         let meta =
             client.resolve_metadata(&pkg("ms-python.python", "2023.20.0")).await.unwrap();
 
@@ -370,7 +369,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
         let result = client.resolve_metadata(&pkg("ms-python.python", "9.9.9")).await;
 
         assert!(matches!(result, Err(CoreError::NotFound(_))));
@@ -402,7 +401,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
         let stream =
             client.fetch_artifact(&pkg("ms-python.python", "2023.20.0")).await.unwrap();
         let chunks: Vec<bytes::Bytes> = stream.try_collect().await.unwrap();
@@ -421,7 +420,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
         let result = client.fetch_artifact(&pkg("ms-python.python", "2023.20.0")).await;
 
         assert!(matches!(result, Err(CoreError::NotFound(_))));
@@ -436,7 +435,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
         let result = client.fetch_artifact(&pkg("ms-python.python", "9.9.9")).await;
 
         assert!(matches!(result, Err(CoreError::NotFound(_))));
@@ -451,7 +450,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
         let result = client.fetch_artifact(&pkg("ms-python.python", "2023.20.0")).await;
 
         assert!(matches!(result, Err(CoreError::Registry(_))));
@@ -480,7 +479,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = OpenVsxRegistryClient::new(server.url(), &Default::default());
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
         let result = client.fetch_artifact(&pkg("ms-python.python", "2023.20.0")).await;
 
         assert!(matches!(result, Err(CoreError::Registry(_))));

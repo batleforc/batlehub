@@ -2,6 +2,7 @@
 claude = "latest"
 cocogitto = "latest"
 go = "latest"
+lazydocker = "latest"
 node = "24"
 rust = "latest"
 task = "latest"

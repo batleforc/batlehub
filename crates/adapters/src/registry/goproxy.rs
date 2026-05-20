@@ -37,13 +37,12 @@ pub struct GoProxyRegistryClient {
 }
 
 impl GoProxyRegistryClient {
-    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Self {
+    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
         let builder = reqwest::Client::builder()
             .user_agent("proxy-cache/0.1")
             .redirect(reqwest::redirect::Policy::limited(10));
-        let http = apply_upstream_options(builder, opts)
-            .expect("failed to build GoProxy HTTP client");
-        Self { http, base_url: base_url.into(), basic_auth: opts.basic_auth.clone() }
+        let http = apply_upstream_options(builder, opts)?;
+        Ok(Self { http, base_url: base_url.into(), basic_auth: opts.basic_auth.clone() })
     }
 
     fn get(&self, url: &str) -> reqwest::RequestBuilder {
@@ -221,7 +220,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = GoProxyRegistryClient::new(server.url(), &Default::default());
+        let client = GoProxyRegistryClient::new(server.url(), &Default::default()).unwrap();
         let meta = client.resolve_metadata(&pkg("golang.org/x/text", "latest")).await.unwrap();
 
         assert_eq!(meta.id.version, "v0.14.0");
@@ -239,7 +238,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = GoProxyRegistryClient::new(server.url(), &Default::default());
+        let client = GoProxyRegistryClient::new(server.url(), &Default::default()).unwrap();
         let meta = client.resolve_metadata(&pkg("golang.org/x/text", "v0.3.7")).await.unwrap();
 
         assert_eq!(meta.id.version, "v0.3.7");
@@ -255,7 +254,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = GoProxyRegistryClient::new(server.url(), &Default::default());
+        let client = GoProxyRegistryClient::new(server.url(), &Default::default()).unwrap();
         let result = client.resolve_metadata(&pkg("example.com/unknown", "latest")).await;
 
         assert!(matches!(result, Err(CoreError::NotFound(_))));
@@ -272,7 +271,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = GoProxyRegistryClient::new(server.url(), &Default::default());
+        let client = GoProxyRegistryClient::new(server.url(), &Default::default()).unwrap();
         let stream = client.fetch_artifact(&pkg("golang.org/x/text", "v0.3.7")).await.unwrap();
         let bytes: Vec<bytes::Bytes> = stream.try_collect().await.unwrap();
         let content = bytes.into_iter().flat_map(|b| b.to_vec()).collect::<Vec<u8>>();
@@ -290,7 +289,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = GoProxyRegistryClient::new(server.url(), &Default::default());
+        let client = GoProxyRegistryClient::new(server.url(), &Default::default()).unwrap();
         let pkg_list = pkg("golang.org/x/text", "latest").with_artifact("list");
         let stream = client.fetch_artifact(&pkg_list).await.unwrap();
         let bytes: Vec<bytes::Bytes> = stream.try_collect().await.unwrap();

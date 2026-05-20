@@ -75,7 +75,8 @@ impl StorageRouter {
         .bind(size as i64)
         .bind(key)
         .execute(&self.pool)
-        .await;
+        .await
+        .inspect_err(|e| tracing::warn!(error = %e, key, "failed to update artifact size"));
     }
 
     async fn record_backend(&self, key: &str, backend_name: &str, size_bytes: Option<u64>) {
@@ -92,7 +93,8 @@ impl StorageRouter {
         .bind(backend_name)
         .bind(size_bytes.map(|s| s as i64))
         .execute(&self.pool)
-        .await;
+        .await
+        .inspect_err(|e| tracing::warn!(error = %e, key, backend_name, "failed to record artifact backend"));
     }
 
     fn backend_name_for_key(&self, key: &str) -> &str {
@@ -158,60 +160,19 @@ impl StorageBackend for StorageRouter {
         let _ = sqlx::query("DELETE FROM artifact_storage WHERE storage_key = $1")
             .bind(key)
             .execute(&self.pool)
-            .await;
+            .await
+            .inspect_err(|e| tracing::warn!(error = %e, key, "failed to delete artifact_storage record"));
 
         Ok(())
     }
 
     async fn stat_by_prefix(&self, prefix: &str) -> Result<(u64, u64), CoreError> {
-        let registry = prefix
-            .strip_prefix("artifact:")
-            .and_then(|k| k.split('/').next())
-            .unwrap_or("");
-
-        let backend = {
-            let backend_name = if registry.is_empty() {
-                self.default_name.as_str()
-            } else {
-                self.registry_assignments
-                    .get(registry)
-                    .map(|s| s.as_str())
-                    .unwrap_or(&self.default_name)
-            };
-            Arc::clone(
-                self.backends
-                    .get(backend_name)
-                    .or_else(|| self.backends.get(&self.default_name))
-                    .expect("default storage backend must always be present"),
-            )
-        };
-
+        let backend = Arc::clone(self.resolve_backend_for_key(prefix));
         backend.stat_by_prefix(prefix).await
     }
 
     async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError> {
-        let registry = prefix
-            .strip_prefix("artifact:")
-            .and_then(|k| k.split('/').next())
-            .unwrap_or("");
-
-        let backend = {
-            let backend_name = if registry.is_empty() {
-                self.default_name.as_str()
-            } else {
-                self.registry_assignments
-                    .get(registry)
-                    .map(|s| s.as_str())
-                    .unwrap_or(&self.default_name)
-            };
-            Arc::clone(
-                self.backends
-                    .get(backend_name)
-                    .or_else(|| self.backends.get(&self.default_name))
-                    .expect("default storage backend must always be present"),
-            )
-        };
-
+        let backend = Arc::clone(self.resolve_backend_for_key(prefix));
         backend.delete_by_prefix(prefix).await
     }
 }

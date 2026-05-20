@@ -395,6 +395,7 @@ pub fn swagger_ui(openapi: utoipa::openapi::OpenApi) -> SwaggerUi {
 /// the plain `actix_web::App` returned by `split_for_parts()` after this configure
 /// call, so that `actix_files::Files` (which is not an `OpenApiFactory`) does not
 /// interfere with path collection.
+#[allow(clippy::too_many_arguments)]
 pub fn configure_app(
     proxy_svc: Arc<ProxyService>,
     admin_svc: Arc<AdminService>,

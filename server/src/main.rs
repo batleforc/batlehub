@@ -225,7 +225,8 @@ async fn main() -> Result<()> {
     let mut npm_upstream_map: HashMap<String, String> = HashMap::new();
 
     for reg in &config.registries {
-        let client = build_registry_client(reg);
+        let client = build_registry_client(reg)
+            .with_context(|| format!("building registry client for '{}'", reg.name))?;
         registry_clients.insert(reg.name.clone(), client);
 
         let policy = build_policy(
@@ -246,7 +247,9 @@ async fn main() -> Result<()> {
         }
 
         if reg.registry_type == "cargo" {
-            cargo_indexes.insert(reg.name.clone(), build_cargo_index(reg));
+            let index = build_cargo_index(reg)
+                .with_context(|| format!("building cargo index client for '{}'", reg.name))?;
+            cargo_indexes.insert(reg.name.clone(), index);
         }
     }
 
@@ -414,7 +417,7 @@ fn upstream_options(reg: &RegistryConfig) -> UpstreamHttpOptions {
     }
 }
 
-fn build_cargo_index(reg: &RegistryConfig) -> CargoIndexProxy {
+fn build_cargo_index(reg: &RegistryConfig) -> anyhow::Result<CargoIndexProxy> {
     let index_url = if let Some(ref url) = reg.index_url {
         url.clone()
     } else {
@@ -429,13 +432,12 @@ fn build_cargo_index(reg: &RegistryConfig) -> CargoIndexProxy {
     let http = proxy_cache_adapters::registry::apply_upstream_options(
         reqwest::Client::builder().user_agent("proxy-cache/0.1"),
         &opts,
-    )
-    .expect("failed to build cargo index HTTP client");
+    )?;
     tracing::info!(index_url = %index_url, "cargo sparse index proxy configured");
-    CargoIndexProxy { http, index_url }
+    Ok(CargoIndexProxy { http, index_url })
 }
 
-fn build_registry_client(reg: &RegistryConfig) -> Arc<dyn proxy_cache_core::ports::RegistryClient> {
+fn build_registry_client(reg: &RegistryConfig) -> anyhow::Result<Arc<dyn proxy_cache_core::ports::RegistryClient>> {
     fn resolve_urls(configured: &[String], default: &str) -> Vec<String> {
         if configured.is_empty() {
             vec![default.to_owned()]
@@ -448,16 +450,17 @@ fn build_registry_client(reg: &RegistryConfig) -> Arc<dyn proxy_cache_core::port
         registry_type: &str,
         url: &str,
         opts: &UpstreamHttpOptions,
-    ) -> Arc<dyn proxy_cache_core::ports::RegistryClient> {
-        match registry_type {
-            "github" => Arc::new(GithubRegistryClient::new(url, opts)),
-            "npm" => Arc::new(NpmRegistryClient::new(url, opts)),
-            "cargo" => Arc::new(CargoRegistryClient::new(url, opts)),
-            "openvsx" => Arc::new(OpenVsxRegistryClient::new(url, opts)),
-            "goproxy" => Arc::new(GoProxyRegistryClient::new(url, opts)),
-            "vscode-marketplace" => Arc::new(VsCodeMarketplaceRegistryClient::new(url, opts)),
-            other => panic!("registry type '{other}' is configured but no adapter is compiled in"),
-        }
+    ) -> anyhow::Result<Arc<dyn proxy_cache_core::ports::RegistryClient>> {
+        let client: Arc<dyn proxy_cache_core::ports::RegistryClient> = match registry_type {
+            "github" => Arc::new(GithubRegistryClient::new(url, opts)?),
+            "npm" => Arc::new(NpmRegistryClient::new(url, opts)?),
+            "cargo" => Arc::new(CargoRegistryClient::new(url, opts)?),
+            "openvsx" => Arc::new(OpenVsxRegistryClient::new(url, opts)?),
+            "goproxy" => Arc::new(GoProxyRegistryClient::new(url, opts)?),
+            "vscode-marketplace" => Arc::new(VsCodeMarketplaceRegistryClient::new(url, opts)?),
+            other => anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in"),
+        };
+        Ok(client)
     }
 
     let opts = upstream_options(reg);
@@ -469,7 +472,7 @@ fn build_registry_client(reg: &RegistryConfig) -> Arc<dyn proxy_cache_core::port
         "openvsx" => resolve_urls(&reg.upstreams, "https://open-vsx.org"),
         "goproxy" => resolve_urls(&reg.upstreams, "https://proxy.golang.org"),
         "vscode-marketplace" => resolve_urls(&reg.upstreams, "https://marketplace.visualstudio.com"),
-        other => panic!("registry type '{other}' is configured but no adapter is compiled in"),
+        other => anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in"),
     };
 
     if urls.len() == 1 {
@@ -478,8 +481,8 @@ fn build_registry_client(reg: &RegistryConfig) -> Arc<dyn proxy_cache_core::port
         let clients = urls
             .iter()
             .map(|u| make_one(&reg.registry_type, u, &opts))
-            .collect();
-        Arc::new(FanoutRegistryClient::new(&reg.registry_type, clients))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        Ok(Arc::new(FanoutRegistryClient::new(&reg.registry_type, clients)))
     }
 }
 

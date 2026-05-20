@@ -1,15 +1,14 @@
 use std::sync::Arc;
 
 use actix_web::{HttpResponse, Responder, get, post, web};
-use bytes::Bytes;
-use futures::StreamExt;
 
 use proxy_cache_core::{
     entities::PackageId,
-    services::{ProxyRequest, ProxyResponse, ProxyService},
+    services::ProxyService,
 };
 
 use crate::{RegistryMap, UpstreamMap, error::AppError, extractors::AuthIdentity};
+use super::common::proxy_stream;
 
 fn require_npm_or_cargo(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry) {
@@ -57,7 +56,7 @@ pub async fn get_packument(
     let (registry, package) = path.into_inner();
     require_npm_or_cargo(&registry, &map)?;
     let pkg = PackageId::new(&registry, &package, "latest");
-    proxy_stream(svc, pkg, identity, "releases:read").await
+    proxy_stream(svc, pkg, identity, "releases:read", None).await
 }
 
 /// Fetch package version metadata.
@@ -89,7 +88,7 @@ pub async fn get_version(
     let (registry, package, version) = path.into_inner();
     require_npm_or_cargo(&registry, &map)?;
     let pkg = PackageId::new(&registry, &package, &version);
-    proxy_stream(svc, pkg, identity, "releases:read").await
+    proxy_stream(svc, pkg, identity, "releases:read", None).await
 }
 
 /// Download npm package tarball for a specific version.
@@ -119,7 +118,7 @@ pub async fn download_tarball(
     let (registry, package, version) = path.into_inner();
     require_npm(&registry, &map)?;
     let pkg = PackageId::new(&registry, &package, &version).with_artifact("tarball");
-    proxy_stream(svc, pkg, identity, "source:read").await
+    proxy_stream(svc, pkg, identity, "source:read", None).await
 }
 
 /// Proxy npm audit requests to the upstream npm registry.
@@ -179,26 +178,3 @@ pub async fn audit_quick(
         .body(response_body))
 }
 
-// ── Shared stream helper ──────────────────────────────────────────────────────
-
-async fn proxy_stream(
-    svc: web::Data<Arc<ProxyService>>,
-    pkg: PackageId,
-    identity: AuthIdentity,
-    resource_type: &str,
-) -> Result<HttpResponse, AppError> {
-    let req = ProxyRequest {
-        package_id: pkg,
-        identity: identity.0.clone(),
-        resource_type: resource_type.to_owned(),
-    };
-    match svc.handle(req).await.map_err(AppError::from)? {
-        ProxyResponse::Denied { reason } => Err(AppError::forbidden(reason)),
-        ProxyResponse::Stream(stream) => {
-            let body = stream.filter_map(|chunk| async move {
-                chunk.ok().map(Ok::<Bytes, actix_web::Error>)
-            });
-            Ok(HttpResponse::Ok().streaming(body))
-        }
-    }
-}

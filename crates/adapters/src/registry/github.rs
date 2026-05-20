@@ -32,7 +32,7 @@ pub struct GithubRegistryClient {
 }
 
 impl GithubRegistryClient {
-    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Self {
+    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
         // GitHub-specific default headers merged with any auth headers from opts.
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
@@ -43,14 +43,14 @@ impl GithubRegistryClient {
             "X-GitHub-Api-Version",
             "2022-11-28".parse().unwrap(),
         );
-        let auth_headers = upstream_auth_headers(opts).expect("invalid upstream auth config");
+        let auth_headers = upstream_auth_headers(opts)?;
         headers.extend(auth_headers);
 
         let builder = reqwest::Client::builder()
             .user_agent("proxy-cache/0.1")
             .default_headers(headers);
-        let builder = apply_upstream_tls(builder, opts).expect("invalid upstream TLS config");
-        let http = builder.build().expect("failed to build GitHub HTTP client");
+        let builder = apply_upstream_tls(builder, opts)?;
+        let http = builder.build()?;
 
         let base_url = base_url.into();
 
@@ -67,7 +67,7 @@ impl GithubRegistryClient {
             (host.to_owned(), host.to_owned())
         };
 
-        Self { http, base_url, raw_base_url, archive_base_url, basic_auth: opts.basic_auth.clone() }
+        Ok(Self { http, base_url, raw_base_url, archive_base_url, basic_auth: opts.basic_auth.clone() })
     }
 
     fn get(&self, url: &str) -> reqwest::RequestBuilder {
