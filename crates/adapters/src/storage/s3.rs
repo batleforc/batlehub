@@ -42,6 +42,18 @@ impl S3StorageBackend {
             "S3 storage backend initialised"
         );
 
+        client
+            .head_bucket()
+            .bucket(&cfg.bucket)
+            .send()
+            .await
+            .map_err(|e| CoreError::Storage(format!(
+                "S3 bucket '{}' is not reachable: {}",
+                cfg.bucket, e
+            )))?;
+
+        tracing::info!(bucket = %cfg.bucket, "S3 bucket reachability check passed");
+
         Ok(Self { client, bucket: cfg.bucket.clone(), prefix })
     }
 
