@@ -6,6 +6,7 @@
     "nhoizey.gremlins",
     "oderwat.indent-rainbow",
     "shardulm94.trailing-spaces",
-    "pflannery.vscode-versionlens"
+    "pflannery.vscode-versionlens",
+    "tombi-toml.tombi"
   ]
 }

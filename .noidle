@@ -1,0 +1,5 @@
+enabled: true
+watchedCommands:
+  - claude
+  - helm
+checkPeriodSeconds: 60

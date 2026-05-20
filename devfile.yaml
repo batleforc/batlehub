@@ -90,6 +90,8 @@ components:
           value: batlehub
         - name: POSTGRES_PASSWORD
           value: changeme
+        - name: POSTGRES_PASSWORD
+          value: changeme
         - name: POSTGRES_USER
           value: batlehub
         - name: PGDATA
