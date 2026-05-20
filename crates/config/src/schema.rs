@@ -25,7 +25,8 @@ impl AppConfig {
                 bail!("registry is missing a 'name' field");
             }
             match registry.registry_type.as_str() {
-                "github" | "cargo" | "npm" | "openvsx" | "goproxy" | "pypi" | "composer" => {}
+                "github" | "cargo" | "npm" | "openvsx" | "goproxy" | "pypi" | "composer"
+                | "vscode-marketplace" => {}
                 other => bail!("unknown registry type: '{other}'"),
             }
         }

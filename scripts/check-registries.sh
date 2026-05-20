@@ -25,8 +25,9 @@ Options:
   --cargo <name>     Test cargo registry named <name>
   --go <name>        Test go registry named <name>
   --github <name>    Test github registry named <name>
-  --openvsx <name>   Test openvsx registry named <name>
-  -h, --help         Show this help
+  --openvsx <name>              Test openvsx registry named <name>
+  --vscode-marketplace <name>   Test vscode-marketplace registry named <name>
+  -h, --help                    Show this help
 
 Examples:
   # Test all registries using names from config.example.toml
@@ -45,6 +46,7 @@ CARGO_NAME=""
 GO_NAME=""
 GITHUB_NAME=""
 OPENVSX_NAME=""
+VSCODE_MARKETPLACE_NAME=""
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -55,14 +57,15 @@ while [[ $# -gt 0 ]]; do
         --cargo)     CARGO_NAME="$2";     shift 2 ;;
         --go)        GO_NAME="$2";        shift 2 ;;
         --github)    GITHUB_NAME="$2";    shift 2 ;;
-        --openvsx)   OPENVSX_NAME="$2";   shift 2 ;;
+        --openvsx)             OPENVSX_NAME="$2";             shift 2 ;;
+        --vscode-marketplace)  VSCODE_MARKETPLACE_NAME="$2";  shift 2 ;;
         -h|--help)   usage; exit 0 ;;
         *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 1 ;;
     esac
 done
 
 # ── Validate at least one registry was requested ──────────────────────────────
-if [[ -z "$NPM_NAME" && -z "$CARGO_NAME" && -z "$GO_NAME" && -z "$GITHUB_NAME" && -z "$OPENVSX_NAME" ]]; then
+if [[ -z "$NPM_NAME" && -z "$CARGO_NAME" && -z "$GO_NAME" && -z "$GITHUB_NAME" && -z "$OPENVSX_NAME" && -z "$VSCODE_MARKETPLACE_NAME" ]]; then
     printf '%bNo registries specified. Use --npm, --cargo, --go, --github, and/or --openvsx.%b\n' "$RED" "$RESET" >&2
     usage >&2
     exit 1
@@ -271,6 +274,64 @@ test_npm() {
         else
             print_fail "npm:tool — downloaded file is not a valid gzip (magic: $magic2)"
             record npm tool FAIL
+        fi
+    fi
+
+    # Audit HTTP check — POST a minimal package tree to /-/npm/v1/audit/quick,
+    # expect any non-5xx response (proxy layer is healthy if no server error).
+    local audit_payload='{"name":"proxy-cache-check","version":"1.0.0","requires":{},"dependencies":{}}'
+    local audit_body="${TMPDIR_ROOT}/npm_audit_${RANDOM}"
+    local audit_code audit_rc=0
+    audit_code=$(curl -sS --max-time 30 "${CURL_AUTH[@]}" \
+        -X POST -H "Content-Type: application/json" \
+        -d "$audit_payload" \
+        -o "$audit_body" -w '%{http_code}' \
+        "${BASE_URL}/proxy/${name}/-/npm/v1/audit/quick" 2>/dev/null) || audit_rc=$?
+    rm -f "$audit_body"
+    if (( audit_rc != 0 )); then
+        print_fail "npm:audit-http — curl failed"
+        record npm audit-http FAIL
+    elif [[ "$audit_code" == 5* ]]; then
+        print_fail "npm:audit-http — HTTP $audit_code (server error)"
+        record npm audit-http FAIL
+    else
+        print_pass "npm:audit-http (HTTP $audit_code)"
+        record npm audit-http PASS
+    fi
+
+    # Audit tool check — write a minimal lockfile and run npm audit through the proxy.
+    # The proxy serves cached artifacts (gzip tarballs), not JSON packuments, so
+    # `npm install` through it would fail. npm audit only needs a lockfile — it reads
+    # the resolved dependency tree and POSTs it to the registry audit endpoint without
+    # downloading any packages.
+    if ! tool_present npm; then
+        print_skip "npm:audit-tool — npm not installed"
+        record npm audit-tool SKIP
+    else
+        local audit_dir="${TMPDIR_ROOT}/npm-audit-${name}"
+        mkdir -p "$audit_dir"
+
+        cat > "$audit_dir/package.json" <<'PKGJSON'
+{"name":"proxy-cache-audit-check","version":"1.0.0","private":true,"dependencies":{"ms":"^2.1.3"}}
+PKGJSON
+        # Lockfile v3 (npm ≥ 7): npm audit reads this without fetching packages.
+        cat > "$audit_dir/package-lock.json" <<'LOCKJSON'
+{"name":"proxy-cache-audit-check","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"proxy-cache-audit-check","version":"1.0.0","dependencies":{"ms":"^2.1.3"}},"node_modules/ms":{"version":"2.1.3","resolved":"https://registry.npmjs.org/ms/-/ms-2.1.3.tgz","integrity":"sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTg=="}}}
+LOCKJSON
+
+        local audit_out audit_exit=0
+        audit_out=$(npm audit --prefix "$audit_dir" \
+            --registry "${BASE_URL}/proxy/${name}" \
+            --json 2>&1) || audit_exit=$?
+        # exit 0 = no vulnerabilities, exit 1 = vulnerabilities found — both are valid
+        # responses from the audit endpoint; only higher exit codes signal a failure.
+        if (( audit_exit <= 1 )); then
+            print_pass "npm:audit-tool — npm audit completed (exit $audit_exit)"
+            record npm audit-tool PASS
+        else
+            print_fail "npm:audit-tool — npm audit failed (exit $audit_exit)"
+            printf '%bOutput:%b\n%s\n' "$DIM" "$RESET" "$(printf '%s' "$audit_out" | tail -5)"
+            record npm audit-tool FAIL
         fi
     fi
 }
@@ -581,17 +642,81 @@ test_openvsx() {
     fi
 }
 
+# ── VS Code Marketplace ───────────────────────────────────────────────────────
+test_vscode_marketplace() {
+    local name="$1"
+    section "vscode-marketplace registry: $name"
+
+    # HTTP check — any non-5xx is acceptable (upstream 404 is fine)
+    local http_ok=true
+    http_check_not_5xx "vscode-marketplace:http — ms-python.python/2024.2.1/vsix" \
+        "${BASE_URL}/proxy/${name}/ms-python.python/2024.2.1/vsix" || http_ok=false
+    if $http_ok; then record vscode-marketplace http PASS; else record vscode-marketplace http FAIL; fi
+
+    # Tool check — download VSIX and verify ZIP magic bytes (VSIX files are ZIPs)
+    local vsix_file="${TMPDIR_ROOT}/vscode-marketplace-${name}.vsix"
+    local http_code rc=0
+    http_code=$(curl -sS --max-time 60 "${CURL_AUTH[@]}" \
+        -L -o "$vsix_file" -w '%{http_code}' \
+        "${BASE_URL}/proxy/${name}/ms-python.python/2024.2.1/vsix" 2>/dev/null) || rc=$?
+
+    if (( rc != 0 )); then
+        print_fail "vscode-marketplace:tool — download failed (curl error)"
+        record vscode-marketplace tool FAIL
+    elif [[ "$http_code" == "404" ]]; then
+        print_skip "vscode-marketplace:tool — extension not found upstream (HTTP 404)"
+        record vscode-marketplace tool SKIP
+    elif [[ "$http_code" != "200" ]]; then
+        print_fail "vscode-marketplace:tool — HTTP $http_code"
+        record vscode-marketplace tool FAIL
+    else
+        # Check ZIP magic bytes: 50 4b 03 04
+        local magic=""
+        if tool_present xxd; then
+            magic=$(xxd -l 4 "$vsix_file" 2>/dev/null | awk '{print $2$3}' | head -1) || true
+            if [[ "$magic" == "504b0304" ]]; then
+                print_pass "vscode-marketplace:tool — valid VSIX (ZIP magic bytes confirmed)"
+                record vscode-marketplace tool PASS
+            else
+                print_fail "vscode-marketplace:tool — downloaded file is not a valid ZIP (magic: $magic)"
+                record vscode-marketplace tool FAIL
+            fi
+        elif tool_present od; then
+            magic=$(od -A x -t x1 -N 4 "$vsix_file" 2>/dev/null | awk 'NR==1{print $2$3$4$5}') || true
+            if [[ "$magic" == "504b0304" ]]; then
+                print_pass "vscode-marketplace:tool — valid VSIX (ZIP magic bytes confirmed)"
+                record vscode-marketplace tool PASS
+            else
+                print_fail "vscode-marketplace:tool — downloaded file is not a valid ZIP (magic: $magic)"
+                record vscode-marketplace tool FAIL
+            fi
+        else
+            local size
+            size=$(wc -c < "$vsix_file")
+            if (( size > 100 )); then
+                print_pass "vscode-marketplace:tool — downloaded ${size} bytes (xxd/od unavailable for magic check)"
+                record vscode-marketplace tool PASS
+            else
+                print_fail "vscode-marketplace:tool — downloaded file is suspiciously small (${size} bytes)"
+                record vscode-marketplace tool FAIL
+            fi
+        fi
+    fi
+    rm -f "$vsix_file"
+}
+
 # ── Summary table ─────────────────────────────────────────────────────────────
 print_summary() {
-    printf "\n${BOLD}%-12s  %-8s  %-8s${RESET}\n" "Registry" "HTTP" "Tool"
-    printf '%-12s  %-8s  %-8s\n' "------------" "--------" "--------"
+    printf "\n${BOLD}%-20s  %-8s  %-8s${RESET}\n" "Registry" "HTTP" "Tool"
+    printf '%-20s  %-8s  %-8s\n' "--------------------" "--------" "--------"
 
     local -a order=()
-    [[ -n "$NPM_NAME"     ]] && order+=("npm")
-    [[ -n "$CARGO_NAME"   ]] && order+=("cargo")
-    [[ -n "$GO_NAME"      ]] && order+=("go")
-    [[ -n "$GITHUB_NAME"  ]] && order+=("github")
-    [[ -n "$OPENVSX_NAME" ]] && order+=("openvsx")
+    [[ -n "$NPM_NAME"                ]] && order+=("npm")
+    [[ -n "$CARGO_NAME"              ]] && order+=("cargo")
+    [[ -n "$GO_NAME"                 ]] && order+=("go")
+    [[ -n "$GITHUB_NAME"             ]] && order+=("github")
+    [[ -n "$OPENVSX_NAME"            ]] && order+=("openvsx")
+    [[ -n "$VSCODE_MARKETPLACE_NAME" ]] && order+=("vscode-marketplace")
 
     for reg in "${order[@]}"; do
         local http_status="${RESULTS["${reg}:http"]:-SKIP}"
@@ -611,7 +736,7 @@ print_summary() {
             *)    tool_colored="$tool_status" ;;
         esac
 
-        printf "%-12s  %b%-8s%b  %b%-8s%b\n" \
+        printf "%-20s  %b%-8s%b  %b%-8s%b\n" \
             "$reg" \
             "" "$http_status" "" \
             "" "$tool_status" ""
@@ -621,15 +746,16 @@ print_summary() {
 }
 
 print_summary_colored() {
-    printf "\n${BOLD}%-12s  %-6s  %-6s${RESET}\n" "Registry" "HTTP" "Tool"
-    printf "${DIM}%-12s  %-6s  %-6s${RESET}\n" "------------" "------" "------"
+    printf "\n${BOLD}%-20s  %-6s  %-6s${RESET}\n" "Registry" "HTTP" "Tool"
+    printf "${DIM}%-20s  %-6s  %-6s${RESET}\n" "--------------------" "------" "------"
 
     local -a order=()
-    [[ -n "$NPM_NAME"     ]] && order+=("npm")
-    [[ -n "$CARGO_NAME"   ]] && order+=("cargo")
-    [[ -n "$GO_NAME"      ]] && order+=("go")
-    [[ -n "$GITHUB_NAME"  ]] && order+=("github")
-    [[ -n "$OPENVSX_NAME" ]] && order+=("openvsx")
+    [[ -n "$NPM_NAME"                ]] && order+=("npm")
+    [[ -n "$CARGO_NAME"              ]] && order+=("cargo")
+    [[ -n "$GO_NAME"                 ]] && order+=("go")
+    [[ -n "$GITHUB_NAME"             ]] && order+=("github")
+    [[ -n "$OPENVSX_NAME"            ]] && order+=("openvsx")
+    [[ -n "$VSCODE_MARKETPLACE_NAME" ]] && order+=("vscode-marketplace")
 
     for reg in "${order[@]}"; do
         local http_status="${RESULTS["${reg}:http"]:-SKIP}"
@@ -643,7 +769,7 @@ print_summary_colored() {
             PASS) tool_col="$GREEN" ;; FAIL) tool_col="$RED" ;; *) tool_col="$YELLOW" ;;
         esac
 
-        printf "%-12s  ${http_col}%-6s${RESET}  ${tool_col}%-6s${RESET}\n" \
+        printf "%-20s  ${http_col}%-6s${RESET}  ${tool_col}%-6s${RESET}\n" \
             "$reg" "$http_status" "$tool_status"
     done
 }
@@ -652,11 +778,12 @@ print_summary_colored() {
 printf "${BOLD}proxy-cache registry check${RESET}  ${DIM}%s${RESET}\n" "$BASE_URL"
 [[ -n "$AUTH_TOKEN" ]] && printf "${DIM}(using bearer token auth)${RESET}\n"
 
-[[ -n "$NPM_NAME"     ]] && test_npm     "$NPM_NAME"
-[[ -n "$CARGO_NAME"   ]] && test_cargo   "$CARGO_NAME"
-[[ -n "$GO_NAME"      ]] && test_go      "$GO_NAME"
-[[ -n "$GITHUB_NAME"  ]] && test_github  "$GITHUB_NAME"
-[[ -n "$OPENVSX_NAME" ]] && test_openvsx "$OPENVSX_NAME"
+[[ -n "$NPM_NAME"                ]] && test_npm                "$NPM_NAME"
+[[ -n "$CARGO_NAME"              ]] && test_cargo              "$CARGO_NAME"
+[[ -n "$GO_NAME"                 ]] && test_go                 "$GO_NAME"
+[[ -n "$GITHUB_NAME"             ]] && test_github             "$GITHUB_NAME"
+[[ -n "$OPENVSX_NAME"            ]] && test_openvsx            "$OPENVSX_NAME"
+[[ -n "$VSCODE_MARKETPLACE_NAME" ]] && test_vscode_marketplace "$VSCODE_MARKETPLACE_NAME"
 
 printf "\n${BOLD}Summary${RESET}\n"
 print_summary_colored

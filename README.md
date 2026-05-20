@@ -10,27 +10,28 @@ A self-hosted smart proxy and cache for package registries. It sits between your
 | **npm** | Full packument + tarball proxy | `registry.npmjs.org` |
 | **Cargo** | Sparse index + `.crate` download | `crates.io` / `index.crates.io` |
 | **OpenVSX** | VS Code extension VSIX download | `open-vsx.org` |
+| **VS Code Marketplace** | VS Code extension VSIX download via Microsoft Gallery API | `marketplace.visualstudio.com` |
 | **Go** | GOPROXY protocol (`.info`, `.mod`, `.zip`, `@latest`, `@v/list`) | `proxy.golang.org` |
 
 Multiple instances of the same registry type can run in parallel (e.g. a private npm registry and the public one as fallback).
 
 ### Feature matrix
 
-| Feature | GitHub | npm | Cargo | OpenVSX | Go |
-|---------|:------:|:---:|:-----:|:-------:|:--:|
-| Version listing | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Latest version resolution | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Version metadata | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Source archive download | ✓ | ✓ | ✓ | — | ✓ |
-| Binary / extension download | ✓ | — | — | ✓ | — |
-| Raw file access | ✓ | — | — | — | — |
-| Sparse index proxy | — | — | ✓ | — | — |
-| Module definition file | — | — | — | — | ✓ |
-| Publish timestamp | ⚠ ² | ✓ | ✓ | ✓ | ✓ |
-| Signed release detection | — | — | — | ✓ | — |
-| Release age gate rule | ⚠ ² | ✓ | ✓ | ✓ | ✓ |
-| Deny latest tag rule | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Multi-upstream fanout | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Feature | GitHub | npm | Cargo | OpenVSX | VS Code Marketplace | Go |
+|---------|:------:|:---:|:-----:|:-------:|:-------------------:|:--:|
+| Version listing | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Latest version resolution | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Version metadata | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Source archive download | ✓ | ✓ | ✓ | — | — | ✓ |
+| Binary / extension download | ✓ | — | — | ✓ | ✓ | — |
+| Raw file access | ✓ | — | — | — | — | — |
+| Sparse index proxy | — | — | ✓ | — | — | — |
+| Module definition file | — | — | — | — | — | ✓ |
+| Publish timestamp | ⚠ ² | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Signed release detection | — | — | — | ✓ | — | — |
+| Release age gate rule | ⚠ ² | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Deny latest tag rule | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Multi-upstream fanout | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 > ² **GitHub**: publish timestamp (and therefore the age gate) is only populated for specific-tag release requests. Raw file, source tarball, and release-listing requests return no timestamp and the rule is skipped.
 
@@ -205,6 +206,21 @@ export GONOSUMCHECK="*"
 export GONOSUMDB="*"
 ```
 
+### VS Code Marketplace
+
+```sh
+# Download and install an extension via the proxy
+curl -sL "http://localhost:8080/proxy/vscode/ms-python.python/latest/vsix" \
+  -o extension.vsix && code --install-extension extension.vsix
+
+# Pin a specific version
+curl -H "Authorization: Bearer <token>" \
+  "http://localhost:8080/proxy/vscode/ms-python.python/2024.2.1/vsix" \
+  -o ms-python.python-2024.2.1.vsix
+```
+
+The proxy URL pattern is `/proxy/{registry}/{publisher}.{name}/{version}/vsix`.
+
 ### GitHub (mise)
 
 ```toml
@@ -220,7 +236,7 @@ export GONOSUMDB="*"
 
 ```
 config.toml
-  └─ [[registries]]  type = "npm" | "cargo" | "github" | "openvsx" | "goproxy"
+  └─ [[registries]]  type = "npm" | "cargo" | "github" | "openvsx" | "vscode-marketplace" | "goproxy"
          │
          ▼
 server/src/main.rs         — builds registry clients, policies, services

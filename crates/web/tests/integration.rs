@@ -332,6 +332,7 @@ async fn make_app(
         ("cargo".to_owned(), FixedRegistry::new("cargo") as Arc<dyn RegistryClient>),
         ("openvsx".to_owned(), FixedRegistry::new("openvsx") as Arc<dyn RegistryClient>),
         ("go".to_owned(), FixedRegistry::new("goproxy") as Arc<dyn RegistryClient>),
+        ("vscode".to_owned(), FixedRegistry::new("vscode-marketplace") as Arc<dyn RegistryClient>),
     ]
     .into();
 
@@ -341,6 +342,7 @@ async fn make_app(
         ("cargo".to_owned(), rbac_policy(repo_dyn.clone())),
         ("openvsx".to_owned(), rbac_policy(repo_dyn.clone())),
         ("go".to_owned(), rbac_policy(repo_dyn.clone())),
+        ("vscode".to_owned(), rbac_policy(repo_dyn.clone())),
     ]
     .into();
 
@@ -356,13 +358,13 @@ async fn make_app(
 
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
     let access_config = proxy_cache_web::AccessConfig {
-        anonymous: ["github", "npm", "cargo", "openvsx", "go"].iter().map(|s| s.to_string()).collect(),
-        user: ["github", "npm", "cargo", "openvsx", "go"].iter().map(|s| s.to_string()).collect(),
-        admin: ["github", "npm", "cargo", "openvsx", "go"].iter().map(|s| s.to_string()).collect(),
+        anonymous: ["github", "npm", "cargo", "openvsx", "go", "vscode"].iter().map(|s| s.to_string()).collect(),
+        user: ["github", "npm", "cargo", "openvsx", "go", "vscode"].iter().map(|s| s.to_string()).collect(),
+        admin: ["github", "npm", "cargo", "openvsx", "go", "vscode"].iter().map(|s| s.to_string()).collect(),
         groups: std::collections::HashMap::new(),
     };
     let registry_map = proxy_cache_web::RegistryMap(
-        [("github", "github"), ("npm", "npm"), ("cargo", "cargo"), ("openvsx", "openvsx"), ("go", "goproxy")]
+        [("github", "github"), ("npm", "npm"), ("cargo", "cargo"), ("openvsx", "openvsx"), ("go", "goproxy"), ("vscode", "vscode-marketplace")]
             .iter()
             .map(|(n, t)| (n.to_string(), t.to_string()))
             .collect(),
@@ -371,7 +373,7 @@ async fn make_app(
         std::collections::HashMap::new();
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, vec![]))
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, proxy_cache_web::UpstreamMap::default(), vec![]))
         .split_for_parts();
     let app = app.app_data(actix_web::web::Data::new(cargo_indexes));
 
@@ -986,7 +988,7 @@ async fn make_group_app(
         std::collections::HashMap::new();
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, vec![]))
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, proxy_cache_web::UpstreamMap::default(), vec![]))
         .split_for_parts();
     let app = app.app_data(actix_web::web::Data::new(cargo_indexes));
 
@@ -1353,7 +1355,7 @@ async fn make_app_with_tokens(
 
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, tok_repo, None, access_config, registry_map, vec![]))
+        .configure(configure_app(proxy_svc, admin_svc, tok_repo, None, access_config, registry_map, proxy_cache_web::UpstreamMap::default(), vec![]))
         .split_for_parts();
     let app = app.app_data(actix_web::web::Data::new(cargo_indexes));
 
@@ -1691,7 +1693,7 @@ async fn make_app_with_cargo_index(
 
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, vec![]))
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, proxy_cache_web::UpstreamMap::default(), vec![]))
         .split_for_parts();
     let app = app.app_data(actix_web::web::Data::new(cargo_indexes));
 
@@ -2095,6 +2097,42 @@ async fn proxy_openvsx_unknown_registry_returns_404() {
     let app = make_app(InMemoryRepo::new()).await;
     let req = TestRequest::get()
         .uri("/proxy/unknown-reg/ms-python.python/2023.20.0/vsix")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+// ── VS Code Marketplace proxy handler ─────────────────────────────────────────
+
+#[actix_web::test]
+async fn proxy_vscode_marketplace_vsix_blocked_for_anonymous() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/vscode/ms-python.python/2024.2.1/vsix")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    // download_vsix uses source:read — anonymous only has releases:read
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn proxy_vscode_marketplace_vsix_accessible_by_user() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/vscode/ms-python.python/2024.2.1/vsix")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn proxy_vscode_marketplace_wrong_registry_type_returns_404() {
+    let app = make_app(InMemoryRepo::new()).await;
+    // "npm" exists but is type "npm", not "vscode-marketplace" — require_openvsx rejects it
+    let req = TestRequest::get()
+        .uri("/proxy/npm/ms-python.python/2024.2.1/vsix")
         .insert_header(("Authorization", bearer(USER_TOKEN)))
         .to_request();
     let resp = call_service(&app, req).await;

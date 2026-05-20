@@ -218,6 +218,16 @@ mod access_config_tests {
 #[derive(Clone)]
 pub struct RegistryMap(pub HashMap<String, String>);
 
+/// Maps npm registry name → first upstream base URL (for audit pass-through).
+#[derive(Clone, Default)]
+pub struct UpstreamMap(pub HashMap<String, String>);
+
+impl UpstreamMap {
+    pub fn upstream_for(&self, name: &str) -> Option<&str> {
+        self.0.get(name).map(String::as_str)
+    }
+}
+
 impl RegistryMap {
     pub fn type_of(&self, name: &str) -> Option<&str> {
         self.0.get(name).map(String::as_str)
@@ -305,10 +315,11 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             // Register most-specific patterns first so actix-web resolves correctly:
             // cargo index (literal "registry" segment) > github (owner/repo/verb) >
             // cargo download (literal "download") > openvsx vsix (literal "vsix") >
-            // npm tarball (literal "tarball") > shared version metadata > shared packument
+            // npm audit (literal "/-/npm/v1/audit/quick") > npm tarball (literal "tarball") >
+            // shared version metadata > shared packument
             cargo::{cargo_registry_config, cargo_registry_index, download_crate},
             github::{download_asset, download_asset_by_name, download_raw, download_tarball, download_zipball, get_release, list_releases},
-            npm::{download_tarball as npm_download_tarball, get_packument, get_version},
+            npm::{audit_quick, download_tarball as npm_download_tarball, get_packument, get_version},
             openvsx::download_vsix,
             goproxy::{goproxy_file, goproxy_latest, goproxy_list},
         },
@@ -340,6 +351,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(goproxy_file);
     // OpenVSX VSIX download (literal "vsix" suffix)
     cfg.service(download_vsix);
+    // npm audit pass-through (literal "/-/npm/v1/audit/quick" path)
+    cfg.service(audit_quick);
     // npm tarball (literal "tarball" suffix)
     cfg.service(npm_download_tarball);
     // Shared npm/cargo: version metadata then packument (more specific first)
@@ -389,14 +402,21 @@ pub fn configure_app(
     pool: Option<PgPool>,
     access_config: AccessConfig,
     registry_map: RegistryMap,
+    upstream_map: UpstreamMap,
     oidc_sso_flows: Vec<OidcSsoFlow>,
 ) -> impl Fn(&mut UtoipaServiceConfig) + Clone + 'static {
+    let audit_client = reqwest::Client::builder()
+        .user_agent("proxy-cache/0.1")
+        .build()
+        .expect("audit HTTP client");
     move |cfg| {
         cfg.app_data(web::Data::new(proxy_svc.clone()));
         cfg.app_data(web::Data::new(admin_svc.clone()));
         cfg.app_data(web::Data::new(token_repo.clone()));
         cfg.app_data(web::Data::new(access_config.clone()));
         cfg.app_data(web::Data::new(registry_map.clone()));
+        cfg.app_data(web::Data::new(upstream_map.clone()));
+        cfg.app_data(web::Data::new(audit_client.clone()));
         cfg.app_data(web::Data::new(oidc_sso_flows.clone()));
         if let Some(ref p) = pool {
             cfg.app_data(web::Data::new(p.clone()));

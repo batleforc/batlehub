@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actix_web::{HttpResponse, Responder, get, web};
+use actix_web::{HttpResponse, Responder, get, post, web};
 use bytes::Bytes;
 use futures::StreamExt;
 
@@ -9,7 +9,7 @@ use proxy_cache_core::{
     services::{ProxyRequest, ProxyResponse, ProxyService},
 };
 
-use crate::{RegistryMap, error::AppError, extractors::AuthIdentity};
+use crate::{RegistryMap, UpstreamMap, error::AppError, extractors::AuthIdentity};
 
 fn require_npm_or_cargo(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry) {
@@ -120,6 +120,63 @@ pub async fn download_tarball(
     require_npm(&registry, &map)?;
     let pkg = PackageId::new(&registry, &package, &version).with_artifact("tarball");
     proxy_stream(svc, pkg, identity, "source:read").await
+}
+
+/// Proxy npm audit requests to the upstream npm registry.
+///
+/// npm sends `POST /-/npm/v1/audit/quick` when `npm audit` runs. Forwards the
+/// request body to the configured upstream and returns the response, enabling
+/// `npm audit` to work through the proxy without caching.
+#[utoipa::path(
+    post,
+    path = "/proxy/{registry}/-/npm/v1/audit/quick",
+    tag = "proxy/npm",
+    params(
+        ("registry" = String, Path, description = "npm registry name"),
+    ),
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "Audit advisory data from upstream"),
+        (status = 404, description = "Unknown or non-npm registry"),
+        (status = 502, description = "Upstream audit request failed"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[post("/proxy/{registry}/-/npm/v1/audit/quick")]
+pub async fn audit_quick(
+    path: web::Path<(String,)>,
+    body: web::Json<serde_json::Value>,
+    map: web::Data<RegistryMap>,
+    upstream_map: web::Data<UpstreamMap>,
+    client: web::Data<reqwest::Client>,
+) -> Result<impl Responder, AppError> {
+    let (registry,) = path.into_inner();
+    require_npm(&registry, &map)?;
+
+    let upstream = upstream_map
+        .upstream_for(&registry)
+        .ok_or_else(|| AppError::not_found(format!("no upstream configured for '{registry}'")))?;
+
+    let url = format!("{upstream}/-/npm/v1/audit/quick");
+
+    let resp = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .json(&body.into_inner())
+        .send()
+        .await
+        .map_err(|e| AppError::internal(format!("upstream audit request failed: {e}")))?;
+
+    let status = actix_web::http::StatusCode::from_u16(resp.status().as_u16())
+        .unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR);
+    let response_body = resp
+        .bytes()
+        .await
+        .map_err(|e| AppError::internal(format!("upstream audit response read failed: {e}")))?;
+
+    Ok(HttpResponse::build(status)
+        .content_type("application/json")
+        .body(response_body))
 }
 
 // ── Shared stream helper ──────────────────────────────────────────────────────

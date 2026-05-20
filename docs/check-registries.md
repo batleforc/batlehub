@@ -14,6 +14,7 @@
    - [Go](#33-go)
    - [GitHub](#34-github)
    - [OpenVSX](#35-openvsx)
+   - [VS Code Marketplace](#36-vs-code-marketplace)
 4. [Authentication](#4-authentication)
 5. [Exit Codes and CI Use](#5-exit-codes-and-ci-use)
 6. [Common Failures](#6-common-failures)
@@ -31,6 +32,7 @@ The script itself only requires `bash` and `curl`. Tool checks are skipped grace
 | Go | `go` | 1.21 (for `NETRC` env var) |
 | GitHub | `curl` | any |
 | OpenVSX | `curl` | any |
+| VS Code Marketplace | `curl` | any |
 
 JSON field validation uses `jq` when available; without it the script falls back to `grep`-based checks.
 
@@ -47,12 +49,13 @@ JSON field validation uses `jq` when available; without it the script falls back
   --cargo <name>     Test the cargo registry named <name>
   --go <name>        Test the go registry named <name>
   --github <name>    Test the github registry named <name>
-  --openvsx <name>   Test the openvsx registry named <name>
+  --openvsx <name>              Test the openvsx registry named <name>
+  --vscode-marketplace <name>   Test the vscode-marketplace registry named <name>
 ```
 
 The `<name>` value for each flag is the `name` field you assigned that registry in your `config.toml`, not the `type`. Only the registries you specify are tested.
 
-**Test all five registry types against a local instance:**
+**Test all registry types against a local instance:**
 
 ```sh
 ./scripts/check-registries.sh \
@@ -60,7 +63,8 @@ The `<name>` value for each flag is the `name` field you assigned that registry 
   --cargo cargo \
   --go go \
   --github github \
-  --openvsx openvsx
+  --openvsx openvsx \
+  --vscode-marketplace vscode
 ```
 
 **Test a remote instance with custom registry names and auth:**
@@ -173,6 +177,16 @@ GET /proxy/<name>/redhat.java/1.26.0/vsix  →  non-5xx
 
 **Tool check** — downloads the VSIX to a temp file and verifies the ZIP magic bytes (`PK\x03\x04`), confirming the proxy returned a valid VSIX archive rather than an error page. A 404 from upstream causes this check to be skipped rather than failed.
 
+### 3.6 VS Code Marketplace
+
+**HTTP check** — requests a VS Code extension VSIX and accepts any non-5xx response (a 404 from upstream is acceptable):
+
+```text
+GET /proxy/<name>/ms-python.python/2024.2.1/vsix  →  non-5xx
+```
+
+**Tool check** — downloads the VSIX to a temp file and verifies the ZIP magic bytes (`PK\x03\x04`), confirming the proxy returned a valid VSIX archive rather than an error page. A 404 from upstream causes this check to be skipped rather than failed.
+
 ---
 
 ## 4. Authentication
@@ -231,3 +245,6 @@ The tool is not installed in the environment running the script. Install it, or 
 
 **`openvsx:tool — SKIP (HTTP 404)`**
 The extension version requested (`redhat.java/1.26.0`) does not exist on open-vsx.org. This is expected on some deployments; the HTTP check (non-5xx) is the authoritative signal.
+
+**`vscode-marketplace:tool — SKIP (HTTP 404)`**
+The extension version requested (`ms-python.python/2024.2.1`) was not found on marketplace.visualstudio.com. Try a different extension or version, or check that the proxy can reach the upstream.

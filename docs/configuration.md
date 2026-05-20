@@ -82,7 +82,7 @@ curl -H "Authorization: Bearer my-admin-token" http://localhost:8080/...
 
 1. The TOML file at the path given to `--config` is parsed (default: `config.toml` in the working directory).
 2. Environment variables matching `PROXY_CACHE__<SECTION>__<FIELD>` are applied on top of the file values.
-3. The config is validated: registry names must not be empty and registry types must be one of `github`, `npm`, `cargo`, `openvsx`, `goproxy`, `pypi`, `composer`.
+3. The config is validated: registry names must not be empty and registry types must be one of `github`, `npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`, `pypi`, `composer`.
 
 ### Auth evaluation order
 
@@ -348,7 +348,7 @@ bypass_roles = ["admin"]
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `type` | string | yes | `"github"`, `"npm"`, `"cargo"`, `"openvsx"`, `"goproxy"`, `"pypi"`, `"composer"` |
+| `type` | string | yes | `"github"`, `"npm"`, `"cargo"`, `"openvsx"`, `"vscode-marketplace"`, `"goproxy"`, `"pypi"`, `"composer"` |
 | `name` | string | yes | Unique identifier; used in proxy URL paths |
 | `upstreams` | string[] | no | Upstream URLs tried in order on cache miss; 404 from one falls through to the next. Defaults to the registry's built-in URL. |
 | `index_url` | string | no | Cargo only: sparse crate index URL. Defaults to `https://index.crates.io`. Required for self-hosted Gitea/Forgejo registries. |
@@ -365,6 +365,33 @@ bypass_roles = ["admin"]
 **`cargo`** — proxies the Cargo sparse index and `.crate` downloads. Set `index_url` for self-hosted Gitea/Forgejo registries.
 
 **`openvsx`** — proxies VS Code extension VSIX downloads from [open-vsx.org](https://open-vsx.org) or a compatible host. Extension IDs use the `{publisher}.{name}` convention.
+
+**`vscode-marketplace`** — proxies VS Code extension VSIX downloads from [marketplace.visualstudio.com](https://marketplace.visualstudio.com) using Microsoft's Gallery API. Extension IDs use the same `{publisher}.{name}` convention as OpenVSX. Metadata is resolved via a `POST /_apis/public/gallery/extensionquery` call; artifacts are fetched directly from `/_apis/public/gallery/publishers/{publisher}/vsextensions/{name}/{version}/vspackage`. Use this type when you need to cache extensions that are only available on the Microsoft marketplace and not mirrored on open-vsx.org.
+
+```toml
+[[registries]]
+type = "vscode-marketplace"
+name = "vscode"
+# upstreams = ["https://marketplace.visualstudio.com"]  # default
+
+[registries.rbac]
+user = ["releases:read", "source:read"]
+admin = ["*"]
+```
+
+Download a VSIX via the proxy:
+
+```sh
+# Latest version
+curl -H "Authorization: Bearer <token>" \
+  http://localhost:8080/proxy/vscode/ms-python.python/latest/vsix \
+  -o ms-python.python.vsix
+
+# Pinned version
+curl -H "Authorization: Bearer <token>" \
+  http://localhost:8080/proxy/vscode/ms-python.python/2024.2.1/vsix \
+  -o ms-python.python-2024.2.1.vsix
+```
 
 **`goproxy`** — implements the [GOPROXY protocol](https://go.dev/ref/mod#goproxy-protocol) for Go module proxying. Supports all five endpoints:
 
@@ -415,7 +442,7 @@ export GOPROXY="http://proxy-cache.example.com/proxy/go,direct"
 | `bypass_roles` | string[] | `[]` | Roles that skip the gate (e.g. `["admin"]`) |
 
 > **Timestamp support by registry type:** The gate is only enforced when the upstream provides a publish timestamp.
-> - **npm**, **Cargo**, **OpenVSX**, **Go** — timestamp always populated; gate is fully enforced.
+> - **npm**, **Cargo**, **OpenVSX**, **VS Code Marketplace**, **Go** — timestamp always populated; gate is fully enforced.
 > - **GitHub** — timestamp populated only for specific-tag release requests (asset downloads). Raw files, source tarballs, and release listings return no timestamp and the gate is skipped for those requests.
 
 **`[[registries.rules]]` — Require signed release:**
@@ -440,7 +467,7 @@ bypass_roles = ["admin"]   # omit or leave empty for a hard block
 | `kind` | string | — | Must be `"deny_latest"` |
 | `bypass_roles` | string[] | `[]` | Roles that may still request `"latest"` (e.g. `["admin"]`). When multiple roles are listed the least-privileged one sets the access floor. When empty, the block applies to all roles. |
 
-> This rule applies to all registry types. `"latest"` is the literal version string sent by the client — for npm it maps to the `latest` dist-tag, for Cargo and Go it triggers upstream `@latest` resolution, and for OpenVSX it fetches the current published version.
+> This rule applies to all registry types. `"latest"` is the literal version string sent by the client — for npm it maps to the `latest` dist-tag, for Cargo and Go it triggers upstream `@latest` resolution, and for OpenVSX and VS Code Marketplace it fetches the current published version.
 
 #### `[registries.upstream_auth]` {#upstream_auth}
 
@@ -1031,7 +1058,7 @@ ca_cert_path = "/etc/ssl/corp-ca.pem"
 
 ### Supported registry types
 
-All registry types support `upstream_auth` and `tls`: `github`, `npm`, `cargo`, `openvsx`, `goproxy`. For `cargo`, the sparse index proxy (the `index_url` endpoint) also uses the same credentials and TLS settings.
+All registry types support `upstream_auth` and `tls`: `github`, `npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`. For `cargo`, the sparse index proxy (the `index_url` endpoint) also uses the same credentials and TLS settings.
 
 ### Secret management
 

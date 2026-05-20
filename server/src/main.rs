@@ -22,7 +22,8 @@ use proxy_cache_adapters::{
     db::PgPackageRepository,
     registry::{
         CargoRegistryClient, FanoutRegistryClient, GoProxyRegistryClient, GithubRegistryClient,
-        NpmRegistryClient, OpenVsxRegistryClient, UpstreamHttpOptions,
+        NpmRegistryClient, OpenVsxRegistryClient, VsCodeMarketplaceRegistryClient,
+        UpstreamHttpOptions,
     },
     storage::{FilesystemStorageBackend, StorageRouter},
 };
@@ -36,7 +37,7 @@ use proxy_cache_core::{
     rules::{BlockListRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule},
     services::{AdminService, ProxyService, RegistryPolicy},
 };
-use proxy_cache_web::{configure_app, openapi_spec, AccessConfig, ApiDoc, CargoIndexProxy, RegistryMap};
+use proxy_cache_web::{configure_app, openapi_spec, AccessConfig, ApiDoc, CargoIndexProxy, RegistryMap, UpstreamMap};
 
 // ── Tracing span builder ──────────────────────────────────────────────────────
 
@@ -221,6 +222,7 @@ async fn main() -> Result<()> {
     let mut policies: HashMap<String, RegistryPolicy> = HashMap::new();
     let mut cargo_indexes: HashMap<String, CargoIndexProxy> = HashMap::new();
     let mut registry_type_map: HashMap<String, String> = HashMap::new();
+    let mut npm_upstream_map: HashMap<String, String> = HashMap::new();
 
     for reg in &config.registries {
         let client = build_registry_client(reg);
@@ -234,10 +236,21 @@ async fn main() -> Result<()> {
 
         registry_type_map.insert(reg.name.clone(), reg.registry_type.clone());
 
+        if reg.registry_type == "npm" {
+            let first_url = if reg.upstreams.is_empty() {
+                "https://registry.npmjs.org".to_owned()
+            } else {
+                reg.upstreams[0].clone()
+            };
+            npm_upstream_map.insert(reg.name.clone(), first_url);
+        }
+
         if reg.registry_type == "cargo" {
             cargo_indexes.insert(reg.name.clone(), build_cargo_index(reg));
         }
     }
+
+    let upstream_map = UpstreamMap(npm_upstream_map);
 
     // ── Services ──────────────────────────────────────────────────────────────
     let proxy_svc = Arc::new(ProxyService {
@@ -297,6 +310,7 @@ async fn main() -> Result<()> {
             Some(db_pool.clone()),
             access_config.clone(),
             registry_map.clone(),
+            upstream_map.clone(),
             oidc_sso_flows.clone(),
         );
         let static_dir_inner = static_dir.clone();
@@ -441,6 +455,7 @@ fn build_registry_client(reg: &RegistryConfig) -> Arc<dyn proxy_cache_core::port
             "cargo" => Arc::new(CargoRegistryClient::new(url, opts)),
             "openvsx" => Arc::new(OpenVsxRegistryClient::new(url, opts)),
             "goproxy" => Arc::new(GoProxyRegistryClient::new(url, opts)),
+            "vscode-marketplace" => Arc::new(VsCodeMarketplaceRegistryClient::new(url, opts)),
             other => panic!("registry type '{other}' is configured but no adapter is compiled in"),
         }
     }
@@ -453,6 +468,7 @@ fn build_registry_client(reg: &RegistryConfig) -> Arc<dyn proxy_cache_core::port
         "cargo" => resolve_urls(&reg.upstreams, "https://crates.io"),
         "openvsx" => resolve_urls(&reg.upstreams, "https://open-vsx.org"),
         "goproxy" => resolve_urls(&reg.upstreams, "https://proxy.golang.org"),
+        "vscode-marketplace" => resolve_urls(&reg.upstreams, "https://marketplace.visualstudio.com"),
         other => panic!("registry type '{other}' is configured but no adapter is compiled in"),
     };
 

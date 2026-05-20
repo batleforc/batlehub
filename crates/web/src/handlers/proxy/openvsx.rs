@@ -13,9 +13,9 @@ use crate::{RegistryMap, error::AppError, extractors::AuthIdentity};
 
 pub fn require_openvsx(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry) {
-        Some("openvsx") => Ok(()),
+        Some("openvsx") | Some("vscode-marketplace") => Ok(()),
         Some(_) => Err(AppError::not_found(format!(
-            "registry '{registry}' is not an openvsx registry"
+            "registry '{registry}' is not an openvsx or vscode-marketplace registry"
         ))),
         None => Err(AppError::not_found(format!("unknown registry '{registry}'"))),
     }
