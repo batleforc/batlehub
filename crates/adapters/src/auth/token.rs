@@ -112,3 +112,81 @@ impl AuthProvider for StaticTokenAuthProvider {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use batlehub_core::{entities::Role, ports::RawAuthRequest};
+    use super::*;
+
+    fn req(auth: &str) -> RawAuthRequest {
+        RawAuthRequest {
+            headers: HashMap::from([("authorization".to_owned(), auth.to_owned())]),
+            query_params: HashMap::new(),
+        }
+    }
+
+    fn provider() -> StaticTokenAuthProvider {
+        StaticTokenAuthProvider::new([
+            ("secret".to_owned(), Some("alice".to_owned()), Role::Admin),
+        ])
+    }
+
+    #[tokio::test]
+    async fn no_auth_header_returns_none() {
+        let p = provider();
+        let r = RawAuthRequest { headers: HashMap::new(), query_params: HashMap::new() };
+        assert!(p.authenticate(&r).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn lowercase_bearer_prefix_works() {
+        let p = provider();
+        let id = p.authenticate(&req("bearer secret")).await.unwrap().unwrap();
+        assert_eq!(id.role, Role::Admin);
+    }
+
+    #[tokio::test]
+    async fn unknown_token_returns_none() {
+        let p = provider();
+        assert!(p.authenticate(&req("Bearer wrong")).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn basic_auth_extracts_token_from_password_field() {
+        // base64("user:secret") = "dXNlcjpzZWNyZXQ="
+        let p = provider();
+        let id = p.authenticate(&req("Basic dXNlcjpzZWNyZXQ=")).await.unwrap().unwrap();
+        assert_eq!(id.user_id.as_deref(), Some("alice"));
+    }
+
+    #[tokio::test]
+    async fn basic_auth_invalid_base64_returns_none() {
+        let p = provider();
+        assert!(p.authenticate(&req("Basic !!!not-base64!!!")).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn basic_auth_no_colon_in_decoded_returns_none() {
+        // base64("secretonly") — no colon → token becomes "" → not found
+        use base64::Engine as _;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("secretonly");
+        let p = provider();
+        assert!(p.authenticate(&req(&format!("Basic {encoded}"))).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn with_group_entries_populates_groups() {
+        let p = StaticTokenAuthProvider::new([])
+            .with_group_entries([("tok".to_owned(), Some("bob".to_owned()), Role::User, vec!["team-a".to_owned()])]);
+        let id = p.authenticate(&req("Bearer tok")).await.unwrap().unwrap();
+        assert_eq!(id.groups, vec!["team-a"]);
+        assert_eq!(id.role, Role::User);
+    }
+
+    #[tokio::test]
+    async fn unrecognised_scheme_returns_none() {
+        let p = provider();
+        assert!(p.authenticate(&req("Digest something")).await.unwrap().is_none());
+    }
+}

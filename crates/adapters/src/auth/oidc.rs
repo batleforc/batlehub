@@ -718,4 +718,279 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
         assert!(id.groups.is_empty());
     }
+
+    // ── lowercase bearer prefix ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn lowercase_bearer_prefix_is_accepted() {
+        let p = default_provider();
+        let token = signed_token(
+            Some("test-kid"),
+            json!({ "sub": "alice", "role": "admin", "exp": future_exp() }),
+        );
+        let req = RawAuthRequest {
+            headers: [("authorization".to_owned(), format!("bearer {token}"))].into(),
+            query_params: Default::default(),
+        };
+        let id = p.authenticate(&req).await.unwrap().unwrap();
+        assert_eq!(id.role, Role::Admin);
+    }
+
+    // ── percent_encode ────────────────────────────────────────────────────────
+
+    #[test]
+    fn percent_encode_alphanumeric_and_safe_chars_unchanged() {
+        assert_eq!(percent_encode("abc123-_.~"), "abc123-_.~");
+    }
+
+    #[test]
+    fn percent_encode_encodes_space_and_special_chars() {
+        let encoded = percent_encode("hello world+foo=bar");
+        assert!(encoded.contains("%20"), "space should be %20");
+        assert!(encoded.contains("%2B"), "plus should be %2B");
+        assert!(encoded.contains("%3D"), "equals should be %3D");
+        assert!(!encoded.contains(' '), "encoded string should have no raw spaces");
+    }
+
+    // ── OidcSsoFlow::authorization_url ────────────────────────────────────────
+
+    #[test]
+    fn authorization_url_contains_required_params() {
+        let flow = OidcSsoFlow {
+            name: "oidc".to_owned(),
+            client_id: "my-client".to_owned(),
+            client_secret: None,
+            redirect_uri: "https://app.example.com/callback".to_owned(),
+            scopes: vec!["openid".to_owned(), "profile".to_owned()],
+            authorization_endpoint: "https://idp.example.com/auth".to_owned(),
+            token_endpoint: "https://idp.example.com/token".to_owned(),
+            frontend_url: "https://app.example.com".to_owned(),
+            http: reqwest::Client::new(),
+        };
+        let url = flow.authorization_url("csrf-state-123");
+        assert!(url.starts_with("https://idp.example.com/auth?"));
+        assert!(url.contains("client_id=my-client"));
+        assert!(url.contains("response_type=code"));
+        assert!(url.contains("state=csrf-state-123"));
+        assert!(url.contains("redirect_uri="));
+        assert!(url.contains("scope="));
+    }
+
+    // ── sso_flow() accessor ───────────────────────────────────────────────────
+
+    #[test]
+    fn sso_flow_returns_none_when_not_configured() {
+        let p = default_provider();
+        assert!(p.sso_flow().is_none());
+    }
+
+    // ── OidcAuthProvider::new() + exchange_code + refresh (mockito) ───────────
+
+    fn discovery_json(base_url: &str) -> String {
+        serde_json::json!({
+            "issuer": base_url,
+            "jwks_uri": format!("{base_url}/jwks"),
+            "authorization_endpoint": format!("{base_url}/auth"),
+            "token_endpoint": format!("{base_url}/token"),
+        }).to_string()
+    }
+
+    #[tokio::test]
+    async fn new_bootstraps_provider_from_discovery_document() {
+        let mut server = mockito::Server::new_async().await;
+        let base = server.url();
+
+        let _discovery = server.mock("GET", "/.well-known/openid-configuration")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(discovery_json(&base))
+            .create_async().await;
+
+        let _jwks = server.mock("GET", "/jwks")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(TEST_JWKS_JSON)
+            .create_async().await;
+
+        use batlehub_config::schema::OidcAuthConfig;
+        let cfg = OidcAuthConfig {
+            name: "test".to_owned(),
+            issuer_url: base.clone(),
+            client_id: "my-client".to_owned(),
+            client_secret: None,
+            redirect_uri: None,
+            frontend_url: String::new(),
+            scopes: vec!["openid".to_owned()],
+            user_id_claim: "sub".to_owned(),
+            role_claim: "role".to_owned(),
+            role_mappings: HashMap::new(),
+        };
+
+        let provider = OidcAuthProvider::new(&cfg).await.expect("provider construction failed");
+        assert!(provider.sso_flow().is_none());
+    }
+
+    #[tokio::test]
+    async fn new_with_redirect_uri_creates_sso_flow() {
+        let mut server = mockito::Server::new_async().await;
+        let base = server.url();
+
+        let _discovery = server.mock("GET", "/.well-known/openid-configuration")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(discovery_json(&base))
+            .create_async().await;
+
+        let _jwks = server.mock("GET", "/jwks")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(TEST_JWKS_JSON)
+            .create_async().await;
+
+        use batlehub_config::schema::OidcAuthConfig;
+        let cfg = OidcAuthConfig {
+            name: "oidc".to_owned(),
+            issuer_url: base.clone(),
+            client_id: "my-client".to_owned(),
+            client_secret: Some("secret".to_owned()),
+            redirect_uri: Some("https://app.example.com/callback".to_owned()),
+            frontend_url: "https://app.example.com".to_owned(),
+            scopes: vec!["openid".to_owned()],
+            user_id_claim: "sub".to_owned(),
+            role_claim: "role".to_owned(),
+            role_mappings: HashMap::new(),
+        };
+
+        let provider = OidcAuthProvider::new(&cfg).await.expect("provider construction failed");
+        let sso = provider.sso_flow().expect("sso_flow should be Some with redirect_uri");
+        let auth_url = sso.authorization_url("test-state");
+        assert!(auth_url.contains("state=test-state"));
+    }
+
+    #[tokio::test]
+    async fn exchange_code_sends_code_grant_request() {
+        let mut server = mockito::Server::new_async().await;
+        let base = server.url();
+
+        let _discovery = server.mock("GET", "/.well-known/openid-configuration")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(discovery_json(&base))
+            .create_async().await;
+
+        let _jwks = server.mock("GET", "/jwks")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(TEST_JWKS_JSON)
+            .create_async().await;
+
+        let _token = server.mock("POST", "/token")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"access_token":"at-123","refresh_token":"rt-xyz","expires_in":3600}"#)
+            .create_async().await;
+
+        use batlehub_config::schema::OidcAuthConfig;
+        let cfg = OidcAuthConfig {
+            name: "oidc".to_owned(),
+            issuer_url: base.clone(),
+            client_id: "my-client".to_owned(),
+            client_secret: Some("secret".to_owned()),
+            redirect_uri: Some("https://app.example.com/callback".to_owned()),
+            frontend_url: String::new(),
+            scopes: vec!["openid".to_owned()],
+            user_id_claim: "sub".to_owned(),
+            role_claim: "role".to_owned(),
+            role_mappings: HashMap::new(),
+        };
+
+        let provider = OidcAuthProvider::new(&cfg).await.unwrap();
+        let sso = provider.sso_flow().unwrap();
+        let tokens = sso.exchange_code("auth-code-abc").await.unwrap();
+        assert_eq!(tokens.access_token, "at-123");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("rt-xyz"));
+        assert_eq!(tokens.expires_in, Some(3600));
+    }
+
+    #[tokio::test]
+    async fn refresh_sends_refresh_token_grant_request() {
+        let mut server = mockito::Server::new_async().await;
+        let base = server.url();
+
+        let _discovery = server.mock("GET", "/.well-known/openid-configuration")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(discovery_json(&base))
+            .create_async().await;
+
+        let _jwks = server.mock("GET", "/jwks")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(TEST_JWKS_JSON)
+            .create_async().await;
+
+        let _token = server.mock("POST", "/token")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"access_token":"new-at","expires_in":1800}"#)
+            .create_async().await;
+
+        use batlehub_config::schema::OidcAuthConfig;
+        let cfg = OidcAuthConfig {
+            name: "oidc".to_owned(),
+            issuer_url: base,
+            client_id: "my-client".to_owned(),
+            client_secret: None,
+            redirect_uri: Some("https://app.example.com/callback".to_owned()),
+            frontend_url: String::new(),
+            scopes: vec!["openid".to_owned()],
+            user_id_claim: "sub".to_owned(),
+            role_claim: "role".to_owned(),
+            role_mappings: HashMap::new(),
+        };
+
+        let provider = OidcAuthProvider::new(&cfg).await.unwrap();
+        let sso = provider.sso_flow().unwrap();
+        let tokens = sso.refresh("old-refresh-token").await.unwrap();
+        assert_eq!(tokens.access_token, "new-at");
+        assert_eq!(tokens.expires_in, Some(1800));
+    }
+
+    // ── JWKS cache refresh path ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_decoding_key_refreshes_stale_jwks_cache() {
+        let mut server = mockito::Server::new_async().await;
+        let jwks_url = format!("{}/jwks", server.url());
+
+        let _m = server.mock("GET", "/jwks")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(TEST_JWKS_JSON)
+            .create_async().await;
+
+        // Create a provider with a stale JWKS cache (older than JWKS_MIN_REFRESH).
+        let p = OidcAuthProvider {
+            name: "oidc".to_owned(),
+            issuer: String::new(),
+            user_id_claim: "sub".to_owned(),
+            role_claim: "role".to_owned(),
+            role_mappings: HashMap::new(),
+            http: reqwest::Client::new(),
+            jwks_uri: jwks_url,
+            cache: Arc::new(RwLock::new(JwksCache {
+                keys: serde_json::from_str::<JwkSet>(r#"{"keys":[]}"#).unwrap(),
+                fetched_at: Instant::now() - Duration::from_secs(301),
+            })),
+            sso: None,
+        };
+
+        // Token signed with test-kid — not in the stale empty cache but in the fresh JWKS.
+        let token = signed_token(
+            Some("test-kid"),
+            json!({ "sub": "alice", "exp": future_exp() }),
+        );
+        let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
+        assert_eq!(id.user_id.as_deref(), Some("alice"));
+    }
 }

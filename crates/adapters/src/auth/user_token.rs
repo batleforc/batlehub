@@ -64,3 +64,107 @@ impl AuthProvider for UserTokenAuthProvider {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use async_trait::async_trait;
+    use chrono::DateTime;
+    use batlehub_core::{entities::Role, error::CoreError, ports::{RawAuthRequest, UserToken, UserTokenRepository}};
+    use super::*;
+
+    fn req(auth: &str) -> RawAuthRequest {
+        RawAuthRequest {
+            headers: HashMap::from([("authorization".to_owned(), auth.to_owned())]),
+            query_params: HashMap::new(),
+        }
+    }
+
+    fn no_auth_req() -> RawAuthRequest {
+        RawAuthRequest { headers: HashMap::new(), query_params: HashMap::new() }
+    }
+
+    struct StubRepo(Option<UserToken>);
+
+    fn stub_token() -> UserToken {
+        UserToken {
+            id: uuid::Uuid::new_v4(),
+            user_id: "carol".to_owned(),
+            name: "test-token".to_owned(),
+            role: Role::User,
+            created_at: chrono::Utc::now(),
+            expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+            revoked_at: None,
+        }
+    }
+
+    #[async_trait]
+    impl UserTokenRepository for StubRepo {
+        async fn create_token(&self, _: uuid::Uuid, _: &str, _: &str, _: &str, _: Role, _: DateTime<chrono::Utc>) -> Result<UserToken, CoreError> {
+            Ok(stub_token())
+        }
+        async fn find_by_hash(&self, _: &str) -> Result<Option<UserToken>, CoreError> {
+            Ok(self.0.as_ref().map(|t| UserToken {
+                id: t.id,
+                user_id: t.user_id.clone(),
+                name: t.name.clone(),
+                role: t.role.clone(),
+                created_at: t.created_at,
+                expires_at: t.expires_at,
+                revoked_at: t.revoked_at,
+            }))
+        }
+        async fn list_for_user(&self, _: &str) -> Result<Vec<UserToken>, CoreError> { Ok(vec![]) }
+        async fn revoke(&self, _: uuid::Uuid, _: &str) -> Result<bool, CoreError> { Ok(true) }
+    }
+
+    #[test]
+    fn generate_token_produces_unique_values() {
+        let (t1, h1) = generate_token();
+        let (t2, h2) = generate_token();
+        assert_ne!(t1, t2);
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn hash_token_is_deterministic() {
+        assert_eq!(hash_token("hello"), hash_token("hello"));
+        assert_ne!(hash_token("hello"), hash_token("world"));
+    }
+
+    #[tokio::test]
+    async fn no_auth_header_returns_none() {
+        let p = UserTokenAuthProvider::new(Arc::new(StubRepo(None)));
+        assert!(p.authenticate(&no_auth_req()).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn non_bearer_header_returns_none() {
+        let p = UserTokenAuthProvider::new(Arc::new(StubRepo(None)));
+        assert!(p.authenticate(&req("Basic dXNlcjpwYXNz")).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn jwt_dot_in_token_short_circuits_without_repo_call() {
+        // Repo would return a token, but the JWT detection must bypass it.
+        let p = UserTokenAuthProvider::new(Arc::new(StubRepo(Some(stub_token()))));
+        let result = p.authenticate(&req("Bearer header.payload.sig")).await.unwrap();
+        assert!(result.is_none(), "JWT tokens must not be looked up in the repo");
+    }
+
+    #[tokio::test]
+    async fn valid_hex_token_returns_identity() {
+        let p = UserTokenAuthProvider::new(Arc::new(StubRepo(Some(stub_token()))));
+        let id = p.authenticate(&req("Bearer abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")).await.unwrap().unwrap();
+        assert_eq!(id.user_id.as_deref(), Some("carol"));
+        assert_eq!(id.role, Role::User);
+    }
+
+    #[tokio::test]
+    async fn unknown_token_returns_none() {
+        let p = UserTokenAuthProvider::new(Arc::new(StubRepo(None)));
+        let result = p.authenticate(&req("Bearer abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")).await.unwrap();
+        assert!(result.is_none());
+    }
+}

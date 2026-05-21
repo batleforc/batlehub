@@ -67,8 +67,6 @@ impl CacheStore for InMemoryCacheStore {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use chrono::Utc;
 
     use super::*;
