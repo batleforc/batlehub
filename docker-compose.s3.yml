@@ -56,6 +56,19 @@ services:
       RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9901
       RUSTFS_OBS_LOG_DIRECTORY: /logs
       RUSTFS_VOLUMES: /data
+      # ── OIDC (Authentik but does not work !!) ────────────────────────────────────────────────────
+      RUSTFS_IDENTITY_OPENID_ENABLE: on
+      RUSTFS_IDENTITY_OPENID_CONFIG_URL: "http://authentik-server:9000/application/o/rustfs/.well-known/openid-configuration"
+      RUSTFS_IDENTITY_OPENID_CLIENT_ID: "rustfs"
+      RUSTFS_IDENTITY_OPENID_CLIENT_SECRET: "rustfs-secret"
+      RUSTFS_IDENTITY_OPENID_GROUPS_CLAIM: "groups"
+      RUSTFS_IDENTITY_OPENID_ROLES_CLAIM: "roles"
+      RUSTFS_IDENTITY_OPENID_REDIRECT_URI: "http://localhost:9901/oauth_callback"
+      RUSTFS_IDENTITY_OPENID_SCOPES: "openid,profile,email,groups"
+      RUSTFS_IDENTITY_OPENID_DISPLAY_NAME: "Authentik"
+    depends_on:
+      authentik-server:
+        condition: service_healthy
     user: "1000:1000" # run as non-root to avoid permission issues with mounted volumes
     ports:
       - "9900:9900"
