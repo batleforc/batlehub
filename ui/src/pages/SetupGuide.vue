@@ -73,8 +73,17 @@ const miseSnippet = computed(() => {
   const gh = githubRegistryName.value || "github";
   const np = npmRegistryName.value || "npm";
   const cg = cargoRegistryName.value || "cargo";
-  return [
-    `[settings.url_replacements]`,
+  const lines: string[] = [];
+  if (isAuthenticated.value) {
+    lines.push(
+      `# Authentication: mise reads ~/.netrc for HTTP Basic Auth`,
+      `# machine ${netrcHost.value}`,
+      `# login ${netrcLogin.value}`,
+      `# password ${token.value}`,
+      ``,
+    );
+  }
+  lines.push(`[settings.url_replacements]`,
     ``,
     `# ── GitHub (registry: ${gh}) ─────────────────────────────────────────────────`,
     `# API (release listings, tag metadata, asset lists)`,
@@ -98,38 +107,78 @@ const miseSnippet = computed(() => {
     ``,
     `# ── Cargo (registry: ${cg}) — downloads only, use .cargo/config.toml for full support`,
     `"regex:^https://static\\.crates\\.io/crates/([^/]+)/([^/]+)/.+\\.crate" = "${b}/proxy/${cg}/$1/$2/download"`,
-  ].join("\n");
+  );
+  return lines.join("\n");
 });
 
-const npmrcSnippet = computed(() => `registry=${base.value}/proxy/${npmRegistryName.value || "npm"}/`);
+const npmrcSnippet = computed(() => {
+  const regUrl = `${base.value}/proxy/${npmRegistryName.value || "npm"}/`;
+  const lines = [`registry=${regUrl}`];
+  if (isAuthenticated.value) {
+    try {
+      const { host, pathname } = new URL(regUrl);
+      lines.push(`//${host}${pathname}:_authToken=${token.value}`);
+    } catch { /* skip */ }
+  }
+  return lines.join("\n");
+});
 
-const yarnSnippet = computed(() => `npmRegistryServer: "${base.value}/proxy/${npmRegistryName.value || "npm"}/"`);
+const yarnSnippet = computed(() => {
+  const lines = [`npmRegistryServer: "${base.value}/proxy/${npmRegistryName.value || "npm"}/"`];
+  if (isAuthenticated.value) lines.push(`npmAuthToken: "${token.value}"`);
+  return lines.join("\n");
+});
 
-const pnpmSnippet = computed(() => `registry=${base.value}/proxy/${npmRegistryName.value || "npm"}/`);
+const pnpmSnippet = computed(() => {
+  const regUrl = `${base.value}/proxy/${npmRegistryName.value || "npm"}/`;
+  const lines = [`registry=${regUrl}`];
+  if (isAuthenticated.value) {
+    try {
+      const { host, pathname } = new URL(regUrl);
+      lines.push(`//${host}${pathname}:_authToken=${token.value}`);
+    } catch { /* skip */ }
+  }
+  return lines.join("\n");
+});
 
 const cargoSnippet = computed(() => {
   const b   = base.value;
   const reg = cargoRegistryName.value || "cargo";
-  return [
+  const lines = [
     `[source.crates-io]`,
     `replace-with = "batlehub"`,
     ``,
     `[source.batlehub]`,
     `registry = "sparse+${b}/proxy/${reg}/registry/"`,
-  ].join("\n");
+  ];
+  if (isAuthenticated.value) {
+    lines.push(``, `[registries.batlehub]`, `token = "${token.value}"`);
+  }
+  return lines.join("\n");
 });
 
 const openvsxMiseSnippet = computed(() => {
   const b   = base.value;
   const reg = openvsxRegistryName.value || "openvsx";
-  return [
+  const lines: string[] = [];
+  if (isAuthenticated.value) {
+    lines.push(
+      `# Authentication: mise reads ~/.netrc for HTTP Basic Auth`,
+      `# machine ${netrcHost.value}`,
+      `# login ${netrcLogin.value}`,
+      `# password ${token.value}`,
+      ``,
+    );
+  }
+  lines.push(
     `[settings.url_replacements]`,
     ``,
     `# ── OpenVSX VSIX downloads ────────────────────────────────────────────────────`,
     `# Intercepts VSIX file downloads from open-vsx.org and routes them through the proxy.`,
     `# The extension ID is joined as publisher.name to match the proxy convention.`,
     `"regex:^https://open-vsx\\.org/api/([^/]+)/([^/]+)/([^/]+)/file/.+\\.vsix$" = "${b}/proxy/${reg}/$1.$2/$3/vsix"`,
-  ].join("\n");
+  );
+  return lines.join("\n");
 });
 
 const openvsxDirectSnippet = computed(() => {
@@ -141,11 +190,20 @@ const openvsxDirectSnippet = computed(() => {
 const goSnippet = computed(() => {
   const b   = base.value;
   const reg = goRegistryName.value || "go";
+  let proxyUrl = `${b}/proxy/${reg}`;
+  if (isAuthenticated.value) {
+    try {
+      const u = new URL(`${b}/proxy/${reg}`);
+      u.username = netrcLogin.value;
+      u.password = token.value ?? "";
+      proxyUrl = u.toString();
+    } catch { /* keep original */ }
+  }
   return [
     `# Shell / CI environment — set before running go commands`,
     `export GONOSUMCHECK="*"`,
     `export GONOSUMDB="*"`,
-    `export GOPROXY="${b}/proxy/${reg},direct"`,
+    `export GOPROXY="${proxyUrl},direct"`,
   ].join("\n");
 });
 
@@ -388,6 +446,10 @@ const openvsxVscodiumSnippet = computed(() => {
               <p class="text-xs text-muted-foreground mt-1.5">
                 Requires the proxy to implement the VS Code gallery protocol
                 (<code class="font-mono bg-muted px-1 rounded">/vscode/gallery</code> endpoints). Only VSIX proxying is supported today.
+              </p>
+              <p v-if="isAuthenticated" class="text-xs text-muted-foreground mt-1.5">
+                VSCodium does not support HTTP Basic Auth in <code class="font-mono bg-muted px-1 rounded">product.json</code>.
+                Add your credentials to <code class="font-mono bg-muted px-1 rounded">~/.netrc</code> — see the <strong>.netrc</strong> tab.
               </p>
             </div>
           </CardContent>
