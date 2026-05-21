@@ -24,6 +24,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use batlehub_adapters::auth::StaticTokenAuthProvider;
+use batlehub_adapters::cache::InMemoryCacheStore;
 use batlehub_core::{
     entities::{
         AccessEvent, EventFilter, PackageFilter, PackageId, PackageMetadata, PackageStatus,
@@ -31,7 +32,7 @@ use batlehub_core::{
     },
     error::CoreError,
     ports::{
-        ArtifactStream, AuthProvider, ByteStream, CacheStore, InMemoryCacheStore,
+        ArtifactStream, AuthProvider, ByteStream, CacheStore,
         PackageRepository, RegistryClient, StorageBackend, StoredArtifact, StorageMeta,
         UserToken, UserTokenRepository,
     },
@@ -306,6 +307,7 @@ fn rbac_policy(
     RegistryPolicy {
         metadata_ttl: Some(Duration::from_secs(300)),
         firewall_only: false,
+        serve_stale_metadata: false,
         rules: vec![
             Box::new(RbacRule::new(perms)),
             Box::new(BlockListRule::new(repo)),
@@ -918,6 +920,7 @@ fn rbac_policy_group_registry(repo: Arc<dyn PackageRepository>) -> RegistryPolic
     RegistryPolicy {
         metadata_ttl: Some(Duration::from_secs(300)),
         firewall_only: false,
+        serve_stale_metadata: false,
         rules: vec![
             Box::new(RbacRule::new(perms).with_groups(group_perms)),
             Box::new(BlockListRule::new(repo)),
@@ -2224,4 +2227,147 @@ async fn proxy_goproxy_wrong_registry_type_returns_404() {
         .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 404);
+}
+
+// ── Upstream-KO / stale-serving integration tests ────────────────────────────
+//
+// These tests verify the end-to-end HTTP behaviour when the upstream registry
+// is unavailable and the proxy falls back to stale metadata from its cache.
+
+struct UnavailableRegistry;
+
+#[async_trait]
+impl RegistryClient for UnavailableRegistry {
+    fn registry_type(&self) -> &str { "npm" }
+
+    async fn resolve_metadata(&self, _pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
+        Err(CoreError::Registry("upstream down".into()))
+    }
+
+    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<ArtifactStream, CoreError> {
+        let data = Bytes::from(format!("artifact:npm:{}", pkg.cache_key()));
+        Ok(Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(data) })))
+    }
+}
+
+async fn make_unavailable_npm_app(
+    repo: Arc<InMemoryRepo>,
+    cache: Arc<InMemoryCacheStore>,
+    serve_stale: bool,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache_dyn: Arc<dyn CacheStore> = cache;
+
+    let registries: HashMap<String, Arc<dyn RegistryClient>> =
+        [("npm".to_owned(), Arc::new(UnavailableRegistry) as Arc<dyn RegistryClient>)].into();
+
+    let perms = HashMap::from([
+        (Role::Anonymous, vec!["releases:read".to_owned()]),
+        (Role::User, vec!["releases:read".to_owned(), "source:read".to_owned()]),
+        (Role::Admin, vec!["*".to_owned()]),
+    ]);
+    let policies: HashMap<String, RegistryPolicy> = [(
+        "npm".to_owned(),
+        RegistryPolicy {
+            metadata_ttl: Some(Duration::from_secs(300)),
+            firewall_only: false,
+            serve_stale_metadata: serve_stale,
+            rules: vec![
+                Box::new(RbacRule::new(perms)),
+                Box::new(BlockListRule::new(repo_dyn.clone())),
+            ],
+        },
+    )]
+    .into();
+
+    let proxy_svc = Arc::new(ProxyService {
+        registries,
+        storage,
+        cache: cache_dyn,
+        repo: repo_dyn.clone(),
+        policies,
+        max_artifact_size_bytes: None,
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = batlehub_web::AccessConfig {
+        anonymous: ["npm"].iter().map(|s| s.to_string()).collect(),
+        user: ["npm"].iter().map(|s| s.to_string()).collect(),
+        admin: ["npm"].iter().map(|s| s.to_string()).collect(),
+        groups: std::collections::HashMap::new(),
+    };
+    let registry_map = batlehub_web::RegistryMap(
+        [("npm", "npm")].iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+    );
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+        ))
+        .split_for_parts();
+    let app = app.app_data(actix_web::web::Data::new(cargo_indexes));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+}
+
+fn stale_npm_meta(name: &str, version: &str) -> PackageMetadata {
+    PackageMetadata {
+        id: PackageId::new("npm", name, version),
+        published_at: Some(Utc::now() - chrono::Duration::days(30)),
+        download_url: None,
+        checksum: None,
+        is_signed: None,
+        extra: serde_json::json!({}),
+    }
+}
+
+#[actix_web::test]
+async fn upstream_down_with_stale_metadata_returns_200() {
+    let cache = Arc::new(InMemoryCacheStore::new());
+    let pkg = PackageId::new("npm", "lodash", "4.17.21");
+    let cache_key = format!("meta:{}", pkg.cache_key());
+    cache.seed_expired(&cache_key, stale_npm_meta("lodash", "4.17.21")).await;
+
+    let app = make_unavailable_npm_app(InMemoryRepo::new(), cache, true).await;
+    let req = TestRequest::get().uri("/proxy/npm/lodash/4.17.21").to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200, "stale metadata should be served when upstream is down");
+}
+
+#[actix_web::test]
+async fn upstream_down_no_stale_returns_502() {
+    let cache = Arc::new(InMemoryCacheStore::new()); // empty — no stale entry
+    let app = make_unavailable_npm_app(InMemoryRepo::new(), cache, true).await;
+    let req = TestRequest::get().uri("/proxy/npm/lodash/4.17.21").to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 502, "no stale + upstream down must return 502");
+}
+
+#[actix_web::test]
+async fn upstream_down_serve_stale_disabled_returns_502() {
+    // Stale entry exists in cache but serve_stale_metadata = false
+    let cache = Arc::new(InMemoryCacheStore::new());
+    let pkg = PackageId::new("npm", "lodash", "4.17.21");
+    let cache_key = format!("meta:{}", pkg.cache_key());
+    cache.seed_expired(&cache_key, stale_npm_meta("lodash", "4.17.21")).await;
+
+    let app = make_unavailable_npm_app(InMemoryRepo::new(), cache, false).await;
+    let req = TestRequest::get().uri("/proxy/npm/lodash/4.17.21").to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 502, "serve_stale=false must not use the stale entry");
 }

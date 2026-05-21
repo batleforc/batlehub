@@ -31,9 +31,10 @@ use batlehub_config::{
     load,
     schema::{AuthConfig, OtelConfig, RegistryConfig, RuleConfig, StorageBackendConfig, StoragesConfig, UpstreamAuthConfig},
 };
+use batlehub_adapters::cache::{InMemoryCacheStore, PgCacheStore};
 use batlehub_core::{
     entities::Role,
-    ports::{AuthProvider, CacheStore, InMemoryCacheStore, UserTokenRepository},
+    ports::{AuthProvider, CacheStore, UserTokenRepository},
     rules::{BlockListRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule},
     services::{AdminService, ProxyService, RegistryPolicy},
 };
@@ -215,8 +216,23 @@ async fn main() -> Result<()> {
     auth_providers.push(Arc::new(UserTokenAuthProvider::new(token_repo.clone())));
     info!("configured user-token auth provider");
 
+    // ── Cache ─────────────────────────────────────────────────────────────────
+    let cache: Arc<dyn CacheStore> = match config.cache.cache_type.as_str() {
+        "postgres" => {
+            tracing::info!("metadata cache: postgres");
+            Arc::new(PgCacheStore::new(repo.pool()))
+        }
+        other => {
+            if other != "memory" {
+                tracing::warn!(cache_type = %other, "unknown cache type, falling back to memory");
+            } else {
+                tracing::info!("metadata cache: memory");
+            }
+            Arc::new(InMemoryCacheStore::new())
+        }
+    };
+
     // ── Registries + policies ─────────────────────────────────────────────────
-    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
     let mut registry_clients: HashMap<String, Arc<dyn batlehub_core::ports::RegistryClient>> =
         HashMap::new();
     let mut policies: HashMap<String, RegistryPolicy> = HashMap::new();
@@ -532,6 +548,7 @@ fn build_policy(
     RegistryPolicy {
         metadata_ttl: Some(Duration::from_secs(reg.cache.metadata_ttl_secs)),
         firewall_only: reg.firewall_only,
+        serve_stale_metadata: reg.cache.serve_stale,
         rules,
     }
 }
