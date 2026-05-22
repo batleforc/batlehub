@@ -18,6 +18,7 @@ export default defineConfig({
       { text: 'Administration',   link: '/guide/administration',    activeMatch: '/guide/administration' },
       { text: 'User Guide',       link: '/guide/user',              activeMatch: '/guide/user' },
       { text: 'Config Generator', link: '/guide/config-generator',  activeMatch: '/guide/config-generator' },
+      { text: 'Roadmap',          link: '/guide/roadmap',           activeMatch: '/guide/roadmap' },
       { text: 'GitHub',           link: 'https://git.batleforc.fr/batleforc/batlehub', target: '_blank' },
     ],
 
@@ -67,6 +68,25 @@ export default defineConfig({
           text: 'Config Generator',
           items: [
             { text: 'Generate config.toml', link: '/guide/config-generator' },
+          ],
+        },
+      ],
+      '/guide/roadmap': [
+        {
+          text: 'Roadmap',
+          items: [
+            { text: 'New registry types',       link: '/guide/roadmap#new-registries' },
+            { text: 'Cache policy',             link: '/guide/roadmap#cache-policy' },
+            { text: 'Metrics & observability',  link: '/guide/roadmap#metrics' },
+            { text: 'Artifact integrity',       link: '/guide/roadmap#integrity' },
+            { text: 'Rate limiting',            link: '/guide/roadmap#rate-limiting' },
+            { text: 'Quota management',         link: '/guide/roadmap#quotas' },
+            { text: 'Hot reload & config',      link: '/guide/roadmap#hot-reload' },
+            { text: 'Webhooks',                 link: '/guide/roadmap#webhooks' },
+            { text: 'Private registry',         link: '/guide/roadmap#private-registry' },
+            { text: 'SBOM',                     link: '/guide/roadmap#sbom' },
+            { text: 'UI improvements',          link: '/guide/roadmap#ui' },
+            { text: 'Testing',                  link: '/guide/roadmap#testing' },
           ],
         },
       ],

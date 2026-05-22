@@ -499,3 +499,7 @@ Full list in [`docs/configuration.md § Environment Variable Overrides`](docs/co
 | [`docs/publishing.md`](docs/publishing.md) | Step-by-step guide for publishing packages (npm, Cargo, VSIX, Go modules) |
 | [`docs/adding-a-registry.md`](docs/adding-a-registry.md) | Step-by-step guide for implementing a new registry adapter |
 | `/swagger-ui/` (runtime) | Interactive API docs |
+
+## Roadmap
+
+See [`ROADMAP.md`](ROADMAP.md) for the full list of planned features, or browse the [Roadmap page on the documentation site](website/guide/roadmap.md).
