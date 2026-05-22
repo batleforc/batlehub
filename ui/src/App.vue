@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { RouterView, RouterLink, useRoute, useRouter } from "vue-router";
-import { Menu, X, Package, ShieldCheck } from "@lucide/vue";
+import { Menu, X, Package, ShieldCheck, BookOpen } from "@lucide/vue";
 import { useAuth } from "@/composables/useAuth";
+import { DOCS_URL } from "@/config";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import ThemeToggle from "@/components/ThemeToggle.vue";
@@ -52,7 +53,7 @@ function isActive(to: string) {
           class="flex items-center gap-2 font-semibold text-sm hover:text-foreground/80 shrink-0"
         >
           <Package class="h-4 w-4 text-primary" />
-          Proxy Cache
+          BatleHub
         </RouterLink>
 
         <!-- Desktop nav -->
@@ -119,6 +120,15 @@ function isActive(to: string) {
 
         <!-- Right side -->
         <div class="ml-auto flex items-center gap-2">
+          <a
+            :href="DOCS_URL"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          >
+            <BookOpen class="h-3.5 w-3.5" />
+            Docs
+          </a>
           <ThemeToggle />
 
           <template v-if="isAuthenticated">
@@ -218,6 +228,16 @@ function isActive(to: string) {
           <ShieldCheck class="h-4 w-4" />
           Admin
         </RouterLink>
+        <a
+          :href="DOCS_URL"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="flex items-center gap-2 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          @click="mobileOpen = false"
+        >
+          <BookOpen class="h-4 w-4" />
+          Documentation
+        </a>
         <div v-if="isAuthenticated" class="pt-2 border-t">
           <button
             class="block w-full text-left px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground"

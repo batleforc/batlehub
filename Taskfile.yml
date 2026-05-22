@@ -303,3 +303,23 @@ tasks:
       - until curl -sf http://localhost:9900/health; do sleep 1; done
       - mc alias set local http://localhost:9900 rustfsadmin rustfsadmin
       - mc mb --ignore-existing local/artifacts
+
+  # ── Docs website (VitePress) ──────────────────────────────────────────────────
+
+  website:dev:
+    desc: Start the VitePress documentation dev server
+    dir: website
+    cmds:
+      - npm run docs:dev
+
+  website:build:
+    desc: Build the VitePress documentation site for production
+    dir: website
+    cmds:
+      - npm run docs:build
+
+  website:preview:
+    desc: Preview the built VitePress documentation site
+    dir: website
+    cmds:
+      - npm run docs:preview

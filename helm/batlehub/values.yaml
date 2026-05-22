@@ -1,0 +1,143 @@
+# Default values for batlehub.
+# Override with: helm install batlehub ./helm/batlehub -f my-values.yaml
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/batleforc/batlehub
+  pullPolicy: IfNotPresent
+  # Overrides the image tag. Defaults to Chart.appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podSecurityContext: {}
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+  host: batlehub.example.com
+  tls: []
+  #  - secretName: batlehub-tls
+  #    hosts:
+  #      - batlehub.example.com
+
+resources: {}
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+  # limits:
+  #   cpu: 500m
+  #   memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ── BatleHub configuration ────────────────────────────────────────────────────
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  # staticDir: "/app/ui/dist"
+  # corsAllowedOrigins: ["https://batlehub.example.com"]
+
+database:
+  url: "postgresql://batlehub:changeme@postgres:5432/batlehub"
+
+storage:
+  # "filesystem" or "s3"
+  type: filesystem
+  # Used when type = "filesystem"
+  path: /var/cache/batlehub
+  # Used when type = "s3"
+  s3:
+    bucket: ""
+    region: ""
+    endpoint: ""      # Leave empty for AWS S3
+    accessKeyId: ""
+    secretAccessKey: ""
+
+# Auth providers. Token auth and/or OIDC.
+auth:
+  # Static API tokens. The first admin token is used for initial setup.
+  tokens:
+    - value: "change-me-admin-token"
+      role: admin
+      userId: admin
+  # OIDC providers (optional, repeatable)
+  oidc: []
+  # - issuerUrl: "https://sso.example.com/application/o/batlehub/"
+  #   clientId: batlehub
+  #   clientSecret: "client-secret"
+  #   redirectUri: "https://batlehub.example.com/api/v1/auth/oidc/callback"
+  #   scopes: ["openid", "profile", "email", "groups"]
+  #   userIdClaim: preferred_username
+  #   roleClaim: groups
+  #   roleMappings: {}
+  #     "authentik Admins": admin
+  #     "proxy-users": user
+
+# Registry blocks as raw TOML. Paste your [[registries]] entries here.
+# Example:
+# registriesRaw: |
+#   [[registries]]
+#   type = "npm"
+#   name = "npm"
+#
+#   [registries.rbac]
+#   anonymous = ["releases:read", "source:read"]
+#
+#   [[registries]]
+#   type = "cargo"
+#   name = "internal"
+#   mode = "local"
+#
+#   [registries.rbac]
+#   user  = ["source:read"]
+#   admin = ["*"]
+registriesRaw: |
+  [[registries]]
+  type = "npm"
+  name = "npm"
+
+  [registries.rbac]
+  anonymous = ["releases:read", "source:read"]
+  user      = ["releases:read", "source:read"]
+  admin     = ["*"]
+
+# OpenTelemetry (optional)
+otel:
+  enabled: false
+  endpoint: ""   # e.g. "http://jaeger:4317"
+
+# Arbitrary extra TOML appended verbatim at the end of config.toml
+extraConfig: ""
+
+# Persistent storage for the artifact cache (filesystem mode)
+persistence:
+  enabled: true
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  # existingClaim: ""
+
+# Reference an existing Secret instead of creating one.
+# The Secret must contain a key named "config.toml".
+existingSecret: ""

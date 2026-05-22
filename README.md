@@ -454,6 +454,20 @@ docker run -p 8080:8080 \
   batlehub
 ```
 
+### Helm chart
+
+A Helm chart is available in `helm/batlehub/` for Kubernetes deployments:
+
+```sh
+helm install batlehub ./helm/batlehub \
+  --namespace batlehub --create-namespace \
+  --set database.url="postgresql://batlehub:changeme@postgres:5432/batlehub" \
+  --set "auth.tokens[0].value=my-admin-token" \
+  --set "auth.tokens[0].role=admin"
+```
+
+See [`website/guide/installation.md`](website/guide/installation.md) for the full Helm reference including values, S3 storage, and GitOps patterns.
+
 The image uses a multi-stage build (Rust builder → Node UI builder → Debian slim runtime). The compiled binary and built SPA are copied into the final stage.
 
 ### Environment variable overrides
@@ -475,6 +489,10 @@ Full list in [`docs/configuration.md § Environment Variable Overrides`](docs/co
 
 | Document | Contents |
 |----------|---------|
+| [`website/`](website/) | VitePress documentation site — run `task website:dev` to browse locally |
+| [`website/guide/installation.md`](website/guide/installation.md) | Installation guide: Docker Compose, binary, Helm chart |
+| [`website/guide/administration.md`](website/guide/administration.md) | Administration: config, auth, S3, health, package management |
+| [`website/guide/user.md`](website/guide/user.md) | User guide: client setup and publishing for all registry types |
 | [`docs/configuration.md`](docs/configuration.md) | Full TOML reference, permissions, worked examples |
 | [`docs/configuration.md § Registry modes`](docs/configuration.md#registry-modes) | Private registry modes (local / hybrid) for Cargo, npm, and VS Code extensions |
 | [`docs/configuration.md § Self-Hosted`](docs/configuration.md#9-self-hosted--private-registries) | Upstream auth (Bearer / Basic / header) and custom CA certificates |
