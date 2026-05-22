@@ -32,12 +32,16 @@ Multiple instances of the same registry type can run in parallel (e.g. a private
 | Release age gate rule | ⚠ ² | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Deny latest tag rule | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Multi-upstream fanout | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **Private publish** (`mode = local/hybrid`) | — | ✓ ³ | ✓ ³ | ✓ ³ | ✓ ³ | ✓ ³ |
 
 > ² **GitHub**: publish timestamp (and therefore the age gate) is only populated for specific-tag release requests. Raw file, source tarball, and release-listing requests return no timestamp and the rule is skipped.
+>
+> ³ **Private publish**: set `mode = "local"` to use BatleHub as the authoritative registry (no upstream needed), or `mode = "hybrid"` to serve locally published packages first and fall through to an upstream for everything else. See [Private registries](#private-registries-local--hybrid-mode) below.
 
 ## Key features
 
 - **Artifact caching** — first download is fetched from upstream and stored; subsequent requests are served from local or S3 storage.
+- **Private / local registry** — `npm`, `cargo`, `openvsx`, `vscode-marketplace`, and `goproxy` registries can be set to `mode = "local"` (fully private, no upstream) or `mode = "hybrid"` (local-first with upstream fallback). Teams publish packages directly to BatleHub using standard tools (`npm publish`, `cargo publish`, raw VSIX upload, Go module zip upload).
 - **RBAC** — per-registry permissions for `anonymous`, `user`, and `admin` roles, plus group-based access from OIDC or Kubernetes claims.
 - **Release age gate** — block packages published less than N seconds ago (supply-chain delay window).
 - **Deny latest tag** — reject requests that use `"latest"` as a version, forcing consumers to pin exact versions. Configurable bypass roles (e.g. admins may still use `latest`).
@@ -173,6 +177,124 @@ export GONOSUMDB="*"
 export GOPROXY="http://localhost:8080/proxy/go,direct"
 go get golang.org/x/text@latest
 ```
+
+---
+
+## Private registries (local / hybrid mode)
+
+`npm`, `cargo`, `openvsx`, and `vscode-marketplace` registries can act as authoritative private registries — not just caches. Set the `mode` field on any registry entry:
+
+| Mode | Behaviour |
+|------|-----------|
+| `proxy` | Default. Forwards to upstream; publishing is rejected. |
+| `local` | BatleHub is the only source. No upstream needed. Clients publish directly to BatleHub. |
+| `hybrid` | Local-first. Serves locally published packages; falls back to upstream for anything else. |
+
+### Cargo (private crate registry)
+
+```toml
+[[registries]]
+type = "cargo"
+name = "internal"
+mode = "local"
+
+[registries.rbac]
+user  = ["source:read"]
+admin = ["*"]
+```
+
+```toml
+# ~/.cargo/config.toml
+[registries.internal]
+index = "sparse+https://batlehub.example.com/proxy/internal/registry/"
+token = "<your-token>"
+```
+
+```sh
+cargo publish --registry internal
+```
+
+### npm (private package registry)
+
+```toml
+[[registries]]
+type = "npm"
+name = "internal-npm"
+mode = "local"
+
+[registries.rbac]
+user  = ["source:read"]
+admin = ["*"]
+```
+
+```ini
+# .npmrc
+@myorg:registry=https://batlehub.example.com/proxy/internal-npm/
+//batlehub.example.com/proxy/internal-npm/:_authToken=<your-token>
+```
+
+```sh
+npm publish --registry https://batlehub.example.com/proxy/internal-npm/
+```
+
+### VS Code extensions (private VSIX registry)
+
+```toml
+[[registries]]
+type = "openvsx"     # or "vscode-marketplace"
+name = "internal-ext"
+mode = "local"
+
+[registries.rbac]
+user  = ["source:read"]
+admin = ["*"]
+```
+
+```sh
+# Upload
+curl -X PUT -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @my-org.my-ext-1.0.0.vsix \
+  "https://batlehub.example.com/proxy/internal-ext/my-org.my-ext/1.0.0/vsix"
+
+# Download
+curl -H "Authorization: Bearer <token>" \
+  "https://batlehub.example.com/proxy/internal-ext/my-org.my-ext/1.0.0/vsix" \
+  -o my-org.my-ext-1.0.0.vsix
+```
+
+### Go (private module proxy)
+
+```toml
+[[registries]]
+type = "goproxy"
+name = "internal-go"
+mode = "local"
+
+[registries.rbac]
+user  = ["source:read"]
+admin = ["*"]
+```
+
+Upload a module (PUT the zip archive — `go.mod` is extracted automatically):
+
+```sh
+curl -X PUT -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/zip" \
+  --data-binary @path/to/module-v1.0.0.zip \
+  "https://batlehub.example.com/proxy/internal-go/example.com/mymod/@v/v1.0.0.zip"
+```
+
+Point the go tool at the private proxy:
+
+```sh
+export GONOSUMCHECK="*"
+export GONOSUMDB="*"
+export GOPROXY="https://batlehub.example.com/proxy/internal-go,direct"
+go get example.com/mymod@v1.0.0
+```
+
+See [`docs/configuration.md § Registry modes`](docs/configuration.md#registry-modes) for the full reference including hybrid mode and client-side setup.
 
 ---
 
@@ -354,6 +476,7 @@ Full list in [`docs/configuration.md § Environment Variable Overrides`](docs/co
 | Document | Contents |
 |----------|---------|
 | [`docs/configuration.md`](docs/configuration.md) | Full TOML reference, permissions, worked examples |
+| [`docs/configuration.md § Registry modes`](docs/configuration.md#registry-modes) | Private registry modes (local / hybrid) for Cargo, npm, and VS Code extensions |
 | [`docs/configuration.md § Self-Hosted`](docs/configuration.md#9-self-hosted--private-registries) | Upstream auth (Bearer / Basic / header) and custom CA certificates |
 | [`docs/adding-a-registry.md`](docs/adding-a-registry.md) | Step-by-step guide for implementing a new registry adapter |
 | `/swagger-ui/` (runtime) | Interactive API docs |

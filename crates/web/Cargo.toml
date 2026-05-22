@@ -25,6 +25,10 @@ chrono.workspace = true
 bytes.workspace = true
 futures.workspace = true
 tokio.workspace = true
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+zip = "2"
 
 [dev-dependencies]
 async-trait.workspace = true

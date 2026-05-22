@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod migrations;
 
 #[cfg(feature = "auth-token")]
 pub mod auth;
@@ -10,3 +11,6 @@ pub mod registry;
 
 #[cfg(feature = "db-postgres")]
 pub mod db;
+
+#[cfg(feature = "local-registry")]
+pub mod local_registry;

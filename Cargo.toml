@@ -54,9 +54,13 @@ opentelemetry = "0.31"
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
 
-# Database
-sqlx = { version = "0.8", features = [
-    "runtime-tokio-rustls",
+# Database — default-features = false to avoid sqlx-macros → sqlx-macros-core →
+# sqlx-mysql → rsa (RUSTSEC-2023-0071, no upstream fix available).
+# Migrations are embedded via Migration::new() + include_str! in db/postgres.rs.
+# sqlx-macros is further patched to a no-dep stub (see [patch.crates-io] below).
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-aws-lc-rs",
     "postgres",
     "chrono",
     "uuid",
@@ -76,5 +80,17 @@ uuid = { version = "1", features = ["v4", "serde"] }
 clap = { version = "4", features = ["derive"] }
 
 # AWS S3 (optional, for storage-s3 feature)
-aws-sdk-s3 = "1"
-aws-config = "1"
+# default-features = false to avoid legacy-rustls-ring (hyper 0.14 / rustls 0.21 / rustls-webpki 0.101)
+# which is vulnerable to RUSTSEC-2026-0098/0099/0104.  The new default-https-client path
+# uses rustls-aws-lc / hyper 1.x / rustls 0.23 / rustls-webpki 0.103 (patched).
+aws-sdk-s3 = { version = "1", default-features = false }
+aws-config = { version = "1", default-features = false }
+
+# Patch sqlx-macros with a no-dep stub.
+# sqlx-macros is an optional dep of sqlx that is never compiled (the `macros` feature
+# is disabled), but Cargo still resolves it with its full transitive chain:
+#   sqlx-macros → sqlx-macros-core → sqlx-mysql → rsa (RUSTSEC-2023-0071)
+# Replacing it with a local stub removes those packages from the lock file entirely.
+[patch.crates-io]
+sqlx-macros = { path = "patches/sqlx-macros" }
+sqlx-mysql  = { path = "patches/sqlx-mysql" }

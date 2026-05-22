@@ -20,6 +20,7 @@ use batlehub_adapters::{
         UserTokenAuthProvider,
     },
     db::PgPackageRepository,
+    local_registry::PostgresLocalRegistry,
     registry::{
         CargoRegistryClient, FanoutRegistryClient, GoProxyRegistryClient, GithubRegistryClient,
         NpmRegistryClient, OpenVsxRegistryClient, VsCodeMarketplaceRegistryClient,
@@ -29,16 +30,16 @@ use batlehub_adapters::{
 };
 use batlehub_config::{
     load,
-    schema::{AuthConfig, OtelConfig, RegistryConfig, RuleConfig, StorageBackendConfig, StoragesConfig, UpstreamAuthConfig},
+    schema::{AuthConfig, OtelConfig, RegistryConfig, RegistryMode, RuleConfig, StorageBackendConfig, StoragesConfig, UpstreamAuthConfig},
 };
 use batlehub_adapters::cache::{InMemoryCacheStore, PgCacheStore};
 use batlehub_core::{
     entities::Role,
     ports::{AuthProvider, CacheStore, UserTokenRepository},
     rules::{BlockListRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule},
-    services::{AdminService, ProxyService, RegistryPolicy},
+    services::{AdminService, LocalRegistryService, ProxyService, RegistryPolicy},
 };
-use batlehub_web::{configure_app, openapi_spec, AccessConfig, ApiDoc, CargoIndexProxy, RegistryMap, UpstreamMap};
+use batlehub_web::{configure_app, openapi_spec, AccessConfig, ApiDoc, CargoIndexProxy, RegistryMap, RegistryModeMap, UpstreamMap};
 
 // ── Tracing span builder ──────────────────────────────────────────────────────
 
@@ -238,6 +239,7 @@ async fn main() -> Result<()> {
     let mut policies: HashMap<String, RegistryPolicy> = HashMap::new();
     let mut cargo_indexes: HashMap<String, CargoIndexProxy> = HashMap::new();
     let mut registry_type_map: HashMap<String, String> = HashMap::new();
+    let mut registry_mode_map_inner: HashMap<String, RegistryMode> = HashMap::new();
     let mut npm_upstream_map: HashMap<String, String> = HashMap::new();
 
     for reg in &config.registries {
@@ -252,6 +254,7 @@ async fn main() -> Result<()> {
         policies.insert(reg.name.clone(), policy);
 
         registry_type_map.insert(reg.name.clone(), reg.registry_type.clone());
+        registry_mode_map_inner.insert(reg.name.clone(), reg.mode.clone());
 
         if reg.registry_type == "npm" {
             let first_url = if reg.upstreams.is_empty() {
@@ -262,7 +265,8 @@ async fn main() -> Result<()> {
             npm_upstream_map.insert(reg.name.clone(), first_url);
         }
 
-        if reg.registry_type == "cargo" {
+        // Proxy and Hybrid modes need an upstream sparse index; Local mode does not.
+        if reg.registry_type == "cargo" && !matches!(reg.mode, RegistryMode::Local) {
             let index = build_cargo_index(reg)
                 .with_context(|| format!("building cargo index client for '{}'", reg.name))?;
             cargo_indexes.insert(reg.name.clone(), index);
@@ -270,6 +274,7 @@ async fn main() -> Result<()> {
     }
 
     let upstream_map = UpstreamMap(npm_upstream_map);
+    let registry_mode_map = RegistryModeMap(registry_mode_map_inner);
 
     // ── Services ──────────────────────────────────────────────────────────────
     let proxy_svc = Arc::new(ProxyService {
@@ -278,12 +283,19 @@ async fn main() -> Result<()> {
         cache: cache.clone(),
         repo: repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>,
         policies,
-        max_artifact_size_bytes: None,
+        max_artifact_size_bytes: config.limits.max_artifact_size_bytes,
     });
 
     let admin_svc = Arc::new(AdminService::new(
         repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>
     ));
+
+    let local_registry_backend = Arc::new(PostgresLocalRegistry::new(repo.pool()));
+    let local_svc = Arc::new(LocalRegistryService {
+        backend: local_registry_backend,
+        storage: storage.clone(),
+        max_artifact_bytes: config.limits.max_artifact_size_bytes,
+    });
 
     // ── Access config ─────────────────────────────────────────────────────────
     // Respects role inheritance: user inherits anonymous, admin inherits both.
@@ -334,6 +346,8 @@ async fn main() -> Result<()> {
         );
         let static_dir_inner = static_dir.clone();
         let cargo_indexes_inner = cargo_indexes.clone();
+        let local_svc_inner = local_svc.clone();
+        let registry_mode_map_inner = registry_mode_map.clone();
 
         let (app, openapi) = App::new()
             .into_utoipa_app()
@@ -341,8 +355,11 @@ async fn main() -> Result<()> {
             .configure(configure)
             .split_for_parts();
 
-        // Register all cargo sparse index proxies (keyed by registry name).
-        let app = app.app_data(web::Data::new(cargo_indexes_inner));
+        // Register app-data that is not injected via configure_app.
+        let app = app
+            .app_data(web::Data::new(cargo_indexes_inner))
+            .app_data(web::Data::new(local_svc_inner))
+            .app_data(web::Data::new(registry_mode_map_inner));
 
         let cors_base = Cors::default()
             .allowed_methods(vec!["GET", "POST", "HEAD", "OPTIONS", "DELETE"])

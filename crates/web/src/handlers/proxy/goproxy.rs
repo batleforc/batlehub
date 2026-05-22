@@ -1,14 +1,18 @@
+use std::io::Read as _;
 use std::sync::Arc;
 
-use actix_web::{Responder, get, web};
+use actix_web::{HttpResponse, Responder, get, put, web};
+use sha2::{Digest, Sha256};
 
+use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
     entities::PackageId,
-    services::ProxyService,
+    error::CoreError,
+    services::{LocalRegistryService, ProxyService, PublishRequest},
 };
 
-use crate::{RegistryMap, error::AppError, extractors::AuthIdentity};
-use super::common::proxy_stream;
+use crate::{RegistryMap, RegistryModeMap, error::AppError, extractors::AuthIdentity};
+use super::common::{collect_payload, proxy_stream, require_local_mode};
 
 pub fn require_goproxy(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry) {
@@ -20,17 +24,38 @@ pub fn require_goproxy(registry: &str, map: &RegistryMap) -> Result<(), AppError
     }
 }
 
+/// Extract the go.mod content from a Go module zip archive.
+/// Go module zips contain entries named `{module}@{version}/{path}`.
+/// Returns a minimal go.mod if none is found.
+fn extract_go_mod(zip_bytes: &[u8], module: &str, version: &str) -> String {
+    let cursor = std::io::Cursor::new(zip_bytes);
+    if let Ok(mut archive) = zip::ZipArchive::new(cursor) {
+        let mod_suffix = format!("{module}@{version}/go.mod");
+        // Try exact name first, then any entry ending with /go.mod
+        for i in 0..archive.len() {
+            if let Ok(mut file) = archive.by_index(i) {
+                let name = file.name().to_owned();
+                if name == mod_suffix || name.ends_with("/go.mod") {
+                    let mut contents = String::new();
+                    if file.read_to_string(&mut contents).is_ok() {
+                        return contents;
+                    }
+                }
+            }
+        }
+    }
+    // Fallback: generate a minimal go.mod
+    format!("module {module}\n\ngo 1.21\n")
+}
+
 /// Fetch the latest version info for a Go module.
-///
-/// The module path may contain slashes (e.g. `golang.org/x/text`).
-/// Returns a JSON object `{"Version":"v1.2.3","Time":"..."}`.
 #[utoipa::path(
     get,
     path = "/proxy/{registry}/{module}/@latest",
     tag = "proxy/goproxy",
     params(
         ("registry" = String, Path, description = "Registry name"),
-        ("module"   = String, Path, description = "Go module path (may contain slashes, e.g. golang.org/x/text)"),
+        ("module"   = String, Path, description = "Go module path (may contain slashes)"),
     ),
     responses(
         (status = 200, description = "Latest version info JSON"),
@@ -44,19 +69,31 @@ pub async fn goproxy_latest(
     path: web::Path<(String, String)>,
     identity: AuthIdentity,
     svc: web::Data<Arc<ProxyService>>,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, raw_module) = path.into_inner();
     require_goproxy(&registry, &map)?;
     let module = raw_module.trim_end_matches('/');
-    let pkg = PackageId::new(&registry, module, "latest");
+    let mode = mode_map.get(&registry);
 
+    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        match local_svc.get_go_latest(&registry, module).await {
+            Ok(info) => return Ok(HttpResponse::Ok().content_type("application/json").json(info)),
+            Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}
+            Err(CoreError::NotFound(_)) => {
+                return Err(AppError::not_found(format!("module '{module}' not found")));
+            }
+            Err(e) => return Err(AppError::from(e)),
+        }
+    }
+
+    let pkg = PackageId::new(&registry, module, "latest");
     proxy_stream(svc, pkg, identity, "releases:read", Some("application/json")).await
 }
 
 /// List known versions for a Go module.
-///
-/// Returns a newline-separated list of available versions.
 #[utoipa::path(
     get,
     path = "/proxy/{registry}/{module}/@v/list",
@@ -77,21 +114,33 @@ pub async fn goproxy_list(
     path: web::Path<(String, String)>,
     identity: AuthIdentity,
     svc: web::Data<Arc<ProxyService>>,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, raw_module) = path.into_inner();
     require_goproxy(&registry, &map)?;
     let module = raw_module.trim_end_matches('/');
-    let pkg = PackageId::new(&registry, module, "latest").with_artifact("list");
+    let mode = mode_map.get(&registry);
 
+    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        match local_svc.get_go_version_list(&registry, module).await {
+            Ok(list) => {
+                return Ok(HttpResponse::Ok().content_type("text/plain").body(list));
+            }
+            Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}
+            Err(CoreError::NotFound(_)) => {
+                return Ok(HttpResponse::Ok().content_type("text/plain").body(""));
+            }
+            Err(e) => return Err(AppError::from(e)),
+        }
+    }
+
+    let pkg = PackageId::new(&registry, module, "latest").with_artifact("list");
     proxy_stream(svc, pkg, identity, "releases:read", Some("text/plain")).await
 }
 
 /// Fetch a versioned Go module file: `.info`, `.mod`, or `.zip`.
-///
-/// - `{version}.info` — version metadata JSON `{"Version":"v1.2.3","Time":"..."}`
-/// - `{version}.mod`  — the module's `go.mod` file
-/// - `{version}.zip`  — the module source zip archive
 #[utoipa::path(
     get,
     path = "/proxy/{registry}/{module}/@v/{filename}",
@@ -114,16 +163,55 @@ pub async fn goproxy_file(
     path: web::Path<(String, String, String)>,
     identity: AuthIdentity,
     svc: web::Data<Arc<ProxyService>>,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, raw_module, filename) = path.into_inner();
     require_goproxy(&registry, &map)?;
     let module = raw_module.trim_end_matches('/');
+    let mode = mode_map.get(&registry);
 
-    // Parse filename: "{version}.{ext}" — split at the last '.'
     let (version, ext) = filename
         .rsplit_once('.')
         .ok_or_else(|| AppError::not_found(format!("unknown goproxy file '{filename}'")))?;
+
+    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        let local_result = match ext {
+            "info" => local_svc
+                .get_go_info(&registry, module, version)
+                .await
+                .map(|info| {
+                    HttpResponse::Ok()
+                        .content_type("application/json")
+                        .json(info)
+                }),
+            "mod" => local_svc
+                .get_go_mod(&registry, module, version)
+                .await
+                .map(|content| {
+                    HttpResponse::Ok()
+                        .content_type("text/plain")
+                        .body(content)
+                }),
+            "zip" => local_svc
+                .get_artifact(&registry, module, version)
+                .await
+                .map(|bytes| {
+                    HttpResponse::Ok()
+                        .content_type("application/zip")
+                        .body(bytes)
+                }),
+            _ => return Err(AppError::not_found(format!("unknown goproxy file extension '.{ext}'"))),
+        };
+
+        match local_result {
+            Ok(resp) => return Ok(resp),
+            Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}
+            Err(CoreError::NotFound(msg)) => return Err(AppError::not_found(msg)),
+            Err(e) => return Err(AppError::from(e)),
+        }
+    }
 
     let (pkg, content_type, resource_type) = match ext {
         "info" => (
@@ -149,4 +237,81 @@ pub async fn goproxy_file(
     };
 
     proxy_stream(svc, pkg, identity, resource_type, Some(content_type)).await
+}
+
+/// Publish a Go module version by uploading its zip archive.
+///
+/// The zip must follow the Go module zip format: all entries prefixed with
+/// `{module}@{version}/`. The `go.mod` is extracted automatically from the
+/// archive. Version metadata (`.info`) is generated from the version string
+/// and the current timestamp.
+///
+/// The module path is inferred from the URL; the version from the filename
+/// (`{version}.zip`).
+#[utoipa::path(
+    put,
+    path = "/proxy/{registry}/{module}/@v/{filename}",
+    tag = "proxy/goproxy",
+    params(
+        ("registry" = String, Path, description = "Registry name"),
+        ("module"   = String, Path, description = "Go module path (may contain slashes)"),
+        ("filename" = String, Path, description = "Version zip: {version}.zip"),
+    ),
+    request_body(content_type = "application/zip", description = "Go module zip archive"),
+    responses(
+        (status = 200, description = "Module published"),
+        (status = 400, description = "Invalid payload or filename"),
+        (status = 403, description = "Access denied"),
+        (status = 409, description = "Version already published"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[put("/proxy/{registry}/{module:[^@]+}@v/{filename}")]
+pub async fn goproxy_publish(
+    path: web::Path<(String, String, String)>,
+    payload: web::Payload,
+    identity: AuthIdentity,
+    map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
+) -> Result<impl Responder, AppError> {
+    let (registry, raw_module, filename) = path.into_inner();
+    require_goproxy(&registry, &map)?;
+    require_local_mode(&registry, &mode_map)?;
+    let module = raw_module.trim_end_matches('/');
+
+    let (version, ext) = filename
+        .rsplit_once('.')
+        .ok_or_else(|| AppError::bad_request(format!("invalid filename '{filename}'")))?;
+    if ext != "zip" {
+        return Err(AppError::bad_request(format!(
+            "only .zip uploads are supported (got '.{ext}')"
+        )));
+    }
+
+    let zip_bytes = collect_payload(payload).await?;
+    let checksum = hex::encode(Sha256::digest(&zip_bytes));
+
+    let go_mod = extract_go_mod(&zip_bytes, module, version);
+    let now = chrono::Utc::now().to_rfc3339();
+    let index_metadata = serde_json::json!({
+        "Version": version,
+        "Time": now,
+        "go_mod": go_mod
+    });
+
+    local_svc
+        .publish(PublishRequest {
+            registry,
+            name: module.to_owned(),
+            version: version.to_owned(),
+            artifact: zip_bytes,
+            checksum,
+            index_metadata,
+            publisher: identity.0.clone(),
+        })
+        .await
+        .map_err(AppError::from)?;
+
+    Ok(HttpResponse::Ok().json(serde_json::json!({ "ok": true })))
 }

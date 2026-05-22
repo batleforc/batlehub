@@ -18,6 +18,16 @@ batlehub is configured with a single TOML file. This document covers every optio
 4. [Permissions Reference](#4-permissions-reference)
 5. [Environment Variable Overrides](#5-environment-variable-overrides)
 6. [Worked Examples](#6-worked-examples)
+   - [6.1 Local Development](#61-local-development)
+   - [6.2 Production with OIDC](#62-production-with-oidc-authentik)
+   - [6.3 Kubernetes Deployment](#63-kubernetes-deployment)
+   - [6.4 Go Module Proxy](#64-go-module-proxy)
+   - [6.5 Self-Hosted Private Registries](#65-self-hosted-private-registries)
+   - [6.6 Private Cargo Registry (local / hybrid mode)](#66-private-cargo-registry-local--hybrid-mode)
+   - [6.7 Private npm Registry (local / hybrid mode)](#67-private-npm-registry-local--hybrid-mode)
+   - [6.8 Private VS Code Extension Registry (local / hybrid mode)](#68-private-vs-code-extension-registry-local--hybrid-mode)
+   - [6.9 Private Go Module Proxy (local / hybrid mode)](#69-private-go-module-proxy-local--hybrid-mode)
+   - [6.10 Multi-Backend Storage](#610-multi-backend-storage)
 7. [CLI Reference](#7-cli-reference)
 8. [User-Generated API Tokens](#8-user-generated-api-tokens)
 9. [Self-Hosted / Private Registries](#9-self-hosted--private-registries)
@@ -350,23 +360,44 @@ bypass_roles = ["admin"]
 |---|---|---|---|
 | `type` | string | yes | `"github"`, `"npm"`, `"cargo"`, `"openvsx"`, `"vscode-marketplace"`, `"goproxy"`, `"pypi"`, `"composer"` |
 | `name` | string | yes | Unique identifier; used in proxy URL paths |
-| `upstreams` | string[] | no | Upstream URLs tried in order on cache miss; 404 from one falls through to the next. Defaults to the registry's built-in URL. |
-| `index_url` | string | no | Cargo only: sparse crate index URL. Defaults to `https://index.crates.io`. Required for self-hosted Gitea/Forgejo registries. |
+| `mode` | string | no | `"proxy"` (default), `"local"`, or `"hybrid"`. Supported for `cargo`, `npm`, `openvsx`, `vscode-marketplace`, and `goproxy`. See [registry modes](#registry-modes). |
+| `upstreams` | string[] | no | Upstream URLs tried in order on cache miss; 404 from one falls through to the next. Defaults to the registry's built-in URL. Required for `hybrid` mode. |
+| `index_url` | string | no | Cargo only: sparse crate index URL. Defaults to `https://index.crates.io`. Required for `hybrid` mode and self-hosted Gitea/Forgejo registries. |
 | `storage` | string | no | Name of the storage backend. Must match a `[[storage.backends]]` name. Omit to use the default backend. |
 | `upstream_auth` | table | no | Credentials sent on every upstream request. See [upstream auth](#upstream_auth). |
 | `tls` | table | no | TLS settings for upstream connections. See [upstream TLS](#upstream_tls). |
+
+#### Registry modes {#registry-modes}
+
+`cargo`, `npm`, `openvsx`, `vscode-marketplace`, and `goproxy` registries support three operating modes, set via the `mode` field:
+
+| Mode | Description |
+|------|-------------|
+| `proxy` | Default. BatleHub only forwards requests to upstream registries. Publishing is rejected. |
+| `local` | BatleHub is the authoritative registry. No upstream needed. Clients publish directly to BatleHub. |
+| `hybrid` | Local-first. Serves locally published packages directly; falls back to the configured upstream for anything not published locally. Requires `upstreams` (and `index_url` for Cargo). |
+
+Publishing requires at least the `user` role. The `published_by` field is set from the authenticated user's `user_id`.
+
+**Cargo** — `local`/`hybrid` modes expose the full publish API (`PUT /api/v1/crates/new`, yank, unyank, owners) and advertise the `api` URL in `config.json` so Cargo discovers it automatically.
+
+**npm** — `local`/`hybrid` modes accept `npm publish` payloads (`PUT /proxy/{registry}/{name}`) and serve packuments and tarballs from local storage.
+
+**openvsx / vscode-marketplace** — `local`/`hybrid` modes accept raw VSIX uploads (`PUT /proxy/{registry}/{extension_id}/{version}/vsix`) and serve them on download.
+
+**goproxy** — `local`/`hybrid` modes accept Go module zip uploads (`PUT /proxy/{registry}/{module}/@v/{version}.zip`). `go.mod` is extracted automatically from the zip; `.info` is generated from the version and upload timestamp. Serves `@latest`, `@v/list`, `.info`, `.mod`, and `.zip` from local storage.
 
 #### Registry-type notes
 
 **`github`** — proxies the GitHub REST API (releases, assets, source tarballs, raw files). Requires `upstreams` to point at `https://api.github.com` (the default).
 
-**`npm`** — proxies the full npm registry protocol: packuments, version metadata, and `.tgz` tarballs. Works with npm, yarn, pnpm, and any tool that speaks the npm registry protocol.
+**`npm`** — proxies the full npm registry protocol: packuments, version metadata, and `.tgz` tarballs. Works with npm, yarn, pnpm, and any tool that speaks the npm registry protocol. Set `mode = "local"` or `mode = "hybrid"` to enable publishing. See [registry modes](#registry-modes) and [Worked Example 6.7](#67-private-npm-registry-local--hybrid-mode).
 
-**`cargo`** — proxies the Cargo sparse index and `.crate` downloads. Set `index_url` for self-hosted Gitea/Forgejo registries.
+**`cargo`** — proxies the Cargo sparse index and `.crate` downloads. Set `index_url` for self-hosted Gitea/Forgejo registries. Set `mode = "local"` or `mode = "hybrid"` to enable publishing. See [registry modes](#registry-modes) and [Worked Example 6.6](#66-private-cargo-registry-local--hybrid-mode).
 
-**`openvsx`** — proxies VS Code extension VSIX downloads from [open-vsx.org](https://open-vsx.org) or a compatible host. Extension IDs use the `{publisher}.{name}` convention.
+**`openvsx`** — proxies VS Code extension VSIX downloads from [open-vsx.org](https://open-vsx.org) or a compatible host. Extension IDs use the `{publisher}.{name}` convention. Set `mode = "local"` or `mode = "hybrid"` to enable publishing. See [Worked Example 6.8](#68-private-vs-code-extension-registry-local--hybrid-mode).
 
-**`vscode-marketplace`** — proxies VS Code extension VSIX downloads from [marketplace.visualstudio.com](https://marketplace.visualstudio.com) using Microsoft's Gallery API. Extension IDs use the same `{publisher}.{name}` convention as OpenVSX. Metadata is resolved via a `POST /_apis/public/gallery/extensionquery` call; artifacts are fetched directly from `/_apis/public/gallery/publishers/{publisher}/vsextensions/{name}/{version}/vspackage`. Use this type when you need to cache extensions that are only available on the Microsoft marketplace and not mirrored on open-vsx.org.
+**`vscode-marketplace`** — proxies VS Code extension VSIX downloads from [marketplace.visualstudio.com](https://marketplace.visualstudio.com) using Microsoft's Gallery API. Extension IDs use the same `{publisher}.{name}` convention as OpenVSX. Metadata is resolved via a `POST /_apis/public/gallery/extensionquery` call; artifacts are fetched directly from `/_apis/public/gallery/publishers/{publisher}/vsextensions/{name}/{version}/vspackage`. Use this type when you need to cache extensions that are only available on the Microsoft marketplace and not mirrored on open-vsx.org. Supports `mode = "local"` and `mode = "hybrid"` for hosting private extensions — see [Worked Example 6.8](#68-private-vs-code-extension-registry-local--hybrid-mode).
 
 ```toml
 [[registries]]
@@ -393,7 +424,7 @@ curl -H "Authorization: Bearer <token>" \
   -o ms-python.python-2024.2.1.vsix
 ```
 
-**`goproxy`** — implements the [GOPROXY protocol](https://go.dev/ref/mod#goproxy-protocol) for Go module proxying. Supports all five endpoints:
+**`goproxy`** — implements the [GOPROXY protocol](https://go.dev/ref/mod#goproxy-protocol) for Go module proxying. Set `mode = "local"` or `mode = "hybrid"` to host private modules — see [registry modes](#registry-modes) and [Worked Example 6.9](#69-private-go-module-proxy-local--hybrid-mode). Supports all five endpoints:
 
 | Endpoint | Description |
 |----------|-------------|
@@ -912,7 +943,293 @@ user      = ["releases:read", "source:read"]
 admin     = ["*"]
 ```
 
-### 6.6 Multi-Backend Storage
+### 6.6 Private Cargo Registry (local / hybrid mode) {#66-private-cargo-registry-local--hybrid-mode}
+
+#### Pure local registry (no upstream)
+
+Use this when you want a completely private Cargo registry that does not proxy crates.io.
+
+```toml
+[[registries]]
+type = "cargo"
+name = "internal"
+mode = "local"          # BatleHub is the only source; no upstream needed
+
+[registries.rbac]
+anonymous = []
+user      = ["source:read"]  # allow download but not publish (publish checks role in service)
+admin     = ["*"]
+```
+
+Configure Cargo on the client side (`~/.cargo/config.toml` or `.cargo/config.toml` in the project root):
+
+```toml
+[registries.internal]
+index = "sparse+https://batlehub.example.com/proxy/internal/registry/"
+
+[registry]
+token = "<your-user-token>"   # or set CARGO_REGISTRIES_INTERNAL_TOKEN env var
+```
+
+Publish a crate:
+
+```sh
+cargo publish --registry internal
+```
+
+Depend on a privately published crate:
+
+```toml
+# Cargo.toml
+[dependencies]
+my-lib = { version = "0.1", registry = "internal" }
+```
+
+#### Hybrid registry (local crates + crates.io fallback)
+
+Use this when you want to publish internal crates while still proxying the public crates.io registry through the same endpoint.
+
+```toml
+[[registries]]
+type      = "cargo"
+name      = "everything"
+mode      = "hybrid"
+upstreams = ["https://static.crates.io/crates"]
+index_url = "https://index.crates.io"
+
+[registries.rbac]
+anonymous = ["source:read"]   # public crates readable without auth
+user      = ["source:read"]
+admin     = ["*"]
+```
+
+Client configuration:
+
+```toml
+[registries.everything]
+index = "sparse+https://batlehub.example.com/proxy/everything/registry/"
+token = "<your-user-token>"
+```
+
+In hybrid mode, `cargo fetch` and `cargo build` work transparently:
+- A dependency that was published to BatleHub is served from local storage.
+- Any other dependency falls back to crates.io through the configured upstream.
+
+#### Endpoints exposed by local / hybrid registries
+
+| Method | Path | Used by |
+|--------|------|---------|
+| `GET` | `/proxy/{registry}/registry/config.json` | `cargo` client on first connect |
+| `GET` | `/proxy/{registry}/registry/{path}` | sparse index lookup |
+| `GET` | `/proxy/{registry}/{name}/{version}/download` | `.crate` download |
+| `PUT` | `/proxy/{registry}/api/v1/crates/new` | `cargo publish` |
+| `DELETE` | `/proxy/{registry}/api/v1/crates/{name}/{version}/yank` | `cargo yank` |
+| `PUT` | `/proxy/{registry}/api/v1/crates/{name}/{version}/unyank` | `cargo yank --undo` |
+| `GET` | `/proxy/{registry}/api/v1/crates/{name}/owners` | `cargo owner --list` |
+
+---
+
+### 6.7 Private npm Registry (local / hybrid mode) {#67-private-npm-registry-local--hybrid-mode}
+
+#### Pure local npm registry (no upstream)
+
+Use this when you want a completely private npm registry for internal packages.
+
+```toml
+[[registries]]
+type = "npm"
+name = "internal-npm"
+mode = "local"
+
+[registries.rbac]
+anonymous = []
+user      = ["source:read"]
+admin     = ["*"]
+```
+
+Configure npm on the client side:
+
+```sh
+# ~/.npmrc or project .npmrc
+@myorg:registry=https://batlehub.example.com/proxy/internal-npm/
+//batlehub.example.com/proxy/internal-npm/:_authToken=<your-user-token>
+```
+
+Publish and install:
+
+```sh
+# publish
+npm publish --registry https://batlehub.example.com/proxy/internal-npm/
+
+# install a scoped package
+npm install @myorg/my-package
+```
+
+#### Hybrid npm registry (local packages + upstream fallback)
+
+```toml
+[[registries]]
+type      = "npm"
+name      = "everything-npm"
+mode      = "hybrid"
+upstreams = ["https://registry.npmjs.org"]
+
+[registries.rbac]
+anonymous = ["releases:read"]
+user      = ["releases:read", "source:read"]
+admin     = ["*"]
+```
+
+In hybrid mode `npm install` transparently serves internal packages from local storage and public packages from the upstream registry.
+
+#### Endpoints exposed by local / hybrid npm registries
+
+| Method | Path | Used by |
+|--------|------|---------|
+| `GET` | `/proxy/{registry}/{package}` | packument (all versions) |
+| `GET` | `/proxy/{registry}/{package}/{version}` | single version metadata |
+| `GET` | `/proxy/{registry}/{package}/{version}/tarball` | tarball download |
+| `PUT` | `/proxy/{registry}/{package}` | `npm publish` |
+| `POST` | `/proxy/{registry}/-/npm/v1/audit/quick` | `npm audit` (proxied upstream) |
+
+---
+
+### 6.8 Private VS Code Extension Registry (local / hybrid mode) {#68-private-vs-code-extension-registry-local--hybrid-mode}
+
+Use this when you want to distribute private VS Code extensions through a self-hosted registry.
+
+#### Pure local extension registry
+
+```toml
+[[registries]]
+type = "openvsx"     # or "vscode-marketplace"
+name = "internal-ext"
+mode = "local"
+
+[registries.rbac]
+anonymous = []
+user      = ["source:read"]
+admin     = ["*"]
+```
+
+Configure VS Code to use the registry (`.vscode/settings.json` or user settings):
+
+```json
+{
+  "vscode-extension-marketplace.serviceUrl": "https://batlehub.example.com/proxy/internal-ext"
+}
+```
+
+Upload an extension (raw VSIX bytes):
+
+```sh
+curl -X PUT \
+  -H "Authorization: Bearer <your-user-token>" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @my-org.my-ext-1.0.0.vsix \
+  "https://batlehub.example.com/proxy/internal-ext/my-org.my-ext/1.0.0/vsix"
+```
+
+Download an extension:
+
+```sh
+curl -H "Authorization: Bearer <token>" \
+  "https://batlehub.example.com/proxy/internal-ext/my-org.my-ext/1.0.0/vsix" \
+  -o my-org.my-ext-1.0.0.vsix
+```
+
+#### Endpoints exposed by local / hybrid VS Code extension registries
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/proxy/{registry}/{extension_id}/{version}/vsix` | Download VSIX |
+| `PUT` | `/proxy/{registry}/{extension_id}/{version}/vsix` | Upload VSIX |
+
+Extension IDs follow the `{publisher}.{name}` convention (e.g. `my-org.my-ext`).
+
+---
+
+### 6.9 Private Go Module Proxy (local / hybrid mode) {#69-private-go-module-proxy-local--hybrid-mode}
+
+#### Pure local Go module proxy (no upstream)
+
+Use this to host private Go modules without exposing them to the public internet.
+
+```toml
+[[registries]]
+type = "goproxy"
+name = "internal-go"
+mode = "local"
+
+[registries.rbac]
+anonymous = []
+user      = ["source:read"]
+admin     = ["*"]
+```
+
+**Upload a module** by pushing the Go module zip archive. BatleHub extracts `go.mod` automatically and generates version metadata from the upload timestamp:
+
+```sh
+# Build the module zip (standard Go module zip format)
+go mod zip example.com/mymod@v1.0.0 . --mod-zip /tmp/mymod-v1.0.0.zip
+
+# Upload to BatleHub
+curl -X PUT -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/zip" \
+  --data-binary @/tmp/mymod-v1.0.0.zip \
+  "https://batlehub.example.com/proxy/internal-go/example.com/mymod/@v/v1.0.0.zip"
+```
+
+**Use the private proxy** in the go toolchain:
+
+```sh
+export GONOSUMCHECK="*"
+export GONOSUMDB="*"
+export GOPROXY="https://batlehub.example.com/proxy/internal-go,direct"
+go get example.com/mymod@v1.0.0
+```
+
+Or add to `go.env`:
+
+```sh
+go env -w GONOSUMCHECK="*"
+go env -w GONOSUMDB="*"
+go env -w GOPROXY="https://batlehub.example.com/proxy/internal-go,direct"
+```
+
+#### Hybrid Go module proxy (local modules + upstream fallback)
+
+```toml
+[[registries]]
+type      = "goproxy"
+name      = "everything-go"
+mode      = "hybrid"
+upstreams = ["https://proxy.golang.org"]
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user      = ["releases:read", "source:read"]
+admin     = ["*"]
+```
+
+In hybrid mode, `go get` and `go mod download` transparently serve internal modules from local storage and public modules from `proxy.golang.org` (or whichever upstream you configure).
+
+#### Endpoints exposed by local / hybrid Go module proxies
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/proxy/{registry}/{module}/@latest` | Latest version info JSON |
+| `GET` | `/proxy/{registry}/{module}/@v/list` | Newline-separated version list |
+| `GET` | `/proxy/{registry}/{module}/@v/{version}.info` | Version metadata JSON |
+| `GET` | `/proxy/{registry}/{module}/@v/{version}.mod` | `go.mod` content |
+| `GET` | `/proxy/{registry}/{module}/@v/{version}.zip` | Module source zip archive |
+| `PUT` | `/proxy/{registry}/{module}/@v/{version}.zip` | Upload module zip (triggers publish) |
+
+Module paths may contain slashes (e.g. `golang.org/x/text`).
+
+---
+
+### 6.10 Multi-Backend Storage {#610-multi-backend-storage}
 
 Default filesystem backend for all registries, dedicated S3 backend for large GitHub release artifacts.
 

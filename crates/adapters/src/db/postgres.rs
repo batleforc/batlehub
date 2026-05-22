@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Row};
+
+use crate::migrations::embedded_migrator;
 use uuid::Uuid;
 
 use batlehub_core::{
@@ -25,7 +27,7 @@ impl PgPackageRepository {
     }
 
     pub async fn run_migrations(&self) -> Result<(), CoreError> {
-        sqlx::migrate!("./migrations")
+        embedded_migrator()
             .run(&self.pool)
             .await
             .map_err(|e| CoreError::Database(format!("migration failed: {e}")))?;

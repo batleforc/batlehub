@@ -6,6 +6,7 @@ pub mod middleware;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use batlehub_config::schema::RegistryMode;
 use batlehub_core::entities::{Identity, Role};
 
 /// Maps each role (and each dynamic group) to the set of registry names it can access.
@@ -218,6 +219,16 @@ mod access_config_tests {
 #[derive(Clone)]
 pub struct RegistryMap(pub HashMap<String, String>);
 
+/// Maps registry name → configured `RegistryMode` (proxy / local / hybrid).
+#[derive(Clone, Default)]
+pub struct RegistryModeMap(pub HashMap<String, RegistryMode>);
+
+impl RegistryModeMap {
+    pub fn get(&self, name: &str) -> RegistryMode {
+        self.0.get(name).cloned().unwrap_or_default()
+    }
+}
+
 /// Maps npm registry name → first upstream base URL (for audit pass-through).
 #[derive(Clone, Default)]
 pub struct UpstreamMap(pub HashMap<String, String>);
@@ -313,15 +324,18 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
         },
         proxy::{
             // Register most-specific patterns first so actix-web resolves correctly:
-            // cargo index (literal "registry" segment) > github (owner/repo/verb) >
-            // cargo download (literal "download") > openvsx vsix (literal "vsix") >
-            // npm audit (literal "/-/npm/v1/audit/quick") > npm tarball (literal "tarball") >
-            // shared version metadata > shared packument
-            cargo::{cargo_registry_config, cargo_registry_index, download_crate},
+            // cargo api/v1 (literal "api" segment) > cargo index (literal "registry" segment) >
+            // github (owner/repo/verb) > cargo download (literal "download") >
+            // openvsx vsix (literal "vsix") > npm audit (literal "/-/npm/v1/audit/quick") >
+            // npm tarball (literal "tarball") > shared version metadata > shared packument
+            cargo::{
+                cargo_owners, cargo_publish, cargo_registry_config, cargo_registry_index,
+                cargo_unyank, cargo_yank, download_crate,
+            },
             github::{download_asset, download_asset_by_name, download_raw, download_tarball, download_zipball, get_release, list_releases},
-            npm::{audit_quick, download_tarball as npm_download_tarball, get_packument, get_version},
-            openvsx::download_vsix,
-            goproxy::{goproxy_file, goproxy_latest, goproxy_list},
+            npm::{audit_quick, download_tarball as npm_download_tarball, get_packument, get_version, npm_publish},
+            openvsx::{download_vsix, vsix_publish},
+            goproxy::{goproxy_file, goproxy_latest, goproxy_list, goproxy_publish},
         },
     };
 
@@ -332,7 +346,12 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(create_token);
     cfg.service(list_tokens);
     cfg.service(revoke_token);
-    // Cargo index (most specific — literal "registry" sub-path)
+    // Cargo publish API (literal "api/v1" sub-path — most specific, must precede download)
+    cfg.service(cargo_publish);
+    cfg.service(cargo_yank);
+    cfg.service(cargo_unyank);
+    cfg.service(cargo_owners);
+    // Cargo index (literal "registry" sub-path)
     cfg.service(cargo_registry_config);
     cfg.service(cargo_registry_index);
     // GitHub (owner/repo structure, multi-segment)
@@ -346,15 +365,20 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     // Cargo download (literal "download" suffix)
     cfg.service(download_crate);
     // Go module proxy (multi-segment module paths — must precede generic packument routes)
+    // PUT goproxy_publish must come before GET goproxy_file (same path pattern, different method)
+    cfg.service(goproxy_publish);
     cfg.service(goproxy_latest);
     cfg.service(goproxy_list);
     cfg.service(goproxy_file);
-    // OpenVSX VSIX download (literal "vsix" suffix)
+    // OpenVSX/VSCode VSIX publish (PUT) and download (GET) — same path, different method
+    cfg.service(vsix_publish);
     cfg.service(download_vsix);
     // npm audit pass-through (literal "/-/npm/v1/audit/quick" path)
     cfg.service(audit_quick);
     // npm tarball (literal "tarball" suffix)
     cfg.service(npm_download_tarball);
+    // npm publish (PUT same path as packument — different method, registered before GET)
+    cfg.service(npm_publish);
     // Shared npm/cargo: version metadata then packument (more specific first)
     cfg.service(get_version);
     cfg.service(get_packument);
