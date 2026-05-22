@@ -1,0 +1,27 @@
+/* ── Inline [[toc]] — hide on desktop where the right-rail TOC already shows ── */
+@media (min-width: 960px) {
+  nav.table-of-contents {
+    display: none;
+  }
+}
+
+/* ── All tables — horizontally scrollable on small screens ─────────────────── */
+.vp-doc table {
+  display: block;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  width: max-content;
+  max-width: 100%;
+}
+
+/* ── Home page: visual separator before the "Supported registries" section ─── */
+.VPHome .vp-doc.container {
+  padding-top: 1rem;
+  padding-bottom: 3rem;
+}
+
+.VPHome .vp-doc h2 {
+  margin-top: 0;
+  padding-top: 2rem;
+  border-top: 1px solid var(--vp-c-divider);
+}

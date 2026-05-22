@@ -18,6 +18,23 @@ pub struct AppConfig {
     pub registries: Vec<RegistryConfig>,
     #[serde(default)]
     pub otel: Option<OtelConfig>,
+    #[serde(default)]
+    pub limits: LimitsConfig,
+}
+
+// ── Limits ────────────────────────────────────────────────────────────────────
+
+/// Upload size limits.
+///
+/// ```toml
+/// [limits]
+/// max_artifact_size_bytes = 524288000  # 500 MiB
+/// ```
+#[derive(Debug, Deserialize, Default)]
+pub struct LimitsConfig {
+    /// Maximum artifact size for proxy downloads and local publishes.
+    /// Defaults to 500 MiB when absent.
+    pub max_artifact_size_bytes: Option<u64>,
 }
 
 impl AppConfig {
@@ -30,6 +47,23 @@ impl AppConfig {
                 "github" | "cargo" | "npm" | "openvsx" | "goproxy" | "pypi" | "composer"
                 | "vscode-marketplace" => {}
                 other => bail!("unknown registry type: '{other}'"),
+            }
+            if matches!(registry.mode, RegistryMode::Local | RegistryMode::Hybrid)
+                && !matches!(
+                    registry.registry_type.as_str(),
+                    "cargo" | "npm" | "openvsx" | "vscode-marketplace" | "goproxy"
+                )
+            {
+                bail!(
+                    "registry '{}': mode 'local'/'hybrid' is only supported for cargo, npm, openvsx, vscode-marketplace, and goproxy registries",
+                    registry.name
+                );
+            }
+            if registry.mode == RegistryMode::Hybrid && registry.upstreams.is_empty() {
+                bail!(
+                    "registry '{}': hybrid mode requires at least one upstream URL",
+                    registry.name
+                );
             }
         }
         Ok(())
@@ -326,10 +360,6 @@ pub struct S3StorageConfig {
     pub force_path_style: Option<bool>,
 }
 
-// Keep the old name as an alias so existing code compiles during migration.
-#[allow(dead_code)]
-pub type StorageConfig = StoragesConfig;
-
 // ── Cache ─────────────────────────────────────────────────────────────────────
 
 /// Selects the metadata cache backend.
@@ -359,6 +389,20 @@ impl Default for CacheConfig {
 }
 
 // ── Registries ────────────────────────────────────────────────────────────────
+
+/// Controls whether a registry acts as a caching proxy, a private authoritative
+/// registry, or both.
+#[derive(Debug, Deserialize, Default, Clone, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RegistryMode {
+    /// Forward all requests to upstream registries and cache responses.
+    #[default]
+    Proxy,
+    /// BatleHub is the authoritative source; no upstream is consulted.
+    Local,
+    /// Check local publications first; fall back to upstream if not found.
+    Hybrid,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct RegistryConfig {
@@ -396,6 +440,9 @@ pub struct RegistryConfig {
     /// TLS settings for upstream connections (e.g. custom CA certificate).
     #[serde(default)]
     pub tls: Option<UpstreamTlsConfig>,
+    /// Controls proxy vs. local vs. hybrid behaviour for this registry.
+    #[serde(default)]
+    pub mode: RegistryMode,
 }
 
 #[derive(Debug, Deserialize)]

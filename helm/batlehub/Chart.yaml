@@ -1,0 +1,20 @@
+apiVersion: v2
+name: batlehub
+description: Smart proxy and cache for package registries
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/batleforc/batlehub
+sources:
+  - https://github.com/batleforc/batlehub
+maintainers:
+  - name: Max Batleforc
+    email: maxleriche.60@gmail.com
+keywords:
+  - proxy
+  - cache
+  - registry
+  - npm
+  - cargo
+  - go
+  - helm

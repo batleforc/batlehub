@@ -42,7 +42,7 @@ async fn make_store(url: &str) -> TestStore {
     let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
     let prefix = format!("t{id}");
     let pool = PgPool::connect(url).await.expect("connect to postgres");
-    sqlx::migrate!("./migrations").run(&pool).await.expect("run migrations");
+    batlehub_adapters::migrations::embedded_migrator().run(&pool).await.expect("run migrations");
     TestStore { store: PgCacheStore::new(pool.clone()), pool, prefix }
 }
 

@@ -14,6 +14,7 @@ use crate::ports::{
 };
 use crate::rules::{evaluate_rules, Rule, RuleContext, RuleDecision};
 
+/// Per-registry behaviour configuration wired in at startup.
 pub struct RegistryPolicy {
     pub metadata_ttl: Option<Duration>,
     /// Rules evaluated in order for every request to this registry.
@@ -25,6 +26,7 @@ pub struct RegistryPolicy {
     pub serve_stale_metadata: bool,
 }
 
+/// Input to `ProxyService::handle`.
 pub struct ProxyRequest {
     pub package_id: PackageId,
     pub identity: Identity,
@@ -32,6 +34,7 @@ pub struct ProxyRequest {
     pub resource_type: String,
 }
 
+/// Output of `ProxyService::handle`.
 pub enum ProxyResponse {
     /// Artifact stream to forward to the HTTP client.
     Stream(ArtifactStream),
@@ -39,6 +42,7 @@ pub enum ProxyResponse {
     Denied { reason: String },
 }
 
+/// Caching proxy service: resolves metadata, evaluates rules, streams artifacts.
 pub struct ProxyService {
     pub registries: HashMap<String, Arc<dyn RegistryClient>>,
     pub storage: Arc<dyn StorageBackend>,
@@ -49,6 +53,12 @@ pub struct ProxyService {
     /// to storage. Requests that exceed this limit return a 413 error rather than
     /// exhausting server memory. Defaults to 500 MiB when `None`.
     pub max_artifact_size_bytes: Option<u64>,
+}
+
+fn warn_if_audit_failed(r: Result<(), CoreError>, ctx: &str) {
+    if let Err(e) = r {
+        tracing::warn!(error = %e, ctx, "audit log write failed");
+    }
 }
 
 impl ProxyService {
@@ -92,28 +102,32 @@ impl ProxyService {
                                 stale.metadata
                             }
                             None => {
-                                self.repo
-                                    .record_access(AccessEvent::proxy_error(
-                                        req.package_id.clone(),
-                                        req.identity.user_id.clone(),
-                                        req.identity.role.clone(),
-                                        e.to_string(),
-                                    ))
-                                    .await
-                                    .unwrap_or_else(|re| tracing::warn!(error = %re, "failed to record proxy error"));
+                                warn_if_audit_failed(
+                                    self.repo
+                                        .record_access(AccessEvent::proxy_error(
+                                            req.package_id.clone(),
+                                            req.identity.user_id.clone(),
+                                            req.identity.role.clone(),
+                                            e.to_string(),
+                                        ))
+                                        .await,
+                                    "proxy error",
+                                );
                                 return Err(e);
                             }
                         }
                     } else {
-                        self.repo
-                            .record_access(AccessEvent::proxy_error(
-                                req.package_id.clone(),
-                                req.identity.user_id.clone(),
-                                req.identity.role.clone(),
-                                e.to_string(),
-                            ))
-                            .await
-                            .unwrap_or_else(|re| tracing::warn!(error = %re, "failed to record proxy error"));
+                        warn_if_audit_failed(
+                            self.repo
+                                .record_access(AccessEvent::proxy_error(
+                                    req.package_id.clone(),
+                                    req.identity.user_id.clone(),
+                                    req.identity.role.clone(),
+                                    e.to_string(),
+                                ))
+                                .await,
+                            "proxy error",
+                        );
                         return Err(e);
                     }
                 }
@@ -148,15 +162,17 @@ impl ProxyService {
         };
 
         if let RuleDecision::Deny { reason } = evaluate_rules(rules, &ctx).await {
-            self.repo
-                .record_access(AccessEvent::denied_download(
-                    req.package_id,
-                    req.identity.user_id,
-                    req.identity.role,
-                    reason.clone(),
-                ))
-                .await
-                .unwrap_or_else(|e| tracing::warn!(error = %e, "failed to record denied access"));
+            warn_if_audit_failed(
+                self.repo
+                    .record_access(AccessEvent::denied_download(
+                        req.package_id,
+                        req.identity.user_id,
+                        req.identity.role,
+                        reason.clone(),
+                    ))
+                    .await,
+                "denied download",
+            );
             return Ok(ProxyResponse::Denied { reason });
         }
 
@@ -172,26 +188,30 @@ impl ProxyService {
             let upstream = match client.fetch_artifact(&req.package_id).await {
                 Ok(s) => s,
                 Err(e) => {
-                    self.repo
-                        .record_access(AccessEvent::proxy_error(
-                            req.package_id.clone(),
-                            req.identity.user_id.clone(),
-                            req.identity.role.clone(),
-                            e.to_string(),
-                        ))
-                        .await
-                        .unwrap_or_else(|re| tracing::warn!(error = %re, "failed to record proxy error"));
+                    warn_if_audit_failed(
+                        self.repo
+                            .record_access(AccessEvent::proxy_error(
+                                req.package_id.clone(),
+                                req.identity.user_id.clone(),
+                                req.identity.role.clone(),
+                                e.to_string(),
+                            ))
+                            .await,
+                        "proxy error",
+                    );
                     return Err(e);
                 }
             };
-            self.repo
-                .record_access(AccessEvent::allowed_download(
-                    req.package_id,
-                    req.identity.user_id,
-                    req.identity.role,
-                ))
-                .await
-                .unwrap_or_else(|e| tracing::warn!(error = %e, "failed to record access"));
+            warn_if_audit_failed(
+                self.repo
+                    .record_access(AccessEvent::allowed_download(
+                        req.package_id,
+                        req.identity.user_id,
+                        req.identity.role,
+                    ))
+                    .await,
+                "allowed download",
+            );
             return Ok(ProxyResponse::Stream(upstream));
         }
 
@@ -206,14 +226,16 @@ impl ProxyService {
                 .await?
                 .ok_or_else(|| CoreError::Registry(format!("artifact '{artifact_key}' vanished between exists and retrieve")))?;
 
-            self.repo
-                .record_access(AccessEvent::allowed_download(
-                    req.package_id,
-                    req.identity.user_id,
-                    req.identity.role,
-                ))
-                .await
-                .unwrap_or_else(|e| tracing::warn!(error = %e, "failed to record access"));
+            warn_if_audit_failed(
+                self.repo
+                    .record_access(AccessEvent::allowed_download(
+                        req.package_id,
+                        req.identity.user_id,
+                        req.identity.role,
+                    ))
+                    .await,
+                "allowed download",
+            );
 
             return Ok(ProxyResponse::Stream(artifact.stream));
         }
@@ -223,15 +245,17 @@ impl ProxyService {
         let mut upstream = match client.fetch_artifact(&req.package_id).await {
             Ok(s) => s,
             Err(e) => {
-                self.repo
-                    .record_access(AccessEvent::proxy_error(
-                        req.package_id.clone(),
-                        req.identity.user_id.clone(),
-                        req.identity.role.clone(),
-                        e.to_string(),
-                    ))
-                    .await
-                    .unwrap_or_else(|re| tracing::warn!(error = %re, "failed to record proxy error"));
+                warn_if_audit_failed(
+                    self.repo
+                        .record_access(AccessEvent::proxy_error(
+                            req.package_id.clone(),
+                            req.identity.user_id.clone(),
+                            req.identity.role.clone(),
+                            e.to_string(),
+                        ))
+                        .await,
+                    "proxy error",
+                );
                 return Err(e);
             }
         };
@@ -261,14 +285,16 @@ impl ProxyService {
             )
             .await?;
 
-        self.repo
-            .record_access(AccessEvent::allowed_download(
-                req.package_id,
-                req.identity.user_id,
-                req.identity.role,
-            ))
-            .await
-            .unwrap_or_else(|e| tracing::warn!(error = %e, "failed to record access"));
+        warn_if_audit_failed(
+            self.repo
+                .record_access(AccessEvent::allowed_download(
+                    req.package_id,
+                    req.identity.user_id,
+                    req.identity.role,
+                ))
+                .await,
+            "allowed download",
+        );
 
         let stream = futures::stream::once(async move { Ok(data) });
         Ok(ProxyResponse::Stream(Box::pin(stream)))

@@ -38,6 +38,23 @@ tasks:
       - until podman exec {{.PG_CONTAINER}} pg_isready -U postgres; do sleep 1; done
       - cargo test -p batlehub-adapters --test pg_cache -- --nocapture
 
+  test:pg-local-registry:
+    desc: Run PostgresLocalRegistry integration tests (starts a temporary Postgres container via Podman)
+    vars:
+      PG_CONTAINER: batlehub-test-pg-local
+      PG_PORT: "15433"
+      PG_PASSWORD: testpass
+      CONF_OVERRIDE: /tmp/batlehub-containers.conf
+    env:
+      CONTAINERS_CONF_OVERRIDE: "{{.CONF_OVERRIDE}}"
+      DATABASE_URL: "postgresql://postgres:{{.PG_PASSWORD}}@127.0.0.1:{{.PG_PORT}}/postgres"
+    cmds:
+      - printf '[network]\ndefault_rootless_network_cmd = "pasta"\n' > {{.CONF_OVERRIDE}}
+      - defer: podman rm -f {{.PG_CONTAINER}} 2>/dev/null || true
+      - podman run -d --name {{.PG_CONTAINER}} -p {{.PG_PORT}}:5432 -e POSTGRES_PASSWORD={{.PG_PASSWORD}} postgres:17-alpine
+      - until podman exec {{.PG_CONTAINER}} pg_isready -U postgres; do sleep 1; done
+      - cargo test -p batlehub-adapters --test local_registry -- --nocapture
+
   test:s3:
     desc: Run S3 storage integration tests (starts a temporary MinIO container via Podman)
     vars:
@@ -82,6 +99,7 @@ tasks:
       - cargo llvm-cov clean --workspace
       - cargo llvm-cov --no-report --workspace --ignore-filename-regex "{{.COVERAGE_EXCLUDE}}"
       - cargo llvm-cov --no-report -p batlehub-adapters --test pg_cache
+      - cargo llvm-cov --no-report -p batlehub-adapters --test local_registry
       - cargo llvm-cov --no-report -p batlehub-adapters --test storage_router
       - cargo llvm-cov --no-report -p batlehub-adapters --features storage-s3 --test s3_storage
       - cargo llvm-cov report --html --output-dir coverage/html --ignore-filename-regex "{{.COVERAGE_EXCLUDE}}"
@@ -112,6 +130,7 @@ tasks:
       - cargo llvm-cov clean --workspace
       - cargo llvm-cov --no-report --workspace --ignore-filename-regex "{{.COVERAGE_EXCLUDE}}"
       - cargo llvm-cov --no-report -p batlehub-adapters --test pg_cache
+      - cargo llvm-cov --no-report -p batlehub-adapters --test local_registry
       - cargo llvm-cov --no-report -p batlehub-adapters --test storage_router
       - cargo llvm-cov --no-report -p batlehub-adapters --features storage-s3 --test s3_storage
       - cargo llvm-cov report --fail-under-lines 80 --ignore-filename-regex "{{.COVERAGE_EXCLUDE}}"
@@ -129,6 +148,11 @@ tasks:
     desc: Run clippy lints across the workspace
     cmds:
       - cargo clippy --workspace -- -D warnings
+
+  audit:
+    desc: Check dependencies for security vulnerabilities (non-actionable advisories suppressed via .cargo/audit.toml)
+    cmds:
+      - cargo audit
 
   fmt:
     desc: Format all Rust source files
@@ -279,3 +303,23 @@ tasks:
       - until curl -sf http://localhost:9900/health; do sleep 1; done
       - mc alias set local http://localhost:9900 rustfsadmin rustfsadmin
       - mc mb --ignore-existing local/artifacts
+
+  # ── Docs website (VitePress) ──────────────────────────────────────────────────
+
+  website:dev:
+    desc: Start the VitePress documentation dev server
+    dir: website
+    cmds:
+      - npm run docs:dev
+
+  website:build:
+    desc: Build the VitePress documentation site for production
+    dir: website
+    cmds:
+      - npm run docs:build
+
+  website:preview:
+    desc: Preview the built VitePress documentation site
+    dir: website
+    cmds:
+      - npm run docs:preview

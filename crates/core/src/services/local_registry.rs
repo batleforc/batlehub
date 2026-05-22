@@ -1,0 +1,366 @@
+use std::sync::Arc;
+
+use bytes::Bytes;
+use futures::StreamExt;
+
+use crate::{
+    entities::{Identity, PublishedPackage, Role},
+    error::CoreError,
+    ports::{LocalRegistryBackend, StorageBackend, StorageMeta},
+};
+
+/// Input to `LocalRegistryService::publish`.
+pub struct PublishRequest {
+    pub registry: String,
+    pub name: String,
+    pub version: String,
+    /// Raw artifact bytes.
+    pub artifact: Bytes,
+    /// SHA-256 hex of `artifact`, computed by the caller (handler layer).
+    pub checksum: String,
+    /// Ecosystem-specific index metadata serialised as JSON.
+    /// Cargo: serialised `CargoIndexEntry` (with `cksum` already set).
+    /// npm: version metadata from the publish payload (`dist.tarball` stripped).
+    /// VSIX: `{"id": "pub.name", "version": "1.0.0"}`.
+    pub index_metadata: serde_json::Value,
+    /// Identity of the publishing user.
+    pub publisher: Identity,
+}
+
+/// Authoritative local-registry service: publish, yank, index, artifact retrieval.
+pub struct LocalRegistryService {
+    pub backend: Arc<dyn LocalRegistryBackend>,
+    pub storage: Arc<dyn StorageBackend>,
+    /// Maximum artifact size in bytes. Defaults to 500 MiB when `None`.
+    pub max_artifact_bytes: Option<u64>,
+}
+
+impl LocalRegistryService {
+    /// Validate and persist a published artifact.
+    pub async fn publish(&self, req: PublishRequest) -> Result<(), CoreError> {
+        if !req.publisher.has_role_at_least(&Role::User) {
+            return Err(CoreError::AccessDenied(
+                "publishing requires at least User role".into(),
+            ));
+        }
+
+        let limit = self.max_artifact_bytes.unwrap_or(500 * 1024 * 1024);
+        if req.artifact.len() as u64 > limit {
+            return Err(CoreError::PayloadTooLarge(format!(
+                "artifact is {} bytes; limit is {}",
+                req.artifact.len(),
+                limit
+            )));
+        }
+
+        let pkg = PublishedPackage {
+            registry: req.registry.clone(),
+            name: req.name.clone(),
+            version: req.version.clone(),
+            checksum: req.checksum.clone(),
+            yanked: false,
+            index_metadata: req.index_metadata,
+            published_at: chrono::Utc::now(),
+            published_by: req.publisher.user_id.clone(),
+        };
+
+        self.backend.publish(pkg).await?;
+
+        self.storage
+            .store(
+                &artifact_storage_key(&req.registry, &req.name, &req.version),
+                req.artifact,
+                StorageMeta {
+                    content_type: Some("application/octet-stream".into()),
+                    size: None,
+                    checksum: Some(req.checksum),
+                },
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn yank(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        identity: &Identity,
+    ) -> Result<(), CoreError> {
+        if !identity.has_role_at_least(&Role::User) {
+            return Err(CoreError::AccessDenied(
+                "yank requires at least User role".into(),
+            ));
+        }
+        self.backend.yank(registry, name, version).await
+    }
+
+    pub async fn unyank(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        identity: &Identity,
+    ) -> Result<(), CoreError> {
+        if !identity.has_role_at_least(&Role::User) {
+            return Err(CoreError::AccessDenied(
+                "unyank requires at least User role".into(),
+            ));
+        }
+        self.backend.unyank(registry, name, version).await
+    }
+
+    /// Return the sparse index file content (newline-delimited JSON) for a Cargo crate.
+    /// Returns `CoreError::NotFound` if the crate has never been published here.
+    pub async fn get_index(&self, registry: &str, name: &str) -> Result<String, CoreError> {
+        let versions = self.backend.get_versions(registry, name).await?;
+        if versions.is_empty() {
+            return Err(CoreError::NotFound(format!(
+                "crate '{}' not found in local registry '{}'",
+                name, registry
+            )));
+        }
+        let lines = versions
+            .iter()
+            .map(|v| serde_json::to_string(&v.index_metadata))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        Ok(lines.join("\n"))
+    }
+
+    /// Build an npm packument for all published versions, rewriting `dist.tarball`
+    /// to point at `base_url` (e.g. `"https://batlehub.example.com"`).
+    pub async fn get_npm_packument(
+        &self,
+        registry: &str,
+        name: &str,
+        base_url: &str,
+    ) -> Result<serde_json::Value, CoreError> {
+        let versions = self.backend.get_versions(registry, name).await?;
+        if versions.is_empty() {
+            return Err(CoreError::NotFound(format!(
+                "package '{}' not found in local registry '{}'",
+                name, registry
+            )));
+        }
+
+        let base = base_url.trim_end_matches('/');
+        let mut versions_map = serde_json::Map::new();
+        let mut time_map = serde_json::Map::new();
+        let mut latest = String::new();
+
+        for pkg in &versions {
+            let mut meta = pkg.index_metadata.clone();
+            if let Some(obj) = meta.as_object_mut() {
+                let dist = obj
+                    .entry("dist")
+                    .or_insert_with(|| serde_json::json!({}));
+                if let Some(d) = dist.as_object_mut() {
+                    d.insert(
+                        "tarball".to_owned(),
+                        serde_json::json!(format!(
+                            "{base}/proxy/{registry}/{name}/{version}/tarball",
+                            version = pkg.version
+                        )),
+                    );
+                }
+            }
+            time_map.insert(
+                pkg.version.clone(),
+                serde_json::json!(pkg.published_at.to_rfc3339()),
+            );
+            versions_map.insert(pkg.version.clone(), meta);
+            latest = pkg.version.clone();
+        }
+
+        Ok(serde_json::json!({
+            "name": name,
+            "_id": name,
+            "dist-tags": { "latest": latest },
+            "versions": versions_map,
+            "time": time_map
+        }))
+    }
+
+    /// Return a single npm version metadata object with `dist.tarball` rewritten.
+    pub async fn get_npm_version(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        base_url: &str,
+    ) -> Result<serde_json::Value, CoreError> {
+        let versions = self.backend.get_versions(registry, name).await?;
+        let pkg = versions
+            .into_iter()
+            .find(|v| v.version == version)
+            .ok_or_else(|| {
+                CoreError::NotFound(format!(
+                    "{}@{} not found in local registry '{}'",
+                    name, version, registry
+                ))
+            })?;
+
+        let base = base_url.trim_end_matches('/');
+        let mut meta = pkg.index_metadata.clone();
+        if let Some(obj) = meta.as_object_mut() {
+            let dist = obj
+                .entry("dist")
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(d) = dist.as_object_mut() {
+                d.insert(
+                    "tarball".to_owned(),
+                    serde_json::json!(format!(
+                        "{base}/proxy/{registry}/{name}/{version}/tarball"
+                    )),
+                );
+            }
+        }
+        Ok(meta)
+    }
+
+    /// Retrieve the raw artifact bytes for download.
+    pub async fn get_artifact(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+    ) -> Result<Bytes, CoreError> {
+        let key = artifact_storage_key(registry, name, version);
+        let artifact = self
+            .storage
+            .retrieve(&key)
+            .await?
+            .ok_or_else(|| {
+                CoreError::NotFound(format!(
+                    "{}/{}@{} not found in local registry",
+                    registry, name, version
+                ))
+            })?;
+        let mut buf = Vec::new();
+        let mut stream = artifact.stream;
+        while let Some(chunk) = stream.next().await {
+            buf.extend_from_slice(&chunk?);
+        }
+        Ok(Bytes::from(buf))
+    }
+
+    /// Return newline-delimited version list for a locally published Go module.
+    /// Returns `CoreError::NotFound` if the module has never been published here.
+    pub async fn get_go_version_list(&self, registry: &str, module: &str) -> Result<String, CoreError> {
+        let versions = self.backend.get_versions(registry, module).await?;
+        if versions.is_empty() {
+            return Err(CoreError::NotFound(format!(
+                "module '{}' not found in local registry '{}'",
+                module, registry
+            )));
+        }
+        let list = versions
+            .iter()
+            .filter_map(|v| {
+                v.index_metadata
+                    .get("Version")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_owned())
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        Ok(list)
+    }
+
+    /// Return the `.info` JSON for a specific Go module version.
+    pub async fn get_go_info(
+        &self,
+        registry: &str,
+        module: &str,
+        version: &str,
+    ) -> Result<serde_json::Value, CoreError> {
+        let pkg = self
+            .backend
+            .get_versions(registry, module)
+            .await?
+            .into_iter()
+            .find(|v| v.version == version)
+            .ok_or_else(|| {
+                CoreError::NotFound(format!(
+                    "{}@{} not found in local registry '{}'",
+                    module, version, registry
+                ))
+            })?;
+        let v = pkg
+            .index_metadata
+            .get("Version")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!(version));
+        let t = pkg
+            .index_metadata
+            .get("Time")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!(pkg.published_at.to_rfc3339()));
+        Ok(serde_json::json!({ "Version": v, "Time": t }))
+    }
+
+    /// Return the `go.mod` content for a specific Go module version.
+    pub async fn get_go_mod(
+        &self,
+        registry: &str,
+        module: &str,
+        version: &str,
+    ) -> Result<String, CoreError> {
+        let pkg = self
+            .backend
+            .get_versions(registry, module)
+            .await?
+            .into_iter()
+            .find(|v| v.version == version)
+            .ok_or_else(|| {
+                CoreError::NotFound(format!(
+                    "{}@{} not found in local registry '{}'",
+                    module, version, registry
+                ))
+            })?;
+        pkg.index_metadata
+            .get("go_mod")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_owned())
+            .ok_or_else(|| {
+                CoreError::NotFound(format!(
+                    "go.mod not found for {}@{} in registry '{}'",
+                    module, version, registry
+                ))
+            })
+    }
+
+    /// Return the `.info` JSON for the most recently published Go module version.
+    pub async fn get_go_latest(
+        &self,
+        registry: &str,
+        module: &str,
+    ) -> Result<serde_json::Value, CoreError> {
+        let versions = self.backend.get_versions(registry, module).await?;
+        let pkg = versions.into_iter().last().ok_or_else(|| {
+            CoreError::NotFound(format!(
+                "module '{}' not found in local registry '{}'",
+                module, registry
+            ))
+        })?;
+        let v = pkg
+            .index_metadata
+            .get("Version")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!(pkg.version));
+        let t = pkg
+            .index_metadata
+            .get("Time")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!(pkg.published_at.to_rfc3339()));
+        Ok(serde_json::json!({ "Version": v, "Time": t }))
+    }
+}
+
+/// Stable storage key for a locally published artifact.
+/// Distinct from the proxy `artifact:…` namespace to avoid collisions.
+pub fn artifact_storage_key(registry: &str, name: &str, version: &str) -> String {
+    format!("local:{}/{}/{}", registry, name, version)
+}

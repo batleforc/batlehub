@@ -132,6 +132,7 @@ path = "./tmp/storage-cache"
 # type = "s3"
 # bucket = "artifacts"
 # region = "us-east-1"
+# prefix = "batlehub/"      # optional: store in a subfolder inside the bucket
 # endpoint_url = "http://localhost:9900"
 # force_path_style = true   # required for RustFS and MinIO
 #

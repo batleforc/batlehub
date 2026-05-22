@@ -38,7 +38,7 @@ async fn make_fs(label: &str) -> Arc<FilesystemStorageBackend> {
 
 async fn pool(url: &str) -> PgPool {
     let p = PgPool::connect(url).await.expect("connect to postgres");
-    sqlx::migrate!("./migrations").run(&p).await.expect("run migrations");
+    batlehub_adapters::migrations::embedded_migrator().run(&p).await.expect("run migrations");
     p
 }
 
