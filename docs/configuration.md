@@ -945,6 +945,8 @@ admin     = ["*"]
 
 ### 6.6 Private Cargo Registry (local / hybrid mode) {#66-private-cargo-registry-local--hybrid-mode}
 
+> For a step-by-step publishing walkthrough, see [`docs/publishing.md § Cargo`](publishing.md#4-cargo).
+
 #### Pure local registry (no upstream)
 
 Use this when you want a completely private Cargo registry that does not proxy crates.io.
@@ -1031,6 +1033,8 @@ In hybrid mode, `cargo fetch` and `cargo build` work transparently:
 
 ### 6.7 Private npm Registry (local / hybrid mode) {#67-private-npm-registry-local--hybrid-mode}
 
+> For a step-by-step publishing walkthrough, see [`docs/publishing.md § npm`](publishing.md#3-npm).
+
 #### Pure local npm registry (no upstream)
 
 Use this when you want a completely private npm registry for internal packages.
@@ -1096,6 +1100,8 @@ In hybrid mode `npm install` transparently serves internal packages from local s
 
 ### 6.8 Private VS Code Extension Registry (local / hybrid mode) {#68-private-vs-code-extension-registry-local--hybrid-mode}
 
+> For a step-by-step publishing walkthrough, see [`docs/publishing.md § VS Code Extensions`](publishing.md#5-vs-code-extensions-openvsx--vs-code-marketplace).
+
 Use this when you want to distribute private VS Code extensions through a self-hosted registry.
 
 #### Pure local extension registry
@@ -1150,6 +1156,8 @@ Extension IDs follow the `{publisher}.{name}` convention (e.g. `my-org.my-ext`).
 ---
 
 ### 6.9 Private Go Module Proxy (local / hybrid mode) {#69-private-go-module-proxy-local--hybrid-mode}
+
+> For a step-by-step publishing walkthrough, see [`docs/publishing.md § Go Modules`](publishing.md#6-go-modules).
 
 #### Pure local Go module proxy (no upstream)
 

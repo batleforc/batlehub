@@ -478,5 +478,6 @@ Full list in [`docs/configuration.md § Environment Variable Overrides`](docs/co
 | [`docs/configuration.md`](docs/configuration.md) | Full TOML reference, permissions, worked examples |
 | [`docs/configuration.md § Registry modes`](docs/configuration.md#registry-modes) | Private registry modes (local / hybrid) for Cargo, npm, and VS Code extensions |
 | [`docs/configuration.md § Self-Hosted`](docs/configuration.md#9-self-hosted--private-registries) | Upstream auth (Bearer / Basic / header) and custom CA certificates |
+| [`docs/publishing.md`](docs/publishing.md) | Step-by-step guide for publishing packages (npm, Cargo, VSIX, Go modules) |
 | [`docs/adding-a-registry.md`](docs/adding-a-registry.md) | Step-by-step guide for implementing a new registry adapter |
 | `/swagger-ui/` (runtime) | Interactive API docs |
