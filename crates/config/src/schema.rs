@@ -13,6 +13,8 @@ pub struct AppConfig {
     pub auth: Vec<AuthConfig>,
     pub storage: StoragesConfig,
     #[serde(default)]
+    pub cache: CacheConfig,
+    #[serde(default)]
     pub registries: Vec<RegistryConfig>,
     #[serde(default)]
     pub otel: Option<OtelConfig>,
@@ -328,6 +330,34 @@ pub struct S3StorageConfig {
 #[allow(dead_code)]
 pub type StorageConfig = StoragesConfig;
 
+// ── Cache ─────────────────────────────────────────────────────────────────────
+
+/// Selects the metadata cache backend.
+///
+/// In TOML:
+/// ```toml
+/// [cache]
+/// type = "postgres"   # "memory" (default) | "postgres"
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct CacheConfig {
+    /// `"memory"` (default) uses an in-process HashMap; no persistence between restarts.
+    /// `"postgres"` stores entries in the `metadata_cache` table; survives restarts and
+    /// is shared across multiple server instances.
+    #[serde(rename = "type", default = "default_cache_type")]
+    pub cache_type: String,
+}
+
+fn default_cache_type() -> String {
+    "memory".to_owned()
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self { cache_type: default_cache_type() }
+    }
+}
+
 // ── Registries ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -401,7 +431,7 @@ pub struct UpstreamTlsConfig {
     pub ca_cert_path: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 pub struct CachePolicy {
     /// TTL for metadata (version lists, release info) in seconds.
     #[serde(default = "default_metadata_ttl")]
@@ -409,6 +439,11 @@ pub struct CachePolicy {
     /// How to handle artifact caching: `"permanent"` (never re-fetch) or `"ttl"`.
     #[serde(default = "default_artifact_strategy")]
     pub artifact_strategy: String,
+    /// When true (the default), serve stale metadata when upstream returns a transient
+    /// error instead of propagating a 502. Allows cached artifacts to keep being served
+    /// during upstream outages.
+    #[serde(default = "default_serve_stale")]
+    pub serve_stale: bool,
 }
 
 fn default_metadata_ttl() -> u64 {
@@ -417,6 +452,20 @@ fn default_metadata_ttl() -> u64 {
 
 fn default_artifact_strategy() -> String {
     "permanent".to_owned()
+}
+
+fn default_serve_stale() -> bool {
+    true
+}
+
+impl Default for CachePolicy {
+    fn default() -> Self {
+        Self {
+            metadata_ttl_secs: default_metadata_ttl(),
+            artifact_strategy: default_artifact_strategy(),
+            serve_stale: true,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]

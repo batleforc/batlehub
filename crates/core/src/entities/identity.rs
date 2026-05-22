@@ -46,3 +46,42 @@ impl Identity {
         &self.role >= minimum
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_admin_true_only_for_admin_role() {
+        assert!(Identity { user_id: None, role: Role::Admin, auth_provider: None, groups: vec![] }.is_admin());
+        assert!(!Identity { user_id: None, role: Role::User, auth_provider: None, groups: vec![] }.is_admin());
+        assert!(!Identity::anonymous().is_admin());
+    }
+
+    #[test]
+    fn has_role_at_least_respects_ordering() {
+        let admin = Identity { user_id: None, role: Role::Admin, auth_provider: None, groups: vec![] };
+        let user  = Identity { user_id: None, role: Role::User,  auth_provider: None, groups: vec![] };
+        let anon  = Identity::anonymous();
+
+        assert!(admin.has_role_at_least(&Role::Admin));
+        assert!(admin.has_role_at_least(&Role::User));
+        assert!(admin.has_role_at_least(&Role::Anonymous));
+
+        assert!(!user.has_role_at_least(&Role::Admin));
+        assert!(user.has_role_at_least(&Role::User));
+        assert!(user.has_role_at_least(&Role::Anonymous));
+
+        assert!(!anon.has_role_at_least(&Role::Admin));
+        assert!(!anon.has_role_at_least(&Role::User));
+        assert!(anon.has_role_at_least(&Role::Anonymous));
+    }
+
+    #[test]
+    fn anonymous_returns_anonymous_role_and_no_user_id() {
+        let id = Identity::anonymous();
+        assert_eq!(id.role, Role::Anonymous);
+        assert!(id.user_id.is_none());
+        assert!(id.auth_provider.is_none());
+    }
+}

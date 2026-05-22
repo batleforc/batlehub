@@ -70,3 +70,119 @@ pub fn apply_upstream_options(
     }
     Ok(builder.build()?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_opts() -> UpstreamHttpOptions {
+        UpstreamHttpOptions::default()
+    }
+
+    #[test]
+    fn default_opts_have_no_fields_set() {
+        let opts = empty_opts();
+        assert!(opts.bearer_token.is_none());
+        assert!(opts.basic_auth.is_none());
+        assert!(opts.custom_header.is_none());
+        assert!(opts.ca_cert_path.is_none());
+    }
+
+    #[test]
+    fn clone_preserves_all_fields() {
+        let opts = UpstreamHttpOptions {
+            bearer_token: Some("tok".to_owned()),
+            basic_auth: Some(("user".to_owned(), "pass".to_owned())),
+            custom_header: Some(("X-Key".to_owned(), "val".to_owned())),
+            ca_cert_path: Some("/etc/ca.pem".to_owned()),
+        };
+        let cloned = opts.clone();
+        assert_eq!(cloned.bearer_token.as_deref(), Some("tok"));
+        assert_eq!(cloned.ca_cert_path.as_deref(), Some("/etc/ca.pem"));
+    }
+
+    #[test]
+    fn debug_format_contains_field_names() {
+        let opts = UpstreamHttpOptions { bearer_token: Some("t".to_owned()), ..Default::default() };
+        let s = format!("{opts:?}");
+        assert!(s.contains("bearer_token"));
+    }
+
+    #[test]
+    fn upstream_auth_headers_empty_opts_returns_empty_map() {
+        let headers = upstream_auth_headers(&empty_opts()).unwrap();
+        assert!(headers.is_empty());
+    }
+
+    #[test]
+    fn upstream_auth_headers_bearer_injects_authorization_header() {
+        let opts = UpstreamHttpOptions { bearer_token: Some("mytoken".to_owned()), ..Default::default() };
+        let headers = upstream_auth_headers(&opts).unwrap();
+        let auth = headers.get("authorization").unwrap().to_str().unwrap();
+        assert_eq!(auth, "Bearer mytoken");
+    }
+
+    #[test]
+    fn upstream_auth_headers_custom_header_is_injected() {
+        let opts = UpstreamHttpOptions {
+            custom_header: Some(("X-Api-Key".to_owned(), "secret".to_owned())),
+            ..Default::default()
+        };
+        let headers = upstream_auth_headers(&opts).unwrap();
+        let val = headers.get("x-api-key").unwrap().to_str().unwrap();
+        assert_eq!(val, "secret");
+    }
+
+    #[test]
+    fn upstream_auth_headers_both_bearer_and_custom() {
+        let opts = UpstreamHttpOptions {
+            bearer_token: Some("tok".to_owned()),
+            custom_header: Some(("X-Tenant".to_owned(), "acme".to_owned())),
+            ..Default::default()
+        };
+        let headers = upstream_auth_headers(&opts).unwrap();
+        assert!(headers.contains_key("authorization"));
+        assert!(headers.contains_key("x-tenant"));
+    }
+
+    #[test]
+    fn apply_upstream_tls_no_cert_returns_unmodified_builder() {
+        let builder = reqwest::Client::builder();
+        let result = apply_upstream_tls(builder, &empty_opts());
+        assert!(result.is_ok());
+        assert!(result.unwrap().build().is_ok());
+    }
+
+    #[test]
+    fn apply_upstream_tls_nonexistent_cert_returns_error() {
+        let opts = UpstreamHttpOptions {
+            ca_cert_path: Some("/nonexistent/ca.pem".to_owned()),
+            ..Default::default()
+        };
+        let err = apply_upstream_tls(reqwest::Client::builder(), &opts).unwrap_err();
+        assert!(err.to_string().contains("reading CA cert"));
+    }
+
+    #[test]
+    fn apply_upstream_options_no_auth_builds_client() {
+        let client = apply_upstream_options(reqwest::Client::builder(), &empty_opts());
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn apply_upstream_options_with_bearer_builds_client() {
+        let opts = UpstreamHttpOptions { bearer_token: Some("tok".to_owned()), ..Default::default() };
+        let client = apply_upstream_options(reqwest::Client::builder(), &opts);
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn apply_upstream_options_with_custom_header_builds_client() {
+        let opts = UpstreamHttpOptions {
+            custom_header: Some(("X-Api-Key".to_owned(), "val".to_owned())),
+            ..Default::default()
+        };
+        let client = apply_upstream_options(reqwest::Client::builder(), &opts);
+        assert!(client.is_ok());
+    }
+}

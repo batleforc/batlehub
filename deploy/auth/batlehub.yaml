@@ -82,3 +82,54 @@ entries:
     attrs:
       name: ProxyAuth
       provider: !KeyOf provider
+
+  # ── RustFS (S3-compatible object storage) ────────────────────────────────────
+  - id: rustfs-provider
+    model: authentik_providers_oauth2.oauth2provider
+    identifiers:
+      name: rustfs
+    attrs:
+      authorization_flow:
+        !Find [
+          authentik_flows.flow,
+          [slug, default-provider-authorization-implicit-consent],
+        ]
+      invalidation_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      client_type: confidential
+      client_id: rustfs
+      client_secret: rustfs-secret
+      redirect_uris:
+        - matching_mode: strict
+          url: http://localhost:9901/oauth_callback
+          redirect_uri_type: authorization
+      grant_types:
+        - authorization_code
+        - refresh_token
+      property_mappings:
+        - !Find [
+            authentik_core.propertymapping,
+            [name, "authentik default OAuth Mapping: OpenID 'openid'"],
+          ]
+        - !Find [
+            authentik_core.propertymapping,
+            [name, "authentik default OAuth Mapping: OpenID 'profile'"],
+          ]
+        - !Find [
+            authentik_core.propertymapping,
+            [name, "authentik default OAuth Mapping: OpenID 'email'"],
+          ]
+        - !KeyOf groups-scope
+      signing_key:
+        !Find [
+          authentik_crypto.certificatekeypair,
+          [name, authentik Self-signed Certificate],
+        ]
+
+  - id: rustfs-application
+    model: authentik_core.application
+    identifiers:
+      slug: rustfs
+    attrs:
+      name: RustFS
+      provider: !KeyOf rustfs-provider

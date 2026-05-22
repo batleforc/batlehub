@@ -74,6 +74,10 @@ impl From<CoreError> for AppError {
                 status: StatusCode::PAYLOAD_TOO_LARGE,
                 message: msg,
             },
+            CoreError::Registry(msg) => Self {
+                status: StatusCode::BAD_GATEWAY,
+                message: msg,
+            },
             other => {
                 tracing::error!(error = %other, "internal error");
                 Self::internal("internal server error")

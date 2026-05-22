@@ -24,6 +24,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use batlehub_adapters::auth::StaticTokenAuthProvider;
+use batlehub_adapters::cache::InMemoryCacheStore;
 use batlehub_core::{
     entities::{
         AccessEvent, EventFilter, PackageFilter, PackageId, PackageMetadata, PackageStatus,
@@ -31,7 +32,7 @@ use batlehub_core::{
     },
     error::CoreError,
     ports::{
-        ArtifactStream, AuthProvider, ByteStream, CacheStore, InMemoryCacheStore,
+        ArtifactStream, AuthProvider, ByteStream, CacheStore,
         PackageRepository, RegistryClient, StorageBackend, StoredArtifact, StorageMeta,
         UserToken, UserTokenRepository,
     },
@@ -306,6 +307,7 @@ fn rbac_policy(
     RegistryPolicy {
         metadata_ttl: Some(Duration::from_secs(300)),
         firewall_only: false,
+        serve_stale_metadata: false,
         rules: vec![
             Box::new(RbacRule::new(perms)),
             Box::new(BlockListRule::new(repo)),
@@ -918,6 +920,7 @@ fn rbac_policy_group_registry(repo: Arc<dyn PackageRepository>) -> RegistryPolic
     RegistryPolicy {
         metadata_ttl: Some(Duration::from_secs(300)),
         firewall_only: false,
+        serve_stale_metadata: false,
         rules: vec![
             Box::new(RbacRule::new(perms).with_groups(group_perms)),
             Box::new(BlockListRule::new(repo)),
@@ -2221,6 +2224,701 @@ async fn proxy_goproxy_wrong_registry_type_returns_404() {
     let req = TestRequest::get()
         .uri("/proxy/npm/golang.org/x/text/@latest")
         .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+// ── Upstream-KO / stale-serving integration tests ────────────────────────────
+//
+// These tests verify the end-to-end HTTP behaviour when the upstream registry
+// is unavailable and the proxy falls back to stale metadata from its cache.
+
+struct UnavailableRegistry;
+
+#[async_trait]
+impl RegistryClient for UnavailableRegistry {
+    fn registry_type(&self) -> &str { "npm" }
+
+    async fn resolve_metadata(&self, _pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
+        Err(CoreError::Registry("upstream down".into()))
+    }
+
+    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<ArtifactStream, CoreError> {
+        let data = Bytes::from(format!("artifact:npm:{}", pkg.cache_key()));
+        Ok(Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(data) })))
+    }
+}
+
+async fn make_unavailable_npm_app(
+    repo: Arc<InMemoryRepo>,
+    cache: Arc<InMemoryCacheStore>,
+    serve_stale: bool,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache_dyn: Arc<dyn CacheStore> = cache;
+
+    let registries: HashMap<String, Arc<dyn RegistryClient>> =
+        [("npm".to_owned(), Arc::new(UnavailableRegistry) as Arc<dyn RegistryClient>)].into();
+
+    let perms = HashMap::from([
+        (Role::Anonymous, vec!["releases:read".to_owned()]),
+        (Role::User, vec!["releases:read".to_owned(), "source:read".to_owned()]),
+        (Role::Admin, vec!["*".to_owned()]),
+    ]);
+    let policies: HashMap<String, RegistryPolicy> = [(
+        "npm".to_owned(),
+        RegistryPolicy {
+            metadata_ttl: Some(Duration::from_secs(300)),
+            firewall_only: false,
+            serve_stale_metadata: serve_stale,
+            rules: vec![
+                Box::new(RbacRule::new(perms)),
+                Box::new(BlockListRule::new(repo_dyn.clone())),
+            ],
+        },
+    )]
+    .into();
+
+    let proxy_svc = Arc::new(ProxyService {
+        registries,
+        storage,
+        cache: cache_dyn,
+        repo: repo_dyn.clone(),
+        policies,
+        max_artifact_size_bytes: None,
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = batlehub_web::AccessConfig {
+        anonymous: ["npm"].iter().map(|s| s.to_string()).collect(),
+        user: ["npm"].iter().map(|s| s.to_string()).collect(),
+        admin: ["npm"].iter().map(|s| s.to_string()).collect(),
+        groups: std::collections::HashMap::new(),
+    };
+    let registry_map = batlehub_web::RegistryMap(
+        [("npm", "npm")].iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+    );
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+        ))
+        .split_for_parts();
+    let app = app.app_data(actix_web::web::Data::new(cargo_indexes));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+}
+
+fn stale_npm_meta(name: &str, version: &str) -> PackageMetadata {
+    PackageMetadata {
+        id: PackageId::new("npm", name, version),
+        published_at: Some(Utc::now() - chrono::Duration::days(30)),
+        download_url: None,
+        checksum: None,
+        is_signed: None,
+        extra: serde_json::json!({}),
+    }
+}
+
+#[actix_web::test]
+async fn upstream_down_with_stale_metadata_returns_200() {
+    let cache = Arc::new(InMemoryCacheStore::new());
+    let pkg = PackageId::new("npm", "lodash", "4.17.21");
+    let cache_key = format!("meta:{}", pkg.cache_key());
+    cache.seed_expired(&cache_key, stale_npm_meta("lodash", "4.17.21")).await;
+
+    let app = make_unavailable_npm_app(InMemoryRepo::new(), cache, true).await;
+    let req = TestRequest::get().uri("/proxy/npm/lodash/4.17.21").to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200, "stale metadata should be served when upstream is down");
+}
+
+#[actix_web::test]
+async fn upstream_down_no_stale_returns_502() {
+    let cache = Arc::new(InMemoryCacheStore::new()); // empty — no stale entry
+    let app = make_unavailable_npm_app(InMemoryRepo::new(), cache, true).await;
+    let req = TestRequest::get().uri("/proxy/npm/lodash/4.17.21").to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 502, "no stale + upstream down must return 502");
+}
+
+#[actix_web::test]
+async fn upstream_down_serve_stale_disabled_returns_502() {
+    // Stale entry exists in cache but serve_stale_metadata = false
+    let cache = Arc::new(InMemoryCacheStore::new());
+    let pkg = PackageId::new("npm", "lodash", "4.17.21");
+    let cache_key = format!("meta:{}", pkg.cache_key());
+    cache.seed_expired(&cache_key, stale_npm_meta("lodash", "4.17.21")).await;
+
+    let app = make_unavailable_npm_app(InMemoryRepo::new(), cache, false).await;
+    let req = TestRequest::get().uri("/proxy/npm/lodash/4.17.21").to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 502, "serve_stale=false must not use the stale entry");
+}
+
+// ── /api/v1/admin/health ──────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn health_non_admin_returns_403() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/health")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn health_no_db_returns_empty_list() {
+    // make_app passes pool=None, so the handler returns [] immediately.
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/health")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body, serde_json::json!([]));
+}
+
+// ── /api/v1/admin/registries/{registry}/clear-cache ──────────────────────────
+
+#[actix_web::test]
+async fn clear_cache_non_admin_returns_403() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/npm/clear-cache")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn clear_cache_unknown_registry_returns_404() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/no-such-registry/clear-cache")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn clear_cache_known_registry_returns_200() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/npm/clear-cache")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert!(body["cleared"].is_number());
+}
+
+// ── /api/v1/admin/packages/bulk-block ────────────────────────────────────────
+
+#[actix_web::test]
+async fn bulk_block_non_admin_returns_403() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/packages/bulk-block")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_json(serde_json::json!({ "items": [] }))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn bulk_block_admin_empty_items_returns_200() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/packages/bulk-block")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({ "items": [] }))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["succeeded_count"], 0);
+}
+
+#[actix_web::test]
+async fn bulk_block_admin_one_item_succeeds() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/packages/bulk-block")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({
+            "items": [
+                { "registry": "npm", "name": "lodash", "version": "4.17.21",
+                  "artifact": null, "reason": "bulk test" }
+            ]
+        }))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["succeeded_count"], 1);
+    assert_eq!(body["failed_count"], 0);
+}
+
+// ── /api/v1/admin/packages/bulk-unblock ──────────────────────────────────────
+
+#[actix_web::test]
+async fn bulk_unblock_non_admin_returns_403() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/packages/bulk-unblock")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_json(serde_json::json!({ "items": [] }))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn bulk_unblock_admin_returns_200() {
+    let repo = InMemoryRepo::new();
+    let app = make_app(repo.clone()).await;
+
+    // Block first
+    let block_req = TestRequest::post()
+        .uri("/api/v1/admin/packages/block")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({
+            "registry": "npm", "name": "lodash", "version": "4.17.21", "reason": "test"
+        }))
+        .to_request();
+    call_service(&app, block_req).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/packages/bulk-unblock")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({
+            "items": [
+                { "registry": "npm", "name": "lodash", "version": "4.17.21", "artifact": null }
+            ]
+        }))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["succeeded_count"], 1);
+}
+
+// ── /api/v1/admin/packages/invalidate ────────────────────────────────────────
+
+#[actix_web::test]
+async fn invalidate_non_admin_returns_403() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/packages/invalidate")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_json(serde_json::json!({
+            "registry": "npm", "name": "lodash", "version": "4.17.21", "artifact": null
+        }))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn invalidate_admin_returns_200() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/packages/invalidate")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({
+            "registry": "npm", "name": "lodash", "version": "4.17.21", "artifact": null
+        }))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["success"], true);
+}
+
+// ── proxy/npm.rs: wrong-registry-type and unknown-registry paths ──────────────
+
+#[actix_web::test]
+async fn get_packument_wrong_registry_type_returns_404() {
+    let app = make_app(InMemoryRepo::new()).await;
+    // "github" is registered but is type "github", not npm/cargo/openvsx
+    let req = TestRequest::get()
+        .uri("/proxy/github/some-package")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn get_packument_unknown_registry_returns_404() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/no-such-registry/some-package")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn get_version_wrong_registry_type_returns_404() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/github/some-package/1.0.0")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn get_version_unknown_registry_returns_404() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/no-such-registry/some-package/1.0.0")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn audit_quick_wrong_registry_type_returns_404() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/proxy/cargo/-/npm/v1/audit/quick")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn audit_quick_unknown_registry_returns_404() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/proxy/no-such/-/npm/v1/audit/quick")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn audit_quick_no_upstream_configured_returns_404() {
+    // make_app uses UpstreamMap::default() (empty), so no upstream for "npm"
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/proxy/npm/-/npm/v1/audit/quick")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn audit_quick_forwards_to_upstream_and_returns_response() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    // Bind a random local port and serve a single HTTP response.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 4096];
+        let _ = stream.read(&mut buf).await;
+        let body = b"{}";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let _ = stream.write_all(response.as_bytes()).await;
+        let _ = stream.write_all(body).await;
+    });
+
+    let upstream_url = format!("http://127.0.0.1:{port}");
+
+    let repo_dyn: Arc<dyn batlehub_core::ports::PackageRepository> = InMemoryRepo::new();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [
+        ("npm".to_owned(), FixedRegistry::new("npm") as Arc<dyn RegistryClient>),
+    ].into();
+    let policies: HashMap<String, batlehub_core::services::RegistryPolicy> = [
+        ("npm".to_owned(), rbac_policy(repo_dyn.clone())),
+    ].into();
+    let proxy_svc = Arc::new(ProxyService {
+        registries,
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        policies,
+        max_artifact_size_bytes: None,
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = batlehub_web::AccessConfig {
+        anonymous: ["npm"].iter().map(|s| s.to_string()).collect(),
+        user: ["npm"].iter().map(|s| s.to_string()).collect(),
+        admin: ["npm"].iter().map(|s| s.to_string()).collect(),
+        groups: std::collections::HashMap::new(),
+    };
+    let registry_map = batlehub_web::RegistryMap(
+        [("npm", "npm")].iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+    );
+    let mut upstream_entries = std::collections::HashMap::new();
+    upstream_entries.insert("npm".to_owned(), upstream_url);
+    let upstream_map = batlehub_web::UpstreamMap(upstream_entries);
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, upstream_map, vec![]))
+        .split_for_parts();
+    let app = app.app_data(actix_web::web::Data::new(cargo_indexes));
+    let app = init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/npm/-/npm/v1/audit/quick")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"packages": {}}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+// ── proxy/npm.rs: download_tarball wrong registry type ───────────────────────
+
+#[actix_web::test]
+async fn download_tarball_wrong_registry_type_returns_404() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/cargo/some-package/1.0.0/tarball")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+// ── front_office/packages: build_proxy_url coverage ──────────────────────────
+
+#[actix_web::test]
+async fn access_check_returns_proxy_url_for_github_tarball() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/packages/access?registry=github&name=rust-lang%2Frust&version=v1.80.0&artifact=tarball")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let proxy_url = body["proxy_url"].as_str().unwrap();
+    assert!(proxy_url.contains("/proxy/github/rust-lang/rust/tarball/v1.80.0"));
+}
+
+#[actix_web::test]
+async fn access_check_returns_proxy_url_for_github_zipball() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/packages/access?registry=github&name=rust-lang%2Frust&version=v1.80.0&artifact=zipball")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let proxy_url = body["proxy_url"].as_str().unwrap();
+    assert!(proxy_url.contains("/proxy/github/rust-lang/rust/zipball/v1.80.0"));
+}
+
+#[actix_web::test]
+async fn access_check_returns_proxy_url_for_github_raw_file() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/packages/access?registry=github&name=rust-lang%2Frust&version=v1.80.0&artifact=raw%2FCompiler_Options.md")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let proxy_url = body["proxy_url"].as_str().unwrap();
+    assert!(proxy_url.contains("/proxy/github/rust-lang/rust/raw/v1.80.0/Compiler_Options.md"));
+}
+
+#[actix_web::test]
+async fn access_check_returns_proxy_url_for_github_asset_by_name() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/packages/access?registry=github&name=rust-lang%2Frust&version=v1.80.0&artifact=rustc-1.80.0-x86_64.tar.gz")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let proxy_url = body["proxy_url"].as_str().unwrap();
+    assert!(proxy_url.contains("/proxy/github/rust-lang/rust/releases/assets/rustc-1.80.0-x86_64.tar.gz"));
+}
+
+#[actix_web::test]
+async fn access_check_returns_proxy_url_for_npm_metadata() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/packages/access?registry=npm&name=lodash&version=4.17.21")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let proxy_url = body["proxy_url"].as_str().unwrap();
+    assert!(proxy_url.contains("/proxy/npm/lodash/4.17.21"));
+    assert!(!proxy_url.contains("/tarball"));
+}
+
+#[actix_web::test]
+async fn access_check_returns_proxy_url_for_cargo_metadata() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/packages/access?registry=cargo&name=serde&version=1.0.0")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let proxy_url = body["proxy_url"].as_str().unwrap();
+    assert!(proxy_url.contains("/proxy/cargo/serde/1.0.0"));
+    assert!(!proxy_url.contains("/download"));
+}
+
+#[actix_web::test]
+async fn access_check_returns_null_proxy_url_for_unknown_registry_type() {
+    let app = make_app(InMemoryRepo::new()).await;
+    // openvsx is a known registry but has no build_proxy_url branch -> returns None
+    let req = TestRequest::get()
+        .uri("/api/v1/packages/access?registry=openvsx&name=some.ext&version=1.0.0")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert!(body["proxy_url"].is_null());
+}
+
+// ── proxy/cargo.rs: cargo_registry_index with real upstream ──────────────────
+
+#[actix_web::test]
+async fn cargo_registry_index_fetches_from_upstream_and_returns_content() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    // Bind a random local port and serve one response for the index entry.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let index_body = b"{\"name\":\"rand\",\"vers\":\"0.8.5\"}";
+    let index_body_len = index_body.len();
+
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 4096];
+        let _ = stream.read(&mut buf).await;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {index_body_len}\r\n\r\n"
+        );
+        let _ = stream.write_all(response.as_bytes()).await;
+        let _ = stream.write_all(index_body).await;
+    });
+
+    let index_url = format!("http://127.0.0.1:{port}");
+
+    let repo_dyn: Arc<dyn batlehub_core::ports::PackageRepository> = InMemoryRepo::new();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [
+        ("cargo".to_owned(), FixedRegistry::new("cargo") as Arc<dyn RegistryClient>),
+    ].into();
+    let policies: HashMap<String, RegistryPolicy> = [
+        ("cargo".to_owned(), rbac_policy(repo_dyn.clone())),
+    ].into();
+    let proxy_svc = Arc::new(ProxyService {
+        registries,
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        policies,
+        max_artifact_size_bytes: None,
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = batlehub_web::AccessConfig {
+        anonymous: ["cargo"].iter().map(|s| s.to_string()).collect(),
+        user: ["cargo"].iter().map(|s| s.to_string()).collect(),
+        admin: ["cargo"].iter().map(|s| s.to_string()).collect(),
+        groups: std::collections::HashMap::new(),
+    };
+    let registry_map = batlehub_web::RegistryMap(
+        [("cargo", "cargo")].iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+    );
+    let mut cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+    cargo_indexes.insert("cargo".to_owned(), batlehub_web::CargoIndexProxy {
+        http: reqwest::Client::new(),
+        index_url,
+    });
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![]))
+        .split_for_parts();
+    let app = app.app_data(actix_web::web::Data::new(cargo_indexes));
+    let app = init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await;
+
+    let req = TestRequest::get()
+        .uri("/proxy/cargo/registry/ra/nd/rand")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+// ── proxy/cargo.rs: wrong-registry-type paths ────────────────────────────────
+
+#[actix_web::test]
+async fn download_crate_wrong_registry_type_returns_404() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/npm/some-crate/1.0.0/download")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn download_crate_unknown_registry_returns_404() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/no-such-registry/some-crate/1.0.0/download")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
         .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 404);

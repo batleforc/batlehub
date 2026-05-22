@@ -1,3 +1,5 @@
+pub mod cache;
+
 #[cfg(feature = "auth-token")]
 pub mod auth;
 

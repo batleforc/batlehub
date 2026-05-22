@@ -161,3 +161,131 @@ impl StorageBackend for FilesystemStorageBackend {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use bytes::Bytes;
+    use futures::StreamExt;
+
+    use super::*;
+
+    static DIR_ID: AtomicU64 = AtomicU64::new(0);
+
+    async fn make_backend() -> FilesystemStorageBackend {
+        let id = DIR_ID.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("batlehub-test-fs-{pid}-{id}"));
+        FilesystemStorageBackend::new(dir).await.unwrap()
+    }
+
+    async fn collect(artifact: StoredArtifact) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let mut stream = artifact.stream;
+        while let Some(chunk) = stream.next().await {
+            buf.extend_from_slice(&chunk.unwrap());
+        }
+        buf
+    }
+
+    #[tokio::test]
+    async fn store_and_retrieve_round_trip() {
+        let b = make_backend().await;
+        let data = Bytes::from_static(b"hello, fs");
+        b.store("artifact:npm/test-pkg", data.clone(), StorageMeta::default()).await.unwrap();
+        let artifact = b.retrieve("artifact:npm/test-pkg").await.unwrap().expect("should exist");
+        assert_eq!(collect(artifact).await, b"hello, fs");
+    }
+
+    #[tokio::test]
+    async fn retrieve_missing_key_returns_none() {
+        let b = make_backend().await;
+        assert!(b.retrieve("artifact:npm/missing").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn exists_before_and_after_store() {
+        let b = make_backend().await;
+        assert!(!b.exists("artifact:npm/ex-pkg").await.unwrap());
+        b.store("artifact:npm/ex-pkg", Bytes::from_static(b"data"), StorageMeta::default()).await.unwrap();
+        assert!(b.exists("artifact:npm/ex-pkg").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn delete_removes_file() {
+        let b = make_backend().await;
+        b.store("artifact:npm/del-pkg", Bytes::from_static(b"bye"), StorageMeta::default()).await.unwrap();
+        b.delete("artifact:npm/del-pkg").await.unwrap();
+        assert!(!b.exists("artifact:npm/del-pkg").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn delete_missing_key_is_ok() {
+        let b = make_backend().await;
+        b.delete("artifact:npm/ghost").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn colon_in_key_is_stored_and_retrieved() {
+        let b = make_backend().await;
+        b.store("artifact:npm/colon-test", Bytes::from_static(b"x"), StorageMeta::default()).await.unwrap();
+        assert!(b.exists("artifact:npm/colon-test").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn stat_by_prefix_counts_and_sums_sizes() {
+        let b = make_backend().await;
+        for i in 0..3u8 {
+            b.store(
+                &format!("artifact:npm/stat-pkg-{i}"),
+                Bytes::from(vec![i; 100]),
+                StorageMeta { size: Some(100), ..Default::default() },
+            )
+            .await
+            .unwrap();
+        }
+        // Prefix must end with '/' to resolve to the registry directory.
+        let (count, bytes) = b.stat_by_prefix("artifact:npm/").await.unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(bytes, 300);
+    }
+
+    #[tokio::test]
+    async fn stat_by_prefix_returns_zero_for_nonexistent_prefix() {
+        let b = make_backend().await;
+        let (count, bytes) = b.stat_by_prefix("artifact:nonexistent/").await.unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn delete_by_prefix_removes_all_matching_files() {
+        let b = make_backend().await;
+        for i in 0..3u8 {
+            b.store(
+                &format!("artifact:npm/del-pkg-{i}"),
+                Bytes::from(vec![0u8; 10]),
+                StorageMeta::default(),
+            )
+            .await
+            .unwrap();
+        }
+        b.store("artifact:cargo/keep", Bytes::from_static(b"keep"), StorageMeta::default()).await.unwrap();
+
+        let deleted = b.delete_by_prefix("artifact:npm/").await.unwrap();
+        assert!(deleted >= 3, "at least 3 npm artifacts should be deleted");
+
+        let (remaining, _) = b.stat_by_prefix("artifact:npm/").await.unwrap();
+        assert_eq!(remaining, 0, "no npm artifacts should remain");
+
+        assert!(b.exists("artifact:cargo/keep").await.unwrap(), "cargo artifact must survive");
+    }
+
+    #[tokio::test]
+    async fn delete_by_prefix_nonexistent_returns_zero() {
+        let b = make_backend().await;
+        let deleted = b.delete_by_prefix("artifact:nonexistent/").await.unwrap();
+        assert_eq!(deleted, 0);
+    }
+}
