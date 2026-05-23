@@ -27,6 +27,7 @@ pub fn embedded_migrator() -> Migrator {
             mig!(4, "artifact size bytes","../migrations/004_artifact_size_bytes.sql"),
             mig!(5, "metadata cache",     "../migrations/005_metadata_cache.sql"),
             mig!(6, "local packages",     "../migrations/006_local_packages.sql"),
+            mig!(7, "artifact cache meta","../migrations/007_artifact_cache_meta.sql"),
         ]),
         ignore_missing: false,
         locking: true,

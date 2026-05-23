@@ -444,6 +444,10 @@ mod tests {
                 .fold((0u64, 0u64), |(c, b), (_, v)| (c + 1, b + v.len() as u64));
             Ok((count, bytes))
         }
+        async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, CoreError> {
+            let map = self.data.lock().unwrap();
+            Ok(map.keys().filter(|k| k.starts_with(prefix)).cloned().collect())
+        }
     }
 
     struct FixedRegistry;
@@ -460,12 +464,16 @@ mod tests {
                 checksum: None,
                 is_signed: None,
                 extra: serde_json::json!({}),
+                cache_control: None,
             })
         }
 
-        async fn fetch_artifact(&self, pkg: &PackageId) -> Result<ArtifactStream, CoreError> {
+        async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
             let data = Bytes::from(format!("artifact:{}", pkg.cache_key()));
-            Ok(Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(data) })))
+            Ok(FetchedArtifact {
+                stream: Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(data) })),
+                cache_control: None,
+            })
         }
     }
 
@@ -482,9 +490,10 @@ mod tests {
                 checksum: None,
                 is_signed: None,
                 extra: serde_json::json!({}),
+                cache_control: None,
             })
         }
-        async fn fetch_artifact(&self, _pkg: &PackageId) -> Result<ArtifactStream, CoreError> {
+        async fn fetch_artifact(&self, _pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
             Err(CoreError::Registry("should not be called".into()))
         }
     }
@@ -714,9 +723,12 @@ mod tests {
         async fn resolve_metadata(&self, _pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
             Err(CoreError::Registry("upstream down".into()))
         }
-        async fn fetch_artifact(&self, pkg: &PackageId) -> Result<ArtifactStream, CoreError> {
+        async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
             let data = Bytes::from(format!("artifact:{}", pkg.cache_key()));
-            Ok(Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(data) })))
+            Ok(FetchedArtifact {
+                stream: Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(data) })),
+                cache_control: None,
+            })
         }
     }
 
@@ -758,6 +770,7 @@ mod tests {
             checksum: None,
             is_signed: None,
             extra: serde_json::json!({}),
+            cache_control: None,
         };
         cache.seed_expired(&cache_key, stale_meta);
 
@@ -783,6 +796,7 @@ mod tests {
             checksum: None,
             is_signed: None,
             extra: serde_json::json!({}),
+            cache_control: None,
         };
         cache.seed_expired(&cache_key, stale_meta);
 
@@ -814,7 +828,7 @@ mod tests {
             async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
                 Err(CoreError::NotFound(pkg.name.clone()))
             }
-            async fn fetch_artifact(&self, _pkg: &PackageId) -> Result<ArtifactStream, CoreError> {
+            async fn fetch_artifact(&self, _pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
                 Err(CoreError::NotFound("no artifact".into()))
             }
         }
@@ -830,6 +844,7 @@ mod tests {
             checksum: None,
             is_signed: None,
             extra: serde_json::json!({}),
+            cache_control: None,
         };
         cache.seed_expired(&cache_key, stale_meta);
 

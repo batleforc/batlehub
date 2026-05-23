@@ -134,6 +134,7 @@ mod tests {
             checksum: None,
             is_signed: None,
             extra: serde_json::Value::Null,
+            cache_control: None,
         };
         let ctx = RuleContext { identity: &identity, package: &meta, resource_type: "releases:read", cache_entry: None, requested_version: None };
         assert!(matches!(rule.evaluate(&ctx).await, RuleDecision::Allow));
@@ -150,6 +151,7 @@ mod tests {
             checksum: None,
             is_signed: None,
             extra: serde_json::Value::Null,
+            cache_control: None,
         };
         let ctx = RuleContext { identity: &identity, package: &meta, resource_type: "source:read", cache_entry: None, requested_version: None };
         assert!(matches!(rule.evaluate(&ctx).await, RuleDecision::Deny { .. }));
@@ -166,6 +168,7 @@ mod tests {
             checksum: None,
             is_signed: None,
             extra: serde_json::Value::Null,
+            cache_control: None,
         };
         let ctx = RuleContext { identity: &identity, package: &meta, resource_type: "actions:read", cache_entry: None, requested_version: None };
         assert!(matches!(rule.evaluate(&ctx).await, RuleDecision::Allow));
@@ -191,6 +194,7 @@ mod tests {
             checksum: None,
             is_signed: None,
             extra: serde_json::Value::Null,
+            cache_control: None,
         }
     }
 

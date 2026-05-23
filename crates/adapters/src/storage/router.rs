@@ -175,4 +175,21 @@ impl StorageBackend for StorageRouter {
         let backend = Arc::clone(self.resolve_backend_for_key(prefix));
         backend.delete_by_prefix(prefix).await
     }
+
+    async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, CoreError> {
+        use std::collections::HashSet;
+
+        let mut seen = HashSet::new();
+        let mut all_keys = Vec::new();
+
+        for backend in self.backends.values() {
+            let keys = backend.list_keys(prefix).await?;
+            for key in keys {
+                if seen.insert(key.clone()) {
+                    all_keys.push(key);
+                }
+            }
+        }
+        Ok(all_keys)
+    }
 }

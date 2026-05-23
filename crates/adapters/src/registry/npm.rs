@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{ArtifactStream, RegistryClient},
+    ports::{ArtifactStream, FetchedArtifact, RegistryClient},
 };
 
 use super::http_client::{apply_upstream_options, UpstreamHttpOptions};
@@ -140,10 +140,11 @@ impl RegistryClient for NpmRegistryClient {
             checksum,
             is_signed: None,
             extra,
+            cache_control: None,
         })
     }
 
-    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<ArtifactStream, CoreError> {
+    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
         // Resolve the tarball URL for this version.
         let packument = self.fetch_packument(&pkg.name).await?;
         let resolved_version = packument
@@ -171,11 +172,17 @@ impl RegistryClient for NpmRegistryClient {
             .error_for_status()
             .map_err(|e| CoreError::Registry(e.to_string()))?;
 
+        let cache_control = response
+            .headers()
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+
         let stream = response
             .bytes_stream()
             .map_err(|e| CoreError::Registry(e.to_string()));
 
-        Ok(Box::pin(stream))
+        Ok(FetchedArtifact { stream: Box::pin(stream), cache_control })
     }
 }
 

@@ -6,7 +6,7 @@ use serde::Deserialize;
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{ArtifactStream, RegistryClient},
+    ports::{FetchedArtifact, RegistryClient},
 };
 
 use super::http_client::{apply_upstream_tls, upstream_auth_headers, UpstreamHttpOptions};
@@ -124,6 +124,7 @@ impl RegistryClient for GithubRegistryClient {
                     checksum: None,
                     is_signed: None,
                     extra: serde_json::Value::Null,
+                    cache_control: None,
                 });
             }
         }
@@ -160,6 +161,7 @@ impl RegistryClient for GithubRegistryClient {
                     checksum: None,
                     is_signed: None,
                     extra,
+                    cache_control: None,
                 })
             }
 
@@ -213,12 +215,13 @@ impl RegistryClient for GithubRegistryClient {
                     checksum: None,
                     is_signed: Some(is_signed),
                     extra,
+                    cache_control: None,
                 })
             }
         }
     }
 
-    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<ArtifactStream, CoreError> {
+    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
         let owner_repo = &pkg.name;
         let git_ref = &pkg.version;
 
@@ -283,11 +286,17 @@ impl RegistryClient for GithubRegistryClient {
             .error_for_status()
             .map_err(|e| CoreError::Registry(e.to_string()))?;
 
+        let cache_control = response
+            .headers()
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+
         let stream = response
             .bytes_stream()
             .map_err(|e| CoreError::Registry(e.to_string()));
 
-        Ok(Box::pin(stream))
+        Ok(FetchedArtifact { stream: Box::pin(stream), cache_control })
     }
 }
 

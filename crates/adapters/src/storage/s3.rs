@@ -228,6 +228,42 @@ impl StorageBackend for S3StorageBackend {
         Ok((count, total_bytes))
     }
 
+    async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, CoreError> {
+        let s3_prefix = self.object_key(prefix);
+        let prefix_strip_len = self.prefix.len();
+        let mut keys = Vec::new();
+        let mut continuation_token: Option<String> = None;
+
+        loop {
+            let mut req = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(&s3_prefix);
+            if let Some(ref token) = continuation_token {
+                req = req.continuation_token(token);
+            }
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| CoreError::Storage(format!("S3 list_objects {s3_prefix}: {e}")))?;
+
+            for obj in resp.contents() {
+                if let Some(k) = obj.key() {
+                    // Strip the backend prefix to get the logical key.
+                    keys.push(k[prefix_strip_len..].to_owned());
+                }
+            }
+
+            let is_truncated = resp.is_truncated().unwrap_or(false);
+            continuation_token = resp.next_continuation_token().map(str::to_owned);
+            if !is_truncated {
+                break;
+            }
+        }
+        Ok(keys)
+    }
+
     async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError> {
         use aws_sdk_s3::types::{Delete, ObjectIdentifier};
 

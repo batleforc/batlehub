@@ -9,6 +9,14 @@ use crate::error::CoreError;
 
 pub type ArtifactStream = Pin<Box<dyn Stream<Item = Result<Bytes, CoreError>> + Send + 'static>>;
 
+/// The result of fetching an artifact from an upstream registry, including the
+/// byte stream and any `Cache-Control` header the upstream returned.
+pub struct FetchedArtifact {
+    pub stream: ArtifactStream,
+    /// Raw `Cache-Control` header value from the upstream artifact response, if any.
+    pub cache_control: Option<String>,
+}
+
 /// A client for a specific upstream package registry.
 ///
 /// Each registry type (GitHub, Cargo, npm, …) provides its own implementation.
@@ -25,6 +33,7 @@ pub trait RegistryClient: Send + Sync {
     /// as the rule engine depends on them.
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError>;
 
-    /// Stream the raw artifact bytes from the upstream registry.
-    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<ArtifactStream, CoreError>;
+    /// Stream the raw artifact bytes from the upstream registry, along with any
+    /// upstream `Cache-Control` header.
+    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError>;
 }

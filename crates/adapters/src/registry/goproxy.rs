@@ -6,7 +6,7 @@ use serde::Deserialize;
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{ArtifactStream, RegistryClient},
+    ports::{FetchedArtifact, RegistryClient},
 };
 
 use super::http_client::{apply_upstream_options, UpstreamHttpOptions};
@@ -99,10 +99,11 @@ impl RegistryClient for GoProxyRegistryClient {
             checksum: None,
             is_signed: None,
             extra,
+            cache_control: None,
         })
     }
 
-    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<ArtifactStream, CoreError> {
+    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
         let url = match pkg.artifact.as_deref() {
             Some("list") => {
                 format!("{}/@v/list", self.module_base(&pkg.name))
@@ -141,13 +142,21 @@ impl RegistryClient for GoProxyRegistryClient {
             )));
         }
 
-        let stream = response
+        let response = response
             .error_for_status()
-            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        let cache_control = response
+            .headers()
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+
+        let stream = response
             .bytes_stream()
             .map_err(|e| CoreError::Registry(e.to_string()));
 
-        Ok(Box::pin(stream))
+        Ok(FetchedArtifact { stream: Box::pin(stream), cache_control })
     }
 }
 
@@ -272,8 +281,8 @@ mod tests {
             .await;
 
         let client = GoProxyRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let stream = client.fetch_artifact(&pkg("golang.org/x/text", "v0.3.7")).await.unwrap();
-        let bytes: Vec<bytes::Bytes> = stream.try_collect().await.unwrap();
+        let fetched = client.fetch_artifact(&pkg("golang.org/x/text", "v0.3.7")).await.unwrap();
+        let bytes: Vec<bytes::Bytes> = fetched.stream.try_collect().await.unwrap();
         let content = bytes.into_iter().flat_map(|b| b.to_vec()).collect::<Vec<u8>>();
         let content = String::from_utf8(content).unwrap();
         assert!(content.contains("v0.3.7"));
@@ -291,8 +300,8 @@ mod tests {
 
         let client = GoProxyRegistryClient::new(server.url(), &Default::default()).unwrap();
         let pkg_list = pkg("golang.org/x/text", "latest").with_artifact("list");
-        let stream = client.fetch_artifact(&pkg_list).await.unwrap();
-        let bytes: Vec<bytes::Bytes> = stream.try_collect().await.unwrap();
+        let fetched = client.fetch_artifact(&pkg_list).await.unwrap();
+        let bytes: Vec<bytes::Bytes> = fetched.stream.try_collect().await.unwrap();
         let content = bytes.into_iter().flat_map(|b| b.to_vec()).collect::<Vec<u8>>();
         let content = String::from_utf8(content).unwrap();
         assert!(content.contains("v0.3.7"));

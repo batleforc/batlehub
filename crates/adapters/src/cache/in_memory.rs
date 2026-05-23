@@ -80,6 +80,7 @@ mod tests {
             checksum: None,
             is_signed: None,
             extra: serde_json::json!({}),
+            cache_control: None,
         }
     }
 

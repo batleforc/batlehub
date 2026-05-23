@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{ArtifactStream, RegistryClient},
+    ports::{FetchedArtifact, RegistryClient},
 };
 
 /// Tries a list of upstream clients in priority order.
@@ -48,11 +48,11 @@ impl RegistryClient for FanoutRegistryClient {
         Err(last)
     }
 
-    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<ArtifactStream, CoreError> {
+    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
         let mut last = CoreError::NotFound(format!("{} artifact not found in any upstream", pkg.name));
         for client in &self.clients {
             match client.fetch_artifact(pkg).await {
-                Ok(stream) => return Ok(stream),
+                Ok(fetched) => return Ok(fetched),
                 Err(CoreError::NotFound(msg)) => {
                     tracing::debug!(upstream = client.registry_type(), %msg, "upstream miss, trying next");
                     last = CoreError::NotFound(msg);
@@ -106,14 +106,15 @@ mod tests {
             checksum: None,
             is_signed: None,
             extra: serde_json::Value::Null,
+            cache_control: None,
         }
     }
 
-    fn dummy_stream() -> ArtifactStream {
+    fn dummy_fetched() -> FetchedArtifact {
         let stream = futures::stream::once(async {
             Ok::<Bytes, CoreError>(Bytes::from_static(b"artifact-data"))
         });
-        Box::pin(stream)
+        FetchedArtifact { stream: Box::pin(stream), cache_control: None }
     }
 
     #[async_trait]
@@ -134,9 +135,9 @@ mod tests {
             }
         }
 
-        async fn fetch_artifact(&self, pkg: &PackageId) -> Result<ArtifactStream, CoreError> {
+        async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
             match self.artifact {
-                MockOutcome::Hit  => Ok(dummy_stream()),
+                MockOutcome::Hit  => Ok(dummy_fetched()),
                 MockOutcome::Miss => Err(CoreError::NotFound(
                     format!("[{}] {} artifact not found", self.label, pkg.name),
                 )),
@@ -234,8 +235,8 @@ mod tests {
             MockRegistry::new("private", MockOutcome::Miss, MockOutcome::Miss),
             MockRegistry::new("public",  MockOutcome::Miss, MockOutcome::Hit),
         ]);
-        let stream = f.fetch_artifact(&pkg()).await.expect("expected stream from public fallback");
-        let chunks: Vec<_> = stream.try_collect().await.expect("stream should yield data");
+        let fetched = f.fetch_artifact(&pkg()).await.expect("expected stream from public fallback");
+        let chunks: Vec<_> = fetched.stream.try_collect().await.expect("stream should yield data");
         assert_eq!(chunks, vec![Bytes::from_static(b"artifact-data")]);
     }
 

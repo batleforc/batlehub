@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{ArtifactStream, RegistryClient},
+    ports::{FetchedArtifact, RegistryClient},
 };
 
 use super::http_client::{apply_upstream_options, UpstreamHttpOptions};
@@ -156,10 +156,11 @@ impl RegistryClient for VsCodeMarketplaceRegistryClient {
             checksum: None,
             is_signed: Some(false),
             extra,
+            cache_control: None,
         })
     }
 
-    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<ArtifactStream, CoreError> {
+    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
         let (publisher, ext_name) = Self::parse_id(&pkg.name)?;
 
         let url = format!(
@@ -185,13 +186,21 @@ impl RegistryClient for VsCodeMarketplaceRegistryClient {
             )));
         }
 
-        let stream = response
+        let response = response
             .error_for_status()
-            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        let cache_control = response
+            .headers()
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+
+        let stream = response
             .bytes_stream()
             .map_err(|e| CoreError::Registry(e.to_string()));
 
-        Ok(Box::pin(stream))
+        Ok(FetchedArtifact { stream: Box::pin(stream), cache_control })
     }
 }
 
@@ -479,9 +488,9 @@ mod tests {
             .await;
 
         let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let stream =
+        let fetched =
             client.fetch_artifact(&pkg("ms-python.python", "2024.2.1")).await.unwrap();
-        let chunks: Vec<bytes::Bytes> = stream.try_collect().await.unwrap();
+        let chunks: Vec<bytes::Bytes> = fetched.stream.try_collect().await.unwrap();
         let content: Vec<u8> = chunks.into_iter().flat_map(|b| b.to_vec()).collect();
         assert_eq!(content, b"fake vsix content");
     }

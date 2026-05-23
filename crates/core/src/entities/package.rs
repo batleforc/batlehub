@@ -60,6 +60,10 @@ pub struct PackageMetadata {
     pub is_signed: Option<bool>,
     /// Registry-specific extra fields (e.g., GitHub release body, Cargo license).
     pub extra: Value,
+    /// Raw `Cache-Control` header value from the upstream metadata response, if any.
+    /// Used to apply `no-store`, `no-cache`, or `max-age` directives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<String>,
 }
 
 /// Administrative status of a package in this proxy.

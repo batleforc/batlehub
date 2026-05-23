@@ -43,4 +43,8 @@ pub trait StorageBackend: Send + Sync {
     /// Count artifacts and sum their sizes for keys starting with `prefix`.
     /// Returns `(count, total_bytes)`.
     async fn stat_by_prefix(&self, prefix: &str) -> Result<(u64, u64), CoreError>;
+
+    /// List all keys starting with `prefix`. Returns the logical keys (not
+    /// backend-internal paths). Used by eviction, coherence, and deduplication.
+    async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, CoreError>;
 }
