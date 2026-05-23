@@ -2,11 +2,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::entities::PackageMetadata;
 use crate::error::CoreError;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheEntry {
     pub metadata: PackageMetadata,
     pub cached_at: DateTime<Utc>,

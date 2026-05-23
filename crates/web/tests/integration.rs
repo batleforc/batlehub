@@ -414,6 +414,7 @@ fn make_local_svc(storage: Arc<dyn StorageBackend>) -> Arc<LocalRegistryService>
         backend: InMemoryLocalRegistry::new(),
         storage,
         max_artifact_bytes: None,
+        quota: None,
     })
 }
 

@@ -11,7 +11,7 @@ For discussion or to propose a feature, open an issue on the [project repository
 Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules.
 
 - [ ] **PyPI** — Python package index (simple API + wheel / sdist downloads)
-- [ ] **Maven / Gradle** — Maven Central-compatible metadata XML + JAR / POM downloads
+- [x] **Maven / Gradle** — Maven Central-compatible metadata XML + JAR / POM downloads
 - [ ] **RubyGems** — gem downloads and version listing
 - [ ] **NuGet** — .NET package protocol
 - [ ] **Deb / RPM** — Debian APT and Red Hat YUM repository proxying
@@ -70,10 +70,10 @@ Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules.
 
 ## Quota management
 
-- [ ] Per-user, per-group, and per-registry quotas on storage usage and number of published packages
-- [ ] Enforcement policies: block publish requests that exceed the quota, or allow with an explicit warning
-- [ ] Quota warnings in API responses and admin UI when a limit is being approached
-- [ ] Admin API for resetting quotas for specific users, groups, or registries
+- [x] Per-user, per-group, and per-registry quotas on storage usage and number of published packages
+- [x] Enforcement policies: block publish requests that exceed the quota, or allow with an explicit warning
+- [x] Quota warnings in API responses and admin UI when a limit is being approached
+- [x] Admin API for resetting quotas for specific users, groups, or registries
 
 ---
 

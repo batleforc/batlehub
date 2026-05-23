@@ -28,6 +28,8 @@ pub fn embedded_migrator() -> Migrator {
             mig!(5, "metadata cache",     "../migrations/005_metadata_cache.sql"),
             mig!(6, "local packages",     "../migrations/006_local_packages.sql"),
             mig!(7, "artifact cache meta","../migrations/007_artifact_cache_meta.sql"),
+            mig!(8, "quota",              "../migrations/008_quota.sql"),
+            mig!(9, "local packages status", "../migrations/009_local_packages_status.sql"),
         ]),
         ignore_missing: false,
         locking: true,

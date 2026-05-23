@@ -4,6 +4,7 @@ pub mod eviction;
 pub mod local_registry;
 pub mod metrics;
 pub mod proxy;
+pub mod quota;
 pub mod warming;
 
 pub use admin::{AdminService, BulkActionResult, BulkBlockItem};
@@ -12,4 +13,5 @@ pub use eviction::{CoherenceReport, EvictionConfig, EvictionReport, EvictionServ
 pub use local_registry::{artifact_storage_key, LocalRegistryService, PublishRequest};
 pub use metrics::ProxyMetrics;
 pub use proxy::{ProxyRequest, ProxyResponse, ProxyService, RegistryPolicy};
+pub use quota::{QuotaCheck, QuotaEnforcement, QuotaService, RegistryQuotaConfig};
 pub use warming::{WarmingReport, WarmingService};

@@ -135,7 +135,7 @@ pub async fn vsix_publish(
         "publisher": publisher
     });
 
-    local_svc
+    let quota = local_svc
         .publish(PublishRequest {
             registry,
             name: extension_id,
@@ -148,5 +148,9 @@ pub async fn vsix_publish(
         .await
         .map_err(AppError::from)?;
 
-    Ok(HttpResponse::Ok().json(serde_json::json!({ "ok": true })))
+    let mut resp = HttpResponse::Ok();
+    for (name, value) in quota.headers() {
+        resp.insert_header((name, value));
+    }
+    Ok(resp.json(serde_json::json!({ "ok": true })))
 }

@@ -9,7 +9,9 @@ name = "batlehub"
 path = "src/main.rs"
 
 [features]
+default = ["cache-redis"]
 storage-s3 = ["batlehub-adapters/storage-s3"]
+cache-redis = ["batlehub-adapters/cache-redis"]
 
 [dependencies]
 batlehub-core = { path = "../crates/core" }
@@ -28,6 +30,7 @@ utoipa.workspace = true
 utoipa-actix-web.workspace = true
 utoipa-swagger-ui.workspace = true
 anyhow.workspace = true
+sqlx.workspace = true
 actix-web.workspace = true
 actix-files.workspace = true
 actix-cors.workspace = true

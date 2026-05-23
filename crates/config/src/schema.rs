@@ -45,7 +45,7 @@ impl AppConfig {
             }
             match registry.registry_type.as_str() {
                 "github" | "cargo" | "npm" | "openvsx" | "goproxy" | "pypi" | "composer"
-                | "vscode-marketplace" => {}
+                | "vscode-marketplace" | "maven" => {}
                 other => bail!("unknown registry type: '{other}'"),
             }
             if matches!(registry.mode, RegistryMode::Local | RegistryMode::Hybrid)
@@ -367,15 +367,23 @@ pub struct S3StorageConfig {
 /// In TOML:
 /// ```toml
 /// [cache]
-/// type = "postgres"   # "memory" (default) | "postgres"
+/// type = "postgres"   # "memory" (default) | "postgres" | "redis"
+///
+/// # Required when type = "redis":
+/// url = "redis://localhost:6379"
 /// ```
 #[derive(Debug, Deserialize)]
 pub struct CacheConfig {
     /// `"memory"` (default) uses an in-process HashMap; no persistence between restarts.
     /// `"postgres"` stores entries in the `metadata_cache` table; survives restarts and
     /// is shared across multiple server instances.
+    /// `"redis"` stores entries in Redis; survives restarts and is shared across instances.
     #[serde(rename = "type", default = "default_cache_type")]
     pub cache_type: String,
+    /// Connection URL for the Redis cache backend (required when `type = "redis"`).
+    /// Format: `redis://[:<password>@]<host>[:<port>][/<db>]`
+    /// or `rediss://...` for TLS.
+    pub url: Option<String>,
 }
 
 fn default_cache_type() -> String {
@@ -384,7 +392,7 @@ fn default_cache_type() -> String {
 
 impl Default for CacheConfig {
     fn default() -> Self {
-        Self { cache_type: default_cache_type() }
+        Self { cache_type: default_cache_type(), url: None }
     }
 }
 
@@ -443,7 +451,50 @@ pub struct RegistryConfig {
     /// Controls proxy vs. local vs. hybrid behaviour for this registry.
     #[serde(default)]
     pub mode: RegistryMode,
+    /// Optional publish quota enforced on local/hybrid registries.
+    #[serde(default)]
+    pub quota: Option<QuotaConfig>,
 }
+
+// ── Quota management ──────────────────────────────────────────────────────────
+
+/// How to enforce quota violations.
+#[derive(Debug, Deserialize, Default, Clone, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum QuotaEnforcement {
+    /// Reject the publish request with HTTP 429 when the quota is exceeded.
+    #[default]
+    Block,
+    /// Allow the publish but include a warning header in the response.
+    Warn,
+}
+
+/// Per-registry publish quotas for local/hybrid mode.
+///
+/// Example TOML:
+/// ```toml
+/// [registries.quota]
+/// max_storage_bytes_per_user = 1_073_741_824   # 1 GiB
+/// max_packages_per_user      = 100
+/// warn_threshold_pct         = 80
+/// enforcement                = "block"
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct QuotaConfig {
+    /// Maximum cumulative bytes a single user may publish to this registry.
+    pub max_storage_bytes_per_user: Option<u64>,
+    /// Maximum number of distinct package versions a single user may publish.
+    pub max_packages_per_user: Option<u32>,
+    /// Emit a quota-warning response header when usage exceeds this percentage
+    /// of the limit. Defaults to 80.
+    #[serde(default = "default_warn_pct")]
+    pub warn_threshold_pct: u8,
+    /// Whether to hard-block or just warn on quota overrun.
+    #[serde(default)]
+    pub enforcement: QuotaEnforcement,
+}
+
+fn default_warn_pct() -> u8 { 80 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]

@@ -319,6 +319,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             audit::audit_log,
             health::{clear_registry_cache, registry_health},
             packages::{block_package, bulk_block_packages, bulk_unblock_packages, invalidate_package, list_packages as admin_list_packages, package_detail, unblock_package},
+            quota::{get_quota_for_user, list_quota, list_quota_for_registry, reset_quota_for_user},
             stats::admin_stats,
             warming::warm_registry,
         },
@@ -331,6 +332,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             // Register most-specific patterns first so actix-web resolves correctly:
             // cargo api/v1 (literal "api" segment) > cargo index (literal "registry" segment) >
             // github (owner/repo/verb) > cargo download (literal "download") >
+            // maven (literal "maven2" segment) >
             // openvsx vsix (literal "vsix") > npm audit (literal "/-/npm/v1/audit/quick") >
             // npm tarball (literal "tarball") > shared version metadata > shared packument
             cargo::{
@@ -341,6 +343,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             npm::{audit_quick, download_tarball as npm_download_tarball, get_packument, get_version, npm_publish},
             openvsx::{download_vsix, vsix_publish},
             goproxy::{goproxy_file, goproxy_latest, goproxy_list, goproxy_publish},
+            maven::maven_get,
         },
     };
 
@@ -375,6 +378,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(goproxy_latest);
     cfg.service(goproxy_list);
     cfg.service(goproxy_file);
+    // Maven (literal "maven2" segment — must precede generic catch-all routes)
+    cfg.service(maven_get);
     // OpenVSX/VSCode VSIX publish (PUT) and download (GET) — same path, different method
     cfg.service(vsix_publish);
     cfg.service(download_vsix);
@@ -403,6 +408,11 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(audit_log);
     cfg.service(warm_registry);
     cfg.service(admin_stats);
+    // Quota admin (specific user route before registry-level route)
+    cfg.service(reset_quota_for_user);
+    cfg.service(get_quota_for_user);
+    cfg.service(list_quota_for_registry);
+    cfg.service(list_quota);
 }
 
 /// Return the raw OpenAPI JSON spec (auto-collected from route registrations).

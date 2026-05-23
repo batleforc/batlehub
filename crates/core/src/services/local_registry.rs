@@ -7,6 +7,7 @@ use crate::{
     entities::{Identity, PublishedPackage, Role},
     error::CoreError,
     ports::{LocalRegistryBackend, StorageBackend, StorageMeta},
+    services::quota::{QuotaCheck, QuotaService},
 };
 
 /// Input to `LocalRegistryService::publish`.
@@ -33,11 +34,17 @@ pub struct LocalRegistryService {
     pub storage: Arc<dyn StorageBackend>,
     /// Maximum artifact size in bytes. Defaults to 500 MiB when `None`.
     pub max_artifact_bytes: Option<u64>,
+    /// Optional publish quota enforcement. When `None`, quotas are disabled.
+    pub quota: Option<Arc<QuotaService>>,
 }
 
 impl LocalRegistryService {
     /// Validate and persist a published artifact.
-    pub async fn publish(&self, req: PublishRequest) -> Result<(), CoreError> {
+    ///
+    /// Returns a `QuotaCheck` describing the publisher's current quota state
+    /// after the publish (useful for setting `X-Quota-*` response headers).
+    /// Returns a zeroed `QuotaCheck` when no quota is configured.
+    pub async fn publish(&self, req: PublishRequest) -> Result<QuotaCheck, CoreError> {
         if !req.publisher.has_role_at_least(&Role::User) {
             return Err(CoreError::AccessDenied(
                 "publishing requires at least User role".into(),
@@ -53,6 +60,15 @@ impl LocalRegistryService {
             )));
         }
 
+        // Check and record quota before persisting. This may return QuotaExceeded.
+        let quota_check = if let Some(quota_svc) = &self.quota {
+            quota_svc
+                .check_and_record_publish(&req.publisher, &req.registry, req.artifact.len() as u64)
+                .await?
+        } else {
+            QuotaCheck::default()
+        };
+
         let pkg = PublishedPackage {
             registry: req.registry.clone(),
             name: req.name.clone(),
@@ -64,21 +80,51 @@ impl LocalRegistryService {
             published_by: req.publisher.user_id.clone(),
         };
 
-        self.backend.publish(pkg).await?;
+        let storage_key = artifact_storage_key(&req.registry, &req.name, &req.version);
+        let bytes = req.artifact.len() as u64;
 
-        self.storage
+        // Step 1: reserve the version (inserted as 'pending', invisible to readers).
+        if let Err(e) = self.backend.publish(pkg).await {
+            // Row was not inserted; only quota needs rollback.
+            self.revoke_quota(&req.publisher, &req.registry, bytes).await;
+            return Err(e);
+        }
+
+        // Step 2: persist artifact bytes. On failure, discard the pending row.
+        if let Err(e) = self
+            .storage
             .store(
-                &artifact_storage_key(&req.registry, &req.name, &req.version),
-                req.artifact,
+                &storage_key,
+                req.artifact.clone(),
                 StorageMeta {
                     content_type: Some("application/octet-stream".into()),
                     size: None,
-                    checksum: Some(req.checksum),
+                    checksum: Some(req.checksum.clone()),
                 },
             )
-            .await?;
+            .await
+        {
+            self.remove_pending(&req.registry, &req.name, &req.version).await;
+            self.revoke_quota(&req.publisher, &req.registry, bytes).await;
+            return Err(e);
+        }
 
-        Ok(())
+        // Step 3: promote the pending row to 'published'. On failure, undo both
+        // the storage write and the pending row so the caller gets a clean error.
+        if let Err(e) = self
+            .backend
+            .commit_publish(&req.registry, &req.name, &req.version)
+            .await
+        {
+            self.remove_pending(&req.registry, &req.name, &req.version).await;
+            if let Err(err) = self.storage.delete(&storage_key).await {
+                tracing::error!("storage cleanup after commit failure: {err}");
+            }
+            self.revoke_quota(&req.publisher, &req.registry, bytes).await;
+            return Err(e);
+        }
+
+        Ok(quota_check)
     }
 
     pub async fn yank(
@@ -109,6 +155,20 @@ impl LocalRegistryService {
             ));
         }
         self.backend.unyank(registry, name, version).await
+    }
+
+    async fn remove_pending(&self, registry: &str, name: &str, version: &str) {
+        if let Err(err) = self.backend.remove_version(registry, name, version).await {
+            tracing::error!("pending row cleanup failed: {err}");
+        }
+    }
+
+    async fn revoke_quota(&self, identity: &Identity, registry: &str, bytes: u64) {
+        if let Some(svc) = &self.quota {
+            if let Err(err) = svc.revoke_publish(identity, registry, bytes).await {
+                tracing::error!("quota revoke failed: {err}");
+            }
+        }
     }
 
     /// Return the sparse index file content (newline-delimited JSON) for a Cargo crate.
@@ -431,6 +491,7 @@ mod tests {
             backend,
             storage: Arc::new(NoopStorage),
             max_artifact_bytes: max_bytes,
+            quota: None,
         }
     }
 

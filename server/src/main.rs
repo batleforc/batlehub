@@ -19,25 +19,30 @@ use batlehub_adapters::{
         KubernetesAuthProvider, OidcAuthProvider, OidcSsoFlow, StaticTokenAuthProvider,
         UserTokenAuthProvider,
     },
-    db::{PgArtifactMetaRepository, PgPackageRepository},
+    db::{PgArtifactMetaRepository, PgPackageRepository, PgQuotaRepository},
     local_registry::PostgresLocalRegistry,
     registry::{
         CargoRegistryClient, FanoutRegistryClient, GoProxyRegistryClient, GithubRegistryClient,
-        NpmRegistryClient, OpenVsxRegistryClient, VsCodeMarketplaceRegistryClient,
-        UpstreamHttpOptions,
+        MavenRegistryClient, NpmRegistryClient, OpenVsxRegistryClient,
+        VsCodeMarketplaceRegistryClient, UpstreamHttpOptions,
     },
     storage::{FilesystemStorageBackend, StorageRouter},
 };
 use batlehub_config::{
     load,
-    schema::{AuthConfig, OtelConfig, RegistryConfig, RegistryMode, RuleConfig, StorageBackendConfig, StoragesConfig, UpstreamAuthConfig},
+    schema::{AuthConfig, OtelConfig, QuotaEnforcement as ConfigQuotaEnforcement, RegistryConfig, RegistryMode, RuleConfig, StorageBackendConfig, StoragesConfig, UpstreamAuthConfig},
 };
 use batlehub_adapters::cache::{InMemoryCacheStore, PgCacheStore};
+#[cfg(feature = "cache-redis")]
+use batlehub_adapters::cache::RedisCacheStore;
 use batlehub_core::{
     entities::Role,
     ports::{AuthProvider, CacheStore, UserTokenRepository},
     rules::{BlockListRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule},
-    services::{AdminService, LocalRegistryService, ProxyMetrics, ProxyService, RegistryPolicy},
+    services::{
+        AdminService, LocalRegistryService, ProxyMetrics, ProxyService, QuotaEnforcement,
+        QuotaService, RegistryPolicy, RegistryQuotaConfig,
+    },
 };
 use batlehub_core::services::WarmingService;
 use batlehub_web::{configure_app, healthz, openapi_spec, prometheus_metrics, AccessConfig, ApiDoc, CargoIndexProxy, RegistryMap, RegistryModeMap, UpstreamMap};
@@ -231,6 +236,23 @@ async fn main() -> Result<()> {
             tracing::info!("metadata cache: postgres");
             Arc::new(PgCacheStore::new(repo.pool()))
         }
+        "redis" => {
+            #[cfg(feature = "cache-redis")]
+            {
+                let url = config.cache.url.as_deref().unwrap_or("redis://127.0.0.1:6379");
+                tracing::info!(url, "metadata cache: redis");
+                Arc::new(
+                    RedisCacheStore::new(url)
+                        .await
+                        .context("connecting to Redis cache")?,
+                )
+            }
+            #[cfg(not(feature = "cache-redis"))]
+            {
+                tracing::warn!("compiled without cache-redis feature; falling back to in-memory cache");
+                Arc::new(InMemoryCacheStore::new())
+            }
+        }
         other => {
             if other != "memory" {
                 tracing::warn!(cache_type = %other, "unknown cache type, falling back to memory");
@@ -305,10 +327,12 @@ async fn main() -> Result<()> {
     ));
 
     let local_registry_backend = Arc::new(PostgresLocalRegistry::new(repo.pool()));
+    let quota_svc = Arc::new(build_quota_service(repo.pool(), &config.registries));
     let local_svc = Arc::new(LocalRegistryService {
         backend: local_registry_backend,
         storage: storage.clone(),
         max_artifact_bytes: config.limits.max_artifact_size_bytes,
+        quota: Some(Arc::clone(&quota_svc)),
     });
 
     // ── Warming services ──────────────────────────────────────────────────────
@@ -403,6 +427,7 @@ async fn main() -> Result<()> {
         let static_dir_inner = static_dir.clone();
         let cargo_indexes_inner = cargo_indexes.clone();
         let local_svc_inner = local_svc.clone();
+        let quota_svc_inner = Arc::clone(&quota_svc);
         let registry_mode_map_inner = registry_mode_map.clone();
 
         let (app, openapi) = App::new()
@@ -415,6 +440,7 @@ async fn main() -> Result<()> {
         let app = app
             .app_data(web::Data::new(cargo_indexes_inner))
             .app_data(web::Data::new(local_svc_inner))
+            .app_data(web::Data::new(quota_svc_inner))
             .app_data(web::Data::new(registry_mode_map_inner))
             .service(prometheus_metrics)
             .service(healthz);
@@ -549,6 +575,7 @@ fn build_registry_client(reg: &RegistryConfig) -> anyhow::Result<Arc<dyn batlehu
             "openvsx" => Arc::new(OpenVsxRegistryClient::new(url, opts)?),
             "goproxy" => Arc::new(GoProxyRegistryClient::new(url, opts)?),
             "vscode-marketplace" => Arc::new(VsCodeMarketplaceRegistryClient::new(url, opts)?),
+            "maven" => Arc::new(MavenRegistryClient::new(url, opts)?),
             other => anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in"),
         };
         Ok(client)
@@ -563,6 +590,7 @@ fn build_registry_client(reg: &RegistryConfig) -> anyhow::Result<Arc<dyn batlehu
         "openvsx" => resolve_urls(&reg.upstreams, "https://open-vsx.org"),
         "goproxy" => resolve_urls(&reg.upstreams, "https://proxy.golang.org"),
         "vscode-marketplace" => resolve_urls(&reg.upstreams, "https://marketplace.visualstudio.com"),
+        "maven" => resolve_urls(&reg.upstreams, "https://repo1.maven.org/maven2"),
         other => anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in"),
     };
 
@@ -627,6 +655,32 @@ fn build_policy(
         artifact_ttl: reg.cache.artifact_ttl_secs.map(Duration::from_secs),
         rules,
     }
+}
+
+/// Build a `QuotaService` from the registries that have a `[quota]` section.
+fn build_quota_service(pool: sqlx::PgPool, registries: &[RegistryConfig]) -> QuotaService {
+    let repo = Arc::new(PgQuotaRepository::new(pool));
+    let configs = registries
+        .iter()
+        .filter_map(|reg| {
+            reg.quota.as_ref().map(|q| {
+                let enforcement = match q.enforcement {
+                    ConfigQuotaEnforcement::Block => QuotaEnforcement::Block,
+                    ConfigQuotaEnforcement::Warn => QuotaEnforcement::Warn,
+                };
+                (
+                    reg.name.clone(),
+                    RegistryQuotaConfig {
+                        max_storage_bytes_per_user: q.max_storage_bytes_per_user,
+                        max_packages_per_user: q.max_packages_per_user,
+                        warn_threshold: q.warn_threshold_pct.clamp(1, 100) as f64 / 100.0,
+                        enforcement,
+                    },
+                )
+            })
+        })
+        .collect();
+    QuotaService::new(repo, configs)
 }
 
 /// Initialise tracing.  Returns the `TracerProvider` when OTLP is configured

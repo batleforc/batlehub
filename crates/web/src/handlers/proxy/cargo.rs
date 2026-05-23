@@ -296,7 +296,7 @@ pub async fn cargo_publish(
     let index_metadata = serde_json::to_value(&entry)
         .map_err(|e| AppError::bad_request(e.to_string()))?;
 
-    local_svc
+    let quota = local_svc
         .publish(PublishRequest {
             registry,
             name,
@@ -309,7 +309,11 @@ pub async fn cargo_publish(
         .await
         .map_err(AppError::from)?;
 
-    Ok(HttpResponse::Ok().json(serde_json::json!({
+    let mut resp = HttpResponse::Ok();
+    for (name, value) in quota.headers() {
+        resp.insert_header((name, value));
+    }
+    Ok(resp.json(serde_json::json!({
         "warnings": {
             "invalid_categories": [],
             "invalid_badges": [],

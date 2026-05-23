@@ -96,12 +96,12 @@ mod tests {
     fn unknown_registry_type_returns_validation_error() {
         let toml = format!("{}\n{}", minimal(), r#"
         [[registries]]
-        type = "maven"
-        name = "my-maven"
+        type = "bogus-registry"
+        name = "my-bogus"
         "#);
         let config: AppConfig = toml::from_str(&toml).unwrap();
         let err = config.validate().expect_err("unknown registry type should fail validation");
-        assert!(err.to_string().contains("maven"));
+        assert!(err.to_string().contains("bogus-registry"));
     }
 
     #[test]

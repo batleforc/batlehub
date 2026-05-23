@@ -33,3 +33,8 @@ pub use goproxy::GoProxyRegistryClient;
 pub mod vscode_marketplace;
 #[cfg(feature = "registry-vscode-marketplace")]
 pub use vscode_marketplace::VsCodeMarketplaceRegistryClient;
+
+#[cfg(feature = "registry-maven")]
+pub mod maven;
+#[cfg(feature = "registry-maven")]
+pub use maven::MavenRegistryClient;

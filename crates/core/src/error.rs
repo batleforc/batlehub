@@ -32,6 +32,9 @@ pub enum CoreError {
     #[error("Payload too large: {0}")]
     PayloadTooLarge(String),
 
+    #[error("Quota exceeded: {0}")]
+    QuotaExceeded(String),
+
     #[error("Invalid configuration: {0}")]
     Config(String),
 

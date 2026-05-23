@@ -74,6 +74,10 @@ impl From<CoreError> for AppError {
                 status: StatusCode::PAYLOAD_TOO_LARGE,
                 message: msg,
             },
+            CoreError::QuotaExceeded(msg) => Self {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                message: msg,
+            },
             CoreError::Registry(msg) => Self {
                 status: StatusCode::BAD_GATEWAY,
                 message: msg,

@@ -62,6 +62,10 @@ impl WarmingService {
     /// that exact version is warmed regardless of `self.latest_n`. Otherwise the
     /// latest `self.latest_n` versions are fetched.
     pub async fn warm_package(&self, package: &str) -> WarmingReport {
+        if self.concurrency == 0 {
+            return WarmingReport::default();
+        }
+
         let (name, pinned_version) = if let Some((n, v)) = package.split_once('@') {
             (n, Some(v.to_owned()))
         } else {
@@ -196,5 +200,86 @@ impl WarmingService {
             total += self.warm_package(package).await;
         }
         total
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+
+    use super::*;
+    use crate::{
+        entities::{PackageId, PackageMetadata},
+        error::CoreError,
+        ports::{
+            ArtifactMeta, ArtifactMetaRepository, FetchedArtifact, RegistryClient, StorageBackend,
+            StorageMeta, StoredArtifact,
+        },
+    };
+    use async_trait::async_trait;
+
+    struct PanicClient;
+    struct PanicStorage;
+    struct PanicMeta;
+
+    #[async_trait]
+    impl RegistryClient for PanicClient {
+        fn registry_type(&self) -> &str { "test" }
+        async fn resolve_metadata(&self, _: &PackageId) -> Result<PackageMetadata, CoreError> { panic!("should not be called") }
+        async fn fetch_artifact(&self, _: &PackageId) -> Result<FetchedArtifact, CoreError> { panic!("should not be called") }
+        async fn list_versions(&self, _: &str) -> Result<Vec<String>, CoreError> { panic!("should not be called") }
+    }
+
+    #[async_trait]
+    impl StorageBackend for PanicStorage {
+        async fn store(&self, _: &str, _: bytes::Bytes, _: StorageMeta) -> Result<(), CoreError> { panic!("should not be called") }
+        async fn retrieve(&self, _: &str) -> Result<Option<StoredArtifact>, CoreError> { panic!("should not be called") }
+        async fn exists(&self, _: &str) -> Result<bool, CoreError> { panic!("should not be called") }
+        async fn delete(&self, _: &str) -> Result<(), CoreError> { panic!("should not be called") }
+        async fn delete_by_prefix(&self, _: &str) -> Result<usize, CoreError> { panic!("should not be called") }
+        async fn stat_by_prefix(&self, _: &str) -> Result<(u64, u64), CoreError> { panic!("should not be called") }
+        async fn list_keys(&self, _: &str) -> Result<Vec<String>, CoreError> { panic!("should not be called") }
+    }
+
+    #[async_trait]
+    impl ArtifactMetaRepository for PanicMeta {
+        async fn record_artifact(&self, _: &str, _: &str, _: &str, _: &str, _: Option<u64>) -> Result<(), CoreError> { panic!("should not be called") }
+        async fn touch_artifact(&self, _: &str) -> Result<(), CoreError> { panic!("should not be called") }
+        async fn list_artifacts(&self, _: &str) -> Result<Vec<ArtifactMeta>, CoreError> { panic!("should not be called") }
+        async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> { panic!("should not be called") }
+        async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> { panic!("should not be called") }
+        async fn list_expired_by_ttl(&self, _: &str, _: chrono::DateTime<Utc>) -> Result<Vec<ArtifactMeta>, CoreError> { panic!("should not be called") }
+        async fn list_idle(&self, _: &str, _: chrono::DateTime<Utc>) -> Result<Vec<ArtifactMeta>, CoreError> { panic!("should not be called") }
+        async fn total_size_bytes(&self, _: &str) -> Result<u64, CoreError> { panic!("should not be called") }
+        async fn list_lru(&self, _: &str, _: i64) -> Result<Vec<ArtifactMeta>, CoreError> { panic!("should not be called") }
+    }
+
+    fn disabled_svc() -> WarmingService {
+        WarmingService {
+            client: Arc::new(PanicClient),
+            storage: Arc::new(PanicStorage),
+            artifact_meta: Arc::new(PanicMeta),
+            registry_name: "test".into(),
+            latest_n: 3,
+            concurrency: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrency_zero_disables_warm_package() {
+        let svc = disabled_svc();
+        let report = svc.warm_package("lodash").await;
+        assert_eq!(report.warmed, 0);
+        assert_eq!(report.skipped, 0);
+        assert_eq!(report.errors, 0);
+    }
+
+    #[tokio::test]
+    async fn concurrency_zero_disables_warm_all() {
+        let svc = disabled_svc();
+        let report = svc.warm_all(&["lodash".into(), "react".into()]).await;
+        assert_eq!(report.warmed, 0);
+        assert_eq!(report.skipped, 0);
+        assert_eq!(report.errors, 0);
     }
 }

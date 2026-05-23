@@ -271,7 +271,7 @@ pub async fn npm_publish(
         }
     }
 
-    local_svc
+    let quota = local_svc
         .publish(PublishRequest {
             registry,
             name,
@@ -284,7 +284,11 @@ pub async fn npm_publish(
         .await
         .map_err(AppError::from)?;
 
-    Ok(HttpResponse::Ok().json(serde_json::json!({})))
+    let mut resp = HttpResponse::Ok();
+    for (name, value) in quota.headers() {
+        resp.insert_header((name, value));
+    }
+    Ok(resp.json(serde_json::json!({})))
 }
 
 /// Proxy npm audit requests to the upstream npm registry.
