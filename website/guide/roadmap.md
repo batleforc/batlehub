@@ -31,11 +31,13 @@ BatleHub currently supports npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, an
 
 ## Cache policy {#cache-policy}
 
-- **Cache-Control headers** — honour `no-cache`, `max-age`, and `no-store` from upstream responses to decide whether and how long to cache
-- **Eviction policies** — TTL-based expiry, "not accessed for N days", keep only the latest N versions, storage size cap with LRU eviction
-- **Deduplication** — content-addressable storage for backends that support it (S3 object versioning, RustFS)
-- **Proactive cache warming** — pre-fetch all known versions of a package to eliminate cold-start latency
-- **Cache index coherence** — detect and recover from mismatches between storage contents and registry metadata (corruption, manual deletions)
+All planned cache policy features have shipped:
+
+- ✅ **Cache-Control headers** — honour `no-cache`, `max-age`, and `no-store` from upstream responses to decide whether and how long to cache
+- ✅ **Eviction policies** — TTL-based expiry, "not accessed for N days", keep only the latest N versions, storage size cap with LRU eviction
+- ✅ **Cache index coherence** — detect and recover from mismatches between storage contents and registry metadata (corruption, manual deletions)
+- ✅ **Content-addressable deduplication** — identical artifact bytes stored once, ref-counted across logical keys; transparent and backwards-compatible
+- ✅ **Proactive cache warming** — pre-fetch known versions of configured packages at startup and on demand via `POST /api/v1/admin/registries/{registry}/warm`
 
 ---
 

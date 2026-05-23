@@ -130,6 +130,14 @@ impl RegistryClient for OpenVsxRegistryClient {
         })
     }
 
+    async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
+        let (publisher, ext_name) = Self::parse_id(package)?;
+        let ext = self.fetch_extension(publisher, ext_name, "latest").await?;
+        let mut versions: Vec<String> = ext.all_versions.into_keys().collect();
+        versions.sort();
+        Ok(versions)
+    }
+
     async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
         let (publisher, ext_name) = Self::parse_id(&pkg.name)?;
         let ext = self.fetch_extension(publisher, ext_name, &pkg.version).await?;
@@ -460,6 +468,55 @@ mod tests {
         let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
         let result = client.fetch_artifact(&pkg("ms-python.python", "2023.20.0")).await;
 
+        assert!(matches!(result, Err(CoreError::Registry(_))));
+    }
+
+    // ── list_versions ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_versions_returns_sorted_versions() {
+        let mut server = Server::new_async().await;
+        let body = r#"{
+            "namespace":"ms-python","name":"python","version":"2024.1.0",
+            "allVersions":{
+                "2024.1.0":"http://example.com/2024.1.0",
+                "2023.20.0":"http://example.com/2023.20.0",
+                "2023.5.0":"http://example.com/2023.5.0"
+            }
+        }"#;
+        let _mock = server
+            .mock("GET", "/api/ms-python/python")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let versions = client.list_versions("ms-python.python").await.unwrap();
+
+        assert_eq!(versions, vec!["2023.20.0", "2023.5.0", "2024.1.0"]);
+    }
+
+    #[tokio::test]
+    async fn list_versions_empty_when_extension_not_found() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/api/ms-python/unknown")
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let result = client.list_versions("ms-python.unknown").await;
+
+        assert!(matches!(result, Err(CoreError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn list_versions_invalid_id_returns_error() {
+        let client = OpenVsxRegistryClient::new("http://unused", &Default::default()).unwrap();
+        let result = client.list_versions("nodot").await;
         assert!(matches!(result, Err(CoreError::Registry(_))));
     }
 

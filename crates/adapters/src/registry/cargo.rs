@@ -111,6 +111,17 @@ impl RegistryClient for CargoRegistryClient {
         })
     }
 
+    async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
+        let resp = self.fetch_crate_info(package).await?;
+        // Return non-yanked versions sorted oldest-first (crates.io returns newest-first).
+        let mut versions: Vec<String> = resp.versions.into_iter()
+            .filter(|v| !v.yanked)
+            .map(|v| v.num)
+            .collect();
+        versions.reverse();
+        Ok(versions)
+    }
+
     async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
         let resp = self.fetch_crate_info(&pkg.name).await?;
         let version = Self::resolve_version(&resp, pkg)?;

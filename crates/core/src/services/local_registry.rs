@@ -364,3 +364,191 @@ impl LocalRegistryService {
 pub fn artifact_storage_key(registry: &str, name: &str, version: &str) -> String {
     format!("local:{}/{}/{}", registry, name, version)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+    use bytes::Bytes;
+    use chrono::Utc;
+
+    use super::*;
+    use crate::{
+        entities::{Identity, Role},
+        error::CoreError,
+        ports::{StorageBackend, StorageMeta, StoredArtifact},
+    };
+
+    // ── Minimal mock backend ──────────────────────────────────────────────────
+
+    #[derive(Default)]
+    struct InMemBackend {
+        versions: Mutex<Vec<PublishedPackage>>,
+    }
+
+    impl InMemBackend {
+        fn arc() -> Arc<Self> { Arc::new(Self::default()) }
+        fn seed(&self, pkg: PublishedPackage) {
+            self.versions.lock().unwrap().push(pkg);
+        }
+    }
+
+    #[async_trait]
+    impl crate::ports::LocalRegistryBackend for InMemBackend {
+        async fn publish(&self, pkg: PublishedPackage) -> Result<(), CoreError> {
+            self.versions.lock().unwrap().push(pkg);
+            Ok(())
+        }
+        async fn yank(&self, _: &str, _: &str, _: &str) -> Result<(), CoreError> { Ok(()) }
+        async fn unyank(&self, _: &str, _: &str, _: &str) -> Result<(), CoreError> { Ok(()) }
+        async fn get_versions(&self, registry: &str, name: &str) -> Result<Vec<PublishedPackage>, CoreError> {
+            Ok(self.versions.lock().unwrap().iter()
+                .filter(|p| p.registry == registry && p.name == name)
+                .cloned()
+                .collect())
+        }
+        async fn exists(&self, registry: &str, name: &str) -> Result<bool, CoreError> {
+            Ok(self.versions.lock().unwrap().iter().any(|p| p.registry == registry && p.name == name))
+        }
+    }
+
+    struct NoopStorage;
+
+    #[async_trait]
+    impl StorageBackend for NoopStorage {
+        async fn store(&self, _: &str, _: Bytes, _: StorageMeta) -> Result<(), CoreError> { Ok(()) }
+        async fn retrieve(&self, _: &str) -> Result<Option<StoredArtifact>, CoreError> { Ok(None) }
+        async fn exists(&self, _: &str) -> Result<bool, CoreError> { Ok(false) }
+        async fn delete(&self, _: &str) -> Result<(), CoreError> { Ok(()) }
+        async fn delete_by_prefix(&self, _: &str) -> Result<usize, CoreError> { Ok(0) }
+        async fn stat_by_prefix(&self, _: &str) -> Result<(u64, u64), CoreError> { Ok((0, 0)) }
+        async fn list_keys(&self, _: &str) -> Result<Vec<String>, CoreError> { Ok(vec![]) }
+    }
+
+    fn svc(backend: Arc<InMemBackend>, max_bytes: Option<u64>) -> LocalRegistryService {
+        LocalRegistryService {
+            backend,
+            storage: Arc::new(NoopStorage),
+            max_artifact_bytes: max_bytes,
+        }
+    }
+
+    fn pkg(registry: &str, name: &str, version: &str) -> PublishedPackage {
+        PublishedPackage {
+            registry: registry.to_owned(),
+            name: name.to_owned(),
+            version: version.to_owned(),
+            checksum: "abc".to_owned(),
+            yanked: false,
+            index_metadata: serde_json::json!({}),
+            published_at: Utc::now(),
+            published_by: None,
+        }
+    }
+
+    fn anon() -> Identity {
+        Identity { user_id: None, role: Role::Anonymous, auth_provider: None, groups: vec![] }
+    }
+
+    fn user() -> Identity {
+        Identity { user_id: Some("u1".into()), role: Role::User, auth_provider: None, groups: vec![] }
+    }
+
+    // ── publish error paths ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn publish_rejects_oversized_artifact() {
+        let backend = InMemBackend::arc();
+        let s = svc(backend, Some(10)); // 10-byte limit
+        let req = PublishRequest {
+            registry: "npm".into(),
+            name: "big".into(),
+            version: "1.0.0".into(),
+            artifact: Bytes::from(vec![0u8; 11]), // 11 bytes > 10-byte limit
+            checksum: "abc".into(),
+            index_metadata: serde_json::json!({}),
+            publisher: user(),
+        };
+        let err = s.publish(req).await.unwrap_err();
+        assert!(matches!(err, CoreError::PayloadTooLarge(_)));
+    }
+
+    // ── yank / unyank role checks ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn yank_requires_user_role() {
+        let s = svc(InMemBackend::arc(), None);
+        let err = s.yank("cargo", "serde", "1.0.0", &anon()).await.unwrap_err();
+        assert!(matches!(err, CoreError::AccessDenied(_)));
+    }
+
+    #[tokio::test]
+    async fn unyank_requires_user_role() {
+        let s = svc(InMemBackend::arc(), None);
+        let err = s.unyank("cargo", "serde", "1.0.0", &anon()).await.unwrap_err();
+        assert!(matches!(err, CoreError::AccessDenied(_)));
+    }
+
+    // ── npm packument / version not-found ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_npm_packument_not_found_when_no_versions() {
+        let s = svc(InMemBackend::arc(), None);
+        let err = s.get_npm_packument("npm", "unknown", "http://localhost").await.unwrap_err();
+        assert!(matches!(err, CoreError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn get_npm_version_not_found_for_unknown_version() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("npm", "express", "4.0.0"));
+        let s = svc(backend, None);
+        let err = s.get_npm_version("npm", "express", "9.9.9", "http://localhost").await.unwrap_err();
+        assert!(matches!(err, CoreError::NotFound(_)));
+    }
+
+    // ── go module not-found ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_go_version_list_not_found_when_empty() {
+        let s = svc(InMemBackend::arc(), None);
+        let err = s.get_go_version_list("go", "example.com/mod").await.unwrap_err();
+        assert!(matches!(err, CoreError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn get_go_info_not_found_for_unknown_version() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("go", "example.com/mod", "v1.0.0"));
+        let s = svc(backend, None);
+        let err = s.get_go_info("go", "example.com/mod", "v9.9.9").await.unwrap_err();
+        assert!(matches!(err, CoreError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn get_go_mod_not_found_for_unknown_version() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("go", "example.com/mod", "v1.0.0"));
+        let s = svc(backend, None);
+        let err = s.get_go_mod("go", "example.com/mod", "v9.9.9").await.unwrap_err();
+        assert!(matches!(err, CoreError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn get_go_mod_not_found_when_no_go_mod_key() {
+        let backend = InMemBackend::arc();
+        // Package exists but index_metadata has no "go_mod" key
+        backend.seed(pkg("go", "example.com/mod", "v1.0.0"));
+        let s = svc(backend, None);
+        let err = s.get_go_mod("go", "example.com/mod", "v1.0.0").await.unwrap_err();
+        assert!(matches!(err, CoreError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn get_go_latest_not_found_when_no_versions() {
+        let s = svc(InMemBackend::arc(), None);
+        let err = s.get_go_latest("go", "example.com/mod").await.unwrap_err();
+        assert!(matches!(err, CoreError::NotFound(_)));
+    }
+}

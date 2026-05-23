@@ -248,6 +248,99 @@ Then open `http://localhost:16686` for the Jaeger UI.
 
 ---
 
+## Cache policy {#cache-policy}
+
+All cache settings live under `[registries.cache]` and are per-registry.
+
+### Eviction
+
+```toml
+[registries.cache]
+metadata_ttl_secs = 300      # re-check version lists after 5 minutes (default)
+serve_stale       = true     # serve cached metadata when upstream is down (default)
+
+artifact_ttl_secs = 2592000  # delete artifacts older than 30 days
+idle_days         = 14       # delete artifacts not accessed for 14 days
+max_size_bytes    = 10737418240  # 10 GiB storage cap — evicts LRU when exceeded
+keep_latest_n     = 5        # keep only the 5 most-recently-cached versions per package
+```
+
+All eviction fields are optional. Omitting a field disables that eviction strategy. Strategies compose: an artifact is evicted as soon as **any** active strategy triggers.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `metadata_ttl_secs` | `300` | Metadata cache TTL in seconds |
+| `serve_stale` | `true` | Serve stale metadata on upstream 5xx instead of propagating the error |
+| `artifact_ttl_secs` | — | Evict artifacts older than N seconds |
+| `idle_days` | — | Evict artifacts not accessed for N days |
+| `max_size_bytes` | — | Storage cap; LRU artifacts are removed when exceeded |
+| `keep_latest_n` | — | Keep only the N most recent versions per package |
+
+### Cache warming {#cache-warming}
+
+Cache warming pre-fetches artifact versions so they are available with zero latency on first request. Configure it alongside eviction:
+
+```toml
+[registries.cache]
+warm_packages    = ["lodash", "react", "typescript@5.4.5"]
+warm_latest_n    = 3   # warm the 3 most recent versions of bare-name entries
+warm_concurrency = 4   # up to 4 parallel downloads
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `warm_packages` | `[]` | Packages to warm at startup. `"name"` warms the latest `warm_latest_n` versions; `"name@version"` warms exactly one. |
+| `warm_latest_n` | `1` | Versions to pre-fetch per bare-name entry |
+| `warm_concurrency` | `2` | Maximum parallel downloads per warming run |
+
+BatleHub starts warming immediately after binding the server socket, so the HTTP server is available while warming runs in the background.
+
+#### On-demand warming via admin API
+
+Re-warm a package at any time without restarting:
+
+```sh
+# Warm using the registry's configured warm_latest_n
+curl -X POST http://localhost:8080/api/v1/admin/registries/npm/warm \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"package": "lodash"}'
+
+# Override the version count for this request only
+curl -X POST http://localhost:8080/api/v1/admin/registries/npm/warm \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"package": "lodash", "versions": 10}'
+
+# Warm a single pinned version
+curl -X POST http://localhost:8080/api/v1/admin/registries/cargo/warm \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"package": "serde@1.0.200"}'
+```
+
+Response:
+
+```json
+{"warmed": 3, "skipped": 0, "errors": 0}
+```
+
+- `warmed` — artifact versions fetched and stored in this run
+- `skipped` — versions already present in the cache (no download needed)
+- `errors` — versions that failed to fetch or store
+
+::: tip Registry support
+Version enumeration (used for bare-name warming) is implemented for **npm**, **Cargo**, **OpenVSX**, and **Go** modules. For GitHub and VS Code Marketplace, use pinned version strings (e.g. `"owner/repo@v1.2.3"`) to warm a specific version.
+:::
+
+### Content-addressable deduplication
+
+BatleHub stores artifact bytes at a content-addressed key (`blob/{sha256}`) and maps logical artifact keys (e.g. `artifact:npm/lodash:4.17.21`) to that blob via a reference count. When identical bytes appear under multiple logical keys — the same package mirrored across two registries, a yanked-then-re-released version — only one copy is stored on disk or in S3.
+
+This is automatic and requires no configuration. Pre-deduplication artifacts stored before upgrading continue to be served normally.
+
+---
+
 ## Package management {#package-management}
 
 ### List packages

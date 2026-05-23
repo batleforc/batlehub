@@ -483,34 +483,66 @@ pub struct CachePolicy {
     /// TTL for metadata (version lists, release info) in seconds.
     #[serde(default = "default_metadata_ttl")]
     pub metadata_ttl_secs: u64,
-    /// How to handle artifact caching: `"permanent"` (never re-fetch) or `"ttl"`.
-    #[serde(default = "default_artifact_strategy")]
-    pub artifact_strategy: String,
     /// When true (the default), serve stale metadata when upstream returns a transient
     /// error instead of propagating a 502. Allows cached artifacts to keep being served
     /// during upstream outages.
     #[serde(default = "default_serve_stale")]
     pub serve_stale: bool,
+    /// Evict artifacts older than this many seconds. `null` means never expire by age.
+    #[serde(default)]
+    pub artifact_ttl_secs: Option<u64>,
+    /// Evict artifacts not accessed for this many days. `null` means never expire by idle time.
+    #[serde(default)]
+    pub idle_days: Option<u64>,
+    /// Storage size cap in bytes. When exceeded, the least-recently-used artifacts are evicted
+    /// until usage falls below this threshold. `null` means no size cap.
+    #[serde(default)]
+    pub max_size_bytes: Option<u64>,
+    /// Keep only the N most-recently-cached versions per (registry, package). Older versions
+    /// are evicted when a new one is stored. `null` means keep all versions.
+    #[serde(default)]
+    pub keep_latest_n: Option<usize>,
+    /// Packages to pre-fetch on startup and via the `/warm` admin endpoint.
+    /// Each entry is either a bare package name (`"lodash"`) or a pinned version
+    /// (`"lodash@4.17.21"`). Bare names warm the latest `warm_latest_n` versions.
+    #[serde(default)]
+    pub warm_packages: Vec<String>,
+    /// Number of most-recent versions to pre-warm per package (default: 1 = latest only).
+    #[serde(default = "default_warm_latest_n")]
+    pub warm_latest_n: usize,
+    /// Maximum number of concurrent artifact downloads during a warming run (default: 2).
+    #[serde(default = "default_warm_concurrency")]
+    pub warm_concurrency: usize,
 }
 
 fn default_metadata_ttl() -> u64 {
     300
 }
 
-fn default_artifact_strategy() -> String {
-    "permanent".to_owned()
-}
-
 fn default_serve_stale() -> bool {
     true
+}
+
+fn default_warm_latest_n() -> usize {
+    1
+}
+
+fn default_warm_concurrency() -> usize {
+    2
 }
 
 impl Default for CachePolicy {
     fn default() -> Self {
         Self {
             metadata_ttl_secs: default_metadata_ttl(),
-            artifact_strategy: default_artifact_strategy(),
             serve_stale: true,
+            artifact_ttl_secs: None,
+            idle_days: None,
+            max_size_bytes: None,
+            keep_latest_n: None,
+            warm_packages: vec![],
+            warm_latest_n: default_warm_latest_n(),
+            warm_concurrency: default_warm_concurrency(),
         }
     }
 }
@@ -576,4 +608,70 @@ pub struct OtelConfig {
 
 fn default_service_name() -> String {
     "batlehub".to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_policy_defaults() {
+        let p: CachePolicy = toml::from_str("").unwrap();
+        assert_eq!(p.metadata_ttl_secs, 300);
+        assert!(p.serve_stale);
+        assert!(p.artifact_ttl_secs.is_none());
+        assert!(p.idle_days.is_none());
+        assert!(p.max_size_bytes.is_none());
+        assert!(p.keep_latest_n.is_none());
+    }
+
+    #[test]
+    fn cache_policy_full_config() {
+        let raw = r#"
+            metadata_ttl_secs = 60
+            serve_stale = false
+            artifact_ttl_secs = 3600
+            idle_days = 30
+            max_size_bytes = 10000000
+            keep_latest_n = 5
+        "#;
+        let p: CachePolicy = toml::from_str(raw).unwrap();
+        assert_eq!(p.metadata_ttl_secs, 60);
+        assert!(!p.serve_stale);
+        assert_eq!(p.artifact_ttl_secs, Some(3600));
+        assert_eq!(p.idle_days, Some(30));
+        assert_eq!(p.max_size_bytes, Some(10_000_000));
+        assert_eq!(p.keep_latest_n, Some(5));
+    }
+
+    #[test]
+    fn cache_policy_partial_config_uses_defaults_for_unset_fields() {
+        let raw = "artifact_ttl_secs = 7200";
+        let p: CachePolicy = toml::from_str(raw).unwrap();
+        assert_eq!(p.metadata_ttl_secs, 300, "metadata_ttl_secs should use default");
+        assert!(p.serve_stale, "serve_stale should default to true");
+        assert_eq!(p.artifact_ttl_secs, Some(7200));
+        assert!(p.idle_days.is_none());
+        assert!(p.max_size_bytes.is_none());
+        assert!(p.keep_latest_n.is_none());
+    }
+
+    #[test]
+    fn cache_policy_zero_keep_latest_n_is_valid() {
+        let raw = "keep_latest_n = 1";
+        let p: CachePolicy = toml::from_str(raw).unwrap();
+        assert_eq!(p.keep_latest_n, Some(1));
+    }
+
+    #[test]
+    fn cache_policy_default_impl_matches_toml_defaults() {
+        let from_default = CachePolicy::default();
+        let from_toml: CachePolicy = toml::from_str("").unwrap();
+        assert_eq!(from_default.metadata_ttl_secs, from_toml.metadata_ttl_secs);
+        assert_eq!(from_default.serve_stale, from_toml.serve_stale);
+        assert_eq!(from_default.artifact_ttl_secs, from_toml.artifact_ttl_secs);
+        assert_eq!(from_default.idle_days, from_toml.idle_days);
+        assert_eq!(from_default.max_size_bytes, from_toml.max_size_bytes);
+        assert_eq!(from_default.keep_latest_n, from_toml.keep_latest_n);
+    }
 }

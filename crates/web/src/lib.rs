@@ -258,6 +258,7 @@ impl RegistryMap {
 }
 
 use actix_web::web;
+use handlers::back_office::warming::WarmingServiceMap;
 use utoipa::OpenApi;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa_actix_web::{AppExt, service_config::ServiceConfig as UtoipaServiceConfig};
@@ -316,6 +317,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             audit::audit_log,
             health::{clear_registry_cache, registry_health},
             packages::{block_package, bulk_block_packages, bulk_unblock_packages, invalidate_package, list_packages as admin_list_packages, package_detail, unblock_package},
+            warming::warm_registry,
         },
         front_office::{
             me::me,
@@ -396,6 +398,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(registry_health);
     cfg.service(clear_registry_cache);
     cfg.service(audit_log);
+    cfg.service(warm_registry);
 }
 
 /// Return the raw OpenAPI JSON spec (auto-collected from route registrations).
@@ -429,6 +432,7 @@ pub fn configure_app(
     registry_map: RegistryMap,
     upstream_map: UpstreamMap,
     oidc_sso_flows: Vec<OidcSsoFlow>,
+    warming_map: WarmingServiceMap,
 ) -> impl Fn(&mut UtoipaServiceConfig) + Clone + 'static {
     let audit_client = reqwest::Client::builder()
         .user_agent("batlehub/0.1")
@@ -443,6 +447,7 @@ pub fn configure_app(
         cfg.app_data(web::Data::new(upstream_map.clone()));
         cfg.app_data(web::Data::new(audit_client.clone()));
         cfg.app_data(web::Data::new(oidc_sso_flows.clone()));
+        cfg.app_data(web::Data::new(warming_map.clone()));
         if let Some(ref p) = pool {
             cfg.app_data(web::Data::new(p.clone()));
         }

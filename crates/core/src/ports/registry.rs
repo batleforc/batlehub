@@ -36,4 +36,13 @@ pub trait RegistryClient: Send + Sync {
     /// Stream the raw artifact bytes from the upstream registry, along with any
     /// upstream `Cache-Control` header.
     async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError>;
+
+    /// Return all known version strings for `package`, oldest-first.
+    ///
+    /// The default implementation returns an empty list; registries that do not
+    /// support version enumeration (e.g. GitHub Releases, OpenVSX) can rely on it.
+    async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
+        let _ = package;
+        Ok(vec![])
+    }
 }

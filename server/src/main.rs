@@ -19,7 +19,7 @@ use batlehub_adapters::{
         KubernetesAuthProvider, OidcAuthProvider, OidcSsoFlow, StaticTokenAuthProvider,
         UserTokenAuthProvider,
     },
-    db::PgPackageRepository,
+    db::{PgArtifactMetaRepository, PgPackageRepository},
     local_registry::PostgresLocalRegistry,
     registry::{
         CargoRegistryClient, FanoutRegistryClient, GoProxyRegistryClient, GithubRegistryClient,
@@ -39,7 +39,9 @@ use batlehub_core::{
     rules::{BlockListRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule},
     services::{AdminService, LocalRegistryService, ProxyService, RegistryPolicy},
 };
+use batlehub_core::services::WarmingService;
 use batlehub_web::{configure_app, openapi_spec, AccessConfig, ApiDoc, CargoIndexProxy, RegistryMap, RegistryModeMap, UpstreamMap};
+use batlehub_web::handlers::back_office::warming::WarmingServiceMap;
 
 // ── Tracing span builder ──────────────────────────────────────────────────────
 
@@ -277,11 +279,13 @@ async fn main() -> Result<()> {
     let registry_mode_map = RegistryModeMap(registry_mode_map_inner);
 
     // ── Services ──────────────────────────────────────────────────────────────
+    let artifact_meta = Arc::new(PgArtifactMetaRepository::new(repo.pool()));
     let proxy_svc = Arc::new(ProxyService {
         registries: registry_clients,
         storage: storage.clone(),
         cache: cache.clone(),
         repo: repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>,
+        artifact_meta,
         policies,
         max_artifact_size_bytes: config.limits.max_artifact_size_bytes,
     });
@@ -296,6 +300,23 @@ async fn main() -> Result<()> {
         storage: storage.clone(),
         max_artifact_bytes: config.limits.max_artifact_size_bytes,
     });
+
+    // ── Warming services ──────────────────────────────────────────────────────
+    let mut warming_map: WarmingServiceMap = HashMap::new();
+    for reg in &config.registries {
+        if let Some(client) = proxy_svc.registries.get(&reg.name) {
+            let warming_svc = Arc::new(WarmingService {
+                client: Arc::clone(client),
+                storage: storage.clone(),
+                artifact_meta: Arc::new(PgArtifactMetaRepository::new(repo.pool()))
+                    as Arc<dyn batlehub_core::ports::ArtifactMetaRepository>,
+                registry_name: reg.name.clone(),
+                latest_n: reg.cache.warm_latest_n,
+                concurrency: reg.cache.warm_concurrency,
+            });
+            warming_map.insert(reg.name.clone(), warming_svc);
+        }
+    }
 
     // ── Access config ─────────────────────────────────────────────────────────
     // Respects role inheritance: user inherits anonymous, admin inherits both.
@@ -333,6 +354,28 @@ async fn main() -> Result<()> {
 
     tracing::info!(addr = %bind_addr, "listening");
 
+    // Spawn startup warming tasks (non-blocking; server starts immediately).
+    for reg in &config.registries {
+        if !reg.cache.warm_packages.is_empty() {
+            if let Some(svc) = warming_map.get(&reg.name) {
+                let svc = Arc::clone(svc);
+                let packages = reg.cache.warm_packages.clone();
+                let name = reg.name.clone();
+                tokio::spawn(async move {
+                    tracing::info!(registry = %name, "warming: startup warming started");
+                    let report = svc.warm_all(&packages).await;
+                    tracing::info!(
+                        registry = %name,
+                        warmed = report.warmed,
+                        skipped = report.skipped,
+                        errors = report.errors,
+                        "warming: startup warming complete"
+                    );
+                });
+            }
+        }
+    }
+
     HttpServer::new(move || {
         let configure = configure_app(
             proxy_svc.clone(),
@@ -343,6 +386,7 @@ async fn main() -> Result<()> {
             registry_map.clone(),
             upstream_map.clone(),
             oidc_sso_flows.clone(),
+            warming_map.clone(),
         );
         let static_dir_inner = static_dir.clone();
         let cargo_indexes_inner = cargo_indexes.clone();
@@ -566,6 +610,7 @@ fn build_policy(
         metadata_ttl: Some(Duration::from_secs(reg.cache.metadata_ttl_secs)),
         firewall_only: reg.firewall_only,
         serve_stale_metadata: reg.cache.serve_stale,
+        artifact_ttl: reg.cache.artifact_ttl_secs.map(Duration::from_secs),
         rules,
     }
 }

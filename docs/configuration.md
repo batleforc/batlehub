@@ -453,7 +453,56 @@ export GOPROXY="http://batlehub.example.com/proxy/go,direct"
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `metadata_ttl_secs` | u64 | `300` | How long release metadata (version lists, release info) is cached in seconds |
-| `artifact_strategy` | string | `"permanent"` | `"permanent"`: once an artifact is cached it is never re-fetched. `"ttl"`: artifacts may be re-checked after the metadata TTL. |
+| `serve_stale` | bool | `true` | When `true`, serve stale metadata if the upstream returns a transient error (5xx). Keeps the registry usable during upstream outages. |
+| `artifact_ttl_secs` | u64? | — | Evict artifacts older than this many seconds. Omit to never expire by age. |
+| `idle_days` | u64? | — | Evict artifacts not accessed for this many days. Omit to disable idle eviction. |
+| `max_size_bytes` | u64? | — | Storage cap in bytes. When exceeded, the least-recently-used artifacts are removed until usage falls below the cap. Omit for no size limit. |
+| `keep_latest_n` | usize? | — | Keep only the N most-recently-cached versions per package. Older versions are evicted when a new one is stored. Omit to keep all versions. |
+| `warm_packages` | string[] | `[]` | Packages to pre-fetch at startup and via the admin warm endpoint. Each entry is a bare name (`"lodash"`) or a pinned version (`"lodash@4.17.21"`). |
+| `warm_latest_n` | usize | `1` | Number of most-recent versions to warm per bare package name. Pinned-version entries always warm exactly one version. |
+| `warm_concurrency` | usize | `2` | Maximum concurrent artifact downloads during a warming run. |
+
+**Eviction example:**
+
+```toml
+[registries.cache]
+metadata_ttl_secs = 600
+artifact_ttl_secs = 2592000   # 30 days
+idle_days         = 14
+max_size_bytes    = 10737418240  # 10 GiB
+keep_latest_n     = 5
+```
+
+**Cache warming example:**
+
+```toml
+[registries.cache]
+warm_packages    = ["lodash", "react", "typescript@5.4.5"]
+warm_latest_n    = 3      # warm the 3 most recent versions of bare-name packages
+warm_concurrency = 4      # up to 4 parallel downloads
+```
+
+At startup, BatleHub pre-fetches the listed packages so they are available with zero latency on first request. The same packages can be re-warmed at any time via the admin API:
+
+```sh
+# Warm all configured versions of lodash
+curl -X POST http://localhost:8080/api/v1/admin/registries/npm/warm \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"package": "lodash"}'
+
+# Override the version count for this call only
+curl -X POST http://localhost:8080/api/v1/admin/registries/npm/warm \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"package": "lodash", "versions": 10}'
+```
+
+> **Registry support:** version enumeration (used by bare-name warming) is implemented for **npm**, **Cargo**, **OpenVSX**, and **Go** modules. For GitHub and VS Code Marketplace, pass a pinned version string (e.g. `"owner/repo@v1.2.3"`) to warm a specific version.
+
+**Content-addressable deduplication:**
+
+BatleHub stores physical artifact bytes at a content-addressed key (`blob/{sha256}`) and maps logical artifact keys to that blob via a reference count. When the same bytes are referenced by multiple logical keys (e.g. the same package mirrored across two registries, or a yanked-then-re-released version), only one copy of the data is stored on disk or in S3. The deduplication tables (`artifact_dedup_index`, `artifact_dedup_refs`) are created automatically by the database migration and require no configuration.
 
 **`[registries.rbac]` fields:**
 

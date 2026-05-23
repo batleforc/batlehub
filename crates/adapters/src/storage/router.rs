@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use sha2::Digest;
 use sqlx::PgPool;
 
 use batlehub_core::{
@@ -10,12 +11,19 @@ use batlehub_core::{
     ports::{StorageBackend, StorageMeta, StoredArtifact},
 };
 
-/// Routes artifact storage operations across multiple named backends.
+/// Routes artifact storage operations across multiple named backends, with
+/// content-addressable deduplication via the `artifact_dedup_index` and
+/// `artifact_dedup_refs` tables.
 ///
-/// - On `store`: the backend is chosen by registry name (derived from the artifact key).
-///   The assignment is recorded in the `artifact_storage` table for future retrieval.
-/// - On `retrieve`/`exists`: the recorded backend is consulted first; artifacts without
-///   a record (pre-migration) fall back to the default backend.
+/// **Dedup model:**
+/// - Physical blobs are stored under `"blob/{sha256_hex}"` in the selected backend.
+/// - `artifact_dedup_refs` maps each logical artifact key to a content hash.
+/// - `artifact_dedup_index` maps each content hash to its physical key and ref count.
+/// - When two logical keys share identical bytes, only one physical blob is written.
+/// - Deleting a logical key decrements the ref count; the blob is deleted only when
+///   the ref count reaches zero.
+/// - Artifacts written before this feature was enabled have no dedup entries and are
+///   served via the legacy path (direct logical-key lookup).
 pub struct StorageRouter {
     backends: HashMap<String, Arc<dyn StorageBackend>>,
     default_name: String,
@@ -34,25 +42,28 @@ impl StorageRouter {
         Self { backends, default_name, registry_assignments, pool }
     }
 
-    fn resolve_backend_for_key(&self, key: &str) -> &Arc<dyn StorageBackend> {
+    fn backend_name_for_key(&self, key: &str) -> &str {
         let registry = key
             .strip_prefix("artifact:")
             .and_then(|k| k.split('/').next())
             .unwrap_or("");
 
-        let backend_name = self
-            .registry_assignments
+        self.registry_assignments
             .get(registry)
             .map(|s| s.as_str())
-            .unwrap_or(&self.default_name);
+            .unwrap_or(&self.default_name)
+    }
 
+    fn resolve_backend(&self, name: &str) -> &Arc<dyn StorageBackend> {
         self.backends
-            .get(backend_name)
+            .get(name)
             .or_else(|| self.backends.get(&self.default_name))
             .expect("default storage backend must always be present")
     }
 
-    async fn recorded_backend_for_key(&self, key: &str) -> Option<&Arc<dyn StorageBackend>> {
+    /// Returns the backend recorded in `artifact_storage` for a logical key,
+    /// or `None` if the key was never recorded.
+    async fn recorded_backend_for_key(&self, key: &str) -> Option<Arc<dyn StorageBackend>> {
         use sqlx::Row;
         let result = sqlx::query(
             "SELECT backend_name FROM artifact_storage WHERE storage_key = $1",
@@ -65,18 +76,35 @@ impl StorageRouter {
 
         result
             .and_then(|r| r.try_get::<String, _>("backend_name").ok())
-            .and_then(|name| self.backends.get(&name))
+            .and_then(|name| self.backends.get(&name).cloned())
     }
 
-    async fn lazy_update_size(&self, key: &str, size: u64) {
-        let _ = sqlx::query(
-            "UPDATE artifact_storage SET size_bytes = $1 WHERE storage_key = $2 AND size_bytes IS NULL",
+    /// Look up the physical `content_key` for a logical artifact key via the dedup tables.
+    /// Returns `(content_key, backend_arc)` if a dedup entry exists.
+    async fn dedup_content_key(&self, logical_key: &str) -> Option<(String, Arc<dyn StorageBackend>)> {
+        use sqlx::Row;
+        let row = sqlx::query(
+            r#"
+            SELECT di.content_key, COALESCE(ast.backend_name, $2) AS backend_name
+            FROM artifact_dedup_refs dr
+            JOIN artifact_dedup_index di USING (content_hash)
+            LEFT JOIN artifact_storage ast ON ast.storage_key = dr.logical_key
+            WHERE dr.logical_key = $1
+            "#,
         )
-        .bind(size as i64)
-        .bind(key)
-        .execute(&self.pool)
+        .bind(logical_key)
+        .bind(&self.default_name)
+        .fetch_optional(&self.pool)
         .await
-        .inspect_err(|e| tracing::warn!(error = %e, key, "failed to update artifact size"));
+        .ok()
+        .flatten()?;
+
+        let content_key: String = row.try_get("content_key").ok()?;
+        let backend_name: String = row.try_get("backend_name").ok()?;
+        let backend = self.backends.get(&backend_name).cloned()
+            .or_else(|| self.backends.get(&self.default_name).cloned())?;
+
+        Some((content_key, backend))
     }
 
     async fn record_backend(&self, key: &str, backend_name: &str, size_bytes: Option<u64>) {
@@ -97,41 +125,107 @@ impl StorageRouter {
         .inspect_err(|e| tracing::warn!(error = %e, key, backend_name, "failed to record artifact backend"));
     }
 
-    fn backend_name_for_key(&self, key: &str) -> &str {
-        let registry = key
-            .strip_prefix("artifact:")
-            .and_then(|k| k.split('/').next())
-            .unwrap_or("");
+    async fn lazy_update_size(&self, key: &str, size: u64) {
+        let _ = sqlx::query(
+            "UPDATE artifact_storage SET size_bytes = $1 WHERE storage_key = $2 AND size_bytes IS NULL",
+        )
+        .bind(size as i64)
+        .bind(key)
+        .execute(&self.pool)
+        .await
+        .inspect_err(|e| tracing::warn!(error = %e, key, "failed to update artifact size"));
+    }
 
-        self.registry_assignments
-            .get(registry)
-            .map(|s| s.as_str())
-            .unwrap_or(&self.default_name)
+    /// Returns all logical keys matching `prefix` from both the dedup refs table and
+    /// the legacy artifact_storage table (for pre-dedup artifacts).
+    async fn logical_keys_by_prefix(&self, prefix: &str) -> Result<Vec<String>, CoreError> {
+        use sqlx::Row;
+        let like = format!("{prefix}%");
+        let rows = sqlx::query(
+            r#"
+            SELECT logical_key AS key FROM artifact_dedup_refs WHERE logical_key LIKE $1
+            UNION
+            SELECT storage_key AS key FROM artifact_storage
+              WHERE storage_key LIKE $1
+                AND storage_key NOT IN (SELECT logical_key FROM artifact_dedup_refs WHERE logical_key LIKE $1)
+            "#,
+        )
+        .bind(&like)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::Storage(e.to_string()))?;
+
+        Ok(rows.into_iter().filter_map(|r| r.try_get::<String, _>("key").ok()).collect())
     }
 }
 
 #[async_trait]
 impl StorageBackend for StorageRouter {
     async fn store(&self, key: &str, data: Bytes, meta: StorageMeta) -> Result<(), CoreError> {
-        let backend_name = self.backend_name_for_key(key).to_owned();
-        let backend = self.backends
-            .get(&backend_name)
-            .or_else(|| self.backends.get(&self.default_name))
-            .expect("default storage backend must always be present");
+        let content_hash = hex::encode(sha2::Sha256::digest(&data));
+        let content_key = format!("blob/{content_hash}");
+        let size = meta.size;
 
-        let size_bytes = meta.size;
-        backend.store(key, data, meta).await?;
-        self.record_backend(key, &backend_name, size_bytes).await;
+        let backend_name = self.backend_name_for_key(key).to_owned();
+        let backend = self.resolve_backend(&backend_name).clone();
+
+        // Insert / increment ref count in the dedup index.
+        let ref_count: i32 = sqlx::query_scalar(
+            r#"
+            INSERT INTO artifact_dedup_index (content_hash, content_key, ref_count, size_bytes)
+            VALUES ($1, $2, 1, $3)
+            ON CONFLICT (content_hash) DO UPDATE
+                SET ref_count = artifact_dedup_index.ref_count + 1
+            RETURNING ref_count
+            "#,
+        )
+        .bind(&content_hash)
+        .bind(&content_key)
+        .bind(size.map(|s| s as i64))
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| CoreError::Storage(format!("dedup index upsert failed: {e}")))?;
+
+        // Map the logical artifact key → content hash.
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO artifact_dedup_refs (logical_key, content_hash)
+            VALUES ($1, $2)
+            ON CONFLICT (logical_key) DO UPDATE SET content_hash = EXCLUDED.content_hash
+            "#,
+        )
+        .bind(key)
+        .bind(&content_hash)
+        .execute(&self.pool)
+        .await
+        .inspect_err(|e| tracing::warn!(error = %e, key, "failed to insert dedup_refs"));
+
+        // Write physical bytes only for the first reference (new content hash).
+        if ref_count == 1 {
+            backend.store(&content_key, data, meta).await?;
+        }
+
+        // Keep the legacy artifact_storage record for routing and size queries.
+        self.record_backend(key, &backend_name, size).await;
+
         Ok(())
     }
 
     async fn retrieve(&self, key: &str) -> Result<Option<StoredArtifact>, CoreError> {
-        // Clone the Arc so we don't hold a reference into self across the await.
-        let backend = match self.recorded_backend_for_key(key).await {
-            Some(b) => Arc::clone(b),
-            None => Arc::clone(self.resolve_backend_for_key(key)),
-        };
+        // Dedup path: resolve logical key → physical content key.
+        if let Some((content_key, backend)) = self.dedup_content_key(key).await {
+            let artifact = backend.retrieve(&content_key).await?;
+            if artifact.is_some() {
+                return Ok(artifact);
+            }
+            // Physical blob missing (possible race during first write); fall through.
+        }
 
+        // Legacy path: artifact was stored before dedup was enabled.
+        let backend = match self.recorded_backend_for_key(key).await {
+            Some(b) => b,
+            None => self.resolve_backend(self.backend_name_for_key(key)).clone(),
+        };
         let artifact = backend.retrieve(key).await?;
         if let Some(ref a) = artifact {
             if let Some(size) = a.meta.size {
@@ -142,21 +236,86 @@ impl StorageBackend for StorageRouter {
     }
 
     async fn exists(&self, key: &str) -> Result<bool, CoreError> {
-        if let Some(backend) = self.recorded_backend_for_key(key).await {
-            return backend.exists(key).await;
+        // Dedup path.
+        if let Some((content_key, backend)) = self.dedup_content_key(key).await {
+            return backend.exists(&content_key).await;
         }
-        self.resolve_backend_for_key(key).exists(key).await
+
+        // Legacy path.
+        match self.recorded_backend_for_key(key).await {
+            Some(b) => b.exists(key).await,
+            None => self.resolve_backend(self.backend_name_for_key(key)).exists(key).await,
+        }
     }
 
     async fn delete(&self, key: &str) -> Result<(), CoreError> {
-        let backend = if let Some(b) = self.recorded_backend_for_key(key).await {
-            b
+        // ── Dedup path ────────────────────────────────────────────────────────
+        let dedup_row = sqlx::query(
+            r#"
+            SELECT dr.content_hash, di.content_key
+            FROM artifact_dedup_refs dr
+            JOIN artifact_dedup_index di USING (content_hash)
+            WHERE dr.logical_key = $1
+            "#,
+        )
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| CoreError::Storage(e.to_string()))?;
+
+        if let Some(row) = dedup_row {
+            use sqlx::Row;
+            let content_hash: String = row.try_get("content_hash")
+                .map_err(|e| CoreError::Storage(e.to_string()))?;
+            let content_key: String = row.try_get("content_key")
+                .map_err(|e| CoreError::Storage(e.to_string()))?;
+
+            let mut tx = self.pool.begin().await
+                .map_err(|e| CoreError::Storage(e.to_string()))?;
+
+            // Delete the logical→hash mapping.
+            sqlx::query("DELETE FROM artifact_dedup_refs WHERE logical_key = $1")
+                .bind(key)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| CoreError::Storage(e.to_string()))?;
+
+            // Decrement ref count.
+            let new_ref_count: i32 = sqlx::query_scalar(
+                "UPDATE artifact_dedup_index SET ref_count = ref_count - 1 WHERE content_hash = $1 RETURNING ref_count",
+            )
+            .bind(&content_hash)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| CoreError::Storage(e.to_string()))?;
+
+            if new_ref_count <= 0 {
+                sqlx::query("DELETE FROM artifact_dedup_index WHERE content_hash = $1")
+                    .bind(&content_hash)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+            }
+
+            tx.commit().await.map_err(|e| CoreError::Storage(e.to_string()))?;
+
+            // Delete physical blob when no more references.
+            if new_ref_count <= 0 {
+                let backend_name = self.backend_name_for_key(key);
+                let backend = self.resolve_backend(backend_name);
+                let _ = backend.delete(&content_key).await
+                    .inspect_err(|e| tracing::warn!(error = %e, key = %content_key, "failed to delete physical blob"));
+            }
         } else {
-            self.resolve_backend_for_key(key)
-        };
+            // ── Legacy path ───────────────────────────────────────────────────
+            let backend = match self.recorded_backend_for_key(key).await {
+                Some(b) => b,
+                None => self.resolve_backend(self.backend_name_for_key(key)).clone(),
+            };
+            backend.delete(key).await?;
+        }
 
-        backend.delete(key).await?;
-
+        // Clean up the routing record regardless of path.
         let _ = sqlx::query("DELETE FROM artifact_storage WHERE storage_key = $1")
             .bind(key)
             .execute(&self.pool)
@@ -166,30 +325,41 @@ impl StorageBackend for StorageRouter {
         Ok(())
     }
 
+    /// Returns count and total size of all logical artifact keys matching `prefix`.
+    /// Queries the DB tables rather than the physical backend (which now stores
+    /// content-addressed blobs under `blob/` prefixes).
     async fn stat_by_prefix(&self, prefix: &str) -> Result<(u64, u64), CoreError> {
-        let backend = Arc::clone(self.resolve_backend_for_key(prefix));
-        backend.stat_by_prefix(prefix).await
+        use sqlx::Row;
+        let like = format!("{prefix}%");
+        let row = sqlx::query(
+            r#"
+            SELECT COUNT(*) AS cnt, COALESCE(SUM(size_bytes), 0) AS total
+            FROM artifact_storage
+            WHERE storage_key LIKE $1
+            "#,
+        )
+        .bind(&like)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| CoreError::Storage(e.to_string()))?;
+
+        let count: i64 = row.try_get("cnt").unwrap_or(0);
+        let total: i64 = row.try_get("total").unwrap_or(0);
+        Ok((count as u64, total as u64))
     }
 
     async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError> {
-        let backend = Arc::clone(self.resolve_backend_for_key(prefix));
-        backend.delete_by_prefix(prefix).await
+        let keys = self.logical_keys_by_prefix(prefix).await?;
+        let count = keys.len();
+        for key in keys {
+            if let Err(e) = self.delete(&key).await {
+                tracing::warn!(error = %e, key, "delete_by_prefix: failed to delete artifact");
+            }
+        }
+        Ok(count)
     }
 
     async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, CoreError> {
-        use std::collections::HashSet;
-
-        let mut seen = HashSet::new();
-        let mut all_keys = Vec::new();
-
-        for backend in self.backends.values() {
-            let keys = backend.list_keys(prefix).await?;
-            for key in keys {
-                if seen.insert(key.clone()) {
-                    all_keys.push(key);
-                }
-            }
-        }
-        Ok(all_keys)
+        self.logical_keys_by_prefix(prefix).await
     }
 }

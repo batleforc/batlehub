@@ -103,6 +103,28 @@ impl RegistryClient for GoProxyRegistryClient {
         })
     }
 
+    async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
+        let url = format!("{}/@v/list", self.module_base(package));
+        let resp = self
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(vec![]);
+        }
+
+        let text = resp
+            .error_for_status()
+            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .text()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        Ok(text.lines().filter(|l| !l.trim().is_empty()).map(str::to_owned).collect())
+    }
+
     async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
         let url = match pkg.artifact.as_deref() {
             Some("list") => {
@@ -286,6 +308,55 @@ mod tests {
         let content = bytes.into_iter().flat_map(|b| b.to_vec()).collect::<Vec<u8>>();
         let content = String::from_utf8(content).unwrap();
         assert!(content.contains("v0.3.7"));
+    }
+
+    // ── list_versions ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_versions_returns_versions_from_list_endpoint() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/golang.org/x/text/@v/list")
+            .with_status(200)
+            .with_body("v0.3.6\nv0.3.7\nv0.14.0\n")
+            .create_async()
+            .await;
+
+        let client = GoProxyRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let versions = client.list_versions("golang.org/x/text").await.unwrap();
+
+        assert_eq!(versions, vec!["v0.3.6", "v0.3.7", "v0.14.0"]);
+    }
+
+    #[tokio::test]
+    async fn list_versions_returns_empty_when_module_not_found() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/example.com/unknown/@v/list")
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let client = GoProxyRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let versions = client.list_versions("example.com/unknown").await.unwrap();
+
+        assert!(versions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_versions_ignores_blank_lines() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/example.com/mod/@v/list")
+            .with_status(200)
+            .with_body("\nv1.0.0\n\nv1.1.0\n")
+            .create_async()
+            .await;
+
+        let client = GoProxyRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let versions = client.list_versions("example.com/mod").await.unwrap();
+
+        assert_eq!(versions, vec!["v1.0.0", "v1.1.0"]);
     }
 
     #[tokio::test]

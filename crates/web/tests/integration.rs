@@ -33,9 +33,9 @@ use batlehub_core::{
     },
     error::CoreError,
     ports::{
-        ArtifactStream, AuthProvider, ByteStream, CacheStore, LocalRegistryBackend,
-        PackageRepository, RegistryClient, StorageBackend, StoredArtifact, StorageMeta,
-        UserToken, UserTokenRepository,
+        ArtifactMeta, ArtifactMetaRepository, AuthProvider, ByteStream, CacheStore,
+        FetchedArtifact, LocalRegistryBackend, PackageRepository, RegistryClient,
+        StorageBackend, StoredArtifact, StorageMeta, UserToken, UserTokenRepository,
     },
     rules::{BlockListRule, RbacRule},
     services::{AdminService, LocalRegistryService, ProxyService, RegistryPolicy},
@@ -214,6 +214,29 @@ impl StorageBackend for InMemoryStorage {
             });
         Ok((count, bytes))
     }
+    async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, CoreError> {
+        let map = self.data.lock().unwrap();
+        Ok(map.keys().filter(|k| k.starts_with(prefix)).cloned().collect())
+    }
+}
+
+// ── No-op ArtifactMetaRepository for tests ───────────────────────────────────
+
+struct NoopArtifactMeta;
+impl NoopArtifactMeta {
+    fn arc() -> Arc<dyn ArtifactMetaRepository> { Arc::new(Self) }
+}
+#[async_trait]
+impl ArtifactMetaRepository for NoopArtifactMeta {
+    async fn record_artifact(&self, _: &str, _: &str, _: &str, _: &str, _: Option<u64>) -> Result<(), CoreError> { Ok(()) }
+    async fn touch_artifact(&self, _: &str) -> Result<(), CoreError> { Ok(()) }
+    async fn list_artifacts(&self, _: &str) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
+    async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
+    async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> { Ok(()) }
+    async fn list_expired_by_ttl(&self, _: &str, _: chrono::DateTime<chrono::Utc>) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
+    async fn list_idle(&self, _: &str, _: chrono::DateTime<chrono::Utc>) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
+    async fn total_size_bytes(&self, _: &str) -> Result<u64, CoreError> { Ok(0) }
+    async fn list_lru(&self, _: &str, _: i64) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
 }
 
 // ── Fixed (deterministic) RegistryClient ─────────────────────────────────────
@@ -243,13 +266,17 @@ impl RegistryClient for FixedRegistry {
             checksum: None,
             is_signed: None,
             extra: serde_json::json!({"registry": self.registry_type, "name": pkg.name}),
+            cache_control: None,
         })
     }
 
-    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<ArtifactStream, CoreError> {
+    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
         let body = format!("artifact:{}:{}", self.registry_type, pkg.cache_key());
         let bytes = Bytes::from(body);
-        Ok(Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(bytes) })))
+        Ok(FetchedArtifact {
+            stream: Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(bytes) })),
+            cache_control: None,
+        })
     }
 }
 
@@ -389,6 +416,7 @@ fn rbac_policy(
         metadata_ttl: Some(Duration::from_secs(300)),
         firewall_only: false,
         serve_stale_metadata: false,
+        artifact_ttl: None,
         rules: vec![
             Box::new(RbacRule::new(perms)),
             Box::new(BlockListRule::new(repo)),
@@ -435,6 +463,7 @@ async fn make_app(
         storage,
         cache,
         repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
     });
@@ -457,7 +486,7 @@ async fn make_app(
         std::collections::HashMap::new();
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![]))
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new()))
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(cargo_indexes))
@@ -1006,6 +1035,7 @@ fn rbac_policy_group_registry(repo: Arc<dyn PackageRepository>) -> RegistryPolic
         metadata_ttl: Some(Duration::from_secs(300)),
         firewall_only: false,
         serve_stale_metadata: false,
+        artifact_ttl: None,
         rules: vec![
             Box::new(RbacRule::new(perms).with_groups(group_perms)),
             Box::new(BlockListRule::new(repo)),
@@ -1042,6 +1072,7 @@ async fn make_group_app(
         storage,
         cache,
         repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
     });
@@ -1077,7 +1108,7 @@ async fn make_group_app(
         std::collections::HashMap::new();
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![]))
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new()))
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(cargo_indexes))
@@ -1429,6 +1460,7 @@ async fn make_app_with_tokens(
         storage,
         cache,
         repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
     });
@@ -1448,7 +1480,7 @@ async fn make_app_with_tokens(
 
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, tok_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![]))
+        .configure(configure_app(proxy_svc, admin_svc, tok_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new()))
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(cargo_indexes))
@@ -1765,6 +1797,7 @@ async fn make_app_with_cargo_index(
         storage,
         cache,
         repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
     });
@@ -1790,7 +1823,7 @@ async fn make_app_with_cargo_index(
 
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![]))
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new()))
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(cargo_indexes))
@@ -2341,9 +2374,12 @@ impl RegistryClient for UnavailableRegistry {
         Err(CoreError::Registry("upstream down".into()))
     }
 
-    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<ArtifactStream, CoreError> {
+    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
         let data = Bytes::from(format!("artifact:npm:{}", pkg.cache_key()));
-        Ok(Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(data) })))
+        Ok(FetchedArtifact {
+            stream: Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(data) })),
+            cache_control: None,
+        })
     }
 }
 
@@ -2374,6 +2410,7 @@ async fn make_unavailable_npm_app(
             metadata_ttl: Some(Duration::from_secs(300)),
             firewall_only: false,
             serve_stale_metadata: serve_stale,
+            artifact_ttl: None,
             rules: vec![
                 Box::new(RbacRule::new(perms)),
                 Box::new(BlockListRule::new(repo_dyn.clone())),
@@ -2388,6 +2425,7 @@ async fn make_unavailable_npm_app(
         storage,
         cache: cache_dyn,
         repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
     });
@@ -2415,6 +2453,7 @@ async fn make_unavailable_npm_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
+            std::collections::HashMap::new(),
         ))
         .split_for_parts();
     let app = app
@@ -2433,6 +2472,7 @@ fn stale_npm_meta(name: &str, version: &str) -> PackageMetadata {
         checksum: None,
         is_signed: None,
         extra: serde_json::json!({}),
+        cache_control: None,
     }
 }
 
@@ -2783,6 +2823,7 @@ async fn audit_quick_forwards_to_upstream_and_returns_response() {
         storage,
         cache,
         repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
     });
@@ -2804,7 +2845,7 @@ async fn audit_quick_forwards_to_upstream_and_returns_response() {
         std::collections::HashMap::new();
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, upstream_map, vec![]))
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, upstream_map, vec![], std::collections::HashMap::new()))
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(cargo_indexes))
@@ -2971,6 +3012,7 @@ async fn cargo_registry_index_fetches_from_upstream_and_returns_content() {
         storage,
         cache,
         repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
     });
@@ -2993,7 +3035,7 @@ async fn cargo_registry_index_fetches_from_upstream_and_returns_content() {
     });
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![]))
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new()))
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(cargo_indexes))
@@ -3083,6 +3125,7 @@ async fn make_local_registry_app(
         storage,
         cache,
         repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
     });
@@ -3128,6 +3171,7 @@ async fn make_local_registry_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
+            std::collections::HashMap::new(),
         ))
         .split_for_parts();
     let app = app
@@ -3468,6 +3512,7 @@ async fn make_local_npm_app(
         storage,
         cache,
         repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
     });
@@ -3502,6 +3547,7 @@ async fn make_local_npm_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
+            std::collections::HashMap::new(),
         ))
         .split_for_parts();
     let app = app
@@ -3711,6 +3757,7 @@ async fn make_local_vsx_app(
         storage,
         cache,
         repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
     });
@@ -3745,6 +3792,7 @@ async fn make_local_vsx_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
+            std::collections::HashMap::new(),
         ))
         .split_for_parts();
     let app = app
@@ -3904,6 +3952,7 @@ async fn make_local_go_app(
         storage,
         cache,
         repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
     });
@@ -3938,6 +3987,7 @@ async fn make_local_go_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
+            std::collections::HashMap::new(),
         ))
         .split_for_parts();
     let app = app

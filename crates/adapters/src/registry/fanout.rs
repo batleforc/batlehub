@@ -48,6 +48,16 @@ impl RegistryClient for FanoutRegistryClient {
         Err(last)
     }
 
+    async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
+        for client in &self.clients {
+            let versions = client.list_versions(package).await?;
+            if !versions.is_empty() {
+                return Ok(versions);
+            }
+        }
+        Ok(vec![])
+    }
+
     async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
         let mut last = CoreError::NotFound(format!("{} artifact not found in any upstream", pkg.name));
         for client in &self.clients {

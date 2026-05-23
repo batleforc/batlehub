@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{ArtifactStream, FetchedArtifact, RegistryClient},
+    ports::{FetchedArtifact, RegistryClient},
 };
 
 use super::http_client::{apply_upstream_options, UpstreamHttpOptions};
@@ -142,6 +142,14 @@ impl RegistryClient for NpmRegistryClient {
             extra,
             cache_control: None,
         })
+    }
+
+    async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
+        let packument = self.fetch_packument(package).await?;
+        let mut versions: Vec<String> = packument.versions.into_keys().collect();
+        // Sort by semver lexicographically as a best-effort ordering (oldest first).
+        versions.sort();
+        Ok(versions)
     }
 
     async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
