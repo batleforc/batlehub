@@ -47,8 +47,10 @@ impl CacheStore for InMemoryCacheStore {
 
     async fn set(&self, key: &str, mut entry: CacheEntry, ttl: Option<Duration>) -> Result<(), CoreError> {
         if let Some(ttl) = ttl {
-            let exp = Utc::now() + chrono::Duration::from_std(ttl).unwrap_or_default();
-            entry.expires_at = Some(exp);
+            match chrono::Duration::from_std(ttl) {
+                Ok(d) => entry.expires_at = Some(Utc::now() + d),
+                Err(e) => tracing::warn!(key, error = %e, "TTL overflows chrono::Duration; entry stored without expiry"),
+            }
         }
         self.inner.write().await.insert(key.to_owned(), InnerEntry { entry });
         Ok(())

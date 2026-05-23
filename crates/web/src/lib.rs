@@ -42,8 +42,8 @@ impl AccessConfig {
                 result.extend(registries.iter().cloned());
             }
             // Wildcard match: "*:local-name" covers any provider prefix
-            if let Some(colon) = group.find(':') {
-                let wildcard = format!("*:{}", &group[colon + 1..]);
+            if let Some((_, local_name)) = group.split_once(':') {
+                let wildcard = format!("*:{local_name}");
                 if let Some(registries) = self.groups.get(&wildcard) {
                     result.extend(registries.iter().cloned());
                 }
@@ -118,7 +118,6 @@ mod access_config_tests {
 
     #[test]
     fn has_registry_access_via_group_only() {
-        let _ = make_config(); // ensure it compiles
         // No role-based registries for anonymous, but group-a-reg is accessible via team-a.
         let anon_cfg = AccessConfig {
             anonymous: [].iter().cloned().collect(),
@@ -269,9 +268,12 @@ use sqlx::PgPool;
 use batlehub_adapters::auth::OidcSsoFlow;
 use batlehub_core::{
     ports::UserTokenRepository,
-    services::{AdminService, ProxyService},
+    services::{AdminService, ProxyMetrics, ProxyService},
 };
+use metrics_exporter_prometheus::PrometheusHandle;
 
+pub use handlers::healthz::healthz;
+pub use handlers::metrics::prometheus_metrics;
 pub use handlers::proxy::cargo::CargoIndexProxy;
 pub use middleware::AuthMiddlewareFactory;
 
@@ -317,6 +319,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             audit::audit_log,
             health::{clear_registry_cache, registry_health},
             packages::{block_package, bulk_block_packages, bulk_unblock_packages, invalidate_package, list_packages as admin_list_packages, package_detail, unblock_package},
+            stats::admin_stats,
             warming::warm_registry,
         },
         front_office::{
@@ -399,6 +402,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(clear_registry_cache);
     cfg.service(audit_log);
     cfg.service(warm_registry);
+    cfg.service(admin_stats);
 }
 
 /// Return the raw OpenAPI JSON spec (auto-collected from route registrations).
@@ -433,6 +437,8 @@ pub fn configure_app(
     upstream_map: UpstreamMap,
     oidc_sso_flows: Vec<OidcSsoFlow>,
     warming_map: WarmingServiceMap,
+    proxy_metrics: Arc<ProxyMetrics>,
+    prometheus_handle: Option<PrometheusHandle>,
 ) -> impl Fn(&mut UtoipaServiceConfig) + Clone + 'static {
     let audit_client = reqwest::Client::builder()
         .user_agent("batlehub/0.1")
@@ -448,6 +454,10 @@ pub fn configure_app(
         cfg.app_data(web::Data::new(audit_client.clone()));
         cfg.app_data(web::Data::new(oidc_sso_flows.clone()));
         cfg.app_data(web::Data::new(warming_map.clone()));
+        cfg.app_data(web::Data::new(proxy_metrics.clone()));
+        if let Some(ref h) = prometheus_handle {
+            cfg.app_data(web::Data::new(h.clone()));
+        }
         if let Some(ref p) = pool {
             cfg.app_data(web::Data::new(p.clone()));
         }

@@ -37,8 +37,12 @@ impl CacheStore for PgCacheStore {
     }
 
     async fn set(&self, key: &str, entry: CacheEntry, ttl: Option<Duration>) -> Result<(), CoreError> {
-        let expires_at = ttl.map(|d| {
-            Utc::now() + chrono::Duration::from_std(d).unwrap_or_default()
+        let expires_at = ttl.and_then(|d| match chrono::Duration::from_std(d) {
+            Ok(cd) => Some(Utc::now() + cd),
+            Err(e) => {
+                tracing::warn!(key, error = %e, "TTL overflows chrono::Duration; entry stored without expiry");
+                None
+            }
         });
         let metadata_json = serde_json::to_value(&entry.metadata)
             .map_err(|e| CoreError::Database(format!("serialize cache metadata: {e}")))?;

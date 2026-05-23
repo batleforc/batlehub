@@ -36,12 +36,26 @@ pub struct WarmingService {
     pub artifact_meta: Arc<dyn ArtifactMetaRepository>,
     pub registry_name: String,
     /// How many of the most-recent versions to warm per package.
+    /// Ignored when the package string includes a pinned version (e.g. `"lodash@4.17.21"`).
     pub latest_n: usize,
     /// Maximum concurrent artifact downloads.
     pub concurrency: usize,
 }
 
 impl WarmingService {
+    /// Return a new `WarmingService` identical to `self` but with a different `latest_n`.
+    /// Used by the admin API to honour a per-request version count override.
+    pub fn with_latest_n(&self, n: usize) -> Self {
+        Self {
+            client: Arc::clone(&self.client),
+            storage: Arc::clone(&self.storage),
+            artifact_meta: Arc::clone(&self.artifact_meta),
+            registry_name: self.registry_name.clone(),
+            latest_n: n,
+            concurrency: self.concurrency,
+        }
+    }
+
     /// Warm a single package.
     ///
     /// If `package` contains an `@version` suffix (e.g. `"lodash@4.17.21"`), only

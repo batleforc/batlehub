@@ -37,11 +37,12 @@ use batlehub_core::{
     entities::Role,
     ports::{AuthProvider, CacheStore, UserTokenRepository},
     rules::{BlockListRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule},
-    services::{AdminService, LocalRegistryService, ProxyService, RegistryPolicy},
+    services::{AdminService, LocalRegistryService, ProxyMetrics, ProxyService, RegistryPolicy},
 };
 use batlehub_core::services::WarmingService;
-use batlehub_web::{configure_app, openapi_spec, AccessConfig, ApiDoc, CargoIndexProxy, RegistryMap, RegistryModeMap, UpstreamMap};
+use batlehub_web::{configure_app, healthz, openapi_spec, prometheus_metrics, AccessConfig, ApiDoc, CargoIndexProxy, RegistryMap, RegistryModeMap, UpstreamMap};
 use batlehub_web::handlers::back_office::warming::WarmingServiceMap;
+use metrics_exporter_prometheus::PrometheusBuilder;
 
 // ── Tracing span builder ──────────────────────────────────────────────────────
 
@@ -111,6 +112,11 @@ async fn main() -> Result<()> {
 
     let config =
         load(&cli.config).with_context(|| format!("loading config from '{}'", cli.config))?;
+
+    // ── Prometheus metrics recorder ───────────────────────────────────────────
+    let prometheus_handle = PrometheusBuilder::new()
+        .install_recorder()
+        .context("installing Prometheus metrics recorder")?;
 
     // ── Tracing ───────────────────────────────────────────────────────────────
     let _tracer_provider = init_tracing(config.otel.as_ref());
@@ -190,9 +196,9 @@ async fn main() -> Result<()> {
                         tracing::info!(issuer = %oidc_cfg.issuer_url, "OIDC auth provider ready");
                     }
                     Err(e) => {
-                        // Non-fatal: server starts without OIDC. The /auth/oidc/login
-                        // endpoint will return 503 until the provider becomes reachable
-                        // and the server is restarted.
+                        // Non-fatal: server starts without this OIDC provider.
+                        // The /auth/oidc/login endpoint will return 503 for this
+                        // provider until the server is restarted with a reachable issuer.
                         tracing::warn!(
                             issuer = %oidc_cfg.issuer_url,
                             error = %e,
@@ -279,6 +285,9 @@ async fn main() -> Result<()> {
     let registry_mode_map = RegistryModeMap(registry_mode_map_inner);
 
     // ── Services ──────────────────────────────────────────────────────────────
+    let registry_names: Vec<String> = config.registries.iter().map(|r| r.name.clone()).collect();
+    let proxy_metrics = Arc::new(ProxyMetrics::new(&registry_names));
+
     let artifact_meta = Arc::new(PgArtifactMetaRepository::new(repo.pool()));
     let proxy_svc = Arc::new(ProxyService {
         registries: registry_clients,
@@ -288,6 +297,7 @@ async fn main() -> Result<()> {
         artifact_meta,
         policies,
         max_artifact_size_bytes: config.limits.max_artifact_size_bytes,
+        metrics: Arc::clone(&proxy_metrics),
     });
 
     let admin_svc = Arc::new(AdminService::new(
@@ -387,6 +397,8 @@ async fn main() -> Result<()> {
             upstream_map.clone(),
             oidc_sso_flows.clone(),
             warming_map.clone(),
+            Arc::clone(&proxy_metrics),
+            Some(prometheus_handle.clone()),
         );
         let static_dir_inner = static_dir.clone();
         let cargo_indexes_inner = cargo_indexes.clone();
@@ -399,11 +411,13 @@ async fn main() -> Result<()> {
             .configure(configure)
             .split_for_parts();
 
-        // Register app-data that is not injected via configure_app.
+        // Register app-data and non-OpenAPI routes that are handled outside configure_app.
         let app = app
             .app_data(web::Data::new(cargo_indexes_inner))
             .app_data(web::Data::new(local_svc_inner))
-            .app_data(web::Data::new(registry_mode_map_inner));
+            .app_data(web::Data::new(registry_mode_map_inner))
+            .service(prometheus_metrics)
+            .service(healthz);
 
         let cors_base = Cors::default()
             .allowed_methods(vec!["GET", "POST", "HEAD", "OPTIONS", "DELETE"])

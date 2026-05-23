@@ -99,7 +99,10 @@ pub struct PackageSummary {
 /// Filter for listing packages.
 #[derive(Debug, Clone, Default)]
 pub struct PackageFilter {
+    /// Single-registry filter. Mutually exclusive with `registries`.
     pub registry: Option<String>,
+    /// Multi-registry allow-list. Empty means "all registries". Ignored when `registry` is set.
+    pub registries: Vec<String>,
     pub name_contains: Option<String>,
     /// Exact match on `package_name` — takes priority over `name_contains`.
     pub name_exact: Option<String>,

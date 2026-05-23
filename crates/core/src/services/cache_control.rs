@@ -21,15 +21,11 @@ pub fn parse_cache_control(header: &str) -> CacheControlDirectives {
             out.no_store = true;
         } else if token.eq_ignore_ascii_case("no-cache") {
             out.no_cache = true;
-        } else if let Some(rest) = token.strip_prefix("max-age=").or_else(|| {
-            if token.to_ascii_lowercase().starts_with("max-age=") {
-                Some(&token["max-age=".len()..])
-            } else {
-                None
-            }
-        }) {
-            if let Ok(secs) = rest.trim().parse::<u64>() {
-                out.max_age = Some(secs);
+        } else if let Some((key, val)) = token.split_once('=') {
+            if key.trim().eq_ignore_ascii_case("max-age") {
+                if let Ok(secs) = val.trim().parse::<u64>() {
+                    out.max_age = Some(secs);
+                }
             }
         }
     }
@@ -87,6 +83,12 @@ mod tests {
     fn max_age_zero_is_valid() {
         let d = parse_cache_control("max-age=0");
         assert_eq!(d.max_age, Some(0));
+    }
+
+    #[test]
+    fn max_age_case_insensitive() {
+        let d = parse_cache_control("MAX-AGE=120");
+        assert_eq!(d.max_age, Some(120));
     }
 
     #[test]

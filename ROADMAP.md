@@ -35,9 +35,9 @@ Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules.
 
 ## Metrics & observability
 
-- [ ] Prometheus metrics endpoint (`/metrics`): request counts, cache hit/miss rates, latency percentiles, error rates per registry
-- [ ] Health check endpoint (`/healthz`) that verifies connectivity to the database and all configured storage backends
-- [ ] Stats dashboard on the admin home screen: hits/misses, bandwidth saved, per-registry and aggregate
+- [x] Prometheus metrics endpoint (`/metrics`): request counts, cache hit/miss rates, latency percentiles, error rates per registry
+- [x] Health check endpoint (`/healthz`) that verifies connectivity to the database and all configured storage backends
+- [x] Stats dashboard on the admin home screen: hits/misses, bandwidth saved, per-registry and aggregate
 
 ---
 

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use chrono::Utc;
@@ -14,6 +14,7 @@ use crate::ports::{
 };
 use crate::rules::{evaluate_rules, Rule, RuleContext, RuleDecision};
 use crate::services::cache_control::parse_cache_control;
+use crate::services::metrics::ProxyMetrics;
 
 /// Per-registry behaviour configuration wired in at startup.
 pub struct RegistryPolicy {
@@ -58,6 +59,8 @@ pub struct ProxyService {
     /// to storage. Requests that exceed this limit return a 413 error rather than
     /// exhausting server memory. Defaults to 500 MiB when `None`.
     pub max_artifact_size_bytes: Option<u64>,
+    /// In-memory counters for the stats dashboard (reset on restart).
+    pub metrics: Arc<ProxyMetrics>,
 }
 
 fn warn_if_audit_failed(r: Result<(), CoreError>, ctx: &str) {
@@ -68,7 +71,9 @@ fn warn_if_audit_failed(r: Result<(), CoreError>, ctx: &str) {
 
 impl ProxyService {
     pub async fn handle(&self, req: ProxyRequest) -> Result<ProxyResponse, CoreError> {
-        let registry_name = req.package_id.registry.as_str();
+        let registry_name: &str = req.package_id.registry.as_str();
+        let registry_label = registry_name.to_owned();
+        let start = Instant::now();
 
         let client = self
             .registries
@@ -84,9 +89,11 @@ impl ProxyService {
 
         let metadata = if let Some(entry) = self.cache.get(&cache_key).await? {
             tracing::debug!(key = %cache_key, "metadata cache hit");
+            metrics::counter!("batlehub_metadata_cache_hits_total", "registry" => registry_label.clone()).increment(1);
             entry.metadata
         } else {
             tracing::debug!(key = %cache_key, "metadata cache miss, fetching from upstream");
+            metrics::counter!("batlehub_metadata_cache_misses_total", "registry" => registry_label.clone()).increment(1);
             let meta = match client.resolve_metadata(&req.package_id).await {
                 Ok(m) => m,
                 Err(e) => {
@@ -107,6 +114,7 @@ impl ProxyService {
                                 stale.metadata
                             }
                             None => {
+                                metrics::counter!("batlehub_upstream_errors_total", "registry" => registry_label.clone()).increment(1);
                                 warn_if_audit_failed(
                                     self.repo
                                         .record_access(AccessEvent::proxy_error(
@@ -122,6 +130,7 @@ impl ProxyService {
                             }
                         }
                     } else {
+                        metrics::counter!("batlehub_upstream_errors_total", "registry" => registry_label.clone()).increment(1);
                         warn_if_audit_failed(
                             self.repo
                                 .record_access(AccessEvent::proxy_error(
@@ -187,6 +196,8 @@ impl ProxyService {
                     .await,
                 "denied download",
             );
+            metrics::counter!("batlehub_requests_total", "registry" => registry_label.clone(), "outcome" => "denied").increment(1);
+            metrics::histogram!("batlehub_request_duration_seconds", "registry" => registry_label.clone()).record(start.elapsed().as_secs_f64());
             return Ok(ProxyResponse::Denied { reason });
         }
 
@@ -226,6 +237,8 @@ impl ProxyService {
                     .await,
                 "allowed download",
             );
+            metrics::counter!("batlehub_requests_total", "registry" => registry_label.clone(), "outcome" => "allowed").increment(1);
+            metrics::histogram!("batlehub_request_duration_seconds", "registry" => registry_label.clone()).record(start.elapsed().as_secs_f64());
             return Ok(ProxyResponse::Stream(upstream.stream));
         }
 
@@ -236,12 +249,20 @@ impl ProxyService {
         let cached_artifact_is_fresh = if self.storage.exists(&artifact_key).await? {
             // When an artifact TTL is set, check the stored timestamp.
             if let Some(ttl) = artifact_ttl {
-                let meta = self.artifact_meta.list_expired_by_ttl(
-                    registry_name,
-                    Utc::now() - chrono::Duration::from_std(ttl).unwrap_or(chrono::Duration::zero()),
-                ).await?;
-                let expired = meta.iter().any(|m| m.artifact_key == artifact_key);
-                !expired
+                match chrono::Duration::from_std(ttl) {
+                    Ok(d) => {
+                        let meta = self.artifact_meta.list_expired_by_ttl(
+                            registry_name,
+                            Utc::now() - d,
+                        ).await?;
+                        !meta.iter().any(|m| m.artifact_key == artifact_key)
+                    }
+                    Err(e) => {
+                        // TTL is larger than chrono's range (≥292 years); treat as "never expire".
+                        tracing::warn!(registry = %registry_name, error = %e, "artifact_ttl overflows chrono::Duration; treating artifact as fresh");
+                        true
+                    }
+                }
             } else {
                 true
             }
@@ -251,6 +272,8 @@ impl ProxyService {
 
         if cached_artifact_is_fresh {
             tracing::debug!(key = %artifact_key, "artifact cache hit");
+            metrics::counter!("batlehub_artifact_cache_hits_total", "registry" => registry_label.clone()).increment(1);
+            self.metrics.record_artifact_hit(registry_name);
             let artifact = self
                 .storage
                 .retrieve(&artifact_key)
@@ -276,15 +299,19 @@ impl ProxyService {
                     .await,
                 "allowed download",
             );
-
+            metrics::counter!("batlehub_requests_total", "registry" => registry_label.clone(), "outcome" => "allowed").increment(1);
+            metrics::histogram!("batlehub_request_duration_seconds", "registry" => registry_label.clone()).record(start.elapsed().as_secs_f64());
             return Ok(ProxyResponse::Stream(artifact.stream));
         }
 
         // ── 5. Fetch from upstream and (conditionally) cache ──────────────────
         tracing::debug!(key = %artifact_key, "artifact not cached, fetching from upstream");
+        metrics::counter!("batlehub_artifact_cache_misses_total", "registry" => registry_label.clone()).increment(1);
+        self.metrics.record_artifact_miss(registry_name);
         let mut upstream = match client.fetch_artifact(&req.package_id).await {
             Ok(s) => s,
             Err(e) => {
+                metrics::counter!("batlehub_upstream_errors_total", "registry" => registry_label.clone()).increment(1);
                 warn_if_audit_failed(
                     self.repo
                         .record_access(AccessEvent::proxy_error(
@@ -357,6 +384,8 @@ impl ProxyService {
                 .await,
             "allowed download",
         );
+        metrics::counter!("batlehub_requests_total", "registry" => registry_label.clone(), "outcome" => "allowed").increment(1);
+        metrics::histogram!("batlehub_request_duration_seconds", "registry" => registry_label).record(start.elapsed().as_secs_f64());
 
         let stream = futures::stream::once(async move { Ok(data) });
         Ok(ProxyResponse::Stream(Box::pin(stream)))
@@ -374,6 +403,7 @@ mod tests {
     use futures::stream;
 
     use super::*;
+    use crate::services::metrics::ProxyMetrics;
     use crate::entities::{
         AccessEvent, AccessResult, EventFilter, Identity, PackageFilter, PackageId, PackageMetadata,
         PackageStatus, PackageSummary,
@@ -521,6 +551,9 @@ mod tests {
         async fn list_packages(&self, _filter: PackageFilter) -> Result<Vec<PackageSummary>, CoreError> {
             Ok(vec![])
         }
+        async fn count_packages(&self, _filter: PackageFilter) -> Result<u64, CoreError> {
+            Ok(0)
+        }
         async fn list_events(&self, _filter: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
             Ok(self.events.lock().unwrap().clone())
         }
@@ -661,6 +694,7 @@ mod tests {
             artifact_meta: NoopArtifactMeta::arc(),
             policies,
             max_artifact_size_bytes: None,
+            metrics: Arc::new(ProxyMetrics::new(&[])),
         }
     }
 
@@ -693,6 +727,7 @@ mod tests {
                 m
             },
             max_artifact_size_bytes: None,
+            metrics: Arc::new(ProxyMetrics::new(&[])),
         };
 
         let cache_key = format!("meta:{}", req("npm").package_id.cache_key());
@@ -748,6 +783,7 @@ mod tests {
                 m
             },
             max_artifact_size_bytes: None,
+            metrics: Arc::new(ProxyMetrics::new(&[])),
         };
 
         let resp = svc.handle(req("npm")).await.unwrap();
@@ -794,6 +830,7 @@ mod tests {
                 m
             },
             max_artifact_size_bytes: Some(5), // FixedRegistry sends >5 bytes
+            metrics: Arc::new(ProxyMetrics::new(&[])),
         };
 
         let result = svc.handle(req("npm")).await;
@@ -815,6 +852,7 @@ mod tests {
             artifact_meta: NoopArtifactMeta::arc(),
             policies: HashMap::new(), // no policy for "npm" — should use empty rule set
             max_artifact_size_bytes: None,
+            metrics: Arc::new(ProxyMetrics::new(&[])),
         };
 
         let resp = svc.handle(req("npm")).await.unwrap();
@@ -841,6 +879,7 @@ mod tests {
                 m
             },
             max_artifact_size_bytes: None,
+            metrics: Arc::new(ProxyMetrics::new(&[])),
         };
 
         let pkg = PackageId::new("npm", "test-pkg", "1.0.0");
@@ -893,6 +932,7 @@ mod tests {
             artifact_meta: NoopArtifactMeta::arc(),
             policies,
             max_artifact_size_bytes: None,
+            metrics: Arc::new(ProxyMetrics::new(&[])),
         }
     }
 
@@ -1063,6 +1103,7 @@ mod tests {
             artifact_meta: NoopArtifactMeta::arc(),
             policies,
             max_artifact_size_bytes: None,
+            metrics: Arc::new(ProxyMetrics::new(&[])),
         };
 
         let cache_key = format!("meta:{}", req("npm").package_id.cache_key());
@@ -1088,6 +1129,7 @@ mod tests {
             artifact_meta: NoopArtifactMeta::arc(),
             policies: HashMap::new(),
             max_artifact_size_bytes: None,
+            metrics: Arc::new(ProxyMetrics::new(&[])),
         };
 
         let pkg = PackageId::new("npm", "test-pkg", "1.0.0");
@@ -1139,6 +1181,7 @@ mod tests {
             artifact_meta: spy_meta.clone(),
             policies,
             max_artifact_size_bytes: None,
+            metrics: Arc::new(ProxyMetrics::new(&[])),
         };
 
         let resp = svc.handle(req("npm")).await.unwrap();
@@ -1176,6 +1219,7 @@ mod tests {
             artifact_meta: spy_meta.clone(),
             policies,
             max_artifact_size_bytes: None,
+            metrics: Arc::new(ProxyMetrics::new(&[])),
         };
 
         let resp = svc.handle(req("npm")).await.unwrap();
@@ -1202,6 +1246,7 @@ mod tests {
             artifact_meta: spy_meta.clone(),
             policies: HashMap::new(),
             max_artifact_size_bytes: None,
+            metrics: Arc::new(ProxyMetrics::new(&[])),
         };
 
         let pkg = PackageId::new("npm", "test-pkg", "1.0.0");
@@ -1213,5 +1258,47 @@ mod tests {
             spy_meta.recorded_keys().contains(&artifact_key),
             "record_artifact must be called after a cache miss and successful upstream fetch"
         );
+    }
+
+    #[tokio::test]
+    async fn metrics_artifact_miss_then_hit() {
+        let proxy_metrics = Arc::new(ProxyMetrics::new(&["npm".to_owned()]));
+        let storage = MemStorage::new();
+        let svc = ProxyService {
+            registries: {
+                let mut m = HashMap::new();
+                m.insert("npm".to_owned(), Arc::new(FixedRegistry) as Arc<dyn RegistryClient>);
+                m
+            },
+            storage: storage.clone(),
+            cache: TestCacheStore::new(),
+            repo: SpyRepo::new(),
+            artifact_meta: NoopArtifactMeta::arc(),
+            policies: {
+                let mut m = HashMap::new();
+                m.insert("npm".to_owned(), RegistryPolicy {
+                    metadata_ttl: Some(Duration::from_secs(300)),
+                    firewall_only: false,
+                    serve_stale_metadata: false,
+                    artifact_ttl: None,
+                    rules: vec![],
+                });
+                m
+            },
+            max_artifact_size_bytes: None,
+            metrics: proxy_metrics.clone(),
+        };
+
+        let npm = proxy_metrics.all().get("npm").unwrap();
+
+        // First call: artifact not in storage → miss counter incremented
+        svc.handle(req("npm")).await.unwrap();
+        assert_eq!(npm.misses(), 1, "first call must register a miss");
+        assert_eq!(npm.hits(), 0);
+
+        // Second call: artifact now in storage → hit counter incremented
+        svc.handle(req("npm")).await.unwrap();
+        assert_eq!(npm.misses(), 1, "miss count must not change on second call");
+        assert_eq!(npm.hits(), 1, "second call must register a hit");
     }
 }

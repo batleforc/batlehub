@@ -14,10 +14,13 @@ use crate::entities::{Identity, PackageMetadata, Role};
 use crate::ports::CacheEntry;
 
 pub struct RuleContext<'a> {
+    /// The caller making the request.
     pub identity: &'a Identity,
+    /// Resolved package metadata from the upstream registry.
     pub package: &'a PackageMetadata,
     /// The operation being requested, e.g. `"releases:read"`, `"source:read"`.
     pub resource_type: &'a str,
+    /// Cached metadata entry, if one exists. Absent on the first request for a package.
     pub cache_entry: Option<&'a CacheEntry>,
     /// The version string from the original request, before upstream resolution.
     /// For example `"latest"` even if the upstream resolved it to `"1.2.3"`.
@@ -26,7 +29,9 @@ pub struct RuleContext<'a> {
 
 #[derive(Debug, Clone)]
 pub enum RuleDecision {
+    /// The request is permitted.
     Allow,
+    /// The request is rejected with a human-readable reason.
     Deny { reason: String },
     /// The current identity's role is too low; elevate to `minimum` to proceed.
     RequireRole { minimum: Role },
@@ -60,8 +65,11 @@ impl RuleDecision {
 /// A single rule in the evaluation pipeline.
 #[async_trait]
 pub trait Rule: Send + Sync {
+    /// Short identifier used in log messages (e.g. `"block_list"`, `"rbac"`).
     fn name(&self) -> &str;
 
+    /// Evaluate the rule against `ctx`. Rules are called in order; the first
+    /// `Deny` or `RequireRole` that resolves to `Deny` short-circuits the chain.
     async fn evaluate(&self, ctx: &RuleContext<'_>) -> RuleDecision;
 }
 

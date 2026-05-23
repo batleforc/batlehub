@@ -85,8 +85,17 @@ pub async fn list_packages(
         }
     }
 
+    // When no specific registry is requested, restrict to accessible registries at the DB level
+    // so that pagination and the total count are accurate.
+    let registries = if query.registry.is_none() {
+        accessible.into_iter().collect()
+    } else {
+        vec![]
+    };
+
     let filter = PackageFilter {
         registry: query.registry.clone(),
+        registries: registries.clone(),
         name_contains: query.name.clone(),
         name_exact: None,
         blocked_only: false,
@@ -94,11 +103,24 @@ pub async fn list_packages(
         offset: query.page * query.per_page,
     };
 
-    let packages = admin_svc.list_packages(filter).await.map_err(AppError::from)?;
+    let count_filter = PackageFilter {
+        registry: query.registry.clone(),
+        registries,
+        name_contains: query.name.clone(),
+        name_exact: None,
+        blocked_only: false,
+        limit: 0,
+        offset: 0,
+    };
+
+    let (packages, total) = tokio::try_join!(
+        admin_svc.list_packages(filter),
+        admin_svc.count_packages(count_filter),
+    )
+    .map_err(AppError::from)?;
 
     let items: Vec<PackageSummaryDto> = packages
         .into_iter()
-        .filter(|p| accessible.contains(&p.package_id.registry))
         .map(|p| PackageSummaryDto {
             registry: p.package_id.registry,
             name: p.package_id.name,
@@ -112,10 +134,9 @@ pub async fn list_packages(
         })
         .collect();
 
-    let total = items.len();
     Ok(web::Json(PackageListResponse {
         items,
-        total,
+        total: total as usize,
         page: query.page,
         per_page: query.per_page,
     }))

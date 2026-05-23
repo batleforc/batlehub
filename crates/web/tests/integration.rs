@@ -38,10 +38,11 @@ use batlehub_core::{
         StorageBackend, StoredArtifact, StorageMeta, UserToken, UserTokenRepository,
     },
     rules::{BlockListRule, RbacRule},
-    services::{AdminService, LocalRegistryService, ProxyService, RegistryPolicy},
+    services::{AdminService, LocalRegistryService, ProxyMetrics, ProxyService, RegistryPolicy},
 };
 use batlehub_config::schema::RegistryMode;
-use batlehub_web::{configure_app, AuthMiddlewareFactory, RegistryModeMap};
+use batlehub_web::{configure_app, healthz, prometheus_metrics, AuthMiddlewareFactory, RegistryModeMap};
+use metrics_exporter_prometheus::PrometheusBuilder;
 
 // ── In-memory PackageRepository ────────────────────────────────────────────────
 
@@ -131,6 +132,18 @@ impl PackageRepository for InMemoryRepo {
             .take(filter.limit as usize)
             .collect();
         Ok(items)
+    }
+
+    async fn count_packages(&self, filter: PackageFilter) -> Result<u64, CoreError> {
+        let sums = self.summaries.lock().unwrap();
+        let count = sums.values().filter(|s| {
+            if let Some(r) = &filter.registry { if &s.package_id.registry != r { return false; } }
+            if !filter.registries.is_empty() && !filter.registries.contains(&s.package_id.registry) { return false; }
+            if let Some(n) = &filter.name_contains { if !s.package_id.name.contains(n.as_str()) { return false; } }
+            if filter.blocked_only && !s.status.is_blocked() { return false; }
+            true
+        }).count();
+        Ok(count as u64)
     }
 
     async fn list_events(&self, filter: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
@@ -466,6 +479,7 @@ async fn make_app(
         artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
 
@@ -486,7 +500,84 @@ async fn make_app(
         std::collections::HashMap::new();
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new()))
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None))
+        .split_for_parts();
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
+
+    init_service(
+        app.wrap(AuthMiddlewareFactory::new(test_auth_providers())),
+    )
+    .await
+}
+
+/// Variant of `make_app` that accepts a caller-supplied `proxy_metrics` so
+/// that tests can inspect or mutate counters and verify the stats endpoint.
+async fn make_app_ext(
+    repo: Arc<InMemoryRepo>,
+    proxy_metrics: Arc<ProxyMetrics>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [
+        ("github".to_owned(), FixedRegistry::new("github") as Arc<dyn RegistryClient>),
+        ("npm".to_owned(), FixedRegistry::new("npm") as Arc<dyn RegistryClient>),
+        ("cargo".to_owned(), FixedRegistry::new("cargo") as Arc<dyn RegistryClient>),
+        ("openvsx".to_owned(), FixedRegistry::new("openvsx") as Arc<dyn RegistryClient>),
+        ("go".to_owned(), FixedRegistry::new("goproxy") as Arc<dyn RegistryClient>),
+        ("vscode".to_owned(), FixedRegistry::new("vscode-marketplace") as Arc<dyn RegistryClient>),
+    ]
+    .into();
+
+    let policies: HashMap<String, RegistryPolicy> = [
+        ("github".to_owned(), rbac_policy(repo_dyn.clone())),
+        ("npm".to_owned(), rbac_policy(repo_dyn.clone())),
+        ("cargo".to_owned(), rbac_policy(repo_dyn.clone())),
+        ("openvsx".to_owned(), rbac_policy(repo_dyn.clone())),
+        ("go".to_owned(), rbac_policy(repo_dyn.clone())),
+        ("vscode".to_owned(), rbac_policy(repo_dyn.clone())),
+    ]
+    .into();
+
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        registries,
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        policies,
+        max_artifact_size_bytes: None,
+        metrics: proxy_metrics.clone(),
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = batlehub_web::AccessConfig {
+        anonymous: ["github", "npm", "cargo", "openvsx", "go", "vscode"].iter().map(|s| s.to_string()).collect(),
+        user: ["github", "npm", "cargo", "openvsx", "go", "vscode"].iter().map(|s| s.to_string()).collect(),
+        admin: ["github", "npm", "cargo", "openvsx", "go", "vscode"].iter().map(|s| s.to_string()).collect(),
+        groups: std::collections::HashMap::new(),
+    };
+    let registry_map = batlehub_web::RegistryMap(
+        [("github", "github"), ("npm", "npm"), ("cargo", "cargo"), ("openvsx", "openvsx"), ("go", "goproxy"), ("vscode", "vscode-marketplace")]
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.to_string()))
+            .collect(),
+    );
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new(), proxy_metrics, None))
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(cargo_indexes))
@@ -1075,6 +1166,7 @@ async fn make_group_app(
         artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -1108,7 +1200,7 @@ async fn make_group_app(
         std::collections::HashMap::new();
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new()))
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None))
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(cargo_indexes))
@@ -1463,6 +1555,7 @@ async fn make_app_with_tokens(
         artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let tok_repo: Arc<dyn UserTokenRepository> = token_repo;
@@ -1480,7 +1573,7 @@ async fn make_app_with_tokens(
 
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, tok_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new()))
+        .configure(configure_app(proxy_svc, admin_svc, tok_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None))
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(cargo_indexes))
@@ -1800,6 +1893,7 @@ async fn make_app_with_cargo_index(
         artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -1823,7 +1917,7 @@ async fn make_app_with_cargo_index(
 
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new()))
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None))
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(cargo_indexes))
@@ -2428,6 +2522,7 @@ async fn make_unavailable_npm_app(
         artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -2453,7 +2548,7 @@ async fn make_unavailable_npm_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None,
         ))
         .split_for_parts();
     let app = app
@@ -2826,6 +2921,7 @@ async fn audit_quick_forwards_to_upstream_and_returns_response() {
         artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -2845,7 +2941,7 @@ async fn audit_quick_forwards_to_upstream_and_returns_response() {
         std::collections::HashMap::new();
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, upstream_map, vec![], std::collections::HashMap::new()))
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, upstream_map, vec![], std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None))
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(cargo_indexes))
@@ -3015,6 +3111,7 @@ async fn cargo_registry_index_fetches_from_upstream_and_returns_content() {
         artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -3035,7 +3132,7 @@ async fn cargo_registry_index_fetches_from_upstream_and_returns_content() {
     });
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new()))
+        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None))
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(cargo_indexes))
@@ -3128,6 +3225,7 @@ async fn make_local_registry_app(
         artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -3171,7 +3269,7 @@ async fn make_local_registry_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None,
         ))
         .split_for_parts();
     let app = app
@@ -3515,6 +3613,7 @@ async fn make_local_npm_app(
         artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -3547,7 +3646,7 @@ async fn make_local_npm_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None,
         ))
         .split_for_parts();
     let app = app
@@ -3760,6 +3859,7 @@ async fn make_local_vsx_app(
         artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -3792,7 +3892,7 @@ async fn make_local_vsx_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None,
         ))
         .split_for_parts();
     let app = app
@@ -3955,6 +4055,7 @@ async fn make_local_go_app(
         artifact_meta: NoopArtifactMeta::arc(),
         policies,
         max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -3987,7 +4088,7 @@ async fn make_local_go_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None,
         ))
         .split_for_parts();
     let app = app
@@ -4200,4 +4301,164 @@ async fn go_info_unknown_returns_404() {
         .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 404);
+}
+
+// ── /healthz ──────────────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn healthz_returns_ok_without_db() {
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let proxy_svc = Arc::new(ProxyService {
+        registries: HashMap::new(),
+        storage,
+        cache: Arc::new(InMemoryCacheStore::new()),
+        repo: InMemoryRepo::new(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        policies: HashMap::new(),
+        max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+    });
+
+    let app = init_service(
+        actix_web::App::new()
+            .app_data(actix_web::web::Data::new(proxy_svc))
+            .service(healthz),
+    )
+    .await;
+
+    let req = TestRequest::get().uri("/healthz").to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["db"], "unconfigured");
+    assert_eq!(body["storage"], "ok");
+}
+
+#[actix_web::test]
+async fn healthz_is_unauthenticated() {
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let proxy_svc = Arc::new(ProxyService {
+        registries: HashMap::new(),
+        storage,
+        cache: Arc::new(InMemoryCacheStore::new()),
+        repo: InMemoryRepo::new(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        policies: HashMap::new(),
+        max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+    });
+
+    let app = init_service(
+        actix_web::App::new()
+            .app_data(actix_web::web::Data::new(proxy_svc))
+            .service(healthz)
+            .wrap(AuthMiddlewareFactory::new(test_auth_providers())),
+    )
+    .await;
+
+    // No Authorization header — must still return 200
+    let req = TestRequest::get().uri("/healthz").to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+// ── /metrics ──────────────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn metrics_returns_503_without_handle() {
+    let app = init_service(
+        actix_web::App::new().service(prometheus_metrics),
+    )
+    .await;
+
+    let req = TestRequest::get().uri("/metrics").to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 503);
+}
+
+#[actix_web::test]
+async fn metrics_returns_200_with_handle() {
+    let recorder = PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+
+    let app = init_service(
+        actix_web::App::new()
+            .app_data(actix_web::web::Data::new(handle))
+            .service(prometheus_metrics),
+    )
+    .await;
+
+    let req = TestRequest::get().uri("/metrics").to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+    assert!(ct.starts_with("text/plain"), "unexpected content-type: {ct}");
+}
+
+// ── /api/v1/admin/stats ───────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn admin_stats_requires_admin_role() {
+    let app = make_app(InMemoryRepo::new()).await;
+
+    let req = TestRequest::get().uri("/api/v1/admin/stats").to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403, "anonymous must be denied");
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/stats")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403, "user role must be denied");
+}
+
+#[actix_web::test]
+async fn admin_stats_returns_zero_counts_initially() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/stats")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["aggregate"]["artifact_hits"], 0);
+    assert_eq!(body["aggregate"]["artifact_misses"], 0);
+    assert!(body["aggregate"]["hit_rate"].is_null(), "hit_rate must be null when there are no requests");
+    assert!(body["since_startup"].is_string());
+    assert!(body["per_registry"].is_array());
+}
+
+#[actix_web::test]
+async fn admin_stats_reflects_counter_updates() {
+    let proxy_metrics = Arc::new(ProxyMetrics::new(&["npm".to_owned()]));
+    let app = make_app_ext(InMemoryRepo::new(), proxy_metrics.clone()).await;
+
+    proxy_metrics.record_artifact_hit("npm");
+    proxy_metrics.record_artifact_hit("npm");
+    proxy_metrics.record_artifact_miss("npm");
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/stats")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["aggregate"]["artifact_hits"], 2);
+    assert_eq!(body["aggregate"]["artifact_misses"], 1);
+
+    let hit_rate = body["aggregate"]["hit_rate"].as_f64().expect("hit_rate must be present");
+    assert!((hit_rate - 2.0 / 3.0).abs() < 1e-9, "expected hit_rate ≈ 0.667, got {hit_rate}");
+
+    let per_npm = body["per_registry"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["registry"] == "npm")
+        .expect("npm entry must be present");
+    assert_eq!(per_npm["artifact_hits"], 2);
+    assert_eq!(per_npm["artifact_misses"], 1);
 }

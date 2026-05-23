@@ -33,3 +33,5 @@ actix-files.workspace = true
 actix-cors.workspace = true
 reqwest.workspace = true
 clap.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true

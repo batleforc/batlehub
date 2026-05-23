@@ -66,17 +66,9 @@ pub async fn warm_registry(
         .get(&registry)
         .ok_or_else(|| AppError::not_found("warming not configured for this registry"))?;
 
-    // Build a local override if the caller specified a `versions` count.
+    // Use caller-specified version count when provided; fall back to configured default.
     let report = if let Some(n) = body.versions {
-        let override_svc = WarmingService {
-            client: Arc::clone(&svc.client),
-            storage: Arc::clone(&svc.storage),
-            artifact_meta: Arc::clone(&svc.artifact_meta),
-            registry_name: svc.registry_name.clone(),
-            latest_n: n,
-            concurrency: svc.concurrency,
-        };
-        override_svc.warm_package(&body.package).await
+        svc.with_latest_n(n).warm_package(&body.package).await
     } else {
         svc.warm_package(&body.package).await
     };

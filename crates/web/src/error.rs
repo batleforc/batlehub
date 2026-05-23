@@ -78,6 +78,15 @@ impl From<CoreError> for AppError {
                 status: StatusCode::BAD_GATEWAY,
                 message: msg,
             },
+            // Dependency unavailability → 503 so load-balancers can retry elsewhere.
+            CoreError::Storage(msg) | CoreError::Cache(msg) => Self {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                message: msg,
+            },
+            CoreError::Database(msg) => Self {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                message: msg,
+            },
             other => {
                 tracing::error!(error = %other, "internal error");
                 Self::internal("internal server error")
@@ -116,9 +125,21 @@ mod tests {
     }
 
     #[test]
-    fn from_core_database_error_maps_to_internal() {
+    fn from_core_database_error_maps_to_503() {
         let e = AppError::from(CoreError::Database("db error".into()));
-        assert_eq!(e.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(e.status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn from_core_storage_error_maps_to_503() {
+        let e = AppError::from(CoreError::Storage("backend down".into()));
+        assert_eq!(e.status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn from_core_cache_error_maps_to_503() {
+        let e = AppError::from(CoreError::Cache("cache unavailable".into()));
+        assert_eq!(e.status, StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[test]

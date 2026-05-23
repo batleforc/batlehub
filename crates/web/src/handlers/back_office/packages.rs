@@ -62,6 +62,7 @@ pub async fn list_packages(
 
     let filter = PackageFilter {
         registry: query.registry.clone(),
+        registries: vec![],
         name_contains: query.name.clone(),
         name_exact: None,
         blocked_only: query.blocked_only,
@@ -446,6 +447,7 @@ pub async fn package_detail(
 
     let filter = PackageFilter {
         registry: Some(query.registry.clone()),
+        registries: vec![],
         name_exact: Some(query.name.clone()),
         name_contains: None,
         blocked_only: false,

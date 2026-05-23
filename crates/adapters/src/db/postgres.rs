@@ -250,6 +250,7 @@ impl PackageRepository for PgPackageRepository {
               AND ($2::text IS NULL OR ps.package_name ILIKE '%' || $2 || '%')
               AND ($3::boolean = false OR ps.status = 'blocked')
               AND ($6::text IS NULL OR ps.package_name = $6)
+              AND ($7::text[] IS NULL OR ps.registry = ANY($7::text[]))
             GROUP BY ps.id, ps.registry, ps.package_name, ps.package_version,
                      ps.package_artifact, ps.status, ps.block_reason, ps.blocked_by, ps.blocked_at
             ORDER BY ps.registry, ps.package_name, ps.package_version
@@ -262,6 +263,7 @@ impl PackageRepository for PgPackageRepository {
         .bind(filter.limit as i64)
         .bind(filter.offset as i64)
         .bind(&filter.name_exact)
+        .bind(if filter.registries.is_empty() { None } else { Some(filter.registries.clone()) })
         .fetch_all(&self.pool)
         .await
         .map_err(|e| CoreError::Database(e.to_string()))?;
@@ -300,6 +302,31 @@ impl PackageRepository for PgPackageRepository {
             .collect();
 
         Ok(summaries)
+    }
+
+    async fn count_packages(&self, filter: PackageFilter) -> Result<u64, CoreError> {
+        let row = sqlx::query(
+            r#"
+            SELECT COUNT(*) AS total
+            FROM package_statuses ps
+            WHERE ($1::text IS NULL OR ps.registry = $1)
+              AND ($2::text IS NULL OR ps.package_name ILIKE '%' || $2 || '%')
+              AND ($3::boolean = false OR ps.status = 'blocked')
+              AND ($4::text IS NULL OR ps.package_name = $4)
+              AND ($5::text[] IS NULL OR ps.registry = ANY($5::text[]))
+            "#,
+        )
+        .bind(&filter.registry)
+        .bind(&filter.name_contains)
+        .bind(filter.blocked_only)
+        .bind(&filter.name_exact)
+        .bind(if filter.registries.is_empty() { None } else { Some(filter.registries) })
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| CoreError::Database(e.to_string()))?;
+
+        let count: i64 = row.try_get("total").unwrap_or(0);
+        Ok(count as u64)
     }
 
     async fn list_events(&self, filter: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
