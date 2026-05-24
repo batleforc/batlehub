@@ -287,7 +287,8 @@ pub use middleware::RateLimitService;
         (name = "proxy/cargo",    description = "Cargo proxy — sparse index, crate metadata, .crate downloads"),
         (name = "proxy/openvsx",  description = "OpenVSX proxy — VS Code extension metadata and VSIX packages"),
         (name = "proxy/goproxy",    description = "Go module proxy — version info, go.mod, and zip downloads"),
-        (name = "proxy/terraform",  description = "Terraform registry — provider and module proxy"),
+        (name = "proxy/terraform",  description = "Terraform registry — provider and module proxy, private module/provider publishing"),
+        (name = "proxy/rubygems",   description = "RubyGems registry — gem downloads, version listing, and private gem publishing"),
         (name = "front-office",     description = "User-facing package information"),
         (name = "back-office",    description = "Admin management (requires Admin role)"),
     ),
@@ -320,7 +321,9 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
         },
         back_office::{
             audit::audit_log,
+            bulk::{bulk_delete, bulk_unyank, bulk_yank as bulk_yank_handler},
             health::{clear_registry_cache, registry_health},
+            ownership::{add_package_owner, list_package_owners, remove_package_owner},
             packages::{block_package, bulk_block_packages, bulk_unblock_packages, invalidate_package, list_packages as admin_list_packages, package_detail, unblock_package},
             quota::{get_quota_for_user, list_quota, list_quota_for_registry, reset_quota_for_user},
             stats::admin_stats,
@@ -346,8 +349,17 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             npm::{audit_quick, download_tarball as npm_download_tarball, get_packument, get_version, npm_publish},
             openvsx::{download_vsix, vsix_publish},
             goproxy::{goproxy_file, goproxy_latest, goproxy_list, goproxy_publish},
-            maven::maven_get,
-            terraform::{tf_module_download, tf_module_versions, tf_provider_download, tf_provider_versions},
+            maven::{maven_get, maven_put},
+            rubygems::{
+                gem_download, gem_gemspec, gem_info, gem_publish, gem_specs_full,
+                gem_specs_latest, gem_specs_prerelease, gem_unyank, gem_versions, gem_yank,
+            },
+            terraform::{
+                tf_module_artifact, tf_module_download, tf_module_upload, tf_module_unyank,
+                tf_module_versions, tf_module_yank,
+                tf_provider_artifact, tf_provider_binary_upload, tf_provider_download,
+                tf_provider_unyank, tf_provider_upload, tf_provider_versions, tf_provider_yank,
+            },
         },
     };
 
@@ -382,15 +394,36 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(goproxy_latest);
     cfg.service(goproxy_list);
     cfg.service(goproxy_file);
-    // Maven (literal "maven2" segment — must precede generic catch-all routes)
+    // Maven — PUT before GET (same path pattern, different method)
+    cfg.service(maven_put);
     cfg.service(maven_get);
-    // Terraform (literal "v1/providers" and "v1/modules" segments — must precede generic routes)
-    // module download (most specific — has extra /download suffix) before module versions
-    cfg.service(tf_module_download);
-    cfg.service(tf_module_versions);
-    // provider download (has extra /download/{os}/{arch}) before provider versions
-    cfg.service(tf_provider_download);
-    cfg.service(tf_provider_versions);
+    // Terraform modules — longer paths first (unyank > yank > artifact > upload > download > versions)
+    cfg.service(tf_module_unyank);          // POST …/versions/{ver}/unyank
+    cfg.service(tf_module_yank);            // DELETE …/versions/{ver}
+    cfg.service(tf_module_artifact);        // GET …/{ver}/artifact
+    cfg.service(tf_module_upload);          // POST …/{ver}
+    cfg.service(tf_module_download);        // GET …/{ver}/download
+    cfg.service(tf_module_versions);        // GET …/versions
+    // Terraform providers — binary PUT/GET before download, unyank/yank before upload/versions
+    cfg.service(tf_provider_unyank);        // POST …/versions/{ver}/unyank
+    cfg.service(tf_provider_yank);          // DELETE …/versions/{ver}
+    cfg.service(tf_provider_binary_upload); // PUT …/{ver}/artifact/{os}/{arch}
+    cfg.service(tf_provider_artifact);      // GET …/{ver}/artifact/{os}/{arch}
+    cfg.service(tf_provider_download);      // GET …/{ver}/download/{os}/{arch}
+    cfg.service(tf_provider_upload);        // POST …/versions (write)
+    cfg.service(tf_provider_versions);      // GET …/versions
+    // RubyGems — yank/unyank/publish before download (same /api/v1/gems prefix, different methods)
+    cfg.service(gem_yank);
+    cfg.service(gem_unyank);
+    cfg.service(gem_publish);
+    // gemspec (literal "quick/Marshal.4.8") before generic gem download
+    cfg.service(gem_gemspec);
+    cfg.service(gem_download);
+    cfg.service(gem_info);
+    cfg.service(gem_versions);
+    cfg.service(gem_specs_full);
+    cfg.service(gem_specs_latest);
+    cfg.service(gem_specs_prerelease);
     // OpenVSX/VSCode VSIX publish (PUT) and download (GET) — same path, different method
     cfg.service(vsix_publish);
     cfg.service(download_vsix);
@@ -424,6 +457,14 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(get_quota_for_user);
     cfg.service(list_quota_for_registry);
     cfg.service(list_quota);
+    // Ownership admin
+    cfg.service(list_package_owners);
+    cfg.service(add_package_owner);
+    cfg.service(remove_package_owner);
+    // Bulk operations admin
+    cfg.service(bulk_yank_handler);
+    cfg.service(bulk_unyank);
+    cfg.service(bulk_delete);
 }
 
 /// Return the raw OpenAPI JSON spec (auto-collected from route registrations).

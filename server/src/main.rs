@@ -19,11 +19,11 @@ use batlehub_adapters::{
         KubernetesAuthProvider, OidcAuthProvider, OidcSsoFlow, StaticTokenAuthProvider,
         UserTokenAuthProvider,
     },
-    db::{PgArtifactMetaRepository, PgPackageRepository, PgQuotaRepository},
+    db::{PgArtifactMetaRepository, PgOwnershipStore, PgPackageRepository, PgQuotaRepository},
     local_registry::PostgresLocalRegistry,
     registry::{
         CargoRegistryClient, FanoutRegistryClient, GoProxyRegistryClient, GithubRegistryClient,
-        MavenRegistryClient, NpmRegistryClient, OpenVsxRegistryClient,
+        MavenRegistryClient, NpmRegistryClient, OpenVsxRegistryClient, RubyGemsRegistryClient,
         TerraformRegistryClient, VsCodeMarketplaceRegistryClient, UpstreamHttpOptions,
     },
     storage::{FilesystemStorageBackend, StorageRouter},
@@ -45,6 +45,7 @@ use batlehub_core::{
     services::{
         AdminService, LocalRegistryService, ProxyMetrics, ProxyService, QuotaEnforcement,
         QuotaService, RegistryPolicy, RegistryQuotaConfig,
+        local_registry::{SigningConfig as CoreSigningConfig, VersioningPolicy},
     },
 };
 use batlehub_core::services::WarmingService;
@@ -376,11 +377,18 @@ async fn main() -> Result<()> {
 
     let local_registry_backend = Arc::new(PostgresLocalRegistry::new(repo.pool()));
     let quota_svc = Arc::new(build_quota_service(repo.pool(), &config.registries));
+    let ownership_store = Arc::new(PgOwnershipStore::new(repo.pool()))
+        as Arc<dyn batlehub_core::ports::OwnershipPort>;
+    let versioning_map = build_versioning_map(&config.registries);
+    let signing_map = build_signing_map(&config.registries);
     let local_svc = Arc::new(LocalRegistryService {
         backend: local_registry_backend,
         storage: storage.clone(),
         max_artifact_bytes: config.limits.max_artifact_size_bytes,
         quota: Some(Arc::clone(&quota_svc)),
+        ownership: Some(ownership_store),
+        versioning: versioning_map,
+        signing: signing_map,
     });
 
     // ── Warming services ──────────────────────────────────────────────────────
@@ -628,6 +636,7 @@ fn build_registry_client(reg: &RegistryConfig) -> anyhow::Result<Arc<dyn batlehu
             "vscode-marketplace" => Arc::new(VsCodeMarketplaceRegistryClient::new(url, opts)?),
             "maven" => Arc::new(MavenRegistryClient::new(url, opts)?),
             "terraform" => Arc::new(TerraformRegistryClient::new(url, opts)?),
+            "rubygems" => Arc::new(RubyGemsRegistryClient::new(url, opts)?),
             other => anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in"),
         };
         Ok(client)
@@ -644,6 +653,7 @@ fn build_registry_client(reg: &RegistryConfig) -> anyhow::Result<Arc<dyn batlehu
         "vscode-marketplace" => resolve_urls(&reg.upstreams, "https://marketplace.visualstudio.com"),
         "maven" => resolve_urls(&reg.upstreams, "https://repo1.maven.org/maven2"),
         "terraform" => resolve_urls(&reg.upstreams, "https://registry.terraform.io"),
+        "rubygems" => resolve_urls(&reg.upstreams, "https://rubygems.org"),
         other => anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in"),
     };
 
@@ -708,6 +718,52 @@ fn build_policy(
         artifact_ttl: reg.cache.artifact_ttl_secs.map(Duration::from_secs),
         rules,
     }
+}
+
+/// Build per-registry `VersioningPolicy` map from registries that have a `[versioning]` section.
+fn build_versioning_map(registries: &[RegistryConfig]) -> HashMap<String, VersioningPolicy> {
+    registries
+        .iter()
+        .filter_map(|reg| {
+            reg.versioning.as_ref().map(|v| {
+                let pattern = v.version_pattern.as_deref().and_then(|pat| {
+                    match regex::Regex::new(pat) {
+                        Ok(re) => Some(re),
+                        Err(e) => {
+                            tracing::warn!("invalid version_pattern for registry '{}': {e}", reg.name);
+                            None
+                        }
+                    }
+                });
+                (
+                    reg.name.clone(),
+                    VersioningPolicy {
+                        enforce_semver: v.enforce_semver,
+                        allow_prerelease: v.allow_prerelease,
+                        version_pattern: pattern,
+                    },
+                )
+            })
+        })
+        .collect()
+}
+
+/// Build per-registry `SigningConfig` map from registries that have a `[signing]` section.
+fn build_signing_map(registries: &[RegistryConfig]) -> HashMap<String, CoreSigningConfig> {
+    registries
+        .iter()
+        .filter_map(|reg| {
+            reg.signing.as_ref().map(|s| {
+                (
+                    reg.name.clone(),
+                    CoreSigningConfig {
+                        required: s.required,
+                        allowed_types: s.allowed_types.clone(),
+                    },
+                )
+            })
+        })
+        .collect()
 }
 
 /// Build a `QuotaService` from the registries that have a `[quota]` section.

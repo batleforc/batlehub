@@ -123,3 +123,36 @@ name = "openvsx"
 anonymous = ["releases:read", "source:read"]
 user      = ["releases:read", "source:read"]
 admin     = ["*"]
+
+[[registries]]
+type   = "maven"
+name   = "my-maven"
+mode   = "hybrid"
+upstreams = ["https://repo1.maven.org/maven2/"]
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user      = ["releases:read", "source:read"]
+admin     = ["*"]
+
+[[registries]]
+type   = "rubygems"
+name   = "my-gems"
+mode   = "hybrid"
+upstreams = ["https://rubygems.org"]
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user      = ["releases:read", "source:read"]
+admin     = ["*"]
+
+[[registries]]
+type = "terraform"
+name = "terraform"
+mode = "hybrid"
+upstreams = ["https://registry.terraform.io/v1/"]
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user      = ["releases:read", "source:read"]
+admin     = ["*"]

@@ -48,6 +48,14 @@ impl MavenRegistryClient {
         }
     }
 
+    fn head(&self, url: &str) -> reqwest::RequestBuilder {
+        let rb = self.http.head(url);
+        match &self.basic_auth {
+            Some((u, p)) => rb.basic_auth(u, Some(p)),
+            None => rb,
+        }
+    }
+
     /// Build the upstream URL for the given `PackageId`.
     fn artifact_url(&self, pkg: &PackageId) -> Result<String, CoreError> {
         let (group_id, artifact_id) = decode_name(&pkg.name)?;
@@ -63,6 +71,32 @@ impl MavenRegistryClient {
             };
             Ok(format!("{base}/{group_path}/{artifact_id}/{}/{filename}", pkg.version))
         }
+    }
+
+    /// HEAD-request the `.pom` file for a specific version and return its `Last-Modified` timestamp.
+    ///
+    /// This gives a per-version publish timestamp, which is more accurate than the
+    /// artifact-collection `<lastUpdated>` in `maven-metadata.xml` (which reflects the
+    /// most-recently-added version, not the requested one).
+    async fn head_pom_last_modified(
+        &self,
+        pkg: &PackageId,
+    ) -> Option<chrono::DateTime<chrono::Utc>> {
+        let (group_id, artifact_id) = decode_name(&pkg.name).ok()?;
+        let group_path = group_id.replace('.', "/");
+        let base = self.base_url.trim_end_matches('/');
+        let url = format!(
+            "{base}/{group_path}/{artifact_id}/{}/{artifact_id}-{}.pom",
+            pkg.version, pkg.version
+        );
+        let resp = self.head(&url).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        resp.headers()
+            .get(reqwest::header::LAST_MODIFIED)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_http_date)
     }
 
     async fn fetch_metadata_xml(&self, pkg: &PackageId) -> Result<(String, Option<String>), CoreError> {
@@ -150,6 +184,13 @@ fn parse_last_updated(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
         .map(|dt| dt.and_utc())
 }
 
+/// Parse an HTTP `Last-Modified` header value (RFC 7231 / RFC 2822) into a `DateTime<Utc>`.
+fn parse_http_date(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc2822(s.trim())
+        .ok()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+}
+
 // ── RegistryClient impl ───────────────────────────────────────────────────────
 
 #[async_trait]
@@ -166,8 +207,15 @@ impl RegistryClient for MavenRegistryClient {
             .unwrap_or_default()
             .to_owned();
 
-        let published_at = extract_xml_tag(&xml, "lastUpdated")
-            .and_then(parse_last_updated);
+        // For specific versions, HEAD the .pom file to get a per-version Last-Modified
+        // timestamp (more accurate than the artifact-collection <lastUpdated>).
+        // Fall back to <lastUpdated> if the HEAD request fails or returns no date.
+        let published_at = if pkg.version != "maven-metadata.xml" {
+            self.head_pom_last_modified(pkg).await
+                .or_else(|| extract_xml_tag(&xml, "lastUpdated").and_then(parse_last_updated))
+        } else {
+            extract_xml_tag(&xml, "lastUpdated").and_then(parse_last_updated)
+        };
 
         Ok(PackageMetadata {
             id: pkg.clone(),
@@ -232,5 +280,139 @@ impl RegistryClient for MavenRegistryClient {
         // but some repositories serve them in arbitrary order; sort them.
         versions.sort();
         Ok(versions)
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mockito::Server;
+
+    const METADATA_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<metadata>
+  <groupId>com.example</groupId>
+  <artifactId>mylib</artifactId>
+  <versioning>
+    <release>1.2.0</release>
+    <latest>1.2.0</latest>
+    <versions>
+      <version>1.0.0</version>
+      <version>1.2.0</version>
+    </versions>
+    <lastUpdated>20240315143022</lastUpdated>
+  </versioning>
+</metadata>"#;
+
+    fn client(base_url: &str) -> MavenRegistryClient {
+        MavenRegistryClient::new(base_url, &Default::default()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn resolve_metadata_metadata_xml_uses_last_updated() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/com/example/mylib/maven-metadata.xml")
+            .with_status(200)
+            .with_header("content-type", "application/xml")
+            .with_body(METADATA_XML)
+            .create_async()
+            .await;
+
+        let c = client(&server.url());
+        let pkg = PackageId::new("maven", "com.example:mylib", "maven-metadata.xml");
+        let meta = c.resolve_metadata(&pkg).await.unwrap();
+        // For metadata-xml requests: uses <lastUpdated>
+        assert!(meta.published_at.is_some(), "published_at should be set from lastUpdated");
+        let ts = meta.published_at.unwrap();
+        assert_eq!(ts.format("%Y-%m-%d").to_string(), "2024-03-15");
+    }
+
+    #[tokio::test]
+    async fn resolve_metadata_specific_version_uses_pom_last_modified() {
+        let mut server = Server::new_async().await;
+        // metadata XML is still fetched (for cache-control / latest version)
+        let _mock_meta = server
+            .mock("GET", "/com/example/mylib/maven-metadata.xml")
+            .with_status(200)
+            .with_header("content-type", "application/xml")
+            .with_body(METADATA_XML)
+            .create_async()
+            .await;
+        // HEAD request for the POM file returns Last-Modified
+        let _mock_head = server
+            .mock("HEAD", "/com/example/mylib/1.0.0/mylib-1.0.0.pom")
+            .with_status(200)
+            .with_header("Last-Modified", "Fri, 01 Mar 2024 08:00:00 GMT")
+            .create_async()
+            .await;
+
+        let c = client(&server.url());
+        let pkg = PackageId::new("maven", "com.example:mylib", "1.0.0");
+        let meta = c.resolve_metadata(&pkg).await.unwrap();
+        // For specific-version requests: uses POM Last-Modified (more accurate)
+        assert!(meta.published_at.is_some(), "published_at should be set from POM Last-Modified");
+        let ts = meta.published_at.unwrap();
+        assert_eq!(ts.format("%Y-%m-%d").to_string(), "2024-03-01");
+    }
+
+    #[tokio::test]
+    async fn resolve_metadata_specific_version_falls_back_to_last_updated() {
+        let mut server = Server::new_async().await;
+        let _mock_meta = server
+            .mock("GET", "/com/example/mylib/maven-metadata.xml")
+            .with_status(200)
+            .with_header("content-type", "application/xml")
+            .with_body(METADATA_XML)
+            .create_async()
+            .await;
+        // HEAD returns no Last-Modified header
+        let _mock_head = server
+            .mock("HEAD", "/com/example/mylib/1.0.0/mylib-1.0.0.pom")
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let c = client(&server.url());
+        let pkg = PackageId::new("maven", "com.example:mylib", "1.0.0");
+        let meta = c.resolve_metadata(&pkg).await.unwrap();
+        // Falls back to <lastUpdated> from metadata XML
+        assert!(meta.published_at.is_some(), "should fall back to lastUpdated");
+    }
+
+    #[tokio::test]
+    async fn resolve_metadata_specific_version_pom_head_404_falls_back() {
+        let mut server = Server::new_async().await;
+        let _mock_meta = server
+            .mock("GET", "/com/example/mylib/maven-metadata.xml")
+            .with_status(200)
+            .with_header("content-type", "application/xml")
+            .with_body(METADATA_XML)
+            .create_async()
+            .await;
+        // HEAD for POM returns 404 (e.g. odd repo layout)
+        let _mock_head = server
+            .mock("HEAD", "/com/example/mylib/1.0.0/mylib-1.0.0.pom")
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let c = client(&server.url());
+        let pkg = PackageId::new("maven", "com.example:mylib", "1.0.0");
+        let meta = c.resolve_metadata(&pkg).await.unwrap();
+        // Falls back to <lastUpdated>
+        assert!(meta.published_at.is_some());
+    }
+
+    #[test]
+    fn parse_http_date_valid() {
+        let dt = parse_http_date("Fri, 15 Mar 2024 12:34:56 GMT").unwrap();
+        assert_eq!(dt.format("%Y-%m-%d %H:%M:%S").to_string(), "2024-03-15 12:34:56");
+    }
+
+    #[test]
+    fn parse_http_date_invalid_returns_none() {
+        assert!(parse_http_date("not-a-date").is_none());
     }
 }

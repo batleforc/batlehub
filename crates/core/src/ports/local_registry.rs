@@ -80,4 +80,66 @@ pub trait LocalRegistryBackend: Send + Sync {
     async fn cleanup_pending(&self, _older_than: Duration) -> Result<u64, CoreError> {
         Ok(0)
     }
+
+    /// Yank multiple versions in one call.
+    /// The default implementation loops over `yank`. Override for efficiency.
+    async fn bulk_yank(
+        &self,
+        registry: &str,
+        items: &[(String, String)],
+    ) -> Result<BulkResult, CoreError> {
+        let mut result = BulkResult { processed: items.len(), succeeded: 0, failed: vec![] };
+        for (name, version) in items {
+            match self.yank(registry, name, version).await {
+                Ok(()) => result.succeeded += 1,
+                Err(e) => result.failed.push((name.clone(), version.clone(), e.to_string())),
+            }
+        }
+        Ok(result)
+    }
+
+    /// Unyank multiple versions in one call.
+    /// The default implementation loops over `unyank`. Override for efficiency.
+    async fn bulk_unyank(
+        &self,
+        registry: &str,
+        items: &[(String, String)],
+    ) -> Result<BulkResult, CoreError> {
+        let mut result = BulkResult { processed: items.len(), succeeded: 0, failed: vec![] };
+        for (name, version) in items {
+            match self.unyank(registry, name, version).await {
+                Ok(()) => result.succeeded += 1,
+                Err(e) => result.failed.push((name.clone(), version.clone(), e.to_string())),
+            }
+        }
+        Ok(result)
+    }
+
+    /// Permanently delete multiple versions in one call.
+    /// The default implementation loops over `remove_version`. Override for efficiency.
+    async fn bulk_remove_versions(
+        &self,
+        registry: &str,
+        items: &[(String, String)],
+    ) -> Result<BulkResult, CoreError> {
+        let mut result = BulkResult { processed: items.len(), succeeded: 0, failed: vec![] };
+        for (name, version) in items {
+            match self.remove_version(registry, name, version).await {
+                Ok(()) => result.succeeded += 1,
+                Err(e) => result.failed.push((name.clone(), version.clone(), e.to_string())),
+            }
+        }
+        Ok(result)
+    }
+}
+
+/// Result of a bulk yank/unyank/delete operation.
+#[derive(Debug)]
+pub struct BulkResult {
+    /// Total items submitted.
+    pub processed: usize,
+    /// Items processed without error.
+    pub succeeded: usize,
+    /// Items that failed: (name, version, error message).
+    pub failed: Vec<(String, String, String)>,
 }

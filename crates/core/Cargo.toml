@@ -18,3 +18,5 @@ anyhow.workspace = true
 tracing.workspace = true
 metrics.workspace = true
 utoipa.workspace = true
+regex.workspace = true
+semver.workspace = true

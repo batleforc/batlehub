@@ -31,7 +31,9 @@ batlehub is configured with a single TOML file. This document covers every optio
    - [6.9 Private Go Module Proxy (local / hybrid mode)](#69-private-go-module-proxy-local--hybrid-mode)
    - [6.10 Multi-Backend Storage](#610-multi-backend-storage)
    - [6.11 Terraform Provider Cache](#611-terraform-provider-cache)
-   - [6.12 Rate Limiting — Per-User + Per-Group](#612-rate-limiting)
+   - [6.12 Private Maven Registry (local / hybrid mode)](#612-private-maven-registry-local--hybrid-mode)
+   - [6.13 Private Terraform Registry (local / hybrid mode)](#613-private-terraform-registry-local--hybrid-mode)
+   - [6.14 Rate Limiting — Per-User + Per-Group](#614-rate-limiting)
 7. [CLI Reference](#7-cli-reference)
 8. [User-Generated API Tokens](#8-user-generated-api-tokens)
 9. [Self-Hosted / Private Registries](#9-self-hosted--private-registries)
@@ -411,7 +413,7 @@ bypass_roles = ["admin"]
 |---|---|---|---|
 | `type` | string | yes | `"github"`, `"npm"`, `"cargo"`, `"openvsx"`, `"vscode-marketplace"`, `"goproxy"`, `"maven"`, `"terraform"`, `"pypi"`, `"composer"` |
 | `name` | string | yes | Unique identifier; used in proxy URL paths |
-| `mode` | string | no | `"proxy"` (default), `"local"`, or `"hybrid"`. Supported for `cargo`, `npm`, `openvsx`, `vscode-marketplace`, and `goproxy`. See [registry modes](#registry-modes). |
+| `mode` | string | no | `"proxy"` (default), `"local"`, or `"hybrid"`. Supported for `cargo`, `npm`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, and `rubygems`. See [registry modes](#registry-modes). |
 | `upstreams` | string[] | no | Upstream URLs tried in order on cache miss; 404 from one falls through to the next. Defaults to the registry's built-in URL. Required for `hybrid` mode. |
 | `index_url` | string | no | Cargo only: sparse crate index URL. Defaults to `https://index.crates.io`. Required for `hybrid` mode and self-hosted Gitea/Forgejo registries. |
 | `storage` | string | no | Name of the storage backend. Must match a `[[storage.backends]]` name. Omit to use the default backend. |
@@ -420,7 +422,7 @@ bypass_roles = ["admin"]
 
 #### Registry modes {#registry-modes}
 
-`cargo`, `npm`, `openvsx`, `vscode-marketplace`, and `goproxy` registries support three operating modes, set via the `mode` field:
+`cargo`, `npm`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, and `rubygems` registries support three operating modes, set via the `mode` field:
 
 | Mode | Description |
 |------|-------------|
@@ -437,6 +439,12 @@ Publishing requires at least the `user` role. The `published_by` field is set fr
 **openvsx / vscode-marketplace** — `local`/`hybrid` modes accept raw VSIX uploads (`PUT /proxy/{registry}/{extension_id}/{version}/vsix`) and serve them on download.
 
 **goproxy** — `local`/`hybrid` modes accept Go module zip uploads (`PUT /proxy/{registry}/{module}/@v/{version}.zip`). `go.mod` is extracted automatically from the zip; `.info` is generated from the version and upload timestamp. Serves `@latest`, `@v/list`, `.info`, `.mod`, and `.zip` from local storage.
+
+**maven** — `local`/`hybrid` modes accept `mvn deploy` artifact uploads (`PUT /proxy/{registry}/maven2/{path}`). Non-POM files (JARs, checksums) are stored immediately; the three-phase publish is triggered when the `.pom` file arrives. `maven-metadata.xml` is generated dynamically from the database and never cached client-side. See [Worked Example 6.12](#612-private-maven-registry-local--hybrid-mode).
+
+**terraform** — `local`/`hybrid` modes accept module uploads (`POST /proxy/{registry}/v1/modules/{ns}/{name}/{provider}/{version}`), provider version manifests (`POST .../v1/providers/{ns}/{type}/versions`), and provider binary uploads (`PUT .../artifact/{os}/{arch}`). The `tf_module_download` endpoint returns a `204 + X-Terraform-Get` header pointing at the locally stored tarball. See [Worked Example 6.13](#613-private-terraform-registry-local--hybrid-mode).
+
+**rubygems** — `local`/`hybrid` modes accept `gem push` uploads (`POST /proxy/{registry}/api/v1/gems`). Serves gem files, version index, and REST info from local storage.
 
 #### Registry-type notes
 
@@ -499,7 +507,7 @@ export GOPROXY="http://batlehub.example.com/proxy/go,direct"
 
 ---
 
-**`maven`** — proxies Maven artifact repositories. Supports `GET` requests for POM files, JARs, source JARs, Javadoc JARs, SHA-1/MD5 checksums, and Maven metadata XML. Compatible with Maven, Gradle, and any tool that speaks the Maven repository protocol. Default upstream: `https://repo1.maven.org/maven2`.
+**`maven`** — proxies Maven artifact repositories. Supports `GET` requests for POM files, JARs, source JARs, Javadoc JARs, SHA-1/MD5 checksums, and Maven metadata XML. Compatible with Maven, Gradle, and any tool that speaks the Maven repository protocol. Default upstream: `https://repo1.maven.org/maven2`. Set `mode = "local"` or `mode = "hybrid"` to enable private publishing — see [registry modes](#registry-modes) and [Worked Example 6.12](#612-private-maven-registry-local--hybrid-mode).
 
 Configure Maven to use the proxy:
 
@@ -510,7 +518,7 @@ Configure Maven to use the proxy:
     <mirror>
       <id>batlehub</id>
       <mirrorOf>central</mirrorOf>
-      <url>http://batlehub.example.com/proxy/maven</url>
+      <url>http://batlehub.example.com/proxy/maven/maven2/</url>
     </mirror>
   </mirrors>
 </settings>
@@ -522,23 +530,28 @@ Configure Gradle to use the proxy:
 // settings.gradle.kts
 dependencyResolutionManagement {
     repositories {
-        maven { url = uri("http://batlehub.example.com/proxy/maven") }
+        maven { url = uri("http://batlehub.example.com/proxy/maven/maven2/") }
     }
 }
 ```
 
 ---
 
-**`terraform`** — proxies the Terraform provider and module registry protocol. Supports provider version listing, provider download info (binary URL + checksums), module version listing, and module source download. Default upstream: `https://registry.terraform.io`.
+**`terraform`** — proxies the Terraform provider and module registry protocol. Supports provider version listing, provider download info (binary URL + checksums), module version listing, and module source download. Default upstream: `https://registry.terraform.io`. Set `mode = "local"` or `mode = "hybrid"` to enable private module and provider publishing — see [registry modes](#registry-modes) and [Worked Example 6.13](#613-private-terraform-registry-local--hybrid-mode).
 
-| Endpoint proxied | Description |
-|---|---|
-| `GET /v1/providers/{namespace}/{type}/versions` | Provider version list (JSON, cached) |
-| `GET /v1/providers/{namespace}/{type}/{version}/download/{os}/{arch}` | Provider download info JSON with binary URL and checksums (cached) |
-| `GET /v1/modules/{namespace}/{name}/{provider}/versions` | Module version list (JSON, cached) |
-| `GET /v1/modules/{namespace}/{name}/{provider}/{version}/download` | Module source download (`204 + X-Terraform-Get`, **not cached** — passthrough) |
+| Endpoint | Method | Description |
+|---|---|---|
+| `/v1/providers/{namespace}/{type}/versions` | GET | Provider version list (JSON, cached) |
+| `/v1/providers/{namespace}/{type}/{version}/download/{os}/{arch}` | GET | Provider download info JSON (cached; local: rewritten to `/artifact` URL) |
+| `/v1/providers/{namespace}/{type}/versions` | POST | **Local/Hybrid:** publish provider version manifest |
+| `/v1/providers/{namespace}/{type}/{version}/artifact/{os}/{arch}` | PUT | **Local/Hybrid:** upload provider binary zip |
+| `/v1/providers/{namespace}/{type}/{version}/artifact/{os}/{arch}` | GET | **Local/Hybrid:** serve provider binary zip |
+| `/v1/modules/{namespace}/{name}/{provider}/versions` | GET | Module version list (JSON, cached) |
+| `/v1/modules/{namespace}/{name}/{provider}/{version}/download` | GET | Module source redirect (`204 + X-Terraform-Get`; local: points at `/artifact`) |
+| `/v1/modules/{namespace}/{name}/{provider}/{version}` | POST | **Local/Hybrid:** upload module tar.gz |
+| `/v1/modules/{namespace}/{name}/{provider}/{version}/artifact` | GET | **Local/Hybrid:** serve module tar.gz |
 
-> **Module download passthrough:** The module download endpoint returns a `204 No Content` response with an `X-Terraform-Get` header pointing to the archive URL. BatleHub passes this through directly to the upstream registry without caching. To fully cache module archives, point the proxy at an internal mirror that serves archives from a stable URL.
+> **Module download in proxy mode:** passes through the upstream `204 + X-Terraform-Get` header without caching. In Local/Hybrid mode the header is rewritten to point at the local `/artifact` endpoint.
 
 Configure the Terraform CLI to use the proxy for providers:
 
@@ -548,14 +561,6 @@ provider_installation {
   network_mirror {
     url = "http://batlehub.example.com/proxy/terraform/"
   }
-}
-```
-
-For modules, reference the proxy host in `source`:
-
-```hcl
-module "consul" {
-  source = "batlehub.example.com/proxy/terraform/hashicorp/consul/aws"
 }
 ```
 
@@ -1565,7 +1570,204 @@ After the first `terraform init`, subsequent runs use the locally cached binarie
 
 ---
 
-### 6.12 Rate Limiting — Per-User + Per-Group {#612-rate-limiting}
+### 6.12 Private Maven Registry (local / hybrid mode) {#612-private-maven-registry-local--hybrid-mode}
+
+Host private Maven/Gradle artifacts (`mvn deploy`, `gradle publish`) so teams never need an external Nexus or Artifactory instance.
+
+```toml
+[[registries]]
+type = "maven"
+name = "internal-maven"
+mode = "local"          # BatleHub is the only source; no upstream needed
+
+[registries.rbac]
+user  = ["releases:read", "source:read"]
+admin = ["*"]
+```
+
+For hybrid mode (serve private artifacts first, fall back to Maven Central for everything else):
+
+```toml
+[[registries]]
+type      = "maven"
+name      = "internal-maven"
+mode      = "hybrid"
+upstreams = ["https://repo1.maven.org/maven2"]
+
+[registries.rbac]
+user  = ["releases:read", "source:read"]
+admin = ["*"]
+```
+
+#### Client setup — Maven
+
+Add credentials to `~/.m2/settings.xml` (the `<id>` must match the `<distributionManagement>` `<id>` in your POM):
+
+```xml
+<settings>
+  <servers>
+    <server>
+      <id>internal-maven</id>
+      <username>your-user-id</username>
+      <password>your-bearer-token</password>
+    </server>
+  </servers>
+  <mirrors>
+    <mirror>
+      <id>internal-maven</id>
+      <name>BatleHub Maven</name>
+      <url>https://batlehub.example.com/proxy/internal-maven/maven2/</url>
+      <mirrorOf>*</mirrorOf>
+    </mirror>
+  </mirrors>
+</settings>
+```
+
+#### Publish setup — pom.xml
+
+```xml
+<distributionManagement>
+  <repository>
+    <id>internal-maven</id>
+    <url>https://batlehub.example.com/proxy/internal-maven/maven2/</url>
+  </repository>
+</distributionManagement>
+```
+
+```sh
+mvn deploy
+```
+
+#### Publish setup — Gradle (settings.gradle.kts)
+
+```kotlin
+dependencyResolutionManagement {
+    repositories {
+        maven {
+            url = uri("https://batlehub.example.com/proxy/internal-maven/maven2/")
+            credentials {
+                username = "your-user-id"
+                password = "your-bearer-token"
+            }
+        }
+    }
+}
+```
+
+#### How it works
+
+Maven/Gradle upload `.jar` and checksum files **before** the `.pom`. BatleHub stores each non-POM file directly in object storage. When the `.pom` arrives, BatleHub parses it (extracting `groupId`, `artifactId`, `version`, `packaging`, `description`) and commits a `local_packages` row via the three-phase publish protocol. Subsequent `GET` requests for `maven-metadata.xml` return XML generated from the database rather than a cached file.
+
+#### Endpoints exposed by local / hybrid Maven registries
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/proxy/{registry}/maven2/{path}` | GET | Serve artifact from local storage (or proxy in hybrid mode) |
+| `/proxy/{registry}/maven2/{group}/{artifact}/maven-metadata.xml` | GET | Generated from DB; never cached |
+| `/proxy/{registry}/maven2/{path}` | PUT | Upload artifact (`.pom` commits version, other files stored directly) |
+
+---
+
+### 6.13 Private Terraform Registry (local / hybrid mode) {#613-private-terraform-registry-local--hybrid-mode}
+
+Publish and serve private Terraform modules and providers without an external registry.
+
+```toml
+[[registries]]
+type = "terraform"
+name = "internal-tf"
+mode = "local"
+
+[registries.rbac]
+user  = ["releases:read", "source:read"]
+admin = ["*"]
+```
+
+For hybrid mode (serve private providers/modules first, proxy `registry.terraform.io` for everything else):
+
+```toml
+[[registries]]
+type      = "terraform"
+name      = "internal-tf"
+mode      = "hybrid"
+upstreams = ["https://registry.terraform.io"]
+
+[registries.rbac]
+user  = ["releases:read", "source:read"]
+admin = ["*"]
+```
+
+#### Client setup — .terraformrc
+
+```hcl
+# ~/.terraformrc  (or %APPDATA%/terraform.rc on Windows)
+provider_installation {
+  network_mirror {
+    url = "https://batlehub.example.com/proxy/internal-tf/"
+  }
+}
+
+credentials "batlehub.example.com" {
+  token = "your-bearer-token"
+}
+```
+
+#### Publishing a private module
+
+```sh
+# Package your module as a tar.gz, then upload:
+tar czf my-module.tar.gz -C ./module-dir .
+curl -X POST \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/gzip" \
+  --data-binary @my-module.tar.gz \
+  "https://batlehub.example.com/proxy/internal-tf/v1/modules/namespace/name/provider/1.0.0"
+```
+
+The response includes an `X-Terraform-Get` header pointing to the stored artifact download URL.
+
+#### Publishing a private provider
+
+Step 1 — upload the version manifest (JSON describing protocols and available platforms):
+
+```sh
+curl -X POST \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "version": "5.0.0",
+    "protocols": ["5.0"],
+    "platforms": [
+      {"os": "linux",  "arch": "amd64",  "filename": "terraform-provider-mycloud_5.0.0_linux_amd64.zip",  "shasum": "abc123..."},
+      {"os": "darwin", "arch": "arm64",  "filename": "terraform-provider-mycloud_5.0.0_darwin_arm64.zip", "shasum": "def456..."}
+    ]
+  }' \
+  "https://batlehub.example.com/proxy/internal-tf/v1/providers/myorg/mycloud/versions"
+```
+
+Step 2 — upload each platform binary:
+
+```sh
+curl -X PUT \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/zip" \
+  --data-binary @terraform-provider-mycloud_5.0.0_linux_amd64.zip \
+  "https://batlehub.example.com/proxy/internal-tf/v1/providers/myorg/mycloud/5.0.0/artifact/linux/amd64"
+```
+
+#### Yank a version (admin)
+
+```sh
+curl -X POST \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"packages":[{"name":"modules/namespace/name/provider","version":"1.0.0"}]}' \
+  "https://batlehub.example.com/api/v1/admin/registries/internal-tf/bulk-yank"
+```
+
+---
+
+### 6.14 Rate Limiting — Per-User + Per-Group {#614-rate-limiting}
 
 Protect a public-facing npm registry: each user gets 200 requests per minute; CI bot group members share a higher 2000 req/min pool; free-tier group is limited to 50 req/min.
 

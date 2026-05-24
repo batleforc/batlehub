@@ -1,14 +1,54 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
 use futures::StreamExt;
+use regex::Regex;
 
 use crate::{
     entities::{Identity, PublishedPackage, Role},
     error::CoreError,
-    ports::{LocalRegistryBackend, StorageBackend, StorageMeta},
+    ports::{LocalRegistryBackend, OwnershipPort, StorageBackend, StorageMeta},
     services::quota::{QuotaCheck, QuotaService},
 };
+
+/// Versioning policy enforced at publish time for a single registry.
+#[derive(Default)]
+pub struct VersioningPolicy {
+    /// Reject versions that are not valid semver.
+    pub enforce_semver: bool,
+    /// If `enforce_semver` is true, also reject pre-release versions (e.g. `1.0.0-beta.1`).
+    pub allow_prerelease: bool,
+    /// Optional compiled regex; publish is rejected when the version string does not match.
+    pub version_pattern: Option<Regex>,
+}
+
+fn validate_version(version: &str, policy: &VersioningPolicy) -> Result<(), CoreError> {
+    if policy.enforce_semver {
+        match semver::Version::parse(version) {
+            Err(_) => {
+                return Err(CoreError::InvalidVersion(format!(
+                    "version '{version}' is not valid semver"
+                )));
+            }
+            Ok(sv) if !policy.allow_prerelease && !sv.pre.is_empty() => {
+                return Err(CoreError::InvalidVersion(format!(
+                    "pre-release versions are not allowed (got '{version}')"
+                )));
+            }
+            Ok(_) => {}
+        }
+    }
+    if let Some(ref re) = policy.version_pattern {
+        if !re.is_match(version) {
+            return Err(CoreError::InvalidVersion(format!(
+                "version '{version}' does not match required pattern '{}'",
+                re.as_str()
+            )));
+        }
+    }
+    Ok(())
+}
 
 /// Input to `LocalRegistryService::publish`.
 pub struct PublishRequest {
@@ -26,6 +66,10 @@ pub struct PublishRequest {
     pub index_metadata: serde_json::Value,
     /// Identity of the publishing user.
     pub publisher: Identity,
+    /// Raw signature bytes decoded from `X-Artifact-Signature` header, if present.
+    pub signature_bytes: Option<Vec<u8>>,
+    /// Signature type from `X-Signature-Type` header, if present.
+    pub signature_type: Option<String>,
 }
 
 /// Authoritative local-registry service: publish, yank, index, artifact retrieval.
@@ -36,6 +80,19 @@ pub struct LocalRegistryService {
     pub max_artifact_bytes: Option<u64>,
     /// Optional publish quota enforcement. When `None`, quotas are disabled.
     pub quota: Option<Arc<QuotaService>>,
+    /// Optional per-package ownership enforcement. When `None`, ownership is not enforced.
+    pub ownership: Option<Arc<dyn OwnershipPort>>,
+    /// Per-registry versioning policies. Keyed by registry name.
+    pub versioning: HashMap<String, VersioningPolicy>,
+    /// Per-registry signing configs. Keyed by registry name.
+    pub signing: HashMap<String, SigningConfig>,
+}
+
+/// Signing configuration stored in the service (mirrors config-layer `SigningConfig`).
+#[derive(Debug, Default, Clone)]
+pub struct SigningConfig {
+    pub required: bool,
+    pub allowed_types: Vec<String>,
 }
 
 impl LocalRegistryService {
@@ -50,6 +107,46 @@ impl LocalRegistryService {
                 "publishing requires at least User role".into(),
             ));
         }
+
+        // Versioning policy check.
+        if let Some(policy) = self.versioning.get(&req.registry) {
+            validate_version(&req.version, policy)?;
+        }
+
+        // Signing check.
+        if let Some(signing) = self.signing.get(&req.registry) {
+            if signing.required && req.signature_bytes.is_none() {
+                return Err(CoreError::AccessDenied(
+                    "artifact signature required (X-Artifact-Signature header missing)".into(),
+                ));
+            }
+            if !signing.allowed_types.is_empty() {
+                if let Some(ref sig_type) = req.signature_type {
+                    if !signing.allowed_types.iter().any(|t| t == sig_type) {
+                        return Err(CoreError::AccessDenied(format!(
+                            "signature type '{sig_type}' is not in the allowed list"
+                        )));
+                    }
+                }
+            }
+        }
+
+        // Ownership check: if ownership is configured and the package already exists,
+        // verify the caller is a registered owner.
+        let is_new_package = if let Some(ref ownership) = self.ownership {
+            let package_exists = self.backend.exists(&req.registry, &req.name).await?;
+            if package_exists
+                && !ownership.can_publish(&req.registry, &req.name, &req.publisher).await?
+            {
+                return Err(CoreError::AccessDenied(format!(
+                    "you are not an owner of '{}' in registry '{}'",
+                    req.name, req.registry
+                )));
+            }
+            !package_exists
+        } else {
+            false
+        };
 
         let limit = self.max_artifact_bytes.unwrap_or(500 * 1024 * 1024);
         if req.artifact.len() as u64 > limit {
@@ -78,6 +175,8 @@ impl LocalRegistryService {
             index_metadata: req.index_metadata,
             published_at: chrono::Utc::now(),
             published_by: req.publisher.user_id.clone(),
+            signature_bytes: req.signature_bytes.clone(),
+            signature_type: req.signature_type.clone(),
         };
 
         let storage_key = artifact_storage_key(&req.registry, &req.name, &req.version);
@@ -122,6 +221,20 @@ impl LocalRegistryService {
             }
             self.revoke_quota(&req.publisher, &req.registry, bytes).await;
             return Err(e);
+        }
+
+        // Step 4: on first publish, register the publisher as the package admin.
+        if is_new_package {
+            if let (Some(ref ownership), Some(ref uid)) =
+                (&self.ownership, &req.publisher.user_id)
+            {
+                if let Err(err) = ownership
+                    .initialize_owner(&req.registry, &req.name, uid)
+                    .await
+                {
+                    tracing::warn!("initialize_owner failed (non-fatal): {err}");
+                }
+            }
         }
 
         Ok(quota_check)
@@ -306,6 +419,22 @@ impl LocalRegistryService {
         Ok(Bytes::from(buf))
     }
 
+    /// Look up the metadata for a specific published version.
+    /// Returns `None` if not found (non-fatal — callers may skip signature headers).
+    pub async fn get_version_meta(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+    ) -> Option<crate::entities::PublishedPackage> {
+        self.backend
+            .get_versions(registry, name)
+            .await
+            .ok()?
+            .into_iter()
+            .find(|p| p.version == version)
+    }
+
     /// Return newline-delimited version list for a locally published Go module.
     /// Returns `CoreError::NotFound` if the module has never been published here.
     pub async fn get_go_version_list(&self, registry: &str, module: &str) -> Result<String, CoreError> {
@@ -417,12 +546,249 @@ impl LocalRegistryService {
             .unwrap_or_else(|| serde_json::json!(pkg.published_at.to_rfc3339()));
         Ok(serde_json::json!({ "Version": v, "Time": t }))
     }
+
+    /// Return the `/api/v1/gems/{name}.json`-compatible info for the latest gem version.
+    pub async fn get_rubygems_gem_info(
+        &self,
+        registry: &str,
+        name: &str,
+    ) -> Result<serde_json::Value, CoreError> {
+        let versions = self.backend.get_versions(registry, name).await?;
+        let latest = versions.into_iter().last().ok_or_else(|| {
+            CoreError::NotFound(format!(
+                "gem '{name}' not found in local registry '{registry}'"
+            ))
+        })?;
+        let meta = &latest.index_metadata;
+        Ok(serde_json::json!({
+            "name": name,
+            "version": latest.version,
+            "platform": meta.get("platform").and_then(|v| v.as_str()).unwrap_or("ruby"),
+            "summary": meta.get("summary"),
+            "authors": meta.get("authors").and_then(|a| a.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+                .unwrap_or_default(),
+            "sha": meta.get("sha"),
+            "created_at": latest.published_at.to_rfc3339(),
+            "yanked": latest.yanked,
+        }))
+    }
+
+    /// Return the `/api/v1/versions/{name}.json`-compatible array for all gem versions.
+    pub async fn get_rubygems_versions(
+        &self,
+        registry: &str,
+        name: &str,
+    ) -> Result<Vec<serde_json::Value>, CoreError> {
+        let versions = self.backend.get_versions(registry, name).await?;
+        if versions.is_empty() {
+            return Err(CoreError::NotFound(format!(
+                "gem '{name}' not found in local registry '{registry}'"
+            )));
+        }
+        let result = versions
+            .into_iter()
+            .rev() // newest-first to match rubygems.org API
+            .map(|pkg| {
+                let meta = &pkg.index_metadata;
+                serde_json::json!({
+                    "number": pkg.version,
+                    "platform": meta.get("platform").and_then(|v| v.as_str()).unwrap_or("ruby"),
+                    "authors": meta.get("authors").and_then(|a| a.as_array())
+                        .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+                        .unwrap_or_default(),
+                    "summary": meta.get("summary"),
+                    "sha": meta.get("sha"),
+                    "created_at": pkg.published_at.to_rfc3339(),
+                    "prerelease": pkg.version.contains('-'),
+                    "yanked": pkg.yanked,
+                })
+            })
+            .collect();
+        Ok(result)
+    }
+
+    /// Return all non-empty published versions for a Maven artifact (`groupId:artifactId`).
+    /// Returns `CoreError::NotFound` when none are published.
+    pub async fn get_maven_versions(
+        &self,
+        registry: &str,
+        name: &str,
+    ) -> Result<Vec<PublishedPackage>, CoreError> {
+        let versions = self.backend.get_versions(registry, name).await?;
+        if versions.is_empty() {
+            return Err(CoreError::NotFound(format!(
+                "artifact '{name}' not found in local registry '{registry}'"
+            )));
+        }
+        Ok(versions)
+    }
+
+    /// Build the Terraform module versions envelope from `local_packages`.
+    pub async fn get_tf_module_versions_response(
+        &self,
+        registry: &str,
+        name: &str,
+    ) -> Result<serde_json::Value, CoreError> {
+        let versions = self.backend.get_versions(registry, name).await?;
+        if versions.is_empty() {
+            return Err(CoreError::NotFound(format!(
+                "module '{name}' not found in local registry '{registry}'"
+            )));
+        }
+        let version_list: Vec<serde_json::Value> = versions
+            .iter()
+            .filter(|v| !v.yanked)
+            .map(|v| serde_json::json!({"version": v.version}))
+            .collect();
+        Ok(serde_json::json!({"modules": [{"versions": version_list}]}))
+    }
+
+    /// Build the Terraform provider versions envelope from `local_packages`.
+    pub async fn get_tf_provider_versions_response(
+        &self,
+        registry: &str,
+        name: &str,
+    ) -> Result<serde_json::Value, CoreError> {
+        let versions = self.backend.get_versions(registry, name).await?;
+        if versions.is_empty() {
+            return Err(CoreError::NotFound(format!(
+                "provider '{name}' not found in local registry '{registry}'"
+            )));
+        }
+        let version_list: Vec<serde_json::Value> = versions
+            .iter()
+            .filter(|v| !v.yanked)
+            .map(|v| {
+                let meta = &v.index_metadata;
+                let protocols = meta
+                    .get("protocols")
+                    .and_then(|p| p.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let platforms = meta
+                    .get("platforms")
+                    .and_then(|p| p.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|p| {
+                                serde_json::json!({
+                                    "os": p.get("os").and_then(|v| v.as_str()).unwrap_or(""),
+                                    "arch": p.get("arch").and_then(|v| v.as_str()).unwrap_or(""),
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                serde_json::json!({
+                    "version": v.version,
+                    "protocols": protocols,
+                    "platforms": platforms,
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({"versions": version_list}))
+    }
+
+    /// Build the Terraform provider download-info response for a specific version+platform.
+    /// Rewrites `download_url` to point at `base_url`.
+    pub async fn get_tf_provider_download_response(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        os: &str,
+        arch: &str,
+        base_url: &str,
+        registry_name: &str,
+    ) -> Result<serde_json::Value, CoreError> {
+        let versions = self.backend.get_versions(registry, name).await?;
+        let pkg = versions
+            .into_iter()
+            .find(|v| v.version == version)
+            .ok_or_else(|| {
+                CoreError::NotFound(format!(
+                    "provider {name}@{version} not found in registry '{registry}'"
+                ))
+            })?;
+
+        let platforms = pkg
+            .index_metadata
+            .get("platforms")
+            .and_then(|p| p.as_array())
+            .ok_or_else(|| {
+                CoreError::NotFound(format!(
+                    "provider {name}@{version} has no platforms metadata"
+                ))
+            })?;
+
+        let platform = platforms
+            .iter()
+            .find(|p| {
+                p.get("os").and_then(|v| v.as_str()) == Some(os)
+                    && p.get("arch").and_then(|v| v.as_str()) == Some(arch)
+            })
+            .ok_or_else(|| {
+                CoreError::NotFound(format!(
+                    "provider {name}@{version} has no platform {os}/{arch}"
+                ))
+            })?;
+
+        // Extract namespace/type from name like "providers/{ns}/{type}"
+        let parts: Vec<&str> = name.splitn(3, '/').collect();
+        let (ns, ptype) = if parts.len() == 3 {
+            (parts[1], parts[2])
+        } else {
+            ("", "")
+        };
+
+        let base = base_url.trim_end_matches('/');
+        let download_url = format!(
+            "{base}/proxy/{registry_name}/v1/providers/{ns}/{ptype}/{version}/artifact/{os}/{arch}"
+        );
+
+        let mut resp = platform.clone();
+        if let Some(obj) = resp.as_object_mut() {
+            obj.insert("os".to_owned(), serde_json::json!(os));
+            obj.insert("arch".to_owned(), serde_json::json!(arch));
+            obj.insert("download_url".to_owned(), serde_json::json!(download_url));
+            let meta = &pkg.index_metadata;
+            obj.entry("protocols")
+                .or_insert_with(|| meta.get("protocols").cloned().unwrap_or(serde_json::json!([])));
+            obj.entry("signing_keys")
+                .or_insert_with(|| serde_json::json!({"gpg_public_keys": []}));
+        }
+        Ok(resp)
+    }
 }
 
 /// Stable storage key for a locally published artifact.
 /// Distinct from the proxy `artifact:…` namespace to avoid collisions.
 pub fn artifact_storage_key(registry: &str, name: &str, version: &str) -> String {
     format!("local:{}/{}/{}", registry, name, version)
+}
+
+/// Storage key for a non-POM Maven artifact (jar, checksum, etc.).
+/// Multiple artifact files can coexist under the same version.
+pub fn maven_artifact_storage_key(
+    registry: &str,
+    name: &str,
+    version: &str,
+    filename: &str,
+) -> String {
+    format!("local:{}/{}/{}/{}", registry, name, version, filename)
+}
+
+/// Storage key for a Terraform provider platform binary.
+pub fn tf_provider_binary_storage_key(
+    registry: &str,
+    namespace: &str,
+    ptype: &str,
+    version: &str,
+    os: &str,
+    arch: &str,
+) -> String {
+    format!("local:{registry}/providers/{namespace}/{ptype}/{version}/{os}-{arch}")
 }
 
 #[cfg(test)]
@@ -492,6 +858,9 @@ mod tests {
             storage: Arc::new(NoopStorage),
             max_artifact_bytes: max_bytes,
             quota: None,
+            ownership: None,
+            versioning: HashMap::new(),
+            signing: HashMap::new(),
         }
     }
 
@@ -505,6 +874,8 @@ mod tests {
             index_metadata: serde_json::json!({}),
             published_at: Utc::now(),
             published_by: None,
+            signature_bytes: None,
+            signature_type: None,
         }
     }
 
@@ -530,6 +901,8 @@ mod tests {
             checksum: "abc".into(),
             index_metadata: serde_json::json!({}),
             publisher: user(),
+            signature_bytes: None,
+            signature_type: None,
         };
         let err = s.publish(req).await.unwrap_err();
         assert!(matches!(err, CoreError::PayloadTooLarge(_)));

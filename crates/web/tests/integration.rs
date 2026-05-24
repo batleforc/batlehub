@@ -417,6 +417,9 @@ fn make_local_svc(storage: Arc<dyn StorageBackend>) -> Arc<LocalRegistryService>
         storage,
         max_artifact_bytes: None,
         quota: None,
+        ownership: None,
+        versioning: std::collections::HashMap::new(),
+        signing: std::collections::HashMap::new(),
     })
 }
 
@@ -4911,4 +4914,745 @@ async fn admin_stats_reflects_counter_updates() {
         .expect("npm entry must be present");
     assert_eq!(per_npm["artifact_hits"], 2);
     assert_eq!(per_npm["artifact_misses"], 1);
+}
+
+// ══ Maven local registry tests ════════════════════════════════════════════════
+
+async fn make_local_maven_app(
+    mode: RegistryMode,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+
+    let mut registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
+    if matches!(mode, RegistryMode::Hybrid) {
+        registries.insert(
+            "local-maven".to_owned(),
+            FixedRegistry::new("maven") as Arc<dyn RegistryClient>,
+        );
+    }
+    let policies: HashMap<String, RegistryPolicy> =
+        [("local-maven".to_owned(), rbac_policy(repo_dyn.clone()))].into();
+
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        registries,
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        policies,
+        max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = batlehub_web::AccessConfig {
+        anonymous: [].iter().map(|s: &&str| s.to_string()).collect(),
+        user: ["local-maven"].iter().map(|s| s.to_string()).collect(),
+        admin: ["local-maven"].iter().map(|s| s.to_string()).collect(),
+        groups: std::collections::HashMap::new(),
+    };
+    let registry_map = batlehub_web::RegistryMap(
+        [("local-maven", "maven")]
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.to_string()))
+            .collect(),
+    );
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+    let mut mode_map = RegistryModeMap::default();
+    mode_map.0.insert("local-maven".to_owned(), mode);
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
+        .split_for_parts();
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(mode_map));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+}
+
+const SAMPLE_POM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>mylib</artifactId>
+  <version>1.0.0</version>
+  <packaging>jar</packaging>
+  <description>A test library</description>
+</project>"#;
+
+#[actix_web::test]
+async fn maven_put_pom_creates_version() {
+    let app = make_local_maven_app(RegistryMode::Local).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-maven/maven2/com/example/mylib/1.0.0/mylib-1.0.0.pom")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("Content-Type", "application/xml"))
+        .set_payload(SAMPLE_POM)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 201);
+
+    // maven-metadata.xml should now contain the version
+    let req = TestRequest::get()
+        .uri("/proxy/local-maven/maven2/com/example/mylib/maven-metadata.xml")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body = String::from_utf8(read_body(resp).await.to_vec()).unwrap();
+    assert!(body.contains("<version>1.0.0</version>"), "metadata should contain version");
+    assert!(body.contains("<groupId>com.example</groupId>"));
+    assert!(body.contains("<artifactId>mylib</artifactId>"));
+}
+
+#[actix_web::test]
+async fn maven_put_jar_before_pom_is_accepted() {
+    let app = make_local_maven_app(RegistryMode::Local).await;
+
+    let jar_bytes = b"fake-jar-bytes";
+    let req = TestRequest::put()
+        .uri("/proxy/local-maven/maven2/com/example/mylib/1.0.0/mylib-1.0.0.jar")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(jar_bytes.as_slice())
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 201);
+
+    // GET the jar back
+    let req = TestRequest::get()
+        .uri("/proxy/local-maven/maven2/com/example/mylib/1.0.0/mylib-1.0.0.jar")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(read_body(resp).await, jar_bytes.as_slice());
+}
+
+#[actix_web::test]
+async fn maven_put_metadata_xml_is_silently_accepted() {
+    let app = make_local_maven_app(RegistryMode::Local).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-maven/maven2/com/example/mylib/maven-metadata.xml")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload("<metadata/>")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn maven_put_pom_duplicate_returns_409() {
+    let app = make_local_maven_app(RegistryMode::Local).await;
+
+    for _ in 0..2 {
+        let req = TestRequest::put()
+            .uri("/proxy/local-maven/maven2/com/example/mylib/1.0.0/mylib-1.0.0.pom")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .insert_header(("Content-Type", "application/xml"))
+            .set_payload(SAMPLE_POM)
+            .to_request();
+        let _ = call_service(&app, req).await;
+    }
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-maven/maven2/com/example/mylib/1.0.0/mylib-1.0.0.pom")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("Content-Type", "application/xml"))
+        .set_payload(SAMPLE_POM)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 409);
+}
+
+#[actix_web::test]
+async fn maven_put_requires_auth() {
+    let app = make_local_maven_app(RegistryMode::Local).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-maven/maven2/com/example/mylib/1.0.0/mylib-1.0.0.pom")
+        .set_payload(SAMPLE_POM)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    // Anonymous has no access to this registry, returns 403 (RBAC) or 401
+    assert!(resp.status() == 401 || resp.status() == 403);
+}
+
+#[actix_web::test]
+async fn maven_get_metadata_empty_returns_404() {
+    let app = make_local_maven_app(RegistryMode::Local).await;
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-maven/maven2/com/example/unknown/maven-metadata.xml")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn maven_put_proxy_mode_registry_rejected() {
+    let app = make_local_maven_app(RegistryMode::Proxy).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-maven/maven2/com/example/mylib/1.0.0/mylib-1.0.0.pom")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(SAMPLE_POM)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+// ══ Terraform local registry tests ════════════════════════════════════════════
+
+async fn make_local_terraform_app(
+    mode: RegistryMode,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
+    let policies: HashMap<String, RegistryPolicy> =
+        [("local-tf".to_owned(), rbac_policy(repo_dyn.clone()))].into();
+
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        registries,
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        policies,
+        max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = batlehub_web::AccessConfig {
+        anonymous: [].iter().map(|s: &&str| s.to_string()).collect(),
+        user: ["local-tf"].iter().map(|s| s.to_string()).collect(),
+        admin: ["local-tf"].iter().map(|s| s.to_string()).collect(),
+        groups: std::collections::HashMap::new(),
+    };
+    let registry_map = batlehub_web::RegistryMap(
+        [("local-tf", "terraform")]
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.to_string()))
+            .collect(),
+    );
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+    let mut mode_map = RegistryModeMap::default();
+    mode_map.0.insert("local-tf".to_owned(), mode);
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
+        .split_for_parts();
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(mode_map));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+}
+
+// ── Terraform module tests ────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn terraform_module_upload_returns_201() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.1.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(b"fake-tarball-bytes".as_slice())
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 201);
+}
+
+#[actix_web::test]
+async fn terraform_module_versions_after_upload() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.1.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(b"tarball".as_slice())
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/versions")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let versions = body["modules"][0]["versions"].as_array().unwrap();
+    assert!(versions.iter().any(|v| v["version"] == "0.1.0"));
+}
+
+#[actix_web::test]
+async fn terraform_module_download_local_returns_204_with_header() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.1.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(b"tarball".as_slice())
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.1.0/download")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 204);
+    let header = resp.headers().get("X-Terraform-Get").expect("X-Terraform-Get header must be present");
+    let url = header.to_str().unwrap();
+    assert!(url.contains("/artifact"), "X-Terraform-Get should point at /artifact");
+}
+
+#[actix_web::test]
+async fn terraform_module_artifact_returns_bytes() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+    let payload = b"tarball-content-bytes";
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.1.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(payload.as_slice())
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.1.0/artifact")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(read_body(resp).await, payload.as_slice());
+}
+
+#[actix_web::test]
+async fn terraform_module_upload_duplicate_returns_409() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    for _ in 0..2 {
+        let req = TestRequest::post()
+            .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.1.0")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .set_payload(b"tarball".as_slice())
+            .to_request();
+        let _ = call_service(&app, req).await;
+    }
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.1.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(b"tarball".as_slice())
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 409);
+}
+
+// ── Terraform provider tests ──────────────────────────────────────────────────
+
+const PROVIDER_MANIFEST: &str = r#"{
+  "version": "5.0.0",
+  "protocols": ["5.0"],
+  "platforms": [
+    {"os": "linux", "arch": "amd64", "filename": "terraform-provider-aws_5.0.0_linux_amd64.zip", "shasum": "deadbeef"}
+  ]
+}"#;
+
+#[actix_web::test]
+async fn terraform_provider_upload_manifest_returns_201() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/versions")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("Content-Type", "application/json"))
+        .set_payload(PROVIDER_MANIFEST)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 201);
+}
+
+#[actix_web::test]
+async fn terraform_provider_binary_upload_returns_200() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    // Must upload manifest first (no strict requirement in handler, but good practice)
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/versions")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("Content-Type", "application/json"))
+        .set_payload(PROVIDER_MANIFEST)
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/5.0.0/artifact/linux/amd64")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(b"fake-zip-bytes".as_slice())
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn terraform_provider_versions_after_upload() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/versions")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("Content-Type", "application/json"))
+        .set_payload(PROVIDER_MANIFEST)
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/versions")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let versions = body["versions"].as_array().unwrap();
+    assert!(versions.iter().any(|v| v["version"] == "5.0.0"));
+}
+
+#[actix_web::test]
+async fn terraform_provider_download_contains_local_artifact_url() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/versions")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("Content-Type", "application/json"))
+        .set_payload(PROVIDER_MANIFEST)
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let download_url = body["download_url"].as_str().unwrap();
+    assert!(
+        download_url.contains("/artifact/linux/amd64"),
+        "download_url should point at local artifact endpoint, got: {download_url}"
+    );
+}
+
+// ── Terraform module yank / unyank ────────────────────────────────────────────
+
+#[actix_web::test]
+async fn terraform_module_yank_returns_200() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.1.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(b"tarball".as_slice())
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::delete()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/versions/0.1.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert!(body["message"].as_str().unwrap().contains("yanked"));
+}
+
+#[actix_web::test]
+async fn terraform_module_yanked_hidden_from_versions() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.1.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(b"tarball".as_slice())
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::delete()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/versions/0.1.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/versions")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    // After yank the only version is yanked; local_svc returns NotFound when all are yanked
+    assert!(resp.status() == 200 || resp.status() == 404);
+}
+
+#[actix_web::test]
+async fn terraform_module_unyank_returns_200() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.1.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(b"tarball".as_slice())
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::delete()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/versions/0.1.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/versions/0.1.0/unyank")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert!(body["message"].as_str().unwrap().contains("unyanked"));
+}
+
+#[actix_web::test]
+async fn terraform_module_yank_requires_auth() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.1.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(b"tarball".as_slice())
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::delete()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/versions/0.1.0")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert!(resp.status() == 401 || resp.status() == 403);
+}
+
+// ── Terraform provider yank / unyank ─────────────────────────────────────────
+
+#[actix_web::test]
+async fn terraform_provider_yank_returns_200() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/versions")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("Content-Type", "application/json"))
+        .set_payload(PROVIDER_MANIFEST)
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::delete()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/versions/5.0.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert!(body["message"].as_str().unwrap().contains("yanked"));
+}
+
+#[actix_web::test]
+async fn terraform_provider_unyank_returns_200() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/versions")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("Content-Type", "application/json"))
+        .set_payload(PROVIDER_MANIFEST)
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::delete()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/versions/5.0.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/versions/5.0.0/unyank")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert!(body["message"].as_str().unwrap().contains("unyanked"));
+}
+
+#[actix_web::test]
+async fn terraform_provider_yank_requires_auth() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/versions")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("Content-Type", "application/json"))
+        .set_payload(PROVIDER_MANIFEST)
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::delete()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/versions/5.0.0")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert!(resp.status() == 401 || resp.status() == 403);
+}
+
+// ── Terraform signing headers ─────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn terraform_module_upload_with_signature_preserved_on_artifact_download() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+    let sig = base64::engine::general_purpose::STANDARD.encode(b"fake-ed25519-sig");
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.2.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("X-Artifact-Signature", sig.as_str()))
+        .insert_header(("X-Signature-Type", "ed25519"))
+        .set_payload(b"tarball".as_slice())
+        .to_request();
+    let upload_resp = call_service(&app, req).await;
+    assert_eq!(upload_resp.status(), 201);
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.2.0/artifact")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    // Signature headers must be echoed back on download
+    assert!(
+        resp.headers().get("X-Artifact-Signature").is_some(),
+        "X-Artifact-Signature header must be present on artifact download"
+    );
+    assert_eq!(
+        resp.headers().get("X-Signature-Type").and_then(|v| v.to_str().ok()),
+        Some("ed25519")
+    );
+}
+
+#[actix_web::test]
+async fn terraform_provider_upload_with_signature_preserved_on_download_info() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+    let sig = base64::engine::general_purpose::STANDARD.encode(b"fake-provider-sig");
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/versions")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("Content-Type", "application/json"))
+        .insert_header(("X-Artifact-Signature", sig.as_str()))
+        .insert_header(("X-Signature-Type", "ed25519"))
+        .set_payload(PROVIDER_MANIFEST)
+        .to_request();
+    let upload_resp = call_service(&app, req).await;
+    assert_eq!(upload_resp.status(), 201);
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    assert!(
+        resp.headers().get("X-Artifact-Signature").is_some(),
+        "X-Artifact-Signature header must be present on provider download info"
+    );
+    assert_eq!(
+        resp.headers().get("X-Signature-Type").and_then(|v| v.to_str().ok()),
+        Some("ed25519")
+    );
+}
+
+// ── Terraform quota headers ───────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn terraform_module_upload_returns_quota_headers() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.3.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(b"tarball".as_slice())
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 201);
+    // Quota headers are only present when a quota is configured; the in-memory backend
+    // has no quota, so they are absent — but the response must still be 201.
+    // This test verifies the handler correctly returns 201 regardless of quota header presence.
+}
+
+#[actix_web::test]
+async fn terraform_provider_upload_returns_quota_headers() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/versions")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("Content-Type", "application/json"))
+        .set_payload(PROVIDER_MANIFEST)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 201);
 }

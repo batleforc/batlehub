@@ -47,6 +47,8 @@ fn pkg(registry: &str, name: &str, version: &str) -> PublishedPackage {
         index_metadata: serde_json::json!({ "name": name, "version": version }),
         published_at: Utc::now(),
         published_by: Some("test-user".to_owned()),
+        signature_bytes: None,
+        signature_type: None,
     }
 }
 

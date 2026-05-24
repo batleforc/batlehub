@@ -11,11 +11,11 @@ For discussion or to propose a feature, open an issue on the [project repository
 Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules.
 
 - [ ] **PyPI** — Python package index (simple API + wheel / sdist downloads)
-- [x] **Maven / Gradle** — Maven Central-compatible metadata XML + JAR / POM downloads
-- [ ] **RubyGems** — gem downloads and version listing
+- [x] **Maven / Gradle** — Maven Central-compatible metadata XML + JAR / POM downloads; private publishing via `mvn deploy` in `local`/`hybrid` mode
+- [x] **RubyGems** — gem downloads and version listing (proxy + local/hybrid with publish/yank/unyank)
 - [ ] **NuGet** — .NET package protocol
 - [ ] **Deb / RPM** — Debian APT and Red Hat YUM repository proxying
-- [x] **Terraform registry** — provider and module proxy protocol
+- [x] **Terraform registry** — provider and module proxy protocol; private module + provider publishing in `local`/`hybrid` mode
 - [ ] **GitLab releases and packages** — similar to GitHub but with different auth and pagination
 - [ ] **Forgejo releases and packages** — Gitea fork with minor API differences
 
@@ -108,14 +108,16 @@ Applies to registries running in `local` or `hybrid` mode.
 - **npm** — versioning policies (enforce semantic versioning, allowlist version patterns)
 - **Cargo** — versioning policies; verify full compatibility with the yank protocol from crates.io
 - **VS Code extensions** — deprecation and unlisting; upload via the UI (form for VSIX + metadata), in addition to the existing `PUT` API
+- [x] **Maven** — private artifact publishing via `mvn deploy`; POM-triggered three-phase publish; JAR/checksum pre-upload; dynamically generated `maven-metadata.xml` from DB; `local` and `hybrid` modes
+- [x] **Terraform** — private module publishing (tar.gz upload, `X-Terraform-Get` redirect); private provider publishing (version manifest + per-platform binary upload); `local` and `hybrid` modes
 
 ### For all private registry types
 
-- [ ] Artifact signing and verification (OpenPGP or similar) for published packages
-- [ ] Ownership and team management: multiple users / groups can publish and manage the same package with different roles
-- [ ] Versioning policies: enforce semantic versioning or restrict accepted version patterns
+- [x] Artifact signing framework: publish with `X-Artifact-Signature` / `X-Signature-Type` headers; signature stored in DB and returned on download; optional `signing.required` enforcement
+- [x] Ownership and team management: per-package owner table (user/group, admin/maintainer roles); `initialize_owner` on first publish; `can_publish` check on subsequent publishes; admin API to list/add/remove owners
+- [x] Versioning policies: `enforce_semver`, `allow_prerelease`, `version_pattern` (regex) per registry; enforced at publish time with HTTP 422
 - [ ] Beta / pre-release channel: allow specific users or groups to access unpublished versions before general release
-- [ ] Bulk operations: bulk publish, bulk deprecation, bulk deletion
+- [x] Bulk operations: `POST /api/v1/admin/registries/{registry}/bulk-yank|bulk-unyank|bulk-delete`
 - [ ] Content-addressable deduplication and integrity verification for stored artifacts
 
 ### CLI tool

@@ -5,4 +5,5 @@ pub mod goproxy;
 pub mod maven;
 pub mod npm;
 pub mod openvsx;
+pub mod rubygems;
 pub mod terraform;

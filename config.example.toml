@@ -352,6 +352,67 @@ admin = ["*"]
 #   X-RateLimit-Reset: {unix_timestamp}  — on 429 responses
 #   X-RateLimit-Warning: rate-limit-exceeded  — on warn-mode overruns
 
+# ── RubyGems registry ────────────────────────────────────────────────────────
+#
+# Proxy mode: mirrors rubygems.org gem downloads, info, and version listing.
+# Local/hybrid mode: accepts `gem push` for private gems.
+#
+# [[registries]]
+# type = "rubygems"
+# name = "gems"
+# # mode = "proxy"           # default
+# # upstreams = ["https://rubygems.org"]  # default upstream
+#
+# # Hybrid example (fall through to rubygems.org when gem not found locally):
+[[registries]]
+type   = "rubygems"
+name   = "my-gems"
+mode   = "hybrid"
+upstreams = ["https://rubygems.org"]
+
+# --- Maven Central registry --------------------------------------------------
+#
+# Proxy mode: mirrors Maven Central artifact downloads, POM info, and version listing.
+# Local/hybrid mode: accepts `mvn deploy` for private artifacts.
+[[registries]]
+type   = "maven"
+name   = "my-maven"
+mode   = "hybrid"
+upstreams = ["https://repo1.maven.org/maven2/"]
+
+# ── Versioning policies (local/hybrid mode) ──────────────────────────────────
+#
+# Enforce versioning rules at publish time. Violations return HTTP 422.
+# All fields are optional; omit the entire [versioning] block to disable.
+#
+# [[registries]]
+# type = "cargo"
+# name = "internal-crates"
+# mode = "local"
+#
+# [registries.versioning]
+# enforce_semver   = true          # reject non-semver versions (e.g. "1.0.0-foo" is OK, "1.0" is not)
+# allow_prerelease = false         # reject pre-release versions (e.g. "1.0.0-beta.1")
+# version_pattern  = "^\\d+\\.\\d+\\.\\d+$"   # optional regex; must match full version string
+
+# ── Artifact signing (local/hybrid mode) ─────────────────────────────────────
+#
+# Accept and store artifact signatures supplied via publish-time HTTP headers:
+#   X-Artifact-Signature: <base64-encoded signature bytes>
+#   X-Signature-Type: pgp                    # or "ed25519", etc.
+#
+# Stored signatures are returned on download as the same headers.
+# All fields are optional; omit the entire [signing] block to disable enforcement.
+#
+# [[registries]]
+# type = "npm"
+# name = "signed-npm"
+# mode = "local"
+#
+# [registries.signing]
+# required      = true             # reject publishes that omit X-Artifact-Signature
+# allowed_types = ["pgp", "ed25519"]   # if non-empty, reject any other type
+
 # ── Self-hosted / private registry auth + TLS ────────────────────────────────
 #
 # Any registry block may include an [upstream_auth] table and/or a [tls] table.

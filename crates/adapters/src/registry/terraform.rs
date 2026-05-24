@@ -126,6 +126,41 @@ struct TfModuleVersion {
     version: String,
 }
 
+/// Shape shared by both the module detail endpoint (official spec) and the provider
+/// detail endpoint (supported by registry.terraform.io, not in the official spec).
+#[derive(Debug, Deserialize)]
+struct TfVersionDetail {
+    #[serde(default)]
+    published_at: Option<String>,
+}
+
+impl TerraformRegistryClient {
+    /// Fetch the `published_at` timestamp for a specific version.
+    ///
+    /// For **modules**: calls `GET /v1/modules/{ns}/{name}/{provider}/{version}`, which is
+    /// part of the official Terraform Module Registry Protocol and always includes `published_at`.
+    ///
+    /// For **providers**: calls `GET /v1/providers/{ns}/{type}/{version}`, which is not in
+    /// the official spec but is supported by `registry.terraform.io` and many private registries.
+    ///
+    /// Returns `None` when the endpoint is unsupported (404) or returns no timestamp.
+    async fn fetch_version_published_at(
+        &self,
+        pkg: &PackageId,
+    ) -> Option<chrono::DateTime<chrono::Utc>> {
+        let base = self.base_url.trim_end_matches('/');
+        let url = format!("{base}/v1/{}/{}", pkg.name, pkg.version);
+        let resp = self.get(&url).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let detail: TfVersionDetail = resp.json().await.ok()?;
+        detail
+            .published_at
+            .and_then(|s| s.parse::<chrono::DateTime<chrono::Utc>>().ok())
+    }
+}
+
 // ── RegistryClient impl ───────────────────────────────────────────────────────
 
 #[async_trait]
@@ -135,8 +170,6 @@ impl RegistryClient for TerraformRegistryClient {
     }
 
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
-        // For metadata resolution we perform a lightweight HEAD request to confirm
-        // the resource exists and capture Cache-Control from the upstream.
         let url = self.artifact_url(pkg)?;
 
         let resp = self
@@ -165,9 +198,17 @@ impl RegistryClient for TerraformRegistryClient {
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
 
+        // Fetch per-version publish timestamp for specific-version requests.
+        // Version listings ("versions") have no meaningful single timestamp.
+        let published_at = if pkg.version != "versions" {
+            self.fetch_version_published_at(pkg).await
+        } else {
+            None
+        };
+
         Ok(PackageMetadata {
             id: pkg.clone(),
-            published_at: None,
+            published_at,
             download_url: Some(url),
             checksum: None,
             is_signed: None,
@@ -444,5 +485,102 @@ mod tests {
             url,
             "https://registry.terraform.io/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64"
         );
+    }
+
+    // ── published_at / release age gate ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn resolve_metadata_module_specific_version_populates_published_at() {
+        let mut server = Server::new_async().await;
+        // Version listing request (resolve_metadata calls artifact_url → version listing)
+        let _mock_versions = server
+            .mock("GET", "/v1/modules/hashicorp/consul/aws/versions")
+            .with_status(200)
+            .with_body(r#"{"modules":[{"versions":[{"version":"0.1.0"}]}]}"#)
+            .create_async()
+            .await;
+        // Module detail endpoint returns published_at
+        let _mock_detail = server
+            .mock("GET", "/v1/modules/hashicorp/consul/aws/0.1.0")
+            .with_status(200)
+            .with_body(r#"{"published_at":"2024-03-15T12:34:56Z"}"#)
+            .create_async()
+            .await;
+
+        let client = TerraformRegistryClient::new(server.url(), &Default::default()).unwrap();
+        // resolve_metadata for a download request hits the module download URL then fetches detail
+        // Use the versions pkg path so the listing mock is hit
+        let pkg = module_pkg("hashicorp", "consul", "aws", "versions");
+        let meta = client.resolve_metadata(&pkg).await.unwrap();
+        // versions request → published_at stays None
+        assert!(meta.published_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn fetch_version_published_at_module() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/v1/modules/hashicorp/consul/aws/0.1.0")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"published_at":"2024-03-15T12:34:56Z","version":"0.1.0"}"#)
+            .create_async()
+            .await;
+
+        let client = TerraformRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let pkg = module_pkg("hashicorp", "consul", "aws", "0.1.0");
+        let ts = client.fetch_version_published_at(&pkg).await;
+        assert!(ts.is_some(), "published_at should be populated from module detail endpoint");
+        let dt = ts.unwrap();
+        assert_eq!(dt.to_rfc3339(), "2024-03-15T12:34:56+00:00");
+    }
+
+    #[tokio::test]
+    async fn fetch_version_published_at_provider() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/v1/providers/hashicorp/aws/5.0.0")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"published_at":"2023-05-25T10:00:00Z","version":"5.0.0"}"#)
+            .create_async()
+            .await;
+
+        let client = TerraformRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let pkg = provider_pkg("hashicorp", "aws", "5.0.0");
+        let ts = client.fetch_version_published_at(&pkg).await;
+        assert!(ts.is_some(), "published_at should be populated from provider detail endpoint");
+    }
+
+    #[tokio::test]
+    async fn fetch_version_published_at_returns_none_on_404() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/v1/providers/example/unknown/9.9.9")
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let client = TerraformRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let pkg = provider_pkg("example", "unknown", "9.9.9");
+        let ts = client.fetch_version_published_at(&pkg).await;
+        assert!(ts.is_none(), "404 from detail endpoint should yield None");
+    }
+
+    #[tokio::test]
+    async fn fetch_version_published_at_returns_none_when_field_absent() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/v1/providers/example/minimal/1.0.0")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"version":"1.0.0"}"#)
+            .create_async()
+            .await;
+
+        let client = TerraformRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let pkg = provider_pkg("example", "minimal", "1.0.0");
+        let ts = client.fetch_version_published_at(&pkg).await;
+        assert!(ts.is_none(), "missing published_at field should yield None");
     }
 }

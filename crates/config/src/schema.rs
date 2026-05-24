@@ -45,17 +45,24 @@ impl AppConfig {
             }
             match registry.registry_type.as_str() {
                 "github" | "cargo" | "npm" | "openvsx" | "goproxy" | "pypi" | "composer"
-                | "vscode-marketplace" | "maven" | "terraform" => {}
+                | "vscode-marketplace" | "maven" | "terraform" | "rubygems" => {}
                 other => bail!("unknown registry type: '{other}'"),
             }
             if matches!(registry.mode, RegistryMode::Local | RegistryMode::Hybrid)
                 && !matches!(
                     registry.registry_type.as_str(),
-                    "cargo" | "npm" | "openvsx" | "vscode-marketplace" | "goproxy"
+                    "cargo"
+                        | "npm"
+                        | "openvsx"
+                        | "vscode-marketplace"
+                        | "goproxy"
+                        | "rubygems"
+                        | "maven"
+                        | "terraform"
                 )
             {
                 bail!(
-                    "registry '{}': mode 'local'/'hybrid' is only supported for cargo, npm, openvsx, vscode-marketplace, and goproxy registries",
+                    "registry '{}': mode 'local'/'hybrid' is only supported for cargo, npm, openvsx, vscode-marketplace, goproxy, rubygems, maven, and terraform registries",
                     registry.name
                 );
             }
@@ -457,6 +464,45 @@ pub struct RegistryConfig {
     /// Optional per-user request rate limit for this registry.
     #[serde(default)]
     pub rate_limit: Option<RateLimitConfig>,
+    /// Optional versioning policy enforced at publish time (local/hybrid mode only).
+    #[serde(default)]
+    pub versioning: Option<VersioningPolicy>,
+    /// Optional artifact signing configuration (local/hybrid mode only).
+    #[serde(default)]
+    pub signing: Option<SigningConfig>,
+}
+
+// ── Versioning policy ─────────────────────────────────────────────────────────
+
+/// Per-registry versioning policy enforced at publish time.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct VersioningPolicy {
+    /// Reject publish if the version string is not a valid semver (e.g. `1.2.3`, `1.0.0-beta.1`).
+    #[serde(default)]
+    pub enforce_semver: bool,
+    /// Reject publish if the semver pre-release component is non-empty (e.g. `-alpha`, `-beta.1`).
+    /// Only effective when `enforce_semver` is also `true`.
+    #[serde(default = "default_true")]
+    pub allow_prerelease: bool,
+    /// Reject publish if the version string does not match this regex.
+    #[serde(default)]
+    pub version_pattern: Option<String>,
+}
+
+fn default_true() -> bool { true }
+
+// ── Artifact signing ──────────────────────────────────────────────────────────
+
+/// Per-registry artifact signing configuration.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SigningConfig {
+    /// When `true`, reject publish requests that do not include an `X-Artifact-Signature` header.
+    #[serde(default)]
+    pub required: bool,
+    /// Accepted signature types (e.g. `["pgp", "ed25519"]`).
+    /// When empty, any type (or no type) is accepted.
+    #[serde(default)]
+    pub allowed_types: Vec<String>,
 }
 
 // ── Quota management ──────────────────────────────────────────────────────────

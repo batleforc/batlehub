@@ -29,11 +29,14 @@ const netrcSnippet = computed(() =>
 );
 const isOidc = computed(() => expiresAt.value > 0);
 
-const githubRegistryName  = ref("github");
-const npmRegistryName     = ref("npm");
-const cargoRegistryName   = ref("cargo");
-const openvsxRegistryName = ref("openvsx");
-const goRegistryName      = ref("go");
+const githubRegistryName    = ref("github");
+const npmRegistryName       = ref("npm");
+const cargoRegistryName     = ref("cargo");
+const openvsxRegistryName   = ref("openvsx");
+const goRegistryName        = ref("go");
+const mavenRegistryName     = ref("maven");
+const terraformRegistryName = ref("terraform");
+const rubygemsRegistryName  = ref("rubygems");
 
 const { data: registries } = useApi<Array<{ name: string; type: string }>>(
   () => listRegistries() as Promise<{ data?: unknown; error?: unknown }>,
@@ -47,18 +50,27 @@ watch(registries, (regs) => {
   const cg  = regs.find(r => r.type === "cargo");
   const ovx = regs.find(r => r.type === "openvsx");
   const go  = regs.find(r => r.type === "goproxy");
+  const mv  = regs.find(r => r.type === "maven");
+  const tf  = regs.find(r => r.type === "terraform");
+  const rg  = regs.find(r => r.type === "rubygems");
   if (gh)  githubRegistryName.value = gh.name;
   if (np)  npmRegistryName.value = np.name;
   if (cg)  cargoRegistryName.value = cg.name;
   if (ovx) openvsxRegistryName.value = ovx.name;
   if (go)  goRegistryName.value = go.name;
+  if (mv)  mavenRegistryName.value = mv.name;
+  if (tf)  terraformRegistryName.value = tf.name;
+  if (rg)  rubygemsRegistryName.value = rg.name;
 });
 
-const githubRegistries  = computed(() => registries.value?.filter(r => r.type === "github")   ?? []);
-const npmRegistries     = computed(() => registries.value?.filter(r => r.type === "npm")       ?? []);
-const cargoRegistries   = computed(() => registries.value?.filter(r => r.type === "cargo")     ?? []);
-const openvsxRegistries = computed(() => registries.value?.filter(r => r.type === "openvsx")   ?? []);
-const goRegistries      = computed(() => registries.value?.filter(r => r.type === "goproxy")   ?? []);
+const githubRegistries    = computed(() => registries.value?.filter(r => r.type === "github")    ?? []);
+const npmRegistries       = computed(() => registries.value?.filter(r => r.type === "npm")        ?? []);
+const cargoRegistries     = computed(() => registries.value?.filter(r => r.type === "cargo")      ?? []);
+const openvsxRegistries   = computed(() => registries.value?.filter(r => r.type === "openvsx")    ?? []);
+const goRegistries        = computed(() => registries.value?.filter(r => r.type === "goproxy")    ?? []);
+const mavenRegistries     = computed(() => registries.value?.filter(r => r.type === "maven")      ?? []);
+const terraformRegistries = computed(() => registries.value?.filter(r => r.type === "terraform")  ?? []);
+const rubygemsRegistries  = computed(() => registries.value?.filter(r => r.type === "rubygems")   ?? []);
 
 async function copy(key: string, text: string) {
   await navigator.clipboard.writeText(text);
@@ -221,10 +233,146 @@ const openvsxVscodiumSnippet = computed(() => {
     `}`,
   ].join("\n");
 });
+
+const mavenSettingsSnippet = computed(() => {
+  const b   = base.value;
+  const reg = mavenRegistryName.value || "maven";
+  const lines = [`<!-- ~/.m2/settings.xml -->`];
+  if (isAuthenticated.value) {
+    lines.push(
+      `<settings>`,
+      `  <servers>`,
+      `    <server>`,
+      `      <id>batlehub-${reg}</id>`,
+      `      <username>${netrcLogin.value}</username>`,
+      `      <password>${token.value}</password>`,
+      `    </server>`,
+      `  </servers>`,
+      `  <mirrors>`,
+      `    <mirror>`,
+      `      <id>batlehub-${reg}</id>`,
+      `      <name>BatleHub Maven Proxy</name>`,
+      `      <url>${b}/proxy/${reg}/maven2/</url>`,
+      `      <mirrorOf>*</mirrorOf>`,
+      `    </mirror>`,
+      `  </mirrors>`,
+      `</settings>`,
+    );
+  } else {
+    lines.push(
+      `<settings>`,
+      `  <mirrors>`,
+      `    <mirror>`,
+      `      <id>batlehub-${reg}</id>`,
+      `      <name>BatleHub Maven Proxy</name>`,
+      `      <url>${b}/proxy/${reg}/maven2/</url>`,
+      `      <mirrorOf>*</mirrorOf>`,
+      `    </mirror>`,
+      `  </mirrors>`,
+      `</settings>`,
+    );
+  }
+  return lines.join("\n");
+});
+
+const mavenPublishSnippet = computed(() => {
+  const b   = base.value;
+  const reg = mavenRegistryName.value || "maven";
+  const lines = [
+    `<!-- pom.xml — add <distributionManagement> inside <project> -->`,
+    `<distributionManagement>`,
+    `  <repository>`,
+    `    <id>batlehub-${reg}</id>`,
+    `    <url>${b}/proxy/${reg}/maven2/</url>`,
+    `  </repository>`,
+    `</distributionManagement>`,
+    ``,
+    `<!-- Then publish with: -->`,
+    `<!-- mvn deploy -->`,
+  ];
+  return lines.join("\n");
+});
+
+const terraformrcSnippet = computed(() => {
+  const b   = base.value;
+  const reg = terraformRegistryName.value || "terraform";
+  let hostPart = b;
+  try { hostPart = new URL(b).hostname; } catch { /* keep b */ }
+  const lines = [
+    `# ~/.terraformrc`,
+    `provider_installation {`,
+    `  network_mirror {`,
+    `    url = "${b}/proxy/${reg}/"`,
+    `  }`,
+    `}`,
+  ];
+  if (isAuthenticated.value) {
+    lines.push(
+      ``,
+      `credentials "${hostPart}" {`,
+      `  token = "${token.value}"`,
+      `}`,
+    );
+  }
+  return lines.join("\n");
+});
+
+const gemsrcSnippet = computed(() => {
+  const b   = base.value;
+  const reg = rubygemsRegistryName.value || "rubygems";
+  let proxyUrl = `${b}/proxy/${reg}/`;
+  if (isAuthenticated.value) {
+    try {
+      const u = new URL(`${b}/proxy/${reg}/`);
+      u.username = netrcLogin.value;
+      u.password = token.value ?? "";
+      proxyUrl = u.toString();
+    } catch { /* keep original */ }
+  }
+  return [
+    `# Bundler — mirror rubygems.org through the proxy`,
+    `# Run once, or commit to .bundle/config`,
+    `bundle config set mirror.https://rubygems.org/ ${proxyUrl}`,
+    ``,
+    `# gem CLI — replace the default source`,
+    `# gem sources --remove https://rubygems.org/`,
+    `# gem sources --add ${proxyUrl}`,
+  ].join("\n");
+});
+
+const gemPublishSnippet = computed(() => {
+  const b   = base.value;
+  const reg = rubygemsRegistryName.value || "rubygems";
+  const lines = [
+    `# Publish a gem (local / hybrid mode only)`,
+    `gem push name-version.gem --host ${b}/proxy/${reg}`,
+  ];
+  if (isAuthenticated.value) {
+    lines.push(``, `# Credentials: set GEM_HOST_API_KEY or pass --key`);
+    lines.push(`export GEM_HOST_API_KEY="${token.value}"`);
+  }
+  return lines.join("\n");
+});
+
+const terraformModuleSnippet = computed(() => {
+  const b   = base.value;
+  const reg = terraformRegistryName.value || "terraform";
+  return [
+    `# Upload a module (tar.gz archive)`,
+    `curl -X POST \\`,
+    `  -H "Authorization: Bearer ${isAuthenticated.value ? token.value : "<your-token>"}" \\`,
+    `  -H "Content-Type: application/gzip" \\`,
+    `  --data-binary @module.tar.gz \\`,
+    `  "${b}/proxy/${reg}/v1/modules/namespace/name/provider/1.0.0"`,
+    ``,
+    `# Download artifact URL returned as X-Terraform-Get header:`,
+    `# ${b}/proxy/${reg}/v1/modules/namespace/name/provider/1.0.0/artifact`,
+  ].join("\n");
+});
 </script>
 
 <template>
-  <div class="max-w-3xl space-y-8">
+  <div class="max-w-7xl space-y-8">
     <div>
       <h1 class="text-2xl font-semibold">Setup Guide</h1>
       <p class="text-sm text-muted-foreground mt-1">
@@ -243,7 +391,7 @@ const openvsxVscodiumSnippet = computed(() => {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <div class="grid grid-cols-2 gap-3 sm:grid-cols-5">
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
           <div class="space-y-1">
             <Label for="sg-github">GitHub registry</Label>
             <Input id="sg-github" v-model="githubRegistryName" list="sg-github-list" placeholder="github" class="font-mono text-sm" />
@@ -279,18 +427,42 @@ const openvsxVscodiumSnippet = computed(() => {
               <option v-for="r in goRegistries" :key="r.name" :value="r.name" />
             </datalist>
           </div>
+          <div class="space-y-1">
+            <Label for="sg-maven">Maven registry</Label>
+            <Input id="sg-maven" v-model="mavenRegistryName" list="sg-maven-list" placeholder="maven" class="font-mono text-sm" />
+            <datalist id="sg-maven-list">
+              <option v-for="r in mavenRegistries" :key="r.name" :value="r.name" />
+            </datalist>
+          </div>
+          <div class="space-y-1">
+            <Label for="sg-terraform">Terraform registry</Label>
+            <Input id="sg-terraform" v-model="terraformRegistryName" list="sg-terraform-list" placeholder="terraform" class="font-mono text-sm" />
+            <datalist id="sg-terraform-list">
+              <option v-for="r in terraformRegistries" :key="r.name" :value="r.name" />
+            </datalist>
+          </div>
+          <div class="space-y-1">
+            <Label for="sg-rubygems">RubyGems registry</Label>
+            <Input id="sg-rubygems" v-model="rubygemsRegistryName" list="sg-rubygems-list" placeholder="rubygems" class="font-mono text-sm" />
+            <datalist id="sg-rubygems-list">
+              <option v-for="r in rubygemsRegistries" :key="r.name" :value="r.name" />
+            </datalist>
+          </div>
         </div>
       </CardContent>
     </Card>
 
     <!-- ── Tool config tabs ── -->
     <Tabs default-value="mise">
-      <TabsList :class="isAuthenticated ? 'grid grid-cols-6' : 'grid grid-cols-5'">
+      <TabsList :class="isAuthenticated ? 'grid grid-cols-9' : 'grid grid-cols-8'">
         <TabsTrigger value="mise">mise</TabsTrigger>
         <TabsTrigger value="npm">npm</TabsTrigger>
         <TabsTrigger value="cargo">Cargo</TabsTrigger>
         <TabsTrigger value="openvsx">OpenVSX</TabsTrigger>
         <TabsTrigger value="go">Go</TabsTrigger>
+        <TabsTrigger value="maven">Maven</TabsTrigger>
+        <TabsTrigger value="terraform">Terraform</TabsTrigger>
+        <TabsTrigger value="rubygems">RubyGems</TabsTrigger>
         <TabsTrigger v-if="isAuthenticated" value="netrc">.netrc</TabsTrigger>
       </TabsList>
 
@@ -492,6 +664,152 @@ const openvsxVscodiumSnippet = computed(() => {
               <code class="font-mono bg-muted px-1 rounded">@v/list</code> responses are also cached —
               clear the proxy storage if you need to pick up newly published versions immediately.
             </p>
+          </CardContent>
+        </Card>
+      </TabsContent>
+
+      <!-- Maven -->
+      <TabsContent value="maven">
+        <Card>
+          <CardHeader>
+            <div class="flex items-center justify-between">
+              <CardDescription>
+                Route Maven/Gradle dependency downloads through this proxy, or publish private
+                artifacts (<code class="text-xs font-mono bg-muted px-1 rounded">mvn deploy</code>)
+                when the registry is configured in <code class="text-xs font-mono bg-muted px-1 rounded">Local</code>
+                or <code class="text-xs font-mono bg-muted px-1 rounded">Hybrid</code> mode.
+              </CardDescription>
+              <Badge variant="outline" class="shrink-0 font-mono text-xs ml-4">Maven</Badge>
+            </div>
+          </CardHeader>
+          <CardContent class="space-y-4">
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">
+                <code class="font-mono">~/.m2/settings.xml</code> — proxy all Maven dependencies
+              </p>
+              <CodeBlock :code="mavenSettingsSnippet" lang="xml">
+                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('maven-settings', mavenSettingsSnippet)">
+                  {{ copied === 'maven-settings' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </CodeBlock>
+            </div>
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">
+                <code class="font-mono">pom.xml</code> — publish private artifacts (Local / Hybrid mode)
+              </p>
+              <CodeBlock :code="mavenPublishSnippet" lang="xml">
+                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('maven-publish', mavenPublishSnippet)">
+                  {{ copied === 'maven-publish' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </CodeBlock>
+              <p class="text-xs text-muted-foreground mt-1.5">
+                The registry must be configured with
+                <code class="font-mono bg-muted px-1 rounded">mode = "local"</code> or
+                <code class="font-mono bg-muted px-1 rounded">mode = "hybrid"</code> in
+                <code class="font-mono bg-muted px-1 rounded">config.toml</code> to accept publishes.
+                The <code class="font-mono bg-muted px-1 rounded">server</code> id in
+                <code class="font-mono bg-muted px-1 rounded">settings.xml</code> must match the
+                <code class="font-mono bg-muted px-1 rounded">repository id</code> in
+                <code class="font-mono bg-muted px-1 rounded">distributionManagement</code>.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      </TabsContent>
+
+      <!-- Terraform -->
+      <TabsContent value="terraform">
+        <Card>
+          <CardHeader>
+            <div class="flex items-center justify-between">
+              <CardDescription>
+                Proxy Terraform provider downloads via network mirror, or publish private modules
+                and providers when the registry is configured in
+                <code class="text-xs font-mono bg-muted px-1 rounded">Local</code>
+                or <code class="text-xs font-mono bg-muted px-1 rounded">Hybrid</code> mode.
+              </CardDescription>
+              <Badge variant="outline" class="shrink-0 font-mono text-xs ml-4">Terraform</Badge>
+            </div>
+          </CardHeader>
+          <CardContent class="space-y-4">
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">
+                <code class="font-mono">~/.terraformrc</code> — provider network mirror
+              </p>
+              <CodeBlock :code="terraformrcSnippet" lang="hcl">
+                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('terraformrc', terraformrcSnippet)">
+                  {{ copied === 'terraformrc' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </CodeBlock>
+              <p class="text-xs text-muted-foreground mt-1.5">
+                The <code class="font-mono bg-muted px-1 rounded">network_mirror</code> block
+                redirects all provider downloads through this proxy.
+                Providers are cached after first download in Proxy/Hybrid mode,
+                or served entirely locally in Local mode.
+              </p>
+            </div>
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">Upload a private module (Local / Hybrid mode)</p>
+              <CodeBlock :code="terraformModuleSnippet" lang="bash">
+                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('terraform-module', terraformModuleSnippet)">
+                  {{ copied === 'terraform-module' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </CodeBlock>
+              <p class="text-xs text-muted-foreground mt-1.5">
+                The response includes an
+                <code class="font-mono bg-muted px-1 rounded">X-Terraform-Get</code>
+                header pointing to the artifact download URL.
+                Modules can also be yanked via the admin API.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      </TabsContent>
+
+      <!-- RubyGems -->
+      <TabsContent value="rubygems">
+        <Card>
+          <CardHeader>
+            <div class="flex items-center justify-between">
+              <CardDescription>
+                Mirror rubygems.org through this proxy for Bundler and the gem CLI.
+                Gems are cached after the first download. Publish private gems with
+                <code class="text-xs font-mono bg-muted px-1 rounded">gem push</code>
+                when the registry is configured in
+                <code class="text-xs font-mono bg-muted px-1 rounded">Local</code>
+                or <code class="text-xs font-mono bg-muted px-1 rounded">Hybrid</code> mode.
+              </CardDescription>
+              <Badge variant="outline" class="shrink-0 font-mono text-xs ml-4">RubyGems</Badge>
+            </div>
+          </CardHeader>
+          <CardContent class="space-y-4">
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">Bundler mirror / gem CLI source</p>
+              <CodeBlock :code="gemsrcSnippet" lang="bash">
+                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('gemsrc', gemsrcSnippet)">
+                  {{ copied === 'gemsrc' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </CodeBlock>
+              <p class="text-xs text-muted-foreground mt-1.5">
+                The <code class="font-mono bg-muted px-1 rounded">bundle config</code> mirror setting
+                intercepts all rubygems.org requests transparently — no changes to your
+                <code class="font-mono bg-muted px-1 rounded">Gemfile</code> needed.
+              </p>
+            </div>
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">Publish a private gem (Local / Hybrid mode)</p>
+              <CodeBlock :code="gemPublishSnippet" lang="bash">
+                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('gem-publish', gemPublishSnippet)">
+                  {{ copied === 'gem-publish' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </CodeBlock>
+              <p class="text-xs text-muted-foreground mt-1.5">
+                The registry must be configured with
+                <code class="font-mono bg-muted px-1 rounded">mode = "local"</code> or
+                <code class="font-mono bg-muted px-1 rounded">mode = "hybrid"</code> in
+                <code class="font-mono bg-muted px-1 rounded">config.toml</code> to accept publishes.
+              </p>
+            </div>
           </CardContent>
         </Card>
       </TabsContent>

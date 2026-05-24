@@ -35,6 +35,14 @@ impl AppError {
     pub fn conflict(msg: impl Into<String>) -> Self {
         Self { status: StatusCode::CONFLICT, message: msg.into() }
     }
+
+    pub fn unprocessable(msg: impl Into<String>) -> Self {
+        Self { status: StatusCode::UNPROCESSABLE_ENTITY, message: msg.into() }
+    }
+
+    pub fn service_unavailable(msg: impl Into<String>) -> Self {
+        Self { status: StatusCode::SERVICE_UNAVAILABLE, message: msg.into() }
+    }
 }
 
 impl actix_web::ResponseError for AppError {
@@ -78,6 +86,7 @@ impl From<CoreError> for AppError {
                 status: StatusCode::TOO_MANY_REQUESTS,
                 message: msg,
             },
+            CoreError::InvalidVersion(msg) => Self::unprocessable(msg),
             CoreError::Registry(msg) => Self {
                 status: StatusCode::BAD_GATEWAY,
                 message: msg,

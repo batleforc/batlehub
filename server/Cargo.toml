@@ -38,3 +38,4 @@ reqwest.workspace = true
 clap.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
+regex.workspace = true

@@ -29,6 +29,7 @@ metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 sha2 = "0.10"
 hex = "0.4"
+quick-xml = { workspace = true }
 base64 = "0.22"
 zip = "2"
 

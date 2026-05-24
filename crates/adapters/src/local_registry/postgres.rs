@@ -38,8 +38,8 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
         sqlx::query(
             "INSERT INTO local_packages \
                 (registry, name, version, checksum, yanked, index_metadata, \
-                 published_at, published_by, status) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')",
+                 published_at, published_by, status, signature_bytes, signature_type) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $10)",
         )
         .bind(&pkg.registry)
         .bind(&pkg.name)
@@ -49,6 +49,8 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
         .bind(&pkg.index_metadata)
         .bind(pkg.published_at)
         .bind(&pkg.published_by)
+        .bind(&pkg.signature_bytes)
+        .bind(&pkg.signature_type)
         .execute(&self.pool)
         .await
         .map_err(|e| {
@@ -123,7 +125,7 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
     ) -> Result<Vec<PublishedPackage>, CoreError> {
         let rows = sqlx::query(
             "SELECT registry, name, version, checksum, yanked, index_metadata, \
-                    published_at, published_by \
+                    published_at, published_by, signature_bytes, signature_type \
              FROM local_packages \
              WHERE registry = $1 AND name = $2 AND status = 'published' \
              ORDER BY published_at ASC",
@@ -145,6 +147,8 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
                 index_metadata: r.get("index_metadata"),
                 published_at: r.get("published_at"),
                 published_by: r.get("published_by"),
+                signature_bytes: r.get("signature_bytes"),
+                signature_type: r.get("signature_type"),
             })
             .collect())
     }

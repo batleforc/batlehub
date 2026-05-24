@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = ["auth-token", "auth-oidc", "auth-kubernetes", "storage-fs", "registry-github", "registry-npm", "registry-cargo", "registry-openvsx", "registry-goproxy", "registry-vscode-marketplace", "registry-maven", "registry-terraform", "db-postgres", "local-registry"]
+default = ["auth-token", "auth-oidc", "auth-kubernetes", "storage-fs", "registry-github", "registry-npm", "registry-cargo", "registry-openvsx", "registry-goproxy", "registry-vscode-marketplace", "registry-maven", "registry-terraform", "registry-rubygems", "db-postgres", "local-registry"]
 auth-token = []
 auth-oidc = ["dep:jsonwebtoken"]
 auth-kubernetes = []
@@ -20,6 +20,7 @@ registry-goproxy = []
 registry-vscode-marketplace = []
 registry-maven = []
 registry-terraform = []
+registry-rubygems = ["dep:flate2", "dep:tar"]
 registry-pypi = []
 registry-composer = []
 db-postgres = []
@@ -47,6 +48,8 @@ aws-sdk-s3 = { workspace = true, optional = true, features = ["sigv4a", "http-1x
 aws-config = { workspace = true, optional = true, features = ["default-https-client", "rt-tokio", "credentials-process"] }
 base64 = "0.22"
 sha2 = "0.10"
+flate2 = { version = "1", optional = true }
+tar = { version = "0.4", optional = true }
 rand = "0.8"
 hex = "0.4"
 

@@ -43,3 +43,8 @@ pub use maven::MavenRegistryClient;
 pub mod terraform;
 #[cfg(feature = "registry-terraform")]
 pub use terraform::TerraformRegistryClient;
+
+#[cfg(feature = "registry-rubygems")]
+pub mod rubygems;
+#[cfg(feature = "registry-rubygems")]
+pub use rubygems::RubyGemsRegistryClient;

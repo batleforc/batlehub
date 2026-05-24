@@ -14,7 +14,7 @@ use batlehub_core::{
 
 
 use crate::{RegistryMap, RegistryModeMap, error::AppError, extractors::AuthIdentity};
-use super::common::{collect_payload, proxy_stream, require_local_mode};
+use super::common::{append_signature_headers, collect_payload, extract_signature_headers, proxy_stream, require_local_mode};
 
 // ── Sparse index proxy ────────────────────────────────────────────────────────
 
@@ -212,17 +212,19 @@ pub async fn download_crate(
             .get_artifact(&registry, &name, &version)
             .await
             .map_err(AppError::from)?;
-        return Ok(HttpResponse::Ok()
-            .content_type("application/octet-stream")
-            .body(bytes));
+        let mut resp = HttpResponse::Ok();
+        resp.content_type("application/octet-stream");
+        append_signature_headers(&mut resp, &local_svc, &registry, &name, &version).await;
+        return Ok(resp.body(bytes));
     }
 
     if matches!(mode, RegistryMode::Hybrid) {
         match local_svc.get_artifact(&registry, &name, &version).await {
             Ok(bytes) => {
-                return Ok(HttpResponse::Ok()
-                    .content_type("application/octet-stream")
-                    .body(bytes));
+                let mut resp = HttpResponse::Ok();
+                resp.content_type("application/octet-stream");
+                append_signature_headers(&mut resp, &local_svc, &registry, &name, &version).await;
+                return Ok(resp.body(bytes));
             }
             Err(CoreError::NotFound(_)) => {} // fall through to proxy
             Err(e) => return Err(AppError::from(e)),
@@ -252,6 +254,7 @@ pub async fn download_crate(
 )]
 #[put("/proxy/{registry}/api/v1/crates/new")]
 pub async fn cargo_publish(
+    req: actix_web::HttpRequest,
     path: web::Path<String>,
     payload: web::Payload,
     identity: AuthIdentity,
@@ -296,6 +299,8 @@ pub async fn cargo_publish(
     let index_metadata = serde_json::to_value(&entry)
         .map_err(|e| AppError::bad_request(e.to_string()))?;
 
+    let (signature_bytes, signature_type) = extract_signature_headers(&req);
+
     let quota = local_svc
         .publish(PublishRequest {
             registry,
@@ -305,6 +310,8 @@ pub async fn cargo_publish(
             checksum,
             index_metadata,
             publisher: identity.0.clone(),
+            signature_bytes,
+            signature_type,
         })
         .await
         .map_err(AppError::from)?;
@@ -409,6 +416,21 @@ pub async fn cargo_owners(
 ) -> Result<impl Responder, AppError> {
     let (registry, name) = path.into_inner();
     require_cargo(&registry, &map)?;
+
+    if let Some(ref ownership) = local_svc.ownership {
+        let entries = ownership
+            .list_owners(&registry, &name)
+            .await
+            .map_err(AppError::from)?;
+        let users: Vec<_> = entries
+            .into_iter()
+            .enumerate()
+            .map(|(i, e)| serde_json::json!({ "id": i + 1, "login": e.principal_id, "name": e.principal_id }))
+            .collect();
+        return Ok(HttpResponse::Ok().json(serde_json::json!({ "users": users })));
+    }
+
+    // Fallback: derive from first-published version.
     let versions = local_svc
         .backend
         .get_versions(&registry, &name)

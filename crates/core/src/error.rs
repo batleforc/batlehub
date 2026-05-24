@@ -35,6 +35,9 @@ pub enum CoreError {
     #[error("Quota exceeded: {0}")]
     QuotaExceeded(String),
 
+    #[error("Invalid version: {0}")]
+    InvalidVersion(String),
+
     #[error("Invalid configuration: {0}")]
     Config(String),
 
