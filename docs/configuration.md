@@ -11,9 +11,11 @@ batlehub is configured with a single TOML file. This document covers every optio
 3. [Full Reference](#3-full-reference)
    - [server](#31-server)
    - [database](#32-database)
+   - [cache](#32a-cache)
    - [auth](#33-auth)
    - [storage](#34-storage)
    - [registries](#35-registries)
+     - [rate_limit](#rate_limit)
    - [otel](#36-otel-optional)
 4. [Permissions Reference](#4-permissions-reference)
 5. [Environment Variable Overrides](#5-environment-variable-overrides)
@@ -28,6 +30,8 @@ batlehub is configured with a single TOML file. This document covers every optio
    - [6.8 Private VS Code Extension Registry (local / hybrid mode)](#68-private-vs-code-extension-registry-local--hybrid-mode)
    - [6.9 Private Go Module Proxy (local / hybrid mode)](#69-private-go-module-proxy-local--hybrid-mode)
    - [6.10 Multi-Backend Storage](#610-multi-backend-storage)
+   - [6.11 Terraform Provider Cache](#611-terraform-provider-cache)
+   - [6.12 Rate Limiting — Per-User + Per-Group](#612-rate-limiting)
 7. [CLI Reference](#7-cli-reference)
 8. [User-Generated API Tokens](#8-user-generated-api-tokens)
 9. [Self-Hosted / Private Registries](#9-self-hosted--private-registries)
@@ -92,7 +96,7 @@ curl -H "Authorization: Bearer my-admin-token" http://localhost:8080/...
 
 1. The TOML file at the path given to `--config` is parsed (default: `config.toml` in the working directory).
 2. Environment variables matching `PROXY_CACHE__<SECTION>__<FIELD>` are applied on top of the file values.
-3. The config is validated: registry names must not be empty and registry types must be one of `github`, `npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`, `pypi`, `composer`.
+3. The config is validated: registry names must not be empty and registry types must be one of `github`, `npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, `pypi`, `composer`.
 
 ### Auth evaluation order
 
@@ -139,6 +143,53 @@ max_connections = 10    # default
 | `max_connections` | u32 | `10` | Connection pool size |
 
 The `url` field can be overridden at runtime via `PROXY_CACHE__DATABASE__URL` without touching the config file.
+
+---
+
+### 3.2a `[cache]`
+
+Selects the storage backend for **metadata cache entries** and **rate-limit counters**. Both subsystems share this backend so a single configuration change affects them together.
+
+```toml
+# In-process memory (default — no extra infrastructure required)
+[cache]
+type = "memory"
+
+# PostgreSQL — persistent across restarts, shared across replicas
+[cache]
+type = "postgres"
+
+# Redis — persistent, shared, TTL-based eviction
+[cache]
+type = "redis"
+url  = "redis://localhost:6379"
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `type` | string | `"memory"` | `"memory"`, `"postgres"`, or `"redis"` |
+| `url` | string | — | Redis connection URL; required when `type = "redis"`. Format: `redis://[:<password>@]<host>[:<port>][/<db>]` or `rediss://…` for TLS. |
+
+#### Backend comparison
+
+| Backend | Persistence | Shared across replicas | Extra infra | Best for |
+|---------|:-----------:|:---------------------:|:-----------:|---------|
+| `memory` | No — resets on restart | No | None | Local dev, single-node |
+| `postgres` | Yes | Yes | None (uses the existing `[database]`) | Production, multi-replica |
+| `redis` | Yes | Yes | Redis cluster | High-throughput production |
+
+> **`memory` is the default** and requires no config changes. Switch to `postgres` or `redis` when you run multiple server replicas or when you want rate-limit counters to survive server restarts.
+
+> **Redis feature flag:** The `redis` backend is only compiled when the `cache-redis` feature is enabled. The official Docker image includes it. When building from source, pass `--features cache-redis` to `cargo build`.
+
+#### How each backend is used
+
+**Metadata cache:** Version lists and release metadata returned by upstream registries are stored with a TTL (`metadata_ttl_secs`). The cache backend is consulted on every proxy request before hitting the upstream.
+
+**Rate-limit counters:** Each `increment` call atomically bumps a counter keyed by `rl:{registry}:user:{user_id}` (or `rl:{registry}:group:{group}`) and returns the new count plus the window-reset timestamp:
+- `memory` — Mutex-protected HashMap; each process has its own counters.
+- `postgres` — `INSERT … ON CONFLICT DO UPDATE … RETURNING count`; fully serialisable.
+- `redis` — atomic `INCR` with a conditional `EXPIRE` on first write; TTL-based cleanup.
 
 ---
 
@@ -333,7 +384,7 @@ name = "cargo"
 
 [registries.cache]
 metadata_ttl_secs = 300     # default: 300 (5 minutes)
-artifact_strategy = "permanent"  # default; "ttl" re-checks artifacts after metadata TTL
+# artifact_ttl_secs = 2592000  # optional: re-fetch artifacts older than 30 days
 
 [registries.rbac]
 anonymous = []
@@ -358,7 +409,7 @@ bypass_roles = ["admin"]
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `type` | string | yes | `"github"`, `"npm"`, `"cargo"`, `"openvsx"`, `"vscode-marketplace"`, `"goproxy"`, `"pypi"`, `"composer"` |
+| `type` | string | yes | `"github"`, `"npm"`, `"cargo"`, `"openvsx"`, `"vscode-marketplace"`, `"goproxy"`, `"maven"`, `"terraform"`, `"pypi"`, `"composer"` |
 | `name` | string | yes | Unique identifier; used in proxy URL paths |
 | `mode` | string | no | `"proxy"` (default), `"local"`, or `"hybrid"`. Supported for `cargo`, `npm`, `openvsx`, `vscode-marketplace`, and `goproxy`. See [registry modes](#registry-modes). |
 | `upstreams` | string[] | no | Upstream URLs tried in order on cache miss; 404 from one falls through to the next. Defaults to the registry's built-in URL. Required for `hybrid` mode. |
@@ -444,6 +495,68 @@ Configure the go toolchain to use the proxy:
 export GONOSUMCHECK="*"
 export GONOSUMDB="*"
 export GOPROXY="http://batlehub.example.com/proxy/go,direct"
+```
+
+---
+
+**`maven`** — proxies Maven artifact repositories. Supports `GET` requests for POM files, JARs, source JARs, Javadoc JARs, SHA-1/MD5 checksums, and Maven metadata XML. Compatible with Maven, Gradle, and any tool that speaks the Maven repository protocol. Default upstream: `https://repo1.maven.org/maven2`.
+
+Configure Maven to use the proxy:
+
+```xml
+<!-- ~/.m2/settings.xml -->
+<settings>
+  <mirrors>
+    <mirror>
+      <id>batlehub</id>
+      <mirrorOf>central</mirrorOf>
+      <url>http://batlehub.example.com/proxy/maven</url>
+    </mirror>
+  </mirrors>
+</settings>
+```
+
+Configure Gradle to use the proxy:
+
+```kotlin
+// settings.gradle.kts
+dependencyResolutionManagement {
+    repositories {
+        maven { url = uri("http://batlehub.example.com/proxy/maven") }
+    }
+}
+```
+
+---
+
+**`terraform`** — proxies the Terraform provider and module registry protocol. Supports provider version listing, provider download info (binary URL + checksums), module version listing, and module source download. Default upstream: `https://registry.terraform.io`.
+
+| Endpoint proxied | Description |
+|---|---|
+| `GET /v1/providers/{namespace}/{type}/versions` | Provider version list (JSON, cached) |
+| `GET /v1/providers/{namespace}/{type}/{version}/download/{os}/{arch}` | Provider download info JSON with binary URL and checksums (cached) |
+| `GET /v1/modules/{namespace}/{name}/{provider}/versions` | Module version list (JSON, cached) |
+| `GET /v1/modules/{namespace}/{name}/{provider}/{version}/download` | Module source download (`204 + X-Terraform-Get`, **not cached** — passthrough) |
+
+> **Module download passthrough:** The module download endpoint returns a `204 No Content` response with an `X-Terraform-Get` header pointing to the archive URL. BatleHub passes this through directly to the upstream registry without caching. To fully cache module archives, point the proxy at an internal mirror that serves archives from a stable URL.
+
+Configure the Terraform CLI to use the proxy for providers:
+
+```hcl
+# ~/.terraformrc  (or %APPDATA%/terraform.rc on Windows)
+provider_installation {
+  network_mirror {
+    url = "http://batlehub.example.com/proxy/terraform/"
+  }
+}
+```
+
+For modules, reference the proxy host in `source`:
+
+```hcl
+module "consul" {
+  source = "batlehub.example.com/proxy/terraform/hashicorp/consul/aws"
+}
 ```
 
 ---
@@ -604,6 +717,80 @@ ca_cert_path = "/etc/ssl/corp-ca.pem"
 | `ca_cert_path` | string | no | Path to a PEM-encoded CA certificate to add as a trusted root for this registry's upstream connections |
 
 > The certificate is loaded once at startup. To rotate a CA certificate, restart the server.
+
+---
+
+#### `[registries.rate_limit]` {#rate_limit}
+
+Per-registry rate limiting using a **fixed-window counter** algorithm. Limits are tracked per authenticated user (by `user_id`) or per client IP for anonymous requests.
+
+Counters are stored in the **cache backend** selected by `[cache]`:
+- `type = "memory"` (default) — counters are per-process; they reset on restart and are **not** shared across multiple server replicas.
+- `type = "postgres"` or `type = "redis"` — counters survive restarts and are shared across all replicas, making the limit consistent across a load-balanced cluster.
+
+```toml
+[registries.rate_limit]
+requests_per_window = 100
+window_secs         = 60
+enforcement         = "block"   # "block" (default) or "warn"
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `requests_per_window` | u32 | — | Maximum number of requests allowed within `window_secs` |
+| `window_secs` | u32 | — | Length of the sliding window in seconds |
+| `enforcement` | string | `"block"` | `"block"` returns HTTP 429; `"warn"` allows the request but adds `X-RateLimit-Warning` |
+
+**Response headers:**
+
+| Header | When added | Description |
+|---|---|---|
+| `X-RateLimit-Limit` | Every proxied response (when configured) | The effective limit that bound this request |
+| `Retry-After` | 429 responses (block mode) | Seconds until the bucket refills |
+| `X-RateLimit-Reset` | 429 responses (block mode) | Unix timestamp when the bucket refills |
+| `X-RateLimit-Warning: rate-limit-exceeded` | Over-limit responses (warn mode) | Signals the limit was exceeded but the request was allowed |
+
+##### Per-group rate limits {#per_group_rate_limits}
+
+All members of a named group share a single request pool. Group names are matched against the strings in the authenticated identity's `groups` list, which are namespaced by auth provider: `"oidc:<group>"`, `"kubernetes:<group>"`, etc.
+
+```toml
+[registries.rate_limit]
+requests_per_window = 100
+window_secs         = 60
+enforcement         = "block"
+
+# CI bots share a single 5000 req/min pool across all members:
+[[registries.rate_limit.groups]]
+name                = "oidc:ci-bots"
+requests_per_window = 5000
+window_secs         = 60
+# enforcement = "block"   # optional; inherits parent enforcement when omitted
+
+# Free-tier users share a more restrictive 200 req/min pool:
+[[registries.rate_limit.groups]]
+name                = "oidc:free-tier"
+requests_per_window = 200
+window_secs         = 60
+```
+
+`[[registries.rate_limit.groups]]` fields:
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `name` | string | yes | Exact match against an entry in `Identity.groups` (e.g. `"oidc:ci-bots"`) |
+| `requests_per_window` | u32 | yes | Shared pool size for **all** members of this group combined |
+| `window_secs` | u32 | yes | Window length in seconds |
+| `enforcement` | string | no | Overrides the parent `enforcement` for this group only; defaults to the parent value when omitted |
+
+**Multi-limiter semantics:** both the per-user bucket and every applicable group bucket must have tokens for a request to proceed. If any bucket is exhausted:
+- In `block` mode: the request is rejected with HTTP 429. The `Retry-After` and `X-RateLimit-Reset` headers reflect the longest wait among all exhausted buckets.
+- In `warn` mode: the request is allowed and `X-RateLimit-Warning` is added to the response.
+- If different buckets have different enforcement modes, `block` takes precedence over `warn`.
+
+> **Multi-instance deployments:** Set `[cache] type = "postgres"` or `type = "redis"` to share rate-limit counters across all server replicas. With the default `type = "memory"`, each replica maintains its own independent counters and the effective per-user limit is `requests_per_window × replica_count`.
+
+> **Fail-open behaviour:** If the cache backend is unreachable when a counter needs to be incremented, the request is **allowed** rather than rejected. A `WARN` log entry (`rate-limit store unavailable … failing open`) is emitted for each affected bucket. Monitor for these warnings to detect backend outages.
 
 ---
 
@@ -1342,6 +1529,91 @@ admin = ["*"]
 
 ---
 
+### 6.11 Terraform Provider Cache {#611-terraform-provider-cache}
+
+Cache Terraform provider binaries locally so `terraform init` doesn't hit `registry.terraform.io` on every CI run.
+
+```toml
+[[registries]]
+type = "terraform"
+name = "terraform"
+# upstreams defaults to ["https://registry.terraform.io"]
+
+[registries.rbac]
+anonymous = []
+user      = ["releases:read", "source:read"]
+admin     = ["*"]
+
+[registries.cache]
+metadata_ttl_secs = 300   # re-check version lists every 5 min
+# artifact_ttl_secs not set — provider binaries are cached forever
+```
+
+Configure each developer's or CI runner's Terraform CLI:
+
+```hcl
+# ~/.terraformrc  (or %APPDATA%/terraform.rc on Windows)
+# CI: write this file during pipeline setup
+provider_installation {
+  network_mirror {
+    url = "https://batlehub.example.com/proxy/terraform/"
+  }
+}
+```
+
+After the first `terraform init`, subsequent runs use the locally cached binaries. Provider checksums are cached alongside the download metadata, so Terraform's checksum verification still passes.
+
+---
+
+### 6.12 Rate Limiting — Per-User + Per-Group {#612-rate-limiting}
+
+Protect a public-facing npm registry: each user gets 200 requests per minute; CI bot group members share a higher 2000 req/min pool; free-tier group is limited to 50 req/min.
+
+```toml
+[[registries]]
+type = "npm"
+name = "npm"
+
+[registries.rbac]
+anonymous = []
+user      = ["releases:read", "source:read"]
+admin     = ["*"]
+
+[registries.rate_limit]
+requests_per_window = 200    # per authenticated user
+window_secs         = 60
+enforcement         = "block"
+
+# CI bots share a single 2000/min pool across all members:
+[[registries.rate_limit.groups]]
+name                = "oidc:ci-bots"
+requests_per_window = 2000
+window_secs         = 60
+
+# Free-tier users share a stricter 50/min pool:
+[[registries.rate_limit.groups]]
+name                = "oidc:free-tier"
+requests_per_window = 50
+window_secs         = 60
+enforcement         = "warn"   # warn instead of block for free-tier
+```
+
+A CI bot that belongs to `oidc:ci-bots` consumes one token from both its personal 200/min bucket and the shared `oidc:ci-bots` 2000/min bucket on each request. If either is exhausted, the request is blocked (or warned, per the per-group enforcement override).
+
+Response when a user exceeds their limit:
+
+```
+HTTP/1.1 429 Too Many Requests
+X-RateLimit-Limit: 200
+Retry-After: 42
+X-RateLimit-Reset: 1716556842
+Content-Type: application/json
+
+{"error":"rate limit exceeded","retry_after_secs":42}
+```
+
+---
+
 ## 7. CLI Reference
 
 ```
@@ -1432,7 +1704,7 @@ ca_cert_path = "/etc/ssl/corp-ca.pem"
 
 ### Supported registry types
 
-All registry types support `upstream_auth` and `tls`: `github`, `npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`. For `cargo`, the sparse index proxy (the `index_url` endpoint) also uses the same credentials and TLS settings.
+All registry types support `upstream_auth` and `tls`: `github`, `npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`. For `cargo`, the sparse index proxy (the `index_url` endpoint) also uses the same credentials and TLS settings.
 
 ### Secret management
 

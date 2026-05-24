@@ -247,15 +247,14 @@ impl ProxyService {
 
         let artifact_ttl = self.policies.get(registry_name).and_then(|p| p.artifact_ttl);
         let cached_artifact_is_fresh = if self.storage.exists(&artifact_key).await? {
-            // When an artifact TTL is set, check the stored timestamp.
+            // When an artifact TTL is set, do a point-lookup for this specific key.
             if let Some(ttl) = artifact_ttl {
                 match chrono::Duration::from_std(ttl) {
                     Ok(d) => {
-                        let meta = self.artifact_meta.list_expired_by_ttl(
-                            registry_name,
-                            Utc::now() - d,
-                        ).await?;
-                        !meta.iter().any(|m| m.artifact_key == artifact_key)
+                        let expired = self.artifact_meta
+                            .is_artifact_expired(&artifact_key, Utc::now() - d)
+                            .await?;
+                        !expired
                     }
                     Err(e) => {
                         // TTL is larger than chrono's range (≥292 years); treat as "never expire".
@@ -429,6 +428,7 @@ mod tests {
         async fn list_artifacts(&self, _registry: &str) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
         async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
         async fn delete_artifact_meta(&self, _key: &str) -> Result<(), CoreError> { Ok(()) }
+        async fn is_artifact_expired(&self, _key: &str, _older_than: chrono::DateTime<chrono::Utc>) -> Result<bool, CoreError> { Ok(false) }
         async fn list_expired_by_ttl(&self, _registry: &str, _older_than: chrono::DateTime<chrono::Utc>) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
         async fn list_idle(&self, _registry: &str, _idle_since: chrono::DateTime<chrono::Utc>) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
         async fn total_size_bytes(&self, _registry: &str) -> Result<u64, CoreError> { Ok(0) }
@@ -473,6 +473,20 @@ mod tests {
         async fn list_artifacts(&self, _: &str) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
         async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
         async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> { Ok(()) }
+        async fn is_artifact_expired(&self, key: &str, older_than: chrono::DateTime<chrono::Utc>) -> Result<bool, CoreError> {
+            // If the key has been "recorded" (has metadata) and is NOT explicitly in the
+            // expired list, treat it as fresh.  If no metadata has been recorded, treat
+            // it as expired (matches PgArtifactMetaRepository semantics: missing row → expired).
+            let recorded = self.recorded.lock().unwrap();
+            let expired = self.expired.lock().unwrap();
+            let has_meta = recorded.contains(&key.to_owned())
+                || expired.iter().any(|m| m.artifact_key == key);
+            if !has_meta {
+                return Ok(true);
+            }
+            let is_expired = expired.iter().any(|m| m.artifact_key == key && m.cached_at < older_than);
+            Ok(is_expired)
+        }
         async fn list_expired_by_ttl(&self, _: &str, _: chrono::DateTime<chrono::Utc>) -> Result<Vec<ArtifactMeta>, CoreError> {
             Ok(self.expired.lock().unwrap().clone())
         }
@@ -1199,8 +1213,11 @@ mod tests {
         let artifact_key = format!("artifact:{}", pkg.cache_key());
         storage.store(&artifact_key, Bytes::from("cached!"), StorageMeta::default()).await.unwrap();
 
-        // SpyArtifactMeta returns empty expired list → artifact is considered fresh
+        // Pre-seed the artifact metadata to simulate a previous record_artifact call.
+        // Without this, is_artifact_expired treats the missing row as expired (correct
+        // production behavior) and the proxy re-fetches instead of serving from cache.
         let spy_meta = SpyArtifactMeta::new();
+        spy_meta.record_artifact(&artifact_key, "npm", "test-pkg", "1.0.0", None).await.unwrap();
         let mut registries = HashMap::new();
         registries.insert("npm".to_owned(), Arc::new(FixedRegistry) as Arc<dyn RegistryClient>);
         let mut policies = HashMap::new();

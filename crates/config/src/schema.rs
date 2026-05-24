@@ -45,7 +45,7 @@ impl AppConfig {
             }
             match registry.registry_type.as_str() {
                 "github" | "cargo" | "npm" | "openvsx" | "goproxy" | "pypi" | "composer"
-                | "vscode-marketplace" | "maven" => {}
+                | "vscode-marketplace" | "maven" | "terraform" => {}
                 other => bail!("unknown registry type: '{other}'"),
             }
             if matches!(registry.mode, RegistryMode::Local | RegistryMode::Hybrid)
@@ -454,6 +454,9 @@ pub struct RegistryConfig {
     /// Optional publish quota enforced on local/hybrid registries.
     #[serde(default)]
     pub quota: Option<QuotaConfig>,
+    /// Optional per-user request rate limit for this registry.
+    #[serde(default)]
+    pub rate_limit: Option<RateLimitConfig>,
 }
 
 // ── Quota management ──────────────────────────────────────────────────────────
@@ -495,6 +498,74 @@ pub struct QuotaConfig {
 }
 
 fn default_warn_pct() -> u8 { 80 }
+
+// ── Rate limiting ─────────────────────────────────────────────────────────────
+
+/// How to enforce rate-limit violations.
+#[derive(Debug, Deserialize, Default, Clone, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RateLimitEnforcement {
+    /// Reject requests that exceed the rate limit with HTTP 429.
+    #[default]
+    Block,
+    /// Allow the request but include a warning header in the response.
+    Warn,
+}
+
+/// Per-registry request rate limiting.
+///
+/// Example TOML:
+/// ```toml
+/// [registries.rate_limit]
+/// requests_per_window = 100
+/// window_secs         = 60
+/// enforcement         = "block"
+///
+/// [[registries.rate_limit.groups]]
+/// name                = "ci-bots"
+/// requests_per_window = 5000   # shared pool for all ci-bots members combined
+/// window_secs         = 60
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct RateLimitConfig {
+    /// Maximum number of requests a single user (or IP for anonymous) may make within the window.
+    pub requests_per_window: u32,
+    /// Length of the sliding window in seconds.
+    pub window_secs: u32,
+    /// Whether to hard-block (429) or just warn on rate-limit overrun.
+    #[serde(default)]
+    pub enforcement: RateLimitEnforcement,
+    /// Optional per-group rate limits. Each entry defines a shared request pool for all
+    /// members of the named group. A user's request is checked against both their personal
+    /// bucket and every group bucket they belong to; all must have tokens available.
+    #[serde(default)]
+    pub groups: Vec<GroupRateLimitConfig>,
+}
+
+/// A shared request pool for all members of a named group.
+///
+/// The `name` is matched against the namespaced group strings in `Identity.groups`
+/// (e.g. `"oidc:ci-bots"` or `"*:ci-bots"` for a wildcard provider prefix).
+///
+/// Example TOML:
+/// ```toml
+/// [[registries.rate_limit.groups]]
+/// name                = "oidc:ci-bots"
+/// requests_per_window = 5000
+/// window_secs         = 60
+/// enforcement         = "block"   # optional; inherits parent enforcement when omitted
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct GroupRateLimitConfig {
+    /// Group name to match against `Identity.groups` (exact string match).
+    pub name: String,
+    /// Maximum requests the entire group may collectively make within the window.
+    pub requests_per_window: u32,
+    /// Length of the sliding window in seconds.
+    pub window_secs: u32,
+    /// Override enforcement for this group. Inherits the parent `enforcement` when absent.
+    pub enforcement: Option<RateLimitEnforcement>,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]

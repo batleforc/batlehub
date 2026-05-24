@@ -38,3 +38,8 @@ pub use vscode_marketplace::VsCodeMarketplaceRegistryClient;
 pub mod maven;
 #[cfg(feature = "registry-maven")]
 pub use maven::MavenRegistryClient;
+
+#[cfg(feature = "registry-terraform")]
+pub mod terraform;
+#[cfg(feature = "registry-terraform")]
+pub use terraform::TerraformRegistryClient;

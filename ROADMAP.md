@@ -15,7 +15,7 @@ Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules.
 - [ ] **RubyGems** — gem downloads and version listing
 - [ ] **NuGet** — .NET package protocol
 - [ ] **Deb / RPM** — Debian APT and Red Hat YUM repository proxying
-- [ ] **Terraform registry** — provider and module proxy protocol
+- [x] **Terraform registry** — provider and module proxy protocol
 - [ ] **GitLab releases and packages** — similar to GitHub but with different auth and pagination
 - [ ] **Forgejo releases and packages** — Gitea fork with minor API differences
 
@@ -60,9 +60,10 @@ Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules.
 
 ## Rate limiting & DoS protection
 
-- [ ] Per-user, per-group, and per-registry rate limits on API requests and artifact downloads, with configurable thresholds and time windows
-- [ ] Configurable enforcement policies: hard block vs. soft warn when a limit is reached
-- [ ] Explicit rate-limit warnings in API responses (`Retry-After`, `X-RateLimit-*` headers) and in the UI
+- [x] Per-user and per-registry rate limits on API requests and artifact downloads, with configurable thresholds and time windows (in-memory token bucket; state resets on restart)
+- [x] Configurable enforcement policies: hard block vs. soft warn when a limit is reached
+- [x] Explicit rate-limit warnings in API responses (`Retry-After`, `X-RateLimit-*` headers)
+- [x] Per-group rate limits (shared token-bucket pools per OIDC/Kubernetes group; enforcement override per group)
 - [ ] IP-based blocking for abusive clients, with configurable block duration and thresholds
 - [ ] Integration with external IP reputation services to automatically block known malicious IPs
 

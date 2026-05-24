@@ -24,7 +24,7 @@ use batlehub_adapters::{
     registry::{
         CargoRegistryClient, FanoutRegistryClient, GoProxyRegistryClient, GithubRegistryClient,
         MavenRegistryClient, NpmRegistryClient, OpenVsxRegistryClient,
-        VsCodeMarketplaceRegistryClient, UpstreamHttpOptions,
+        TerraformRegistryClient, VsCodeMarketplaceRegistryClient, UpstreamHttpOptions,
     },
     storage::{FilesystemStorageBackend, StorageRouter},
 };
@@ -35,9 +35,12 @@ use batlehub_config::{
 use batlehub_adapters::cache::{InMemoryCacheStore, PgCacheStore};
 #[cfg(feature = "cache-redis")]
 use batlehub_adapters::cache::RedisCacheStore;
+use batlehub_adapters::rate_limit::{InMemoryRateLimitStore, PgRateLimitStore};
+#[cfg(feature = "cache-redis")]
+use batlehub_adapters::rate_limit::RedisRateLimitStore;
 use batlehub_core::{
     entities::Role,
-    ports::{AuthProvider, CacheStore, UserTokenRepository},
+    ports::{AuthProvider, CacheStore, RateLimitStore, UserTokenRepository},
     rules::{BlockListRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule},
     services::{
         AdminService, LocalRegistryService, ProxyMetrics, ProxyService, QuotaEnforcement,
@@ -45,7 +48,7 @@ use batlehub_core::{
     },
 };
 use batlehub_core::services::WarmingService;
-use batlehub_web::{configure_app, healthz, openapi_spec, prometheus_metrics, AccessConfig, ApiDoc, CargoIndexProxy, RegistryMap, RegistryModeMap, UpstreamMap};
+use batlehub_web::{configure_app, healthz, openapi_spec, prometheus_metrics, AccessConfig, ApiDoc, CargoIndexProxy, RegistryMap, RegistryModeMap, RateLimitMiddlewareFactory, RateLimitService, UpstreamMap};
 use batlehub_web::handlers::back_office::warming::WarmingServiceMap;
 use metrics_exporter_prometheus::PrometheusBuilder;
 
@@ -294,6 +297,14 @@ async fn main() -> Result<()> {
             };
             npm_upstream_map.insert(reg.name.clone(), first_url);
         }
+        if reg.registry_type == "terraform" {
+            let first_url = if reg.upstreams.is_empty() {
+                "https://registry.terraform.io".to_owned()
+            } else {
+                reg.upstreams[0].clone()
+            };
+            npm_upstream_map.insert(reg.name.clone(), first_url);
+        }
 
         // Proxy and Hybrid modes need an upstream sparse index; Local mode does not.
         if reg.registry_type == "cargo" && !matches!(reg.mode, RegistryMode::Local) {
@@ -305,6 +316,43 @@ async fn main() -> Result<()> {
 
     let upstream_map = UpstreamMap(npm_upstream_map);
     let registry_mode_map = RegistryModeMap(registry_mode_map_inner);
+
+    // ── Rate limiting ──────────────────────────────────────────────────────────
+    let rate_limit_configs: std::collections::HashMap<String, batlehub_config::schema::RateLimitConfig> = config
+        .registries
+        .iter()
+        .filter_map(|r| r.rate_limit.clone().map(|rl| (r.name.clone(), rl)))
+        .collect();
+    let rate_limit_store: Arc<dyn RateLimitStore> = match config.cache.cache_type.as_str() {
+        "postgres" => {
+            tracing::info!("rate limit store: postgres");
+            Arc::new(PgRateLimitStore::new(repo.pool()))
+        }
+        "redis" => {
+            #[cfg(feature = "cache-redis")]
+            {
+                let url = config.cache.url.as_deref().unwrap_or("redis://127.0.0.1:6379");
+                tracing::info!(url, "rate limit store: redis");
+                Arc::new(
+                    RedisRateLimitStore::new(url)
+                        .await
+                        .context("connecting to Redis rate limit store")?,
+                )
+            }
+            #[cfg(not(feature = "cache-redis"))]
+            {
+                tracing::warn!("compiled without cache-redis feature; falling back to in-memory rate limit store");
+                Arc::new(InMemoryRateLimitStore::new())
+            }
+        }
+        other => {
+            if other != "memory" {
+                tracing::warn!(cache_type = %other, "unknown cache type for rate limit store, falling back to memory");
+            }
+            Arc::new(InMemoryRateLimitStore::new())
+        }
+    };
+    let rate_limit_svc = Arc::new(RateLimitService::new(&rate_limit_configs, rate_limit_store));
 
     // ── Services ──────────────────────────────────────────────────────────────
     let registry_names: Vec<String> = config.registries.iter().map(|r| r.name.clone()).collect();
@@ -459,7 +507,10 @@ async fn main() -> Result<()> {
             cors_allowed_origins.iter().fold(cors_base, |c, origin| c.allowed_origin(origin))
         };
 
+        // Middleware runs in reverse registration order (last-registered = outermost = first to run).
+        // Correct chain: cors → auth (sets Identity) → rate_limit (reads Identity) → tracing → handler
         app.wrap(TracingLogger::<BatleHubSpanBuilder>::new())
+            .wrap(RateLimitMiddlewareFactory::new(rate_limit_svc.clone()))
             .wrap(batlehub_web::AuthMiddlewareFactory::new(
                 auth_providers.clone(),
             ))
@@ -576,6 +627,7 @@ fn build_registry_client(reg: &RegistryConfig) -> anyhow::Result<Arc<dyn batlehu
             "goproxy" => Arc::new(GoProxyRegistryClient::new(url, opts)?),
             "vscode-marketplace" => Arc::new(VsCodeMarketplaceRegistryClient::new(url, opts)?),
             "maven" => Arc::new(MavenRegistryClient::new(url, opts)?),
+            "terraform" => Arc::new(TerraformRegistryClient::new(url, opts)?),
             other => anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in"),
         };
         Ok(client)
@@ -591,6 +643,7 @@ fn build_registry_client(reg: &RegistryConfig) -> anyhow::Result<Arc<dyn batlehu
         "goproxy" => resolve_urls(&reg.upstreams, "https://proxy.golang.org"),
         "vscode-marketplace" => resolve_urls(&reg.upstreams, "https://marketplace.visualstudio.com"),
         "maven" => resolve_urls(&reg.upstreams, "https://repo1.maven.org/maven2"),
+        "terraform" => resolve_urls(&reg.upstreams, "https://registry.terraform.io"),
         other => anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in"),
     };
 

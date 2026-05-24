@@ -248,6 +248,7 @@ mod tests {
         async fn list_artifacts(&self, _: &str) -> Result<Vec<ArtifactMeta>, CoreError> { panic!("should not be called") }
         async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> { panic!("should not be called") }
         async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> { panic!("should not be called") }
+        async fn is_artifact_expired(&self, _: &str, _: chrono::DateTime<Utc>) -> Result<bool, CoreError> { panic!("should not be called") }
         async fn list_expired_by_ttl(&self, _: &str, _: chrono::DateTime<Utc>) -> Result<Vec<ArtifactMeta>, CoreError> { panic!("should not be called") }
         async fn list_idle(&self, _: &str, _: chrono::DateTime<Utc>) -> Result<Vec<ArtifactMeta>, CoreError> { panic!("should not be called") }
         async fn total_size_bytes(&self, _: &str) -> Result<u64, CoreError> { panic!("should not be called") }

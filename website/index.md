@@ -32,6 +32,9 @@ features:
   - icon: 🔀
     title: Multi-Upstream Fanout
     details: List multiple upstreams per registry. A 404 from one automatically falls through to the next — no single point of failure.
+  - icon: 🚦
+    title: Distributed Rate Limiting
+    details: Fixed-window per-user and per-group rate limits. Back counters with InMemory, PostgreSQL, or Redis — shared limits survive restarts and scale across replicas.
   - icon: 📊
     title: OpenTelemetry
     details: Optional distributed tracing via OTLP/gRPC. Works out of the box with Jaeger, Tempo, or any OTLP-compatible backend.

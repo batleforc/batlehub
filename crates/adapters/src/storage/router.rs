@@ -169,40 +169,88 @@ impl StorageBackend for StorageRouter {
         let backend_name = self.backend_name_for_key(key).to_owned();
         let backend = self.resolve_backend(&backend_name).clone();
 
-        // Insert / increment ref count in the dedup index.
-        let ref_count: i32 = sqlx::query_scalar(
-            r#"
-            INSERT INTO artifact_dedup_index (content_hash, content_key, ref_count, size_bytes)
-            VALUES ($1, $2, 1, $3)
-            ON CONFLICT (content_hash) DO UPDATE
-                SET ref_count = artifact_dedup_index.ref_count + 1
-            RETURNING ref_count
-            "#,
-        )
-        .bind(&content_hash)
-        .bind(&content_key)
-        .bind(size.map(|s| s as i64))
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| CoreError::Storage(format!("dedup index upsert failed: {e}")))?;
+        // Atomically update the dedup tables inside a single transaction so that a
+        // failed refs insert can never leave an orphaned ref-count increment.
+        let mut tx = self.pool.begin().await
+            .map_err(|e| CoreError::Storage(format!("failed to begin transaction: {e}")))?;
 
-        // Map the logical artifact key → content hash.
-        let _ = sqlx::query(
-            r#"
-            INSERT INTO artifact_dedup_refs (logical_key, content_hash)
-            VALUES ($1, $2)
-            ON CONFLICT (logical_key) DO UPDATE SET content_hash = EXCLUDED.content_hash
-            "#,
+        // Check whether this logical key already maps to a content hash.  A
+        // re-store of identical bytes for the same key must NOT increment ref_count.
+        let existing_hash: Option<String> = sqlx::query_scalar(
+            "SELECT content_hash FROM artifact_dedup_refs WHERE logical_key = $1 FOR UPDATE",
         )
         .bind(key)
-        .bind(&content_hash)
-        .execute(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
-        .inspect_err(|e| tracing::warn!(error = %e, key, "failed to insert dedup_refs"));
+        .map_err(|e| CoreError::Storage(e.to_string()))?;
 
-        // Write physical bytes only for the first reference (new content hash).
-        if ref_count == 1 {
-            backend.store(&content_key, data, meta).await?;
+        if existing_hash.as_deref() == Some(content_hash.as_str()) {
+            // Identical bytes re-stored under the same key — nothing to do in the DB.
+            tx.rollback().await.ok();
+        } else {
+            // Decrement ref count for the previous hash if the key is being replaced.
+            if let Some(old_hash) = &existing_hash {
+                let old_count: i32 = sqlx::query_scalar(
+                    "UPDATE artifact_dedup_index SET ref_count = ref_count - 1 \
+                     WHERE content_hash = $1 RETURNING ref_count",
+                )
+                .bind(old_hash)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| CoreError::Storage(e.to_string()))?;
+
+                if old_count <= 0 {
+                    sqlx::query("DELETE FROM artifact_dedup_index WHERE content_hash = $1")
+                        .bind(old_hash)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| CoreError::Storage(e.to_string()))?;
+                }
+            }
+
+            // Increment (or insert) ref count for the new hash.
+            let count: i32 = sqlx::query_scalar(
+                r#"
+                INSERT INTO artifact_dedup_index (content_hash, content_key, ref_count, size_bytes)
+                VALUES ($1, $2, 1, $3)
+                ON CONFLICT (content_hash) DO UPDATE
+                    SET ref_count = artifact_dedup_index.ref_count + 1
+                RETURNING ref_count
+                "#,
+            )
+            .bind(&content_hash)
+            .bind(&content_key)
+            .bind(size.map(|s| s as i64))
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| CoreError::Storage(format!("dedup index upsert failed: {e}")))?;
+
+            // Map logical key → content hash (propagate errors instead of silently dropping).
+            sqlx::query(
+                r#"
+                INSERT INTO artifact_dedup_refs (logical_key, content_hash)
+                VALUES ($1, $2)
+                ON CONFLICT (logical_key) DO UPDATE SET content_hash = EXCLUDED.content_hash
+                "#,
+            )
+            .bind(key)
+            .bind(&content_hash)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| CoreError::Storage(format!("dedup refs insert failed: {e}")))?;
+
+            // Write the physical blob while the transaction is still open.  Doing
+            // this before commit ensures a backend failure causes a full rollback
+            // rather than leaving orphaned dedup rows that point to a missing blob.
+            if count == 1 {
+                if let Err(e) = backend.store(&content_key, data, meta).await {
+                    let _ = tx.rollback().await;
+                    return Err(e);
+                }
+            }
+
+            tx.commit().await
+                .map_err(|e| CoreError::Storage(e.to_string()))?;
         }
 
         // Keep the legacy artifact_storage record for routing and size queries.
@@ -252,13 +300,16 @@ impl StorageBackend for StorageRouter {
         // ── Dedup path ────────────────────────────────────────────────────────
         let dedup_row = sqlx::query(
             r#"
-            SELECT dr.content_hash, di.content_key
+            SELECT dr.content_hash, di.content_key,
+                   COALESCE(ast.backend_name, $2) AS backend_name
             FROM artifact_dedup_refs dr
             JOIN artifact_dedup_index di USING (content_hash)
+            LEFT JOIN artifact_storage ast ON ast.storage_key = dr.logical_key
             WHERE dr.logical_key = $1
             "#,
         )
         .bind(key)
+        .bind(&self.default_name)
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| CoreError::Storage(e.to_string()))?;
@@ -268,6 +319,11 @@ impl StorageBackend for StorageRouter {
             let content_hash: String = row.try_get("content_hash")
                 .map_err(|e| CoreError::Storage(e.to_string()))?;
             let content_key: String = row.try_get("content_key")
+                .map_err(|e| CoreError::Storage(e.to_string()))?;
+            // Use the backend that actually holds the physical blob, not the one
+            // derived from the logical key's registry prefix (they may differ when
+            // two registries share content via deduplication).
+            let blob_backend_name: String = row.try_get("backend_name")
                 .map_err(|e| CoreError::Storage(e.to_string()))?;
 
             let mut tx = self.pool.begin().await
@@ -301,8 +357,7 @@ impl StorageBackend for StorageRouter {
 
             // Delete physical blob when no more references.
             if new_ref_count <= 0 {
-                let backend_name = self.backend_name_for_key(key);
-                let backend = self.resolve_backend(backend_name);
+                let backend = self.resolve_backend(&blob_backend_name);
                 let _ = backend.delete(&content_key).await
                     .inspect_err(|e| tracing::warn!(error = %e, key = %content_key, "failed to delete physical blob"));
             }

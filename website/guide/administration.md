@@ -250,6 +250,8 @@ Then open `http://localhost:16686` for the Jaeger UI.
 
 ## Cache policy {#cache-policy}
 
+For a full explanation of how caching works end-to-end — request lifecycle, backend selection, rate-limit counters, deduplication — see the dedicated **[Caching guide](/guide/caching)**.
+
 All cache settings live under `[registries.cache]` and are per-registry.
 
 ### Eviction

@@ -344,6 +344,13 @@ mod tests {
             Ok(())
         }
 
+        async fn is_artifact_expired(&self, key: &str, older_than: DateTime<Utc>) -> Result<bool, CoreError> {
+            let rows = self.rows.lock().unwrap();
+            // No row → treat as expired (matches PgArtifactMetaRepository semantics).
+            let fresh = rows.iter().any(|r| r.artifact_key == key && r.cached_at >= older_than);
+            Ok(!fresh)
+        }
+
         async fn list_expired_by_ttl(&self, registry: &str, older_than: DateTime<Utc>) -> Result<Vec<ArtifactMeta>, CoreError> {
             let rows = self.rows.lock().unwrap();
             Ok(rows.iter()

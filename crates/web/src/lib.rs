@@ -276,6 +276,8 @@ pub use handlers::healthz::healthz;
 pub use handlers::metrics::prometheus_metrics;
 pub use handlers::proxy::cargo::CargoIndexProxy;
 pub use middleware::AuthMiddlewareFactory;
+pub use middleware::RateLimitMiddlewareFactory;
+pub use middleware::RateLimitService;
 
 #[derive(OpenApi)]
 #[openapi(
@@ -284,8 +286,9 @@ pub use middleware::AuthMiddlewareFactory;
         (name = "proxy/npm",      description = "npm proxy — packuments, version metadata, tarballs"),
         (name = "proxy/cargo",    description = "Cargo proxy — sparse index, crate metadata, .crate downloads"),
         (name = "proxy/openvsx",  description = "OpenVSX proxy — VS Code extension metadata and VSIX packages"),
-        (name = "proxy/goproxy",  description = "Go module proxy — version info, go.mod, and zip downloads"),
-        (name = "front-office",   description = "User-facing package information"),
+        (name = "proxy/goproxy",    description = "Go module proxy — version info, go.mod, and zip downloads"),
+        (name = "proxy/terraform",  description = "Terraform registry — provider and module proxy"),
+        (name = "front-office",     description = "User-facing package information"),
         (name = "back-office",    description = "Admin management (requires Admin role)"),
     ),
     modifiers(&SecurityAddon),
@@ -344,6 +347,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             openvsx::{download_vsix, vsix_publish},
             goproxy::{goproxy_file, goproxy_latest, goproxy_list, goproxy_publish},
             maven::maven_get,
+            terraform::{tf_module_download, tf_module_versions, tf_provider_download, tf_provider_versions},
         },
     };
 
@@ -380,6 +384,13 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(goproxy_file);
     // Maven (literal "maven2" segment — must precede generic catch-all routes)
     cfg.service(maven_get);
+    // Terraform (literal "v1/providers" and "v1/modules" segments — must precede generic routes)
+    // module download (most specific — has extra /download suffix) before module versions
+    cfg.service(tf_module_download);
+    cfg.service(tf_module_versions);
+    // provider download (has extra /download/{os}/{arch}) before provider versions
+    cfg.service(tf_provider_download);
+    cfg.service(tf_provider_versions);
     // OpenVSX/VSCode VSIX publish (PUT) and download (GET) — same path, different method
     cfg.service(vsix_publish);
     cfg.service(download_vsix);

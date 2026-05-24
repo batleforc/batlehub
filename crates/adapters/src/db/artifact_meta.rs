@@ -89,6 +89,25 @@ impl ArtifactMetaRepository for PgArtifactMetaRepository {
         Ok(())
     }
 
+    async fn is_artifact_expired(
+        &self,
+        key: &str,
+        older_than: DateTime<Utc>,
+    ) -> Result<bool, CoreError> {
+        // Returns true when: (a) the artifact IS expired, or (b) no metadata row exists.
+        // Case (b) covers artifacts written before the artifact_cache_meta migration was applied;
+        // treating them as expired forces a re-fetch rather than serving them stale forever.
+        let fresh: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM artifact_cache_meta WHERE artifact_key = $1 AND cached_at >= $2)",
+        )
+        .bind(key)
+        .bind(older_than)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| CoreError::Database(e.to_string()))?;
+        Ok(!fresh)
+    }
+
     async fn list_expired_by_ttl(
         &self,
         registry: &str,

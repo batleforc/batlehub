@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = ["auth-token", "auth-oidc", "auth-kubernetes", "storage-fs", "registry-github", "registry-npm", "registry-cargo", "registry-openvsx", "registry-goproxy", "registry-vscode-marketplace", "registry-maven", "db-postgres", "local-registry"]
+default = ["auth-token", "auth-oidc", "auth-kubernetes", "storage-fs", "registry-github", "registry-npm", "registry-cargo", "registry-openvsx", "registry-goproxy", "registry-vscode-marketplace", "registry-maven", "registry-terraform", "db-postgres", "local-registry"]
 auth-token = []
 auth-oidc = ["dep:jsonwebtoken"]
 auth-kubernetes = []
@@ -19,6 +19,7 @@ registry-openvsx = []
 registry-goproxy = []
 registry-vscode-marketplace = []
 registry-maven = []
+registry-terraform = []
 registry-pypi = []
 registry-composer = []
 db-postgres = []

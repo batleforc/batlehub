@@ -45,6 +45,16 @@ pub trait ArtifactMetaRepository: Send + Sync {
     /// Remove the metadata record for a key (called when an artifact is evicted).
     async fn delete_artifact_meta(&self, key: &str) -> Result<(), CoreError>;
 
+    /// Return `true` if the artifact's `cached_at` is older than `older_than`, OR if the
+    /// artifact has no metadata row (unknown age → conservatively treat as expired so the
+    /// caller re-fetches rather than serving a potentially stale artifact indefinitely).
+    /// More efficient than `list_expired_by_ttl` for per-request TTL checks.
+    async fn is_artifact_expired(
+        &self,
+        key: &str,
+        older_than: DateTime<Utc>,
+    ) -> Result<bool, CoreError>;
+
     /// List artifact keys whose `cached_at` is older than `older_than`.
     async fn list_expired_by_ttl(
         &self,
