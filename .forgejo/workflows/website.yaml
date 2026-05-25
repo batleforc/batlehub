@@ -29,4 +29,4 @@ jobs:
           ls -la dist
       - name: Publish to Git Pages
         run: |
-          git-pages-cli https://${{ github.repository_owner }}.git.batleforc.fr/${{ github.repository }} --token "Pages ${{ secrets.GITHUB_TOKEN }}" --upload-dir dist
+          git-pages-cli https://${{ github.repository_owner }}.git.batleforc.fr/batlehub --token "Pages ${{ secrets.GITHUB_TOKEN }}" --upload-dir dist
