@@ -5,6 +5,7 @@ on:
       - main
     paths:
       - website/**
+      - .forgejo/workflows/website.yaml
   workflow_dispatch:
 
 jobs:
@@ -25,4 +26,4 @@ jobs:
           yarn run docs:build
       - name: Publish to Git Pages
         run: |
-          git-pages-cli https://${{ github.repository_owner }}.git.batleforc.fr/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }} --upload-dir website/dist
+          git-pages-cli https://${{ github.repository_owner }}.git.batleforc.fr/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }} --upload-dir website/.vitepress/dist
