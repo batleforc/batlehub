@@ -7,7 +7,7 @@ on:
       - website/**
 jobs:
   publish:
-    runs-on: kubernetes
+    runs-on: git-pages
     name: Publish batlehub website
     enable-openid-connect: true # Required for vault authentication
     permissions:
@@ -16,13 +16,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
-      - run: |
-          # Use your favorite static site generator here!
+      - name: Build website
+        run: |
           cd website
           yarn install
           yarn run docs:build
-      - uses: actions/git-pages@v2
-        with:
-          site: https://${{ github.repository_owner }}.git.batleforc.fr/${{ github.repository }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-          source: website/dist
+      - name: Publish to Git Pages
+        run: |
+          git-pages-cli https://${{ github.repository_owner }}.git.batleforc.fr/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }} --upload-dir website/dist
