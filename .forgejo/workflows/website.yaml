@@ -24,6 +24,7 @@ jobs:
           cd website
           yarn install
           yarn run docs:build
+          cp -R .vitepress/dist ../dist
       - name: Publish to Git Pages
         run: |
-          git-pages-cli https://${{ github.repository_owner }}.git.batleforc.fr/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }} --upload-dir website/.vitepress/dist
+          git-pages-cli https://${{ github.repository_owner }}.git.batleforc.fr/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }} --upload-dir dist
