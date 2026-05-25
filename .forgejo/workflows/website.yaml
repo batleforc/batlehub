@@ -8,7 +8,7 @@ on:
 jobs:
   publish:
     runs-on: kubernetes
-    name: Publish BatleCache website
+    name: Publish batlehub website
     enable-openid-connect: true # Required for vault authentication
     permissions:
       contents: read
