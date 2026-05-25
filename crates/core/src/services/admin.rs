@@ -125,6 +125,10 @@ impl AdminService {
         self.repo.list_packages(filter).await
     }
 
+    pub async fn count_packages(&self, filter: PackageFilter) -> Result<u64, CoreError> {
+        self.repo.count_packages(filter).await
+    }
+
     pub async fn list_events(&self, filter: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
         self.repo.list_events(filter).await
     }
@@ -188,6 +192,9 @@ mod tests {
         }
         async fn list_packages(&self, _f: PackageFilter) -> Result<Vec<PackageSummary>, CoreError> {
             Ok(vec![])
+        }
+        async fn count_packages(&self, _f: PackageFilter) -> Result<u64, CoreError> {
+            Ok(0)
         }
         async fn list_events(&self, _f: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
             Ok(self.events.lock().unwrap().clone())

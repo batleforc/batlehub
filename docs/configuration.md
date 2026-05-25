@@ -11,9 +11,11 @@ batlehub is configured with a single TOML file. This document covers every optio
 3. [Full Reference](#3-full-reference)
    - [server](#31-server)
    - [database](#32-database)
+   - [cache](#32a-cache)
    - [auth](#33-auth)
    - [storage](#34-storage)
    - [registries](#35-registries)
+     - [rate_limit](#rate_limit)
    - [otel](#36-otel-optional)
 4. [Permissions Reference](#4-permissions-reference)
 5. [Environment Variable Overrides](#5-environment-variable-overrides)
@@ -28,6 +30,10 @@ batlehub is configured with a single TOML file. This document covers every optio
    - [6.8 Private VS Code Extension Registry (local / hybrid mode)](#68-private-vs-code-extension-registry-local--hybrid-mode)
    - [6.9 Private Go Module Proxy (local / hybrid mode)](#69-private-go-module-proxy-local--hybrid-mode)
    - [6.10 Multi-Backend Storage](#610-multi-backend-storage)
+   - [6.11 Terraform Provider Cache](#611-terraform-provider-cache)
+   - [6.12 Private Maven Registry (local / hybrid mode)](#612-private-maven-registry-local--hybrid-mode)
+   - [6.13 Private Terraform Registry (local / hybrid mode)](#613-private-terraform-registry-local--hybrid-mode)
+   - [6.14 Rate Limiting — Per-User + Per-Group](#614-rate-limiting)
 7. [CLI Reference](#7-cli-reference)
 8. [User-Generated API Tokens](#8-user-generated-api-tokens)
 9. [Self-Hosted / Private Registries](#9-self-hosted--private-registries)
@@ -92,7 +98,7 @@ curl -H "Authorization: Bearer my-admin-token" http://localhost:8080/...
 
 1. The TOML file at the path given to `--config` is parsed (default: `config.toml` in the working directory).
 2. Environment variables matching `PROXY_CACHE__<SECTION>__<FIELD>` are applied on top of the file values.
-3. The config is validated: registry names must not be empty and registry types must be one of `github`, `npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`, `pypi`, `composer`.
+3. The config is validated: registry names must not be empty and registry types must be one of `github`, `npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, `pypi`, `composer`.
 
 ### Auth evaluation order
 
@@ -139,6 +145,53 @@ max_connections = 10    # default
 | `max_connections` | u32 | `10` | Connection pool size |
 
 The `url` field can be overridden at runtime via `PROXY_CACHE__DATABASE__URL` without touching the config file.
+
+---
+
+### 3.2a `[cache]`
+
+Selects the storage backend for **metadata cache entries** and **rate-limit counters**. Both subsystems share this backend so a single configuration change affects them together.
+
+```toml
+# In-process memory (default — no extra infrastructure required)
+[cache]
+type = "memory"
+
+# PostgreSQL — persistent across restarts, shared across replicas
+[cache]
+type = "postgres"
+
+# Redis — persistent, shared, TTL-based eviction
+[cache]
+type = "redis"
+url  = "redis://localhost:6379"
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `type` | string | `"memory"` | `"memory"`, `"postgres"`, or `"redis"` |
+| `url` | string | — | Redis connection URL; required when `type = "redis"`. Format: `redis://[:<password>@]<host>[:<port>][/<db>]` or `rediss://…` for TLS. |
+
+#### Backend comparison
+
+| Backend | Persistence | Shared across replicas | Extra infra | Best for |
+|---------|:-----------:|:---------------------:|:-----------:|---------|
+| `memory` | No — resets on restart | No | None | Local dev, single-node |
+| `postgres` | Yes | Yes | None (uses the existing `[database]`) | Production, multi-replica |
+| `redis` | Yes | Yes | Redis cluster | High-throughput production |
+
+> **`memory` is the default** and requires no config changes. Switch to `postgres` or `redis` when you run multiple server replicas or when you want rate-limit counters to survive server restarts.
+
+> **Redis feature flag:** The `redis` backend is only compiled when the `cache-redis` feature is enabled. The official Docker image includes it. When building from source, pass `--features cache-redis` to `cargo build`.
+
+#### How each backend is used
+
+**Metadata cache:** Version lists and release metadata returned by upstream registries are stored with a TTL (`metadata_ttl_secs`). The cache backend is consulted on every proxy request before hitting the upstream.
+
+**Rate-limit counters:** Each `increment` call atomically bumps a counter keyed by `rl:{registry}:user:{user_id}` (or `rl:{registry}:group:{group}`) and returns the new count plus the window-reset timestamp:
+- `memory` — Mutex-protected HashMap; each process has its own counters.
+- `postgres` — `INSERT … ON CONFLICT DO UPDATE … RETURNING count`; fully serialisable.
+- `redis` — atomic `INCR` with a conditional `EXPIRE` on first write; TTL-based cleanup.
 
 ---
 
@@ -333,7 +386,7 @@ name = "cargo"
 
 [registries.cache]
 metadata_ttl_secs = 300     # default: 300 (5 minutes)
-artifact_strategy = "permanent"  # default; "ttl" re-checks artifacts after metadata TTL
+# artifact_ttl_secs = 2592000  # optional: re-fetch artifacts older than 30 days
 
 [registries.rbac]
 anonymous = []
@@ -358,9 +411,9 @@ bypass_roles = ["admin"]
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `type` | string | yes | `"github"`, `"npm"`, `"cargo"`, `"openvsx"`, `"vscode-marketplace"`, `"goproxy"`, `"pypi"`, `"composer"` |
+| `type` | string | yes | `"github"`, `"npm"`, `"cargo"`, `"openvsx"`, `"vscode-marketplace"`, `"goproxy"`, `"maven"`, `"terraform"`, `"pypi"`, `"composer"` |
 | `name` | string | yes | Unique identifier; used in proxy URL paths |
-| `mode` | string | no | `"proxy"` (default), `"local"`, or `"hybrid"`. Supported for `cargo`, `npm`, `openvsx`, `vscode-marketplace`, and `goproxy`. See [registry modes](#registry-modes). |
+| `mode` | string | no | `"proxy"` (default), `"local"`, or `"hybrid"`. Supported for `cargo`, `npm`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, and `rubygems`. See [registry modes](#registry-modes). |
 | `upstreams` | string[] | no | Upstream URLs tried in order on cache miss; 404 from one falls through to the next. Defaults to the registry's built-in URL. Required for `hybrid` mode. |
 | `index_url` | string | no | Cargo only: sparse crate index URL. Defaults to `https://index.crates.io`. Required for `hybrid` mode and self-hosted Gitea/Forgejo registries. |
 | `storage` | string | no | Name of the storage backend. Must match a `[[storage.backends]]` name. Omit to use the default backend. |
@@ -369,7 +422,7 @@ bypass_roles = ["admin"]
 
 #### Registry modes {#registry-modes}
 
-`cargo`, `npm`, `openvsx`, `vscode-marketplace`, and `goproxy` registries support three operating modes, set via the `mode` field:
+`cargo`, `npm`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, and `rubygems` registries support three operating modes, set via the `mode` field:
 
 | Mode | Description |
 |------|-------------|
@@ -386,6 +439,12 @@ Publishing requires at least the `user` role. The `published_by` field is set fr
 **openvsx / vscode-marketplace** — `local`/`hybrid` modes accept raw VSIX uploads (`PUT /proxy/{registry}/{extension_id}/{version}/vsix`) and serve them on download.
 
 **goproxy** — `local`/`hybrid` modes accept Go module zip uploads (`PUT /proxy/{registry}/{module}/@v/{version}.zip`). `go.mod` is extracted automatically from the zip; `.info` is generated from the version and upload timestamp. Serves `@latest`, `@v/list`, `.info`, `.mod`, and `.zip` from local storage.
+
+**maven** — `local`/`hybrid` modes accept `mvn deploy` artifact uploads (`PUT /proxy/{registry}/maven2/{path}`). Non-POM files (JARs, checksums) are stored immediately; the three-phase publish is triggered when the `.pom` file arrives. `maven-metadata.xml` is generated dynamically from the database and never cached client-side. See [Worked Example 6.12](#612-private-maven-registry-local--hybrid-mode).
+
+**terraform** — `local`/`hybrid` modes accept module uploads (`POST /proxy/{registry}/v1/modules/{ns}/{name}/{provider}/{version}`), provider version manifests (`POST .../v1/providers/{ns}/{type}/versions`), and provider binary uploads (`PUT .../artifact/{os}/{arch}`). The `tf_module_download` endpoint returns a `204 + X-Terraform-Get` header pointing at the locally stored tarball. See [Worked Example 6.13](#613-private-terraform-registry-local--hybrid-mode).
+
+**rubygems** — `local`/`hybrid` modes accept `gem push` uploads (`POST /proxy/{registry}/api/v1/gems`). Serves gem files, version index, and REST info from local storage.
 
 #### Registry-type notes
 
@@ -448,12 +507,120 @@ export GOPROXY="http://batlehub.example.com/proxy/go,direct"
 
 ---
 
+**`maven`** — proxies Maven artifact repositories. Supports `GET` requests for POM files, JARs, source JARs, Javadoc JARs, SHA-1/MD5 checksums, and Maven metadata XML. Compatible with Maven, Gradle, and any tool that speaks the Maven repository protocol. Default upstream: `https://repo1.maven.org/maven2`. Set `mode = "local"` or `mode = "hybrid"` to enable private publishing — see [registry modes](#registry-modes) and [Worked Example 6.12](#612-private-maven-registry-local--hybrid-mode).
+
+Configure Maven to use the proxy:
+
+```xml
+<!-- ~/.m2/settings.xml -->
+<settings>
+  <mirrors>
+    <mirror>
+      <id>batlehub</id>
+      <mirrorOf>central</mirrorOf>
+      <url>http://batlehub.example.com/proxy/maven/maven2/</url>
+    </mirror>
+  </mirrors>
+</settings>
+```
+
+Configure Gradle to use the proxy:
+
+```kotlin
+// settings.gradle.kts
+dependencyResolutionManagement {
+    repositories {
+        maven { url = uri("http://batlehub.example.com/proxy/maven/maven2/") }
+    }
+}
+```
+
+---
+
+**`terraform`** — proxies the Terraform provider and module registry protocol. Supports provider version listing, provider download info (binary URL + checksums), module version listing, and module source download. Default upstream: `https://registry.terraform.io`. Set `mode = "local"` or `mode = "hybrid"` to enable private module and provider publishing — see [registry modes](#registry-modes) and [Worked Example 6.13](#613-private-terraform-registry-local--hybrid-mode).
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/v1/providers/{namespace}/{type}/versions` | GET | Provider version list (JSON, cached) |
+| `/v1/providers/{namespace}/{type}/{version}/download/{os}/{arch}` | GET | Provider download info JSON (cached; local: rewritten to `/artifact` URL) |
+| `/v1/providers/{namespace}/{type}/versions` | POST | **Local/Hybrid:** publish provider version manifest |
+| `/v1/providers/{namespace}/{type}/{version}/artifact/{os}/{arch}` | PUT | **Local/Hybrid:** upload provider binary zip |
+| `/v1/providers/{namespace}/{type}/{version}/artifact/{os}/{arch}` | GET | **Local/Hybrid:** serve provider binary zip |
+| `/v1/modules/{namespace}/{name}/{provider}/versions` | GET | Module version list (JSON, cached) |
+| `/v1/modules/{namespace}/{name}/{provider}/{version}/download` | GET | Module source redirect (`204 + X-Terraform-Get`; local: points at `/artifact`) |
+| `/v1/modules/{namespace}/{name}/{provider}/{version}` | POST | **Local/Hybrid:** upload module tar.gz |
+| `/v1/modules/{namespace}/{name}/{provider}/{version}/artifact` | GET | **Local/Hybrid:** serve module tar.gz |
+
+> **Module download in proxy mode:** passes through the upstream `204 + X-Terraform-Get` header without caching. In Local/Hybrid mode the header is rewritten to point at the local `/artifact` endpoint.
+
+Configure the Terraform CLI to use the proxy for providers:
+
+```hcl
+# ~/.terraformrc  (or %APPDATA%/terraform.rc on Windows)
+provider_installation {
+  network_mirror {
+    url = "http://batlehub.example.com/proxy/terraform/"
+  }
+}
+```
+
+---
+
 **`[registries.cache]` fields:**
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `metadata_ttl_secs` | u64 | `300` | How long release metadata (version lists, release info) is cached in seconds |
-| `artifact_strategy` | string | `"permanent"` | `"permanent"`: once an artifact is cached it is never re-fetched. `"ttl"`: artifacts may be re-checked after the metadata TTL. |
+| `serve_stale` | bool | `true` | When `true`, serve stale metadata if the upstream returns a transient error (5xx). Keeps the registry usable during upstream outages. |
+| `artifact_ttl_secs` | u64? | — | Evict artifacts older than this many seconds. Omit to never expire by age. |
+| `idle_days` | u64? | — | Evict artifacts not accessed for this many days. Omit to disable idle eviction. |
+| `max_size_bytes` | u64? | — | Storage cap in bytes. When exceeded, the least-recently-used artifacts are removed until usage falls below the cap. Omit for no size limit. |
+| `keep_latest_n` | usize? | — | Keep only the N most-recently-cached versions per package. Older versions are evicted when a new one is stored. Omit to keep all versions. |
+| `warm_packages` | string[] | `[]` | Packages to pre-fetch at startup and via the admin warm endpoint. Each entry is a bare name (`"lodash"`) or a pinned version (`"lodash@4.17.21"`). |
+| `warm_latest_n` | usize | `1` | Number of most-recent versions to warm per bare package name. Pinned-version entries always warm exactly one version. |
+| `warm_concurrency` | usize | `2` | Maximum concurrent artifact downloads during a warming run. |
+
+**Eviction example:**
+
+```toml
+[registries.cache]
+metadata_ttl_secs = 600
+artifact_ttl_secs = 2592000   # 30 days
+idle_days         = 14
+max_size_bytes    = 10737418240  # 10 GiB
+keep_latest_n     = 5
+```
+
+**Cache warming example:**
+
+```toml
+[registries.cache]
+warm_packages    = ["lodash", "react", "typescript@5.4.5"]
+warm_latest_n    = 3      # warm the 3 most recent versions of bare-name packages
+warm_concurrency = 4      # up to 4 parallel downloads
+```
+
+At startup, BatleHub pre-fetches the listed packages so they are available with zero latency on first request. The same packages can be re-warmed at any time via the admin API:
+
+```sh
+# Warm all configured versions of lodash
+curl -X POST http://localhost:8080/api/v1/admin/registries/npm/warm \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"package": "lodash"}'
+
+# Override the version count for this call only
+curl -X POST http://localhost:8080/api/v1/admin/registries/npm/warm \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"package": "lodash", "versions": 10}'
+```
+
+> **Registry support:** version enumeration (used by bare-name warming) is implemented for **npm**, **Cargo**, **OpenVSX**, and **Go** modules. For GitHub and VS Code Marketplace, pass a pinned version string (e.g. `"owner/repo@v1.2.3"`) to warm a specific version.
+
+**Content-addressable deduplication:**
+
+BatleHub stores physical artifact bytes at a content-addressed key (`blob/{sha256}`) and maps logical artifact keys to that blob via a reference count. When the same bytes are referenced by multiple logical keys (e.g. the same package mirrored across two registries, or a yanked-then-re-released version), only one copy of the data is stored on disk or in S3. The deduplication tables (`artifact_dedup_index`, `artifact_dedup_refs`) are created automatically by the database migration and require no configuration.
 
 **`[registries.rbac]` fields:**
 
@@ -555,6 +722,80 @@ ca_cert_path = "/etc/ssl/corp-ca.pem"
 | `ca_cert_path` | string | no | Path to a PEM-encoded CA certificate to add as a trusted root for this registry's upstream connections |
 
 > The certificate is loaded once at startup. To rotate a CA certificate, restart the server.
+
+---
+
+#### `[registries.rate_limit]` {#rate_limit}
+
+Per-registry rate limiting using a **fixed-window counter** algorithm. Limits are tracked per authenticated user (by `user_id`) or per client IP for anonymous requests.
+
+Counters are stored in the **cache backend** selected by `[cache]`:
+- `type = "memory"` (default) — counters are per-process; they reset on restart and are **not** shared across multiple server replicas.
+- `type = "postgres"` or `type = "redis"` — counters survive restarts and are shared across all replicas, making the limit consistent across a load-balanced cluster.
+
+```toml
+[registries.rate_limit]
+requests_per_window = 100
+window_secs         = 60
+enforcement         = "block"   # "block" (default) or "warn"
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `requests_per_window` | u32 | — | Maximum number of requests allowed within `window_secs` |
+| `window_secs` | u32 | — | Length of the sliding window in seconds |
+| `enforcement` | string | `"block"` | `"block"` returns HTTP 429; `"warn"` allows the request but adds `X-RateLimit-Warning` |
+
+**Response headers:**
+
+| Header | When added | Description |
+|---|---|---|
+| `X-RateLimit-Limit` | Every proxied response (when configured) | The effective limit that bound this request |
+| `Retry-After` | 429 responses (block mode) | Seconds until the bucket refills |
+| `X-RateLimit-Reset` | 429 responses (block mode) | Unix timestamp when the bucket refills |
+| `X-RateLimit-Warning: rate-limit-exceeded` | Over-limit responses (warn mode) | Signals the limit was exceeded but the request was allowed |
+
+##### Per-group rate limits {#per_group_rate_limits}
+
+All members of a named group share a single request pool. Group names are matched against the strings in the authenticated identity's `groups` list, which are namespaced by auth provider: `"oidc:<group>"`, `"kubernetes:<group>"`, etc.
+
+```toml
+[registries.rate_limit]
+requests_per_window = 100
+window_secs         = 60
+enforcement         = "block"
+
+# CI bots share a single 5000 req/min pool across all members:
+[[registries.rate_limit.groups]]
+name                = "oidc:ci-bots"
+requests_per_window = 5000
+window_secs         = 60
+# enforcement = "block"   # optional; inherits parent enforcement when omitted
+
+# Free-tier users share a more restrictive 200 req/min pool:
+[[registries.rate_limit.groups]]
+name                = "oidc:free-tier"
+requests_per_window = 200
+window_secs         = 60
+```
+
+`[[registries.rate_limit.groups]]` fields:
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `name` | string | yes | Exact match against an entry in `Identity.groups` (e.g. `"oidc:ci-bots"`) |
+| `requests_per_window` | u32 | yes | Shared pool size for **all** members of this group combined |
+| `window_secs` | u32 | yes | Window length in seconds |
+| `enforcement` | string | no | Overrides the parent `enforcement` for this group only; defaults to the parent value when omitted |
+
+**Multi-limiter semantics:** both the per-user bucket and every applicable group bucket must have tokens for a request to proceed. If any bucket is exhausted:
+- In `block` mode: the request is rejected with HTTP 429. The `Retry-After` and `X-RateLimit-Reset` headers reflect the longest wait among all exhausted buckets.
+- In `warn` mode: the request is allowed and `X-RateLimit-Warning` is added to the response.
+- If different buckets have different enforcement modes, `block` takes precedence over `warn`.
+
+> **Multi-instance deployments:** Set `[cache] type = "postgres"` or `type = "redis"` to share rate-limit counters across all server replicas. With the default `type = "memory"`, each replica maintains its own independent counters and the effective per-user limit is `requests_per_window × replica_count`.
+
+> **Fail-open behaviour:** If the cache backend is unreachable when a counter needs to be incremented, the request is **allowed** rather than rejected. A `WARN` log entry (`rate-limit store unavailable … failing open`) is emitted for each affected bucket. Monitor for these warnings to detect backend outages.
 
 ---
 
@@ -1293,6 +1534,288 @@ admin = ["*"]
 
 ---
 
+### 6.11 Terraform Provider Cache {#611-terraform-provider-cache}
+
+Cache Terraform provider binaries locally so `terraform init` doesn't hit `registry.terraform.io` on every CI run.
+
+```toml
+[[registries]]
+type = "terraform"
+name = "terraform"
+# upstreams defaults to ["https://registry.terraform.io"]
+
+[registries.rbac]
+anonymous = []
+user      = ["releases:read", "source:read"]
+admin     = ["*"]
+
+[registries.cache]
+metadata_ttl_secs = 300   # re-check version lists every 5 min
+# artifact_ttl_secs not set — provider binaries are cached forever
+```
+
+Configure each developer's or CI runner's Terraform CLI:
+
+```hcl
+# ~/.terraformrc  (or %APPDATA%/terraform.rc on Windows)
+# CI: write this file during pipeline setup
+provider_installation {
+  network_mirror {
+    url = "https://batlehub.example.com/proxy/terraform/"
+  }
+}
+```
+
+After the first `terraform init`, subsequent runs use the locally cached binaries. Provider checksums are cached alongside the download metadata, so Terraform's checksum verification still passes.
+
+---
+
+### 6.12 Private Maven Registry (local / hybrid mode) {#612-private-maven-registry-local--hybrid-mode}
+
+Host private Maven/Gradle artifacts (`mvn deploy`, `gradle publish`) so teams never need an external Nexus or Artifactory instance.
+
+```toml
+[[registries]]
+type = "maven"
+name = "internal-maven"
+mode = "local"          # BatleHub is the only source; no upstream needed
+
+[registries.rbac]
+user  = ["releases:read", "source:read"]
+admin = ["*"]
+```
+
+For hybrid mode (serve private artifacts first, fall back to Maven Central for everything else):
+
+```toml
+[[registries]]
+type      = "maven"
+name      = "internal-maven"
+mode      = "hybrid"
+upstreams = ["https://repo1.maven.org/maven2"]
+
+[registries.rbac]
+user  = ["releases:read", "source:read"]
+admin = ["*"]
+```
+
+#### Client setup — Maven
+
+Add credentials to `~/.m2/settings.xml` (the `<id>` must match the `<distributionManagement>` `<id>` in your POM):
+
+```xml
+<settings>
+  <servers>
+    <server>
+      <id>internal-maven</id>
+      <username>your-user-id</username>
+      <password>your-bearer-token</password>
+    </server>
+  </servers>
+  <mirrors>
+    <mirror>
+      <id>internal-maven</id>
+      <name>BatleHub Maven</name>
+      <url>https://batlehub.example.com/proxy/internal-maven/maven2/</url>
+      <mirrorOf>*</mirrorOf>
+    </mirror>
+  </mirrors>
+</settings>
+```
+
+#### Publish setup — pom.xml
+
+```xml
+<distributionManagement>
+  <repository>
+    <id>internal-maven</id>
+    <url>https://batlehub.example.com/proxy/internal-maven/maven2/</url>
+  </repository>
+</distributionManagement>
+```
+
+```sh
+mvn deploy
+```
+
+#### Publish setup — Gradle (settings.gradle.kts)
+
+```kotlin
+dependencyResolutionManagement {
+    repositories {
+        maven {
+            url = uri("https://batlehub.example.com/proxy/internal-maven/maven2/")
+            credentials {
+                username = "your-user-id"
+                password = "your-bearer-token"
+            }
+        }
+    }
+}
+```
+
+#### How it works
+
+Maven/Gradle upload `.jar` and checksum files **before** the `.pom`. BatleHub stores each non-POM file directly in object storage. When the `.pom` arrives, BatleHub parses it (extracting `groupId`, `artifactId`, `version`, `packaging`, `description`) and commits a `local_packages` row via the three-phase publish protocol. Subsequent `GET` requests for `maven-metadata.xml` return XML generated from the database rather than a cached file.
+
+#### Endpoints exposed by local / hybrid Maven registries
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/proxy/{registry}/maven2/{path}` | GET | Serve artifact from local storage (or proxy in hybrid mode) |
+| `/proxy/{registry}/maven2/{group}/{artifact}/maven-metadata.xml` | GET | Generated from DB; never cached |
+| `/proxy/{registry}/maven2/{path}` | PUT | Upload artifact (`.pom` commits version, other files stored directly) |
+
+---
+
+### 6.13 Private Terraform Registry (local / hybrid mode) {#613-private-terraform-registry-local--hybrid-mode}
+
+Publish and serve private Terraform modules and providers without an external registry.
+
+```toml
+[[registries]]
+type = "terraform"
+name = "internal-tf"
+mode = "local"
+
+[registries.rbac]
+user  = ["releases:read", "source:read"]
+admin = ["*"]
+```
+
+For hybrid mode (serve private providers/modules first, proxy `registry.terraform.io` for everything else):
+
+```toml
+[[registries]]
+type      = "terraform"
+name      = "internal-tf"
+mode      = "hybrid"
+upstreams = ["https://registry.terraform.io"]
+
+[registries.rbac]
+user  = ["releases:read", "source:read"]
+admin = ["*"]
+```
+
+#### Client setup — .terraformrc
+
+```hcl
+# ~/.terraformrc  (or %APPDATA%/terraform.rc on Windows)
+provider_installation {
+  network_mirror {
+    url = "https://batlehub.example.com/proxy/internal-tf/"
+  }
+}
+
+credentials "batlehub.example.com" {
+  token = "your-bearer-token"
+}
+```
+
+#### Publishing a private module
+
+```sh
+# Package your module as a tar.gz, then upload:
+tar czf my-module.tar.gz -C ./module-dir .
+curl -X POST \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/gzip" \
+  --data-binary @my-module.tar.gz \
+  "https://batlehub.example.com/proxy/internal-tf/v1/modules/namespace/name/provider/1.0.0"
+```
+
+The response includes an `X-Terraform-Get` header pointing to the stored artifact download URL.
+
+#### Publishing a private provider
+
+Step 1 — upload the version manifest (JSON describing protocols and available platforms):
+
+```sh
+curl -X POST \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "version": "5.0.0",
+    "protocols": ["5.0"],
+    "platforms": [
+      {"os": "linux",  "arch": "amd64",  "filename": "terraform-provider-mycloud_5.0.0_linux_amd64.zip",  "shasum": "abc123..."},
+      {"os": "darwin", "arch": "arm64",  "filename": "terraform-provider-mycloud_5.0.0_darwin_arm64.zip", "shasum": "def456..."}
+    ]
+  }' \
+  "https://batlehub.example.com/proxy/internal-tf/v1/providers/myorg/mycloud/versions"
+```
+
+Step 2 — upload each platform binary:
+
+```sh
+curl -X PUT \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/zip" \
+  --data-binary @terraform-provider-mycloud_5.0.0_linux_amd64.zip \
+  "https://batlehub.example.com/proxy/internal-tf/v1/providers/myorg/mycloud/5.0.0/artifact/linux/amd64"
+```
+
+#### Yank a version (admin)
+
+```sh
+curl -X POST \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"packages":[{"name":"modules/namespace/name/provider","version":"1.0.0"}]}' \
+  "https://batlehub.example.com/api/v1/admin/registries/internal-tf/bulk-yank"
+```
+
+---
+
+### 6.14 Rate Limiting — Per-User + Per-Group {#614-rate-limiting}
+
+Protect a public-facing npm registry: each user gets 200 requests per minute; CI bot group members share a higher 2000 req/min pool; free-tier group is limited to 50 req/min.
+
+```toml
+[[registries]]
+type = "npm"
+name = "npm"
+
+[registries.rbac]
+anonymous = []
+user      = ["releases:read", "source:read"]
+admin     = ["*"]
+
+[registries.rate_limit]
+requests_per_window = 200    # per authenticated user
+window_secs         = 60
+enforcement         = "block"
+
+# CI bots share a single 2000/min pool across all members:
+[[registries.rate_limit.groups]]
+name                = "oidc:ci-bots"
+requests_per_window = 2000
+window_secs         = 60
+
+# Free-tier users share a stricter 50/min pool:
+[[registries.rate_limit.groups]]
+name                = "oidc:free-tier"
+requests_per_window = 50
+window_secs         = 60
+enforcement         = "warn"   # warn instead of block for free-tier
+```
+
+A CI bot that belongs to `oidc:ci-bots` consumes one token from both its personal 200/min bucket and the shared `oidc:ci-bots` 2000/min bucket on each request. If either is exhausted, the request is blocked (or warned, per the per-group enforcement override).
+
+Response when a user exceeds their limit:
+
+```
+HTTP/1.1 429 Too Many Requests
+X-RateLimit-Limit: 200
+Retry-After: 42
+X-RateLimit-Reset: 1716556842
+Content-Type: application/json
+
+{"error":"rate limit exceeded","retry_after_secs":42}
+```
+
+---
+
 ## 7. CLI Reference
 
 ```
@@ -1383,7 +1906,7 @@ ca_cert_path = "/etc/ssl/corp-ca.pem"
 
 ### Supported registry types
 
-All registry types support `upstream_auth` and `tls`: `github`, `npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`. For `cargo`, the sparse index proxy (the `index_url` endpoint) also uses the same credentials and TLS settings.
+All registry types support `upstream_auth` and `tls`: `github`, `npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`. For `cargo`, the sparse index proxy (the `index_url` endpoint) also uses the same credentials and TLS settings.
 
 ### Secret management
 

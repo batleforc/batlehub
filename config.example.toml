@@ -111,6 +111,27 @@ role_claim = "groups"
 # "system:serviceaccounts:dev"              = "user"
 # "system:serviceaccounts"                  = "anonymous"
 
+# ── Cache backend ─────────────────────────────────────────────────────────────
+#
+# Selects the storage engine for metadata cache entries and rate-limit counters.
+#
+# memory   (default) — in-process HashMap; resets on restart; not shared across replicas.
+# postgres            — stores entries in the database; persistent and shared.
+# redis               — stores entries in Redis; persistent, shared, and lower-latency.
+#
+# Switch to "postgres" or "redis" when running multiple server replicas so that
+# metadata cache hits and rate-limit counters are consistent across the cluster.
+#
+# [cache]
+# type = "memory"   # default — no extra config needed
+#
+# [cache]
+# type = "postgres"  # reuses the [database] connection pool; no extra url needed
+#
+# [cache]
+# type  = "redis"
+# url   = "redis://localhost:6379"   # required when type = "redis"
+
 # ── Storage backend ────────────────────────────────────────────────────────────
 
 # Single backend (legacy format — still supported):
@@ -208,8 +229,9 @@ name = "cargo"
 [registries.cache]
 # How long to cache release metadata (seconds). Default: 300 (5 min).
 metadata_ttl_secs = 300
-# "permanent" = once an artifact is cached it is never re-fetched.
-artifact_strategy = "permanent"
+# Omitting artifact_ttl_secs means artifacts are kept forever (until eviction).
+# Uncomment to re-fetch artifacts older than 30 days:
+# artifact_ttl_secs = 2592000
 
 [registries.rbac]
 anonymous = ["releases:read", "source:read"]
@@ -263,6 +285,133 @@ admin = ["*"]
 #   export GONOSUMCHECK="*"
 #   export GONOSUMDB="*"
 #   export GOPROXY="http://localhost:8080/proxy/go,direct"
+
+[[registries]]
+type = "terraform"
+name = "terraform"
+# upstreams defaults to ["https://registry.terraform.io"] when omitted.
+# For air-gapped environments, point at an internal Terraform registry mirror:
+# upstreams = ["https://terraform.internal.example.com"]
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
+
+# Configure Terraform to use this proxy for providers:
+#   # ~/.terraformrc  (or %APPDATA%/terraform.rc on Windows)
+#   provider_installation {
+#     network_mirror {
+#       url = "http://localhost:8080/proxy/terraform/"
+#     }
+#   }
+#
+# Configure Terraform modules:
+#   source = "localhost:8080/proxy/terraform/hashicorp/consul/aws"
+
+# ── Rate limiting ─────────────────────────────────────────────────────────────
+#
+# Rate limiting can be added to any registry. Uses a fixed-window counter
+# algorithm backed by the [cache] backend (memory / postgres / redis).
+#
+# With [cache] type = "memory" (default): counters are per-process and reset on
+# restart. With type = "postgres" or type = "redis": counters are shared across
+# all server replicas and survive restarts.
+#
+# Per-user limit: each authenticated user gets their own counter; anonymous
+# requests are grouped by client IP address.
+#
+# Per-group limit: all members of a named group share a single counter. Group
+# names are matched against Identity.groups (namespaced by provider:
+# "oidc:ci-bots", "kubernetes:ops", etc.).
+#
+# Both limits apply independently — a request must pass every applicable
+# counter (user counter AND all relevant group counters) to be allowed.
+#
+# Example: 100/min per user, with a shared 5000/min pool for CI bots:
+#
+# [registries.rate_limit]
+# requests_per_window = 100
+# window_secs         = 60
+# enforcement         = "block"   # or "warn" to allow but add X-RateLimit-Warning header
+#
+# [[registries.rate_limit.groups]]
+# name                = "oidc:ci-bots"   # exact match against Identity.groups
+# requests_per_window = 5000             # shared pool for ALL ci-bots members combined
+# window_secs         = 60
+# # enforcement = "block"               # optional; inherits parent enforcement when omitted
+#
+# [[registries.rate_limit.groups]]
+# name                = "oidc:free-tier"
+# requests_per_window = 200              # more restrictive shared pool for free-tier
+# window_secs         = 60
+#
+# Response headers added by the rate limiter:
+#   X-RateLimit-Limit: {binding_limit}   — always on proxy responses when configured
+#   Retry-After: {seconds}               — on 429 / warn responses
+#   X-RateLimit-Reset: {unix_timestamp}  — on 429 responses
+#   X-RateLimit-Warning: rate-limit-exceeded  — on warn-mode overruns
+
+# ── RubyGems registry ────────────────────────────────────────────────────────
+#
+# Proxy mode: mirrors rubygems.org gem downloads, info, and version listing.
+# Local/hybrid mode: accepts `gem push` for private gems.
+#
+# [[registries]]
+# type = "rubygems"
+# name = "gems"
+# # mode = "proxy"           # default
+# # upstreams = ["https://rubygems.org"]  # default upstream
+#
+# # Hybrid example (fall through to rubygems.org when gem not found locally):
+[[registries]]
+type   = "rubygems"
+name   = "my-gems"
+mode   = "hybrid"
+upstreams = ["https://rubygems.org"]
+
+# --- Maven Central registry --------------------------------------------------
+#
+# Proxy mode: mirrors Maven Central artifact downloads, POM info, and version listing.
+# Local/hybrid mode: accepts `mvn deploy` for private artifacts.
+[[registries]]
+type   = "maven"
+name   = "my-maven"
+mode   = "hybrid"
+upstreams = ["https://repo1.maven.org/maven2/"]
+
+# ── Versioning policies (local/hybrid mode) ──────────────────────────────────
+#
+# Enforce versioning rules at publish time. Violations return HTTP 422.
+# All fields are optional; omit the entire [versioning] block to disable.
+#
+# [[registries]]
+# type = "cargo"
+# name = "internal-crates"
+# mode = "local"
+#
+# [registries.versioning]
+# enforce_semver   = true          # reject non-semver versions (e.g. "1.0.0-foo" is OK, "1.0" is not)
+# allow_prerelease = false         # reject pre-release versions (e.g. "1.0.0-beta.1")
+# version_pattern  = "^\\d+\\.\\d+\\.\\d+$"   # optional regex; must match full version string
+
+# ── Artifact signing (local/hybrid mode) ─────────────────────────────────────
+#
+# Accept and store artifact signatures supplied via publish-time HTTP headers:
+#   X-Artifact-Signature: <base64-encoded signature bytes>
+#   X-Signature-Type: pgp                    # or "ed25519", etc.
+#
+# Stored signatures are returned on download as the same headers.
+# All fields are optional; omit the entire [signing] block to disable enforcement.
+#
+# [[registries]]
+# type = "npm"
+# name = "signed-npm"
+# mode = "local"
+#
+# [registries.signing]
+# required      = true             # reject publishes that omit X-Artifact-Signature
+# allowed_types = ["pgp", "ed25519"]   # if non-empty, reject any other type
 
 # ── Self-hosted / private registry auth + TLS ────────────────────────────────
 #

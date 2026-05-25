@@ -110,7 +110,8 @@ pub async fn registry_health(
         .bind(&registry)
         .fetch_one(pool)
         .await
-        .map(|r| r.try_get::<i64, _>(0).unwrap_or(0))
+        .map_err(|e| AppError::internal(format!("health query failed: {e}")))?
+        .try_get(0)
         .unwrap_or(0);
 
         // ── Artifact count + total size (from storage directly) ───────────────
@@ -132,7 +133,8 @@ pub async fn registry_health(
         .bind(&registry)
         .fetch_one(pool)
         .await
-        .map(|r| r.try_get::<Option<DateTime<Utc>>, _>(0).unwrap_or(None))
+        .map_err(|e| AppError::internal(format!("health query failed: {e}")))?
+        .try_get(0)
         .unwrap_or(None);
 
         // ── Pulls last hour ───────────────────────────────────────────────────
@@ -144,7 +146,8 @@ pub async fn registry_health(
         .bind(&registry)
         .fetch_one(pool)
         .await
-        .map(|r| r.try_get::<i64, _>(0).unwrap_or(0))
+        .map_err(|e| AppError::internal(format!("health query failed: {e}")))?
+        .try_get(0)
         .unwrap_or(0);
 
         // ── Pulls last day ────────────────────────────────────────────────────
@@ -156,7 +159,8 @@ pub async fn registry_health(
         .bind(&registry)
         .fetch_one(pool)
         .await
-        .map(|r| r.try_get::<i64, _>(0).unwrap_or(0))
+        .map_err(|e| AppError::internal(format!("health query failed: {e}")))?
+        .try_get(0)
         .unwrap_or(0);
 
         // ── Recent errors (denied + proxy errors) ─────────────────────────────
@@ -170,7 +174,7 @@ pub async fn registry_health(
         .bind(&registry)
         .fetch_all(pool)
         .await
-        .unwrap_or_default();
+        .map_err(|e| AppError::internal(format!("health query failed: {e}")))?;
 
         let recent_errors = error_rows
             .into_iter()

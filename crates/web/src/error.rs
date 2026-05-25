@@ -35,6 +35,14 @@ impl AppError {
     pub fn conflict(msg: impl Into<String>) -> Self {
         Self { status: StatusCode::CONFLICT, message: msg.into() }
     }
+
+    pub fn unprocessable(msg: impl Into<String>) -> Self {
+        Self { status: StatusCode::UNPROCESSABLE_ENTITY, message: msg.into() }
+    }
+
+    pub fn service_unavailable(msg: impl Into<String>) -> Self {
+        Self { status: StatusCode::SERVICE_UNAVAILABLE, message: msg.into() }
+    }
 }
 
 impl actix_web::ResponseError for AppError {
@@ -74,8 +82,22 @@ impl From<CoreError> for AppError {
                 status: StatusCode::PAYLOAD_TOO_LARGE,
                 message: msg,
             },
+            CoreError::QuotaExceeded(msg) => Self {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                message: msg,
+            },
+            CoreError::InvalidVersion(msg) => Self::unprocessable(msg),
             CoreError::Registry(msg) => Self {
                 status: StatusCode::BAD_GATEWAY,
+                message: msg,
+            },
+            // Dependency unavailability → 503 so load-balancers can retry elsewhere.
+            CoreError::Storage(msg) | CoreError::Cache(msg) => Self {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                message: msg,
+            },
+            CoreError::Database(msg) => Self {
+                status: StatusCode::SERVICE_UNAVAILABLE,
                 message: msg,
             },
             other => {
@@ -116,9 +138,21 @@ mod tests {
     }
 
     #[test]
-    fn from_core_database_error_maps_to_internal() {
+    fn from_core_database_error_maps_to_503() {
         let e = AppError::from(CoreError::Database("db error".into()));
-        assert_eq!(e.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(e.status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn from_core_storage_error_maps_to_503() {
+        let e = AppError::from(CoreError::Storage("backend down".into()));
+        assert_eq!(e.status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn from_core_cache_error_maps_to_503() {
+        let e = AppError::from(CoreError::Cache("cache unavailable".into()));
+        assert_eq!(e.status, StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[test]

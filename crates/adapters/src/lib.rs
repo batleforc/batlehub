@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod migrations;
+pub mod rate_limit;
 
 #[cfg(feature = "auth-token")]
 pub mod auth;

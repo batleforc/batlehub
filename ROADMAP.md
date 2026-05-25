@@ -11,11 +11,11 @@ For discussion or to propose a feature, open an issue on the [project repository
 Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules.
 
 - [ ] **PyPI** — Python package index (simple API + wheel / sdist downloads)
-- [ ] **Maven / Gradle** — Maven Central-compatible metadata XML + JAR / POM downloads
-- [ ] **RubyGems** — gem downloads and version listing
+- [x] **Maven / Gradle** — Maven Central-compatible metadata XML + JAR / POM downloads; private publishing via `mvn deploy` in `local`/`hybrid` mode
+- [x] **RubyGems** — gem downloads and version listing (proxy + local/hybrid with publish/yank/unyank)
 - [ ] **NuGet** — .NET package protocol
 - [ ] **Deb / RPM** — Debian APT and Red Hat YUM repository proxying
-- [ ] **Terraform registry** — provider and module proxy protocol
+- [x] **Terraform registry** — provider and module proxy protocol; private module + provider publishing in `local`/`hybrid` mode
 - [ ] **GitLab releases and packages** — similar to GitHub but with different auth and pagination
 - [ ] **Forgejo releases and packages** — Gitea fork with minor API differences
 
@@ -25,19 +25,19 @@ Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules.
 
 ## Cache policy
 
-- [ ] Honour `Cache-Control` headers from upstream responses (`no-cache`, `max-age`, `no-store`) to decide whether and how long to cache
-- [ ] Eviction policies: TTL-based expiry, "not accessed for N days", garbage-collect all versions except the latest N, storage size cap with LRU eviction
-- [ ] Deduplication for storage backends that support it (S3 object versioning, RustFS content-addressable storage)
-- [ ] Proactive cache warming: pre-fetch all known versions of a package to eliminate cold-start latency on first request
-- [ ] Cache index coherence: compare what is actually in the storage backend against what the registry metadata expects, and recover from corruption or manual deletions
+- [x] Honour `Cache-Control` headers from upstream responses (`no-cache`, `max-age`, `no-store`) to decide whether and how long to cache
+- [x] Eviction policies: TTL-based expiry, "not accessed for N days", garbage-collect all versions except the latest N, storage size cap with LRU eviction
+- [x] Cache index coherence: compare what is actually in the storage backend against what the registry metadata expects, and recover from corruption or manual deletions
+- [x] Content-addressable deduplication: identical artifact bytes are stored once regardless of how many logical keys (registries, package names) reference them — ref-counted via `artifact_dedup_index` / `artifact_dedup_refs`, backwards-compatible with pre-dedup artifacts
+- [x] Proactive cache warming: pre-fetch known versions of configured packages on startup and on demand via the admin API (`POST /api/v1/admin/registries/{registry}/warm`); configurable per registry with `warm_packages`, `warm_latest_n`, and `warm_concurrency`
 
 ---
 
 ## Metrics & observability
 
-- [ ] Prometheus metrics endpoint (`/metrics`): request counts, cache hit/miss rates, latency percentiles, error rates per registry
-- [ ] Health check endpoint (`/healthz`) that verifies connectivity to the database and all configured storage backends
-- [ ] Stats dashboard on the admin home screen: hits/misses, bandwidth saved, per-registry and aggregate
+- [x] Prometheus metrics endpoint (`/metrics`): request counts, cache hit/miss rates, latency percentiles, error rates per registry
+- [x] Health check endpoint (`/healthz`) that verifies connectivity to the database and all configured storage backends
+- [x] Stats dashboard on the admin home screen: hits/misses, bandwidth saved, per-registry and aggregate
 
 ---
 
@@ -60,9 +60,10 @@ Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules.
 
 ## Rate limiting & DoS protection
 
-- [ ] Per-user, per-group, and per-registry rate limits on API requests and artifact downloads, with configurable thresholds and time windows
-- [ ] Configurable enforcement policies: hard block vs. soft warn when a limit is reached
-- [ ] Explicit rate-limit warnings in API responses (`Retry-After`, `X-RateLimit-*` headers) and in the UI
+- [x] Per-user and per-registry rate limits on API requests and artifact downloads, with configurable thresholds and time windows (in-memory token bucket; state resets on restart)
+- [x] Configurable enforcement policies: hard block vs. soft warn when a limit is reached
+- [x] Explicit rate-limit warnings in API responses (`Retry-After`, `X-RateLimit-*` headers)
+- [x] Per-group rate limits (shared token-bucket pools per OIDC/Kubernetes group; enforcement override per group)
 - [ ] IP-based blocking for abusive clients, with configurable block duration and thresholds
 - [ ] Integration with external IP reputation services to automatically block known malicious IPs
 
@@ -70,10 +71,10 @@ Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules.
 
 ## Quota management
 
-- [ ] Per-user, per-group, and per-registry quotas on storage usage and number of published packages
-- [ ] Enforcement policies: block publish requests that exceed the quota, or allow with an explicit warning
-- [ ] Quota warnings in API responses and admin UI when a limit is being approached
-- [ ] Admin API for resetting quotas for specific users, groups, or registries
+- [x] Per-user, per-group, and per-registry quotas on storage usage and number of published packages
+- [x] Enforcement policies: block publish requests that exceed the quota, or allow with an explicit warning
+- [x] Quota warnings in API responses and admin UI when a limit is being approached
+- [x] Admin API for resetting quotas for specific users, groups, or registries
 
 ---
 
@@ -107,14 +108,16 @@ Applies to registries running in `local` or `hybrid` mode.
 - **npm** — versioning policies (enforce semantic versioning, allowlist version patterns)
 - **Cargo** — versioning policies; verify full compatibility with the yank protocol from crates.io
 - **VS Code extensions** — deprecation and unlisting; upload via the UI (form for VSIX + metadata), in addition to the existing `PUT` API
+- [x] **Maven** — private artifact publishing via `mvn deploy`; POM-triggered three-phase publish; JAR/checksum pre-upload; dynamically generated `maven-metadata.xml` from DB; `local` and `hybrid` modes
+- [x] **Terraform** — private module publishing (tar.gz upload, `X-Terraform-Get` redirect); private provider publishing (version manifest + per-platform binary upload); `local` and `hybrid` modes
 
 ### For all private registry types
 
-- [ ] Artifact signing and verification (OpenPGP or similar) for published packages
-- [ ] Ownership and team management: multiple users / groups can publish and manage the same package with different roles
-- [ ] Versioning policies: enforce semantic versioning or restrict accepted version patterns
+- [x] Artifact signing framework: publish with `X-Artifact-Signature` / `X-Signature-Type` headers; signature stored in DB and returned on download; optional `signing.required` enforcement
+- [x] Ownership and team management: per-package owner table (user/group, admin/maintainer roles); `initialize_owner` on first publish; `can_publish` check on subsequent publishes; admin API to list/add/remove owners
+- [x] Versioning policies: `enforce_semver`, `allow_prerelease`, `version_pattern` (regex) per registry; enforced at publish time with HTTP 422
 - [ ] Beta / pre-release channel: allow specific users or groups to access unpublished versions before general release
-- [ ] Bulk operations: bulk publish, bulk deprecation, bulk deletion
+- [x] Bulk operations: `POST /api/v1/admin/registries/{registry}/bulk-yank|bulk-unyank|bulk-delete`
 - [ ] Content-addressable deduplication and integrity verification for stored artifacts
 
 ### CLI tool

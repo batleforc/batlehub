@@ -98,6 +98,7 @@ mod tests {
             Ok(())
         }
         async fn list_packages(&self, _f: PackageFilter) -> Result<Vec<PackageSummary>, CoreError> { Ok(vec![]) }
+        async fn count_packages(&self, _f: PackageFilter) -> Result<u64, CoreError> { Ok(0) }
         async fn list_events(&self, _f: EventFilter) -> Result<Vec<AccessEvent>, CoreError> { Ok(vec![]) }
     }
 
@@ -111,6 +112,7 @@ mod tests {
         }
         async fn set_status(&self, _pkg: &PackageId, _status: PackageStatus) -> Result<(), CoreError> { Ok(()) }
         async fn list_packages(&self, _f: PackageFilter) -> Result<Vec<PackageSummary>, CoreError> { Ok(vec![]) }
+        async fn count_packages(&self, _f: PackageFilter) -> Result<u64, CoreError> { Ok(0) }
         async fn list_events(&self, _f: EventFilter) -> Result<Vec<AccessEvent>, CoreError> { Ok(vec![]) }
     }
 
@@ -132,6 +134,7 @@ mod tests {
             checksum: None,
             is_signed: None,
             extra: serde_json::json!({}),
+            cache_control: None,
         }
     }
 

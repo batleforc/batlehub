@@ -121,6 +121,39 @@ impl StorageBackend for FilesystemStorageBackend {
         Ok((count, total_bytes))
     }
 
+    async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, CoreError> {
+        let fs_rel = prefix.replace(':', "__");
+        let dir = self.root.join(fs_rel.trim_end_matches('/'));
+
+        let mut keys = Vec::new();
+        let mut stack = vec![dir];
+        while let Some(d) = stack.pop() {
+            let mut rd = match tokio::fs::read_dir(&d).await {
+                Ok(rd) => rd,
+                Err(_) => continue,
+            };
+            while let Ok(Some(entry)) = rd.next_entry().await {
+                let path = entry.path();
+                if let Ok(ftype) = entry.file_type().await {
+                    if ftype.is_dir() {
+                        stack.push(path);
+                    } else if path.extension().and_then(|e| e.to_str()) == Some("dat") {
+                        // Reconstruct the logical key from the filesystem path.
+                        if let Ok(rel) = path.strip_prefix(&self.root) {
+                            let key = rel
+                                .to_string_lossy()
+                                .trim_end_matches(".dat")
+                                .replace("__", ":")
+                                .replace(std::path::MAIN_SEPARATOR, "/");
+                            keys.push(key);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(keys)
+    }
+
     async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError> {
         let fs_rel = prefix.replace(':', "__");
         let dir = self.root.join(fs_rel.trim_end_matches('/'));

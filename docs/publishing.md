@@ -12,7 +12,10 @@ This guide walks through publishing packages to a BatleHub private registry for 
 4. [Cargo](#4-cargo)
 5. [VS Code Extensions (OpenVSX / VS Code Marketplace)](#5-vs-code-extensions-openvsx--vs-code-marketplace)
 6. [Go Modules](#6-go-modules)
-7. [Troubleshooting](#7-troubleshooting)
+7. [RubyGems](#7-rubygems)
+8. [Maven](#8-maven)
+9. [Terraform](#9-terraform)
+10. [Troubleshooting](#10-troubleshooting)
 
 ---
 
@@ -359,7 +362,359 @@ go get example.com/mymod@v1.0.0
 
 ---
 
-## 7. Troubleshooting
+## 7. RubyGems
+
+### Server configuration
+
+```toml
+[[registries]]
+type = "rubygems"
+name = "internal-gems"
+mode = "local"          # or "hybrid" to fall back to rubygems.org
+
+[registries.rbac]
+anonymous = []
+user      = ["source:read"]
+admin     = ["*"]
+```
+
+For hybrid mode add `upstreams = ["https://rubygems.org"]`.
+
+### Client setup
+
+Add to `~/.gem/credentials` (create if absent, `chmod 600` after):
+
+```yaml
+---
+:internal-gems: <your-token>
+```
+
+Or pass the token directly on the command line.
+
+### Publish
+
+```sh
+# gem push reads credentials from ~/.gem/credentials
+gem push my-gem-1.0.0.gem --host https://batlehub.example.com/proxy/internal-gems
+
+# Or pass the token directly
+gem push my-gem-1.0.0.gem --host https://batlehub.example.com/proxy/internal-gems \
+  --key <your-token>
+```
+
+### Install
+
+```sh
+gem install my-gem --source https://batlehub.example.com/proxy/internal-gems
+```
+
+Or in a `Gemfile`:
+
+```ruby
+source "https://batlehub.example.com/proxy/internal-gems" do
+  gem "my-gem"
+end
+```
+
+### Yank / unyank
+
+```sh
+# Yank
+curl -X DELETE \
+  -H "Authorization: Bearer <your-token>" \
+  "https://batlehub.example.com/proxy/internal-gems/api/v1/gems/yank?gem_name=my-gem&version=1.0.0"
+
+# Unyank
+curl -X PUT \
+  -H "Authorization: Bearer <your-token>" \
+  "https://batlehub.example.com/proxy/internal-gems/api/v1/gems/unyank?gem_name=my-gem&version=1.0.0"
+```
+
+### Endpoint reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/proxy/{registry}/api/v1/gems` | `gem push` |
+| `DELETE` | `/proxy/{registry}/api/v1/gems/yank` | Yank version |
+| `PUT` | `/proxy/{registry}/api/v1/gems/unyank` | Unyank version |
+| `GET` | `/proxy/{registry}/gems/{name}-{version}.gem` | Download gem |
+| `GET` | `/proxy/{registry}/api/v1/gems/{name}.json` | Gem info |
+| `GET` | `/proxy/{registry}/api/v1/versions/{name}.json` | All versions |
+
+---
+
+## 8. Maven
+
+Maven artifacts are published by uploading individual files (`PUT`) using the Maven 2 repository layout. When the `.pom` file is uploaded, BatleHub parses it and creates a version record — subsequent GET requests will include it in `maven-metadata.xml`.
+
+### Server configuration
+
+```toml
+[[registries]]
+type = "maven"
+name = "internal-maven"
+mode = "local"          # or "hybrid" to fall back to repo1.maven.org
+
+[registries.rbac]
+anonymous = []
+user      = ["source:read"]
+admin     = ["*"]
+```
+
+For hybrid mode add `upstreams = ["https://repo1.maven.org/maven2"]`.
+
+### Client setup — Maven (`~/.m2/settings.xml`)
+
+```xml
+<settings>
+  <servers>
+    <server>
+      <id>internal-maven</id>
+      <username>token</username>
+      <password>YOUR_TOKEN</password>
+    </server>
+  </servers>
+
+  <!-- Optional: use as a download mirror for all artifacts -->
+  <mirrors>
+    <mirror>
+      <id>internal-maven</id>
+      <mirrorOf>*</mirrorOf>
+      <url>https://batlehub.example.com/proxy/internal-maven/maven2</url>
+    </mirror>
+  </mirrors>
+</settings>
+```
+
+### Client setup — Gradle (`build.gradle.kts`)
+
+```kotlin
+repositories {
+    maven {
+        name = "internalMaven"
+        url  = uri("https://batlehub.example.com/proxy/internal-maven/maven2")
+        credentials {
+            username = "token"
+            password = System.getenv("BATLEHUB_TOKEN") ?: ""
+        }
+    }
+}
+```
+
+### Publish — Maven
+
+Add to your project's `pom.xml`:
+
+```xml
+<distributionManagement>
+  <repository>
+    <id>internal-maven</id>
+    <url>https://batlehub.example.com/proxy/internal-maven/maven2</url>
+  </repository>
+  <snapshotRepository>
+    <id>internal-maven</id>
+    <url>https://batlehub.example.com/proxy/internal-maven/maven2</url>
+  </snapshotRepository>
+</distributionManagement>
+```
+
+Then deploy:
+
+```sh
+mvn deploy
+# or, overriding the repository URL without editing pom.xml:
+mvn deploy -DaltDeploymentRepository=internal-maven::default::https://batlehub.example.com/proxy/internal-maven/maven2
+```
+
+Maven uploads the `.jar`, `-sources.jar`, `.pom`, and checksum files individually. BatleHub accepts all of them and records the version when the `.pom` arrives.
+
+### Publish — Gradle
+
+Add to `build.gradle.kts`:
+
+```kotlin
+publishing {
+    repositories {
+        maven {
+            name = "internalMaven"
+            url  = uri("https://batlehub.example.com/proxy/internal-maven/maven2")
+            credentials {
+                username = "token"
+                password = System.getenv("BATLEHUB_TOKEN") ?: ""
+            }
+        }
+    }
+}
+```
+
+Then publish:
+
+```sh
+./gradlew publish
+```
+
+### Verify
+
+```sh
+# Download maven-metadata.xml (should list the published version)
+curl -H "Authorization: Bearer <your-token>" \
+  "https://batlehub.example.com/proxy/internal-maven/maven2/com/example/mylib/maven-metadata.xml"
+
+# Resolve the artifact (Maven)
+mvn dependency:get -Dartifact=com.example:mylib:1.0.0
+```
+
+### Endpoint reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `PUT` | `/proxy/{registry}/maven2/{group}/{artifact}/{version}/{file}` | Upload artifact (`.pom` triggers version record) |
+| `GET` | `/proxy/{registry}/maven2/{group}/{artifact}/maven-metadata.xml` | Generated version list XML |
+| `GET` | `/proxy/{registry}/maven2/{group}/{artifact}/{version}/{file}` | Download artifact |
+
+`{group}` uses path segments: `com/example` maps to groupId `com.example`.
+
+---
+
+## 9. Terraform
+
+BatleHub supports both **provider** and **module** private registries. Modules use a simple tarball upload. Providers follow a two-step process: upload a version manifest (JSON describing platforms and checksums), then upload each platform binary.
+
+### Server configuration
+
+```toml
+[[registries]]
+type = "terraform"
+name = "internal-tf"
+mode = "local"          # or "hybrid" to fall back to registry.terraform.io
+
+[registries.rbac]
+anonymous = []
+user      = ["source:read"]
+admin     = ["*"]
+```
+
+For hybrid mode add `upstreams = ["https://registry.terraform.io"]`.
+
+### Publishing modules
+
+A Terraform module is a `.tar.gz` archive of the module directory.
+
+```sh
+# Build the archive
+tar -czf consul-aws-0.1.0.tar.gz -C /path/to/module .
+
+# Upload
+curl -X POST \
+  -H "Authorization: Bearer <your-token>" \
+  -H "Content-Type: application/gzip" \
+  --data-binary @consul-aws-0.1.0.tar.gz \
+  "https://batlehub.example.com/proxy/internal-tf/v1/modules/hashicorp/consul/aws/0.1.0"
+```
+
+### Using a private module
+
+Add credentials to `~/.terraformrc`:
+
+```hcl
+credentials "batlehub.example.com" {
+  token = "<your-token>"
+}
+```
+
+Reference the module in Terraform:
+
+```hcl
+module "consul" {
+  source  = "batlehub.example.com/proxy/internal-tf/hashicorp/consul/aws"
+  version = "0.1.0"
+}
+```
+
+### Publishing providers
+
+**Step 1 — Upload version manifest** (JSON describing the version and its platforms):
+
+```sh
+curl -X POST \
+  -H "Authorization: Bearer <your-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "version": "1.0.0",
+    "protocols": ["5.0"],
+    "platforms": [
+      {
+        "os": "linux", "arch": "amd64",
+        "filename": "terraform-provider-mycloud_1.0.0_linux_amd64.zip",
+        "shasum": "<sha256-hex>"
+      }
+    ]
+  }' \
+  "https://batlehub.example.com/proxy/internal-tf/v1/providers/myorg/mycloud/versions"
+```
+
+**Step 2 — Upload platform binaries**:
+
+```sh
+curl -X PUT \
+  -H "Authorization: Bearer <your-token>" \
+  -H "Content-Type: application/zip" \
+  --data-binary @terraform-provider-mycloud_1.0.0_linux_amd64.zip \
+  "https://batlehub.example.com/proxy/internal-tf/v1/providers/myorg/mycloud/1.0.0/artifact/linux/amd64"
+```
+
+Repeat the binary upload for each supported platform.
+
+### Using a private provider
+
+```hcl
+# ~/.terraformrc
+credentials "batlehub.example.com" {
+  token = "<your-token>"
+}
+```
+
+```hcl
+# main.tf
+terraform {
+  required_providers {
+    mycloud = {
+      source  = "batlehub.example.com/proxy/internal-tf/myorg/mycloud"
+      version = "~> 1.0"
+    }
+  }
+}
+```
+
+### Yank a version (admin)
+
+Use the admin bulk-operations API (see [Administration guide](../website/guide/administration.md)):
+
+```sh
+curl -X POST \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"packages": [{"name": "modules/hashicorp/consul/aws", "versions": ["0.1.0"]}]}' \
+  "https://batlehub.example.com/api/v1/admin/registries/internal-tf/bulk-yank"
+```
+
+### Endpoint reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/proxy/{registry}/v1/modules/{ns}/{name}/{provider}/{version}` | Upload module tarball |
+| `GET` | `/proxy/{registry}/v1/modules/{ns}/{name}/{provider}/{version}/artifact` | Download module tarball |
+| `GET` | `/proxy/{registry}/v1/modules/{ns}/{name}/{provider}/versions` | List module versions |
+| `GET` | `/proxy/{registry}/v1/modules/{ns}/{name}/{provider}/{version}/download` | Download redirect (`X-Terraform-Get`) |
+| `POST` | `/proxy/{registry}/v1/providers/{ns}/{type}/versions` | Upload provider manifest |
+| `PUT` | `/proxy/{registry}/v1/providers/{ns}/{type}/{version}/artifact/{os}/{arch}` | Upload platform binary |
+| `GET` | `/proxy/{registry}/v1/providers/{ns}/{type}/{version}/artifact/{os}/{arch}` | Download platform binary |
+| `GET` | `/proxy/{registry}/v1/providers/{ns}/{type}/versions` | List provider versions |
+| `GET` | `/proxy/{registry}/v1/providers/{ns}/{type}/{version}/download/{os}/{arch}` | Provider download info JSON |
+
+---
+
+## 10. Troubleshooting
 
 ### `403 Forbidden` on publish
 
@@ -388,4 +743,27 @@ Cargo expects the sparse index `config.json` to match the token endpoint. Verify
 
 ```
 sparse+https://batlehub.example.com/proxy/internal/registry/
+```
+
+### `400 Bad Request` (Maven) — "POM missing groupId"
+
+The uploaded `.pom` file is missing `<groupId>` or `<artifactId>`. These are required fields. Check that your `pom.xml` or Gradle `build.gradle.kts` sets `group` and `archivesName`/`rootProject.name` before publishing.
+
+### `mvn deploy` succeeds but `maven-metadata.xml` is not updated
+
+BatleHub generates `maven-metadata.xml` dynamically from the database. A successful `.pom` upload (HTTP 201) means the version was recorded. If GET returns 404, the `.pom` upload may have failed — check the response status for each uploaded file in verbose output (`mvn deploy -X`).
+
+### Terraform `terraform init` fails — "registry does not have a provider"
+
+Verify the `source` address in `terraform required_providers` matches the registry hostname and path exactly:
+```
+batlehub.example.com/proxy/{registry}/namespace/type
+```
+Ensure credentials for `batlehub.example.com` are set in `~/.terraformrc`.
+
+### Terraform provider download fails — "no matching binary"
+
+The provider manifest was uploaded without a binary for the requested platform. Upload the binary via:
+```
+PUT /proxy/{registry}/v1/providers/{ns}/{type}/{version}/artifact/{os}/{arch}
 ```

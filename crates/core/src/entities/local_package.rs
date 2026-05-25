@@ -15,6 +15,12 @@ pub struct PublishedPackage {
     pub index_metadata: serde_json::Value,
     pub published_at: DateTime<Utc>,
     pub published_by: Option<String>,
+    /// Raw signature bytes from the `X-Artifact-Signature` header (base64-decoded).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_bytes: Option<Vec<u8>>,
+    /// Signature type from the `X-Signature-Type` header (e.g. `"pgp"`, `"ed25519"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_type: Option<String>,
 }
 
 /// One newline-delimited line in a Cargo sparse index file.

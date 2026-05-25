@@ -27,11 +27,15 @@ Options:
   --github <name>    Test github registry named <name>
   --openvsx <name>              Test openvsx registry named <name>
   --vscode-marketplace <name>   Test vscode-marketplace registry named <name>
-  -h, --help                    Show this help
+  --maven <name>     Test maven registry named <name>
+  --terraform <name> Test terraform registry named <name>
+  --rubygems <name>  Test rubygems registry named <name>
+  -h, --help         Show this help
 
 Examples:
   # Test all registries using names from config.example.toml
-  $(basename "$0") --npm npm --cargo cargo --go go --github github --openvsx openvsx
+  $(basename "$0") --npm npm --cargo cargo --go go --github github --openvsx openvsx \
+    --maven maven --terraform terraform --rubygems gems
 
   # Test only npm and cargo against a remote instance with auth
   $(basename "$0") --url https://registry.example.com --token mytoken --npm my-npm --cargo my-cargo
@@ -47,6 +51,9 @@ GO_NAME=""
 GITHUB_NAME=""
 OPENVSX_NAME=""
 VSCODE_MARKETPLACE_NAME=""
+MAVEN_NAME=""
+TERRAFORM_NAME=""
+RUBYGEMS_NAME=""
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -59,14 +66,17 @@ while [[ $# -gt 0 ]]; do
         --github)    GITHUB_NAME="$2";    shift 2 ;;
         --openvsx)             OPENVSX_NAME="$2";             shift 2 ;;
         --vscode-marketplace)  VSCODE_MARKETPLACE_NAME="$2";  shift 2 ;;
+        --maven)     MAVEN_NAME="$2";     shift 2 ;;
+        --terraform) TERRAFORM_NAME="$2"; shift 2 ;;
+        --rubygems)  RUBYGEMS_NAME="$2";  shift 2 ;;
         -h|--help)   usage; exit 0 ;;
         *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 1 ;;
     esac
 done
 
 # ── Validate at least one registry was requested ──────────────────────────────
-if [[ -z "$NPM_NAME" && -z "$CARGO_NAME" && -z "$GO_NAME" && -z "$GITHUB_NAME" && -z "$OPENVSX_NAME" && -z "$VSCODE_MARKETPLACE_NAME" ]]; then
-    printf '%bNo registries specified. Use --npm, --cargo, --go, --github, and/or --openvsx.%b\n' "$RED" "$RESET" >&2
+if [[ -z "$NPM_NAME" && -z "$CARGO_NAME" && -z "$GO_NAME" && -z "$GITHUB_NAME" && -z "$OPENVSX_NAME" && -z "$VSCODE_MARKETPLACE_NAME" && -z "$MAVEN_NAME" && -z "$TERRAFORM_NAME" && -z "$RUBYGEMS_NAME" ]]; then
+    printf '%bNo registries specified. Use --npm, --cargo, --go, --github, --openvsx, --maven, --terraform, and/or --rubygems.%b\n' "$RED" "$RESET" >&2
     usage >&2
     exit 1
 fi
@@ -705,6 +715,214 @@ test_vscode_marketplace() {
     rm -f "$vsix_file"
 }
 
+# ── RubyGems ─────────────────────────────────────────────────────────────────
+# RubyGems check strategy:
+#   HTTP check  — GET /api/v1/gems/rake.json; verify .name == "rake"
+#   Tool check  — download rake-13.2.1.gem; verify it is a valid tar archive
+# No gem CLI required; both checks use curl only.
+test_rubygems() {
+    local name="$1"
+    section "rubygems registry: $name"
+
+    # HTTP check — gem info JSON for 'rake' (always present on rubygems.org)
+    local rg_body="${TMPDIR_ROOT}/rg_http_${RANDOM}"
+    local http_code rc=0
+    http_code=$(curl -sS --max-time 30 "${CURL_AUTH[@]}" \
+        -o "$rg_body" -w '%{http_code}' \
+        "${BASE_URL}/proxy/${name}/api/v1/gems/rake.json" 2>/dev/null) || rc=$?
+
+    local http_ok=true
+    if (( rc != 0 )); then
+        print_fail "rubygems:http — curl failed"; http_ok=false
+    elif [[ "$http_code" != "200" ]]; then
+        print_fail "rubygems:http — HTTP $http_code (expected 200)"; http_ok=false
+    else
+        decompress_if_gzip "$rg_body"
+        local gem_name=""
+        if tool_present jq; then
+            gem_name=$(jq -r '.name // empty' "$rg_body" 2>/dev/null) || true
+        else
+            grep -q '"name":"rake"' "$rg_body" 2>/dev/null && gem_name="rake"
+        fi
+        if [[ "$gem_name" == "rake" ]]; then
+            print_pass "rubygems:http — rake gem info (.name == \"rake\")"
+        else
+            print_fail "rubygems:http — .name != \"rake\" (got: \"${gem_name}\")"
+            http_ok=false
+        fi
+    fi
+    rm -f "$rg_body"
+    if $http_ok; then record rubygems http PASS; else record rubygems http FAIL; fi
+
+    # Tool check — download rake-13.2.1.gem and verify it is a tar archive
+    # (.gem files are plain tar archives containing metadata.gz and data.tar.gz)
+    local gem_file="${TMPDIR_ROOT}/rg_gem_${RANDOM}.gem"
+    rc=0
+    http_code=$(curl -sS --max-time 60 "${CURL_AUTH[@]}" \
+        -o "$gem_file" -w '%{http_code}' \
+        "${BASE_URL}/proxy/${name}/gems/rake-13.2.1.gem" 2>/dev/null) || rc=$?
+
+    if (( rc != 0 )); then
+        print_fail "rubygems:tool — curl failed"
+        rm -f "$gem_file"; record rubygems tool FAIL
+    elif [[ "$http_code" != "200" ]]; then
+        print_fail "rubygems:tool — rake-13.2.1.gem: HTTP $http_code (expected 200)"
+        rm -f "$gem_file"; record rubygems tool FAIL
+    elif tool_present tar; then
+        local tar_rc=0
+        tar tf "$gem_file" &>/dev/null || tar_rc=$?
+        rm -f "$gem_file"
+        if (( tar_rc == 0 )); then
+            print_pass "rubygems:tool — rake-13.2.1.gem is a valid tar archive"
+            record rubygems tool PASS
+        else
+            print_fail "rubygems:tool — downloaded file is not a valid tar archive"
+            record rubygems tool FAIL
+        fi
+    else
+        # tar not available — check the file is non-trivially sized
+        local size
+        size=$(wc -c < "$gem_file")
+        rm -f "$gem_file"
+        if (( size > 10240 )); then
+            print_pass "rubygems:tool — rake-13.2.1.gem downloaded (${size} bytes, tar unavailable for full check)"
+            record rubygems tool PASS
+        else
+            print_fail "rubygems:tool — downloaded file is suspiciously small (${size} bytes)"
+            record rubygems tool FAIL
+        fi
+    fi
+}
+
+# ── Maven ─────────────────────────────────────────────────────────────────────
+# Maven check strategy:
+#   HTTP check  — fetch maven-metadata.xml for junit:junit (well-known, always in Central)
+#   Tool check  — download junit-4.13.2.pom and verify it contains <project
+# No Maven CLI required; both checks use curl only.
+test_maven() {
+    local name="$1"
+    section "maven registry: $name"
+
+    # HTTP check — maven-metadata.xml lists all published versions as XML
+    local meta_file="${TMPDIR_ROOT}/maven_meta_${RANDOM}"
+    local http_code rc=0
+    http_code=$(curl -sS --max-time 30 "${CURL_AUTH[@]}" \
+        -o "$meta_file" -w '%{http_code}' \
+        "${BASE_URL}/proxy/${name}/maven2/junit/junit/maven-metadata.xml" 2>/dev/null) || rc=$?
+
+    local http_ok=true
+    if (( rc != 0 )); then
+        print_fail "maven:http — curl failed"; http_ok=false
+    elif [[ "$http_code" != "200" ]]; then
+        print_fail "maven:http — HTTP $http_code (expected 200)"; http_ok=false
+    elif ! grep -q '<metadata' "$meta_file" 2>/dev/null; then
+        print_fail "maven:http — response is not valid maven-metadata.xml (no <metadata> element)"; http_ok=false
+    else
+        print_pass "maven:http — junit maven-metadata.xml"
+    fi
+    rm -f "$meta_file"
+    if $http_ok; then record maven http PASS; else record maven http FAIL; fi
+
+    # Tool check — download the junit-4.13.2 POM and verify it is valid XML
+    local pom_file="${TMPDIR_ROOT}/maven_pom_${RANDOM}.pom"
+    rc=0
+    http_code=$(curl -sS --max-time 60 "${CURL_AUTH[@]}" \
+        -o "$pom_file" -w '%{http_code}' \
+        "${BASE_URL}/proxy/${name}/maven2/junit/junit/4.13.2/junit-4.13.2.pom" 2>/dev/null) || rc=$?
+
+    if (( rc != 0 )); then
+        print_fail "maven:tool — curl failed"
+        rm -f "$pom_file"; record maven tool FAIL
+    elif [[ "$http_code" != "200" ]]; then
+        print_fail "maven:tool — junit-4.13.2.pom: HTTP $http_code (expected 200)"
+        rm -f "$pom_file"; record maven tool FAIL
+    elif grep -q '<project' "$pom_file" 2>/dev/null; then
+        print_pass "maven:tool — junit-4.13.2.pom is valid XML"
+        rm -f "$pom_file"; record maven tool PASS
+    else
+        print_fail "maven:tool — downloaded file does not look like a valid POM"
+        rm -f "$pom_file"; record maven tool FAIL
+    fi
+}
+
+# ── Terraform ─────────────────────────────────────────────────────────────────
+# Terraform check strategy:
+#   HTTP check  — fetch provider version list for hashicorp/random (stable, small)
+#   Tool check  — fetch download info JSON for a specific version; verify download_url present
+# No Terraform CLI required; both checks use curl only.
+test_terraform() {
+    local name="$1"
+    section "terraform registry: $name"
+
+    # HTTP check — provider versions endpoint returns JSON with a .versions array
+    local tf_body="${TMPDIR_ROOT}/tf_http_${RANDOM}"
+    local http_code rc=0
+    http_code=$(curl -sS --max-time 30 "${CURL_AUTH[@]}" \
+        -o "$tf_body" -w '%{http_code}' \
+        "${BASE_URL}/proxy/${name}/v1/providers/hashicorp/random/versions" 2>/dev/null) || rc=$?
+
+    local http_ok=true
+    if (( rc != 0 )); then
+        print_fail "terraform:http — curl failed"; http_ok=false
+    elif [[ "$http_code" != "200" ]]; then
+        print_fail "terraform:http — HTTP $http_code (expected 200)"; http_ok=false
+    else
+        decompress_if_gzip "$tf_body"
+        local has_versions=false
+        if tool_present jq; then
+            local count
+            count=$(jq '.versions | length' "$tf_body" 2>/dev/null) || count=0
+            (( count > 0 )) && has_versions=true
+        else
+            grep -q '"version"' "$tf_body" 2>/dev/null && has_versions=true
+        fi
+        if $has_versions; then
+            print_pass "terraform:http — hashicorp/random versions"
+        else
+            print_fail "terraform:http — response contains no versions"
+            http_ok=false
+        fi
+    fi
+    rm -f "$tf_body"
+    if $http_ok; then record terraform http PASS; else record terraform http FAIL; fi
+
+    # Tool check — provider download info JSON for a specific version
+    local tf_dl="${TMPDIR_ROOT}/tf_dl_${RANDOM}"
+    rc=0
+    http_code=$(curl -sS --max-time 30 "${CURL_AUTH[@]}" \
+        -o "$tf_dl" -w '%{http_code}' \
+        "${BASE_URL}/proxy/${name}/v1/providers/hashicorp/random/3.6.0/download/linux/amd64" 2>/dev/null) || rc=$?
+
+    if (( rc != 0 )); then
+        print_fail "terraform:tool — download info curl failed"
+        rm -f "$tf_dl"; record terraform tool FAIL
+    elif [[ "$http_code" == "404" ]]; then
+        print_skip "terraform:tool — hashicorp/random 3.6.0 not found upstream (HTTP 404)"
+        rm -f "$tf_dl"; record terraform tool SKIP
+    elif [[ "$http_code" != "200" ]]; then
+        print_fail "terraform:tool — download info HTTP $http_code (expected 200)"
+        rm -f "$tf_dl"; record terraform tool FAIL
+    else
+        decompress_if_gzip "$tf_dl"
+        local has_url=false
+        if tool_present jq; then
+            local dl_url
+            dl_url=$(jq -r '.download_url // empty' "$tf_dl" 2>/dev/null) || true
+            [[ -n "$dl_url" ]] && has_url=true
+        else
+            grep -q '"download_url"' "$tf_dl" 2>/dev/null && has_url=true
+        fi
+        rm -f "$tf_dl"
+        if $has_url; then
+            print_pass "terraform:tool — hashicorp/random 3.6.0 download info (linux/amd64)"
+            record terraform tool PASS
+        else
+            print_fail "terraform:tool — download info JSON missing download_url"
+            record terraform tool FAIL
+        fi
+    fi
+}
+
 # ── Summary table ─────────────────────────────────────────────────────────────
 print_summary() {
     printf "\n${BOLD}%-20s  %-8s  %-8s${RESET}\n" "Registry" "HTTP" "Tool"
@@ -717,6 +935,9 @@ print_summary() {
     [[ -n "$GITHUB_NAME"             ]] && order+=("github")
     [[ -n "$OPENVSX_NAME"            ]] && order+=("openvsx")
     [[ -n "$VSCODE_MARKETPLACE_NAME" ]] && order+=("vscode-marketplace")
+    [[ -n "$MAVEN_NAME"              ]] && order+=("maven")
+    [[ -n "$TERRAFORM_NAME"          ]] && order+=("terraform")
+    [[ -n "$RUBYGEMS_NAME"           ]] && order+=("rubygems")
 
     for reg in "${order[@]}"; do
         local http_status="${RESULTS["${reg}:http"]:-SKIP}"
@@ -756,6 +977,9 @@ print_summary_colored() {
     [[ -n "$GITHUB_NAME"             ]] && order+=("github")
     [[ -n "$OPENVSX_NAME"            ]] && order+=("openvsx")
     [[ -n "$VSCODE_MARKETPLACE_NAME" ]] && order+=("vscode-marketplace")
+    [[ -n "$MAVEN_NAME"              ]] && order+=("maven")
+    [[ -n "$TERRAFORM_NAME"          ]] && order+=("terraform")
+    [[ -n "$RUBYGEMS_NAME"           ]] && order+=("rubygems")
 
     for reg in "${order[@]}"; do
         local http_status="${RESULTS["${reg}:http"]:-SKIP}"
@@ -784,6 +1008,9 @@ printf "${BOLD}batlehub registry check${RESET}  ${DIM}%s${RESET}\n" "$BASE_URL"
 [[ -n "$GITHUB_NAME"             ]] && test_github             "$GITHUB_NAME"
 [[ -n "$OPENVSX_NAME"            ]] && test_openvsx            "$OPENVSX_NAME"
 [[ -n "$VSCODE_MARKETPLACE_NAME" ]] && test_vscode_marketplace "$VSCODE_MARKETPLACE_NAME"
+[[ -n "$MAVEN_NAME"              ]] && test_maven              "$MAVEN_NAME"
+[[ -n "$TERRAFORM_NAME"          ]] && test_terraform          "$TERRAFORM_NAME"
+[[ -n "$RUBYGEMS_NAME"           ]] && test_rubygems           "$RUBYGEMS_NAME"
 
 printf "\n${BOLD}Summary${RESET}\n"
 print_summary_colored

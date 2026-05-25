@@ -52,6 +52,29 @@ const { data, error, loading, reload } = useApi<RegistryHealthDto[]>(
   [token],
 );
 
+interface AggregateStats {
+  artifact_hits: number;
+  artifact_misses: number;
+  hit_rate: number | null;
+  cached_bytes: number;
+}
+
+interface StatsResponse {
+  since_startup: string;
+  aggregate: AggregateStats;
+}
+
+const { data: statsData } = useApi<StatsResponse>(
+  () =>
+    fetch(`${API_BASE}/api/v1/admin/stats`, {
+      headers: token.value ? { Authorization: `Bearer ${token.value}` } : {},
+    }).then(async (r) => {
+      if (!r.ok) throw new Error(await r.text());
+      return { data: await r.json() };
+    }) as Promise<{ data?: unknown; error?: unknown }>,
+  [token],
+);
+
 const expandedErrors = ref<Set<string>>(new Set());
 
 const clearTarget = ref<string | null>(null);
@@ -145,6 +168,55 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
     <p v-if="loading && !data" class="text-sm text-muted-foreground">Loading…</p>
     <p v-else-if="error" class="text-sm text-destructive">{{ error }}</p>
     <p v-else-if="data && data.length === 0" class="text-sm text-muted-foreground">No registries configured.</p>
+
+    <!-- Aggregate stats (since last restart) -->
+    <Card v-if="statsData" class="border-muted/60">
+      <CardHeader class="pb-2">
+        <div class="flex items-center justify-between">
+          <CardTitle class="text-sm font-medium text-muted-foreground uppercase tracking-wide">
+            Cache performance since last restart
+          </CardTitle>
+          <span class="text-xs text-muted-foreground">since {{ fmtRelative(statsData.since_startup) }}</span>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+            <p class="text-xs text-muted-foreground">Cache hit rate</p>
+            <p
+              class="text-2xl font-semibold tabular-nums"
+              :class="statsData.aggregate.hit_rate !== null && statsData.aggregate.hit_rate >= 0.7
+                ? 'text-green-600 dark:text-green-400'
+                : statsData.aggregate.hit_rate !== null && statsData.aggregate.hit_rate >= 0.4
+                ? 'text-yellow-600 dark:text-yellow-400'
+                : 'text-muted-foreground'"
+            >
+              {{ statsData.aggregate.hit_rate !== null ? `${(statsData.aggregate.hit_rate * 100).toFixed(1)}%` : '—' }}
+            </p>
+            <p class="text-xs text-muted-foreground">artifact requests</p>
+          </div>
+          <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+            <p class="text-xs text-muted-foreground">Cache hits</p>
+            <p class="text-2xl font-semibold tabular-nums text-green-600 dark:text-green-400">
+              {{ statsData.aggregate.artifact_hits.toLocaleString() }}
+            </p>
+            <p class="text-xs text-muted-foreground">served from cache</p>
+          </div>
+          <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+            <p class="text-xs text-muted-foreground">Cache misses</p>
+            <p class="text-2xl font-semibold tabular-nums">
+              {{ statsData.aggregate.artifact_misses.toLocaleString() }}
+            </p>
+            <p class="text-xs text-muted-foreground">fetched from upstream</p>
+          </div>
+          <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+            <p class="text-xs text-muted-foreground">Total cached</p>
+            <p class="text-2xl font-semibold">{{ fmtBytes(statsData.aggregate.cached_bytes) }}</p>
+            <p class="text-xs text-muted-foreground">in storage</p>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
 
     <!-- Registry cards grid -->
     <div

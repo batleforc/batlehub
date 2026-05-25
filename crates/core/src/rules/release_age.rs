@@ -73,6 +73,7 @@ mod tests {
             checksum: None,
             is_signed: None,
             extra: serde_json::Value::Null,
+            cache_control: None,
         }
     }
 

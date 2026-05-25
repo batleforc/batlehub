@@ -19,27 +19,39 @@ use batlehub_adapters::{
         KubernetesAuthProvider, OidcAuthProvider, OidcSsoFlow, StaticTokenAuthProvider,
         UserTokenAuthProvider,
     },
-    db::PgPackageRepository,
+    db::{PgArtifactMetaRepository, PgOwnershipStore, PgPackageRepository, PgQuotaRepository},
     local_registry::PostgresLocalRegistry,
     registry::{
         CargoRegistryClient, FanoutRegistryClient, GoProxyRegistryClient, GithubRegistryClient,
-        NpmRegistryClient, OpenVsxRegistryClient, VsCodeMarketplaceRegistryClient,
-        UpstreamHttpOptions,
+        MavenRegistryClient, NpmRegistryClient, OpenVsxRegistryClient, RubyGemsRegistryClient,
+        TerraformRegistryClient, VsCodeMarketplaceRegistryClient, UpstreamHttpOptions,
     },
     storage::{FilesystemStorageBackend, StorageRouter},
 };
 use batlehub_config::{
     load,
-    schema::{AuthConfig, OtelConfig, RegistryConfig, RegistryMode, RuleConfig, StorageBackendConfig, StoragesConfig, UpstreamAuthConfig},
+    schema::{AuthConfig, OtelConfig, QuotaEnforcement as ConfigQuotaEnforcement, RegistryConfig, RegistryMode, RuleConfig, StorageBackendConfig, StoragesConfig, UpstreamAuthConfig},
 };
 use batlehub_adapters::cache::{InMemoryCacheStore, PgCacheStore};
+#[cfg(feature = "cache-redis")]
+use batlehub_adapters::cache::RedisCacheStore;
+use batlehub_adapters::rate_limit::{InMemoryRateLimitStore, PgRateLimitStore};
+#[cfg(feature = "cache-redis")]
+use batlehub_adapters::rate_limit::RedisRateLimitStore;
 use batlehub_core::{
     entities::Role,
-    ports::{AuthProvider, CacheStore, UserTokenRepository},
+    ports::{AuthProvider, CacheStore, RateLimitStore, UserTokenRepository},
     rules::{BlockListRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule},
-    services::{AdminService, LocalRegistryService, ProxyService, RegistryPolicy},
+    services::{
+        AdminService, LocalRegistryService, ProxyMetrics, ProxyService, QuotaEnforcement,
+        QuotaService, RegistryPolicy, RegistryQuotaConfig,
+        local_registry::{SigningConfig as CoreSigningConfig, VersioningPolicy},
+    },
 };
-use batlehub_web::{configure_app, openapi_spec, AccessConfig, ApiDoc, CargoIndexProxy, RegistryMap, RegistryModeMap, UpstreamMap};
+use batlehub_core::services::WarmingService;
+use batlehub_web::{configure_app, healthz, openapi_spec, prometheus_metrics, AccessConfig, ApiDoc, CargoIndexProxy, RegistryMap, RegistryModeMap, RateLimitMiddlewareFactory, RateLimitService, UpstreamMap};
+use batlehub_web::handlers::back_office::warming::WarmingServiceMap;
+use metrics_exporter_prometheus::PrometheusBuilder;
 
 // ── Tracing span builder ──────────────────────────────────────────────────────
 
@@ -109,6 +121,11 @@ async fn main() -> Result<()> {
 
     let config =
         load(&cli.config).with_context(|| format!("loading config from '{}'", cli.config))?;
+
+    // ── Prometheus metrics recorder ───────────────────────────────────────────
+    let prometheus_handle = PrometheusBuilder::new()
+        .install_recorder()
+        .context("installing Prometheus metrics recorder")?;
 
     // ── Tracing ───────────────────────────────────────────────────────────────
     let _tracer_provider = init_tracing(config.otel.as_ref());
@@ -188,9 +205,9 @@ async fn main() -> Result<()> {
                         tracing::info!(issuer = %oidc_cfg.issuer_url, "OIDC auth provider ready");
                     }
                     Err(e) => {
-                        // Non-fatal: server starts without OIDC. The /auth/oidc/login
-                        // endpoint will return 503 until the provider becomes reachable
-                        // and the server is restarted.
+                        // Non-fatal: server starts without this OIDC provider.
+                        // The /auth/oidc/login endpoint will return 503 for this
+                        // provider until the server is restarted with a reachable issuer.
                         tracing::warn!(
                             issuer = %oidc_cfg.issuer_url,
                             error = %e,
@@ -222,6 +239,23 @@ async fn main() -> Result<()> {
         "postgres" => {
             tracing::info!("metadata cache: postgres");
             Arc::new(PgCacheStore::new(repo.pool()))
+        }
+        "redis" => {
+            #[cfg(feature = "cache-redis")]
+            {
+                let url = config.cache.url.as_deref().unwrap_or("redis://127.0.0.1:6379");
+                tracing::info!(url, "metadata cache: redis");
+                Arc::new(
+                    RedisCacheStore::new(url)
+                        .await
+                        .context("connecting to Redis cache")?,
+                )
+            }
+            #[cfg(not(feature = "cache-redis"))]
+            {
+                tracing::warn!("compiled without cache-redis feature; falling back to in-memory cache");
+                Arc::new(InMemoryCacheStore::new())
+            }
         }
         other => {
             if other != "memory" {
@@ -264,6 +298,14 @@ async fn main() -> Result<()> {
             };
             npm_upstream_map.insert(reg.name.clone(), first_url);
         }
+        if reg.registry_type == "terraform" {
+            let first_url = if reg.upstreams.is_empty() {
+                "https://registry.terraform.io".to_owned()
+            } else {
+                reg.upstreams[0].clone()
+            };
+            npm_upstream_map.insert(reg.name.clone(), first_url);
+        }
 
         // Proxy and Hybrid modes need an upstream sparse index; Local mode does not.
         if reg.registry_type == "cargo" && !matches!(reg.mode, RegistryMode::Local) {
@@ -276,14 +318,57 @@ async fn main() -> Result<()> {
     let upstream_map = UpstreamMap(npm_upstream_map);
     let registry_mode_map = RegistryModeMap(registry_mode_map_inner);
 
+    // ── Rate limiting ──────────────────────────────────────────────────────────
+    let rate_limit_configs: std::collections::HashMap<String, batlehub_config::schema::RateLimitConfig> = config
+        .registries
+        .iter()
+        .filter_map(|r| r.rate_limit.clone().map(|rl| (r.name.clone(), rl)))
+        .collect();
+    let rate_limit_store: Arc<dyn RateLimitStore> = match config.cache.cache_type.as_str() {
+        "postgres" => {
+            tracing::info!("rate limit store: postgres");
+            Arc::new(PgRateLimitStore::new(repo.pool()))
+        }
+        "redis" => {
+            #[cfg(feature = "cache-redis")]
+            {
+                let url = config.cache.url.as_deref().unwrap_or("redis://127.0.0.1:6379");
+                tracing::info!(url, "rate limit store: redis");
+                Arc::new(
+                    RedisRateLimitStore::new(url)
+                        .await
+                        .context("connecting to Redis rate limit store")?,
+                )
+            }
+            #[cfg(not(feature = "cache-redis"))]
+            {
+                tracing::warn!("compiled without cache-redis feature; falling back to in-memory rate limit store");
+                Arc::new(InMemoryRateLimitStore::new())
+            }
+        }
+        other => {
+            if other != "memory" {
+                tracing::warn!(cache_type = %other, "unknown cache type for rate limit store, falling back to memory");
+            }
+            Arc::new(InMemoryRateLimitStore::new())
+        }
+    };
+    let rate_limit_svc = Arc::new(RateLimitService::new(&rate_limit_configs, rate_limit_store));
+
     // ── Services ──────────────────────────────────────────────────────────────
+    let registry_names: Vec<String> = config.registries.iter().map(|r| r.name.clone()).collect();
+    let proxy_metrics = Arc::new(ProxyMetrics::new(&registry_names));
+
+    let artifact_meta = Arc::new(PgArtifactMetaRepository::new(repo.pool()));
     let proxy_svc = Arc::new(ProxyService {
         registries: registry_clients,
         storage: storage.clone(),
         cache: cache.clone(),
         repo: repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>,
+        artifact_meta,
         policies,
         max_artifact_size_bytes: config.limits.max_artifact_size_bytes,
+        metrics: Arc::clone(&proxy_metrics),
     });
 
     let admin_svc = Arc::new(AdminService::new(
@@ -291,11 +376,37 @@ async fn main() -> Result<()> {
     ));
 
     let local_registry_backend = Arc::new(PostgresLocalRegistry::new(repo.pool()));
+    let quota_svc = Arc::new(build_quota_service(repo.pool(), &config.registries));
+    let ownership_store = Arc::new(PgOwnershipStore::new(repo.pool()))
+        as Arc<dyn batlehub_core::ports::OwnershipPort>;
+    let versioning_map = build_versioning_map(&config.registries);
+    let signing_map = build_signing_map(&config.registries);
     let local_svc = Arc::new(LocalRegistryService {
         backend: local_registry_backend,
         storage: storage.clone(),
         max_artifact_bytes: config.limits.max_artifact_size_bytes,
+        quota: Some(Arc::clone(&quota_svc)),
+        ownership: Some(ownership_store),
+        versioning: versioning_map,
+        signing: signing_map,
     });
+
+    // ── Warming services ──────────────────────────────────────────────────────
+    let mut warming_map: WarmingServiceMap = HashMap::new();
+    for reg in &config.registries {
+        if let Some(client) = proxy_svc.registries.get(&reg.name) {
+            let warming_svc = Arc::new(WarmingService {
+                client: Arc::clone(client),
+                storage: storage.clone(),
+                artifact_meta: Arc::new(PgArtifactMetaRepository::new(repo.pool()))
+                    as Arc<dyn batlehub_core::ports::ArtifactMetaRepository>,
+                registry_name: reg.name.clone(),
+                latest_n: reg.cache.warm_latest_n,
+                concurrency: reg.cache.warm_concurrency,
+            });
+            warming_map.insert(reg.name.clone(), warming_svc);
+        }
+    }
 
     // ── Access config ─────────────────────────────────────────────────────────
     // Respects role inheritance: user inherits anonymous, admin inherits both.
@@ -333,6 +444,28 @@ async fn main() -> Result<()> {
 
     tracing::info!(addr = %bind_addr, "listening");
 
+    // Spawn startup warming tasks (non-blocking; server starts immediately).
+    for reg in &config.registries {
+        if !reg.cache.warm_packages.is_empty() {
+            if let Some(svc) = warming_map.get(&reg.name) {
+                let svc = Arc::clone(svc);
+                let packages = reg.cache.warm_packages.clone();
+                let name = reg.name.clone();
+                tokio::spawn(async move {
+                    tracing::info!(registry = %name, "warming: startup warming started");
+                    let report = svc.warm_all(&packages).await;
+                    tracing::info!(
+                        registry = %name,
+                        warmed = report.warmed,
+                        skipped = report.skipped,
+                        errors = report.errors,
+                        "warming: startup warming complete"
+                    );
+                });
+            }
+        }
+    }
+
     HttpServer::new(move || {
         let configure = configure_app(
             proxy_svc.clone(),
@@ -343,10 +476,14 @@ async fn main() -> Result<()> {
             registry_map.clone(),
             upstream_map.clone(),
             oidc_sso_flows.clone(),
+            warming_map.clone(),
+            Arc::clone(&proxy_metrics),
+            Some(prometheus_handle.clone()),
         );
         let static_dir_inner = static_dir.clone();
         let cargo_indexes_inner = cargo_indexes.clone();
         let local_svc_inner = local_svc.clone();
+        let quota_svc_inner = Arc::clone(&quota_svc);
         let registry_mode_map_inner = registry_mode_map.clone();
 
         let (app, openapi) = App::new()
@@ -355,11 +492,14 @@ async fn main() -> Result<()> {
             .configure(configure)
             .split_for_parts();
 
-        // Register app-data that is not injected via configure_app.
+        // Register app-data and non-OpenAPI routes that are handled outside configure_app.
         let app = app
             .app_data(web::Data::new(cargo_indexes_inner))
             .app_data(web::Data::new(local_svc_inner))
-            .app_data(web::Data::new(registry_mode_map_inner));
+            .app_data(web::Data::new(quota_svc_inner))
+            .app_data(web::Data::new(registry_mode_map_inner))
+            .service(prometheus_metrics)
+            .service(healthz);
 
         let cors_base = Cors::default()
             .allowed_methods(vec!["GET", "POST", "HEAD", "OPTIONS", "DELETE"])
@@ -375,7 +515,10 @@ async fn main() -> Result<()> {
             cors_allowed_origins.iter().fold(cors_base, |c, origin| c.allowed_origin(origin))
         };
 
+        // Middleware runs in reverse registration order (last-registered = outermost = first to run).
+        // Correct chain: cors → auth (sets Identity) → rate_limit (reads Identity) → tracing → handler
         app.wrap(TracingLogger::<BatleHubSpanBuilder>::new())
+            .wrap(RateLimitMiddlewareFactory::new(rate_limit_svc.clone()))
             .wrap(batlehub_web::AuthMiddlewareFactory::new(
                 auth_providers.clone(),
             ))
@@ -491,6 +634,9 @@ fn build_registry_client(reg: &RegistryConfig) -> anyhow::Result<Arc<dyn batlehu
             "openvsx" => Arc::new(OpenVsxRegistryClient::new(url, opts)?),
             "goproxy" => Arc::new(GoProxyRegistryClient::new(url, opts)?),
             "vscode-marketplace" => Arc::new(VsCodeMarketplaceRegistryClient::new(url, opts)?),
+            "maven" => Arc::new(MavenRegistryClient::new(url, opts)?),
+            "terraform" => Arc::new(TerraformRegistryClient::new(url, opts)?),
+            "rubygems" => Arc::new(RubyGemsRegistryClient::new(url, opts)?),
             other => anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in"),
         };
         Ok(client)
@@ -505,6 +651,9 @@ fn build_registry_client(reg: &RegistryConfig) -> anyhow::Result<Arc<dyn batlehu
         "openvsx" => resolve_urls(&reg.upstreams, "https://open-vsx.org"),
         "goproxy" => resolve_urls(&reg.upstreams, "https://proxy.golang.org"),
         "vscode-marketplace" => resolve_urls(&reg.upstreams, "https://marketplace.visualstudio.com"),
+        "maven" => resolve_urls(&reg.upstreams, "https://repo1.maven.org/maven2"),
+        "terraform" => resolve_urls(&reg.upstreams, "https://registry.terraform.io"),
+        "rubygems" => resolve_urls(&reg.upstreams, "https://rubygems.org"),
         other => anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in"),
     };
 
@@ -566,8 +715,81 @@ fn build_policy(
         metadata_ttl: Some(Duration::from_secs(reg.cache.metadata_ttl_secs)),
         firewall_only: reg.firewall_only,
         serve_stale_metadata: reg.cache.serve_stale,
+        artifact_ttl: reg.cache.artifact_ttl_secs.map(Duration::from_secs),
         rules,
     }
+}
+
+/// Build per-registry `VersioningPolicy` map from registries that have a `[versioning]` section.
+fn build_versioning_map(registries: &[RegistryConfig]) -> HashMap<String, VersioningPolicy> {
+    registries
+        .iter()
+        .filter_map(|reg| {
+            reg.versioning.as_ref().map(|v| {
+                let pattern = v.version_pattern.as_deref().and_then(|pat| {
+                    match regex::Regex::new(pat) {
+                        Ok(re) => Some(re),
+                        Err(e) => {
+                            tracing::warn!("invalid version_pattern for registry '{}': {e}", reg.name);
+                            None
+                        }
+                    }
+                });
+                (
+                    reg.name.clone(),
+                    VersioningPolicy {
+                        enforce_semver: v.enforce_semver,
+                        allow_prerelease: v.allow_prerelease,
+                        version_pattern: pattern,
+                    },
+                )
+            })
+        })
+        .collect()
+}
+
+/// Build per-registry `SigningConfig` map from registries that have a `[signing]` section.
+fn build_signing_map(registries: &[RegistryConfig]) -> HashMap<String, CoreSigningConfig> {
+    registries
+        .iter()
+        .filter_map(|reg| {
+            reg.signing.as_ref().map(|s| {
+                (
+                    reg.name.clone(),
+                    CoreSigningConfig {
+                        required: s.required,
+                        allowed_types: s.allowed_types.clone(),
+                    },
+                )
+            })
+        })
+        .collect()
+}
+
+/// Build a `QuotaService` from the registries that have a `[quota]` section.
+fn build_quota_service(pool: sqlx::PgPool, registries: &[RegistryConfig]) -> QuotaService {
+    let repo = Arc::new(PgQuotaRepository::new(pool));
+    let configs = registries
+        .iter()
+        .filter_map(|reg| {
+            reg.quota.as_ref().map(|q| {
+                let enforcement = match q.enforcement {
+                    ConfigQuotaEnforcement::Block => QuotaEnforcement::Block,
+                    ConfigQuotaEnforcement::Warn => QuotaEnforcement::Warn,
+                };
+                (
+                    reg.name.clone(),
+                    RegistryQuotaConfig {
+                        max_storage_bytes_per_user: q.max_storage_bytes_per_user,
+                        max_packages_per_user: q.max_packages_per_user,
+                        warn_threshold: q.warn_threshold_pct.clamp(1, 100) as f64 / 100.0,
+                        enforcement,
+                    },
+                )
+            })
+        })
+        .collect();
+    QuotaService::new(repo, configs)
 }
 
 /// Initialise tracing.  Returns the `TracerProvider` when OTLP is configured

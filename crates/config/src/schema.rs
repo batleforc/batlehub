@@ -45,17 +45,24 @@ impl AppConfig {
             }
             match registry.registry_type.as_str() {
                 "github" | "cargo" | "npm" | "openvsx" | "goproxy" | "pypi" | "composer"
-                | "vscode-marketplace" => {}
+                | "vscode-marketplace" | "maven" | "terraform" | "rubygems" => {}
                 other => bail!("unknown registry type: '{other}'"),
             }
             if matches!(registry.mode, RegistryMode::Local | RegistryMode::Hybrid)
                 && !matches!(
                     registry.registry_type.as_str(),
-                    "cargo" | "npm" | "openvsx" | "vscode-marketplace" | "goproxy"
+                    "cargo"
+                        | "npm"
+                        | "openvsx"
+                        | "vscode-marketplace"
+                        | "goproxy"
+                        | "rubygems"
+                        | "maven"
+                        | "terraform"
                 )
             {
                 bail!(
-                    "registry '{}': mode 'local'/'hybrid' is only supported for cargo, npm, openvsx, vscode-marketplace, and goproxy registries",
+                    "registry '{}': mode 'local'/'hybrid' is only supported for cargo, npm, openvsx, vscode-marketplace, goproxy, rubygems, maven, and terraform registries",
                     registry.name
                 );
             }
@@ -367,15 +374,23 @@ pub struct S3StorageConfig {
 /// In TOML:
 /// ```toml
 /// [cache]
-/// type = "postgres"   # "memory" (default) | "postgres"
+/// type = "postgres"   # "memory" (default) | "postgres" | "redis"
+///
+/// # Required when type = "redis":
+/// url = "redis://localhost:6379"
 /// ```
 #[derive(Debug, Deserialize)]
 pub struct CacheConfig {
     /// `"memory"` (default) uses an in-process HashMap; no persistence between restarts.
     /// `"postgres"` stores entries in the `metadata_cache` table; survives restarts and
     /// is shared across multiple server instances.
+    /// `"redis"` stores entries in Redis; survives restarts and is shared across instances.
     #[serde(rename = "type", default = "default_cache_type")]
     pub cache_type: String,
+    /// Connection URL for the Redis cache backend (required when `type = "redis"`).
+    /// Format: `redis://[:<password>@]<host>[:<port>][/<db>]`
+    /// or `rediss://...` for TLS.
+    pub url: Option<String>,
 }
 
 fn default_cache_type() -> String {
@@ -384,7 +399,7 @@ fn default_cache_type() -> String {
 
 impl Default for CacheConfig {
     fn default() -> Self {
-        Self { cache_type: default_cache_type() }
+        Self { cache_type: default_cache_type(), url: None }
     }
 }
 
@@ -443,6 +458,159 @@ pub struct RegistryConfig {
     /// Controls proxy vs. local vs. hybrid behaviour for this registry.
     #[serde(default)]
     pub mode: RegistryMode,
+    /// Optional publish quota enforced on local/hybrid registries.
+    #[serde(default)]
+    pub quota: Option<QuotaConfig>,
+    /// Optional per-user request rate limit for this registry.
+    #[serde(default)]
+    pub rate_limit: Option<RateLimitConfig>,
+    /// Optional versioning policy enforced at publish time (local/hybrid mode only).
+    #[serde(default)]
+    pub versioning: Option<VersioningPolicy>,
+    /// Optional artifact signing configuration (local/hybrid mode only).
+    #[serde(default)]
+    pub signing: Option<SigningConfig>,
+}
+
+// ── Versioning policy ─────────────────────────────────────────────────────────
+
+/// Per-registry versioning policy enforced at publish time.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct VersioningPolicy {
+    /// Reject publish if the version string is not a valid semver (e.g. `1.2.3`, `1.0.0-beta.1`).
+    #[serde(default)]
+    pub enforce_semver: bool,
+    /// Reject publish if the semver pre-release component is non-empty (e.g. `-alpha`, `-beta.1`).
+    /// Only effective when `enforce_semver` is also `true`.
+    #[serde(default = "default_true")]
+    pub allow_prerelease: bool,
+    /// Reject publish if the version string does not match this regex.
+    #[serde(default)]
+    pub version_pattern: Option<String>,
+}
+
+fn default_true() -> bool { true }
+
+// ── Artifact signing ──────────────────────────────────────────────────────────
+
+/// Per-registry artifact signing configuration.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SigningConfig {
+    /// When `true`, reject publish requests that do not include an `X-Artifact-Signature` header.
+    #[serde(default)]
+    pub required: bool,
+    /// Accepted signature types (e.g. `["pgp", "ed25519"]`).
+    /// When empty, any type (or no type) is accepted.
+    #[serde(default)]
+    pub allowed_types: Vec<String>,
+}
+
+// ── Quota management ──────────────────────────────────────────────────────────
+
+/// How to enforce quota violations.
+#[derive(Debug, Deserialize, Default, Clone, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum QuotaEnforcement {
+    /// Reject the publish request with HTTP 429 when the quota is exceeded.
+    #[default]
+    Block,
+    /// Allow the publish but include a warning header in the response.
+    Warn,
+}
+
+/// Per-registry publish quotas for local/hybrid mode.
+///
+/// Example TOML:
+/// ```toml
+/// [registries.quota]
+/// max_storage_bytes_per_user = 1_073_741_824   # 1 GiB
+/// max_packages_per_user      = 100
+/// warn_threshold_pct         = 80
+/// enforcement                = "block"
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct QuotaConfig {
+    /// Maximum cumulative bytes a single user may publish to this registry.
+    pub max_storage_bytes_per_user: Option<u64>,
+    /// Maximum number of distinct package versions a single user may publish.
+    pub max_packages_per_user: Option<u32>,
+    /// Emit a quota-warning response header when usage exceeds this percentage
+    /// of the limit. Defaults to 80.
+    #[serde(default = "default_warn_pct")]
+    pub warn_threshold_pct: u8,
+    /// Whether to hard-block or just warn on quota overrun.
+    #[serde(default)]
+    pub enforcement: QuotaEnforcement,
+}
+
+fn default_warn_pct() -> u8 { 80 }
+
+// ── Rate limiting ─────────────────────────────────────────────────────────────
+
+/// How to enforce rate-limit violations.
+#[derive(Debug, Deserialize, Default, Clone, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RateLimitEnforcement {
+    /// Reject requests that exceed the rate limit with HTTP 429.
+    #[default]
+    Block,
+    /// Allow the request but include a warning header in the response.
+    Warn,
+}
+
+/// Per-registry request rate limiting.
+///
+/// Example TOML:
+/// ```toml
+/// [registries.rate_limit]
+/// requests_per_window = 100
+/// window_secs         = 60
+/// enforcement         = "block"
+///
+/// [[registries.rate_limit.groups]]
+/// name                = "ci-bots"
+/// requests_per_window = 5000   # shared pool for all ci-bots members combined
+/// window_secs         = 60
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct RateLimitConfig {
+    /// Maximum number of requests a single user (or IP for anonymous) may make within the window.
+    pub requests_per_window: u32,
+    /// Length of the sliding window in seconds.
+    pub window_secs: u32,
+    /// Whether to hard-block (429) or just warn on rate-limit overrun.
+    #[serde(default)]
+    pub enforcement: RateLimitEnforcement,
+    /// Optional per-group rate limits. Each entry defines a shared request pool for all
+    /// members of the named group. A user's request is checked against both their personal
+    /// bucket and every group bucket they belong to; all must have tokens available.
+    #[serde(default)]
+    pub groups: Vec<GroupRateLimitConfig>,
+}
+
+/// A shared request pool for all members of a named group.
+///
+/// The `name` is matched against the namespaced group strings in `Identity.groups`
+/// (e.g. `"oidc:ci-bots"` or `"*:ci-bots"` for a wildcard provider prefix).
+///
+/// Example TOML:
+/// ```toml
+/// [[registries.rate_limit.groups]]
+/// name                = "oidc:ci-bots"
+/// requests_per_window = 5000
+/// window_secs         = 60
+/// enforcement         = "block"   # optional; inherits parent enforcement when omitted
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct GroupRateLimitConfig {
+    /// Group name to match against `Identity.groups` (exact string match).
+    pub name: String,
+    /// Maximum requests the entire group may collectively make within the window.
+    pub requests_per_window: u32,
+    /// Length of the sliding window in seconds.
+    pub window_secs: u32,
+    /// Override enforcement for this group. Inherits the parent `enforcement` when absent.
+    pub enforcement: Option<RateLimitEnforcement>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -483,34 +651,66 @@ pub struct CachePolicy {
     /// TTL for metadata (version lists, release info) in seconds.
     #[serde(default = "default_metadata_ttl")]
     pub metadata_ttl_secs: u64,
-    /// How to handle artifact caching: `"permanent"` (never re-fetch) or `"ttl"`.
-    #[serde(default = "default_artifact_strategy")]
-    pub artifact_strategy: String,
     /// When true (the default), serve stale metadata when upstream returns a transient
     /// error instead of propagating a 502. Allows cached artifacts to keep being served
     /// during upstream outages.
     #[serde(default = "default_serve_stale")]
     pub serve_stale: bool,
+    /// Evict artifacts older than this many seconds. `null` means never expire by age.
+    #[serde(default)]
+    pub artifact_ttl_secs: Option<u64>,
+    /// Evict artifacts not accessed for this many days. `null` means never expire by idle time.
+    #[serde(default)]
+    pub idle_days: Option<u64>,
+    /// Storage size cap in bytes. When exceeded, the least-recently-used artifacts are evicted
+    /// until usage falls below this threshold. `null` means no size cap.
+    #[serde(default)]
+    pub max_size_bytes: Option<u64>,
+    /// Keep only the N most-recently-cached versions per (registry, package). Older versions
+    /// are evicted when a new one is stored. `null` means keep all versions.
+    #[serde(default)]
+    pub keep_latest_n: Option<usize>,
+    /// Packages to pre-fetch on startup and via the `/warm` admin endpoint.
+    /// Each entry is either a bare package name (`"lodash"`) or a pinned version
+    /// (`"lodash@4.17.21"`). Bare names warm the latest `warm_latest_n` versions.
+    #[serde(default)]
+    pub warm_packages: Vec<String>,
+    /// Number of most-recent versions to pre-warm per package (default: 1 = latest only).
+    #[serde(default = "default_warm_latest_n")]
+    pub warm_latest_n: usize,
+    /// Maximum number of concurrent artifact downloads during a warming run (default: 2).
+    #[serde(default = "default_warm_concurrency")]
+    pub warm_concurrency: usize,
 }
 
 fn default_metadata_ttl() -> u64 {
     300
 }
 
-fn default_artifact_strategy() -> String {
-    "permanent".to_owned()
-}
-
 fn default_serve_stale() -> bool {
     true
+}
+
+fn default_warm_latest_n() -> usize {
+    1
+}
+
+fn default_warm_concurrency() -> usize {
+    2
 }
 
 impl Default for CachePolicy {
     fn default() -> Self {
         Self {
             metadata_ttl_secs: default_metadata_ttl(),
-            artifact_strategy: default_artifact_strategy(),
             serve_stale: true,
+            artifact_ttl_secs: None,
+            idle_days: None,
+            max_size_bytes: None,
+            keep_latest_n: None,
+            warm_packages: vec![],
+            warm_latest_n: default_warm_latest_n(),
+            warm_concurrency: default_warm_concurrency(),
         }
     }
 }
@@ -576,4 +776,70 @@ pub struct OtelConfig {
 
 fn default_service_name() -> String {
     "batlehub".to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_policy_defaults() {
+        let p: CachePolicy = toml::from_str("").unwrap();
+        assert_eq!(p.metadata_ttl_secs, 300);
+        assert!(p.serve_stale);
+        assert!(p.artifact_ttl_secs.is_none());
+        assert!(p.idle_days.is_none());
+        assert!(p.max_size_bytes.is_none());
+        assert!(p.keep_latest_n.is_none());
+    }
+
+    #[test]
+    fn cache_policy_full_config() {
+        let raw = r#"
+            metadata_ttl_secs = 60
+            serve_stale = false
+            artifact_ttl_secs = 3600
+            idle_days = 30
+            max_size_bytes = 10000000
+            keep_latest_n = 5
+        "#;
+        let p: CachePolicy = toml::from_str(raw).unwrap();
+        assert_eq!(p.metadata_ttl_secs, 60);
+        assert!(!p.serve_stale);
+        assert_eq!(p.artifact_ttl_secs, Some(3600));
+        assert_eq!(p.idle_days, Some(30));
+        assert_eq!(p.max_size_bytes, Some(10_000_000));
+        assert_eq!(p.keep_latest_n, Some(5));
+    }
+
+    #[test]
+    fn cache_policy_partial_config_uses_defaults_for_unset_fields() {
+        let raw = "artifact_ttl_secs = 7200";
+        let p: CachePolicy = toml::from_str(raw).unwrap();
+        assert_eq!(p.metadata_ttl_secs, 300, "metadata_ttl_secs should use default");
+        assert!(p.serve_stale, "serve_stale should default to true");
+        assert_eq!(p.artifact_ttl_secs, Some(7200));
+        assert!(p.idle_days.is_none());
+        assert!(p.max_size_bytes.is_none());
+        assert!(p.keep_latest_n.is_none());
+    }
+
+    #[test]
+    fn cache_policy_zero_keep_latest_n_is_valid() {
+        let raw = "keep_latest_n = 1";
+        let p: CachePolicy = toml::from_str(raw).unwrap();
+        assert_eq!(p.keep_latest_n, Some(1));
+    }
+
+    #[test]
+    fn cache_policy_default_impl_matches_toml_defaults() {
+        let from_default = CachePolicy::default();
+        let from_toml: CachePolicy = toml::from_str("").unwrap();
+        assert_eq!(from_default.metadata_ttl_secs, from_toml.metadata_ttl_secs);
+        assert_eq!(from_default.serve_stale, from_toml.serve_stale);
+        assert_eq!(from_default.artifact_ttl_secs, from_toml.artifact_ttl_secs);
+        assert_eq!(from_default.idle_days, from_toml.idle_days);
+        assert_eq!(from_default.max_size_bytes, from_toml.max_size_bytes);
+        assert_eq!(from_default.keep_latest_n, from_toml.keep_latest_n);
+    }
 }

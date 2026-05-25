@@ -60,6 +60,10 @@ pub struct PackageMetadata {
     pub is_signed: Option<bool>,
     /// Registry-specific extra fields (e.g., GitHub release body, Cargo license).
     pub extra: Value,
+    /// Raw `Cache-Control` header value from the upstream metadata response, if any.
+    /// Used to apply `no-store`, `no-cache`, or `max-age` directives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<String>,
 }
 
 /// Administrative status of a package in this proxy.
@@ -95,7 +99,10 @@ pub struct PackageSummary {
 /// Filter for listing packages.
 #[derive(Debug, Clone, Default)]
 pub struct PackageFilter {
+    /// Single-registry filter. Mutually exclusive with `registries`.
     pub registry: Option<String>,
+    /// Multi-registry allow-list. Empty means "all registries". Ignored when `registry` is set.
+    pub registries: Vec<String>,
     pub name_contains: Option<String>,
     /// Exact match on `package_name` — takes priority over `name_contains`.
     pub name_exact: Option<String>,

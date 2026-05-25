@@ -13,7 +13,7 @@ use batlehub_core::{
 };
 
 use crate::{RegistryMap, RegistryModeMap, UpstreamMap, error::AppError, extractors::AuthIdentity};
-use super::common::{collect_payload, proxy_stream, require_local_mode};
+use super::common::{collect_payload, extract_signature_headers, proxy_stream, require_local_mode};
 
 fn require_npm_or_cargo(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry) {
@@ -216,6 +216,7 @@ pub async fn download_tarball(
 )]
 #[put("/proxy/{registry}/{name}")]
 pub async fn npm_publish(
+    req: HttpRequest,
     path: web::Path<(String, String)>,
     payload: web::Payload,
     identity: AuthIdentity,
@@ -271,7 +272,9 @@ pub async fn npm_publish(
         }
     }
 
-    local_svc
+    let (signature_bytes, signature_type) = extract_signature_headers(&req);
+
+    let quota = local_svc
         .publish(PublishRequest {
             registry,
             name,
@@ -280,11 +283,17 @@ pub async fn npm_publish(
             checksum,
             index_metadata: meta,
             publisher: identity.0.clone(),
+            signature_bytes,
+            signature_type,
         })
         .await
         .map_err(AppError::from)?;
 
-    Ok(HttpResponse::Ok().json(serde_json::json!({})))
+    let mut resp = HttpResponse::Ok();
+    for (name, value) in quota.headers() {
+        resp.insert_header((name, value));
+    }
+    Ok(resp.json(serde_json::json!({})))
 }
 
 /// Proxy npm audit requests to the upstream npm registry.

@@ -32,9 +32,18 @@ features:
   - icon: 🔀
     title: Multi-Upstream Fanout
     details: List multiple upstreams per registry. A 404 from one automatically falls through to the next — no single point of failure.
+  - icon: 🚦
+    title: Distributed Rate Limiting
+    details: Fixed-window per-user and per-group rate limits. Back counters with InMemory, PostgreSQL, or Redis — shared limits survive restarts and scale across replicas.
   - icon: 📊
     title: OpenTelemetry
     details: Optional distributed tracing via OTLP/gRPC. Works out of the box with Jaeger, Tempo, or any OTLP-compatible backend.
+  - icon: 🔥
+    title: Cache Warming & Eviction
+    details: Pre-fetch packages at startup to eliminate cold-start latency. Evict by TTL, idle time, version count, or storage size cap — mix and match per registry.
+  - icon: 🗄️
+    title: Storage Deduplication
+    details: Identical artifact bytes are stored once, regardless of how many registries or package names reference them. Ref-counted and backwards-compatible.
 ---
 
 ## Supported registries
@@ -59,3 +68,4 @@ BatleHub proxies six registry types. Every registry type can run as a pure cache
 | Multi-upstream fanout | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Release age gate | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | RBAC | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Cache warming (version enumeration) | — | ✓ | ✓ | ✓ | — | ✓ |

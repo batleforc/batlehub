@@ -1,0 +1,28 @@
+name: Publish
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - website/**
+jobs:
+  publish:
+    runs-on: kubernetes
+    name: Publish batlehub website
+    enable-openid-connect: true # Required for vault authentication
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - run: |
+          # Use your favorite static site generator here!
+          cd website
+          yarn install
+          yarn run docs:build
+      - uses: actions/git-pages@v2
+        with:
+          site: https://${{ github.repository_owner }}.git.batleforc.fr/${{ github.repository }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          source: website/dist

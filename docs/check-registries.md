@@ -15,6 +15,9 @@
    - [GitHub](#34-github)
    - [OpenVSX](#35-openvsx)
    - [VS Code Marketplace](#36-vs-code-marketplace)
+   - [Maven](#37-maven)
+   - [Terraform](#38-terraform)
+   - [RubyGems](#39-rubygems)
 4. [Authentication](#4-authentication)
 5. [Exit Codes and CI Use](#5-exit-codes-and-ci-use)
 6. [Common Failures](#6-common-failures)
@@ -33,6 +36,9 @@ The script itself only requires `bash` and `curl`. Tool checks are skipped grace
 | GitHub | `curl` | any |
 | OpenVSX | `curl` | any |
 | VS Code Marketplace | `curl` | any |
+| Maven | `curl` | any |
+| Terraform | `curl` | any |
+| RubyGems | `curl` | any |
 
 JSON field validation uses `jq` when available; without it the script falls back to `grep`-based checks.
 
@@ -51,6 +57,9 @@ JSON field validation uses `jq` when available; without it the script falls back
   --github <name>    Test the github registry named <name>
   --openvsx <name>              Test the openvsx registry named <name>
   --vscode-marketplace <name>   Test the vscode-marketplace registry named <name>
+  --maven <name>     Test the maven registry named <name>
+  --terraform <name> Test the terraform registry named <name>
+  --rubygems <name>  Test the rubygems registry named <name>
 ```
 
 The `<name>` value for each flag is the `name` field you assigned that registry in your `config.toml`, not the `type`. Only the registries you specify are tested.
@@ -64,7 +73,10 @@ The `<name>` value for each flag is the `name` field you assigned that registry 
   --go go \
   --github github \
   --openvsx openvsx \
-  --vscode-marketplace vscode
+  --vscode-marketplace vscode \
+  --maven maven \
+  --terraform terraform \
+  --rubygems gems
 ```
 
 **Test a remote instance with custom registry names and auth:**
@@ -187,6 +199,61 @@ GET /proxy/<name>/ms-python.python/2024.2.1/vsix  →  non-5xx
 
 **Tool check** — downloads the VSIX to a temp file and verifies the ZIP magic bytes (`PK\x03\x04`), confirming the proxy returned a valid VSIX archive rather than an error page. A 404 from upstream causes this check to be skipped rather than failed.
 
+### 3.7 Maven
+
+Both checks use `curl` only — no `mvn` installation required. The artifact chosen (`junit:junit`) is always present in Maven Central.
+
+**HTTP check** — fetches `maven-metadata.xml` for `junit:junit` and verifies the response contains a `<metadata>` element:
+
+```text
+GET /proxy/<name>/maven2/junit/junit/maven-metadata.xml  →  200, XML with <metadata>
+```
+
+**Tool check** — downloads the `junit-4.13.2.pom` file and verifies it contains a `<project>` element:
+
+```text
+GET /proxy/<name>/maven2/junit/junit/4.13.2/junit-4.13.2.pom  →  200, XML with <project>
+```
+
+This exercises both the metadata path (`maven-metadata.xml`) and the artifact download path (versioned POM). In `hybrid` mode the proxy fetches from upstream on the first request and caches the result.
+
+### 3.8 Terraform
+
+Both checks use `curl` and `jq` (with a `grep` fallback). The provider chosen (`hashicorp/random`) is a small, stable provider always present on `registry.terraform.io`.
+
+**HTTP check** — fetches the provider version list and verifies `.versions` is non-empty:
+
+```text
+GET /proxy/<name>/v1/providers/hashicorp/random/versions  →  200, JSON { "versions": [...] }
+```
+
+**Tool check** — fetches the download info JSON for `hashicorp/random 3.6.0` on `linux/amd64` and verifies the `download_url` field is present:
+
+```text
+GET /proxy/<name>/v1/providers/hashicorp/random/3.6.0/download/linux/amd64
+  →  200, JSON { "download_url": "...", ... }
+```
+
+A 404 from upstream (version delisted) skips the tool check rather than failing it.
+
+### 3.9 RubyGems
+
+Both checks use `curl` only — no `gem` installation required. The gem chosen (`rake`) is always present on rubygems.org.
+
+**HTTP check** — fetches the gem info JSON for `rake` and verifies `.name == "rake"`:
+
+```text
+GET /proxy/<name>/api/v1/gems/rake.json  →  200, JSON { "name": "rake", ... }
+```
+
+**Tool check** — downloads `rake-13.2.1.gem` and verifies it is a valid tar archive:
+
+```text
+GET /proxy/<name>/gems/rake-13.2.1.gem  →  200, valid tar (verified with tar tf)
+```
+
+`.gem` files are standard POSIX tar archives containing `metadata.gz` and `data.tar.gz`. The `tar tf` command is used to inspect the archive structure without extracting. When `tar` is not available the check falls back to verifying the downloaded file is larger than 10 KiB.
+
 ---
 
 ## 4. Authentication
@@ -248,3 +315,27 @@ The extension version requested (`redhat.java/1.26.0`) does not exist on open-vs
 
 **`vscode-marketplace:tool — SKIP (HTTP 404)`**
 The extension version requested (`ms-python.python/2024.2.1`) was not found on marketplace.visualstudio.com. Try a different extension or version, or check that the proxy can reach the upstream.
+
+**`maven:http — HTTP 404`**
+The proxy cannot find `junit/junit/maven-metadata.xml` on `repo1.maven.org`. Verify the registry `name` in your config and that the `type` is `"maven"`. In `local` mode this is expected — the artifact has not been published locally.
+
+**`maven:http — response is not valid maven-metadata.xml`**
+The proxy returned 200 but the body is not XML (possibly an error page from upstream). Check that the proxy can reach `repo1.maven.org` and that TLS certificates are trusted.
+
+**`terraform:http — HTTP 404`**
+The proxy cannot find `hashicorp/random` on `registry.terraform.io`. Verify the registry `name` is `"terraform"` in your config. In `local` mode this is expected — no providers have been uploaded yet.
+
+**`terraform:http — response contains no versions`**
+The proxy returned 200 but the JSON body has an empty `.versions` array. This can happen if the upstream registry is temporarily returning empty responses; re-run after a short delay.
+
+**`terraform:tool — SKIP (HTTP 404)`**
+`hashicorp/random 3.6.0` was not found on `registry.terraform.io` (the version may have been delisted). The HTTP check result is the authoritative signal in this case.
+
+**`rubygems:http — HTTP 404`**
+The proxy cannot find `rake` on `rubygems.org`. Verify the registry `name` in your config and that `type = "rubygems"`. In `local` mode this is expected — `rake` has not been published locally.
+
+**`rubygems:http — .name != "rake"`**
+The proxy returned 200 but the JSON body is not the expected gem info object. Check that the upstream (`rubygems.org`) is reachable and returning valid JSON.
+
+**`rubygems:tool — not a valid tar archive`**
+The proxy returned 200 but the downloaded `.gem` file failed `tar tf`. This can indicate a truncated download or a corrupted cached artifact. Delete the cached entry and retry.

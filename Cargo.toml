@@ -41,6 +41,10 @@ utoipa = { version = "5", features = ["actix_extras", "chrono", "uuid"] }
 utoipa-actix-web = "0.1"
 utoipa-swagger-ui = { version = "9", features = ["actix-web"] }
 
+# Metrics
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+
 # Tracing / OTEL
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = [
@@ -75,6 +79,10 @@ anyhow = "1"
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+regex = "1"
+semver = "1"
+base64 = "0.22"
+quick-xml = "0.36"
 
 # CLI
 clap = { version = "4", features = ["derive"] }

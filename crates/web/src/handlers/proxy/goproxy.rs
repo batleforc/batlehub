@@ -1,7 +1,7 @@
 use std::io::Read as _;
 use std::sync::Arc;
 
-use actix_web::{HttpResponse, Responder, get, put, web};
+use actix_web::{HttpRequest, HttpResponse, Responder, get, put, web};
 use sha2::{Digest, Sha256};
 
 use batlehub_config::schema::RegistryMode;
@@ -12,7 +12,7 @@ use batlehub_core::{
 };
 
 use crate::{RegistryMap, RegistryModeMap, error::AppError, extractors::AuthIdentity};
-use super::common::{collect_payload, proxy_stream, require_local_mode};
+use super::common::{collect_payload, extract_signature_headers, proxy_stream, require_local_mode};
 
 pub fn require_goproxy(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry) {
@@ -268,6 +268,7 @@ pub async fn goproxy_file(
 )]
 #[put("/proxy/{registry}/{module:[^@]+}@v/{filename}")]
 pub async fn goproxy_publish(
+    req: HttpRequest,
     path: web::Path<(String, String, String)>,
     payload: web::Payload,
     identity: AuthIdentity,
@@ -300,7 +301,9 @@ pub async fn goproxy_publish(
         "go_mod": go_mod
     });
 
-    local_svc
+    let (signature_bytes, signature_type) = extract_signature_headers(&req);
+
+    let quota = local_svc
         .publish(PublishRequest {
             registry,
             name: module.to_owned(),
@@ -309,9 +312,15 @@ pub async fn goproxy_publish(
             checksum,
             index_metadata,
             publisher: identity.0.clone(),
+            signature_bytes,
+            signature_type,
         })
         .await
         .map_err(AppError::from)?;
 
-    Ok(HttpResponse::Ok().json(serde_json::json!({ "ok": true })))
+    let mut resp = HttpResponse::Ok();
+    for (name, value) in quota.headers() {
+        resp.insert_header((name, value));
+    }
+    Ok(resp.json(serde_json::json!({ "ok": true })))
 }

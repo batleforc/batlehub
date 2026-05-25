@@ -22,3 +22,5 @@ ui/.env
 
 # Temp Storage
 /tmp/
+
+lcov.info

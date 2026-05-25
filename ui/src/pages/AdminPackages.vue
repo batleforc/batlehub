@@ -37,6 +37,8 @@ const { data: packages, error, loading, reload } = useApi<AdminPackageSummary[]>
   [token],
 );
 
+const actionError = ref<string | null>(null);
+
 const { data: registries } = useApi<RegistryInfo[]>(
   () => listRegistries() as Promise<{ data?: unknown; error?: unknown }>,
   [token],
@@ -60,28 +62,38 @@ const filteredPackages = computed(() => {
 async function block(pkg: AdminPackageSummary) {
   const reason = window.prompt("Block reason:");
   if (!reason) return;
-  await blockPackage({
-    body: {
-      registry: pkg.package_id.registry,
-      name: pkg.package_id.name,
-      version: pkg.package_id.version,
-      artifact: pkg.package_id.artifact,
-      reason,
-    },
-  });
-  reload();
+  actionError.value = null;
+  try {
+    await blockPackage({
+      body: {
+        registry: pkg.package_id.registry,
+        name: pkg.package_id.name,
+        version: pkg.package_id.version,
+        artifact: pkg.package_id.artifact,
+        reason,
+      },
+    });
+    reload();
+  } catch (e: unknown) {
+    actionError.value = e instanceof Error ? e.message : "Failed to block package.";
+  }
 }
 
 async function unblock(pkg: AdminPackageSummary) {
-  await unblockPackage({
-    body: {
-      registry: pkg.package_id.registry,
-      name: pkg.package_id.name,
-      version: pkg.package_id.version,
-      artifact: pkg.package_id.artifact,
-    },
-  });
-  reload();
+  actionError.value = null;
+  try {
+    await unblockPackage({
+      body: {
+        registry: pkg.package_id.registry,
+        name: pkg.package_id.name,
+        version: pkg.package_id.version,
+        artifact: pkg.package_id.artifact,
+      },
+    });
+    reload();
+  } catch (e: unknown) {
+    actionError.value = e instanceof Error ? e.message : "Failed to unblock package.";
+  }
 }
 
 // ── Multi-select + bulk actions ───────────────────────────────────────────────
@@ -313,6 +325,7 @@ async function submitPreBlock() {
         />
       </CardHeader>
       <CardContent class="p-0">
+        <p v-if="actionError" class="px-6 pt-4 text-sm text-destructive">{{ actionError }}</p>
         <p v-if="loading" class="p-6 text-sm text-muted-foreground">Loading…</p>
         <p v-else-if="error" class="p-6 text-sm text-destructive">{{ error }}</p>
 
