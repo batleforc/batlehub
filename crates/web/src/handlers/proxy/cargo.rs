@@ -106,7 +106,7 @@ pub async fn cargo_registry_index(
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
-    _identity: AuthIdentity,
+    identity: AuthIdentity,
 ) -> HttpResponse {
     let (registry, index_path) = path.into_inner();
     if !map.is_type(&registry, "cargo") {
@@ -116,9 +116,9 @@ pub async fn cargo_registry_index(
     let mode = mode_map.get(&registry);
 
     match mode {
-        RegistryMode::Local => serve_local_index(&local_svc, &registry, &index_path).await,
+        RegistryMode::Local => serve_local_index(&local_svc, &registry, &index_path, &identity).await,
         RegistryMode::Hybrid => {
-            let local = serve_local_index(&local_svc, &registry, &index_path).await;
+            let local = serve_local_index(&local_svc, &registry, &index_path, &identity).await;
             if local.status() != actix_web::http::StatusCode::NOT_FOUND {
                 return local;
             }
@@ -132,10 +132,11 @@ async fn serve_local_index(
     local_svc: &LocalRegistryService,
     registry: &str,
     index_path: &str,
+    identity: &batlehub_core::entities::Identity,
 ) -> HttpResponse {
     // The last path segment is the crate name (e.g. "se/rd/serde" → "serde").
     let name = index_path.split('/').next_back().unwrap_or(index_path);
-    match local_svc.get_index(registry, name).await {
+    match local_svc.get_index(registry, name, identity).await {
         Ok(content) => HttpResponse::Ok()
             .content_type("text/plain; charset=utf-8")
             .body(content),
@@ -208,6 +209,10 @@ pub async fn download_crate(
     let mode = mode_map.get(&registry);
 
     if matches!(mode, RegistryMode::Local) {
+        local_svc
+            .check_prerelease_access(&registry, &version, &identity)
+            .await
+            .map_err(AppError::from)?;
         let bytes = local_svc
             .get_artifact(&registry, &name, &version)
             .await
@@ -219,15 +224,23 @@ pub async fn download_crate(
     }
 
     if matches!(mode, RegistryMode::Hybrid) {
-        match local_svc.get_artifact(&registry, &name, &version).await {
-            Ok(bytes) => {
-                let mut resp = HttpResponse::Ok();
-                resp.content_type("application/octet-stream");
-                append_signature_headers(&mut resp, &local_svc, &registry, &name, &version).await;
-                return Ok(resp.body(bytes));
+        if let Err(e) = local_svc.check_prerelease_access(&registry, &version, &identity).await {
+            if matches!(e, CoreError::NotFound(_)) {
+                // pre-release gated; fall through to proxy
+            } else {
+                return Err(AppError::from(e));
             }
-            Err(CoreError::NotFound(_)) => {} // fall through to proxy
-            Err(e) => return Err(AppError::from(e)),
+        } else {
+            match local_svc.get_artifact(&registry, &name, &version).await {
+                Ok(bytes) => {
+                    let mut resp = HttpResponse::Ok();
+                    resp.content_type("application/octet-stream");
+                    append_signature_headers(&mut resp, &local_svc, &registry, &name, &version).await;
+                    return Ok(resp.body(bytes));
+                }
+                Err(CoreError::NotFound(_)) => {} // fall through to proxy
+                Err(e) => return Err(AppError::from(e)),
+            }
         }
     }
 

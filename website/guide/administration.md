@@ -435,6 +435,79 @@ Example entry:
 
 ---
 
+## Beta/Pre-Release Channel {#beta-channel}
+
+Gate pre-release versions (e.g. `1.0.0-beta.1`) to specific users or groups. Non-members see only stable versions and get 404 on pre-release artifact downloads.
+
+Enable per registry:
+
+```toml
+[registries.beta_channel]
+enabled = true
+```
+
+Manage members at runtime:
+
+```sh
+# Add a user
+curl -s -X POST \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"principal_type":"user","principal_id":"alice"}' \
+  http://localhost:8080/api/v1/admin/registries/my-npm/beta-channel
+
+# List members
+curl -H "Authorization: Bearer <admin-token>" \
+  http://localhost:8080/api/v1/admin/registries/my-npm/beta-channel
+
+# Remove a member
+curl -X DELETE -H "Authorization: Bearer <admin-token>" \
+  http://localhost:8080/api/v1/admin/registries/my-npm/beta-channel/user/alice
+```
+
+See the [Access Control guide](/guide/access-control#beta-channel) for the full reference, including group membership, per-registry support table, and user-facing behaviour.
+
+---
+
+## IP-Based Blocking {#ip-blocking}
+
+Automatically block IPs that trigger too many violations (rate-limit hits, auth failures) within a time window.
+
+```toml
+[ip_blocking]
+enabled               = true
+violation_threshold   = 10
+violation_window_secs = 300      # 5-minute window
+ban_duration_secs     = 3600     # 1-hour block
+trigger_on_status     = [429, 401]
+```
+
+Manage blocks manually:
+
+```sh
+# List blocked IPs
+curl -H "Authorization: Bearer <admin-token>" \
+  http://localhost:8080/api/v1/admin/ip-blocks
+
+# Block an IP
+curl -s -X POST \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"ip":"1.2.3.4","reason":"bad actor","duration_secs":86400}' \
+  http://localhost:8080/api/v1/admin/ip-blocks
+
+# Unblock
+curl -s -X DELETE \
+  -H "Authorization: Bearer <admin-token>" \
+  http://localhost:8080/api/v1/admin/ip-blocks/1.2.3.4
+```
+
+Blocked IPs receive `403 Forbidden` with `X-Block-Expires`. The check runs before authentication. Violation counts and blocks are stored in the same backend as the rate-limit store (`memory` / `postgres` / `redis`).
+
+See the [Access Control guide](/guide/access-control#ip-blocking) for the full reference including load-balancer setup and storage backend comparison.
+
+---
+
 ## Rules {#rules}
 
 Rules are optional per-registry policies evaluated after RBAC.

@@ -279,7 +279,7 @@ pub async fn maven_get(
         RegistryMode::Local | RegistryMode::Hybrid => {
             match &kind {
                 MavenPathKind::Metadata { name } => {
-                    match local_svc.get_maven_versions(&registry, name).await {
+                    match local_svc.get_maven_versions(&registry, name, &identity).await {
                         Ok(versions) => {
                             let group_id = versions
                                 .first()
@@ -306,6 +306,12 @@ pub async fn maven_get(
                     }
                 }
                 MavenPathKind::Artifact { name, version, filename } => {
+                    if let Err(e) = local_svc.check_prerelease_access(&registry, version, &identity).await {
+                        if !matches!(e, batlehub_core::error::CoreError::NotFound(_)) {
+                            return Err(AppError::from(e));
+                        }
+                        // pre-release gated; fall through to proxy
+                    } else {
                     let storage_key = if filename.ends_with(".pom") {
                         artifact_storage_key(&registry, name, version)
                     } else {
@@ -336,6 +342,7 @@ pub async fn maven_get(
                         }
                         Err(e) => return Err(AppError::from(e)),
                     }
+                    } // close else block for prerelease check
                 }
             }
         }

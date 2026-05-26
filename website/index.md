@@ -41,6 +41,12 @@ features:
   - icon: 🔥
     title: Cache Warming & Eviction
     details: Pre-fetch packages at startup to eliminate cold-start latency. Evict by TTL, idle time, version count, or storage size cap — mix and match per registry.
+  - icon: 🧪
+    title: Beta/Pre-Release Channel
+    details: Gate pre-release versions (e.g. 1.0.0-beta.1) to approved users or groups. Non-members see only stable versions — no separate publish step needed.
+  - icon: 🚫
+    title: IP-Based Blocking
+    details: Fail2ban-style auto-blocking. IPs that exceed a violation threshold (rate-limit hits, auth failures) are blocked automatically. Manual ban/unban via admin API.
   - icon: 🗄️
     title: Storage Deduplication
     details: Identical artifact bytes are stored once, regardless of how many registries or package names reference them. Ref-counted and backwards-compatible.

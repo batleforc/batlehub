@@ -69,10 +69,9 @@ BatleHub aims to be a trust boundary, not just a cache. Planned integrity featur
 
 ## Rate limiting & DoS protection {#rate-limiting}
 
-- Per-user, per-group, and per-registry rate limits with configurable thresholds and time windows
-- Configurable enforcement: hard block vs. soft warn on limit exceeded
-- Standard rate-limit headers (`Retry-After`, `X-RateLimit-*`) and UI warnings when approaching a limit
-- IP-based blocking for abusive clients
+- ✅ **Per-user and per-group rate limits** — fixed-window counters with configurable thresholds and time windows, backed by InMemory / PostgreSQL / Redis
+- ✅ **Configurable enforcement** — hard block (429) or soft warn; standard `Retry-After` and `X-RateLimit-*` headers
+- ✅ **IP-based blocking** — fail2ban-style: auto-block IPs that exceed a violation threshold; manual block/unblock via admin API; `X-Block-Expires` header; fail-open on store errors. See [Access Control guide](/guide/access-control#ip-blocking).
 - Integration with external IP reputation services
 
 ---
@@ -118,11 +117,12 @@ Applies to registries running in `local` or `hybrid` mode. See the [User Guide](
 
 ### For all private registry types
 
-- Artifact signing and verification (OpenPGP or similar)
-- Ownership and team management: multiple users / groups per package with distinct roles
-- Versioning policies: enforce semantic versioning or restrict accepted version patterns
-- Beta / pre-release channel: gate unpublished versions to specific users or groups
-- Bulk operations: bulk publish, bulk deprecation, bulk deletion
+- ✅ **Artifact signing** — publish-time `X-Artifact-Signature` / `X-Signature-Type` headers; stored and returned on download; configurable required enforcement and allowed-type allowlist
+- ✅ **Ownership management** — per-package owner list with roles; admin API for listing, adding, and removing owners
+- ✅ **Versioning policies** — enforce semver and/or restrict accepted version patterns per registry
+- ✅ **Beta/pre-release channel** — gate pre-release versions (semver `-pre` suffix) to specific users or groups; non-members see only stable versions. See [Access Control guide](/guide/access-control#beta-channel).
+- ✅ **Bulk operations** — bulk yank, unyank, and delete via admin API
+- Bulk publish, bulk deprecation
 - Content-addressable deduplication and integrity verification for stored artifacts
 
 ### CLI tool — `batlehub-cli`

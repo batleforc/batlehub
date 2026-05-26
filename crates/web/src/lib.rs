@@ -276,6 +276,7 @@ pub use handlers::healthz::healthz;
 pub use handlers::metrics::prometheus_metrics;
 pub use handlers::proxy::cargo::CargoIndexProxy;
 pub use middleware::AuthMiddlewareFactory;
+pub use middleware::IpBlockMiddlewareFactory;
 pub use middleware::RateLimitMiddlewareFactory;
 pub use middleware::RateLimitService;
 
@@ -321,8 +322,10 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
         },
         back_office::{
             audit::audit_log,
+            beta_channel::{add_beta_member, list_beta_members, remove_beta_member},
             bulk::{bulk_delete, bulk_unyank, bulk_yank as bulk_yank_handler},
             health::{clear_registry_cache, registry_health},
+            ip_blocks::{block_ip, list_blocked_ips, unblock_ip},
             ownership::{add_package_owner, list_package_owners, remove_package_owner},
             packages::{block_package, bulk_block_packages, bulk_unblock_packages, invalidate_package, list_packages as admin_list_packages, package_detail, unblock_package},
             quota::{get_quota_for_user, list_quota, list_quota_for_registry, reset_quota_for_user},
@@ -465,6 +468,14 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(bulk_yank_handler);
     cfg.service(bulk_unyank);
     cfg.service(bulk_delete);
+    // Beta channel admin
+    cfg.service(list_beta_members);
+    cfg.service(add_beta_member);
+    cfg.service(remove_beta_member);
+    // IP block admin
+    cfg.service(list_blocked_ips);
+    cfg.service(block_ip);
+    cfg.service(unblock_ip);
 }
 
 /// Return the raw OpenAPI JSON spec (auto-collected from route registrations).

@@ -8,7 +8,7 @@ use regex::Regex;
 use crate::{
     entities::{Identity, PublishedPackage, Role},
     error::CoreError,
-    ports::{LocalRegistryBackend, OwnershipPort, StorageBackend, StorageMeta},
+    ports::{BetaChannelPort, LocalRegistryBackend, OwnershipPort, StorageBackend, StorageMeta},
     services::quota::{QuotaCheck, QuotaService},
 };
 
@@ -86,6 +86,9 @@ pub struct LocalRegistryService {
     pub versioning: HashMap<String, VersioningPolicy>,
     /// Per-registry signing configs. Keyed by registry name.
     pub signing: HashMap<String, SigningConfig>,
+    /// Per-registry beta-channel ports. Keyed by registry name.
+    /// When present, pre-release versions are gated behind beta-channel membership.
+    pub beta_channel: HashMap<String, Arc<dyn BetaChannelPort>>,
 }
 
 /// Signing configuration stored in the service (mirrors config-layer `SigningConfig`).
@@ -286,8 +289,14 @@ impl LocalRegistryService {
 
     /// Return the sparse index file content (newline-delimited JSON) for a Cargo crate.
     /// Returns `CoreError::NotFound` if the crate has never been published here.
-    pub async fn get_index(&self, registry: &str, name: &str) -> Result<String, CoreError> {
+    pub async fn get_index(
+        &self,
+        registry: &str,
+        name: &str,
+        identity: &Identity,
+    ) -> Result<String, CoreError> {
         let versions = self.backend.get_versions(registry, name).await?;
+        let versions = self.filter_for_identity(registry, versions, identity).await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "crate '{}' not found in local registry '{}'",
@@ -309,8 +318,10 @@ impl LocalRegistryService {
         registry: &str,
         name: &str,
         base_url: &str,
+        identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
         let versions = self.backend.get_versions(registry, name).await?;
+        let versions = self.filter_for_identity(registry, versions, identity).await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "package '{}' not found in local registry '{}'",
@@ -344,7 +355,9 @@ impl LocalRegistryService {
                 serde_json::json!(pkg.published_at.to_rfc3339()),
             );
             versions_map.insert(pkg.version.clone(), meta);
-            latest = pkg.version.clone();
+            if !Self::is_prerelease(&pkg.version) {
+                latest = pkg.version.clone();
+            }
         }
 
         Ok(serde_json::json!({
@@ -363,7 +376,9 @@ impl LocalRegistryService {
         name: &str,
         version: &str,
         base_url: &str,
+        identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
+        self.check_prerelease_access(registry, version, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
         let pkg = versions
             .into_iter()
@@ -419,6 +434,54 @@ impl LocalRegistryService {
         Ok(Bytes::from(buf))
     }
 
+    // ── Beta channel helpers ──────────────────────────────────────────────────
+
+    /// Returns `true` when `version` has a semver pre-release component (e.g. `1.0.0-beta.1`).
+    fn is_prerelease(version: &str) -> bool {
+        semver::Version::parse(version)
+            .map(|v| !v.pre.is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Filter `versions` to remove pre-release entries when `identity` is not a
+    /// beta-channel member and a beta channel is configured for `registry`.
+    async fn filter_for_identity(
+        &self,
+        registry: &str,
+        versions: Vec<PublishedPackage>,
+        identity: &Identity,
+    ) -> Result<Vec<PublishedPackage>, CoreError> {
+        let Some(beta_port) = self.beta_channel.get(registry) else {
+            return Ok(versions);
+        };
+        if beta_port.is_member(registry, identity).await? {
+            return Ok(versions);
+        }
+        Ok(versions.into_iter().filter(|p| !Self::is_prerelease(&p.version)).collect())
+    }
+
+    /// Returns `CoreError::NotFound` if `version` is a pre-release and the caller
+    /// is not a beta-channel member for `registry`.
+    pub async fn check_prerelease_access(
+        &self,
+        registry: &str,
+        version: &str,
+        identity: &Identity,
+    ) -> Result<(), CoreError> {
+        if !Self::is_prerelease(version) {
+            return Ok(());
+        }
+        let Some(beta_port) = self.beta_channel.get(registry) else {
+            return Ok(());
+        };
+        if beta_port.is_member(registry, identity).await? {
+            return Ok(());
+        }
+        Err(CoreError::NotFound(format!(
+            "version '{version}' is a pre-release and you are not a beta-channel member"
+        )))
+    }
+
     /// Look up the metadata for a specific published version.
     /// Returns `None` if not found (non-fatal — callers may skip signature headers).
     pub async fn get_version_meta(
@@ -437,8 +500,14 @@ impl LocalRegistryService {
 
     /// Return newline-delimited version list for a locally published Go module.
     /// Returns `CoreError::NotFound` if the module has never been published here.
-    pub async fn get_go_version_list(&self, registry: &str, module: &str) -> Result<String, CoreError> {
+    pub async fn get_go_version_list(
+        &self,
+        registry: &str,
+        module: &str,
+        identity: &Identity,
+    ) -> Result<String, CoreError> {
         let versions = self.backend.get_versions(registry, module).await?;
+        let versions = self.filter_for_identity(registry, versions, identity).await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "module '{}' not found in local registry '{}'",
@@ -464,7 +533,9 @@ impl LocalRegistryService {
         registry: &str,
         module: &str,
         version: &str,
+        identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
+        self.check_prerelease_access(registry, version, identity).await?;
         let pkg = self
             .backend
             .get_versions(registry, module)
@@ -496,7 +567,9 @@ impl LocalRegistryService {
         registry: &str,
         module: &str,
         version: &str,
+        identity: &Identity,
     ) -> Result<String, CoreError> {
+        self.check_prerelease_access(registry, version, identity).await?;
         let pkg = self
             .backend
             .get_versions(registry, module)
@@ -526,14 +599,22 @@ impl LocalRegistryService {
         &self,
         registry: &str,
         module: &str,
+        identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
         let versions = self.backend.get_versions(registry, module).await?;
-        let pkg = versions.into_iter().last().ok_or_else(|| {
-            CoreError::NotFound(format!(
-                "module '{}' not found in local registry '{}'",
-                module, registry
-            ))
-        })?;
+        let versions = self.filter_for_identity(registry, versions, identity).await?;
+        let pkg = versions
+            .iter()
+            .rev()
+            .find(|v| !Self::is_prerelease(&v.version))
+            .or_else(|| versions.last())
+            .cloned()
+            .ok_or_else(|| {
+                CoreError::NotFound(format!(
+                    "module '{}' not found in local registry '{}'",
+                    module, registry
+                ))
+            })?;
         let v = pkg
             .index_metadata
             .get("Version")
@@ -552,13 +633,21 @@ impl LocalRegistryService {
         &self,
         registry: &str,
         name: &str,
+        identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
         let versions = self.backend.get_versions(registry, name).await?;
-        let latest = versions.into_iter().last().ok_or_else(|| {
-            CoreError::NotFound(format!(
-                "gem '{name}' not found in local registry '{registry}'"
-            ))
-        })?;
+        let versions = self.filter_for_identity(registry, versions, identity).await?;
+        let latest = versions
+            .iter()
+            .rev()
+            .find(|v| !Self::is_prerelease(&v.version))
+            .or_else(|| versions.last())
+            .cloned()
+            .ok_or_else(|| {
+                CoreError::NotFound(format!(
+                    "gem '{name}' not found in local registry '{registry}'"
+                ))
+            })?;
         let meta = &latest.index_metadata;
         Ok(serde_json::json!({
             "name": name,
@@ -579,8 +668,10 @@ impl LocalRegistryService {
         &self,
         registry: &str,
         name: &str,
+        identity: &Identity,
     ) -> Result<Vec<serde_json::Value>, CoreError> {
         let versions = self.backend.get_versions(registry, name).await?;
+        let versions = self.filter_for_identity(registry, versions, identity).await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "gem '{name}' not found in local registry '{registry}'"
@@ -600,7 +691,7 @@ impl LocalRegistryService {
                     "summary": meta.get("summary"),
                     "sha": meta.get("sha"),
                     "created_at": pkg.published_at.to_rfc3339(),
-                    "prerelease": pkg.version.contains('-'),
+                    "prerelease": Self::is_prerelease(&pkg.version),
                     "yanked": pkg.yanked,
                 })
             })
@@ -614,8 +705,10 @@ impl LocalRegistryService {
         &self,
         registry: &str,
         name: &str,
+        identity: &Identity,
     ) -> Result<Vec<PublishedPackage>, CoreError> {
         let versions = self.backend.get_versions(registry, name).await?;
+        let versions = self.filter_for_identity(registry, versions, identity).await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "artifact '{name}' not found in local registry '{registry}'"
@@ -629,8 +722,10 @@ impl LocalRegistryService {
         &self,
         registry: &str,
         name: &str,
+        identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
         let versions = self.backend.get_versions(registry, name).await?;
+        let versions = self.filter_for_identity(registry, versions, identity).await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "module '{name}' not found in local registry '{registry}'"
@@ -649,8 +744,10 @@ impl LocalRegistryService {
         &self,
         registry: &str,
         name: &str,
+        identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
         let versions = self.backend.get_versions(registry, name).await?;
+        let versions = self.filter_for_identity(registry, versions, identity).await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "provider '{name}' not found in local registry '{registry}'"
@@ -701,7 +798,9 @@ impl LocalRegistryService {
         arch: &str,
         base_url: &str,
         registry_name: &str,
+        identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
+        self.check_prerelease_access(registry, version, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
         let pkg = versions
             .into_iter()
@@ -861,6 +960,7 @@ mod tests {
             ownership: None,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            beta_channel: HashMap::new(),
         }
     }
 
@@ -929,7 +1029,7 @@ mod tests {
     #[tokio::test]
     async fn get_npm_packument_not_found_when_no_versions() {
         let s = svc(InMemBackend::arc(), None);
-        let err = s.get_npm_packument("npm", "unknown", "http://localhost").await.unwrap_err();
+        let err = s.get_npm_packument("npm", "unknown", "http://localhost", &anon()).await.unwrap_err();
         assert!(matches!(err, CoreError::NotFound(_)));
     }
 
@@ -938,7 +1038,7 @@ mod tests {
         let backend = InMemBackend::arc();
         backend.seed(pkg("npm", "express", "4.0.0"));
         let s = svc(backend, None);
-        let err = s.get_npm_version("npm", "express", "9.9.9", "http://localhost").await.unwrap_err();
+        let err = s.get_npm_version("npm", "express", "9.9.9", "http://localhost", &anon()).await.unwrap_err();
         assert!(matches!(err, CoreError::NotFound(_)));
     }
 
@@ -947,7 +1047,7 @@ mod tests {
     #[tokio::test]
     async fn get_go_version_list_not_found_when_empty() {
         let s = svc(InMemBackend::arc(), None);
-        let err = s.get_go_version_list("go", "example.com/mod").await.unwrap_err();
+        let err = s.get_go_version_list("go", "example.com/mod", &anon()).await.unwrap_err();
         assert!(matches!(err, CoreError::NotFound(_)));
     }
 
@@ -956,7 +1056,7 @@ mod tests {
         let backend = InMemBackend::arc();
         backend.seed(pkg("go", "example.com/mod", "v1.0.0"));
         let s = svc(backend, None);
-        let err = s.get_go_info("go", "example.com/mod", "v9.9.9").await.unwrap_err();
+        let err = s.get_go_info("go", "example.com/mod", "v9.9.9", &anon()).await.unwrap_err();
         assert!(matches!(err, CoreError::NotFound(_)));
     }
 
@@ -965,7 +1065,7 @@ mod tests {
         let backend = InMemBackend::arc();
         backend.seed(pkg("go", "example.com/mod", "v1.0.0"));
         let s = svc(backend, None);
-        let err = s.get_go_mod("go", "example.com/mod", "v9.9.9").await.unwrap_err();
+        let err = s.get_go_mod("go", "example.com/mod", "v9.9.9", &anon()).await.unwrap_err();
         assert!(matches!(err, CoreError::NotFound(_)));
     }
 
@@ -975,14 +1075,200 @@ mod tests {
         // Package exists but index_metadata has no "go_mod" key
         backend.seed(pkg("go", "example.com/mod", "v1.0.0"));
         let s = svc(backend, None);
-        let err = s.get_go_mod("go", "example.com/mod", "v1.0.0").await.unwrap_err();
+        let err = s.get_go_mod("go", "example.com/mod", "v1.0.0", &anon()).await.unwrap_err();
         assert!(matches!(err, CoreError::NotFound(_)));
     }
 
     #[tokio::test]
     async fn get_go_latest_not_found_when_no_versions() {
         let s = svc(InMemBackend::arc(), None);
-        let err = s.get_go_latest("go", "example.com/mod").await.unwrap_err();
+        let err = s.get_go_latest("go", "example.com/mod", &anon()).await.unwrap_err();
         assert!(matches!(err, CoreError::NotFound(_)));
+    }
+
+    // ── Beta channel ─────────────────────────────────────────────────────────────
+
+    /// Minimal in-memory BetaChannelPort whose membership set is seeded at construction.
+    struct MemBetaChannel {
+        members: std::collections::HashSet<String>, // user_ids
+    }
+
+    impl MemBetaChannel {
+        fn with_users(ids: &[&str]) -> Arc<Self> {
+            Arc::new(Self {
+                members: ids.iter().map(|s| s.to_string()).collect(),
+            })
+        }
+        fn empty() -> Arc<Self> {
+            Arc::new(Self { members: std::collections::HashSet::new() })
+        }
+    }
+
+    #[async_trait]
+    impl crate::ports::BetaChannelPort for MemBetaChannel {
+        async fn is_member(&self, _registry: &str, identity: &Identity) -> Result<bool, CoreError> {
+            Ok(identity.user_id.as_ref().map(|id| self.members.contains(id)).unwrap_or(false))
+        }
+        async fn add_member(&self, _: &str, _: crate::ports::BetaChannelEntry) -> Result<(), CoreError> { Ok(()) }
+        async fn remove_member(&self, _: &str, _: &str, _: &str) -> Result<(), CoreError> { Ok(()) }
+        async fn list_members(&self, _: &str) -> Result<Vec<crate::ports::BetaChannelEntry>, CoreError> { Ok(vec![]) }
+    }
+
+    fn svc_with_beta(backend: Arc<InMemBackend>, beta: Arc<dyn crate::ports::BetaChannelPort>) -> LocalRegistryService {
+        let mut bc = HashMap::new();
+        bc.insert("reg".to_owned(), beta as Arc<dyn crate::ports::BetaChannelPort>);
+        LocalRegistryService {
+            backend,
+            storage: Arc::new(NoopStorage),
+            max_artifact_bytes: None,
+            quota: None,
+            ownership: None,
+            versioning: HashMap::new(),
+            signing: HashMap::new(),
+            beta_channel: bc,
+        }
+    }
+
+    fn beta_user() -> Identity {
+        Identity { user_id: Some("beta".into()), role: Role::User, auth_provider: None, groups: vec![] }
+    }
+
+    // No beta channel configured → all versions visible to everyone (tested via npm packument).
+    #[tokio::test]
+    async fn filter_no_beta_channel_shows_all_versions() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("reg", "lib", "1.0.0"));
+        backend.seed(pkg("reg", "lib", "1.1.0-beta.1"));
+        let s = svc(backend, None);
+        let doc = s.get_npm_packument("reg", "lib", "http://localhost", &anon()).await.unwrap();
+        assert_eq!(doc["versions"].as_object().unwrap().len(), 2);
+    }
+
+    // Beta channel configured; anonymous user sees only stable versions.
+    #[tokio::test]
+    async fn filter_non_member_hides_prerelease() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("reg", "lib", "1.0.0"));
+        backend.seed(pkg("reg", "lib", "1.1.0-beta.1"));
+        let s = svc_with_beta(backend, MemBetaChannel::empty());
+        let doc = s.get_npm_packument("reg", "lib", "http://localhost", &anon()).await.unwrap();
+        let versions = doc["versions"].as_object().unwrap();
+        assert_eq!(versions.len(), 1);
+        assert!(versions.contains_key("1.0.0"));
+    }
+
+    // Beta channel configured; member sees all versions including pre-release.
+    #[tokio::test]
+    async fn filter_member_sees_prerelease() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("reg", "lib", "1.0.0"));
+        backend.seed(pkg("reg", "lib", "1.1.0-beta.1"));
+        let s = svc_with_beta(backend, MemBetaChannel::with_users(&["beta"]));
+        let doc = s.get_npm_packument("reg", "lib", "http://localhost", &beta_user()).await.unwrap();
+        assert_eq!(doc["versions"].as_object().unwrap().len(), 2);
+    }
+
+    // check_prerelease_access passes for stable versions regardless of membership.
+    #[tokio::test]
+    async fn check_prerelease_access_stable_always_ok() {
+        let backend = InMemBackend::arc();
+        let s = svc_with_beta(backend, MemBetaChannel::empty());
+        s.check_prerelease_access("reg", "1.0.0", &anon()).await.unwrap();
+    }
+
+    // check_prerelease_access blocks non-members on pre-release versions.
+    #[tokio::test]
+    async fn check_prerelease_access_blocks_non_member() {
+        let backend = InMemBackend::arc();
+        let s = svc_with_beta(backend, MemBetaChannel::empty());
+        let err = s.check_prerelease_access("reg", "1.1.0-beta.1", &anon()).await.unwrap_err();
+        assert!(matches!(err, CoreError::NotFound(_)));
+    }
+
+    // check_prerelease_access allows members on pre-release versions.
+    #[tokio::test]
+    async fn check_prerelease_access_allows_member() {
+        let backend = InMemBackend::arc();
+        let s = svc_with_beta(backend, MemBetaChannel::with_users(&["beta"]));
+        s.check_prerelease_access("reg", "1.1.0-beta.1", &beta_user()).await.unwrap();
+    }
+
+    // check_prerelease_access passes when no beta channel is configured (open access).
+    #[tokio::test]
+    async fn check_prerelease_access_no_channel_open() {
+        let backend = InMemBackend::arc();
+        let s = svc(backend, None);
+        s.check_prerelease_access("reg", "1.1.0-beta.1", &anon()).await.unwrap();
+    }
+
+    // npm packument: dist-tags.latest must point to latest stable, not pre-release.
+    #[tokio::test]
+    async fn npm_packument_latest_tag_skips_prerelease() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("reg", "pkg", "1.0.0"));
+        backend.seed(pkg("reg", "pkg", "2.0.0-alpha.1"));
+        // Even beta members should not see a pre-release as `latest`.
+        let s = svc_with_beta(backend, MemBetaChannel::with_users(&["beta"]));
+        let doc = s.get_npm_packument("reg", "pkg", "http://localhost", &beta_user()).await.unwrap();
+        let latest = doc["dist-tags"]["latest"].as_str().unwrap();
+        assert_eq!(latest, "1.0.0");
+    }
+
+    // npm packument: if all visible versions are pre-release, latest stays empty.
+    #[tokio::test]
+    async fn npm_packument_latest_tag_only_prereleases() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("reg", "pkg", "1.0.0-beta.1"));
+        let s = svc_with_beta(backend, MemBetaChannel::with_users(&["beta"]));
+        let doc = s.get_npm_packument("reg", "pkg", "http://localhost", &beta_user()).await.unwrap();
+        // No stable version exists; latest should be empty string (initial value).
+        let latest = doc["dist-tags"]["latest"].as_str().unwrap();
+        assert_eq!(latest, "");
+    }
+
+    // go @latest: prefers last stable; falls back to last pre-release only if no stable exists.
+    #[tokio::test]
+    async fn go_latest_prefers_stable_over_prerelease() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("reg", "mod", "1.0.0"));
+        backend.seed(pkg("reg", "mod", "2.0.0-rc.1"));
+        let s = svc_with_beta(backend, MemBetaChannel::with_users(&["beta"]));
+        let info = s.get_go_latest("reg", "mod", &beta_user()).await.unwrap();
+        assert_eq!(info["Version"].as_str().unwrap(), "1.0.0");
+    }
+
+    #[tokio::test]
+    async fn go_latest_falls_back_to_prerelease_when_all_prerelease() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("reg", "mod", "1.0.0-alpha.1"));
+        let s = svc_with_beta(backend, MemBetaChannel::with_users(&["beta"]));
+        let info = s.get_go_latest("reg", "mod", &beta_user()).await.unwrap();
+        assert_eq!(info["Version"].as_str().unwrap(), "1.0.0-alpha.1");
+    }
+
+    // rubygems gem_info: same stable-preference behaviour.
+    #[tokio::test]
+    async fn rubygems_gem_info_prefers_stable() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("reg", "gem", "1.0.0"));
+        backend.seed(pkg("reg", "gem", "1.1.0-pre"));
+        let s = svc_with_beta(backend, MemBetaChannel::with_users(&["beta"]));
+        let info = s.get_rubygems_gem_info("reg", "gem", &beta_user()).await.unwrap();
+        assert_eq!(info["version"].as_str().unwrap(), "1.0.0");
+    }
+
+    // rubygems versions: prerelease field uses semver-aware detection.
+    #[tokio::test]
+    async fn rubygems_versions_prerelease_flag_uses_semver() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("reg", "gem", "1.0.0"));
+        backend.seed(pkg("reg", "gem", "1.1.0-rc.1"));
+        let s = svc_with_beta(backend, MemBetaChannel::with_users(&["beta"]));
+        let versions = s.get_rubygems_versions("reg", "gem", &beta_user()).await.unwrap();
+        // Newest first; 1.1.0-rc.1 is index 0.
+        let pre = versions[0]["prerelease"].as_bool().unwrap();
+        let stable = versions[1]["prerelease"].as_bool().unwrap();
+        assert!(pre, "1.1.0-rc.1 should be marked prerelease=true");
+        assert!(!stable, "1.0.0 should be marked prerelease=false");
     }
 }

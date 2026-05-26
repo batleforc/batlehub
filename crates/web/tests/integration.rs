@@ -420,6 +420,7 @@ fn make_local_svc(storage: Arc<dyn StorageBackend>) -> Arc<LocalRegistryService>
         ownership: None,
         versioning: std::collections::HashMap::new(),
         signing: std::collections::HashMap::new(),
+        beta_channel: std::collections::HashMap::new(),
     })
 }
 

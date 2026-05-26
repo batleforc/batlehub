@@ -63,19 +63,26 @@ pub async fn gem_download(
 
     let mode = mode_map.get(&registry);
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        match local_svc.get_artifact(&registry, name, version).await {
-            Ok(bytes) => {
-                let mut resp = HttpResponse::Ok();
-                resp.content_type("application/octet-stream");
-                append_signature_headers(&mut resp, &local_svc, &registry, name, version).await;
-                return Ok(resp.body(bytes));
+        if let Err(e) = local_svc.check_prerelease_access(&registry, version, &identity).await {
+            if !matches!(e, batlehub_core::error::CoreError::NotFound(_)) {
+                return Err(AppError::from(e));
             }
-            Err(batlehub_core::error::CoreError::NotFound(_))
-                if matches!(mode, RegistryMode::Hybrid) => {}
-            Err(batlehub_core::error::CoreError::NotFound(_)) => {
-                return Err(AppError::not_found(format!("gem '{name}@{version}' not found")));
+            // pre-release gated; fall through to proxy
+        } else {
+            match local_svc.get_artifact(&registry, name, version).await {
+                Ok(bytes) => {
+                    let mut resp = HttpResponse::Ok();
+                    resp.content_type("application/octet-stream");
+                    append_signature_headers(&mut resp, &local_svc, &registry, name, version).await;
+                    return Ok(resp.body(bytes));
+                }
+                Err(batlehub_core::error::CoreError::NotFound(_))
+                    if matches!(mode, RegistryMode::Hybrid) => {}
+                Err(batlehub_core::error::CoreError::NotFound(_)) => {
+                    return Err(AppError::not_found(format!("gem '{name}@{version}' not found")));
+                }
+                Err(e) => return Err(AppError::from(e)),
             }
-            Err(e) => return Err(AppError::from(e)),
         }
     }
 
@@ -113,7 +120,7 @@ pub async fn gem_info(
 
     let mode = mode_map.get(&registry);
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        match local_svc.get_rubygems_gem_info(&registry, &name).await {
+        match local_svc.get_rubygems_gem_info(&registry, &name, &identity).await {
             Ok(info) => return Ok(HttpResponse::Ok().json(info)),
             Err(batlehub_core::error::CoreError::NotFound(_))
                 if matches!(mode, RegistryMode::Hybrid) => {}
@@ -158,7 +165,7 @@ pub async fn gem_versions(
 
     let mode = mode_map.get(&registry);
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        match local_svc.get_rubygems_versions(&registry, &name).await {
+        match local_svc.get_rubygems_versions(&registry, &name, &identity).await {
             Ok(versions) => return Ok(HttpResponse::Ok().json(versions)),
             Err(batlehub_core::error::CoreError::NotFound(_))
                 if matches!(mode, RegistryMode::Hybrid) => {}
