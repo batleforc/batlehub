@@ -1,124 +1,189 @@
-import { defineConfig } from 'vitepress'
+import { defineConfig } from "vitepress";
 
 export default defineConfig({
-  title: 'BatleHub',
-  description: 'Smart proxy and cache for package registries',
+  title: "BatleHub",
+  description: "Smart proxy and cache for package registries",
   cleanUrls: true,
+  base: process.env.BASE_URL || "/",
 
-  head: [
-    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/logo.svg' }],
-  ],
+  head: [["link", { rel: "icon", type: "image/svg+xml", href: "/logo.svg" }]],
 
   themeConfig: {
-    logo: '/logo.svg',
+    logo: "/logo.svg",
 
     nav: [
-      { text: 'Home',             link: '/' },
-      { text: 'Installation',     link: '/guide/installation',      activeMatch: '/guide/installation' },
-      { text: 'Administration',   link: '/guide/administration',    activeMatch: '/guide/administration' },
-      { text: 'Caching',          link: '/guide/caching',           activeMatch: '/guide/caching' },
-      { text: 'User Guide',       link: '/guide/user',              activeMatch: '/guide/user' },
-      { text: 'Config Generator', link: '/guide/config-generator',  activeMatch: '/guide/config-generator' },
-      { text: 'Roadmap',          link: '/guide/roadmap',           activeMatch: '/guide/roadmap' },
-      { text: 'GitHub',           link: 'https://git.batleforc.fr/batleforc/batlehub', target: '_blank' },
+      { text: "Home", link: "/" },
+      {
+        text: "Installation",
+        link: "/guide/installation",
+        activeMatch: "/guide/installation",
+      },
+      {
+        text: "Administration",
+        link: "/guide/administration",
+        activeMatch: "/guide/administration",
+      },
+      {
+        text: "Caching",
+        link: "/guide/caching",
+        activeMatch: "/guide/caching",
+      },
+      { text: "User Guide", link: "/guide/user", activeMatch: "/guide/user" },
+      {
+        text: "Config Generator",
+        link: "/guide/config-generator",
+        activeMatch: "/guide/config-generator",
+      },
+      {
+        text: "Roadmap",
+        link: "/guide/roadmap",
+        activeMatch: "/guide/roadmap",
+      },
+      {
+        text: "GitHub",
+        link: "https://git.batleforc.fr/batleforc/batlehub",
+        target: "_blank",
+      },
     ],
 
     // Per-page sidebar: each section only shows its own subsections.
     // Top nav handles cross-section navigation.
     sidebar: {
-      '/guide/installation': [
+      "/guide/installation": [
         {
-          text: 'Installation',
+          text: "Installation",
           items: [
-            { text: 'Prerequisites',       link: '/guide/installation#prerequisites' },
-            { text: 'Docker Compose',      link: '/guide/installation#docker-compose-quickest-path' },
-            { text: 'Binary from source',  link: '/guide/installation#binary-from-source' },
-            { text: 'Helm chart',          link: '/guide/installation#helm-chart' },
-            { text: 'First-time setup',    link: '/guide/installation#first-time-setup' },
+            {
+              text: "Prerequisites",
+              link: "/guide/installation#prerequisites",
+            },
+            {
+              text: "Docker Compose",
+              link: "/guide/installation#docker-compose-quickest-path",
+            },
+            {
+              text: "Binary from source",
+              link: "/guide/installation#binary-from-source",
+            },
+            { text: "Helm chart", link: "/guide/installation#helm-chart" },
+            {
+              text: "First-time setup",
+              link: "/guide/installation#first-time-setup",
+            },
           ],
         },
       ],
-      '/guide/administration': [
+      "/guide/administration": [
         {
-          text: 'Administration',
+          text: "Administration",
           items: [
-            { text: 'Configuration',        link: '/guide/administration#configuration' },
-            { text: 'Storage',              link: '/guide/administration#storage' },
-            { text: 'Health & Observability', link: '/guide/administration#health' },
-            { text: 'Cache policy',         link: '/guide/administration#cache-policy' },
-            { text: 'Package management',   link: '/guide/administration#package-management' },
-            { text: 'Audit log',            link: '/guide/administration#audit-log' },
-            { text: 'Rules',                link: '/guide/administration#rules' },
+            {
+              text: "Configuration",
+              link: "/guide/administration#configuration",
+            },
+            { text: "Storage", link: "/guide/administration#storage" },
+            {
+              text: "Health & Observability",
+              link: "/guide/administration#health",
+            },
+            {
+              text: "Cache policy",
+              link: "/guide/administration#cache-policy",
+            },
+            {
+              text: "Package management",
+              link: "/guide/administration#package-management",
+            },
+            { text: "Audit log", link: "/guide/administration#audit-log" },
+            { text: "Rules", link: "/guide/administration#rules" },
           ],
         },
       ],
-      '/guide/caching': [
+      "/guide/caching": [
         {
-          text: 'Caching',
+          text: "Caching",
           items: [
-            { text: 'How the cache works',    link: '/guide/caching#how-the-cache-works' },
-            { text: 'Cache backend [cache]',  link: '/guide/caching#cache-backend' },
-            { text: 'Per-registry policy',    link: '/guide/caching#registry-cache-policy' },
-            { text: 'Cache warming',          link: '/guide/caching#cache-warming' },
-            { text: 'Deduplication',          link: '/guide/caching#deduplication' },
-            { text: 'Rate limiting',          link: '/guide/caching#rate-limiting' },
-            { text: 'Worked examples',        link: '/guide/caching#worked-examples' },
+            {
+              text: "How the cache works",
+              link: "/guide/caching#how-the-cache-works",
+            },
+            {
+              text: "Cache backend [cache]",
+              link: "/guide/caching#cache-backend",
+            },
+            {
+              text: "Per-registry policy",
+              link: "/guide/caching#registry-cache-policy",
+            },
+            { text: "Cache warming", link: "/guide/caching#cache-warming" },
+            { text: "Deduplication", link: "/guide/caching#deduplication" },
+            { text: "Rate limiting", link: "/guide/caching#rate-limiting" },
+            { text: "Worked examples", link: "/guide/caching#worked-examples" },
           ],
         },
       ],
-      '/guide/user': [
+      "/guide/user": [
         {
-          text: 'User Guide',
+          text: "User Guide",
           items: [
-            { text: 'Getting a token',        link: '/guide/user#getting-a-token' },
-            { text: 'npm',                    link: '/guide/user#npm' },
-            { text: 'Cargo',                  link: '/guide/user#cargo' },
-            { text: 'Go Modules',             link: '/guide/user#go-modules' },
-            { text: 'VS Code Extensions',     link: '/guide/user#vs-code-extensions' },
-            { text: 'Troubleshooting',        link: '/guide/user#troubleshooting' },
+            { text: "Getting a token", link: "/guide/user#getting-a-token" },
+            { text: "npm", link: "/guide/user#npm" },
+            { text: "Cargo", link: "/guide/user#cargo" },
+            { text: "Go Modules", link: "/guide/user#go-modules" },
+            {
+              text: "VS Code Extensions",
+              link: "/guide/user#vs-code-extensions",
+            },
+            { text: "Troubleshooting", link: "/guide/user#troubleshooting" },
           ],
         },
       ],
-      '/guide/config-generator': [
+      "/guide/config-generator": [
         {
-          text: 'Config Generator',
+          text: "Config Generator",
           items: [
-            { text: 'Generate config.toml', link: '/guide/config-generator' },
+            { text: "Generate config.toml", link: "/guide/config-generator" },
           ],
         },
       ],
-      '/guide/roadmap': [
+      "/guide/roadmap": [
         {
-          text: 'Roadmap',
+          text: "Roadmap",
           items: [
-            { text: 'New registry types',       link: '/guide/roadmap#new-registries' },
-            { text: 'Cache policy',             link: '/guide/roadmap#cache-policy' },
-            { text: 'Metrics & observability',  link: '/guide/roadmap#metrics' },
-            { text: 'Artifact integrity',       link: '/guide/roadmap#integrity' },
-            { text: 'Rate limiting',            link: '/guide/roadmap#rate-limiting' },
-            { text: 'Quota management',         link: '/guide/roadmap#quotas' },
-            { text: 'Hot reload & config',      link: '/guide/roadmap#hot-reload' },
-            { text: 'Webhooks',                 link: '/guide/roadmap#webhooks' },
-            { text: 'Private registry',         link: '/guide/roadmap#private-registry' },
-            { text: 'SBOM',                     link: '/guide/roadmap#sbom' },
-            { text: 'UI improvements',          link: '/guide/roadmap#ui' },
-            { text: 'Testing',                  link: '/guide/roadmap#testing' },
+            {
+              text: "New registry types",
+              link: "/guide/roadmap#new-registries",
+            },
+            { text: "Cache policy", link: "/guide/roadmap#cache-policy" },
+            { text: "Metrics & observability", link: "/guide/roadmap#metrics" },
+            { text: "Artifact integrity", link: "/guide/roadmap#integrity" },
+            { text: "Rate limiting", link: "/guide/roadmap#rate-limiting" },
+            { text: "Quota management", link: "/guide/roadmap#quotas" },
+            { text: "Hot reload & config", link: "/guide/roadmap#hot-reload" },
+            { text: "Webhooks", link: "/guide/roadmap#webhooks" },
+            {
+              text: "Private registry",
+              link: "/guide/roadmap#private-registry",
+            },
+            { text: "SBOM", link: "/guide/roadmap#sbom" },
+            { text: "UI improvements", link: "/guide/roadmap#ui" },
+            { text: "Testing", link: "/guide/roadmap#testing" },
           ],
         },
       ],
     },
 
     socialLinks: [
-      { icon: 'github', link: 'https://git.batleforc.fr/batleforc/batlehub' },
+      { icon: "github", link: "https://git.batleforc.fr/batleforc/batlehub" },
     ],
 
     footer: {
-      message: 'Released under the MIT License.',
-      copyright: 'Copyright © 2025 Max Batleforc',
+      message: "Released under the MIT License.",
+      copyright: "Copyright © 2025 Max Batleforc",
     },
 
     search: {
-      provider: 'local',
+      provider: "local",
     },
   },
-})
+});

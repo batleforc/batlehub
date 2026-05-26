@@ -20,6 +20,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
       - name: Build website
+        env:
+          BASE_URL: /batlehub/
         run: |
           cd website
           yarn install
