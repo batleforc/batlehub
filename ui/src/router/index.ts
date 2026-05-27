@@ -48,6 +48,8 @@ export const router = createRouter({
         { path: "bulk",            component: AdminBulk },
         { path: "audit-log",       component: AuditLog },
         { path: "health",          component: AdminHealth },
+        { path: "ip-blocks",       component: () => import("@/pages/AdminIpBlocks.vue") },
+        { path: "beta-channel",    component: () => import("@/pages/AdminBetaChannel.vue") },
       ],
     },
   ],

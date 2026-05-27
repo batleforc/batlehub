@@ -5,6 +5,7 @@ import { blockPackage, unblockPackage, bulkBlockPackages, bulkUnblockPackages, l
 import type { RegistryInfo } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
+
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -52,6 +53,10 @@ interface PackageDetailResponse {
   recent_events: PackageEventDto[];
 }
 
+function isPreRelease(version: string): boolean {
+  return version.includes("-");
+}
+
 const route = useRoute();
 const router = useRouter();
 
@@ -93,6 +98,32 @@ const { data, error, loading, reload } = useApi<PackageDetailResponse>(
     }) as Promise<{ data?: unknown; error?: unknown }>,
   [token, registry, name],
 );
+
+interface BetaChannelMemberDto {
+  principal_type: string;
+  principal_id: string;
+  granted_by: string | null;
+}
+
+const {
+  data: betaMembers,
+  loading: betaLoading,
+  reload: reloadBeta,
+} = useApi<BetaChannelMemberDto[]>(
+  () => {
+    if (!registry.value) return Promise.resolve({ data: [] }) as Promise<{ data?: unknown; error?: unknown }>;
+    return fetch(
+      `${API_BASE}/api/v1/admin/registries/${encodeURIComponent(registry.value)}/beta-channel`,
+      { headers: token.value ? { Authorization: `Bearer ${token.value}` } : {} },
+    ).then(async (r) => {
+      if (!r.ok) throw new Error(await r.text());
+      return { data: await r.json() };
+    }) as Promise<{ data?: unknown; error?: unknown }>;
+  },
+  [token, registry],
+);
+
+const betaExpanded = ref(false);
 
 const upstreamUrl = computed(() => {
   if (!registry.value || !name.value) return null;
@@ -327,7 +358,10 @@ async function bulkUnblockVersions() {
                     class="cursor-pointer"
                   />
                 </TableCell>
-                <TableCell class="font-mono text-xs">{{ v.version }}</TableCell>
+                <TableCell class="font-mono text-xs">
+                  {{ v.version }}
+                  <Badge v-if="isPreRelease(v.version)" variant="outline" class="ml-1 text-xs align-middle">pre-release</Badge>
+                </TableCell>
                 <TableCell class="font-mono text-xs text-muted-foreground">{{ v.artifact ?? "—" }}</TableCell>
                 <TableCell>
                   <div class="space-y-0.5">
@@ -390,6 +424,69 @@ async function bulkUnblockVersions() {
             </TableBody>
           </Table>
           <p v-if="data.versions.length === 0" class="p-6 text-sm text-muted-foreground text-center">No versions tracked yet.</p>
+        </CardContent>
+      </Card>
+
+      <!-- Beta channel access -->
+      <Card>
+        <CardHeader>
+          <div class="flex items-center justify-between">
+            <button
+              class="flex items-center gap-2 text-base font-semibold hover:text-primary transition-colors"
+              @click="betaExpanded = !betaExpanded"
+            >
+              Beta Channel Access
+              <span class="text-muted-foreground text-xs font-normal">
+                {{ betaExpanded ? "▲ hide" : "▼ show" }}
+              </span>
+              <Badge v-if="betaMembers && betaMembers.length > 0" variant="secondary" class="text-xs ml-1">
+                {{ betaMembers.length }} member{{ betaMembers.length > 1 ? "s" : "" }}
+              </Badge>
+            </button>
+            <Button
+              v-if="betaExpanded"
+              variant="outline"
+              size="sm"
+              :disabled="betaLoading"
+              @click="reloadBeta"
+            >
+              {{ betaLoading ? "Loading…" : "Refresh" }}
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent v-if="betaExpanded" class="p-0">
+          <p class="px-6 py-2 text-xs text-muted-foreground border-b">
+            Pre-release versions (marked <span class="font-mono">pre-release</span> above) are only accessible to the users and groups listed here.
+          </p>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Type</TableHead>
+                <TableHead>Principal ID</TableHead>
+                <TableHead>Granted by</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <TableRow
+                v-for="m in betaMembers"
+                :key="m.principal_type + ':' + m.principal_id"
+              >
+                <TableCell>
+                  <Badge :variant="m.principal_type === 'user' ? 'default' : 'secondary'" class="text-xs capitalize">
+                    {{ m.principal_type }}
+                  </Badge>
+                </TableCell>
+                <TableCell class="font-mono text-sm">{{ m.principal_id }}</TableCell>
+                <TableCell class="text-sm text-muted-foreground">{{ m.granted_by ?? "—" }}</TableCell>
+              </TableRow>
+            </TableBody>
+          </Table>
+          <p
+            v-if="!betaMembers || betaMembers.length === 0"
+            class="p-6 text-sm text-muted-foreground text-center"
+          >
+            No beta channel members — pre-release versions are not accessible to anyone.
+          </p>
         </CardContent>
       </Card>
 

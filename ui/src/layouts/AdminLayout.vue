@@ -6,15 +6,19 @@ import {
   Upload,
   ScrollText,
   HeartPulse,
+  Shield,
+  FlaskConical,
 } from "@lucide/vue";
 
 const route = useRoute();
 
 const adminLinks = [
-  { to: "/admin/packages",   label: "Packages",    icon: Package },
-  { to: "/admin/bulk",       label: "Bulk Import", icon: Upload },
-  { to: "/admin/audit-log",  label: "Audit Log",   icon: ScrollText },
-  { to: "/admin/health",     label: "Health",      icon: HeartPulse },
+  { to: "/admin/packages",     label: "Packages",     icon: Package },
+  { to: "/admin/bulk",         label: "Bulk Import",  icon: Upload },
+  { to: "/admin/audit-log",    label: "Audit Log",    icon: ScrollText },
+  { to: "/admin/health",       label: "Health",       icon: HeartPulse },
+  { to: "/admin/ip-blocks",    label: "IP Blocks",    icon: Shield },
+  { to: "/admin/beta-channel", label: "Beta Channel", icon: FlaskConical },
 ];
 
 function isActive(to: string) {
