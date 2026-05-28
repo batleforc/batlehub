@@ -8,6 +8,7 @@ import {
   HeartPulse,
   Shield,
   FlaskConical,
+  FolderKey,
 } from "@lucide/vue";
 
 const route = useRoute();
@@ -18,7 +19,8 @@ const adminLinks = [
   { to: "/admin/audit-log",    label: "Audit Log",    icon: ScrollText },
   { to: "/admin/health",       label: "Health",       icon: HeartPulse },
   { to: "/admin/ip-blocks",    label: "IP Blocks",    icon: Shield },
-  { to: "/admin/beta-channel", label: "Beta Channel", icon: FlaskConical },
+  { to: "/admin/beta-channel",    label: "Beta Channel",    icon: FlaskConical },
+  { to: "/admin/team-namespaces", label: "Team Namespaces", icon: FolderKey },
 ];
 
 function isActive(to: string) {

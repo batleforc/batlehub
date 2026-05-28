@@ -199,7 +199,7 @@ pub async fn goproxy_file(
                     Err(e)
                 } else {
                     local_svc
-                        .get_artifact(&registry, module, version)
+                        .get_artifact(&registry, module, version, &identity)
                         .await
                         .map(|bytes| {
                             HttpResponse::Ok()

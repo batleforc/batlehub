@@ -200,7 +200,7 @@ pub async fn composer_dist(
             .check_prerelease_access(&registry, &version, &identity.0)
             .await
             .map_err(AppError::from)?;
-        match local_svc.get_artifact(&registry, &name, &version).await {
+        match local_svc.get_artifact(&registry, &name, &version, &identity).await {
             Ok(bytes) => {
                 return Ok(HttpResponse::Ok()
                     .content_type("application/zip")
@@ -226,7 +226,7 @@ pub async fn composer_dist(
 
         // Gate passed — try local artifact; fall through to proxy only when we truly
         // don't have it locally (NotFound = "not published here, go upstream").
-        match local_svc.get_artifact(&registry, &name, &version).await {
+        match local_svc.get_artifact(&registry, &name, &version, &identity).await {
             Ok(bytes) => {
                 return Ok(HttpResponse::Ok()
                     .content_type("application/zip")

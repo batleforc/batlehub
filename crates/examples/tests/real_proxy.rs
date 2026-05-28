@@ -315,6 +315,7 @@ impl RealProxy {
             versioning: HashMap::new(),
             signing: HashMap::new(),
             beta_channel: HashMap::new(),
+            team_namespace: None,
         });
 
         let proxy_svc = Arc::new(ProxyService {
@@ -437,6 +438,7 @@ impl RealProxy {
             versioning: HashMap::new(),
             signing: HashMap::new(),
             beta_channel: HashMap::new(),
+            team_namespace: None,
         });
 
         let proxy_svc = Arc::new(ProxyService {

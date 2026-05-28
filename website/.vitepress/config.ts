@@ -102,6 +102,7 @@ export default defineConfig({
             { text: "Audit log", link: "/guide/administration#audit-log" },
             { text: "Beta channel", link: "/guide/administration#beta-channel" },
             { text: "IP blocking", link: "/guide/administration#ip-blocking" },
+            { text: "Team namespaces", link: "/guide/administration#team-namespaces" },
             { text: "Rules", link: "/guide/administration#rules" },
           ],
         },
@@ -184,6 +185,22 @@ export default defineConfig({
             {
               text: "Storage backends",
               link: "/guide/access-control#ip-storage",
+            },
+            {
+              text: "Team Namespaces & Visibility",
+              link: "/guide/access-control#team-namespaces",
+            },
+            {
+              text: "Namespace claims",
+              link: "/guide/access-control#ns-claims",
+            },
+            {
+              text: "Package visibility",
+              link: "/guide/access-control#ns-visibility",
+            },
+            {
+              text: "Registry support",
+              link: "/guide/access-control#ns-registries",
             },
           ],
         },

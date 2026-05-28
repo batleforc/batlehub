@@ -134,14 +134,22 @@ async fn serve_local_index(
     index_path: &str,
     identity: &batlehub_core::entities::Identity,
 ) -> HttpResponse {
-    // The last path segment is the crate name (e.g. "se/rd/serde" → "serde").
-    let name = index_path.split('/').next_back().unwrap_or(index_path);
+    // The Cargo sparse index path format is "{prefix1}/{prefix2}/{name}" for
+    // names ≥ 3 chars, or "{len}/{name}" for 1–2 char names.
+    // `splitn(3, '/')` captures everything after the prefix segments as the
+    // final component, which preserves slashes in package names (e.g. a
+    // name like "scope/pkg" decoded from "scope%2Fpkg" in the URL remains
+    // intact as "scope/pkg" rather than being truncated to "pkg").
+    let name = index_path.splitn(3, '/').last().unwrap_or(index_path);
     match local_svc.get_index(registry, name, identity).await {
         Ok(content) => HttpResponse::Ok()
             .content_type("text/plain; charset=utf-8")
             .body(content),
         Err(CoreError::NotFound(_)) => {
             HttpResponse::NotFound().body(format!("crate '{name}' not found in local registry"))
+        }
+        Err(CoreError::AccessDenied(msg)) => {
+            HttpResponse::Forbidden().body(msg)
         }
         Err(e) => {
             tracing::error!(error = %e, "local index lookup failed");
@@ -214,7 +222,7 @@ pub async fn download_crate(
             .await
             .map_err(AppError::from)?;
         let bytes = local_svc
-            .get_artifact(&registry, &name, &version)
+            .get_artifact(&registry, &name, &version, &identity)
             .await
             .map_err(AppError::from)?;
         let mut resp = HttpResponse::Ok();
@@ -230,7 +238,7 @@ pub async fn download_crate(
             .check_prerelease_access(&registry, &version, &identity)
             .await
             .map_err(AppError::from)?;
-        match local_svc.get_artifact(&registry, &name, &version).await {
+        match local_svc.get_artifact(&registry, &name, &version, &identity).await {
             Ok(bytes) => {
                 let mut resp = HttpResponse::Ok();
                 resp.content_type("application/octet-stream");

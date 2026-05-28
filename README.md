@@ -49,6 +49,7 @@ Multiple instances of the same registry type can run in parallel (e.g. a private
 - **Artifact caching** — first download is fetched from upstream and stored; subsequent requests are served from local or S3 storage.
 - **Private / local registry** — `npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`, `rubygems`, `maven`, `terraform`, and `composer` registries can be set to `mode = "local"` (fully private, no upstream) or `mode = "hybrid"` (local-first with upstream fallback). Teams publish packages directly to BatleHub using standard tools (`npm publish`, `cargo publish`, `gem push`, `mvn deploy`, raw VSIX / Go zip / Terraform provider upload / Composer ZIP upload).
 - **Ownership & team management** — per-package owner table (user or group, admin or maintainer role). The first publisher becomes the package admin; subsequent publishes require an owner record. Manage via the admin API or let it be set automatically.
+- **Team namespaces & package visibility** — assign a package name prefix (e.g. `frontend/`) to an auth-provider group so only its members can publish there. Set per-package visibility to `public` (default), `internal` (any authenticated user), or `team` (group members only) to control who can download.
 - **Versioning policies** — enforce semver, block pre-release versions, or restrict accepted version strings with a regex. Violations return HTTP 422 at publish time.
 - **Artifact signing** — publish with `X-Artifact-Signature` (base64) and `X-Signature-Type` headers; signatures are stored alongside the artifact and returned on every download. Optionally require signatures (`signing.required = true`) and restrict accepted types.
 - **Bulk operations** — bulk yank, unyank, and delete via the admin API; process hundreds of versions in a single request.
@@ -538,6 +539,44 @@ curl -X POST -H "Authorization: Bearer <admin-token>" \
 # Remove an owner
 curl -X DELETE -H "Authorization: Bearer <admin-token>" \
   https://batlehub.example.com/api/v1/admin/registries/internal-npm/packages/my-pkg/owners/user/alice
+```
+
+### Team namespaces & package visibility
+
+Team namespaces let an auth-provider group (from OIDC claims or Kubernetes) claim a package name prefix within a registry. Only members of that group — plus admins — may publish packages whose name starts with the claimed prefix. Groups are not managed inside BatleHub; membership is read from the `groups` claim delivered by the auth provider on every request.
+
+Package visibility controls who can **download** a package, independently of who can publish it:
+
+| Visibility | Who can download |
+|------------|-----------------|
+| `public` (default) | Everyone, including unauthenticated users |
+| `internal` | Any authenticated user |
+| `team` | Only members of the group that owns the namespace |
+
+Visibility is package-level (all versions share the same setting). Changing visibility takes effect immediately on the next request; no cache flush is required. Publishing a new version inherits the existing package visibility automatically.
+
+```sh
+# Claim the "frontend" namespace for the group "oidc:frontend-team"
+curl -X POST -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"prefix":"frontend","group_id":"oidc:frontend-team"}' \
+  https://batlehub.example.com/api/v1/admin/registries/internal-npm/namespaces
+
+# Only members of "oidc:frontend-team" can now publish "frontend/utils", "frontend/ui", etc.
+
+# List namespace claims for a registry
+curl -H "Authorization: Bearer <admin-token>" \
+  https://batlehub.example.com/api/v1/admin/registries/internal-npm/namespaces
+
+# Set a package to team-only visibility
+curl -X PUT -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"visibility":"team"}' \
+  https://batlehub.example.com/api/v1/admin/registries/internal-npm/packages/frontend%2Futils/visibility
+
+# Release the namespace claim
+curl -X DELETE -H "Authorization: Bearer <admin-token>" \
+  https://batlehub.example.com/api/v1/admin/registries/internal-npm/namespaces/frontend
 ```
 
 ### Versioning policies

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { blockPackage, unblockPackage, bulkBlockPackages, bulkUnblockPackages, listRegistries } from "@/client/sdk.gen";
 import type { RegistryInfo } from "@/client/types.gen";
@@ -8,7 +8,8 @@ import { useAuth } from "@/composables/useAuth";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
+import Select from "@/components/ui/select/Select.vue";
 import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
 } from "@/components/ui/table";
@@ -124,6 +125,66 @@ const {
 );
 
 const betaExpanded = ref(false);
+
+// ── Package visibility ────────────────────────────────────────────────────────
+
+type Visibility = "public" | "internal" | "team";
+
+const {
+  data: visibilityData,
+  reload: reloadVisibility,
+} = useApi<{ visibility: Visibility }>(
+  () => {
+    if (!registry.value || !name.value) {
+      return Promise.resolve({ data: undefined }) as Promise<{ data?: unknown; error?: unknown }>;
+    }
+    return fetch(
+      `${API_BASE}/api/v1/admin/registries/${encodeURIComponent(registry.value)}/packages/${name.value}/visibility`,
+      { headers: token.value ? { Authorization: `Bearer ${token.value}` } : {} },
+    ).then(async (r) => {
+      if (!r.ok) throw new Error(await r.text());
+      return { data: await r.json() };
+    }) as Promise<{ data?: unknown; error?: unknown }>;
+  },
+  [token, registry, name],
+);
+
+const selectedVisibility = ref<Visibility>("public");
+watch(visibilityData, (v) => { if (v) selectedVisibility.value = v.visibility; });
+
+const visibilityLoading = ref(false);
+const visibilityError = ref<string | null>(null);
+
+const visibilityOptions = [
+  { value: "public",   label: "Public — anyone can download" },
+  { value: "internal", label: "Internal — authenticated users only" },
+  { value: "team",     label: "Team — namespace group members only" },
+];
+
+async function saveVisibility() {
+  if (!registry.value || !name.value) return;
+  visibilityLoading.value = true;
+  visibilityError.value = null;
+  try {
+    const r = await fetch(
+      `${API_BASE}/api/v1/admin/registries/${encodeURIComponent(registry.value)}/packages/${name.value}/visibility`,
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token.value ? { Authorization: `Bearer ${token.value}` } : {}),
+        },
+        body: JSON.stringify({ visibility: selectedVisibility.value }),
+      },
+    );
+    if (!r.ok) throw new Error(await r.text());
+    reloadVisibility();
+  } catch (e) {
+    visibilityError.value = e instanceof Error ? e.message : "Unknown error";
+  } finally {
+    visibilityLoading.value = false;
+  }
+}
 
 const upstreamUrl = computed(() => {
   if (!registry.value || !name.value) return null;
@@ -487,6 +548,38 @@ async function bulkUnblockVersions() {
           >
             No beta channel members — pre-release versions are not accessible to anyone.
           </p>
+        </CardContent>
+      </Card>
+
+      <!-- Package visibility -->
+      <Card>
+        <CardHeader>
+          <CardTitle class="text-base">Package visibility</CardTitle>
+          <CardDescription>Controls who can download this package (all versions share the same setting).</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div class="flex items-center gap-3 flex-wrap">
+            <Badge
+              :variant="selectedVisibility === 'public' ? 'default' : selectedVisibility === 'internal' ? 'secondary' : 'outline'"
+              :class="selectedVisibility === 'team' ? 'border-blue-500 text-blue-600' : ''"
+              class="capitalize text-xs"
+            >
+              {{ visibilityData?.visibility ?? "public" }}
+            </Badge>
+            <Select
+              v-model="selectedVisibility"
+              :options="visibilityOptions"
+              class="w-72"
+            />
+            <Button
+              size="sm"
+              :disabled="visibilityLoading || selectedVisibility === (visibilityData?.visibility ?? 'public')"
+              @click="saveVisibility"
+            >
+              {{ visibilityLoading ? "Saving…" : "Save" }}
+            </Button>
+          </div>
+          <p v-if="visibilityError" class="mt-2 text-sm text-destructive">{{ visibilityError }}</p>
         </CardContent>
       </Card>
 

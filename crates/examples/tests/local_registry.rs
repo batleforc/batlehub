@@ -109,6 +109,7 @@ impl LocalProxy {
             versioning: HashMap::new(),
             signing: HashMap::new(),
             beta_channel: HashMap::new(),
+            team_namespace: None,
         });
 
         // No upstream registries — local mode only.

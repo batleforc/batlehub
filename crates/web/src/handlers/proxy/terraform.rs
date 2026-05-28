@@ -655,7 +655,7 @@ pub async fn tf_module_artifact(
 
     let pkg_name = format!("modules/{namespace}/{name}/{provider}");
     let bytes = local_svc
-        .get_artifact(&registry, &pkg_name, &version)
+        .get_artifact(&registry, &pkg_name, &version, &identity)
         .await
         .map_err(AppError::from)?;
 

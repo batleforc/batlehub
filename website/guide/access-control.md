@@ -1,9 +1,10 @@
 # Access Control
 
-BatleHub provides two complementary access-control features for private and hybrid registries:
+BatleHub provides three complementary access-control features for private and hybrid registries:
 
 - **Beta/Pre-Release Channel** — restrict pre-release package versions to approved users or groups
 - **IP-Based Blocking** — automatically block abusive IPs (fail2ban-style) and manage manual bans
+- **Team Namespaces & Package Visibility** — assign package name prefixes to auth-provider groups and control per-package download visibility
 
 [[toc]]
 
@@ -280,3 +281,154 @@ Flow:
 1. Rate limiting blocks excessive requests → 429 counts as a violation.
 2. Auth failures (401) also count → brute-force attempts auto-block the source IP.
 3. Beta releases are visible only to users or groups added via the admin API.
+
+---
+
+## Team Namespaces & Package Visibility {#team-namespaces}
+
+### How it works {#ns-how-it-works}
+
+A **team namespace** maps a package name prefix to an auth-provider group. Once claimed, only members of that group — plus admins — can publish packages whose name starts with `prefix` or `prefix/`.
+
+**Example:** claiming prefix `frontend` for group `oidc:frontend-team` restricts publishing of `frontend/utils`, `frontend/components`, and any package named exactly `frontend` to members of that group. Publishing `backend/api` is unaffected.
+
+Groups are not managed inside BatleHub. Membership is read from the `groups` claim delivered by the configured auth provider (OIDC, Kubernetes, or static token) on every request — no separate sync required.
+
+**Package visibility** controls who can _download_ a package, independently of who published it:
+
+| Visibility | Who can download |
+|------------|-----------------|
+| `public` (default) | Everyone, including unauthenticated users |
+| `internal` | Any authenticated user |
+| `team` | Members of the group that owns the namespace |
+
+Visibility is **package-level** — all versions of a package share the same setting. When a new version is published, it inherits the existing visibility automatically. Admins always bypass visibility checks.
+
+There is no TOML configuration required. Namespace claims and visibility are managed entirely at runtime via the admin API.
+
+### Managing namespace claims {#ns-claims}
+
+All endpoints require an `Admin` role token.
+
+#### List claims
+
+```sh
+curl -H "Authorization: Bearer <admin-token>" \
+  https://batlehub.example.com/api/v1/admin/registries/internal-npm/namespaces
+```
+
+```json
+[
+  { "registry": "internal-npm", "prefix": "frontend", "group_id": "oidc:frontend-team", "claimed_by": "admin" },
+  { "registry": "internal-npm", "prefix": "backend",  "group_id": "oidc:backend-team",  "claimed_by": null }
+]
+```
+
+#### Claim a namespace
+
+```sh
+curl -X POST \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"prefix":"frontend","group_id":"oidc:frontend-team","claimed_by":"admin"}' \
+  https://batlehub.example.com/api/v1/admin/registries/internal-npm/namespaces
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `prefix` | Yes | Package name prefix (no trailing slash). May contain slashes: `org/team`. |
+| `group_id` | Yes | Group name as it appears in the auth provider claim, e.g. `oidc:frontend-team`. |
+| `claimed_by` | No | Free-text note; typically the admin who created the claim. |
+
+Returns `204 No Content`; `409 Conflict` if the prefix is already claimed.
+
+#### Release a claim
+
+Prefixes containing slashes are passed verbatim in the URL path:
+
+```sh
+# Simple prefix
+curl -X DELETE \
+  -H "Authorization: Bearer <admin-token>" \
+  https://batlehub.example.com/api/v1/admin/registries/internal-npm/namespaces/frontend
+
+# Slash-containing prefix
+curl -X DELETE \
+  -H "Authorization: Bearer <admin-token>" \
+  https://batlehub.example.com/api/v1/admin/registries/internal-npm/namespaces/org/team
+```
+
+Returns `204 No Content` even if the claim did not exist.
+
+### Package visibility {#ns-visibility}
+
+#### Get current visibility
+
+```sh
+curl -H "Authorization: Bearer <admin-token>" \
+  https://batlehub.example.com/api/v1/admin/registries/internal-npm/packages/frontend%2Futils/visibility
+```
+
+```json
+{ "visibility": "public" }
+```
+
+:::tip URL encoding
+Package names that contain slashes must be percent-encoded in the URL: `/` → `%2F`.
+:::
+
+#### Set visibility
+
+```sh
+# Team-only
+curl -X PUT \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"visibility":"team"}' \
+  https://batlehub.example.com/api/v1/admin/registries/internal-npm/packages/frontend%2Futils/visibility
+
+# Any authenticated user
+curl -X PUT \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"visibility":"internal"}' \
+  https://batlehub.example.com/api/v1/admin/registries/internal-npm/packages/frontend%2Futils/visibility
+
+# Restore public access
+curl -X PUT \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"visibility":"public"}' \
+  https://batlehub.example.com/api/v1/admin/registries/internal-npm/packages/frontend%2Futils/visibility
+```
+
+Accepted values: `public`, `internal`, `team`. Returns `204 No Content`; `404` if the package has never been published; `400` for an unknown value.
+
+#### Download-time enforcement
+
+When a request arrives for a package with non-public visibility, BatleHub evaluates in order:
+
+1. **Admin?** → allow.
+2. **`public`?** → allow.
+3. **`internal`?** → allow if the caller has at least `User` role (i.e. is authenticated).
+4. **`team`?** → allow if the caller's group claims include the group that owns the namespace. If no claim is found, deny all non-admin access.
+
+The same check applies to every access path: artifact downloads, index/metadata responses, version listings. A user who cannot download a package also cannot see it in `npm view`, `cargo search`, etc.
+
+### Registry support {#ns-registries}
+
+Team namespaces and visibility apply to all registry types in `local` or `hybrid` mode:
+
+| Registry | Prefix example |
+|----------|---------------|
+| npm | `@scope` or `team/` |
+| Cargo | `my-prefix/` or an exact crate name |
+| Go modules | `github.com/org/` |
+| RubyGems | `my-gem` |
+| Maven | `com.example.group:` |
+| Terraform modules | `namespace/module/provider` |
+| Terraform providers | `namespace/type` |
+| Composer | `vendor/` |
+| OpenVSX / VSIX | `publisher.name` |
+
+Prefixes are matched by a **longest-prefix rule**: if both `frontend` and `frontend/ui` are claimed, `frontend/ui/button` is governed by the `frontend/ui` claim.

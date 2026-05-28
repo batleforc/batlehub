@@ -228,6 +228,7 @@ mod tests {
             published_by: Some("test-user".to_owned()),
             signature_bytes: None,
             signature_type: None,
+            visibility: Default::default(),
         }
     }
 

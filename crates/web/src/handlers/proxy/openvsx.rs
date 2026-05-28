@@ -63,7 +63,7 @@ pub async fn download_vsix(
             .await
             .map_err(AppError::from)?;
         let bytes = local_svc
-            .get_artifact(&registry, &extension_id, &version)
+            .get_artifact(&registry, &extension_id, &version, &identity)
             .await
             .map_err(AppError::from)?;
         return Ok(HttpResponse::Ok()
@@ -82,7 +82,7 @@ pub async fn download_vsix(
             // pre-release gated; fall through to proxy
         } else {
             match local_svc
-                .get_artifact(&registry, &extension_id, &version)
+                .get_artifact(&registry, &extension_id, &version, &identity)
                 .await
             {
                 Ok(bytes) => {

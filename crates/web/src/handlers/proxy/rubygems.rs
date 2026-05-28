@@ -68,7 +68,7 @@ pub async fn gem_download(
             .await
             .map_err(AppError::from)?;
         let bytes = local_svc
-            .get_artifact(&registry, name, version)
+            .get_artifact(&registry, name, version, &identity)
             .await
             .map_err(AppError::from)?;
         let mut resp = HttpResponse::Ok();
@@ -84,7 +84,7 @@ pub async fn gem_download(
             .check_prerelease_access(&registry, version, &identity)
             .await
             .map_err(AppError::from)?;
-        match local_svc.get_artifact(&registry, name, version).await {
+        match local_svc.get_artifact(&registry, name, version, &identity).await {
             Ok(bytes) => {
                 let mut resp = HttpResponse::Ok();
                 resp.content_type("application/octet-stream");

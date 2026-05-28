@@ -10,6 +10,7 @@ pub mod quota;
 pub mod rate_limit_store;
 pub mod registry;
 pub mod storage;
+pub mod team_namespace;
 pub mod user_token_repo;
 
 pub use artifact_meta::*;
@@ -24,4 +25,5 @@ pub use quota::{QuotaRepository, QuotaUsage};
 pub use rate_limit_store::RateLimitStore;
 pub use registry::*;
 pub use storage::*;
+pub use team_namespace::TeamNamespacePort;
 pub use user_token_repo::*;

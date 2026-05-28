@@ -50,7 +50,8 @@ use batlehub_core::{
 use batlehub_adapters::rate_limit::{InMemoryIpBlockStore, InMemoryRateLimitStore};
 use batlehub_config::schema::{GroupRateLimitConfig, RateLimitConfig, RateLimitEnforcement, RegistryMode};
 use batlehub_core::entities::Identity;
-use batlehub_core::ports::{BetaChannelEntry, BetaChannelPort, IpBlockStore};
+use batlehub_core::ports::{BetaChannelEntry, BetaChannelPort, IpBlockStore, TeamNamespacePort};
+use batlehub_core::entities::{TeamNamespace, Visibility};
 use batlehub_web::{configure_app, healthz, prometheus_metrics, AuthMiddlewareFactory, RateLimitMiddlewareFactory, RateLimitService, RegistryModeMap};
 use metrics_exporter_prometheus::PrometheusBuilder;
 
@@ -124,6 +125,7 @@ fn make_local_svc(storage: Arc<dyn StorageBackend>) -> Arc<LocalRegistryService>
         versioning: std::collections::HashMap::new(),
         signing: std::collections::HashMap::new(),
         beta_channel: std::collections::HashMap::new(),
+        team_namespace: None,
     })
 }
 
@@ -6259,4 +6261,1053 @@ async fn beta_channel_requires_admin() {
         .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 403);
+}
+
+// ── In-memory TeamNamespacePort ───────────────────────────────────────────────
+
+#[derive(Debug, Default)]
+struct InMemoryTeamNamespaceStore {
+    namespaces: Mutex<Vec<(String, String, String, Option<String>)>>, // (registry, prefix, group_id, claimed_by)
+    visibility: Mutex<std::collections::HashMap<(String, String), String>>, // (registry, name) -> visibility
+}
+
+impl InMemoryTeamNamespaceStore {
+    fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+}
+
+#[async_trait]
+impl TeamNamespacePort for InMemoryTeamNamespaceStore {
+    async fn find_namespace(
+        &self,
+        registry: &str,
+        package: &str,
+    ) -> Result<Option<TeamNamespace>, CoreError> {
+        let guard = self.namespaces.lock().unwrap();
+        let result = guard
+            .iter()
+            .filter(|(r, prefix, _, _)| {
+                r == registry
+                    && (package == prefix
+                        || (package.len() > prefix.len()
+                            && &package[..prefix.len() + 1] == format!("{prefix}/")))
+            })
+            .max_by_key(|(_, prefix, _, _)| prefix.len())
+            .map(|(reg, prefix, group, claimed_by)| TeamNamespace {
+                registry: reg.clone(),
+                prefix: prefix.clone(),
+                group_id: group.clone(),
+                claimed_by: claimed_by.clone(),
+            });
+        Ok(result)
+    }
+
+    async fn list_namespaces(&self, registry: &str) -> Result<Vec<TeamNamespace>, CoreError> {
+        let guard = self.namespaces.lock().unwrap();
+        let mut result: Vec<TeamNamespace> = guard
+            .iter()
+            .filter(|(r, _, _, _)| r == registry)
+            .map(|(r, prefix, group, claimed_by)| TeamNamespace {
+                registry: r.clone(),
+                prefix: prefix.clone(),
+                group_id: group.clone(),
+                claimed_by: claimed_by.clone(),
+            })
+            .collect();
+        result.sort_by(|a, b| a.prefix.cmp(&b.prefix));
+        Ok(result)
+    }
+
+    async fn claim_namespace(&self, ns: TeamNamespace) -> Result<(), CoreError> {
+        let mut guard = self.namespaces.lock().unwrap();
+        if guard.iter().any(|(r, p, _, _)| r == &ns.registry && p == &ns.prefix) {
+            return Err(CoreError::Conflict(format!(
+                "namespace '{}' in '{}' already claimed",
+                ns.prefix, ns.registry
+            )));
+        }
+        guard.push((ns.registry, ns.prefix, ns.group_id, ns.claimed_by));
+        Ok(())
+    }
+
+    async fn release_namespace(&self, registry: &str, prefix: &str) -> Result<(), CoreError> {
+        self.namespaces.lock().unwrap().retain(|(r, p, _, _)| !(r == registry && p == prefix));
+        Ok(())
+    }
+
+    async fn set_visibility(
+        &self,
+        registry: &str,
+        package: &str,
+        vis: Visibility,
+    ) -> Result<(), CoreError> {
+        self.visibility.lock().unwrap().insert(
+            (registry.to_owned(), package.to_owned()),
+            vis.to_string(),
+        );
+        Ok(())
+    }
+
+    async fn get_visibility(&self, registry: &str, package: &str) -> Result<Visibility, CoreError> {
+        let guard = self.visibility.lock().unwrap();
+        Ok(guard
+            .get(&(registry.to_owned(), package.to_owned()))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_default())
+    }
+}
+
+// ── App factories for team namespace + visibility ─────────────────────────────
+
+/// A token for a user who is a member of group "team-alpha".
+const NS_MEMBER_TOKEN: &str = "ns-member-token";
+/// A regular user with no group membership.
+const NS_PLAIN_USER_TOKEN: &str = "ns-plain-user-token";
+
+fn team_ns_auth_providers() -> Vec<Arc<dyn AuthProvider>> {
+    vec![Arc::new(
+        StaticTokenAuthProvider::new([
+            (ADMIN_TOKEN.to_owned(), Some("admin".to_owned()), Role::Admin),
+            (NS_PLAIN_USER_TOKEN.to_owned(), Some("plain-user".to_owned()), Role::User),
+        ])
+        .with_group_entries([(
+            NS_MEMBER_TOKEN.to_owned(),
+            Some("member-user".to_owned()),
+            Role::User,
+            vec!["team-alpha".to_owned()],
+        )]),
+    )]
+}
+
+/// Build a minimal admin-only test app with a `TeamNamespacePort` registered.
+/// No proxy registries — only back-office endpoints are exercised.
+async fn make_app_with_ns_store(
+    ns_store: Arc<dyn TeamNamespacePort>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
+    let policies: HashMap<String, RegistryPolicy> = HashMap::new();
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        registries,
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        policies,
+        max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = batlehub_web::AccessConfig {
+        anonymous: std::collections::HashSet::new(),
+        user: std::collections::HashSet::new(),
+        admin: std::collections::HashSet::new(),
+        groups: std::collections::HashMap::new(),
+    };
+    let registry_map = batlehub_web::RegistryMap(std::collections::HashMap::new());
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
+        .split_for_parts();
+
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(RegistryModeMap::default()))
+        .app_data(actix_web::web::Data::new(ns_store));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+}
+
+/// Build a local Cargo registry app wired with a `TeamNamespacePort`.
+///
+/// The `LocalRegistryService` uses the same store instance, so mutations made
+/// through the back-office API are visible to the publish/download handlers in
+/// the same test.
+async fn make_ns_cargo_app(
+    ns_store: Arc<dyn TeamNamespacePort>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+
+    let registries: HashMap<String, Arc<dyn RegistryClient>> =
+        [("local-cargo".to_owned(), FixedRegistry::new("cargo") as Arc<dyn RegistryClient>)].into();
+    let policies: HashMap<String, RegistryPolicy> =
+        [("local-cargo".to_owned(), rbac_policy(repo_dyn.clone()))].into();
+
+    // Build the local registry service WITH the namespace store so enforcement fires.
+    let backend = Arc::new(InMemoryLocalRegistry::new());
+    let local_svc = Arc::new(LocalRegistryService {
+        backend: backend.clone(),
+        storage: storage.clone(),
+        max_artifact_bytes: None,
+        quota: None,
+        ownership: None,
+        versioning: std::collections::HashMap::new(),
+        signing: std::collections::HashMap::new(),
+        beta_channel: std::collections::HashMap::new(),
+        team_namespace: Some(Arc::clone(&ns_store)),
+    });
+
+    let proxy_svc = Arc::new(ProxyService {
+        registries,
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        policies,
+        max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = batlehub_web::AccessConfig {
+        anonymous: [].iter().cloned().collect(),
+        user: ["local-cargo"].iter().map(|s| s.to_string()).collect(),
+        admin: ["local-cargo"].iter().map(|s| s.to_string()).collect(),
+        groups: std::collections::HashMap::new(),
+    };
+    let registry_map = batlehub_web::RegistryMap(
+        [("local-cargo", "cargo")].iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+    );
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+    let mut mode_map = RegistryModeMap::default();
+    mode_map.0.insert("local-cargo".to_owned(), RegistryMode::Local);
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
+        .split_for_parts();
+
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(mode_map))
+        // Register the store for back-office visibility endpoints.
+        .app_data(actix_web::web::Data::new(ns_store));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(team_ns_auth_providers()))).await
+}
+
+// ── Namespace back-office endpoint tests ─────────────────────────────────────
+
+#[actix_web::test]
+async fn ns_list_empty_returns_200_with_empty_array() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body, serde_json::json!([]));
+}
+
+#[actix_web::test]
+async fn ns_claim_returns_204() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"prefix": "frontend", "group_id": "team-fe"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 204);
+}
+
+#[actix_web::test]
+async fn ns_claim_shows_in_list() {
+    let store = InMemoryTeamNamespaceStore::new();
+    let store_dyn: Arc<dyn TeamNamespacePort> = store.clone();
+    let app = make_app_with_ns_store(store_dyn).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({
+            "prefix": "backend",
+            "group_id": "team-be",
+            "claimed_by": "alice"
+        }))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let list = body.as_array().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["prefix"], "backend");
+    assert_eq!(list[0]["group_id"], "team-be");
+    assert_eq!(list[0]["claimed_by"], "alice");
+}
+
+#[actix_web::test]
+async fn ns_claim_duplicate_returns_409() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(Arc::clone(&store)).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"prefix": "lib", "group_id": "team-a"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"prefix": "lib", "group_id": "team-b"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 409);
+}
+
+#[actix_web::test]
+async fn ns_release_returns_204_and_removes_claim() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(Arc::clone(&store)).await;
+
+    // Claim first.
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"prefix": "ui", "group_id": "team-ui"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    // Release.
+    let req = TestRequest::delete()
+        .uri("/api/v1/admin/registries/my-reg/namespaces/ui")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    // Should be gone from list.
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body, serde_json::json!([]));
+}
+
+#[actix_web::test]
+async fn ns_release_nonexistent_returns_204() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::delete()
+        .uri("/api/v1/admin/registries/my-reg/namespaces/does-not-exist")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+}
+
+#[actix_web::test]
+async fn ns_release_with_slash_in_prefix() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(Arc::clone(&store)).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"prefix": "org/team", "group_id": "g1"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    // DELETE with slash in prefix — the wildcard route must capture it.
+    let req = TestRequest::delete()
+        .uri("/api/v1/admin/registries/my-reg/namespaces/org/team")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body, serde_json::json!([]));
+}
+
+#[actix_web::test]
+async fn ns_list_multiple_registries_are_isolated() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(Arc::clone(&store)).await;
+
+    for (reg, prefix) in [("reg-a", "lib"), ("reg-b", "core"), ("reg-a", "util")] {
+        let req = TestRequest::post()
+            .uri(&format!("/api/v1/admin/registries/{reg}/namespaces"))
+            .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+            .set_json(serde_json::json!({"prefix": prefix, "group_id": "g"}))
+            .to_request();
+        assert_eq!(call_service(&app, req).await.status(), 204);
+    }
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/reg-a/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    let body: Value = read_body_json(resp).await;
+    let list = body.as_array().unwrap();
+    assert_eq!(list.len(), 2, "reg-a should have exactly 2 namespace claims");
+    // Sorted by prefix ascending.
+    assert_eq!(list[0]["prefix"], "lib");
+    assert_eq!(list[1]["prefix"], "util");
+}
+
+#[actix_web::test]
+async fn ns_list_requires_admin() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn ns_claim_requires_admin() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_json(serde_json::json!({"prefix": "x", "group_id": "g"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn ns_release_requires_admin() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::delete()
+        .uri("/api/v1/admin/registries/my-reg/namespaces/x")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn ns_claim_empty_prefix_returns_400() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"prefix": "", "group_id": "g"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 400);
+}
+
+#[actix_web::test]
+async fn ns_claim_empty_group_id_returns_400() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"prefix": "lib", "group_id": ""}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 400);
+}
+
+// ── Visibility back-office endpoint tests ─────────────────────────────────────
+
+#[actix_web::test]
+async fn visibility_get_default_is_public() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-reg/packages/my-pkg/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["visibility"], "public");
+}
+
+// Visibility CRUD tests use make_ns_cargo_app so the package can be published first.
+// PgTeamNamespaceStore::set_visibility operates on existing local_packages rows, so
+// the package must exist before visibility can be set.
+
+#[actix_web::test]
+async fn visibility_set_internal_and_get() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+    publish_and_get_name(&app, "my-pkg", "1.0.0").await;
+
+    let req = TestRequest::put()
+        .uri("/api/v1/admin/registries/local-cargo/packages/my-pkg/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"visibility": "internal"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/local-cargo/packages/my-pkg/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let body: Value = read_body_json(call_service(&app, req).await).await;
+    assert_eq!(body["visibility"], "internal");
+}
+
+#[actix_web::test]
+async fn visibility_set_team_and_get() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+    publish_and_get_name(&app, "my-pkg", "1.0.0").await;
+
+    let req = TestRequest::put()
+        .uri("/api/v1/admin/registries/local-cargo/packages/my-pkg/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"visibility": "team"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/local-cargo/packages/my-pkg/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let body: Value = read_body_json(call_service(&app, req).await).await;
+    assert_eq!(body["visibility"], "team");
+}
+
+#[actix_web::test]
+async fn visibility_downgrade_team_to_public() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+    publish_and_get_name(&app, "my-pkg", "1.0.0").await;
+
+    for vis in ["team", "public"] {
+        let req = TestRequest::put()
+            .uri("/api/v1/admin/registries/local-cargo/packages/my-pkg/visibility")
+            .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+            .set_json(serde_json::json!({"visibility": vis}))
+            .to_request();
+        assert_eq!(call_service(&app, req).await.status(), 204);
+    }
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/local-cargo/packages/my-pkg/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let body: Value = read_body_json(call_service(&app, req).await).await;
+    assert_eq!(body["visibility"], "public");
+}
+
+#[actix_web::test]
+async fn visibility_set_invalid_value_returns_400() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::put()
+        .uri("/api/v1/admin/registries/my-reg/packages/my-pkg/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"visibility": "secret"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 400);
+}
+
+#[actix_web::test]
+async fn visibility_get_requires_admin() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-reg/packages/my-pkg/visibility")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn visibility_set_requires_admin() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::put()
+        .uri("/api/v1/admin/registries/my-reg/packages/my-pkg/visibility")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_json(serde_json::json!({"visibility": "internal"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn visibility_slash_package_name_works() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(Arc::clone(&store)).await;
+
+    // Set visibility for a package whose name contains slashes.
+    let req = TestRequest::put()
+        .uri("/api/v1/admin/registries/my-reg/packages/frontend/utils/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"visibility": "internal"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-reg/packages/frontend/utils/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let body: Value = read_body_json(call_service(&app, req).await).await;
+    assert_eq!(body["visibility"], "internal");
+}
+
+// ── Namespace publish-enforcement tests (Cargo local registry) ────────────────
+
+#[actix_web::test]
+async fn cargo_publish_to_claimed_namespace_blocks_non_member() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    // Claim "internal" prefix for group "team-alpha".
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-cargo".to_owned(),
+            prefix: "internal".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_cargo_app(ns_store as Arc<dyn TeamNamespacePort>).await;
+
+    // NS_PLAIN_USER_TOKEN has no groups -> blocked.
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .set_payload(make_publish_payload("internal/utils", "1.0.0"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn cargo_publish_to_claimed_namespace_allows_member() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-cargo".to_owned(),
+            prefix: "internal".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_cargo_app(ns_store as Arc<dyn TeamNamespacePort>).await;
+
+    // NS_MEMBER_TOKEN has group "team-alpha" -> allowed.
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .insert_header(("Authorization", bearer(NS_MEMBER_TOKEN)))
+        .set_payload(make_publish_payload("internal/utils", "1.0.0"))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200, "team member must be allowed to publish");
+}
+
+#[actix_web::test]
+async fn cargo_publish_to_unclaimed_namespace_allows_any_user() {
+    let ns_store = InMemoryTeamNamespaceStore::new(); // no claims
+    let app = make_ns_cargo_app(ns_store as Arc<dyn TeamNamespacePort>).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .set_payload(make_publish_payload("any/package", "1.0.0"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn cargo_admin_can_publish_to_any_claimed_namespace() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-cargo".to_owned(),
+            prefix: "secured".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_cargo_app(ns_store as Arc<dyn TeamNamespacePort>).await;
+
+    // ADMIN_TOKEN bypasses namespace gate.
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_payload(make_publish_payload("secured/core", "1.0.0"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn cargo_publish_anonymous_still_blocked_in_ns_mode() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(ns_store as Arc<dyn TeamNamespacePort>).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .set_payload(make_publish_payload("any/pkg", "1.0.0"))
+        .to_request();
+    // Blocked by the base role check (User required), not namespace check.
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+// ── Visibility download tests (Cargo local registry) ─────────────────────────
+
+/// Publish a crate and return its name/version.
+async fn publish_and_get_name(
+    app: &impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+    name: &str,
+    version: &str,
+) {
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_payload(make_publish_payload(name, version))
+        .to_request();
+    let status = call_service(app, req).await.status();
+    assert_eq!(status, 200, "pre-test publish must succeed");
+}
+
+#[actix_web::test]
+async fn cargo_download_public_package_allows_anonymous() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    publish_and_get_name(&app, "my-crate", "1.0.0").await;
+    // Public visibility (default) -> anonymous download allowed.
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/my-crate/1.0.0/download")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn cargo_download_internal_package_blocks_anonymous() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    publish_and_get_name(&app, "my-crate", "1.0.0").await;
+    // Set to internal directly via the store.
+    ns_store.set_visibility("local-cargo", "my-crate", Visibility::Internal).await.unwrap();
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/my-crate/1.0.0/download")
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn cargo_download_internal_package_allows_authenticated_user() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    publish_and_get_name(&app, "my-crate", "1.0.0").await;
+    ns_store.set_visibility("local-cargo", "my-crate", Visibility::Internal).await.unwrap();
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/my-crate/1.0.0/download")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn cargo_download_team_package_blocks_non_member() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    // Claim the namespace so check_visibility can find the owning group.
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-cargo".to_owned(),
+            prefix: "secured".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    // Admin publishes so the publish gate is bypassed.
+    publish_and_get_name(&app, "secured/pkg", "1.0.0").await;
+    ns_store.set_visibility("local-cargo", "secured/pkg", Visibility::Team).await.unwrap();
+
+    // NS_PLAIN_USER_TOKEN has no groups.
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/secured%2Fpkg/1.0.0/download")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn cargo_download_team_package_allows_member() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-cargo".to_owned(),
+            prefix: "secured".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    publish_and_get_name(&app, "secured/pkg", "1.0.0").await;
+    ns_store.set_visibility("local-cargo", "secured/pkg", Visibility::Team).await.unwrap();
+
+    // NS_MEMBER_TOKEN has group "team-alpha".
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/secured%2Fpkg/1.0.0/download")
+        .insert_header(("Authorization", bearer(NS_MEMBER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn cargo_download_admin_bypasses_team_visibility() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    publish_and_get_name(&app, "secret-crate", "1.0.0").await;
+    ns_store.set_visibility("local-cargo", "secret-crate", Visibility::Team).await.unwrap();
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/secret-crate/1.0.0/download")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+// ── Visibility index tests (sparse Cargo index endpoint) ──────────────────────
+
+#[actix_web::test]
+async fn cargo_index_internal_blocks_anonymous() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    publish_and_get_name(&app, "my-lib", "1.0.0").await;
+    ns_store.set_visibility("local-cargo", "my-lib", Visibility::Internal).await.unwrap();
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/registry/my/li/my-lib")
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn cargo_index_internal_allows_user() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    publish_and_get_name(&app, "my-lib", "1.0.0").await;
+    ns_store.set_visibility("local-cargo", "my-lib", Visibility::Internal).await.unwrap();
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/registry/my/li/my-lib")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .to_request();
+    // Index returns 200 with newline-delimited JSON entries.
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn cargo_index_team_blocks_non_member() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    // Claim the exact package name as the namespace prefix (exact-match rule).
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-cargo".to_owned(),
+            prefix: "priv-tool".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    // Admin publishes (bypasses namespace gate).
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+    publish_and_get_name(&app, "priv-tool", "1.0.0").await;
+    ns_store.set_visibility("local-cargo", "priv-tool", Visibility::Team).await.unwrap();
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/registry/pr/iv/priv-tool")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn cargo_index_team_allows_member() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-cargo".to_owned(),
+            prefix: "priv-tool".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+    publish_and_get_name(&app, "priv-tool", "1.0.0").await;
+    ns_store.set_visibility("local-cargo", "priv-tool", Visibility::Team).await.unwrap();
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/registry/pr/iv/priv-tool")
+        .insert_header(("Authorization", bearer(NS_MEMBER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn cargo_index_public_package_visible_to_user() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    publish_and_get_name(&app, "open-crate", "1.0.0").await;
+    // Default visibility is public — no visibility set needed.
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/registry/op/en/open-crate")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+// ── Visibility via back-office API (round-trip) ───────────────────────────────
+
+// Use 'team' visibility so that an authenticated-but-non-member user
+// (NS_PLAIN_USER_TOKEN) is blocked by the visibility check itself, not by
+// the registry-level RBAC layer (anonymous has no registry access in
+// make_ns_cargo_app regardless of visibility, so anonymous-blocks are
+// ambiguous about which layer fired).
+#[actix_web::test]
+async fn visibility_set_via_api_then_download_blocked() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    // Claim the namespace so check_visibility can resolve the owning group.
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-cargo".to_owned(),
+            prefix: "lib-x".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    publish_and_get_name(&app, "lib-x", "2.0.0").await;
+
+    // Set to 'team' via back-office API.
+    let req = TestRequest::put()
+        .uri("/api/v1/admin/registries/local-cargo/packages/lib-x/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"visibility": "team"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    // Authenticated non-member is blocked by visibility (not by RBAC — they have
+    // User role and registry access, but are not in group "team-alpha").
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/lib-x/2.0.0/download")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+
+    // Team member can download.
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/lib-x/2.0.0/download")
+        .insert_header(("Authorization", bearer(NS_MEMBER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn visibility_set_to_public_after_internal_reopens_access() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    publish_and_get_name(&app, "lib-y", "1.0.0").await;
+
+    // Set internal.
+    let req = TestRequest::put()
+        .uri("/api/v1/admin/registries/local-cargo/packages/lib-y/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"visibility": "internal"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    // Re-open to public.
+    let req = TestRequest::put()
+        .uri("/api/v1/admin/registries/local-cargo/packages/lib-y/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"visibility": "public"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    // Anonymous download should work again (but blocked by RBAC, not visibility).
+    // Test with plain user to avoid registry-level RBAC:
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/lib-y/1.0.0/download")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
 }

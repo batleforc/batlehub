@@ -19,7 +19,7 @@ use batlehub_adapters::{
         KubernetesAuthProvider, OidcAuthProvider, OidcSsoFlow, StaticTokenAuthProvider,
         UserTokenAuthProvider,
     },
-    db::{PgArtifactMetaRepository, PgBetaChannelStore, PgOwnershipStore, PgPackageRepository, PgQuotaRepository},
+    db::{PgArtifactMetaRepository, PgBetaChannelStore, PgOwnershipStore, PgPackageRepository, PgQuotaRepository, PgTeamNamespaceStore},
     local_registry::PostgresLocalRegistry,
     registry::{
         CargoRegistryClient, ComposerRegistryClient, FanoutRegistryClient, GoProxyRegistryClient,
@@ -385,6 +385,8 @@ async fn main() -> Result<()> {
     let beta_channel_store: Arc<dyn BetaChannelPort> =
         Arc::new(PgBetaChannelStore::new(repo.pool()));
     let beta_channel_map = build_beta_channel_map(Arc::clone(&beta_channel_store), &config.registries);
+    let team_namespace_store: Arc<dyn batlehub_core::ports::TeamNamespacePort> =
+        Arc::new(PgTeamNamespaceStore::new(repo.pool()));
 
     // ── IP blocking store ─────────────────────────────────────────────────────
     let ip_block_store: Arc<dyn IpBlockStore> = match config.cache.cache_type.as_str() {
@@ -421,6 +423,7 @@ async fn main() -> Result<()> {
         versioning: versioning_map,
         signing: signing_map,
         beta_channel: beta_channel_map,
+        team_namespace: Some(Arc::clone(&team_namespace_store)),
     });
 
     // ── Warming services ──────────────────────────────────────────────────────
@@ -519,6 +522,7 @@ async fn main() -> Result<()> {
         let registry_mode_map_inner = registry_mode_map.clone();
         let ip_block_store_inner = Arc::clone(&ip_block_store);
         let beta_channel_store_inner = Arc::clone(&beta_channel_store);
+        let team_namespace_store_inner = Arc::clone(&team_namespace_store);
         let ip_blocking_cfg_inner = ip_blocking_cfg.clone();
 
         let (app, openapi) = App::new()
@@ -535,6 +539,7 @@ async fn main() -> Result<()> {
             .app_data(web::Data::new(registry_mode_map_inner))
             .app_data(web::Data::new(ip_block_store_inner))
             .app_data(web::Data::new(beta_channel_store_inner))
+            .app_data(web::Data::new(team_namespace_store_inner))
             .service(prometheus_metrics)
             .service(healthz);
 

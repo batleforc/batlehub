@@ -1,5 +1,41 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+
+/// Visibility level for a locally published package.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Visibility {
+    /// Anyone, including anonymous users, may download.
+    #[default]
+    Public,
+    /// Any authenticated user may download.
+    Internal,
+    /// Only members of the owning team group may download.
+    Team,
+}
+
+impl std::fmt::Display for Visibility {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Visibility::Public => write!(f, "public"),
+            Visibility::Internal => write!(f, "internal"),
+            Visibility::Team => write!(f, "team"),
+        }
+    }
+}
+
+impl std::str::FromStr for Visibility {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "public" => Ok(Self::Public),
+            "internal" => Ok(Self::Internal),
+            "team" => Ok(Self::Team),
+            other => Err(format!("unknown visibility: '{other}'")),
+        }
+    }
+}
 
 /// A package published directly to this BatleHub instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,6 +57,9 @@ pub struct PublishedPackage {
     /// Signature type from the `X-Signature-Type` header (e.g. `"pgp"`, `"ed25519"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature_type: Option<String>,
+    /// Download visibility for this package.
+    #[serde(default)]
+    pub visibility: Visibility,
 }
 
 /// One newline-delimited line in a Cargo sparse index file.

@@ -330,6 +330,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             packages::{block_package, bulk_block_packages, bulk_unblock_packages, invalidate_package, list_packages as admin_list_packages, package_detail, unblock_package},
             quota::{get_quota_for_user, list_quota, list_quota_for_registry, reset_quota_for_user},
             stats::admin_stats,
+            team_namespaces::{claim_namespace, list_namespaces, release_namespace},
+            visibility::{get_package_visibility, set_package_visibility},
             warming::warm_registry,
         },
         front_office::{
@@ -475,6 +477,13 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(list_package_owners);
     cfg.service(add_package_owner);
     cfg.service(remove_package_owner);
+    // Package visibility admin (wildcard {name:.*} — registered after literal-suffix /owners routes)
+    cfg.service(get_package_visibility);
+    cfg.service(set_package_visibility);
+    // Team namespace admin
+    cfg.service(list_namespaces);
+    cfg.service(claim_namespace);
+    cfg.service(release_namespace); // wildcard {prefix:.*}
     // Bulk operations admin
     cfg.service(bulk_yank_handler);
     cfg.service(bulk_unyank);

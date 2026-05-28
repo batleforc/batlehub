@@ -403,6 +403,55 @@ curl -X POST \
 
 ---
 
+## Team Namespaces & Package Visibility {#team-namespaces}
+
+Team namespaces let you assign a package name prefix within a registry to an auth-provider group. Only group members — and admins — may publish packages under that prefix. Package visibility independently controls who can download a package.
+
+This feature requires no TOML changes and no server restart — claims and visibility are managed entirely via the admin API.
+
+For the full reference (visibility levels, download-time enforcement, longest-prefix rule, registry support matrix) see the [Access Control guide](/guide/access-control#team-namespaces).
+
+### Managing namespace claims
+
+```sh
+# List claims for a registry
+curl -H "Authorization: Bearer <admin-token>" \
+  https://batlehub.example.com/api/v1/admin/registries/internal-npm/namespaces
+
+# Claim a prefix for a group
+curl -X POST \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"prefix":"frontend","group_id":"oidc:frontend-team","claimed_by":"admin"}' \
+  https://batlehub.example.com/api/v1/admin/registries/internal-npm/namespaces
+
+# Release a claim (prefix may contain slashes, passed verbatim in the path)
+curl -X DELETE \
+  -H "Authorization: Bearer <admin-token>" \
+  https://batlehub.example.com/api/v1/admin/registries/internal-npm/namespaces/frontend
+```
+
+### Managing package visibility
+
+Visibility is package-level — all versions share the same setting. Accepted values: `public` (default), `internal`, `team`.
+
+```sh
+# Read current visibility
+curl -H "Authorization: Bearer <admin-token>" \
+  https://batlehub.example.com/api/v1/admin/registries/internal-npm/packages/frontend%2Futils/visibility
+
+# Restrict to team members only
+curl -X PUT \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"visibility":"team"}' \
+  https://batlehub.example.com/api/v1/admin/registries/internal-npm/packages/frontend%2Futils/visibility
+```
+
+Package names containing slashes must be percent-encoded in the URL (`/` → `%2F`).
+
+---
+
 ## Audit log {#audit-log}
 
 Every access-control decision (allow or deny) is recorded in PostgreSQL.

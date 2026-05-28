@@ -14,6 +14,9 @@ pub mod postgres;
 pub mod quota;
 
 #[cfg(feature = "db-postgres")]
+pub mod team_namespace;
+
+#[cfg(feature = "db-postgres")]
 pub mod user_tokens;
 
 #[cfg(feature = "db-postgres")]
@@ -30,3 +33,6 @@ pub use postgres::PgPackageRepository;
 
 #[cfg(feature = "db-postgres")]
 pub use quota::PgQuotaRepository;
+
+#[cfg(feature = "db-postgres")]
+pub use team_namespace::PgTeamNamespaceStore;

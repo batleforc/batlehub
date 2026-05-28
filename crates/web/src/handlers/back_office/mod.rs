@@ -7,6 +7,8 @@ pub mod ownership;
 pub mod packages;
 pub mod quota;
 pub mod stats;
+pub mod team_namespaces;
+pub mod visibility;
 pub mod warming;
 
 use std::time::{SystemTime, UNIX_EPOCH};

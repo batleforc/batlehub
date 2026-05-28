@@ -174,7 +174,7 @@ pub async fn download_tarball(
             .await
             .map_err(AppError::from)?;
         let bytes = local_svc
-            .get_artifact(&registry, &package, &version)
+            .get_artifact(&registry, &package, &version, &identity)
             .await
             .map_err(AppError::from)?;
         return Ok(HttpResponse::Ok()
@@ -189,7 +189,7 @@ pub async fn download_tarball(
             .check_prerelease_access(&registry, &version, &identity)
             .await
             .map_err(AppError::from)?;
-        match local_svc.get_artifact(&registry, &package, &version).await {
+        match local_svc.get_artifact(&registry, &package, &version, &identity).await {
             Ok(bytes) => {
                 return Ok(HttpResponse::Ok()
                     .content_type("application/octet-stream")

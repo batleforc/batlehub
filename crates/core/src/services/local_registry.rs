@@ -6,9 +6,9 @@ use futures::StreamExt;
 use regex::Regex;
 
 use crate::{
-    entities::{Identity, PublishedPackage, Role},
+    entities::{Identity, PublishedPackage, Role, Visibility},
     error::CoreError,
-    ports::{BetaChannelPort, LocalRegistryBackend, OwnershipPort, StorageBackend, StorageMeta},
+    ports::{BetaChannelPort, LocalRegistryBackend, OwnershipPort, StorageBackend, StorageMeta, TeamNamespacePort},
     services::quota::{QuotaCheck, QuotaService},
 };
 
@@ -89,6 +89,8 @@ pub struct LocalRegistryService {
     /// Per-registry beta-channel ports. Keyed by registry name.
     /// When present, pre-release versions are gated behind beta-channel membership.
     pub beta_channel: HashMap<String, Arc<dyn BetaChannelPort>>,
+    /// Optional team namespace enforcement. When `None`, namespace gating is disabled.
+    pub team_namespace: Option<Arc<dyn TeamNamespacePort>>,
 }
 
 /// Signing configuration stored in the service (mirrors config-layer `SigningConfig`).
@@ -134,6 +136,22 @@ impl LocalRegistryService {
             }
         }
 
+        // Namespace enforcement: if the package prefix is claimed by a team group,
+        // only members of that group (or admins) may publish here.
+        if let Some(ref ns_port) = self.team_namespace {
+            if let Some(ns) = ns_port.find_namespace(&req.registry, &req.name).await? {
+                let ok = req.publisher.is_admin()
+                    || req.publisher.groups.iter().any(|g| *g == ns.group_id);
+                if !ok {
+                    return Err(CoreError::AccessDenied(format!(
+                        "namespace '{}' in registry '{}' is owned by group '{}'; \
+                         you are not a member",
+                        ns.prefix, req.registry, ns.group_id
+                    )));
+                }
+            }
+        }
+
         // Ownership check: if ownership is configured and the package already exists,
         // verify the caller is a registered owner.
         let is_new_package = if let Some(ref ownership) = self.ownership {
@@ -169,6 +187,17 @@ impl LocalRegistryService {
             QuotaCheck::default()
         };
 
+        // Inherit the existing package visibility so that publishing a new version
+        // doesn't silently reset a team/internal package back to public.
+        // `get_visibility` returns Public when no published rows exist yet (first publish).
+        // Propagate DB errors rather than defaulting to Public — silently publishing a
+        // team-private package as world-readable during a DB outage is a security failure.
+        let visibility = if let Some(ref ns_port) = self.team_namespace {
+            ns_port.get_visibility(&req.registry, &req.name).await?
+        } else {
+            Visibility::default()
+        };
+
         let pkg = PublishedPackage {
             registry: req.registry.clone(),
             name: req.name.clone(),
@@ -180,6 +209,7 @@ impl LocalRegistryService {
             published_by: req.publisher.user_id.clone(),
             signature_bytes: req.signature_bytes.clone(),
             signature_type: req.signature_type.clone(),
+            visibility,
         };
 
         let storage_key = artifact_storage_key(&req.registry, &req.name, &req.version);
@@ -255,6 +285,7 @@ impl LocalRegistryService {
                 "yank requires at least User role".into(),
             ));
         }
+        self.check_namespace_membership(registry, name, identity).await?;
         self.backend.yank(registry, name, version).await
     }
 
@@ -270,7 +301,35 @@ impl LocalRegistryService {
                 "unyank requires at least User role".into(),
             ));
         }
+        self.check_namespace_membership(registry, name, identity).await?;
         self.backend.unyank(registry, name, version).await
+    }
+
+    /// If a namespace claim covers `package` in `registry`, verify `identity` is
+    /// a member of the owning group. Admins and unclaimed packages bypass this.
+    pub async fn check_namespace_membership(
+        &self,
+        registry: &str,
+        package: &str,
+        identity: &Identity,
+    ) -> Result<(), CoreError> {
+        if identity.is_admin() {
+            return Ok(());
+        }
+        let Some(ref ns_port) = self.team_namespace else {
+            return Ok(());
+        };
+        if let Some(ns) = ns_port.find_namespace(registry, package).await? {
+            let ok = identity.groups.iter().any(|g| *g == ns.group_id);
+            if !ok {
+                return Err(CoreError::AccessDenied(format!(
+                    "namespace '{}' in registry '{}' is owned by group '{}'; \
+                     you are not a member",
+                    ns.prefix, registry, ns.group_id
+                )));
+            }
+        }
+        Ok(())
     }
 
     async fn remove_pending(&self, registry: &str, name: &str, version: &str) {
@@ -295,6 +354,7 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<String, CoreError> {
+        self.check_visibility(registry, name, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
         let versions = self.filter_for_identity(registry, versions, identity).await?;
         if versions.is_empty() {
@@ -320,6 +380,7 @@ impl LocalRegistryService {
         base_url: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
+        self.check_visibility(registry, name, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
         let versions = self.filter_for_identity(registry, versions, identity).await?;
         if versions.is_empty() {
@@ -386,6 +447,7 @@ impl LocalRegistryService {
         base_url: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
+        self.check_visibility(registry, name, identity).await?;
         self.check_prerelease_access(registry, version, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
         let pkg = versions
@@ -422,7 +484,9 @@ impl LocalRegistryService {
         registry: &str,
         name: &str,
         version: &str,
+        identity: &Identity,
     ) -> Result<Bytes, CoreError> {
+        self.check_visibility(registry, name, identity).await?;
         let key = artifact_storage_key(registry, name, version);
         let artifact = self
             .storage
@@ -440,6 +504,62 @@ impl LocalRegistryService {
             buf.extend_from_slice(&chunk?);
         }
         Ok(Bytes::from(buf))
+    }
+
+    // ── Visibility helpers ────────────────────────────────────────────────────
+
+    /// Check whether `identity` is allowed to access `package` given its
+    /// current visibility setting.
+    ///
+    /// - `Public`   → always allowed (even anonymous).
+    /// - `Internal` → requires at least `Role::User`.
+    /// - `Team`     → requires membership in the group that owns the namespace.
+    ///               Falls back to `Internal` semantics when no claim exists.
+    ///
+    /// Admins bypass all checks. When no `team_namespace` port is configured,
+    /// access is always permitted.
+    pub async fn check_visibility(
+        &self,
+        registry: &str,
+        package: &str,
+        identity: &Identity,
+    ) -> Result<(), CoreError> {
+        if identity.is_admin() {
+            return Ok(());
+        }
+        let Some(ref ns_port) = self.team_namespace else {
+            return Ok(());
+        };
+        let vis = ns_port.get_visibility(registry, package).await?;
+        match vis {
+            Visibility::Public => Ok(()),
+            Visibility::Internal => {
+                if identity.has_role_at_least(&Role::User) {
+                    Ok(())
+                } else {
+                    Err(CoreError::AccessDenied(
+                        "package is internal; authentication required".into(),
+                    ))
+                }
+            }
+            Visibility::Team => {
+                match ns_port.find_namespace(registry, package).await? {
+                    Some(ns) if identity.groups.iter().any(|g| *g == ns.group_id) => Ok(()),
+                    Some(ns) => Err(CoreError::AccessDenied(format!(
+                        "package visibility is 'team'; must be a member of group '{}'",
+                        ns.group_id
+                    ))),
+                    // No claim found: deny everyone. Falling back to "any authenticated user"
+                    // would allow non-team members to read team-private packages whenever
+                    // the namespace claim is missing or has been deleted.
+                    None => Err(CoreError::AccessDenied(
+                        "package visibility is 'team' but no namespace claim is configured; \
+                         access denied"
+                            .into(),
+                    )),
+                }
+            }
+        }
     }
 
     // ── Beta channel helpers ──────────────────────────────────────────────────
@@ -523,6 +643,7 @@ impl LocalRegistryService {
         module: &str,
         identity: &Identity,
     ) -> Result<String, CoreError> {
+        self.check_visibility(registry, module, identity).await?;
         let versions = self.backend.get_versions(registry, module).await?;
         let versions = self.filter_for_identity(registry, versions, identity).await?;
         if versions.is_empty() {
@@ -552,6 +673,7 @@ impl LocalRegistryService {
         version: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
+        self.check_visibility(registry, module, identity).await?;
         self.check_prerelease_access(registry, version, identity).await?;
         let pkg = self
             .backend
@@ -586,6 +708,7 @@ impl LocalRegistryService {
         version: &str,
         identity: &Identity,
     ) -> Result<String, CoreError> {
+        self.check_visibility(registry, module, identity).await?;
         self.check_prerelease_access(registry, version, identity).await?;
         let pkg = self
             .backend
@@ -618,6 +741,7 @@ impl LocalRegistryService {
         module: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
+        self.check_visibility(registry, module, identity).await?;
         let versions = self.backend.get_versions(registry, module).await?;
         let versions = self.filter_for_identity(registry, versions, identity).await?;
         let pkg = versions
@@ -652,6 +776,7 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
+        self.check_visibility(registry, name, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
         let versions = self.filter_for_identity(registry, versions, identity).await?;
         let latest = versions
@@ -687,6 +812,7 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<Vec<serde_json::Value>, CoreError> {
+        self.check_visibility(registry, name, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
         let versions = self.filter_for_identity(registry, versions, identity).await?;
         if versions.is_empty() {
@@ -724,6 +850,7 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<Vec<PublishedPackage>, CoreError> {
+        self.check_visibility(registry, name, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
         let versions = self.filter_for_identity(registry, versions, identity).await?;
         if versions.is_empty() {
@@ -741,6 +868,7 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
+        self.check_visibility(registry, name, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
         let versions = self.filter_for_identity(registry, versions, identity).await?;
         if versions.is_empty() {
@@ -763,6 +891,7 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
+        self.check_visibility(registry, name, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
         let versions = self.filter_for_identity(registry, versions, identity).await?;
         if versions.is_empty() {
@@ -817,6 +946,7 @@ impl LocalRegistryService {
         registry_name: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
+        self.check_visibility(registry, name, identity).await?;
         self.check_prerelease_access(registry, version, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
         let pkg = versions
@@ -888,6 +1018,7 @@ impl LocalRegistryService {
         base_url: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
+        self.check_visibility(registry, name, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
         let versions = self.filter_for_identity(registry, versions, identity).await?;
 
@@ -1055,6 +1186,7 @@ mod tests {
             versioning: HashMap::new(),
             signing: HashMap::new(),
             beta_channel: HashMap::new(),
+            team_namespace: None,
         }
     }
 
@@ -1070,6 +1202,7 @@ mod tests {
             published_by: None,
             signature_bytes: None,
             signature_type: None,
+            visibility: Default::default(),
         }
     }
 
@@ -1220,6 +1353,7 @@ mod tests {
             versioning: HashMap::new(),
             signing: HashMap::new(),
             beta_channel: bc,
+            team_namespace: None,
         }
     }
 
@@ -1386,5 +1520,340 @@ mod tests {
         let s = svc_with_beta(backend, MemBetaChannel::empty());
         let err = s.check_prerelease_access("reg", "dev-main", &anon()).await.unwrap_err();
         assert!(matches!(err, CoreError::NotFound(_)), "dev-main must be gated");
+    }
+
+    // ── Team namespace enforcement tests ─────────────────────────────────────
+
+    #[derive(Debug, Default)]
+    struct MockTeamNamespace {
+        namespaces: Mutex<Vec<crate::entities::TeamNamespace>>,
+        visibility: Mutex<HashMap<(String, String), Visibility>>,
+    }
+
+    impl MockTeamNamespace {
+        fn arc() -> Arc<Self> { Arc::new(Self::default()) }
+        fn with_namespace(registry: &str, prefix: &str, group: &str) -> Arc<Self> {
+            let s = Self::arc();
+            s.namespaces.lock().unwrap().push(crate::entities::TeamNamespace {
+                registry: registry.to_owned(),
+                prefix: prefix.to_owned(),
+                group_id: group.to_owned(),
+                claimed_by: None,
+            });
+            s
+        }
+        fn with_visibility(registry: &str, package: &str, vis: Visibility) -> Arc<Self> {
+            let s = Self::arc();
+            s.visibility.lock().unwrap().insert(
+                (registry.to_owned(), package.to_owned()),
+                vis,
+            );
+            s
+        }
+    }
+
+    #[async_trait]
+    impl TeamNamespacePort for MockTeamNamespace {
+        async fn find_namespace(&self, registry: &str, package: &str) -> Result<Option<crate::entities::TeamNamespace>, CoreError> {
+            let ns = self.namespaces.lock().unwrap();
+            let result = ns.iter()
+                .filter(|n| n.registry == registry
+                    && (package == n.prefix
+                        || (package.len() > n.prefix.len()
+                            && package[..n.prefix.len() + 1] == format!("{}/", n.prefix))))
+                .max_by_key(|n| n.prefix.len())
+                .cloned();
+            Ok(result)
+        }
+        async fn list_namespaces(&self, _: &str) -> Result<Vec<crate::entities::TeamNamespace>, CoreError> { Ok(vec![]) }
+        async fn claim_namespace(&self, _: crate::entities::TeamNamespace) -> Result<(), CoreError> { Ok(()) }
+        async fn release_namespace(&self, _: &str, _: &str) -> Result<(), CoreError> { Ok(()) }
+        async fn set_visibility(&self, _: &str, _: &str, _: Visibility) -> Result<(), CoreError> { Ok(()) }
+        async fn get_visibility(&self, registry: &str, package: &str) -> Result<Visibility, CoreError> {
+            Ok(self.visibility.lock().unwrap()
+                .get(&(registry.to_owned(), package.to_owned()))
+                .cloned()
+                .unwrap_or_default())
+        }
+    }
+
+    fn svc_with_ns(backend: Arc<InMemBackend>, ns: Arc<dyn TeamNamespacePort>) -> LocalRegistryService {
+        LocalRegistryService {
+            backend,
+            storage: Arc::new(NoopStorage),
+            max_artifact_bytes: None,
+            quota: None,
+            ownership: None,
+            versioning: HashMap::new(),
+            signing: HashMap::new(),
+            beta_channel: HashMap::new(),
+            team_namespace: Some(ns),
+        }
+    }
+
+    fn member() -> Identity {
+        Identity {
+            user_id: Some("m1".into()),
+            role: Role::User,
+            auth_provider: None,
+            groups: vec!["team-a".into()],
+        }
+    }
+
+    fn non_member() -> Identity {
+        Identity { user_id: Some("u2".into()), role: Role::User, auth_provider: None, groups: vec![] }
+    }
+
+    fn admin_id() -> Identity {
+        Identity { user_id: Some("adm".into()), role: Role::Admin, auth_provider: None, groups: vec![] }
+    }
+
+    #[tokio::test]
+    async fn namespace_enforcement_blocks_non_member() {
+        let backend = InMemBackend::arc();
+        let ns = MockTeamNamespace::with_namespace("reg", "frontend", "team-a");
+        let s = svc_with_ns(backend, ns);
+        let req = PublishRequest {
+            registry: "reg".into(),
+            name: "frontend/utils".into(),
+            version: "1.0.0".into(),
+            artifact: Bytes::from("data"),
+            checksum: "abc".into(),
+            index_metadata: serde_json::json!({}),
+            publisher: non_member(),
+            signature_bytes: None,
+            signature_type: None,
+        };
+        let err = s.publish(req).await.unwrap_err();
+        assert!(matches!(err, CoreError::AccessDenied(_)), "non-member must be denied");
+    }
+
+    #[tokio::test]
+    async fn namespace_enforcement_allows_member() {
+        let backend = InMemBackend::arc();
+        let ns = MockTeamNamespace::with_namespace("reg", "frontend", "team-a");
+        let s = svc_with_ns(backend, ns);
+        let req = PublishRequest {
+            registry: "reg".into(),
+            name: "frontend/utils".into(),
+            version: "1.0.0".into(),
+            artifact: Bytes::from("data"),
+            checksum: "abc".into(),
+            index_metadata: serde_json::json!({}),
+            publisher: member(),
+            signature_bytes: None,
+            signature_type: None,
+        };
+        assert!(s.publish(req).await.is_ok(), "member must be allowed");
+    }
+
+    #[tokio::test]
+    async fn namespace_enforcement_admin_bypasses() {
+        let backend = InMemBackend::arc();
+        let ns = MockTeamNamespace::with_namespace("reg", "frontend", "team-a");
+        let s = svc_with_ns(backend, ns);
+        let req = PublishRequest {
+            registry: "reg".into(),
+            name: "frontend/utils".into(),
+            version: "1.0.0".into(),
+            artifact: Bytes::from("data"),
+            checksum: "abc".into(),
+            index_metadata: serde_json::json!({}),
+            publisher: admin_id(),
+            signature_bytes: None,
+            signature_type: None,
+        };
+        assert!(s.publish(req).await.is_ok(), "admin must bypass namespace gate");
+    }
+
+    #[tokio::test]
+    async fn no_namespace_claim_allows_any_user() {
+        let backend = InMemBackend::arc();
+        let ns = MockTeamNamespace::arc(); // no namespaces
+        let s = svc_with_ns(backend, ns);
+        let req = PublishRequest {
+            registry: "reg".into(),
+            name: "any/package".into(),
+            version: "1.0.0".into(),
+            artifact: Bytes::from("data"),
+            checksum: "abc".into(),
+            index_metadata: serde_json::json!({}),
+            publisher: non_member(),
+            signature_bytes: None,
+            signature_type: None,
+        };
+        assert!(s.publish(req).await.is_ok(), "unclaimed namespace allows any user");
+    }
+
+    // ── check_visibility tests ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn visibility_public_allows_anonymous() {
+        let s = svc(InMemBackend::arc(), None);
+        // no team_namespace configured -> always Ok
+        assert!(s.check_visibility("reg", "pkg", &anon()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn visibility_internal_blocks_anonymous() {
+        let ns = MockTeamNamespace::with_visibility("reg", "pkg", Visibility::Internal);
+        let s = svc_with_ns(InMemBackend::arc(), ns);
+        let err = s.check_visibility("reg", "pkg", &anon()).await.unwrap_err();
+        assert!(matches!(err, CoreError::AccessDenied(_)));
+    }
+
+    #[tokio::test]
+    async fn visibility_internal_allows_user() {
+        let ns = MockTeamNamespace::with_visibility("reg", "pkg", Visibility::Internal);
+        let s = svc_with_ns(InMemBackend::arc(), ns);
+        assert!(s.check_visibility("reg", "pkg", &non_member()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn visibility_team_blocks_non_member() {
+        let mock = MockTeamNamespace::with_namespace("reg", "frontend", "team-a");
+        // override visibility map
+        let mock = {
+            let inner = Arc::try_unwrap(mock).unwrap();
+            inner.visibility.lock().unwrap().insert(
+                ("reg".into(), "frontend/pkg".into()),
+                Visibility::Team,
+            );
+            Arc::new(inner)
+        };
+        let s = svc_with_ns(InMemBackend::arc(), mock);
+        let err = s.check_visibility("reg", "frontend/pkg", &non_member()).await.unwrap_err();
+        assert!(matches!(err, CoreError::AccessDenied(_)));
+    }
+
+    #[tokio::test]
+    async fn visibility_team_allows_member() {
+        let mock = MockTeamNamespace::with_namespace("reg", "frontend", "team-a");
+        mock.visibility.lock().unwrap().insert(
+            ("reg".into(), "frontend/pkg".into()),
+            Visibility::Team,
+        );
+        let s = svc_with_ns(InMemBackend::arc(), mock);
+        assert!(s.check_visibility("reg", "frontend/pkg", &member()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn visibility_admin_bypasses_all() {
+        let ns = MockTeamNamespace::with_visibility("reg", "pkg", Visibility::Team);
+        let s = svc_with_ns(InMemBackend::arc(), ns);
+        assert!(s.check_visibility("reg", "pkg", &admin_id()).await.is_ok());
+    }
+
+    // When Team visibility is set but no namespace claim exists, access must
+    // be denied for ALL non-admins — falling back to "any authenticated user"
+    // would allow non-team members to read team-private packages.
+    #[tokio::test]
+    async fn visibility_team_no_claim_denies_authenticated_user() {
+        // Visibility is Team but no namespace claim is seeded.
+        let ns = MockTeamNamespace::with_visibility("reg", "pkg", Visibility::Team);
+        let s = svc_with_ns(InMemBackend::arc(), ns);
+        let err = s.check_visibility("reg", "pkg", &non_member()).await.unwrap_err();
+        assert!(matches!(err, CoreError::AccessDenied(_)));
+    }
+
+    #[tokio::test]
+    async fn visibility_team_no_claim_denies_anonymous() {
+        let ns = MockTeamNamespace::with_visibility("reg", "pkg", Visibility::Team);
+        let s = svc_with_ns(InMemBackend::arc(), ns);
+        let err = s.check_visibility("reg", "pkg", &anon()).await.unwrap_err();
+        assert!(matches!(err, CoreError::AccessDenied(_)));
+    }
+
+    // Verify visibility is inherited when a second version is published on a
+    // package that already has a non-public visibility.
+    #[tokio::test]
+    async fn publish_second_version_inherits_visibility() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("reg", "my-pkg", "1.0.0"));
+
+        // Seed visibility = Internal for the first version.
+        let ns = MockTeamNamespace::arc();
+        ns.visibility.lock().unwrap().insert(
+            ("reg".into(), "my-pkg".into()),
+            Visibility::Internal,
+        );
+        let s = svc_with_ns(backend, ns);
+
+        let req = PublishRequest {
+            registry: "reg".into(),
+            name: "my-pkg".into(),
+            version: "2.0.0".into(),
+            artifact: bytes::Bytes::from("data"),
+            checksum: "abc".into(),
+            index_metadata: serde_json::json!({}),
+            publisher: user(),
+            signature_bytes: None,
+            signature_type: None,
+        };
+        s.publish(req).await.unwrap();
+
+        // The newly published version must carry the inherited visibility.
+        let versions = s.backend.get_versions("reg", "my-pkg").await.unwrap();
+        let v2 = versions.iter().find(|v| v.version == "2.0.0").unwrap();
+        assert_eq!(v2.visibility, Visibility::Internal,
+            "second version must inherit Internal visibility from the package");
+    }
+
+    // ── yank/unyank namespace enforcement ────────────────────────────────────
+
+    #[tokio::test]
+    async fn yank_blocks_non_member_in_claimed_namespace() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("reg", "frontend/utils", "1.0.0"));
+        let ns = MockTeamNamespace::with_namespace("reg", "frontend", "team-a");
+        let s = svc_with_ns(backend, ns);
+        let err = s.yank("reg", "frontend/utils", "1.0.0", &non_member()).await.unwrap_err();
+        assert!(matches!(err, CoreError::AccessDenied(_)), "non-member must not yank namespace package");
+    }
+
+    #[tokio::test]
+    async fn yank_allows_namespace_member() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("reg", "frontend/utils", "1.0.0"));
+        let ns = MockTeamNamespace::with_namespace("reg", "frontend", "team-a");
+        let s = svc_with_ns(backend, ns);
+        assert!(s.yank("reg", "frontend/utils", "1.0.0", &member()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn yank_admin_bypasses_namespace() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("reg", "frontend/utils", "1.0.0"));
+        let ns = MockTeamNamespace::with_namespace("reg", "frontend", "team-a");
+        let s = svc_with_ns(backend, ns);
+        assert!(s.yank("reg", "frontend/utils", "1.0.0", &admin_id()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn yank_unclaimed_package_allows_any_user() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("reg", "unclaimed/pkg", "1.0.0"));
+        let ns = MockTeamNamespace::arc(); // no claims
+        let s = svc_with_ns(backend, ns);
+        assert!(s.yank("reg", "unclaimed/pkg", "1.0.0", &non_member()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn unyank_blocks_non_member_in_claimed_namespace() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("reg", "frontend/utils", "1.0.0"));
+        let ns = MockTeamNamespace::with_namespace("reg", "frontend", "team-a");
+        let s = svc_with_ns(backend, ns);
+        let err = s.unyank("reg", "frontend/utils", "1.0.0", &non_member()).await.unwrap_err();
+        assert!(matches!(err, CoreError::AccessDenied(_)));
+    }
+
+    #[tokio::test]
+    async fn unyank_allows_namespace_member() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("reg", "frontend/utils", "1.0.0"));
+        let ns = MockTeamNamespace::with_namespace("reg", "frontend", "team-a");
+        let s = svc_with_ns(backend, ns);
+        assert!(s.unyank("reg", "frontend/utils", "1.0.0", &member()).await.is_ok());
     }
 }
