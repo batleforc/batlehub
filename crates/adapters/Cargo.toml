@@ -48,6 +48,7 @@ aws-sdk-s3 = { workspace = true, optional = true, features = ["sigv4a", "http-1x
 aws-config = { workspace = true, optional = true, features = ["default-https-client", "rt-tokio", "credentials-process"] }
 base64 = "0.22"
 sha2 = "0.10"
+argon2.workspace = true
 flate2 = { version = "1", optional = true }
 tar = { version = "0.4", optional = true }
 zip = { version = "2", optional = true }

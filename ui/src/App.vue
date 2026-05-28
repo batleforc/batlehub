@@ -18,9 +18,6 @@ const isOidcUser = computed(
   () => isAuthenticated.value && !!identity.value?.auth_provider
 );
 
-const hasNamespaces = computed(
-  () => isAuthenticated.value && (identity.value?.groups?.length ?? 0) > 0
-);
 
 const userLinks = [
   { to: "/packages", label: "Packages" },
@@ -106,7 +103,7 @@ function isActive(to: string) {
 
           <!-- My Namespace link for team members -->
           <RouterLink
-            v-if="hasNamespaces && !isAdmin"
+            v-if="isAuthenticated"
             to="/my-namespace"
             :class="[
               'flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors hover:bg-accent hover:text-accent-foreground',
@@ -234,7 +231,7 @@ function isActive(to: string) {
           My Profile
         </RouterLink>
         <RouterLink
-          v-if="hasNamespaces && !isAdmin"
+          v-if="isAuthenticated"
           to="/my-namespace"
           :class="[
             'flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors',

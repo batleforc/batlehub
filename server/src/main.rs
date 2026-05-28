@@ -17,7 +17,7 @@ use utoipa_actix_web::AppExt;
 use batlehub_adapters::{
     auth::{
         KubernetesAuthProvider, OidcAuthProvider, OidcSsoFlow, StaticTokenAuthProvider,
-        UserTokenAuthProvider,
+        UserTokenAuthProvider, hash_static_token,
     },
     db::{PgArtifactMetaRepository, PgBetaChannelStore, PgOwnershipStore, PgPackageRepository, PgQuotaRepository, PgTeamNamespaceStore},
     local_registry::PostgresLocalRegistry,
@@ -105,6 +105,16 @@ struct Cli {
 enum Command {
     /// Print the OpenAPI spec to stdout and exit (for frontend code generation).
     DumpSpec,
+    /// Hash a plain-text token with Argon2id and print the result.
+    ///
+    /// Use the output as the `value` in `[[auth.tokens]]` to avoid storing
+    /// credentials in plain text.  Example:
+    ///
+    ///   batlehub hash-token my-secret-token
+    HashToken {
+        /// The plain-text token to hash.
+        token: String,
+    },
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -114,10 +124,17 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Handle subcommands before loading config or initialising anything heavy.
-    if let Some(Command::DumpSpec) = cli.command {
-        let spec = openapi_spec();
-        println!("{}", spec.to_pretty_json().expect("serialize openapi spec"));
-        return Ok(());
+    match cli.command {
+        Some(Command::DumpSpec) => {
+            let spec = openapi_spec();
+            println!("{}", spec.to_pretty_json().expect("serialize openapi spec"));
+            return Ok(());
+        }
+        Some(Command::HashToken { token }) => {
+            println!("{}", hash_static_token(&token));
+            return Ok(());
+        }
+        None => {}
     }
 
     let config =

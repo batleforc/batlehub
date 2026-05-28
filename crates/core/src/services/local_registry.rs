@@ -140,8 +140,9 @@ impl LocalRegistryService {
         // only members of that group (or admins) may publish here.
         if let Some(ref ns_port) = self.team_namespace {
             if let Some(ns) = ns_port.find_namespace(&req.registry, &req.name).await? {
+                let norm_id = ns.group_id.replace(' ', "");
                 let ok = req.publisher.is_admin()
-                    || req.publisher.groups.iter().any(|g| *g == ns.group_id);
+                    || req.publisher.groups.iter().any(|g| g.replace(' ', "") == norm_id);
                 if !ok {
                     return Err(CoreError::AccessDenied(format!(
                         "namespace '{}' in registry '{}' is owned by group '{}'; \
@@ -320,7 +321,8 @@ impl LocalRegistryService {
             return Ok(());
         };
         if let Some(ns) = ns_port.find_namespace(registry, package).await? {
-            let ok = identity.groups.iter().any(|g| *g == ns.group_id);
+            let norm_id = ns.group_id.replace(' ', "");
+            let ok = identity.groups.iter().any(|g| g.replace(' ', "") == norm_id);
             if !ok {
                 return Err(CoreError::AccessDenied(format!(
                     "namespace '{}' in registry '{}' is owned by group '{}'; \
@@ -544,7 +546,7 @@ impl LocalRegistryService {
             }
             Visibility::Team => {
                 match ns_port.find_namespace(registry, package).await? {
-                    Some(ns) if identity.groups.iter().any(|g| *g == ns.group_id) => Ok(()),
+                    Some(ns) if identity.groups.iter().any(|g| g.replace(' ', "") == ns.group_id.replace(' ', "")) => Ok(()),
                     Some(ns) => Err(CoreError::AccessDenied(format!(
                         "package visibility is 'team'; must be a member of group '{}'",
                         ns.group_id
@@ -1574,6 +1576,13 @@ mod tests {
                 .get(&(registry.to_owned(), package.to_owned()))
                 .cloned()
                 .unwrap_or_default())
+        }
+        async fn list_namespaces_for_groups(&self, groups: &[String]) -> Result<Vec<crate::entities::TeamNamespace>, CoreError> {
+            let ns = self.namespaces.lock().unwrap();
+            Ok(ns.iter().filter(|n| groups.iter().any(|g| g.replace(' ', "") == n.group_id.replace(' ', ""))).cloned().collect())
+        }
+        async fn list_packages_in_namespace(&self, _: &str, _: &str, _: u64, _: u64) -> Result<Vec<crate::entities::NamespacePackage>, CoreError> {
+            Ok(vec![])
         }
     }
 

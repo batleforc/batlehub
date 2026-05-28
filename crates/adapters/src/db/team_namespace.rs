@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use sqlx::{PgPool, Row};
 
 use batlehub_core::{
-    entities::{TeamNamespace, Visibility},
+    entities::{NamespacePackage, TeamNamespace, Visibility},
     error::CoreError,
     ports::TeamNamespacePort,
 };
@@ -156,5 +156,76 @@ impl TeamNamespacePort for PgTeamNamespaceStore {
                     .map_err(|e| CoreError::Database(format!("invalid visibility in db: {e}")))
             }
         }
+    }
+
+    async fn list_namespaces_for_groups(
+        &self,
+        groups: &[String],
+    ) -> Result<Vec<TeamNamespace>, CoreError> {
+        if groups.is_empty() {
+            return Ok(vec![]);
+        }
+        let rows = sqlx::query(
+            "SELECT registry, prefix, group_id, claimed_by FROM team_namespaces \
+             WHERE group_id = ANY($1) \
+             ORDER BY registry, prefix ASC",
+        )
+        .bind(groups)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::Database(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| TeamNamespace {
+                registry: r.get("registry"),
+                prefix: r.get("prefix"),
+                group_id: r.get("group_id"),
+                claimed_by: r.get("claimed_by"),
+            })
+            .collect())
+    }
+
+    async fn list_packages_in_namespace(
+        &self,
+        registry: &str,
+        prefix: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<Vec<NamespacePackage>, CoreError> {
+        let rows = sqlx::query(
+            "SELECT name, version, visibility, published_by, published_at, yanked \
+             FROM local_packages \
+             WHERE registry = $1 \
+               AND status = 'published' \
+               AND (name = $2 \
+                    OR (LENGTH(name) > LENGTH($2) \
+                        AND SUBSTRING(name, 1, LENGTH($2) + 1) = $2 || '/')) \
+             ORDER BY name, version \
+             LIMIT $3 OFFSET $4",
+        )
+        .bind(registry)
+        .bind(prefix)
+        .bind(limit as i64)
+        .bind(offset as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::Database(e.to_string()))?;
+
+        rows.into_iter()
+            .map(|r| {
+                let vis_str: String = r.get("visibility");
+                let vis = Visibility::from_str(&vis_str)
+                    .map_err(|e| CoreError::Database(format!("invalid visibility in db: {e}")))?;
+                Ok(NamespacePackage {
+                    name: r.get("name"),
+                    version: r.get("version"),
+                    visibility: vis,
+                    published_by: r.get("published_by"),
+                    published_at: r.get("published_at"),
+                    yanked: r.get("yanked"),
+                })
+            })
+            .collect()
     }
 }

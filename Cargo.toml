@@ -84,6 +84,7 @@ regex = "1"
 semver = "1"
 base64 = "0.22"
 quick-xml = "0.36"
+argon2 = { version = "0.5", features = ["std"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }

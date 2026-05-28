@@ -330,7 +330,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             packages::{block_package, bulk_block_packages, bulk_unblock_packages, invalidate_package, list_packages as admin_list_packages, package_detail, unblock_package},
             quota::{get_quota_for_user, list_quota, list_quota_for_registry, reset_quota_for_user},
             stats::admin_stats,
-            team_namespaces::{claim_namespace, list_namespaces, release_namespace},
+            team_namespaces::{claim_namespace, list_namespaces, my_namespace_packages, my_namespaces, release_namespace},
             visibility::{get_package_visibility, set_package_visibility},
             warming::warm_registry,
         },
@@ -484,6 +484,9 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(list_namespaces);
     cfg.service(claim_namespace);
     cfg.service(release_namespace); // wildcard {prefix:.*}
+    // Team namespace user-facing
+    cfg.service(my_namespaces);
+    cfg.service(my_namespace_packages); // wildcard {prefix:.*}
     // Bulk operations admin
     cfg.service(bulk_yank_handler);
     cfg.service(bulk_unyank);

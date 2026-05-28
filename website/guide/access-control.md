@@ -432,3 +432,17 @@ Team namespaces and visibility apply to all registry types in `local` or `hybrid
 | OpenVSX / VSIX | `publisher.name` |
 
 Prefixes are matched by a **longest-prefix rule**: if both `frontend` and `frontend/ui` are claimed, `frontend/ui/button` is governed by the `frontend/ui` claim.
+
+### User-facing namespace dashboard {#ns-user-dashboard}
+
+Once claims are in place, users can manage their own packages without needing admin access. The **Team Namespace** page (`/my-namespace` in the web UI) lets group members:
+
+- See all namespace prefixes their groups own, across every registry.
+- Browse published package versions and change visibility inline.
+- Upload new packages via a browser form (supported for RubyGems, Composer, OpenVSX, and Go modules) or copy CLI instructions for other registry types.
+
+::: tip Group name normalisation
+Spaces in group names are stripped before matching — `"oidc:my team"` and `"oidc:myteam"` are treated as the same group. Set `group_id` without spaces when creating claims to avoid ambiguity.
+:::
+
+See the [Team Namespace dashboard section in the User Guide](./user#team-namespace) for end-user instructions.

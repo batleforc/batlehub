@@ -1,7 +1,7 @@
 #[cfg(feature = "auth-token")]
 pub mod token;
 #[cfg(feature = "auth-token")]
-pub use token::StaticTokenAuthProvider;
+pub use token::{StaticTokenAuthProvider, hash_static_token};
 
 #[cfg(feature = "auth-oidc")]
 pub mod oidc;

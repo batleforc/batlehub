@@ -33,7 +33,7 @@ async fn require_admin_or_namespace_member(
         return Err(AppError::forbidden("authentication required"));
     }
     match store.find_namespace(registry, package).await.map_err(AppError::from)? {
-        Some(ns) if identity.groups.iter().any(|g| g == &ns.group_id) => Ok(()),
+        Some(ns) if identity.groups.iter().any(|g| g.replace(' ', "") == ns.group_id.replace(' ', "")) => Ok(()),
         Some(ns) => Err(AppError::forbidden(format!(
             "package namespace '{}' is owned by group '{}'; you are not a member",
             ns.prefix, ns.group_id

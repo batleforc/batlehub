@@ -335,6 +335,67 @@ curl -s "https://batlehub.example.com/proxy/packagist/p2/symfony/console.json" \
 
 ---
 
+## Team Namespace dashboard {#team-namespace}
+
+If your administrator has assigned namespace claims to your group, the **Team Namespace** page at `/my-namespace` gives you a single place to view your ownership, browse published packages, manage visibility, and upload new packages without needing CLI access.
+
+### Your groups {#ns-groups}
+
+The top card lists every auth-provider group you belong to. These are the values your administrator uses when creating namespace claims. Spaces are stripped from group names because package prefixes cannot contain spaces — `"oidc:my team"` is shown and matched as `"oidc:myteam"`.
+
+### Your namespaces {#ns-namespaces}
+
+The **My namespaces** table shows every namespace prefix claimed for your groups, across all registries. Each row shows:
+
+| Column | Description |
+|--------|-------------|
+| Registry | The registry this claim applies to |
+| Prefix | Package name prefix your group owns |
+| Group | The group identifier (spaces stripped) |
+
+Click any row to load the packages published under that namespace.
+
+### Browsing and managing packages {#ns-packages}
+
+After clicking a namespace row, the **Packages** card shows all published versions under that prefix. Columns include package name, version, visibility, publisher, and publication date.
+
+**Changing visibility inline:**
+
+Click the visibility badge on any row (or the "Edit visibility" button) to open an inline dropdown. Choose the new level and click **Save**:
+
+| Level | Who can download |
+|-------|-----------------|
+| `public` | Everyone, including unauthenticated |
+| `internal` | Any authenticated user |
+| `team` | Members of your group only |
+
+Results are paginated (50 per page). Use the Previous / Next buttons to navigate.
+
+### Uploading packages {#ns-upload}
+
+The **Upload package** card lets you publish directly from the browser for registry types that accept binary file uploads. Only registries in `local` or `hybrid` mode appear in the selector.
+
+#### File upload (browser)
+
+| Registry type | Accepted file | Extra fields |
+|--------------|---------------|--------------|
+| RubyGems | `.gem` | None — name and version are read from the gem |
+| Composer | `.zip` | None — name and version are read from `composer.json` inside the archive |
+| OpenVSX / VS Code Marketplace | `.vsix` | Extension ID (`publisher.name`) and version |
+| Go modules | `.zip` | Module path (e.g. `github.com/org/repo`) and version (e.g. `v1.0.0`) |
+
+Select the registry, fill in any extra fields, choose the file, and click **Upload**.
+
+::: tip Go module zip format
+The zip must follow the standard Go module layout — every entry must be prefixed with `{module}@{version}/`. Running `go mod zip` produces this layout automatically.
+:::
+
+#### CLI (npm, Cargo, Maven, Terraform)
+
+For registry types without a browser-friendly binary format, the **CLI instructions** tab shows ready-to-paste commands pre-filled with your registry name. See [the full publishing guide](#npm) for each ecosystem's complete setup steps.
+
+---
+
 ## Permissions
 
 | Permission | What it grants |

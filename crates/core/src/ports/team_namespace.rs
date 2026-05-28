@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use crate::{
-    entities::{TeamNamespace, Visibility},
+    entities::{NamespacePackage, TeamNamespace, Visibility},
     error::CoreError,
 };
 
@@ -53,4 +53,22 @@ pub trait TeamNamespacePort: Send + Sync {
     ///
     /// Returns `Visibility::Public` when the package has no published rows yet.
     async fn get_visibility(&self, registry: &str, package: &str) -> Result<Visibility, CoreError>;
+
+    /// Return all namespace claims across all registries where `group_id` is
+    /// one of the supplied `groups`, ordered by registry then prefix.
+    async fn list_namespaces_for_groups(
+        &self,
+        groups: &[String],
+    ) -> Result<Vec<TeamNamespace>, CoreError>;
+
+    /// Return all published package versions in `registry` whose name matches
+    /// `prefix` (exact match or `prefix + '/'` prefix), ordered by name then
+    /// version, with pagination.
+    async fn list_packages_in_namespace(
+        &self,
+        registry: &str,
+        prefix: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<Vec<NamespacePackage>, CoreError>;
 }
