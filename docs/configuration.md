@@ -36,6 +36,7 @@ batlehub is configured with a single TOML file. This document covers every optio
    - [6.12 Private Maven Registry (local / hybrid mode)](#612-private-maven-registry-local--hybrid-mode)
    - [6.13 Private Terraform Registry (local / hybrid mode)](#613-private-terraform-registry-local--hybrid-mode)
    - [6.14 Rate Limiting — Per-User + Per-Group](#614-rate-limiting)
+   - [6.15 Private Composer Registry (local / hybrid mode)](#615-private-composer-registry-local--hybrid-mode)
 7. [CLI Reference](#7-cli-reference)
 8. [User-Generated API Tokens](#8-user-generated-api-tokens)
 9. [Self-Hosted / Private Registries](#9-self-hosted--private-registries)
@@ -562,6 +563,50 @@ Configure the Terraform CLI to use the proxy for providers:
 provider_installation {
   network_mirror {
     url = "http://batlehub.example.com/proxy/terraform/"
+  }
+}
+```
+
+---
+
+**`composer`** — implements the [Packagist v2 protocol](https://packagist.org/apidoc) for PHP Composer. Serves `packages.json` (repository root index), `p2/{vendor}/{package}.json` (metadata), and `dist/{vendor}/{package}/{version}` (ZIP artifact downloads). Default upstream: `https://repo.packagist.org`. Set `mode = "local"` or `mode = "hybrid"` to enable private package publishing — see [registry modes](#registry-modes) and [Worked Example 6.15](#615-private-composer-registry-local--hybrid-mode).
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/proxy/{registry}/packages.json` | GET | Repository root index (lists all known package names) |
+| `/proxy/{registry}/p2/{vendor}/{package}.json` | GET | Package metadata (all versions, dist URLs) |
+| `/proxy/{registry}/p2/{vendor}/{package}~dev.json` | GET | Dev-stability metadata variant |
+| `/proxy/{registry}/dist/{vendor}/{package}/{version}` | GET | Download ZIP artifact |
+| `/proxy/{registry}/api/upload` | POST | **Local/Hybrid:** publish a package (multipart or raw ZIP body) |
+| `/proxy/{registry}/api/packages/{vendor}/{package}/versions/{version}` | DELETE | **Local/Hybrid:** yank a version |
+
+Configure Composer to use the proxy by adding a repository entry in `composer.json`:
+
+```json
+{
+  "repositories": [
+    {
+      "type": "composer",
+      "url": "http://batlehub.example.com/proxy/packagist/",
+      "options": {
+        "http": {
+          "header": ["Authorization: Bearer <your-token>"]
+        }
+      }
+    }
+  ]
+}
+```
+
+Or store credentials in `auth.json` (never commit this file):
+
+```json
+{
+  "http-basic": {
+    "batlehub.example.com": {
+      "username": "user",
+      "password": "<your-token>"
+    }
   }
 }
 ```
@@ -1876,6 +1921,98 @@ Content-Type: application/json
 
 {"error":"rate limit exceeded","retry_after_secs":42}
 ```
+
+---
+
+### 6.15 Private Composer Registry (local / hybrid mode) {#615-private-composer-registry-local--hybrid-mode}
+
+Publish and serve private PHP packages without an external Packagist-compatible registry.
+
+```toml
+[[registries]]
+type = "composer"
+name = "internal-composer"
+mode = "local"
+
+[registries.rbac]
+user  = ["releases:read", "source:read"]
+admin = ["*"]
+```
+
+For hybrid mode (serve private packages first, proxy Packagist for everything else):
+
+```toml
+[[registries]]
+type      = "composer"
+name      = "internal-composer"
+mode      = "hybrid"
+upstreams = ["https://repo.packagist.org"]
+
+[registries.rbac]
+user  = ["releases:read", "source:read"]
+admin = ["*"]
+```
+
+#### Client setup — composer.json
+
+Add a repository entry to your project's `composer.json`:
+
+```json
+{
+  "repositories": [
+    {
+      "type": "composer",
+      "url": "https://batlehub.example.com/proxy/internal-composer/",
+      "options": {
+        "http": {
+          "header": ["Authorization: Bearer your-token"]
+        }
+      }
+    }
+  ]
+}
+```
+
+Alternatively, keep credentials out of `composer.json` by storing them in `auth.json`:
+
+```json
+{
+  "http-basic": {
+    "batlehub.example.com": {
+      "username": "user",
+      "password": "your-token"
+    }
+  }
+}
+```
+
+#### Publishing a package
+
+Create a ZIP archive containing a valid `composer.json` at its root or inside a single top-level directory (GitHub archive layout is also accepted). The `composer.json` must include `name` (in `vendor/package` format) and `version` fields:
+
+```sh
+# Create the archive
+zip -r symfony-console-7.1.0.zip symfony-console-7.1.0/
+
+# Publish
+curl -X POST \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/zip" \
+  --data-binary @symfony-console-7.1.0.zip \
+  "https://batlehub.example.com/proxy/internal-composer/api/upload"
+```
+
+The `version` field in the uploaded `composer.json` determines the published version. It can be overridden by appending `?version=<version>` to the upload URL.
+
+#### Yanking a version
+
+```sh
+curl -X DELETE \
+  -H "Authorization: Bearer <token>" \
+  "https://batlehub.example.com/proxy/internal-composer/api/packages/my-vendor/my-package/versions/1.0.0"
+```
+
+Yanked versions are hidden from `p2/` metadata and return 404 on download.
 
 ---
 

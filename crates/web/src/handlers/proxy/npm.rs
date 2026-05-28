@@ -183,21 +183,20 @@ pub async fn download_tarball(
     }
 
     if matches!(mode, RegistryMode::Hybrid) {
-        if let Err(e) = local_svc.check_prerelease_access(&registry, &version, &identity).await {
-            if !matches!(e, CoreError::NotFound(_)) {
-                return Err(AppError::from(e));
+        // Gate must be enforced before falling through to upstream: a non-member
+        // must not receive a pre-release artifact from the upstream registry.
+        local_svc
+            .check_prerelease_access(&registry, &version, &identity)
+            .await
+            .map_err(AppError::from)?;
+        match local_svc.get_artifact(&registry, &package, &version).await {
+            Ok(bytes) => {
+                return Ok(HttpResponse::Ok()
+                    .content_type("application/octet-stream")
+                    .body(bytes));
             }
-            // pre-release gated; fall through to proxy
-        } else {
-            match local_svc.get_artifact(&registry, &package, &version).await {
-                Ok(bytes) => {
-                    return Ok(HttpResponse::Ok()
-                        .content_type("application/octet-stream")
-                        .body(bytes));
-                }
-                Err(CoreError::NotFound(_)) => {}
-                Err(e) => return Err(AppError::from(e)),
-            }
+            Err(CoreError::NotFound(_)) => {} // not found locally; fall through to upstream
+            Err(e) => return Err(AppError::from(e)),
         }
     }
 

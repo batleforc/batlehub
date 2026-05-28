@@ -251,6 +251,90 @@ code --install-extension my-org.my-extension-1.0.0.vsix
 
 ---
 
+## Composer (PHP) {#composer}
+
+### Point Composer at BatleHub
+
+Add a repository entry to `composer.json` in your project. BatleHub implements the Packagist v2 protocol (`packages.json` + `p2/` metadata endpoints), so Composer treats it as a native Composer repository.
+
+```json
+{
+  "repositories": [
+    {
+      "type": "composer",
+      "url": "https://batlehub.example.com/proxy/packagist/",
+      "options": {
+        "http": {
+          "header": ["Authorization: Bearer ${BATLEHUB_TOKEN}"]
+        }
+      }
+    }
+  ]
+}
+```
+
+For credentials, store them in `auth.json` (in `~/.config/composer/` or the project root — never commit this file):
+
+```json
+{
+  "http-basic": {
+    "batlehub.example.com": {
+      "username": "user",
+      "password": "<your-token>"
+    }
+  }
+}
+```
+
+When `auth.json` is in place, the `options.http.header` entry in `composer.json` is not needed.
+
+### Install packages
+
+```sh
+composer install
+composer require symfony/console
+```
+
+### Publish a private package (local/hybrid mode)
+
+The registry must be in `local` or `hybrid` mode — ask your administrator.
+
+Create a ZIP archive that contains a `composer.json` at its root (or inside a single top-level directory, like a GitHub archive):
+
+```sh
+# Create the ZIP — composer.json must have "name" and "version" fields
+zip -r my-vendor-my-pkg-1.0.0.zip my-vendor-my-pkg-1.0.0/
+
+# Upload
+curl -X POST \
+  -H "Authorization: Bearer $BATLEHUB_TOKEN" \
+  -H "Content-Type: application/zip" \
+  --data-binary @my-vendor-my-pkg-1.0.0.zip \
+  "https://batlehub.example.com/proxy/internal-composer/api/upload"
+```
+
+The `name` field in `composer.json` must follow the `vendor/package` format (e.g. `"name": "my-vendor/my-pkg"`). The `version` field is used as the package version; it can be overridden by the `?version=` query parameter on the upload URL.
+
+### Yank a version
+
+```sh
+curl -X DELETE \
+  -H "Authorization: Bearer $BATLEHUB_TOKEN" \
+  "https://batlehub.example.com/proxy/internal-composer/api/packages/my-vendor/my-pkg/versions/1.0.0"
+```
+
+Yanked versions are hidden from version listings and return 404 on download attempts.
+
+### Verify
+
+```sh
+# List available versions of a package
+curl -s "https://batlehub.example.com/proxy/packagist/p2/symfony/console.json" \
+  -H "Authorization: Bearer $BATLEHUB_TOKEN" | jq '.packages | keys'
+```
+
+---
+
 ## Permissions
 
 | Permission | What it grants |

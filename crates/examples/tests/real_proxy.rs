@@ -23,17 +23,12 @@ use std::{
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
 
-use async_trait::async_trait;
-use bytes::Bytes;
-use chrono::{DateTime, Utc};
-use futures::stream;
 use tempfile::TempDir;
-use uuid::Uuid;
 
 use actix_web::{web, App, HttpServer};
 use utoipa_actix_web::AppExt;
@@ -41,6 +36,11 @@ use utoipa_actix_web::AppExt;
 use batlehub_adapters::{
     auth::StaticTokenAuthProvider,
     cache::InMemoryCacheStore,
+    in_memory::{
+        InMemoryPackageRepository, InMemoryStorageBackend, NoopArtifactMetaRepository,
+        NullUserTokenRepository,
+    },
+    local_registry::InMemoryLocalRegistry,
     registry::{
         CargoRegistryClient, ComposerRegistryClient, GithubRegistryClient, GoProxyRegistryClient,
         MavenRegistryClient, NpmRegistryClient, OpenVsxRegistryClient, RubyGemsRegistryClient,
@@ -48,16 +48,8 @@ use batlehub_adapters::{
     },
 };
 use batlehub_core::{
-    entities::{
-        AccessEvent, EventFilter, PackageFilter, PackageId, PackageStatus, PackageSummary,
-        PublishedPackage, Role,
-    },
-    error::CoreError,
-    ports::{
-        ArtifactMeta, ArtifactMetaRepository, AuthProvider, ByteStream, CacheStore,
-        LocalRegistryBackend, PackageRepository, RegistryClient, StorageBackend, StoredArtifact,
-        StorageMeta, UserToken, UserTokenRepository,
-    },
+    entities::Role,
+    ports::{AuthProvider, CacheStore, RegistryClient},
     rules::{BlockListRule, RbacRule},
     services::{AdminService, LocalRegistryService, ProxyMetrics, ProxyService, RegistryPolicy},
 };
@@ -263,237 +255,6 @@ provider_installation {{
     path.to_path_buf()
 }
 
-// ── In-memory implementations (no PostgreSQL needed) ─────────────────────────
-
-struct InMemoryRepo {
-    summaries: Mutex<HashMap<String, PackageSummary>>,
-    events: Mutex<Vec<AccessEvent>>,
-}
-
-impl InMemoryRepo {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            summaries: Mutex::new(HashMap::new()),
-            events: Mutex::new(Vec::new()),
-        })
-    }
-}
-
-#[async_trait]
-impl PackageRepository for InMemoryRepo {
-    async fn record_access(&self, event: AccessEvent) -> Result<(), CoreError> {
-        let key = event.package_id.cache_key();
-        let mut sums = self.summaries.lock().unwrap();
-        let entry = sums.entry(key).or_insert_with(|| PackageSummary {
-            id: Uuid::new_v4(),
-            package_id: event.package_id.clone(),
-            status: PackageStatus::Available,
-            last_accessed: None,
-            last_accessed_by: None,
-            access_count: 0,
-        });
-        entry.access_count += 1;
-        entry.last_accessed = Some(event.timestamp);
-        self.events.lock().unwrap().push(event);
-        Ok(())
-    }
-
-    async fn get_status(&self, pkg: &PackageId) -> Result<PackageStatus, CoreError> {
-        Ok(self
-            .summaries
-            .lock()
-            .unwrap()
-            .get(&pkg.cache_key())
-            .map(|s| s.status.clone())
-            .unwrap_or(PackageStatus::Available))
-    }
-
-    async fn set_status(&self, pkg: &PackageId, status: PackageStatus) -> Result<(), CoreError> {
-        let mut sums = self.summaries.lock().unwrap();
-        let entry = sums.entry(pkg.cache_key()).or_insert_with(|| PackageSummary {
-            id: Uuid::new_v4(),
-            package_id: pkg.clone(),
-            status: PackageStatus::Available,
-            last_accessed: None,
-            last_accessed_by: None,
-            access_count: 0,
-        });
-        entry.status = status;
-        Ok(())
-    }
-
-    async fn list_packages(
-        &self, _filter: PackageFilter,
-    ) -> Result<Vec<PackageSummary>, CoreError> {
-        Ok(vec![])
-    }
-
-    async fn count_packages(&self, _filter: PackageFilter) -> Result<u64, CoreError> {
-        Ok(0)
-    }
-
-    async fn list_events(&self, _filter: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
-        Ok(vec![])
-    }
-}
-
-// ── In-memory StorageBackend ──────────────────────────────────────────────────
-
-struct InMemoryStorage {
-    data: Mutex<HashMap<String, (Bytes, StorageMeta)>>,
-}
-
-impl InMemoryStorage {
-    fn new() -> Arc<Self> {
-        Arc::new(Self { data: Mutex::new(HashMap::new()) })
-    }
-}
-
-#[async_trait]
-impl StorageBackend for InMemoryStorage {
-    async fn store(&self, key: &str, data: Bytes, meta: StorageMeta) -> Result<(), CoreError> {
-        self.data.lock().unwrap().insert(key.to_owned(), (data, meta));
-        Ok(())
-    }
-
-    async fn retrieve(&self, key: &str) -> Result<Option<StoredArtifact>, CoreError> {
-        let lock = self.data.lock().unwrap();
-        Ok(lock.get(key).map(|(data, meta)| {
-            let bytes = data.clone();
-            let s: ByteStream =
-                Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(bytes) }));
-            StoredArtifact { stream: s, meta: meta.clone() }
-        }))
-    }
-
-    async fn exists(&self, key: &str) -> Result<bool, CoreError> {
-        Ok(self.data.lock().unwrap().contains_key(key))
-    }
-
-    async fn delete(&self, key: &str) -> Result<(), CoreError> {
-        self.data.lock().unwrap().remove(key);
-        Ok(())
-    }
-
-    async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError> {
-        let mut map = self.data.lock().unwrap();
-        let keys: Vec<String> = map.keys().filter(|k| k.starts_with(prefix)).cloned().collect();
-        let count = keys.len();
-        for k in keys {
-            map.remove(&k);
-        }
-        Ok(count)
-    }
-
-    async fn stat_by_prefix(&self, prefix: &str) -> Result<(u64, u64), CoreError> {
-        let map = self.data.lock().unwrap();
-        Ok(map
-            .iter()
-            .filter(|(k, _)| k.starts_with(prefix))
-            .fold((0u64, 0u64), |(c, b), (_, (data, meta))| {
-                (c + 1, b + meta.size.unwrap_or(data.len() as u64))
-            }))
-    }
-
-    async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, CoreError> {
-        Ok(self
-            .data
-            .lock()
-            .unwrap()
-            .keys()
-            .filter(|k| k.starts_with(prefix))
-            .cloned()
-            .collect())
-    }
-}
-
-// ── No-op ArtifactMetaRepository ─────────────────────────────────────────────
-
-struct NoopArtifactMeta;
-
-impl NoopArtifactMeta {
-    fn arc() -> Arc<dyn ArtifactMetaRepository> {
-        Arc::new(Self)
-    }
-}
-
-#[async_trait]
-impl ArtifactMetaRepository for NoopArtifactMeta {
-    async fn record_artifact(&self, _: &str, _: &str, _: &str, _: &str, _: Option<u64>) -> Result<(), CoreError> { Ok(()) }
-    async fn touch_artifact(&self, _: &str) -> Result<(), CoreError> { Ok(()) }
-    async fn list_artifacts(&self, _: &str) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
-    async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
-    async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> { Ok(()) }
-    async fn is_artifact_expired(&self, _: &str, _: DateTime<Utc>) -> Result<bool, CoreError> { Ok(false) }
-    async fn list_expired_by_ttl(&self, _: &str, _: DateTime<Utc>) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
-    async fn list_idle(&self, _: &str, _: DateTime<Utc>) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
-    async fn total_size_bytes(&self, _: &str) -> Result<u64, CoreError> { Ok(0) }
-    async fn list_lru(&self, _: &str, _: i64) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
-}
-
-// ── Null UserTokenRepository ──────────────────────────────────────────────────
-
-struct NullTokenRepo;
-
-#[async_trait]
-impl UserTokenRepository for NullTokenRepo {
-    async fn create_token(&self, _: Uuid, _: &str, _: &str, _: &str, _: Role, _: DateTime<Utc>) -> Result<UserToken, CoreError> {
-        Err(CoreError::Database("not implemented".into()))
-    }
-    async fn find_by_hash(&self, _: &str) -> Result<Option<UserToken>, CoreError> { Ok(None) }
-    async fn list_for_user(&self, _: &str) -> Result<Vec<UserToken>, CoreError> { Ok(vec![]) }
-    async fn revoke(&self, _: Uuid, _: &str) -> Result<bool, CoreError> { Ok(false) }
-}
-
-// ── In-memory LocalRegistryBackend ────────────────────────────────────────────
-
-struct InMemoryLocalRegistry {
-    packages: Mutex<HashMap<String, Vec<PublishedPackage>>>,
-}
-
-impl InMemoryLocalRegistry {
-    fn new() -> Arc<Self> {
-        Arc::new(Self { packages: Mutex::new(HashMap::new()) })
-    }
-}
-
-#[async_trait]
-impl LocalRegistryBackend for InMemoryLocalRegistry {
-    async fn publish(&self, pkg: PublishedPackage) -> Result<(), CoreError> {
-        let key = format!("{}:{}", pkg.registry, pkg.name);
-        self.packages.lock().unwrap().entry(key).or_default().push(pkg);
-        Ok(())
-    }
-
-    async fn yank(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError> {
-        let key = format!("{registry}:{name}");
-        if let Some(vers) = self.packages.lock().unwrap().get_mut(&key) {
-            for v in vers.iter_mut() {
-                if v.version == version { v.yanked = true; }
-            }
-        }
-        Ok(())
-    }
-
-    async fn unyank(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError> {
-        let key = format!("{registry}:{name}");
-        if let Some(vers) = self.packages.lock().unwrap().get_mut(&key) {
-            for v in vers.iter_mut() {
-                if v.version == version { v.yanked = false; }
-            }
-        }
-        Ok(())
-    }
-
-    async fn get_versions(&self, registry: &str, name: &str) -> Result<Vec<PublishedPackage>, CoreError> {
-        let key = format!("{registry}:{name}");
-        Ok(self.packages.lock().unwrap().get(&key).cloned().unwrap_or_default())
-    }
-
-    async fn exists(&self, registry: &str, name: &str) -> Result<bool, CoreError> {
-        Ok(self.packages.lock().unwrap().contains_key(&format!("{registry}:{name}")))
-    }
-}
 
 // ── Real batlehub proxy server ────────────────────────────────────────────────
 
@@ -516,8 +277,8 @@ impl RealProxy {
         registries: HashMap<String, Arc<dyn RegistryClient>>,
         registry_map: RegistryMap,
     ) -> Self {
-        let repo: Arc<dyn PackageRepository> = InMemoryRepo::new();
-        let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+        let repo = InMemoryPackageRepository::new();
+        let storage = InMemoryStorageBackend::new();
         let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
 
         let registry_names: Vec<String> = registry_map.0.keys().cloned().collect();
@@ -545,7 +306,7 @@ impl RealProxy {
             .collect();
 
         let local_svc = Arc::new(LocalRegistryService {
-            backend: InMemoryLocalRegistry::new(),
+            backend: Arc::new(InMemoryLocalRegistry::new()),
             storage: storage.clone(),
             max_artifact_bytes: None,
             quota: None,
@@ -560,13 +321,13 @@ impl RealProxy {
             storage,
             cache,
             repo: repo.clone(),
-            artifact_meta: NoopArtifactMeta::arc(),
+            artifact_meta: NoopArtifactMetaRepository::arc(),
             policies,
             max_artifact_size_bytes: None,
             metrics: Arc::new(ProxyMetrics::new(&[])),
         });
         let admin_svc = Arc::new(AdminService::new(repo));
-        let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepo);
+        let token_repo = NullUserTokenRepository::arc();
 
         let access_config = AccessConfig {
             anonymous: registry_names.iter().cloned().collect(),

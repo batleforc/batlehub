@@ -8,7 +8,7 @@ For discussion or to propose a feature, open an issue on the [project repository
 
 ## New registry types
 
-Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules.
+Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules, Maven, RubyGems, Terraform, Composer.
 
 - [ ] **PyPI** — Python package index (simple API + wheel / sdist downloads)
 - [x] **Maven / Gradle** — Maven Central-compatible metadata XML + JAR / POM downloads; private publishing via `mvn deploy` in `local`/`hybrid` mode
@@ -18,7 +18,7 @@ Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules.
 - [x] **Terraform registry** — provider and module proxy protocol; private module + provider publishing in `local`/`hybrid` mode
 - [ ] **GitLab releases and packages** — similar to GitHub but with different auth and pagination
 - [ ] **Forgejo releases and packages** — Gitea fork with minor API differences
-- [ ] **Composer** - Php Composer
+- [x] **Composer** — PHP Composer registry (Packagist v2 protocol — `packages.json`, p2 metadata, dist downloads); private package publishing via ZIP upload in `local`/`hybrid` mode
 
 > **Not planned:** Docker / OCI artifacts. [Harbor](https://goharbor.io) solves this better than we could, unless concrete demand arises.
 

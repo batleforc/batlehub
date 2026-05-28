@@ -4,7 +4,7 @@ import { ref, computed } from 'vue'
 // ── Types ───────────────────────────────────────────────────────────────────
 
 type RegistryMode = 'proxy' | 'local' | 'hybrid'
-type RegistryType = 'npm' | 'cargo' | 'openvsx' | 'vscode-marketplace' | 'goproxy' | 'github' | 'maven' | 'terraform' | 'rubygems'
+type RegistryType = 'npm' | 'cargo' | 'openvsx' | 'vscode-marketplace' | 'goproxy' | 'github' | 'maven' | 'terraform' | 'rubygems' | 'composer'
 type AuthRole = 'admin' | 'user' | 'anonymous'
 type StorageBackendType = 'filesystem' | 's3'
 type StorageMode = 'single' | 'multi'
@@ -163,6 +163,7 @@ const defaultUpstream: Record<RegistryType, string> = {
   maven: 'https://repo1.maven.org/maven2',
   terraform: 'https://registry.terraform.io',
   rubygems: 'https://rubygems.org',
+  composer: 'https://repo.packagist.org',
 }
 
 function defaultRegistry(type: RegistryType = 'npm'): Registry {
@@ -515,6 +516,31 @@ const backendNames = computed(() =>
 )
 
 const isLocalOrHybrid = (reg: Registry) => reg.mode === 'local' || reg.mode === 'hybrid'
+
+function composerRepoSnippet(registryName: string): string {
+  return `{
+  "repositories": [
+    {
+      "type": "composer",
+      "url": "https://your-batlehub-host/proxy/${registryName}/",
+      "options": {
+        "http": {
+          "header": ["Authorization: Bearer <token>"]
+        }
+      }
+    }
+  ]
+}`
+}
+
+const composerAuthSnippet = `{
+  "http-basic": {
+    "your-batlehub-host": {
+      "username": "user",
+      "password": "<your-token>"
+    }
+  }
+}`
 </script>
 
 <template>
@@ -712,6 +738,7 @@ const isLocalOrHybrid = (reg: Registry) => reg.mode === 'local' || reg.mode === 
                 <option value="cargo">Cargo</option>
                 <option value="maven">Maven</option>
                 <option value="rubygems">RubyGems</option>
+                <option value="composer">Composer (PHP)</option>
                 <option value="openvsx">OpenVSX</option>
                 <option value="vscode-marketplace">VS Code Marketplace</option>
                 <option value="goproxy">Go Modules</option>
@@ -729,6 +756,24 @@ const isLocalOrHybrid = (reg: Registry) => reg.mode === 'local' || reg.mode === 
             Upstreams (one per line)
             <textarea v-model="reg.upstreams" rows="2" />
           </label>
+
+          <!-- Composer client config hint -->
+          <div v-if="reg.type === 'composer'" class="cg-registry-hint">
+            <p class="cg-hint-title">Composer client setup</p>
+            <p class="cg-hint-text">Add a repository entry to your project's <code>composer.json</code>:</p>
+            <pre class="cg-hint-code">{{ composerRepoSnippet(reg.name) }}</pre>
+            <p class="cg-hint-text" style="margin-top:0.5rem">Store credentials in <code>auth.json</code> (never commit this file):</p>
+            <pre class="cg-hint-code">{{ composerAuthSnippet }}</pre>
+            <p class="cg-hint-text" style="margin-top:0.5rem">
+              Publish via ZIP upload (must contain <code>composer.json</code> with <code>"name"</code> and <code>"version"</code>):
+            </p>
+            <pre class="cg-hint-code">curl -X POST \
+  -H "Authorization: Bearer &lt;token&gt;" \
+  -H "Content-Type: application/zip" \
+  --data-binary @vendor-pkg-1.0.0.zip \
+  "/proxy/{{ reg.name }}/api/upload"</pre>
+          </div>
+
           <label v-if="storageMode === 'multi'">
             Storage backend (blank = use default)
             <select v-model="reg.storage_backend">
@@ -1177,6 +1222,49 @@ textarea {
   overflow-y: auto;
   flex: 1 1 0;
   white-space: pre;
+}
+
+/* ── Registry-type hints ─────────────────────────────────────────── */
+.cg-registry-hint {
+  border: 1px solid var(--vp-c-brand-soft);
+  border-left: 3px solid var(--vp-c-brand-1);
+  border-radius: 5px;
+  padding: 0.65rem 0.8rem;
+  margin: 0.5rem 0;
+  background: var(--vp-c-brand-soft);
+}
+
+.cg-hint-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--vp-c-brand-1);
+  margin: 0 0 0.35rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cg-hint-text {
+  font-size: 0.8rem;
+  color: var(--vp-c-text-2);
+  margin: 0 0 0.25rem;
+}
+
+.cg-hint-text code {
+  font-size: 0.78rem;
+}
+
+.cg-hint-code {
+  font-size: 0.76rem;
+  font-family: var(--vp-font-family-mono);
+  background: var(--vp-c-bg);
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 4px;
+  padding: 0.5rem 0.65rem;
+  margin: 0.25rem 0 0;
+  white-space: pre;
+  overflow-x: auto;
+  color: var(--vp-c-text-1);
+  line-height: 1.5;
 }
 
 /* ── Responsive ──────────────────────────────────────────────────── */

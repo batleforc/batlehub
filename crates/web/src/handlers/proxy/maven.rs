@@ -306,12 +306,13 @@ pub async fn maven_get(
                     }
                 }
                 MavenPathKind::Artifact { name, version, filename } => {
-                    if let Err(e) = local_svc.check_prerelease_access(&registry, version, &identity).await {
-                        if !matches!(e, batlehub_core::error::CoreError::NotFound(_)) {
-                            return Err(AppError::from(e));
-                        }
-                        // pre-release gated; fall through to proxy
-                    } else {
+                    // Gate must be enforced before falling through to upstream: a non-member
+                    // must not receive a pre-release artifact from the upstream registry.
+                    local_svc
+                        .check_prerelease_access(&registry, version, &identity)
+                        .await
+                        .map_err(AppError::from)?;
+                    {
                     let storage_key = if filename.ends_with(".pom") {
                         artifact_storage_key(&registry, name, version)
                     } else {

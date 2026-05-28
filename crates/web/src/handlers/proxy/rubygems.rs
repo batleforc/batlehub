@@ -78,22 +78,21 @@ pub async fn gem_download(
     }
 
     if matches!(mode, RegistryMode::Hybrid) {
-        if let Err(e) = local_svc.check_prerelease_access(&registry, version, &identity).await {
-            if !matches!(e, batlehub_core::error::CoreError::NotFound(_)) {
-                return Err(AppError::from(e));
+        // Gate must be enforced before falling through to upstream: a non-member
+        // must not receive a pre-release artifact from the upstream registry.
+        local_svc
+            .check_prerelease_access(&registry, version, &identity)
+            .await
+            .map_err(AppError::from)?;
+        match local_svc.get_artifact(&registry, name, version).await {
+            Ok(bytes) => {
+                let mut resp = HttpResponse::Ok();
+                resp.content_type("application/octet-stream");
+                append_signature_headers(&mut resp, &local_svc, &registry, name, version).await;
+                return Ok(resp.body(bytes));
             }
-            // pre-release gated; fall through to proxy
-        } else {
-            match local_svc.get_artifact(&registry, name, version).await {
-                Ok(bytes) => {
-                    let mut resp = HttpResponse::Ok();
-                    resp.content_type("application/octet-stream");
-                    append_signature_headers(&mut resp, &local_svc, &registry, name, version).await;
-                    return Ok(resp.body(bytes));
-                }
-                Err(batlehub_core::error::CoreError::NotFound(_)) => {} // fall through to proxy
-                Err(e) => return Err(AppError::from(e)),
-            }
+            Err(batlehub_core::error::CoreError::NotFound(_)) => {} // not found locally; fall through to upstream
+            Err(e) => return Err(AppError::from(e)),
         }
     }
 

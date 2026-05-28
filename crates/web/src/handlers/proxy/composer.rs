@@ -425,7 +425,7 @@ fn parse_p2_package_name(path: &str) -> Option<String> {
 /// Returns `true` when every character in `s` is a safe Composer name segment
 /// character: ASCII alphanumeric, hyphen, underscore, or dot.
 fn is_valid_composer_segment(s: &str) -> bool {
-    s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 #[cfg(test)]
