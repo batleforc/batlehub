@@ -22,7 +22,7 @@
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
-    "@hey-api/openapi-ts": "^0.97.1",
+    "@hey-api/openapi-ts": "^0.97.3",
     "@types/node": "^22.15.3",
     "@vitejs/plugin-vue": "^5.2.3",
     "autoprefixer": "^10.4.21",
