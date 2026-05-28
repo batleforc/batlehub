@@ -33,6 +33,9 @@ RUN touch crates/*/src/lib.rs server/src/main.rs
 
 RUN cargo build --release -p batlehub-server
 
+# Pre-create runtime directories so they can be copied into the shell-less distroless image.
+RUN mkdir -p /var/cache/batlehub
+
 # ── Frontend build stage ───────────────────────────────────────────────────────
 FROM node:26-slim@sha256:1e738cb88890a15c71880323fbc35a739b7bbc703d72e8bfd1613128f8182f78 AS ui-builder
 
@@ -50,16 +53,11 @@ RUN batlehub --config /etc/batlehub/config.toml dump-spec > openapi.json && \
     npm run build
 
 # ── Runtime image ─────────────────────────────────────────────────────────────
-FROM debian:bookworm-slim@sha256:0104b334637a5f19aa9c983a91b54c89887c0984081f2068983107a6f6c21eeb AS runtime
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl \
-    && rm -rf /var/lib/apt/lists/*
+FROM gcr.io/distroless/cc-debian12 AS runtime
 
 COPY --from=builder  /build/target/release/batlehub /usr/local/bin/batlehub
-COPY --from=ui-builder /ui/dist                        /app/ui/dist
-
-RUN mkdir -p /var/cache/batlehub
+COPY --from=builder  /var/cache/batlehub             /var/cache/batlehub
+COPY --from=ui-builder /ui/dist                      /app/ui/dist
 
 EXPOSE 8080
 

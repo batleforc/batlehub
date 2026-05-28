@@ -28,7 +28,7 @@ pub struct BulkPackageRequest {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct BulkFailureDto {
+pub struct BulkPackageFailureDto {
     pub name: String,
     pub version: String,
     pub error: String,
@@ -38,7 +38,7 @@ pub struct BulkFailureDto {
 pub struct BulkPackageResponse {
     pub processed: usize,
     pub succeeded: usize,
-    pub failed: Vec<BulkFailureDto>,
+    pub failed: Vec<BulkPackageFailureDto>,
 }
 
 /// Bulk-yank versions in a local/hybrid registry (admin).
@@ -80,7 +80,7 @@ pub async fn bulk_yank(
         failed: result
             .failed
             .into_iter()
-            .map(|(name, version, error)| BulkFailureDto { name, version, error })
+            .map(|(name, version, error)| BulkPackageFailureDto { name, version, error })
             .collect(),
     }))
 }
@@ -124,7 +124,7 @@ pub async fn bulk_unyank(
         failed: result
             .failed
             .into_iter()
-            .map(|(name, version, error)| BulkFailureDto { name, version, error })
+            .map(|(name, version, error)| BulkPackageFailureDto { name, version, error })
             .collect(),
     }))
 }
@@ -168,7 +168,7 @@ pub async fn bulk_delete(
         failed: result
             .failed
             .into_iter()
-            .map(|(name, version, error)| BulkFailureDto { name, version, error })
+            .map(|(name, version, error)| BulkPackageFailureDto { name, version, error })
             .collect(),
     }))
 }
