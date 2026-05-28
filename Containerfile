@@ -33,7 +33,7 @@ RUN touch crates/*/src/lib.rs server/src/main.rs
 RUN cargo build --release -p batlehub-server
 
 # ── Frontend build stage ───────────────────────────────────────────────────────
-FROM node:24-slim AS ui-builder
+FROM node:26-slim@sha256:1e738cb88890a15c71880323fbc35a739b7bbc703d72e8bfd1613128f8182f78 AS ui-builder
 
 WORKDIR /ui
 COPY ui/package.json ui/package-lock.json ./
