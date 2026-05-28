@@ -14,12 +14,13 @@ import {
 // ── State ──────────────────────────────────────────────────────────────────────
 
 const pastedUrl = ref("");
-const registry  = ref<"npm" | "cargo" | "github">("github");
+const registry  = ref<"npm" | "cargo" | "github" | "composer">("github");
 
 // Registry name overrides (default to type name for backward compat)
-const githubRegistryName = ref("github");
-const npmRegistryName    = ref("npm");
-const cargoRegistryName  = ref("cargo");
+const githubRegistryName   = ref("github");
+const npmRegistryName      = ref("npm");
+const cargoRegistryName    = ref("cargo");
+const composerRegistryName = ref("composer");
 
 const { data: registries } = useApi<Array<{ name: string; type: string }>>(
   () => listRegistries() as Promise<{ data?: unknown; error?: unknown }>,
@@ -28,17 +29,20 @@ const { data: registries } = useApi<Array<{ name: string; type: string }>>(
 
 watch(registries, (regs) => {
   if (!regs) return;
-  const gh = regs.find(r => r.type === "github");
-  const np = regs.find(r => r.type === "npm");
-  const cg = regs.find(r => r.type === "cargo");
-  if (gh) githubRegistryName.value = gh.name;
-  if (np) npmRegistryName.value = np.name;
-  if (cg) cargoRegistryName.value = cg.name;
+  const gh  = regs.find(r => r.type === "github");
+  const np  = regs.find(r => r.type === "npm");
+  const cg  = regs.find(r => r.type === "cargo");
+  const cmp = regs.find(r => r.type === "composer");
+  if (gh)  githubRegistryName.value = gh.name;
+  if (np)  npmRegistryName.value = np.name;
+  if (cg)  cargoRegistryName.value = cg.name;
+  if (cmp) composerRegistryName.value = cmp.name;
 });
 
-const githubRegistries = computed(() => registries.value?.filter(r => r.type === "github") ?? []);
-const npmRegistries    = computed(() => registries.value?.filter(r => r.type === "npm") ?? []);
-const cargoRegistries  = computed(() => registries.value?.filter(r => r.type === "cargo") ?? []);
+const githubRegistries   = computed(() => registries.value?.filter(r => r.type === "github")   ?? []);
+const npmRegistries      = computed(() => registries.value?.filter(r => r.type === "npm")       ?? []);
+const cargoRegistries    = computed(() => registries.value?.filter(r => r.type === "cargo")     ?? []);
+const composerRegistries = computed(() => registries.value?.filter(r => r.type === "composer")  ?? []);
 
 // npm fields
 const npmPackage = ref("");
@@ -47,6 +51,11 @@ const npmVersion = ref("");
 // cargo fields
 const cargoName    = ref("");
 const cargoVersion = ref("");
+
+// composer fields
+const composerVendor  = ref("");
+const composerPackage = ref("");
+const composerVersion = ref("");
 
 // github fields
 const ghOwner      = ref("");
@@ -117,6 +126,17 @@ function parseUrl(raw: string) {
         if (parts[3] === "releases" && parts[4] === "tags") ghRef.value = parts[5] ?? "";
         if (parts[3] === "releases" && parts[4] === "assets") ghAssetId.value = parts[5] ?? "";
       }
+    } else if (u.hostname === "repo.packagist.org" || u.hostname === "packagist.org") {
+      registry.value = "composer";
+      if (parts[0] === "p2" && parts[1] && parts[2]) {
+        // repo.packagist.org/p2/vendor/package.json
+        composerVendor.value  = parts[1];
+        composerPackage.value = parts[2].replace(/\.json$/, "").replace(/~dev$/, "");
+      } else if (parts[0] === "packages" && parts[1] && parts[2]) {
+        // packagist.org/packages/vendor/package
+        composerVendor.value  = parts[1];
+        composerPackage.value = parts[2];
+      }
     }
   } catch {
     // not a valid URL — ignore silently
@@ -179,9 +199,26 @@ const githubPaths = computed<ProxyPath[]>(() => {
   ];
 });
 
+const composerPaths = computed<ProxyPath[]>(() => {
+  const reg    = composerRegistryName.value.trim() || "composer";
+  const vendor = composerVendor.value.trim();
+  const pkg    = composerPackage.value.trim();
+  const ver    = composerVersion.value.trim();
+  const hasName = !!vendor && !!pkg;
+  return [
+    { label: "Root index",             url: `/proxy/${reg}/packages.json`,                                       available: true },
+    { label: "Package metadata (p2)",  url: `/proxy/${reg}/p2/${vendor}/${pkg}.json`,                           available: hasName },
+    { label: "Dev metadata (~dev)",    url: `/proxy/${reg}/p2/${vendor}/${pkg}~dev.json`,                       available: hasName },
+    { label: "Dist download",          url: `/proxy/${reg}/dist/${vendor}/${pkg}/${ver}`,                       available: hasName && !!ver },
+    { label: "Upload endpoint (POST)", url: `/proxy/${reg}/api/upload`,                                         available: true },
+    { label: "Yank version (DELETE)",  url: `/proxy/${reg}/api/packages/${vendor}/${pkg}/versions/${ver}`,      available: hasName && !!ver },
+  ];
+});
+
 const activePaths = computed(() =>
-  registry.value === "npm"    ? npmPaths.value
-  : registry.value === "cargo" ? cargoPaths.value
+  registry.value === "npm"      ? npmPaths.value
+  : registry.value === "cargo"  ? cargoPaths.value
+  : registry.value === "composer" ? composerPaths.value
   : githubPaths.value
 );
 
@@ -226,7 +263,7 @@ function fullUrl(path: string) {
     <!-- Registry tabs (plain buttons) -->
     <div class="flex gap-1 rounded-lg border bg-muted p-1">
       <button
-        v-for="tab in (['github', 'npm', 'cargo'] as const)"
+        v-for="tab in (['github', 'npm', 'cargo', 'composer'] as const)"
         :key="tab"
         class="flex-1 rounded-md py-1.5 text-sm font-medium transition-colors"
         :class="registry === tab
@@ -234,7 +271,7 @@ function fullUrl(path: string) {
           : 'text-muted-foreground hover:text-foreground'"
         @click="registry = tab"
       >
-        {{ tab === 'github' ? 'GitHub' : tab === 'npm' ? 'npm' : 'Cargo' }}
+        {{ tab === 'github' ? 'GitHub' : tab === 'npm' ? 'npm' : tab === 'cargo' ? 'Cargo' : 'Composer' }}
       </button>
     </div>
 
@@ -299,7 +336,7 @@ function fullUrl(path: string) {
     </div>
 
     <!-- Cargo fields -->
-    <div v-else class="space-y-4">
+    <div v-else-if="registry === 'cargo'" class="space-y-4">
       <div class="space-y-1">
         <Label for="cargo-registry">Registry name</Label>
         <Input id="cargo-registry" v-model="cargoRegistryName" list="pm-cargo-list" placeholder="cargo" class="font-mono" />
@@ -317,6 +354,36 @@ function fullUrl(path: string) {
           <Input id="cargo-ver" v-model="cargoVersion" placeholder="1.0.197" class="font-mono" />
         </div>
       </div>
+    </div>
+
+    <!-- Composer fields -->
+    <div v-else class="space-y-4">
+      <div class="space-y-1">
+        <Label for="composer-registry">Registry name</Label>
+        <Input id="composer-registry" v-model="composerRegistryName" list="pm-composer-list" placeholder="composer" class="font-mono" />
+        <datalist id="pm-composer-list">
+          <option v-for="r in composerRegistries" :key="r.name" :value="r.name" />
+        </datalist>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div class="space-y-1">
+          <Label for="composer-vendor">Vendor</Label>
+          <Input id="composer-vendor" v-model="composerVendor" placeholder="symfony" class="font-mono" />
+        </div>
+        <div class="space-y-1">
+          <Label for="composer-pkg">Package</Label>
+          <Input id="composer-pkg" v-model="composerPackage" placeholder="console" class="font-mono" />
+        </div>
+      </div>
+      <div class="space-y-1">
+        <Label for="composer-ver">Version <span class="text-muted-foreground">(optional — for dist download and yank)</span></Label>
+        <Input id="composer-ver" v-model="composerVersion" placeholder="7.1.0" class="font-mono" />
+      </div>
+      <p class="text-xs text-muted-foreground">
+        Package names follow the <code class="font-mono bg-muted px-1 rounded">vendor/package</code> convention.
+        Paste a <code class="font-mono bg-muted px-1 rounded">packagist.org</code> or
+        <code class="font-mono bg-muted px-1 rounded">repo.packagist.org</code> URL above to auto-fill.
+      </p>
     </div>
 
     <!-- Results -->

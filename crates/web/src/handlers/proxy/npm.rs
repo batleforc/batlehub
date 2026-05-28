@@ -71,7 +71,7 @@ pub async fn get_packument(
 
     if map.is_type(&registry, "npm") && matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
         let url = base_url(&req);
-        match local_svc.get_npm_packument(&registry, &package, &url).await {
+        match local_svc.get_npm_packument(&registry, &package, &url, &identity).await {
             Ok(packument) => {
                 return Ok(HttpResponse::Ok().json(packument));
             }
@@ -123,7 +123,7 @@ pub async fn get_version(
 
     if map.is_type(&registry, "npm") && matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
         let url = base_url(&req);
-        match local_svc.get_npm_version(&registry, &package, &version, &url).await {
+        match local_svc.get_npm_version(&registry, &package, &version, &url, &identity).await {
             Ok(meta) => return Ok(HttpResponse::Ok().json(meta)),
             Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}
             Err(CoreError::NotFound(_)) => {
@@ -169,8 +169,12 @@ pub async fn download_tarball(
     let mode = mode_map.get(&registry);
 
     if matches!(mode, RegistryMode::Local) {
+        local_svc
+            .check_prerelease_access(&registry, &version, &identity)
+            .await
+            .map_err(AppError::from)?;
         let bytes = local_svc
-            .get_artifact(&registry, &package, &version)
+            .get_artifact(&registry, &package, &version, &identity)
             .await
             .map_err(AppError::from)?;
         return Ok(HttpResponse::Ok()
@@ -179,13 +183,19 @@ pub async fn download_tarball(
     }
 
     if matches!(mode, RegistryMode::Hybrid) {
-        match local_svc.get_artifact(&registry, &package, &version).await {
+        // Gate must be enforced before falling through to upstream: a non-member
+        // must not receive a pre-release artifact from the upstream registry.
+        local_svc
+            .check_prerelease_access(&registry, &version, &identity)
+            .await
+            .map_err(AppError::from)?;
+        match local_svc.get_artifact(&registry, &package, &version, &identity).await {
             Ok(bytes) => {
                 return Ok(HttpResponse::Ok()
                     .content_type("application/octet-stream")
                     .body(bytes));
             }
-            Err(CoreError::NotFound(_)) => {}
+            Err(CoreError::NotFound(_)) => {} // not found locally; fall through to upstream
             Err(e) => return Err(AppError::from(e)),
         }
     }

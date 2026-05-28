@@ -7,6 +7,7 @@ use futures::StreamExt;
 use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
     entities::PackageId,
+    error::CoreError,
     services::{LocalRegistryService, ProxyRequest, ProxyResponse, ProxyService},
 };
 
@@ -51,10 +52,20 @@ pub async fn append_signature_headers(
 }
 
 /// Drain an actix streaming body into a contiguous `Bytes` buffer.
+///
+/// Rejects the upload if the accumulated size exceeds `max_bytes` (default 500 MiB)
+/// to prevent OOM from unbounded uploads before the service-layer size check fires.
 pub async fn collect_payload(mut payload: web::Payload) -> Result<Bytes, AppError> {
+    const MAX_BYTES: u64 = 500 * 1024 * 1024;
     let mut raw = BytesMut::new();
     while let Some(chunk) = payload.next().await {
-        raw.extend_from_slice(&chunk.map_err(|e| AppError::bad_request(e.to_string()))?);
+        let chunk = chunk.map_err(|e| AppError::bad_request(e.to_string()))?;
+        if raw.len() as u64 + chunk.len() as u64 > MAX_BYTES {
+            return Err(AppError::from(CoreError::PayloadTooLarge(format!(
+                "upload exceeds the {MAX_BYTES}-byte limit"
+            ))));
+        }
+        raw.extend_from_slice(&chunk);
     }
     Ok(raw.freeze())
 }

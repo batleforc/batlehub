@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { RouterView, RouterLink, useRoute, useRouter } from "vue-router";
-import { Menu, X, Package, ShieldCheck, BookOpen } from "@lucide/vue";
+import { Menu, X, Package, ShieldCheck, BookOpen, FolderKey } from "@lucide/vue";
 import { useAuth } from "@/composables/useAuth";
 import { DOCS_URL } from "@/config";
 import { Badge } from "@/components/ui/badge";
@@ -17,6 +17,7 @@ const mobileOpen = ref(false);
 const isOidcUser = computed(
   () => isAuthenticated.value && !!identity.value?.auth_provider
 );
+
 
 const userLinks = [
   { to: "/packages", label: "Packages" },
@@ -98,6 +99,21 @@ function isActive(to: string) {
             ]"
           >
             My Profile
+          </RouterLink>
+
+          <!-- My Namespace link for team members -->
+          <RouterLink
+            v-if="isAuthenticated"
+            to="/my-namespace"
+            :class="[
+              'flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors hover:bg-accent hover:text-accent-foreground',
+              isActive('/my-namespace')
+                ? 'bg-accent text-accent-foreground font-medium'
+                : 'text-muted-foreground',
+            ]"
+          >
+            <FolderKey class="h-3.5 w-3.5" />
+            My Namespace
           </RouterLink>
         </nav>
 
@@ -213,6 +229,20 @@ function isActive(to: string) {
           @click="mobileOpen = false"
         >
           My Profile
+        </RouterLink>
+        <RouterLink
+          v-if="isAuthenticated"
+          to="/my-namespace"
+          :class="[
+            'flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors',
+            isActive('/my-namespace')
+              ? 'bg-accent text-accent-foreground font-medium'
+              : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+          ]"
+          @click="mobileOpen = false"
+        >
+          <FolderKey class="h-4 w-4" />
+          My Namespace
         </RouterLink>
         <RouterLink
           v-if="isAdmin"

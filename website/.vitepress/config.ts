@@ -35,6 +35,11 @@ export default defineConfig({
         activeMatch: "/guide/config-generator",
       },
       {
+        text: "Access Control",
+        link: "/guide/access-control",
+        activeMatch: "/guide/access-control",
+      },
+      {
         text: "Roadmap",
         link: "/guide/roadmap",
         activeMatch: "/guide/roadmap",
@@ -95,6 +100,9 @@ export default defineConfig({
               link: "/guide/administration#package-management",
             },
             { text: "Audit log", link: "/guide/administration#audit-log" },
+            { text: "Beta channel", link: "/guide/administration#beta-channel" },
+            { text: "IP blocking", link: "/guide/administration#ip-blocking" },
+            { text: "Team namespaces", link: "/guide/administration#team-namespaces" },
             { text: "Rules", link: "/guide/administration#rules" },
           ],
         },
@@ -138,11 +146,62 @@ export default defineConfig({
           ],
         },
       ],
-      "/guide/config-generator": [
+      "/guide/access-control": [
         {
-          text: "Config Generator",
+          text: "Access Control",
           items: [
-            { text: "Generate config.toml", link: "/guide/config-generator" },
+            {
+              text: "Beta/Pre-Release Channel",
+              link: "/guide/access-control#beta-channel",
+            },
+            {
+              text: "How it works",
+              link: "/guide/access-control#beta-how-it-works",
+            },
+            {
+              text: "Configuration",
+              link: "/guide/access-control#beta-config",
+            },
+            {
+              text: "Managing members",
+              link: "/guide/access-control#beta-members",
+            },
+            {
+              text: "Registry support",
+              link: "/guide/access-control#beta-registries",
+            },
+            {
+              text: "IP-Based Blocking",
+              link: "/guide/access-control#ip-blocking",
+            },
+            {
+              text: "Configuration",
+              link: "/guide/access-control#ip-config",
+            },
+            {
+              text: "Manual block management",
+              link: "/guide/access-control#ip-admin",
+            },
+            {
+              text: "Storage backends",
+              link: "/guide/access-control#ip-storage",
+            },
+            {
+              text: "Team Namespaces & Visibility",
+              link: "/guide/access-control#team-namespaces",
+            },
+            {
+              text: "Namespace claims",
+              link: "/guide/access-control#ns-claims",
+            },
+            {
+              text: "Package visibility",
+              link: "/guide/access-control#ns-visibility",
+            },
+            {
+              text: "Registry support",
+              link: "/guide/access-control#ns-registries",
+            },
           ],
         },
       ],

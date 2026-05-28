@@ -41,6 +41,12 @@ features:
   - icon: 🔥
     title: Cache Warming & Eviction
     details: Pre-fetch packages at startup to eliminate cold-start latency. Evict by TTL, idle time, version count, or storage size cap — mix and match per registry.
+  - icon: 🧪
+    title: Beta/Pre-Release Channel
+    details: Gate pre-release versions (e.g. 1.0.0-beta.1) to approved users or groups. Non-members see only stable versions — no separate publish step needed.
+  - icon: 🚫
+    title: IP-Based Blocking
+    details: Fail2ban-style auto-blocking. IPs that exceed a violation threshold (rate-limit hits, auth failures) are blocked automatically. Manual ban/unban via admin API.
   - icon: 🗄️
     title: Storage Deduplication
     details: Identical artifact bytes are stored once, regardless of how many registries or package names reference them. Ref-counted and backwards-compatible.
@@ -48,7 +54,7 @@ features:
 
 ## Supported registries
 
-BatleHub proxies six registry types. Every registry type can run as a pure cache (proxy mode), a fully private registry (local mode), or a hybrid of both.
+BatleHub proxies ten registry types. Every registry type can run as a pure cache (proxy mode), a fully private registry (local mode), or a hybrid of both.
 
 | Registry | Protocol | Default upstream |
 |----------|----------|-----------------|
@@ -58,14 +64,18 @@ BatleHub proxies six registry types. Every registry type can run as a pure cache
 | **OpenVSX** | VS Code extension VSIX | `open-vsx.org` |
 | **VS Code Marketplace** | VS Code extension VSIX via Microsoft Gallery API | `marketplace.visualstudio.com` |
 | **Go** | GOPROXY protocol (`.info`, `.mod`, `.zip`) | `proxy.golang.org` |
+| **Maven** | Maven Central-compatible metadata XML + JAR / POM downloads | `repo1.maven.org` |
+| **Terraform** | Provider and module proxy protocol (v1 API) | `registry.terraform.io` |
+| **RubyGems** | Gem downloads, version listing, REST info API | `rubygems.org` |
+| **Composer** | Packagist v2 protocol (`packages.json`, p2 metadata, dist downloads) | `repo.packagist.org` |
 
-| Feature | GitHub | npm | Cargo | OpenVSX | VS Code | Go |
-|---------|:------:|:---:|:-----:|:-------:|:-------:|:--:|
-| Version listing | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Source archive | ✓ | ✓ | ✓ | — | — | ✓ |
-| Binary / extension | ✓ | — | — | ✓ | ✓ | — |
-| **Private publish** | — | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Multi-upstream fanout | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Release age gate | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| RBAC | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Cache warming (version enumeration) | — | ✓ | ✓ | ✓ | — | ✓ |
+| Feature | GitHub | npm | Cargo | OpenVSX | VS Code | Go | Maven | Terraform | RubyGems | Composer |
+|---------|:------:|:---:|:-----:|:-------:|:-------:|:--:|:-----:|:---------:|:--------:|:--------:|
+| Version listing | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Source archive | ✓ | ✓ | ✓ | — | — | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Binary / extension | ✓ | — | — | ✓ | ✓ | — | ✓ | ✓ | — | — |
+| **Private publish** | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Multi-upstream fanout | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Release age gate | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| RBAC | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Cache warming (version enumeration) | — | ✓ | ✓ | ✓ | — | ✓ | — | — | — | — |

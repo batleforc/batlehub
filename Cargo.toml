@@ -5,6 +5,7 @@ members = [
     "crates/config",
     "crates/adapters",
     "crates/web",
+    "crates/examples",
     "server",
 ]
 
@@ -83,9 +84,13 @@ regex = "1"
 semver = "1"
 base64 = "0.22"
 quick-xml = "0.36"
+argon2 = { version = "0.5", features = ["std"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+
+# Testing utilities
+tempfile = "3"
 
 # AWS S3 (optional, for storage-s3 feature)
 # default-features = false to avoid legacy-rustls-ring (hyper 0.14 / rustls 0.21 / rustls-webpki 0.101)

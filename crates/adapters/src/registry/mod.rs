@@ -48,3 +48,8 @@ pub use terraform::TerraformRegistryClient;
 pub mod rubygems;
 #[cfg(feature = "registry-rubygems")]
 pub use rubygems::RubyGemsRegistryClient;
+
+#[cfg(feature = "registry-composer")]
+pub mod composer;
+#[cfg(feature = "registry-composer")]
+pub use composer::ComposerRegistryClient;

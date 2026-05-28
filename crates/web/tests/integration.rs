@@ -21,11 +21,18 @@ use bytes::Bytes;
 use chrono::Utc;
 use futures::stream;
 use serde_json::Value;
-use uuid::Uuid;
 
 use base64::Engine as _;
 use batlehub_adapters::auth::StaticTokenAuthProvider;
 use batlehub_adapters::cache::InMemoryCacheStore;
+use batlehub_adapters::in_memory::{
+    InMemoryPackageRepository as InMemoryRepo,
+    InMemoryStorageBackend as InMemoryStorage,
+    NoopArtifactMetaRepository as NoopArtifactMeta,
+    NullUserTokenRepository as NullTokenRepository,
+};
+use batlehub_adapters::local_registry::InMemoryLocalRegistry;
+use uuid::Uuid;
 use batlehub_core::{
     entities::{
         AccessEvent, EventFilter, PackageFilter, PackageId, PackageMetadata, PackageStatus,
@@ -40,219 +47,13 @@ use batlehub_core::{
     rules::{BlockListRule, RbacRule},
     services::{AdminService, LocalRegistryService, ProxyMetrics, ProxyService, RegistryPolicy},
 };
-use batlehub_adapters::rate_limit::InMemoryRateLimitStore;
+use batlehub_adapters::rate_limit::{InMemoryIpBlockStore, InMemoryRateLimitStore};
 use batlehub_config::schema::{GroupRateLimitConfig, RateLimitConfig, RateLimitEnforcement, RegistryMode};
+use batlehub_core::entities::Identity;
+use batlehub_core::ports::{BetaChannelEntry, BetaChannelPort, IpBlockStore, TeamNamespacePort};
+use batlehub_core::entities::{NamespacePackage, TeamNamespace, Visibility};
 use batlehub_web::{configure_app, healthz, prometheus_metrics, AuthMiddlewareFactory, RateLimitMiddlewareFactory, RateLimitService, RegistryModeMap};
 use metrics_exporter_prometheus::PrometheusBuilder;
-
-// ── In-memory PackageRepository ────────────────────────────────────────────────
-
-struct InMemoryRepo {
-    summaries: Mutex<HashMap<String, PackageSummary>>,
-    events: Mutex<Vec<AccessEvent>>,
-}
-
-impl InMemoryRepo {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            summaries: Mutex::new(HashMap::new()),
-            events: Mutex::new(Vec::new()),
-        })
-    }
-}
-
-#[async_trait]
-impl PackageRepository for InMemoryRepo {
-    async fn record_access(&self, event: AccessEvent) -> Result<(), CoreError> {
-        let key = event.package_id.cache_key();
-        let mut sums = self.summaries.lock().unwrap();
-        let entry = sums.entry(key).or_insert_with(|| PackageSummary {
-            id: Uuid::new_v4(),
-            package_id: event.package_id.clone(),
-            status: PackageStatus::Available,
-            last_accessed: None,
-            last_accessed_by: None,
-            access_count: 0,
-        });
-        entry.access_count += 1;
-        entry.last_accessed = Some(event.timestamp);
-        self.events.lock().unwrap().push(event);
-        Ok(())
-    }
-
-    async fn get_status(&self, pkg: &PackageId) -> Result<PackageStatus, CoreError> {
-        Ok(self
-            .summaries
-            .lock()
-            .unwrap()
-            .get(&pkg.cache_key())
-            .map(|s| s.status.clone())
-            .unwrap_or(PackageStatus::Available))
-    }
-
-    async fn set_status(&self, pkg: &PackageId, status: PackageStatus) -> Result<(), CoreError> {
-        let mut sums = self.summaries.lock().unwrap();
-        let entry = sums.entry(pkg.cache_key()).or_insert_with(|| PackageSummary {
-            id: Uuid::new_v4(),
-            package_id: pkg.clone(),
-            status: PackageStatus::Available,
-            last_accessed: None,
-            last_accessed_by: None,
-            access_count: 0,
-        });
-        entry.status = status;
-        Ok(())
-    }
-
-    async fn list_packages(&self, filter: PackageFilter) -> Result<Vec<PackageSummary>, CoreError> {
-        let sums = self.summaries.lock().unwrap();
-        let mut items: Vec<PackageSummary> = sums
-            .values()
-            .filter(|s| {
-                if let Some(r) = &filter.registry {
-                    if &s.package_id.registry != r {
-                        return false;
-                    }
-                }
-                if let Some(n) = &filter.name_contains {
-                    if !s.package_id.name.contains(n.as_str()) {
-                        return false;
-                    }
-                }
-                if filter.blocked_only && !s.status.is_blocked() {
-                    return false;
-                }
-                true
-            })
-            .cloned()
-            .collect();
-        items.sort_by_key(|s| s.package_id.cache_key());
-        let items = items
-            .into_iter()
-            .skip(filter.offset as usize)
-            .take(filter.limit as usize)
-            .collect();
-        Ok(items)
-    }
-
-    async fn count_packages(&self, filter: PackageFilter) -> Result<u64, CoreError> {
-        let sums = self.summaries.lock().unwrap();
-        let count = sums.values().filter(|s| {
-            if let Some(r) = &filter.registry { if &s.package_id.registry != r { return false; } }
-            if !filter.registries.is_empty() && !filter.registries.contains(&s.package_id.registry) { return false; }
-            if let Some(n) = &filter.name_contains { if !s.package_id.name.contains(n.as_str()) { return false; } }
-            if filter.blocked_only && !s.status.is_blocked() { return false; }
-            true
-        }).count();
-        Ok(count as u64)
-    }
-
-    async fn list_events(&self, filter: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
-        let events = self.events.lock().unwrap();
-        let items = events
-            .iter()
-            .filter(|e| {
-                if let Some(r) = &filter.registry {
-                    if &e.package_id.registry != r {
-                        return false;
-                    }
-                }
-                if let Some(uid) = &filter.user_id {
-                    if e.user_id.as_deref() != Some(uid.as_str()) {
-                        return false;
-                    }
-                }
-                if filter.denied_only && !e.result.is_denied() {
-                    return false;
-                }
-                true
-            })
-            .cloned()
-            .skip(filter.offset as usize)
-            .take(filter.limit as usize)
-            .collect();
-        Ok(items)
-    }
-}
-
-// ── In-memory StorageBackend ──────────────────────────────────────────────────
-
-struct InMemoryStorage {
-    data: Mutex<HashMap<String, (Bytes, StorageMeta)>>,
-}
-
-impl InMemoryStorage {
-    fn new() -> Arc<Self> {
-        Arc::new(Self { data: Mutex::new(HashMap::new()) })
-    }
-}
-
-#[async_trait]
-impl StorageBackend for InMemoryStorage {
-    async fn store(&self, key: &str, data: Bytes, meta: StorageMeta) -> Result<(), CoreError> {
-        self.data.lock().unwrap().insert(key.to_owned(), (data, meta));
-        Ok(())
-    }
-
-    async fn retrieve(&self, key: &str) -> Result<Option<StoredArtifact>, CoreError> {
-        let lock = self.data.lock().unwrap();
-        Ok(lock.get(key).map(|(data, meta)| {
-            let bytes = data.clone();
-            let stream: ByteStream =
-                Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(bytes) }));
-            StoredArtifact { stream, meta: meta.clone() }
-        }))
-    }
-
-    async fn exists(&self, key: &str) -> Result<bool, CoreError> {
-        Ok(self.data.lock().unwrap().contains_key(key))
-    }
-
-    async fn delete(&self, key: &str) -> Result<(), CoreError> {
-        self.data.lock().unwrap().remove(key);
-        Ok(())
-    }
-    async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError> {
-        let mut map = self.data.lock().unwrap();
-        let keys: Vec<String> = map.keys().filter(|k| k.starts_with(prefix)).cloned().collect();
-        let count = keys.len();
-        for k in keys { map.remove(&k); }
-        Ok(count)
-    }
-    async fn stat_by_prefix(&self, prefix: &str) -> Result<(u64, u64), CoreError> {
-        let map = self.data.lock().unwrap();
-        let (count, bytes) = map.iter()
-            .filter(|(k, _)| k.starts_with(prefix))
-            .fold((0u64, 0u64), |(c, b), (_, (data, meta))| {
-                (c + 1, b + meta.size.unwrap_or(data.len() as u64))
-            });
-        Ok((count, bytes))
-    }
-    async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, CoreError> {
-        let map = self.data.lock().unwrap();
-        Ok(map.keys().filter(|k| k.starts_with(prefix)).cloned().collect())
-    }
-}
-
-// ── No-op ArtifactMetaRepository for tests ───────────────────────────────────
-
-struct NoopArtifactMeta;
-impl NoopArtifactMeta {
-    fn arc() -> Arc<dyn ArtifactMetaRepository> { Arc::new(Self) }
-}
-#[async_trait]
-impl ArtifactMetaRepository for NoopArtifactMeta {
-    async fn record_artifact(&self, _: &str, _: &str, _: &str, _: &str, _: Option<u64>) -> Result<(), CoreError> { Ok(()) }
-    async fn touch_artifact(&self, _: &str) -> Result<(), CoreError> { Ok(()) }
-    async fn list_artifacts(&self, _: &str) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
-    async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
-    async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> { Ok(()) }
-    async fn is_artifact_expired(&self, _: &str, _: chrono::DateTime<chrono::Utc>) -> Result<bool, CoreError> { Ok(false) }
-    async fn list_expired_by_ttl(&self, _: &str, _: chrono::DateTime<chrono::Utc>) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
-    async fn list_idle(&self, _: &str, _: chrono::DateTime<chrono::Utc>) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
-    async fn total_size_bytes(&self, _: &str) -> Result<u64, CoreError> { Ok(0) }
-    async fn list_lru(&self, _: &str, _: i64) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
-}
 
 // ── Fixed (deterministic) RegistryClient ─────────────────────────────────────
 
@@ -314,112 +115,17 @@ fn test_auth_providers() -> Vec<Arc<dyn AuthProvider>> {
     ]))]
 }
 
-struct NullTokenRepository;
-
-#[async_trait]
-impl UserTokenRepository for NullTokenRepository {
-    async fn create_token(
-        &self,
-        _id: uuid::Uuid,
-        _user_id: &str,
-        _name: &str,
-        _token_hash: &str,
-        _role: Role,
-        _expires_at: chrono::DateTime<chrono::Utc>,
-    ) -> Result<UserToken, CoreError> {
-        Err(CoreError::Database("not implemented".into()))
-    }
-    async fn find_by_hash(&self, _token_hash: &str) -> Result<Option<UserToken>, CoreError> {
-        Ok(None)
-    }
-    async fn list_for_user(&self, _user_id: &str) -> Result<Vec<UserToken>, CoreError> {
-        Ok(vec![])
-    }
-    async fn revoke(&self, _id: uuid::Uuid, _user_id: &str) -> Result<bool, CoreError> {
-        Ok(false)
-    }
-}
-
-// ── In-memory LocalRegistryBackend ───────────────────────────────────────────
-
-struct InMemoryLocalRegistry {
-    packages: Mutex<HashMap<String, Vec<PublishedPackage>>>,
-}
-
-impl InMemoryLocalRegistry {
-    fn new() -> Arc<Self> {
-        Arc::new(Self { packages: Mutex::new(HashMap::new()) })
-    }
-}
-
-#[async_trait]
-impl LocalRegistryBackend for InMemoryLocalRegistry {
-    async fn publish(&self, pkg: PublishedPackage) -> Result<(), CoreError> {
-        let key = format!("{}:{}", pkg.registry, pkg.name);
-        let mut map = self.packages.lock().unwrap();
-        let versions = map.entry(key).or_default();
-        if versions.iter().any(|v| v.version == pkg.version) {
-            return Err(CoreError::Conflict(format!(
-                "{}@{} already published",
-                pkg.name, pkg.version
-            )));
-        }
-        versions.push(pkg);
-        Ok(())
-    }
-
-    async fn yank(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError> {
-        let key = format!("{registry}:{name}");
-        let mut map = self.packages.lock().unwrap();
-        if let Some(versions) = map.get_mut(&key) {
-            for v in versions.iter_mut() {
-                if v.version == version {
-                    v.yanked = true;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn unyank(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError> {
-        let key = format!("{registry}:{name}");
-        let mut map = self.packages.lock().unwrap();
-        if let Some(versions) = map.get_mut(&key) {
-            for v in versions.iter_mut() {
-                if v.version == version {
-                    v.yanked = false;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn get_versions(
-        &self,
-        registry: &str,
-        name: &str,
-    ) -> Result<Vec<PublishedPackage>, CoreError> {
-        let key = format!("{registry}:{name}");
-        let map = self.packages.lock().unwrap();
-        Ok(map.get(&key).cloned().unwrap_or_default())
-    }
-
-    async fn exists(&self, registry: &str, name: &str) -> Result<bool, CoreError> {
-        let key = format!("{registry}:{name}");
-        let map = self.packages.lock().unwrap();
-        Ok(map.contains_key(&key))
-    }
-}
-
 fn make_local_svc(storage: Arc<dyn StorageBackend>) -> Arc<LocalRegistryService> {
     Arc::new(LocalRegistryService {
-        backend: InMemoryLocalRegistry::new(),
+        backend: Arc::new(InMemoryLocalRegistry::new()),
         storage,
         max_artifact_bytes: None,
         quota: None,
         ownership: None,
         versioning: std::collections::HashMap::new(),
         signing: std::collections::HashMap::new(),
+        beta_channel: std::collections::HashMap::new(),
+        team_namespace: None,
     })
 }
 
@@ -594,6 +300,187 @@ async fn make_app_ext(
         app.wrap(AuthMiddlewareFactory::new(test_auth_providers())),
     )
     .await
+}
+
+// ── In-memory BetaChannelPort ─────────────────────────────────────────────────
+
+#[derive(Default)]
+struct InMemoryBetaChannelStore {
+    entries: Mutex<Vec<(String, String, String, Option<String>)>>, // (registry, type, id, granted_by)
+}
+
+impl InMemoryBetaChannelStore {
+    fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+}
+
+#[async_trait]
+impl BetaChannelPort for InMemoryBetaChannelStore {
+    async fn is_member(&self, registry: &str, identity: &Identity) -> Result<bool, CoreError> {
+        let Some(user_id) = identity.user_id.as_deref() else { return Ok(false) };
+        let guard = self.entries.lock().unwrap();
+        Ok(guard.iter().any(|(r, t, id, _)| r == registry && t == "user" && id == user_id))
+    }
+
+    async fn add_member(&self, registry: &str, entry: BetaChannelEntry) -> Result<(), CoreError> {
+        self.entries.lock().unwrap().push((
+            registry.to_owned(),
+            entry.principal_type,
+            entry.principal_id,
+            entry.granted_by,
+        ));
+        Ok(())
+    }
+
+    async fn remove_member(
+        &self,
+        registry: &str,
+        principal_type: &str,
+        principal_id: &str,
+    ) -> Result<(), CoreError> {
+        self.entries.lock().unwrap().retain(|(r, t, id, _)| {
+            !(r == registry && t == principal_type && id == principal_id)
+        });
+        Ok(())
+    }
+
+    async fn list_members(&self, registry: &str) -> Result<Vec<BetaChannelEntry>, CoreError> {
+        let guard = self.entries.lock().unwrap();
+        Ok(guard
+            .iter()
+            .filter(|(r, _, _, _)| r == registry)
+            .map(|(_, t, id, gb)| BetaChannelEntry {
+                principal_type: t.clone(),
+                principal_id: id.clone(),
+                granted_by: gb.clone(),
+            })
+            .collect())
+    }
+}
+
+// ── App factories for back-office stores ──────────────────────────────────────
+
+async fn make_app_with_ip_store(
+    ip_store: Arc<dyn IpBlockStore>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo = InMemoryRepo::new();
+    let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
+    let policies: HashMap<String, RegistryPolicy> = HashMap::new();
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        registries,
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        policies,
+        max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = batlehub_web::AccessConfig {
+        anonymous: std::collections::HashSet::new(),
+        user: std::collections::HashSet::new(),
+        admin: std::collections::HashSet::new(),
+        groups: std::collections::HashMap::new(),
+    };
+    let registry_map = batlehub_web::RegistryMap(std::collections::HashMap::new());
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
+        .split_for_parts();
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(RegistryModeMap::default()))
+        .app_data(actix_web::web::Data::new(ip_store));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+}
+
+async fn make_app_with_beta_store(
+    beta_store: Arc<dyn BetaChannelPort>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo = InMemoryRepo::new();
+    let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
+    let policies: HashMap<String, RegistryPolicy> = HashMap::new();
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        registries,
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        policies,
+        max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = batlehub_web::AccessConfig {
+        anonymous: std::collections::HashSet::new(),
+        user: std::collections::HashSet::new(),
+        admin: std::collections::HashSet::new(),
+        groups: std::collections::HashMap::new(),
+    };
+    let registry_map = batlehub_web::RegistryMap(std::collections::HashMap::new());
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
+        .split_for_parts();
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(RegistryModeMap::default()))
+        .app_data(actix_web::web::Data::new(beta_store));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
 }
 
 // ── Rate-limited app factory ──────────────────────────────────────────────────
@@ -5655,4 +5542,2548 @@ async fn terraform_provider_upload_returns_quota_headers() {
         .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 201);
+}
+
+// ── PHP Composer registry ─────────────────────────────────────────────────────
+
+async fn make_local_composer_app(
+    mode: RegistryMode,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
+        "local-composer".to_owned(),
+        FixedRegistry::new("composer") as Arc<dyn RegistryClient>,
+    )]
+    .into();
+    let policies: HashMap<String, RegistryPolicy> =
+        [("local-composer".to_owned(), rbac_policy(repo_dyn.clone()))].into();
+
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        registries,
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        policies,
+        max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = batlehub_web::AccessConfig {
+        anonymous: [].iter().map(|s: &&str| s.to_string()).collect(),
+        user: ["local-composer"].iter().map(|s| s.to_string()).collect(),
+        admin: ["local-composer"].iter().map(|s| s.to_string()).collect(),
+        groups: std::collections::HashMap::new(),
+    };
+    let registry_map = batlehub_web::RegistryMap(
+        [("local-composer", "composer")]
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.to_string()))
+            .collect(),
+    );
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+    let mut mode_map = RegistryModeMap::default();
+    mode_map.0.insert("local-composer".to_owned(), mode);
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
+        .split_for_parts();
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(mode_map));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+}
+
+fn make_composer_zip(name: &str, version: &str) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut buf);
+        let opts = zip::write::SimpleFileOptions::default();
+        writer.start_file("composer.json", opts).unwrap();
+        let json = serde_json::json!({
+            "name": name,
+            "version": version,
+            "description": "Test package",
+            "type": "library",
+        });
+        writer.write_all(json.to_string().as_bytes()).unwrap();
+        writer.finish().unwrap();
+    }
+    buf.into_inner()
+}
+
+// ── packages.json ─────────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn composer_packages_json_proxy_mode_returns_metadata_url() {
+    let app = make_local_composer_app(RegistryMode::Proxy).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/packages.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let metadata_url = body["metadata-url"].as_str().unwrap();
+    assert!(
+        metadata_url.contains("/proxy/local-composer/p2/%package%.json"),
+        "metadata-url must point to our p2 endpoint"
+    );
+    assert_eq!(body["available-packages"], serde_json::json!([]));
+}
+
+#[actix_web::test]
+async fn composer_packages_json_local_mode_lists_published_packages() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+
+    // Publish a package first so it appears in the listing.
+    let zip = make_composer_zip("acme/my-pkg", "1.0.0");
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/packages.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let available = body["available-packages"].as_array().unwrap();
+    assert!(
+        available.iter().any(|v| v.as_str() == Some("acme/my-pkg")),
+        "available-packages must list published package name"
+    );
+}
+
+#[actix_web::test]
+async fn composer_packages_json_unknown_registry_returns_404() {
+    let app = make_local_composer_app(RegistryMode::Proxy).await;
+    let req = TestRequest::get()
+        .uri("/proxy/no-such-registry/packages.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+// ── p2 metadata ───────────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn composer_p2_proxy_mode_returns_artifact_body() {
+    let app = make_local_composer_app(RegistryMode::Proxy).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/p2/vendor/pkg.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body = read_body(resp).await;
+    // FixedRegistry returns "artifact:composer:…" — assert content originates from the registry call
+    let body_str = std::str::from_utf8(&body).expect("body is valid UTF-8");
+    assert!(
+        body_str.contains("vendor/pkg"),
+        "response body must reference the requested package name; got: {body_str:?}"
+    );
+}
+
+#[actix_web::test]
+async fn composer_p2_dev_variant_returns_200_and_body() {
+    let app = make_local_composer_app(RegistryMode::Proxy).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/p2/vendor/pkg~dev.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    // ~dev.json is a valid variant — the parse helper strips the suffix.
+    assert_eq!(resp.status(), 200);
+    let body = read_body(resp).await;
+    let body_str = std::str::from_utf8(&body).expect("body is valid UTF-8");
+    assert!(
+        body_str.contains("vendor/pkg"),
+        "response body must reference the requested package name; got: {body_str:?}"
+    );
+}
+
+#[actix_web::test]
+async fn composer_p2_local_mode_published_package_found() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+
+    let zip = make_composer_zip("acme/my-lib", "2.0.0");
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip)
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/p2/acme/my-lib.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert!(body["packages"]["acme/my-lib"].is_array());
+}
+
+#[actix_web::test]
+async fn composer_p2_local_mode_unknown_package_returns_404() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/p2/ghost/pkg.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn composer_p2_hybrid_mode_falls_back_to_proxy() {
+    // In hybrid mode with no local packages the request falls back to FixedRegistry.
+    let app = make_local_composer_app(RegistryMode::Hybrid).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/p2/vendor/remote-pkg.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+// ── dist artifact ─────────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn composer_dist_proxy_mode_streams_artifact() {
+    let app = make_local_composer_app(RegistryMode::Proxy).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/dist/vendor/pkg/1.0.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn composer_dist_local_mode_serves_stored_artifact() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+
+    let zip = make_composer_zip("acme/zippkg", "3.1.0");
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip.clone())
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/dist/acme/zippkg/3.1.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body = read_body(resp).await;
+    assert_eq!(body.as_ref(), zip.as_slice());
+}
+
+#[actix_web::test]
+async fn composer_dist_local_mode_unknown_version_returns_404() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/dist/ghost/pkg/9.9.9")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn composer_dist_hybrid_falls_back_to_proxy() {
+    let app = make_local_composer_app(RegistryMode::Hybrid).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/dist/vendor/remote/1.0.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+// ── upload ────────────────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn composer_upload_user_can_publish() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+    let zip = make_composer_zip("myvendor/mypkg", "1.0.0");
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["status"], "success");
+    assert_eq!(body["name"], "myvendor/mypkg");
+    assert_eq!(body["version"], "1.0.0");
+}
+
+#[actix_web::test]
+async fn composer_upload_version_override_via_query_param() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+    // ZIP has version "1.0.0" in composer.json but we override to "2.5.0".
+    let zip = make_composer_zip("myvendor/override-pkg", "1.0.0");
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload?version=2.5.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["version"], "2.5.0");
+}
+
+#[actix_web::test]
+async fn composer_upload_anonymous_returns_403() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+    let zip = make_composer_zip("myvendor/anon-pkg", "1.0.0");
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        // No Authorization header — anonymous identity.
+        .set_payload(zip)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn composer_upload_proxy_mode_returns_404() {
+    let app = make_local_composer_app(RegistryMode::Proxy).await;
+    let zip = make_composer_zip("myvendor/proxy-pkg", "1.0.0");
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn composer_upload_duplicate_version_returns_409() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+    let zip = make_composer_zip("myvendor/dup-pkg", "1.0.0");
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip.clone())
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 409);
+}
+
+#[actix_web::test]
+async fn composer_upload_invalid_zip_returns_422() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(b"this is not a zip file".as_slice())
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 422);
+}
+
+#[actix_web::test]
+async fn composer_upload_then_p2_shows_package() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+
+    let zip = make_composer_zip("acme/seq-pkg", "1.2.3");
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip)
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/p2/acme/seq-pkg.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let versions = body["packages"]["acme/seq-pkg"].as_array().unwrap();
+    assert!(!versions.is_empty());
+    assert_eq!(versions[0]["version"], "1.2.3");
+    assert!(versions[0]["dist"]["url"]
+        .as_str()
+        .unwrap()
+        .contains("/proxy/local-composer/dist/acme/seq-pkg/1.2.3"));
+}
+
+// ── yank ──────────────────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn composer_yank_excludes_version_from_p2() {
+    // Yanked versions are removed from the Packagist v2 response because Composer
+    // clients have no standard `yanked` field — they would otherwise install yanked releases.
+    let app = make_local_composer_app(RegistryMode::Local).await;
+
+    let zip = make_composer_zip("acme/yankable", "4.0.0");
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip)
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    // Verify the version appears before yanking.
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/p2/acme/yankable.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert!(!body["packages"]["acme/yankable"].as_array().unwrap().is_empty());
+
+    let req = TestRequest::delete()
+        .uri("/proxy/local-composer/api/packages/acme/yankable/versions/4.0.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    // After yanking the only version, the p2 endpoint should return 404.
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/p2/acme/yankable.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn composer_yank_anonymous_returns_403() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+    let req = TestRequest::delete()
+        .uri("/proxy/local-composer/api/packages/acme/anon-pkg/versions/1.0.0")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn composer_yank_proxy_mode_returns_404() {
+    let app = make_local_composer_app(RegistryMode::Proxy).await;
+    let req = TestRequest::delete()
+        .uri("/proxy/local-composer/api/packages/acme/proxy-pkg/versions/1.0.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+// ── misc ──────────────────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn composer_wrong_registry_type_returns_404() {
+    // "npm" registry exists but is type "npm", not "composer".
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/npm/packages.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+// ── /api/v1/admin/ip-blocks ───────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn ip_blocks_list_empty_returns_200_with_empty_array() {
+    let store: Arc<dyn IpBlockStore> = Arc::new(InMemoryIpBlockStore::new());
+    let app = make_app_with_ip_store(store).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/ip-blocks")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body, serde_json::json!([]));
+}
+
+#[actix_web::test]
+async fn ip_blocks_block_ip_returns_204() {
+    let store: Arc<dyn IpBlockStore> = Arc::new(InMemoryIpBlockStore::new());
+    let app = make_app_with_ip_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/ip-blocks")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"ip": "1.2.3.4"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 204);
+}
+
+#[actix_web::test]
+async fn ip_blocks_list_shows_blocked_ip() {
+    let store: Arc<dyn IpBlockStore> = Arc::new(InMemoryIpBlockStore::new());
+    let app = make_app_with_ip_store(Arc::clone(&store)).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/ip-blocks")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"ip": "10.0.0.1", "reason": "spam", "duration_secs": 3600}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/ip-blocks")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let list = body.as_array().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["ip"], "10.0.0.1");
+    assert_eq!(list[0]["reason"], "spam");
+}
+
+#[actix_web::test]
+async fn ip_blocks_unblock_ip_returns_204_and_removes_from_list() {
+    let store: Arc<dyn IpBlockStore> = Arc::new(InMemoryIpBlockStore::new());
+    let app = make_app_with_ip_store(Arc::clone(&store)).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/ip-blocks")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"ip": "5.6.7.8"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::delete()
+        .uri("/api/v1/admin/ip-blocks/5.6.7.8")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/ip-blocks")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body, serde_json::json!([]));
+}
+
+#[actix_web::test]
+async fn ip_blocks_block_invalid_ip_returns_400() {
+    let store: Arc<dyn IpBlockStore> = Arc::new(InMemoryIpBlockStore::new());
+    let app = make_app_with_ip_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/ip-blocks")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"ip": "not-an-ip"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
+async fn ip_blocks_block_zero_duration_returns_400() {
+    let store: Arc<dyn IpBlockStore> = Arc::new(InMemoryIpBlockStore::new());
+    let app = make_app_with_ip_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/ip-blocks")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"ip": "1.2.3.4", "duration_secs": 0}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
+async fn ip_blocks_requires_admin() {
+    let store: Arc<dyn IpBlockStore> = Arc::new(InMemoryIpBlockStore::new());
+    let app = make_app_with_ip_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/ip-blocks")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_json(serde_json::json!({"ip": "1.2.3.4"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+// ── /api/v1/admin/registries/{r}/beta-channel ────────────────────────────────
+
+#[actix_web::test]
+async fn beta_channel_list_empty_returns_200() {
+    let store: Arc<dyn BetaChannelPort> = InMemoryBetaChannelStore::new();
+    let app = make_app_with_beta_store(store).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-npm/beta-channel")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body, serde_json::json!([]));
+}
+
+#[actix_web::test]
+async fn beta_channel_add_member_returns_204() {
+    let store: Arc<dyn BetaChannelPort> = InMemoryBetaChannelStore::new();
+    let app = make_app_with_beta_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-npm/beta-channel")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"principal_type": "user", "principal_id": "alice"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 204);
+}
+
+#[actix_web::test]
+async fn beta_channel_list_shows_added_member() {
+    let store: Arc<dyn BetaChannelPort> = InMemoryBetaChannelStore::new();
+    let app = make_app_with_beta_store(Arc::clone(&store)).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-npm/beta-channel")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"principal_type": "user", "principal_id": "bob", "granted_by": "admin"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-npm/beta-channel")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let list = body.as_array().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["principal_type"], "user");
+    assert_eq!(list[0]["principal_id"], "bob");
+    assert_eq!(list[0]["granted_by"], "admin");
+}
+
+#[actix_web::test]
+async fn beta_channel_remove_member_returns_204() {
+    let store: Arc<dyn BetaChannelPort> = InMemoryBetaChannelStore::new();
+    let app = make_app_with_beta_store(Arc::clone(&store)).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-npm/beta-channel")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"principal_type": "user", "principal_id": "charlie"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::delete()
+        .uri("/api/v1/admin/registries/my-npm/beta-channel/user/charlie")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-npm/beta-channel")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body, serde_json::json!([]));
+}
+
+#[actix_web::test]
+async fn beta_channel_add_invalid_principal_type_returns_400() {
+    let store: Arc<dyn BetaChannelPort> = InMemoryBetaChannelStore::new();
+    let app = make_app_with_beta_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-npm/beta-channel")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"principal_type": "org", "principal_id": "acme"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
+async fn beta_channel_requires_admin() {
+    let store: Arc<dyn BetaChannelPort> = InMemoryBetaChannelStore::new();
+    let app = make_app_with_beta_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-npm/beta-channel")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_json(serde_json::json!({"principal_type": "user", "principal_id": "eve"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+// ── In-memory TeamNamespacePort ───────────────────────────────────────────────
+
+#[derive(Default)]
+struct InMemoryTeamNamespaceStore {
+    namespaces: Mutex<Vec<(String, String, String, Option<String>)>>, // (registry, prefix, group_id, claimed_by)
+    visibility: Mutex<std::collections::HashMap<(String, String), String>>, // (registry, name) -> visibility
+    backend: Option<Arc<dyn LocalRegistryBackend>>,
+}
+
+impl InMemoryTeamNamespaceStore {
+    fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    fn with_backend(backend: Arc<dyn LocalRegistryBackend>) -> Arc<Self> {
+        Arc::new(Self { backend: Some(backend), ..Self::default() })
+    }
+}
+
+#[async_trait]
+impl TeamNamespacePort for InMemoryTeamNamespaceStore {
+    async fn find_namespace(
+        &self,
+        registry: &str,
+        package: &str,
+    ) -> Result<Option<TeamNamespace>, CoreError> {
+        let guard = self.namespaces.lock().unwrap();
+        let result = guard
+            .iter()
+            .filter(|(r, prefix, _, _)| {
+                r == registry
+                    && (package == prefix
+                        || (package.len() > prefix.len()
+                            && &package[..prefix.len() + 1] == format!("{prefix}/")))
+            })
+            .max_by_key(|(_, prefix, _, _)| prefix.len())
+            .map(|(reg, prefix, group, claimed_by)| TeamNamespace {
+                registry: reg.clone(),
+                prefix: prefix.clone(),
+                group_id: group.clone(),
+                claimed_by: claimed_by.clone(),
+            });
+        Ok(result)
+    }
+
+    async fn list_namespaces(&self, registry: &str) -> Result<Vec<TeamNamespace>, CoreError> {
+        let guard = self.namespaces.lock().unwrap();
+        let mut result: Vec<TeamNamespace> = guard
+            .iter()
+            .filter(|(r, _, _, _)| r == registry)
+            .map(|(r, prefix, group, claimed_by)| TeamNamespace {
+                registry: r.clone(),
+                prefix: prefix.clone(),
+                group_id: group.clone(),
+                claimed_by: claimed_by.clone(),
+            })
+            .collect();
+        result.sort_by(|a, b| a.prefix.cmp(&b.prefix));
+        Ok(result)
+    }
+
+    async fn claim_namespace(&self, ns: TeamNamespace) -> Result<(), CoreError> {
+        let mut guard = self.namespaces.lock().unwrap();
+        if guard.iter().any(|(r, p, _, _)| r == &ns.registry && p == &ns.prefix) {
+            return Err(CoreError::Conflict(format!(
+                "namespace '{}' in '{}' already claimed",
+                ns.prefix, ns.registry
+            )));
+        }
+        guard.push((ns.registry, ns.prefix, ns.group_id, ns.claimed_by));
+        Ok(())
+    }
+
+    async fn release_namespace(&self, registry: &str, prefix: &str) -> Result<(), CoreError> {
+        self.namespaces.lock().unwrap().retain(|(r, p, _, _)| !(r == registry && p == prefix));
+        Ok(())
+    }
+
+    async fn set_visibility(
+        &self,
+        registry: &str,
+        package: &str,
+        vis: Visibility,
+    ) -> Result<(), CoreError> {
+        self.visibility.lock().unwrap().insert(
+            (registry.to_owned(), package.to_owned()),
+            vis.to_string(),
+        );
+        Ok(())
+    }
+
+    async fn get_visibility(&self, registry: &str, package: &str) -> Result<Visibility, CoreError> {
+        let guard = self.visibility.lock().unwrap();
+        Ok(guard
+            .get(&(registry.to_owned(), package.to_owned()))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_default())
+    }
+
+    async fn list_namespaces_for_groups(
+        &self,
+        groups: &[String],
+    ) -> Result<Vec<TeamNamespace>, CoreError> {
+        let guard = self.namespaces.lock().unwrap();
+        Ok(guard
+            .iter()
+            .filter(|(_, _, group, _)| groups.contains(group))
+            .map(|(r, prefix, group, claimed_by)| TeamNamespace {
+                registry: r.clone(),
+                prefix: prefix.clone(),
+                group_id: group.clone(),
+                claimed_by: claimed_by.clone(),
+            })
+            .collect())
+    }
+
+    async fn list_packages_in_namespace(
+        &self,
+        registry: &str,
+        prefix: &str,
+        limit: u64,
+        offset: u64,
+    ) -> Result<Vec<NamespacePackage>, CoreError> {
+        let Some(backend) = &self.backend else { return Ok(vec![]); };
+        let all_names = backend.list_package_names(registry).await?;
+        let mut matching: Vec<NamespacePackage> = vec![];
+        for name in all_names {
+            let matches = name == prefix
+                || (name.len() > prefix.len() && name.starts_with(&format!("{prefix}/")));
+            if !matches { continue; }
+            let versions = backend.get_versions(registry, &name).await?;
+            let vis_guard = self.visibility.lock().unwrap();
+            for pkg in versions {
+                let vis_str = vis_guard
+                    .get(&(registry.to_owned(), name.clone()))
+                    .cloned()
+                    .unwrap_or_else(|| "public".to_owned());
+                matching.push(NamespacePackage {
+                    name: pkg.name,
+                    version: pkg.version,
+                    visibility: vis_str.parse().unwrap_or_default(),
+                    published_by: pkg.published_by.unwrap_or_default(),
+                    published_at: pkg.published_at,
+                    yanked: pkg.yanked,
+                });
+            }
+        }
+        matching.sort_by(|a, b| a.name.cmp(&b.name).then(a.version.cmp(&b.version)));
+        let start = offset as usize;
+        let end = (offset + limit) as usize;
+        Ok(matching.into_iter().skip(start).take(end.saturating_sub(start)).collect())
+    }
+}
+
+// ── App factories for team namespace + visibility ─────────────────────────────
+
+/// A token for a user who is a member of group "team-alpha".
+const NS_MEMBER_TOKEN: &str = "ns-member-token";
+/// A regular user with no group membership.
+const NS_PLAIN_USER_TOKEN: &str = "ns-plain-user-token";
+
+fn team_ns_auth_providers() -> Vec<Arc<dyn AuthProvider>> {
+    vec![Arc::new(
+        StaticTokenAuthProvider::new([
+            (ADMIN_TOKEN.to_owned(), Some("admin".to_owned()), Role::Admin),
+            (NS_PLAIN_USER_TOKEN.to_owned(), Some("plain-user".to_owned()), Role::User),
+        ])
+        .with_group_entries([(
+            NS_MEMBER_TOKEN.to_owned(),
+            Some("member-user".to_owned()),
+            Role::User,
+            vec!["team-alpha".to_owned()],
+        )]),
+    )]
+}
+
+/// Build a minimal admin-only test app with a `TeamNamespacePort` registered.
+/// No proxy registries — only back-office endpoints are exercised.
+async fn make_app_with_ns_store(
+    ns_store: Arc<dyn TeamNamespacePort>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
+    let policies: HashMap<String, RegistryPolicy> = HashMap::new();
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        registries,
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        policies,
+        max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = batlehub_web::AccessConfig {
+        anonymous: std::collections::HashSet::new(),
+        user: std::collections::HashSet::new(),
+        admin: std::collections::HashSet::new(),
+        groups: std::collections::HashMap::new(),
+    };
+    let registry_map = batlehub_web::RegistryMap(std::collections::HashMap::new());
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
+        .split_for_parts();
+
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(RegistryModeMap::default()))
+        .app_data(actix_web::web::Data::new(ns_store));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+}
+
+/// Build a local Cargo registry app wired with a `TeamNamespacePort`.
+///
+/// The `LocalRegistryService` uses the same store instance, so mutations made
+/// through the back-office API are visible to the publish/download handlers in
+/// the same test.
+async fn make_ns_cargo_app(
+    ns_store: Arc<dyn TeamNamespacePort>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+
+    let registries: HashMap<String, Arc<dyn RegistryClient>> =
+        [("local-cargo".to_owned(), FixedRegistry::new("cargo") as Arc<dyn RegistryClient>)].into();
+    let policies: HashMap<String, RegistryPolicy> =
+        [("local-cargo".to_owned(), rbac_policy(repo_dyn.clone()))].into();
+
+    // Build the local registry service WITH the namespace store so enforcement fires.
+    let backend = Arc::new(InMemoryLocalRegistry::new());
+    let local_svc = Arc::new(LocalRegistryService {
+        backend: backend.clone(),
+        storage: storage.clone(),
+        max_artifact_bytes: None,
+        quota: None,
+        ownership: None,
+        versioning: std::collections::HashMap::new(),
+        signing: std::collections::HashMap::new(),
+        beta_channel: std::collections::HashMap::new(),
+        team_namespace: Some(Arc::clone(&ns_store)),
+    });
+
+    let proxy_svc = Arc::new(ProxyService {
+        registries,
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        policies,
+        max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = batlehub_web::AccessConfig {
+        anonymous: [].iter().cloned().collect(),
+        user: ["local-cargo"].iter().map(|s| s.to_string()).collect(),
+        admin: ["local-cargo"].iter().map(|s| s.to_string()).collect(),
+        groups: std::collections::HashMap::new(),
+    };
+    let registry_map = batlehub_web::RegistryMap(
+        [("local-cargo", "cargo")].iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+    );
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+    let mut mode_map = RegistryModeMap::default();
+    mode_map.0.insert("local-cargo".to_owned(), RegistryMode::Local);
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
+        .split_for_parts();
+
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(mode_map))
+        // Register the store for back-office visibility endpoints.
+        .app_data(actix_web::web::Data::new(ns_store));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(team_ns_auth_providers()))).await
+}
+
+/// Like `make_ns_cargo_app` but also returns the `InMemoryTeamNamespaceStore`
+/// pre-wired to the same backend, so tests can pre-seed namespace claims and
+/// `list_packages_in_namespace` can actually see published packages.
+async fn make_ns_cargo_app_seeded(
+    claims: Vec<TeamNamespace>,
+) -> (
+    Arc<InMemoryTeamNamespaceStore>,
+    impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+) {
+    let backend: Arc<InMemoryLocalRegistry> = Arc::new(InMemoryLocalRegistry::new());
+    let ns_store = InMemoryTeamNamespaceStore::with_backend(backend.clone() as Arc<dyn LocalRegistryBackend>);
+    for claim in claims {
+        ns_store.claim_namespace(claim).await.unwrap();
+    }
+    let app = make_ns_cargo_app_with_backend(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>, backend).await;
+    (ns_store, app)
+}
+
+async fn make_ns_cargo_app_with_backend(
+    ns_store: Arc<dyn TeamNamespacePort>,
+    backend: Arc<InMemoryLocalRegistry>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+
+    let registries: HashMap<String, Arc<dyn RegistryClient>> =
+        [("local-cargo".to_owned(), FixedRegistry::new("cargo") as Arc<dyn RegistryClient>)].into();
+    let policies: HashMap<String, RegistryPolicy> =
+        [("local-cargo".to_owned(), rbac_policy(repo_dyn.clone()))].into();
+
+    let local_svc = Arc::new(LocalRegistryService {
+        backend: backend.clone(),
+        storage: storage.clone(),
+        max_artifact_bytes: None,
+        quota: None,
+        ownership: None,
+        versioning: std::collections::HashMap::new(),
+        signing: std::collections::HashMap::new(),
+        beta_channel: std::collections::HashMap::new(),
+        team_namespace: Some(Arc::clone(&ns_store)),
+    });
+
+    let proxy_svc = Arc::new(ProxyService {
+        registries,
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        policies,
+        max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = batlehub_web::AccessConfig {
+        anonymous: [].iter().cloned().collect(),
+        user: ["local-cargo"].iter().map(|s| s.to_string()).collect(),
+        admin: ["local-cargo"].iter().map(|s| s.to_string()).collect(),
+        groups: std::collections::HashMap::new(),
+    };
+    let registry_map = batlehub_web::RegistryMap(
+        [("local-cargo", "cargo")].iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+    );
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+    let mut mode_map = RegistryModeMap::default();
+    mode_map.0.insert("local-cargo".to_owned(), RegistryMode::Local);
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
+        .split_for_parts();
+
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(mode_map))
+        .app_data(actix_web::web::Data::new(ns_store));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(team_ns_auth_providers()))).await
+}
+
+// ── Namespace back-office endpoint tests ─────────────────────────────────────
+
+#[actix_web::test]
+async fn ns_list_empty_returns_200_with_empty_array() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body, serde_json::json!([]));
+}
+
+#[actix_web::test]
+async fn ns_claim_returns_204() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"prefix": "frontend", "group_id": "team-fe"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 204);
+}
+
+#[actix_web::test]
+async fn ns_claim_shows_in_list() {
+    let store = InMemoryTeamNamespaceStore::new();
+    let store_dyn: Arc<dyn TeamNamespacePort> = store.clone();
+    let app = make_app_with_ns_store(store_dyn).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({
+            "prefix": "backend",
+            "group_id": "team-be",
+            "claimed_by": "alice"
+        }))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let list = body.as_array().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["prefix"], "backend");
+    assert_eq!(list[0]["group_id"], "team-be");
+    assert_eq!(list[0]["claimed_by"], "alice");
+}
+
+#[actix_web::test]
+async fn ns_claim_duplicate_returns_409() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(Arc::clone(&store)).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"prefix": "lib", "group_id": "team-a"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"prefix": "lib", "group_id": "team-b"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 409);
+}
+
+#[actix_web::test]
+async fn ns_release_returns_204_and_removes_claim() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(Arc::clone(&store)).await;
+
+    // Claim first.
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"prefix": "ui", "group_id": "team-ui"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    // Release.
+    let req = TestRequest::delete()
+        .uri("/api/v1/admin/registries/my-reg/namespaces/ui")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    // Should be gone from list.
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body, serde_json::json!([]));
+}
+
+#[actix_web::test]
+async fn ns_release_nonexistent_returns_204() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::delete()
+        .uri("/api/v1/admin/registries/my-reg/namespaces/does-not-exist")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+}
+
+#[actix_web::test]
+async fn ns_release_with_slash_in_prefix() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(Arc::clone(&store)).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"prefix": "org/team", "group_id": "g1"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    // DELETE with slash in prefix — the wildcard route must capture it.
+    let req = TestRequest::delete()
+        .uri("/api/v1/admin/registries/my-reg/namespaces/org/team")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body, serde_json::json!([]));
+}
+
+#[actix_web::test]
+async fn ns_list_multiple_registries_are_isolated() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(Arc::clone(&store)).await;
+
+    for (reg, prefix) in [("reg-a", "lib"), ("reg-b", "core"), ("reg-a", "util")] {
+        let req = TestRequest::post()
+            .uri(&format!("/api/v1/admin/registries/{reg}/namespaces"))
+            .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+            .set_json(serde_json::json!({"prefix": prefix, "group_id": "g"}))
+            .to_request();
+        assert_eq!(call_service(&app, req).await.status(), 204);
+    }
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/reg-a/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    let body: Value = read_body_json(resp).await;
+    let list = body.as_array().unwrap();
+    assert_eq!(list.len(), 2, "reg-a should have exactly 2 namespace claims");
+    // Sorted by prefix ascending.
+    assert_eq!(list[0]["prefix"], "lib");
+    assert_eq!(list[1]["prefix"], "util");
+}
+
+#[actix_web::test]
+async fn ns_list_requires_admin() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn ns_claim_requires_admin() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_json(serde_json::json!({"prefix": "x", "group_id": "g"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn ns_release_requires_admin() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::delete()
+        .uri("/api/v1/admin/registries/my-reg/namespaces/x")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn ns_claim_empty_prefix_returns_400() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"prefix": "", "group_id": "g"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 400);
+}
+
+#[actix_web::test]
+async fn ns_claim_empty_group_id_returns_400() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"prefix": "lib", "group_id": ""}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 400);
+}
+
+// ── Visibility back-office endpoint tests ─────────────────────────────────────
+
+#[actix_web::test]
+async fn visibility_get_default_is_public() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-reg/packages/my-pkg/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["visibility"], "public");
+}
+
+// Visibility CRUD tests use make_ns_cargo_app so the package can be published first.
+// PgTeamNamespaceStore::set_visibility operates on existing local_packages rows, so
+// the package must exist before visibility can be set.
+
+#[actix_web::test]
+async fn visibility_set_internal_and_get() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+    publish_and_get_name(&app, "my-pkg", "1.0.0").await;
+
+    let req = TestRequest::put()
+        .uri("/api/v1/admin/registries/local-cargo/packages/my-pkg/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"visibility": "internal"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/local-cargo/packages/my-pkg/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let body: Value = read_body_json(call_service(&app, req).await).await;
+    assert_eq!(body["visibility"], "internal");
+}
+
+#[actix_web::test]
+async fn visibility_set_team_and_get() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+    publish_and_get_name(&app, "my-pkg", "1.0.0").await;
+
+    let req = TestRequest::put()
+        .uri("/api/v1/admin/registries/local-cargo/packages/my-pkg/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"visibility": "team"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/local-cargo/packages/my-pkg/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let body: Value = read_body_json(call_service(&app, req).await).await;
+    assert_eq!(body["visibility"], "team");
+}
+
+#[actix_web::test]
+async fn visibility_downgrade_team_to_public() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+    publish_and_get_name(&app, "my-pkg", "1.0.0").await;
+
+    for vis in ["team", "public"] {
+        let req = TestRequest::put()
+            .uri("/api/v1/admin/registries/local-cargo/packages/my-pkg/visibility")
+            .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+            .set_json(serde_json::json!({"visibility": vis}))
+            .to_request();
+        assert_eq!(call_service(&app, req).await.status(), 204);
+    }
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/local-cargo/packages/my-pkg/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let body: Value = read_body_json(call_service(&app, req).await).await;
+    assert_eq!(body["visibility"], "public");
+}
+
+#[actix_web::test]
+async fn visibility_set_invalid_value_returns_400() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::put()
+        .uri("/api/v1/admin/registries/my-reg/packages/my-pkg/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"visibility": "secret"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 400);
+}
+
+#[actix_web::test]
+async fn visibility_get_requires_admin() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-reg/packages/my-pkg/visibility")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn visibility_set_requires_admin() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(store).await;
+    let req = TestRequest::put()
+        .uri("/api/v1/admin/registries/my-reg/packages/my-pkg/visibility")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_json(serde_json::json!({"visibility": "internal"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn visibility_slash_package_name_works() {
+    let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
+    let app = make_app_with_ns_store(Arc::clone(&store)).await;
+
+    // Set visibility for a package whose name contains slashes.
+    let req = TestRequest::put()
+        .uri("/api/v1/admin/registries/my-reg/packages/frontend/utils/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"visibility": "internal"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-reg/packages/frontend/utils/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let body: Value = read_body_json(call_service(&app, req).await).await;
+    assert_eq!(body["visibility"], "internal");
+}
+
+// ── Namespace publish-enforcement tests (Cargo local registry) ────────────────
+
+#[actix_web::test]
+async fn cargo_publish_to_claimed_namespace_blocks_non_member() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    // Claim "internal" prefix for group "team-alpha".
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-cargo".to_owned(),
+            prefix: "internal".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_cargo_app(ns_store as Arc<dyn TeamNamespacePort>).await;
+
+    // NS_PLAIN_USER_TOKEN has no groups -> blocked.
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .set_payload(make_publish_payload("internal/utils", "1.0.0"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn cargo_publish_to_claimed_namespace_allows_member() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-cargo".to_owned(),
+            prefix: "internal".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_cargo_app(ns_store as Arc<dyn TeamNamespacePort>).await;
+
+    // NS_MEMBER_TOKEN has group "team-alpha" -> allowed.
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .insert_header(("Authorization", bearer(NS_MEMBER_TOKEN)))
+        .set_payload(make_publish_payload("internal/utils", "1.0.0"))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200, "team member must be allowed to publish");
+}
+
+#[actix_web::test]
+async fn cargo_publish_to_unclaimed_namespace_allows_any_user() {
+    let ns_store = InMemoryTeamNamespaceStore::new(); // no claims
+    let app = make_ns_cargo_app(ns_store as Arc<dyn TeamNamespacePort>).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .set_payload(make_publish_payload("any/package", "1.0.0"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn cargo_admin_can_publish_to_any_claimed_namespace() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-cargo".to_owned(),
+            prefix: "secured".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_cargo_app(ns_store as Arc<dyn TeamNamespacePort>).await;
+
+    // ADMIN_TOKEN bypasses namespace gate.
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_payload(make_publish_payload("secured/core", "1.0.0"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn cargo_publish_anonymous_still_blocked_in_ns_mode() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(ns_store as Arc<dyn TeamNamespacePort>).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .set_payload(make_publish_payload("any/pkg", "1.0.0"))
+        .to_request();
+    // Blocked by the base role check (User required), not namespace check.
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+// ── Visibility download tests (Cargo local registry) ─────────────────────────
+
+/// Publish a crate and return its name/version.
+async fn publish_and_get_name(
+    app: &impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+    name: &str,
+    version: &str,
+) {
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_payload(make_publish_payload(name, version))
+        .to_request();
+    let status = call_service(app, req).await.status();
+    assert_eq!(status, 200, "pre-test publish must succeed");
+}
+
+#[actix_web::test]
+async fn cargo_download_public_package_allows_anonymous() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    publish_and_get_name(&app, "my-crate", "1.0.0").await;
+    // Public visibility (default) -> anonymous download allowed.
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/my-crate/1.0.0/download")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn cargo_download_internal_package_blocks_anonymous() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    publish_and_get_name(&app, "my-crate", "1.0.0").await;
+    // Set to internal directly via the store.
+    ns_store.set_visibility("local-cargo", "my-crate", Visibility::Internal).await.unwrap();
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/my-crate/1.0.0/download")
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn cargo_download_internal_package_allows_authenticated_user() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    publish_and_get_name(&app, "my-crate", "1.0.0").await;
+    ns_store.set_visibility("local-cargo", "my-crate", Visibility::Internal).await.unwrap();
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/my-crate/1.0.0/download")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn cargo_download_team_package_blocks_non_member() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    // Claim the namespace so check_visibility can find the owning group.
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-cargo".to_owned(),
+            prefix: "secured".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    // Admin publishes so the publish gate is bypassed.
+    publish_and_get_name(&app, "secured/pkg", "1.0.0").await;
+    ns_store.set_visibility("local-cargo", "secured/pkg", Visibility::Team).await.unwrap();
+
+    // NS_PLAIN_USER_TOKEN has no groups.
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/secured%2Fpkg/1.0.0/download")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn cargo_download_team_package_allows_member() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-cargo".to_owned(),
+            prefix: "secured".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    publish_and_get_name(&app, "secured/pkg", "1.0.0").await;
+    ns_store.set_visibility("local-cargo", "secured/pkg", Visibility::Team).await.unwrap();
+
+    // NS_MEMBER_TOKEN has group "team-alpha".
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/secured%2Fpkg/1.0.0/download")
+        .insert_header(("Authorization", bearer(NS_MEMBER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn cargo_download_admin_bypasses_team_visibility() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    publish_and_get_name(&app, "secret-crate", "1.0.0").await;
+    ns_store.set_visibility("local-cargo", "secret-crate", Visibility::Team).await.unwrap();
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/secret-crate/1.0.0/download")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+// ── Visibility index tests (sparse Cargo index endpoint) ──────────────────────
+
+#[actix_web::test]
+async fn cargo_index_internal_blocks_anonymous() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    publish_and_get_name(&app, "my-lib", "1.0.0").await;
+    ns_store.set_visibility("local-cargo", "my-lib", Visibility::Internal).await.unwrap();
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/registry/my/li/my-lib")
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn cargo_index_internal_allows_user() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    publish_and_get_name(&app, "my-lib", "1.0.0").await;
+    ns_store.set_visibility("local-cargo", "my-lib", Visibility::Internal).await.unwrap();
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/registry/my/li/my-lib")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .to_request();
+    // Index returns 200 with newline-delimited JSON entries.
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn cargo_index_team_blocks_non_member() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    // Claim the exact package name as the namespace prefix (exact-match rule).
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-cargo".to_owned(),
+            prefix: "priv-tool".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    // Admin publishes (bypasses namespace gate).
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+    publish_and_get_name(&app, "priv-tool", "1.0.0").await;
+    ns_store.set_visibility("local-cargo", "priv-tool", Visibility::Team).await.unwrap();
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/registry/pr/iv/priv-tool")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn cargo_index_team_allows_member() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-cargo".to_owned(),
+            prefix: "priv-tool".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+    publish_and_get_name(&app, "priv-tool", "1.0.0").await;
+    ns_store.set_visibility("local-cargo", "priv-tool", Visibility::Team).await.unwrap();
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/registry/pr/iv/priv-tool")
+        .insert_header(("Authorization", bearer(NS_MEMBER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn cargo_index_public_package_visible_to_user() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    publish_and_get_name(&app, "open-crate", "1.0.0").await;
+    // Default visibility is public — no visibility set needed.
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/registry/op/en/open-crate")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+// ── Visibility via back-office API (round-trip) ───────────────────────────────
+
+// Use 'team' visibility so that an authenticated-but-non-member user
+// (NS_PLAIN_USER_TOKEN) is blocked by the visibility check itself, not by
+// the registry-level RBAC layer (anonymous has no registry access in
+// make_ns_cargo_app regardless of visibility, so anonymous-blocks are
+// ambiguous about which layer fired).
+#[actix_web::test]
+async fn visibility_set_via_api_then_download_blocked() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    // Claim the namespace so check_visibility can resolve the owning group.
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-cargo".to_owned(),
+            prefix: "lib-x".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    publish_and_get_name(&app, "lib-x", "2.0.0").await;
+
+    // Set to 'team' via back-office API.
+    let req = TestRequest::put()
+        .uri("/api/v1/admin/registries/local-cargo/packages/lib-x/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"visibility": "team"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    // Authenticated non-member is blocked by visibility (not by RBAC — they have
+    // User role and registry access, but are not in group "team-alpha").
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/lib-x/2.0.0/download")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+
+    // Team member can download.
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/lib-x/2.0.0/download")
+        .insert_header(("Authorization", bearer(NS_MEMBER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn visibility_set_to_public_after_internal_reopens_access() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
+
+    publish_and_get_name(&app, "lib-y", "1.0.0").await;
+
+    // Set internal.
+    let req = TestRequest::put()
+        .uri("/api/v1/admin/registries/local-cargo/packages/lib-y/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"visibility": "internal"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    // Re-open to public.
+    let req = TestRequest::put()
+        .uri("/api/v1/admin/registries/local-cargo/packages/lib-y/visibility")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"visibility": "public"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    // Anonymous download should work again (but blocked by RBAC, not visibility).
+    // Test with plain user to avoid registry-level RBAC:
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/lib-y/1.0.0/download")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+// ── Generic ns-upload app factory ────────────────────────────────────────────
+
+/// Build a Local-mode test app for `registry_name` (type `registry_type`) with
+/// a `TeamNamespacePort` wired into the `LocalRegistryService`.
+///
+/// Used by the upload-enforcement tests for RubyGems, GoProxy, OpenVSX, and
+/// Composer — only the registry name/type differ from `make_ns_cargo_app`.
+async fn make_ns_upload_app(
+    registry_name: &'static str,
+    registry_type: &'static str,
+    ns_store: Arc<dyn TeamNamespacePort>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
+        registry_name.to_owned(),
+        FixedRegistry::new(registry_type) as Arc<dyn RegistryClient>,
+    )]
+    .into();
+    let policies: HashMap<String, RegistryPolicy> =
+        [(registry_name.to_owned(), rbac_policy(repo_dyn.clone()))].into();
+
+    let backend = Arc::new(InMemoryLocalRegistry::new());
+    let local_svc = Arc::new(LocalRegistryService {
+        backend: backend.clone(),
+        storage: storage.clone(),
+        max_artifact_bytes: None,
+        quota: None,
+        ownership: None,
+        versioning: std::collections::HashMap::new(),
+        signing: std::collections::HashMap::new(),
+        beta_channel: std::collections::HashMap::new(),
+        team_namespace: Some(Arc::clone(&ns_store)),
+    });
+
+    let proxy_svc = Arc::new(ProxyService {
+        registries,
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        policies,
+        max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = batlehub_web::AccessConfig {
+        anonymous: [].iter().cloned().collect(),
+        user:  [registry_name].iter().map(|s| s.to_string()).collect(),
+        admin: [registry_name].iter().map(|s| s.to_string()).collect(),
+        groups: std::collections::HashMap::new(),
+    };
+    let registry_map = batlehub_web::RegistryMap(
+        [(registry_name.to_string(), registry_type.to_string())].into(),
+    );
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+    let mut mode_map = RegistryModeMap::default();
+    mode_map.0.insert(registry_name.to_owned(), RegistryMode::Local);
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
+        .split_for_parts();
+
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(mode_map))
+        .app_data(actix_web::web::Data::new(ns_store));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(team_ns_auth_providers()))).await
+}
+
+// ── Payload builders for upload-capable registry types ────────────────────────
+
+/// Minimal `.gem` file: a TAR archive containing one `metadata.gz` entry with
+/// name/version encoded as YAML inside a gzip stream.
+fn ns_minimal_gem(name: &str, version: &str) -> Vec<u8> {
+    use flate2::{write::GzEncoder, Compression};
+    use std::io::Write as _;
+
+    let yaml = format!("name: {name}\nversion:\n  version: '{version}'\nplatform: ruby\n");
+    let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+    gz.write_all(yaml.as_bytes()).unwrap();
+    let metadata_gz = gz.finish().unwrap();
+
+    let mut builder = tar::Builder::new(Vec::new());
+    let mut header = tar::Header::new_gnu();
+    header.set_size(metadata_gz.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    builder
+        .append_data(&mut header, "metadata.gz", metadata_gz.as_slice())
+        .unwrap();
+    builder.into_inner().unwrap()
+}
+
+/// Minimal Go module ZIP: one entry `{module}@{version}/go.mod`.
+fn ns_go_module_zip(module: &str, version: &str) -> Vec<u8> {
+    use std::io::Write as _;
+    let go_mod = format!("module {module}\n\ngo 1.21\n");
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut zw = zip::ZipWriter::new(&mut buf);
+        let opts = zip::write::SimpleFileOptions::default();
+        zw.start_file(format!("{module}@{version}/go.mod"), opts).unwrap();
+        zw.write_all(go_mod.as_bytes()).unwrap();
+        zw.finish().unwrap();
+    }
+    buf.into_inner()
+}
+
+/// Minimal Composer ZIP: `composer.json` at the archive root.
+fn ns_composer_zip(vendor_pkg: &str, version: &str) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut zw = zip::ZipWriter::new(&mut buf);
+        let opts = zip::write::SimpleFileOptions::default();
+        zw.start_file("composer.json", opts).unwrap();
+        let json = serde_json::json!({
+            "name": vendor_pkg,
+            "version": version,
+            "description": "test",
+            "type": "library",
+        });
+        zw.write_all(json.to_string().as_bytes()).unwrap();
+        zw.finish().unwrap();
+    }
+    buf.into_inner()
+}
+
+/// Minimal VSIX: a ZIP with a `[Content_Types].xml` entry so the handler
+/// recognises it as a valid archive.  Name and version come from the URL path.
+fn ns_minimal_vsix() -> Vec<u8> {
+    use std::io::Write as _;
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut zw = zip::ZipWriter::new(&mut buf);
+        let opts = zip::write::SimpleFileOptions::default();
+        zw.start_file("[Content_Types].xml", opts).unwrap();
+        zw.write_all(b"<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"></Types>").unwrap();
+        zw.finish().unwrap();
+    }
+    buf.into_inner()
+}
+
+// ── RubyGems upload enforcement ───────────────────────────────────────────────
+
+#[actix_web::test]
+async fn rubygems_upload_to_claimed_namespace_blocks_non_member() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-gems".to_owned(),
+            prefix: "internal-gem".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_upload_app("local-gems", "rubygems", ns_store).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-gems/api/v1/gems")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .insert_header(("Content-Type", "application/octet-stream"))
+        .set_payload(ns_minimal_gem("internal-gem", "1.0.0"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn rubygems_upload_to_claimed_namespace_allows_member() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-gems".to_owned(),
+            prefix: "internal-gem".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_upload_app("local-gems", "rubygems", ns_store).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-gems/api/v1/gems")
+        .insert_header(("Authorization", bearer(NS_MEMBER_TOKEN)))
+        .insert_header(("Content-Type", "application/octet-stream"))
+        .set_payload(ns_minimal_gem("internal-gem", "1.0.0"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn rubygems_upload_to_unclaimed_namespace_allows_any_user() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_upload_app("local-gems", "rubygems", ns_store).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-gems/api/v1/gems")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .insert_header(("Content-Type", "application/octet-stream"))
+        .set_payload(ns_minimal_gem("open-gem", "1.0.0"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+// ── GoProxy upload enforcement ────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn goproxy_upload_to_claimed_namespace_blocks_non_member() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-go".to_owned(),
+            prefix: "example.com/internal".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_upload_app("local-go", "goproxy", ns_store).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-go/example.com/internal/utils/@v/v1.0.0.zip")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .insert_header(("Content-Type", "application/zip"))
+        .set_payload(ns_go_module_zip("example.com/internal/utils", "v1.0.0"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn goproxy_upload_to_claimed_namespace_allows_member() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-go".to_owned(),
+            prefix: "example.com/internal".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_upload_app("local-go", "goproxy", ns_store).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-go/example.com/internal/utils/@v/v1.0.0.zip")
+        .insert_header(("Authorization", bearer(NS_MEMBER_TOKEN)))
+        .insert_header(("Content-Type", "application/zip"))
+        .set_payload(ns_go_module_zip("example.com/internal/utils", "v1.0.0"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn goproxy_upload_to_unclaimed_namespace_allows_any_user() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_upload_app("local-go", "goproxy", ns_store).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-go/example.com/open/pkg/@v/v1.0.0.zip")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .insert_header(("Content-Type", "application/zip"))
+        .set_payload(ns_go_module_zip("example.com/open/pkg", "v1.0.0"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+// ── OpenVSX upload enforcement ────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn openvsx_upload_to_claimed_namespace_blocks_non_member() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    // Extension ID is "myorg.myext"; prefix "myorg.myext" covers it exactly.
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-vsx".to_owned(),
+            prefix: "myorg.myext".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_upload_app("local-vsx", "openvsx", ns_store).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-vsx/myorg.myext/1.0.0/vsix")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .insert_header(("Content-Type", "application/octet-stream"))
+        .set_payload(ns_minimal_vsix())
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn openvsx_upload_to_claimed_namespace_allows_member() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-vsx".to_owned(),
+            prefix: "myorg.myext".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_upload_app("local-vsx", "openvsx", ns_store).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-vsx/myorg.myext/1.0.0/vsix")
+        .insert_header(("Authorization", bearer(NS_MEMBER_TOKEN)))
+        .insert_header(("Content-Type", "application/octet-stream"))
+        .set_payload(ns_minimal_vsix())
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn openvsx_upload_to_unclaimed_namespace_allows_any_user() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_upload_app("local-vsx", "openvsx", ns_store).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-vsx/openorg.openext/1.0.0/vsix")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .insert_header(("Content-Type", "application/octet-stream"))
+        .set_payload(ns_minimal_vsix())
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+// ── Composer upload enforcement ───────────────────────────────────────────────
+
+#[actix_web::test]
+async fn composer_upload_to_claimed_namespace_blocks_non_member() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-composer".to_owned(),
+            prefix: "myvendor".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_upload_app("local-composer", "composer", ns_store).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .insert_header(("Content-Type", "application/zip"))
+        .set_payload(ns_composer_zip("myvendor/mypkg", "1.0.0"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn composer_upload_to_claimed_namespace_allows_member() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-composer".to_owned(),
+            prefix: "myvendor".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_upload_app("local-composer", "composer", ns_store).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(NS_MEMBER_TOKEN)))
+        .insert_header(("Content-Type", "application/zip"))
+        .set_payload(ns_composer_zip("myvendor/mypkg", "1.0.0"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn composer_upload_to_unclaimed_namespace_allows_any_user() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_upload_app("local-composer", "composer", ns_store).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .insert_header(("Content-Type", "application/zip"))
+        .set_payload(ns_composer_zip("openvendor/openpkg", "1.0.0"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+// ── /api/v1/me/namespaces endpoint ────────────────────────────────────────────
+
+#[actix_web::test]
+async fn me_namespaces_returns_only_caller_groups_namespaces() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    // Claim for the caller's group.
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-cargo".to_owned(),
+            prefix: "team-pkg".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    // Claim for a different group — must NOT appear in the response.
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-cargo".to_owned(),
+            prefix: "other-pkg".to_owned(),
+            group_id: "team-beta".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_cargo_app(ns_store as Arc<dyn TeamNamespacePort>).await;
+
+    let req = TestRequest::get()
+        .uri("/api/v1/me/namespaces")
+        .insert_header(("Authorization", bearer(NS_MEMBER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let namespaces = body.as_array().unwrap();
+    assert_eq!(namespaces.len(), 1);
+    assert_eq!(namespaces[0]["prefix"], "team-pkg");
+    assert_eq!(namespaces[0]["group_id"], "team-alpha");
+}
+
+#[actix_web::test]
+async fn me_namespaces_returns_empty_for_user_with_no_groups() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-cargo".to_owned(),
+            prefix: "team-pkg".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_cargo_app(ns_store as Arc<dyn TeamNamespacePort>).await;
+
+    let req = TestRequest::get()
+        .uri("/api/v1/me/namespaces")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body.as_array().unwrap().len(), 0);
+}
+
+#[actix_web::test]
+async fn me_namespaces_requires_authentication() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_cargo_app(ns_store as Arc<dyn TeamNamespacePort>).await;
+
+    let req = TestRequest::get()
+        .uri("/api/v1/me/namespaces")
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+// ── /api/v1/me/namespaces/{registry}/{prefix}/packages endpoint ───────────────
+
+#[actix_web::test]
+async fn me_namespace_packages_lists_published_packages() {
+    let (_, app) = make_ns_cargo_app_seeded(vec![TeamNamespace {
+        registry: "local-cargo".to_owned(),
+        prefix: "internal".to_owned(),
+        group_id: "team-alpha".to_owned(),
+        claimed_by: None,
+    }]).await;
+
+    // Publish two packages under the namespace.
+    for name in &["internal/lib-a", "internal/lib-b"] {
+        let req = TestRequest::put()
+            .uri("/proxy/local-cargo/api/v1/crates/new")
+            .insert_header(("Authorization", bearer(NS_MEMBER_TOKEN)))
+            .set_payload(make_publish_payload(name, "1.0.0"))
+            .to_request();
+        assert_eq!(call_service(&app, req).await.status(), 200);
+    }
+
+    let req = TestRequest::get()
+        .uri("/api/v1/me/namespaces/local-cargo/internal/packages")
+        .insert_header(("Authorization", bearer(NS_MEMBER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let pkgs = body.as_array().unwrap();
+    assert_eq!(pkgs.len(), 2);
+    let names: Vec<&str> = pkgs.iter().map(|p| p["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"internal/lib-a"));
+    assert!(names.contains(&"internal/lib-b"));
+    assert_eq!(pkgs[0]["visibility"], "public");
+}
+
+#[actix_web::test]
+async fn me_namespace_packages_blocks_non_member() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    ns_store
+        .claim_namespace(TeamNamespace {
+            registry: "local-cargo".to_owned(),
+            prefix: "internal".to_owned(),
+            group_id: "team-alpha".to_owned(),
+            claimed_by: None,
+        })
+        .await
+        .unwrap();
+    let app = make_ns_cargo_app(ns_store as Arc<dyn TeamNamespacePort>).await;
+
+    let req = TestRequest::get()
+        .uri("/api/v1/me/namespaces/local-cargo/internal/packages")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn me_namespace_packages_admin_can_query_any_namespace() {
+    let (_, app) = make_ns_cargo_app_seeded(vec![TeamNamespace {
+        registry: "local-cargo".to_owned(),
+        prefix: "internal".to_owned(),
+        group_id: "team-alpha".to_owned(),
+        claimed_by: None,
+    }]).await;
+
+    // Publish as member.
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .insert_header(("Authorization", bearer(NS_MEMBER_TOKEN)))
+        .set_payload(make_publish_payload("internal/lib-c", "0.1.0"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    // Admin queries — not a member of team-alpha but should still get results.
+    let req = TestRequest::get()
+        .uri("/api/v1/me/namespaces/local-cargo/internal/packages")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body.as_array().unwrap().len(), 1);
+}
+
+#[actix_web::test]
+async fn me_namespace_packages_pagination() {
+    let (_, app) = make_ns_cargo_app_seeded(vec![TeamNamespace {
+        registry: "local-cargo".to_owned(),
+        prefix: "paged".to_owned(),
+        group_id: "team-alpha".to_owned(),
+        claimed_by: None,
+    }]).await;
+
+    // Publish three packages.
+    for i in 0..3u8 {
+        let req = TestRequest::put()
+            .uri("/proxy/local-cargo/api/v1/crates/new")
+            .insert_header(("Authorization", bearer(NS_MEMBER_TOKEN)))
+            .set_payload(make_publish_payload(&format!("paged/lib-{i}"), "1.0.0"))
+            .to_request();
+        assert_eq!(call_service(&app, req).await.status(), 200);
+    }
+
+    // Page 0, size 2 → 2 results.
+    let req = TestRequest::get()
+        .uri("/api/v1/me/namespaces/local-cargo/paged/packages?page=0&per_page=2")
+        .insert_header(("Authorization", bearer(NS_MEMBER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(read_body_json::<Value, _>(resp).await.as_array().unwrap().len(), 2);
+
+    // Page 1, size 2 → 1 result.
+    let req = TestRequest::get()
+        .uri("/api/v1/me/namespaces/local-cargo/paged/packages?page=1&per_page=2")
+        .insert_header(("Authorization", bearer(NS_MEMBER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(read_body_json::<Value, _>(resp).await.as_array().unwrap().len(), 1);
 }

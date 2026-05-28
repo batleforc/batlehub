@@ -354,6 +354,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "argon2"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c3610892ee6e0cbce8ae2700349fcf8f98adb0dbfbee85aec3c9179d29cc072"
+dependencies = [
+ "base64ct",
+ "blake2",
+ "cpufeatures 0.2.17",
+ "password-hash",
+]
+
+[[package]]
 name = "assert-json-diff"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -847,6 +859,7 @@ name = "batlehub-adapters"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "argon2",
  "async-trait",
  "aws-config",
  "aws-sdk-s3",
@@ -875,6 +888,7 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "uuid",
+ "zip 2.4.2",
 ]
 
 [[package]]
@@ -907,6 +921,32 @@ dependencies = [
  "tracing",
  "utoipa",
  "uuid",
+]
+
+[[package]]
+name = "batlehub-examples"
+version = "0.1.0"
+dependencies = [
+ "actix-web",
+ "async-trait",
+ "base64",
+ "batlehub-adapters",
+ "batlehub-config",
+ "batlehub-core",
+ "batlehub-web",
+ "bytes",
+ "chrono",
+ "flate2",
+ "futures",
+ "metrics-exporter-prometheus",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "tokio",
+ "toml",
+ "utoipa-actix-web",
+ "uuid",
+ "zip 2.4.2",
 ]
 
 [[package]]
@@ -954,6 +994,7 @@ dependencies = [
  "batlehub-core",
  "bytes",
  "chrono",
+ "flate2",
  "futures",
  "hex",
  "metrics",
@@ -964,6 +1005,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
+ "tar",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -980,6 +1022,15 @@ name = "bitflags"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
+
+[[package]]
+name = "blake2"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe"
+dependencies = [
+ "digest 0.10.7",
+]
 
 [[package]]
 name = "block-buffer"
@@ -2900,6 +2951,17 @@ dependencies = [
  "redox_syscall 0.5.18",
  "smallvec",
  "windows-link",
+]
+
+[[package]]
+name = "password-hash"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "346f04948ba92c43e8469c1ee6736c7563d71012b17d40745260fe106aac2166"
+dependencies = [
+ "base64ct",
+ "rand_core 0.6.4",
+ "subtle",
 ]
 
 [[package]]

@@ -2,13 +2,14 @@ use actix_web::{Responder, get, web};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::{AccessConfig, RegistryMap, extractors::AuthIdentity};
+use crate::{AccessConfig, RegistryMap, RegistryModeMap, extractors::AuthIdentity};
 
 #[derive(Serialize, ToSchema)]
 pub struct RegistryInfo {
     pub name: String,
     #[serde(rename = "type")]
     pub registry_type: String,
+    pub mode: String,
 }
 
 /// List configured registries visible to the current user.
@@ -24,6 +25,7 @@ pub struct RegistryInfo {
 #[get("/api/v1/registries")]
 pub async fn list_registries(
     map: web::Data<RegistryMap>,
+    modes: web::Data<RegistryModeMap>,
     access: web::Data<AccessConfig>,
     identity: AuthIdentity,
 ) -> impl Responder {
@@ -35,6 +37,11 @@ pub async fn list_registries(
         .map(|(name, registry_type)| RegistryInfo {
             name: name.clone(),
             registry_type: registry_type.clone(),
+            mode: match modes.get(name) {
+                batlehub_config::schema::RegistryMode::Proxy => "proxy",
+                batlehub_config::schema::RegistryMode::Local => "local",
+                batlehub_config::schema::RegistryMode::Hybrid => "hybrid",
+            }.to_string(),
         })
         .collect();
     registries.sort_by(|a, b| a.name.cmp(&b.name));

@@ -1,3 +1,13 @@
+/* ── Config Generator — hide the right aside, expand content to full width ─── */
+.VPDoc:has(._guide_config-generator) .aside {
+  display: none;
+}
+.VPDoc:has(._guide_config-generator) .container,
+.VPDoc:has(._guide_config-generator) .content,
+.VPDoc:has(._guide_config-generator) .content-container {
+  max-width: 100% !important;
+}
+
 /* ── Inline [[toc]] — hide on desktop where the right-rail TOC already shows ── */
 @media (min-width: 960px) {
   nav.table-of-contents {

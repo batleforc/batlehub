@@ -1,0 +1,17 @@
+[tools]
+node = "22"
+
+[env]
+NPM_CONFIG_USERCONFIG = "{{cwd}}/.npmrc"
+
+[tasks.install]
+description = "Install dependencies through the proxy"
+run = "npm install"
+
+[tasks.start]
+description = "Start the application"
+run = "npm start"
+
+[tasks.dev]
+description = "Start the application in watch mode"
+run = "npm run dev"

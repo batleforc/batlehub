@@ -187,22 +187,134 @@ Short version:
 
 ## 7. Running tests
 
+BatleHub has four layers of tests, each trading breadth for depth. Run them in order when you want full confidence; run just the first two for fast feedback.
+
+### Layer 0 — unit tests (no external dependencies)
+
 ```bash
-# All unit tests (no database required)
-cargo test
-
-# Single crate
-cargo test -p batlehub-core
-
-# Integration tests (require PostgreSQL)
-DATABASE_URL=postgresql://user:pass@localhost/batlehub_test cargo test -p batlehub-web
-
-# Coverage (requires cargo-llvm-cov)
-cargo llvm-cov --html
+cargo test                      # all crates
+cargo test -p batlehub-core     # domain logic only
+cargo test -p batlehub-adapters # I/O adapter implementations
 ```
 
-Tests for a module live at the bottom of the same file under `#[cfg(test)]`.
-Integration tests for the web layer are in `crates/web/tests/integration.rs`.
+Every module keeps its unit tests at the bottom of the same source file under `#[cfg(test)]`. These tests use in-process mocks and stubs only — no database, no HTTP server, no network.
+
+**What they validate:** Pure business logic — publish rules, quota checks, RBAC decisions, cache-key formatting, wire-format parsing. They run in milliseconds and must always pass on any developer machine.
+
+---
+
+### Layer 1 — web integration tests (in-memory backends, no PostgreSQL)
+
+```bash
+cargo test -p batlehub-web
+```
+
+`crates/web/tests/integration.rs` (~6 000 lines) spins up a real actix-web application using `actix_web::test::init_service` and in-memory backends (no Postgres, no S3). It sends actual HTTP requests and asserts on status codes, headers, and JSON bodies.
+
+**What they validate:**
+- All proxy handlers across every registry type — correct URL routing, wire-format parsing, upstream passthrough, cache behaviour, and error mapping.
+- Auth middleware — anonymous fallback, bearer token resolution, role mapping.
+- Rate-limit middleware — per-user buckets, per-group buckets, warn/block modes, 429 responses.
+- Back-office admin API — package listing, block/unblock, audit log, quota management, yank/unyank.
+- Local registry publish/pull cycle — three-phase commit, quota enforcement, ownership checks.
+
+These tests cover the largest surface area and run without any external services. They are the primary regression net for handler changes.
+
+---
+
+### Layer 2 — example structure tests (no network)
+
+```bash
+cargo test -p batlehub-examples --test structure
+```
+
+`crates/examples/tests/structure.rs` is a single static-analysis test (`all_examples_are_complete`) that iterates over all 12 example directories and asserts:
+- Required files are present (`mise.toml`, `README.md`, a start script, a config file).
+- TOML and JSON files parse without error.
+- Config files reference the expected proxy URL placeholder.
+- Shell scripts carry a proper shebang line.
+
+**What they validate:** That every shipped example is complete and well-formed before anyone runs it. Catches copy-paste omissions and accidental deletions immediately, without touching the network or running any package manager.
+
+---
+
+### Layer 3 — local registry upload/pull cycle (no network, curl only)
+
+```bash
+cargo test -p batlehub-examples --test local_registry
+```
+
+`crates/examples/tests/local_registry.rs` starts a genuine actix-web batlehub proxy in `RegistryMode::Local` with fully in-memory backends (no PostgreSQL, no upstream registries) and runs an end-to-end publish → download cycle for every publish-capable registry type.
+
+| Test | Publish endpoint | Download check |
+|------|-----------------|---------------|
+| `local_npm_publish_pull` | `PUT /proxy/{reg}/{name}` | packument + tarball |
+| `local_cargo_publish_pull` | `PUT /proxy/{reg}/api/v1/crates/new` | `.crate` download |
+| `local_go_publish_pull` | `PUT /proxy/{reg}/{module}@v/{ver}.zip` | list, `.mod`, `.zip` |
+| `local_rubygems_publish_pull` | `POST /proxy/{reg}/api/v1/gems` | `.gem` download |
+| `local_composer_publish_pull` | `POST /proxy/{reg}/api/upload` | p2 metadata + dist |
+| `local_maven_publish_pull` | `PUT /proxy/{reg}/maven2/{path}` | artifact download |
+| `local_openvsx_publish_pull` | `PUT /proxy/{reg}/{pub}.{name}/{ver}/vsix` | vsix download |
+| `local_terraform_module_publish_pull` | `POST /proxy/{reg}/v1/modules/{ns}/{name}/{prov}/{ver}` | versions + artifact |
+
+**What they validate:** That the full publish → store → serve pipeline works end-to-end for each ecosystem's wire format (binary framing for cargo, TAR+gzip for rubygems, ZIP for composer and goproxy, etc.) without any network dependency or package-manager tooling. These tests are the first line of defence when touching `LocalRegistryService`, storage backends, or registry-specific handlers.
+
+---
+
+### Layer 4 — smoke tests against example apps (requires mise + language runtimes)
+
+```bash
+cargo test -p batlehub-examples --test smoke
+```
+
+`crates/examples/tests/smoke.rs` copies each example into a temp directory, runs `mise install` to pull language runtimes, starts the example application, and curls it. Tests that hit the network skip gracefully when the required tool is not available.
+
+**What they validate:**
+
+| Group | Tests | What is verified |
+|-------|-------|-----------------|
+| MockProxy routing | `proxy_curl_endpoints` | curl hits a hand-rolled TCP proxy; `X-Served-By: mock-proxy` header is returned |
+| Downstream tool routing | `vsix_downloads_via_proxy`, `github_asset_download_via_proxy` | curl downloads pass through the mock proxy log |
+| Real app startup | `api_npm`, `api_go`, `api_python`, `api_ruby`, `api_composer_console`, `api_maven_spring`, `api_maven_quarkus` | example app starts, HTTP `/` returns "hello" |
+| mise proxy routing | `mise_install_tasks_route_through_proxy` | package-manager requests are logged in the mock proxy |
+
+These are the highest-cost tests and are intended for CI environments with full language tooling. They confirm that the shipped examples actually work.
+
+---
+
+### Layer 5 — real proxy against live upstreams (requires network + language runtimes)
+
+```bash
+cargo test -p batlehub-examples --test real_proxy
+```
+
+`crates/examples/tests/real_proxy.rs` starts a genuine batlehub actix-web proxy with in-memory backends and **real upstream registry HTTP clients**, then uses actual package-manager tools to fetch packages through it.
+
+| Test | Tool / ecosystem | What is verified |
+|------|-----------------|-----------------|
+| `real_proxy_npm_api` | Node / npm | npm example installs deps via proxy, app starts, GET `/` → "hello" |
+| `real_proxy_cargo_fetch` | cargo | `cargo fetch` resolves a crate through the proxy |
+| `real_proxy_go_api` | Go | Go example builds + runs with `GOPROXY` pointing at the proxy |
+| `real_proxy_pypi_api` | Python / pip | Python example installs via proxy, app starts |
+| `real_proxy_rubygems_api` | Ruby / bundler | Ruby example installs via proxy, app starts |
+| `real_proxy_composer_console` | PHP / composer | composer install routes through proxy |
+| `real_proxy_maven_spring_api` | Java / Maven | Spring Boot example builds via proxy, starts, GET `/` → "hello" |
+| `real_proxy_maven_quarkus_api` | Java / Maven | Quarkus example builds via proxy, starts, GET `/` → "hello" |
+| `real_proxy_terraform_init` | Terraform | `terraform init` downloads provider through proxy |
+| `real_proxy_github_releases` | GitHub Releases | asset download resolves through proxy |
+| `real_proxy_openvsx_download` | Open VSX | extension download resolves through proxy |
+| `real_proxy_vscode_marketplace_download` | VS Code Marketplace | extension download resolves through proxy |
+
+**What they validate:** True end-to-end correctness of each `RegistryClient` implementation against the live upstream protocol — caching headers, redirect handling, tarball streaming, checksum verification. These are network-dependent and will skip or fail gracefully when the required toolchain or network is unavailable.
+
+---
+
+### Coverage
+
+```bash
+# Requires cargo-llvm-cov
+cargo llvm-cov --html
+```
 
 ---
 

@@ -1,0 +1,17 @@
+[tools]
+rust = "stable"
+
+[env]
+CARGO_HOME = "{{cwd}}/.cargo-home"
+
+[tasks.build]
+description = "Build the project through the proxy"
+run = "cargo build"
+
+[tasks.run]
+description = "Build and run the application"
+run = "cargo run"
+
+[tasks.test]
+description = "Run all tests"
+run = "cargo test"

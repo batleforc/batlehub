@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Copy this file to ~/.m2/settings.xml, or pass it with:
+        mvn -s examples/maven-quarkus/settings.xml quarkus:dev
+
+    It mirrors Maven Central through the batlehub proxy so all downloads
+    are cached and auditable — including the Quarkus BOM and extension JARs.
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0
+              https://maven.apache.org/xsd/settings-1.2.0.xsd">
+
+    <servers>
+        <server>
+            <id>batlehub</id>
+            <username>user</username>
+            <password>change-me-user-token</password>
+        </server>
+    </servers>
+
+    <mirrors>
+        <mirror>
+            <id>batlehub</id>
+            <name>BatleHub Maven Proxy</name>
+            <!-- mirrorOf = * means ALL repositories go through this mirror -->
+            <mirrorOf>*</mirrorOf>
+            <url>http://localhost:8080/proxy/my-maven/maven2/</url>
+        </mirror>
+    </mirrors>
+
+</settings>

@@ -79,7 +79,7 @@ pub async fn goproxy_latest(
     let mode = mode_map.get(&registry);
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        match local_svc.get_go_latest(&registry, module).await {
+        match local_svc.get_go_latest(&registry, module, &identity).await {
             Ok(info) => return Ok(HttpResponse::Ok().content_type("application/json").json(info)),
             Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}
             Err(CoreError::NotFound(_)) => {
@@ -124,7 +124,7 @@ pub async fn goproxy_list(
     let mode = mode_map.get(&registry);
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        match local_svc.get_go_version_list(&registry, module).await {
+        match local_svc.get_go_version_list(&registry, module, &identity).await {
             Ok(list) => {
                 return Ok(HttpResponse::Ok().content_type("text/plain").body(list));
             }
@@ -179,7 +179,7 @@ pub async fn goproxy_file(
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
         let local_result = match ext {
             "info" => local_svc
-                .get_go_info(&registry, module, version)
+                .get_go_info(&registry, module, version, &identity)
                 .await
                 .map(|info| {
                     HttpResponse::Ok()
@@ -187,21 +187,27 @@ pub async fn goproxy_file(
                         .json(info)
                 }),
             "mod" => local_svc
-                .get_go_mod(&registry, module, version)
+                .get_go_mod(&registry, module, version, &identity)
                 .await
                 .map(|content| {
                     HttpResponse::Ok()
                         .content_type("text/plain")
                         .body(content)
                 }),
-            "zip" => local_svc
-                .get_artifact(&registry, module, version)
-                .await
-                .map(|bytes| {
-                    HttpResponse::Ok()
-                        .content_type("application/zip")
-                        .body(bytes)
-                }),
+            "zip" => {
+                if let Err(e) = local_svc.check_prerelease_access(&registry, version, &identity).await {
+                    Err(e)
+                } else {
+                    local_svc
+                        .get_artifact(&registry, module, version, &identity)
+                        .await
+                        .map(|bytes| {
+                            HttpResponse::Ok()
+                                .content_type("application/zip")
+                                .body(bytes)
+                        })
+                }
+            }
             _ => return Err(AppError::not_found(format!("unknown goproxy file extension '.{ext}'"))),
         };
 

@@ -1,0 +1,33 @@
+[package]
+name = "batlehub-examples"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# No library source — this crate exists only to host the structure integration test.
+
+[dev-dependencies]
+toml.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+base64.workspace = true
+
+# Layer 4 — real proxy server (no PostgreSQL; in-memory backends + real upstreams)
+batlehub-web      = { path = "../web" }
+batlehub-adapters = { path = "../adapters" }
+batlehub-core     = { path = "../core" }
+batlehub-config   = { path = "../config" }
+tokio.workspace   = true
+actix-web.workspace = true
+utoipa-actix-web.workspace = true
+async-trait.workspace = true
+bytes.workspace   = true
+futures.workspace = true
+chrono.workspace  = true
+uuid.workspace    = true
+metrics-exporter-prometheus.workspace = true
+
+# payload construction for local_registry tests
+flate2 = "1"
+tar    = "0.4"
+zip    = "2"

@@ -37,6 +37,7 @@ const goRegistryName        = ref("go");
 const mavenRegistryName     = ref("maven");
 const terraformRegistryName = ref("terraform");
 const rubygemsRegistryName  = ref("rubygems");
+const composerRegistryName  = ref("composer");
 
 const { data: registries } = useApi<Array<{ name: string; type: string }>>(
   () => listRegistries() as Promise<{ data?: unknown; error?: unknown }>,
@@ -53,6 +54,7 @@ watch(registries, (regs) => {
   const mv  = regs.find(r => r.type === "maven");
   const tf  = regs.find(r => r.type === "terraform");
   const rg  = regs.find(r => r.type === "rubygems");
+  const cmp = regs.find(r => r.type === "composer");
   if (gh)  githubRegistryName.value = gh.name;
   if (np)  npmRegistryName.value = np.name;
   if (cg)  cargoRegistryName.value = cg.name;
@@ -61,6 +63,7 @@ watch(registries, (regs) => {
   if (mv)  mavenRegistryName.value = mv.name;
   if (tf)  terraformRegistryName.value = tf.name;
   if (rg)  rubygemsRegistryName.value = rg.name;
+  if (cmp) composerRegistryName.value = cmp.name;
 });
 
 const githubRegistries    = computed(() => registries.value?.filter(r => r.type === "github")    ?? []);
@@ -71,6 +74,7 @@ const goRegistries        = computed(() => registries.value?.filter(r => r.type 
 const mavenRegistries     = computed(() => registries.value?.filter(r => r.type === "maven")      ?? []);
 const terraformRegistries = computed(() => registries.value?.filter(r => r.type === "terraform")  ?? []);
 const rubygemsRegistries  = computed(() => registries.value?.filter(r => r.type === "rubygems")   ?? []);
+const composerRegistries  = computed(() => registries.value?.filter(r => r.type === "composer")   ?? []);
 
 async function copy(key: string, text: string) {
   await navigator.clipboard.writeText(text);
@@ -369,6 +373,70 @@ const terraformModuleSnippet = computed(() => {
     `# ${b}/proxy/${reg}/v1/modules/namespace/name/provider/1.0.0/artifact`,
   ].join("\n");
 });
+
+// ── Composer snippets ─────────────────────────────────────────────────────────
+
+const composerJsonSnippet = computed(() => {
+  const b   = base.value;
+  const reg = composerRegistryName.value || "composer";
+  const lines = [
+    `// composer.json — add inside the root object`,
+    `"repositories": [`,
+    `  {`,
+    `    "type": "composer",`,
+    `    "url": "${b}/proxy/${reg}/",`,
+  ];
+  if (isAuthenticated.value) {
+    lines.push(
+      `    "options": {`,
+      `      "http": {`,
+      `        "header": ["Authorization: Bearer ${token.value}"]`,
+      `      }`,
+      `    }`,
+    );
+  }
+  lines.push(`  }`, `]`);
+  return lines.join("\n");
+});
+
+const composerAuthSnippet = computed(() => {
+  let hostPart = base.value;
+  try { hostPart = new URL(base.value).hostname; } catch { /* keep */ }
+  return [
+    `// auth.json — project root or ~/.config/composer/auth.json`,
+    `// Never commit this file!`,
+    `{`,
+    `  "http-basic": {`,
+    `    "${hostPart}": {`,
+    `      "username": "${isAuthenticated.value ? (netrcLogin.value ?? "user") : "user"}",`,
+    `      "password": "${isAuthenticated.value ? token.value : "<your-token>"}"`,
+    `    }`,
+    `  }`,
+    `}`,
+  ].join("\n");
+});
+
+const composerPublishSnippet = computed(() => {
+  const b   = base.value;
+  const reg = composerRegistryName.value || "composer";
+  const tok = isAuthenticated.value ? token.value : "<your-token>";
+  return [
+    `# Publish a package (Local / Hybrid mode only)`,
+    `# ZIP must contain composer.json with "name" (vendor/pkg) and "version"`,
+    `zip -r vendor-pkg-1.0.0.zip vendor-pkg-1.0.0/`,
+    ``,
+    `curl -X POST \\`,
+    `  -H "Authorization: Bearer ${tok}" \\`,
+    `  -H "Content-Type: application/zip" \\`,
+    `  --data-binary @vendor-pkg-1.0.0.zip \\`,
+    `  "${b}/proxy/${reg}/api/upload"`,
+    ``,
+    `# Yank a version`,
+    `curl -X DELETE \\`,
+    `  -H "Authorization: Bearer ${tok}" \\`,
+    `  "${b}/proxy/${reg}/api/packages/vendor/pkg/versions/1.0.0"`,
+  ].join("\n");
+});
 </script>
 
 <template>
@@ -391,7 +459,7 @@ const terraformModuleSnippet = computed(() => {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <div class="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-9">
           <div class="space-y-1">
             <Label for="sg-github">GitHub registry</Label>
             <Input id="sg-github" v-model="githubRegistryName" list="sg-github-list" placeholder="github" class="font-mono text-sm" />
@@ -448,13 +516,20 @@ const terraformModuleSnippet = computed(() => {
               <option v-for="r in rubygemsRegistries" :key="r.name" :value="r.name" />
             </datalist>
           </div>
+          <div class="space-y-1">
+            <Label for="sg-composer">Composer registry</Label>
+            <Input id="sg-composer" v-model="composerRegistryName" list="sg-composer-list" placeholder="composer" class="font-mono text-sm" />
+            <datalist id="sg-composer-list">
+              <option v-for="r in composerRegistries" :key="r.name" :value="r.name" />
+            </datalist>
+          </div>
         </div>
       </CardContent>
     </Card>
 
     <!-- ── Tool config tabs ── -->
     <Tabs default-value="mise">
-      <TabsList :class="isAuthenticated ? 'grid grid-cols-9' : 'grid grid-cols-8'">
+      <TabsList :class="isAuthenticated ? 'grid grid-cols-10' : 'grid grid-cols-9'">
         <TabsTrigger value="mise">mise</TabsTrigger>
         <TabsTrigger value="npm">npm</TabsTrigger>
         <TabsTrigger value="cargo">Cargo</TabsTrigger>
@@ -463,6 +538,7 @@ const terraformModuleSnippet = computed(() => {
         <TabsTrigger value="maven">Maven</TabsTrigger>
         <TabsTrigger value="terraform">Terraform</TabsTrigger>
         <TabsTrigger value="rubygems">RubyGems</TabsTrigger>
+        <TabsTrigger value="composer">Composer</TabsTrigger>
         <TabsTrigger v-if="isAuthenticated" value="netrc">.netrc</TabsTrigger>
       </TabsList>
 
@@ -808,6 +884,70 @@ const terraformModuleSnippet = computed(() => {
                 <code class="font-mono bg-muted px-1 rounded">mode = "local"</code> or
                 <code class="font-mono bg-muted px-1 rounded">mode = "hybrid"</code> in
                 <code class="font-mono bg-muted px-1 rounded">config.toml</code> to accept publishes.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      </TabsContent>
+
+      <!-- Composer -->
+      <TabsContent value="composer">
+        <Card>
+          <CardHeader>
+            <div class="flex items-center justify-between">
+              <CardDescription>
+                Proxy PHP Composer package downloads from
+                <a href="https://packagist.org" target="_blank" rel="noopener" class="underline underline-offset-2 hover:text-foreground transition-colors">Packagist</a>
+                or publish private packages via ZIP upload when the registry is configured in
+                <code class="text-xs font-mono bg-muted px-1 rounded">Local</code>
+                or <code class="text-xs font-mono bg-muted px-1 rounded">Hybrid</code> mode.
+                Authentication uses <code class="text-xs font-mono bg-muted px-1 rounded">auth.json</code>
+                (HTTP Basic) rather than a token header — this is a Composer convention.
+              </CardDescription>
+              <Badge variant="outline" class="shrink-0 font-mono text-xs ml-4">Composer</Badge>
+            </div>
+          </CardHeader>
+          <CardContent class="space-y-4">
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">
+                <code class="font-mono">composer.json</code> — add the proxy as a repository
+              </p>
+              <CodeBlock :code="composerJsonSnippet" lang="jsonc">
+                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('composer-json', composerJsonSnippet)">
+                  {{ copied === 'composer-json' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </CodeBlock>
+            </div>
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">
+                <code class="font-mono">auth.json</code> — credentials (never commit this file)
+              </p>
+              <CodeBlock :code="composerAuthSnippet" lang="jsonc">
+                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('composer-auth', composerAuthSnippet)">
+                  {{ copied === 'composer-auth' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </CodeBlock>
+              <p class="text-xs text-muted-foreground mt-1.5">
+                Place <code class="font-mono bg-muted px-1 rounded">auth.json</code> in your project root or
+                <code class="font-mono bg-muted px-1 rounded">~/.config/composer/auth.json</code> for global use.
+                When present, Composer sends HTTP Basic credentials automatically — no
+                <code class="font-mono bg-muted px-1 rounded">options.http.header</code> needed in
+                <code class="font-mono bg-muted px-1 rounded">composer.json</code>.
+              </p>
+            </div>
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">Publish a private package (Local / Hybrid mode)</p>
+              <CodeBlock :code="composerPublishSnippet" lang="bash">
+                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('composer-publish', composerPublishSnippet)">
+                  {{ copied === 'composer-publish' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </CodeBlock>
+              <p class="text-xs text-muted-foreground mt-1.5">
+                The ZIP must contain a valid <code class="font-mono bg-muted px-1 rounded">composer.json</code>
+                at its root or inside a single top-level directory (GitHub archive layout).
+                The <code class="font-mono bg-muted px-1 rounded">name</code> field must use the
+                <code class="font-mono bg-muted px-1 rounded">vendor/package</code> format and the
+                <code class="font-mono bg-muted px-1 rounded">version</code> field determines the published version.
               </p>
             </div>
           </CardContent>

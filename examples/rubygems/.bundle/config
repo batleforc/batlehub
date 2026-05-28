@@ -1,0 +1,8 @@
+# Bundler configuration — equivalent to running:
+#   bundle config set --local mirror.https://rubygems.org http://localhost:8080/proxy/my-gems/
+#   bundle config set --local mirror.https://rubygems.org.fallback_timeout 5
+BUNDLE_MIRROR__HTTPS://RUBYGEMS__ORG/: "http://localhost:8080/proxy/my-gems/"
+BUNDLE_MIRROR__HTTPS://RUBYGEMS__ORG/.FALLBACK_TIMEOUT: "5"
+
+# Pass the auth token via Basic auth (any username, token as password).
+BUNDLE_MY__GEMS__LOCALHOST__8080: "user:change-me-user-token"

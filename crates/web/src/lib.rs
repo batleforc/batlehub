@@ -276,6 +276,7 @@ pub use handlers::healthz::healthz;
 pub use handlers::metrics::prometheus_metrics;
 pub use handlers::proxy::cargo::CargoIndexProxy;
 pub use middleware::AuthMiddlewareFactory;
+pub use middleware::IpBlockMiddlewareFactory;
 pub use middleware::RateLimitMiddlewareFactory;
 pub use middleware::RateLimitService;
 
@@ -321,12 +322,16 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
         },
         back_office::{
             audit::audit_log,
+            beta_channel::{add_beta_member, list_beta_members, remove_beta_member},
             bulk::{bulk_delete, bulk_unyank, bulk_yank as bulk_yank_handler},
             health::{clear_registry_cache, registry_health},
+            ip_blocks::{block_ip, list_blocked_ips, unblock_ip},
             ownership::{add_package_owner, list_package_owners, remove_package_owner},
             packages::{block_package, bulk_block_packages, bulk_unblock_packages, invalidate_package, list_packages as admin_list_packages, package_detail, unblock_package},
             quota::{get_quota_for_user, list_quota, list_quota_for_registry, reset_quota_for_user},
             stats::admin_stats,
+            team_namespaces::{claim_namespace, list_namespaces, my_namespace_packages, my_namespaces, release_namespace},
+            visibility::{get_package_visibility, set_package_visibility},
             warming::warm_registry,
         },
         front_office::{
@@ -341,6 +346,11 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             // maven (literal "maven2" segment) >
             // openvsx vsix (literal "vsix") > npm audit (literal "/-/npm/v1/audit/quick") >
             // npm tarball (literal "tarball") > shared version metadata > shared packument
+            // composer: upload/yank (literal "api") > p2 (literal "p2") > dist > packages.json
+            composer::{
+                composer_dist, composer_packages_json, composer_p2_metadata,
+                composer_upload, composer_yank,
+            },
             cargo::{
                 cargo_owners, cargo_publish, cargo_registry_config, cargo_registry_index,
                 cargo_unyank, cargo_yank, download_crate,
@@ -424,6 +434,12 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(gem_specs_full);
     cfg.service(gem_specs_latest);
     cfg.service(gem_specs_prerelease);
+    // Composer: literal "api" routes before "p2" before "dist" before "packages.json"
+    cfg.service(composer_upload);         // POST …/api/upload
+    cfg.service(composer_yank);           // DELETE …/api/packages/{vendor}/{package}/versions/{version}
+    cfg.service(composer_p2_metadata);    // GET …/p2/{path:.*}
+    cfg.service(composer_dist);           // GET …/dist/{vendor}/{package}/{version}
+    cfg.service(composer_packages_json);  // GET …/packages.json
     // OpenVSX/VSCode VSIX publish (PUT) and download (GET) — same path, different method
     cfg.service(vsix_publish);
     cfg.service(download_vsix);
@@ -461,10 +477,28 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(list_package_owners);
     cfg.service(add_package_owner);
     cfg.service(remove_package_owner);
+    // Package visibility admin (wildcard {name:.*} — registered after literal-suffix /owners routes)
+    cfg.service(get_package_visibility);
+    cfg.service(set_package_visibility);
+    // Team namespace admin
+    cfg.service(list_namespaces);
+    cfg.service(claim_namespace);
+    cfg.service(release_namespace); // wildcard {prefix:.*}
+    // Team namespace user-facing
+    cfg.service(my_namespaces);
+    cfg.service(my_namespace_packages); // wildcard {prefix:.*}
     // Bulk operations admin
     cfg.service(bulk_yank_handler);
     cfg.service(bulk_unyank);
     cfg.service(bulk_delete);
+    // Beta channel admin
+    cfg.service(list_beta_members);
+    cfg.service(add_beta_member);
+    cfg.service(remove_beta_member);
+    // IP block admin
+    cfg.service(list_blocked_ips);
+    cfg.service(block_ip);
+    cfg.service(unblock_ip);
 }
 
 /// Return the raw OpenAPI JSON spec (auto-collected from route registrations).

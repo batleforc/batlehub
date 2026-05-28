@@ -15,6 +15,7 @@ import SetupGuide from "@/pages/SetupGuide.vue";
 import TokensPage from "@/pages/TokensPage.vue";
 import MyProfile from "@/pages/MyProfile.vue";
 import AdminLayout from "@/layouts/AdminLayout.vue";
+import MyNamespace from "@/pages/MyNamespace.vue";
 
 const OIDC_STATE_KEY = "oidc_state";
 
@@ -39,6 +40,11 @@ export const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: "/my-namespace",
+      component: MyNamespace,
+      meta: { requiresAuth: true },
+    },
+    {
       path: "/admin",
       component: AdminLayout,
       meta: { requiresAdmin: true },
@@ -48,6 +54,9 @@ export const router = createRouter({
         { path: "bulk",            component: AdminBulk },
         { path: "audit-log",       component: AuditLog },
         { path: "health",          component: AdminHealth },
+        { path: "ip-blocks",       component: () => import("@/pages/AdminIpBlocks.vue") },
+        { path: "beta-channel",    component: () => import("@/pages/AdminBetaChannel.vue") },
+        { path: "team-namespaces", component: () => import("@/pages/AdminTeamNamespaces.vue") },
       ],
     },
   ],

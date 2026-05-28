@@ -18,8 +18,8 @@ port = 8080
 # static_dir = "./ui/dist"
 
 [database]
-type            = "postgresql"
-url             = "postgresql://batlehub:changeme@localhost:5432/batlehub"
+type = "postgresql"
+url = "postgresql://batlehub:changeme@localhost:5432/batlehub"
 max_connections = 10
 
 # ── Auth providers (evaluated in order; first match wins) ─────────────────────
@@ -28,34 +28,34 @@ max_connections = 10
 type = "token"
 
 [[auth.tokens]]
-value   = "change-me-admin-token"
-role    = "admin"
+value = "change-me-admin-token"
+role = "admin"
 user_id = "admin"
 
 [[auth.tokens]]
-value   = "change-me-user-token"
-role    = "user"
+value = "change-me-user-token"
+role = "user"
 user_id = "user-1"
 
 # Authentik OIDC — started by task compose:s3:db, UI at http://localhost:9000
 # Default credentials: akadmin / akadmin
 # Blueprint at deploy/auth/batlehub.yaml provisions the client app automatically.
 [[auth]]
-type          = "oidc"
-issuer_url    = "http://localhost:9000/application/o/proxy-auth/"
-client_id     = "proxy-auth"
+type = "oidc"
+issuer_url = "http://localhost:9000/application/o/proxy-auth/"
+client_id = "proxy-auth"
 client_secret = "proxy-auth-secret"
-redirect_uri  = "http://localhost:8080/api/v1/auth/oidc/callback"
-scopes        = ["openid", "profile", "email", "groups"]
+redirect_uri = "http://localhost:8080/api/v1/auth/oidc/callback"
+scopes = ["openid", "profile", "email", "groups"]
 # Point at the Vite dev server when running ui separately.
-frontend_url  = "http://localhost:5173"
+frontend_url = "http://localhost:5173"
 
 user_id_claim = "preferred_username"
-role_claim    = "groups"
+role_claim = "groups"
 
 [auth.role_mappings]
 "authentik Admins" = "admin"
-"proxy-users"      = "user"
+"proxy-users" = "user"
 
 # ── Storage — RustFS (S3-compatible) ─────────────────────────────────────────
 #
@@ -63,18 +63,18 @@ role_claim    = "groups"
 # Credentials are read from AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars.
 
 [storage]
-type             = "s3"
-bucket           = "artifacts"
-region           = "us-east-1"
-endpoint_url     = "http://localhost:9900"
-force_path_style = true   # required for RustFS and other non-AWS S3 stores
+type = "s3"
+bucket = "artifacts"
+region = "us-east-1"
+endpoint_url = "http://localhost:9900"
+force_path_style = true  # required for RustFS and other non-AWS S3 stores
 
 # ── OpenTelemetry ─────────────────────────────────────────────────────────────
 # Jaeger UI: http://localhost:16686
 # Jaeger is started by task compose:s3:db.
 
 [otel]
-endpoint     = "http://localhost:4317"
+endpoint = "http://localhost:4317"
 service_name = "batlehub"
 
 # ── Registries ────────────────────────────────────────────────────────────────
@@ -85,8 +85,8 @@ name = "github"
 
 [registries.rbac]
 anonymous = []
-user      = ["releases:read", "source:read"]
-admin     = ["*"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
 
 [[registries]]
 type = "npm"
@@ -94,8 +94,8 @@ name = "npm"
 
 [registries.rbac]
 anonymous = ["releases:read", "source:read"]
-user      = ["releases:read", "source:read"]
-admin     = ["*"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
 
 [[registries]]
 type = "cargo"
@@ -103,8 +103,8 @@ name = "cargo"
 
 [registries.rbac]
 anonymous = ["releases:read", "source:read"]
-user      = ["releases:read", "source:read"]
-admin     = ["*"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
 
 [[registries]]
 type = "goproxy"
@@ -112,8 +112,8 @@ name = "go"
 
 [registries.rbac]
 anonymous = ["releases:read", "source:read"]
-user      = ["releases:read", "source:read"]
-admin     = ["*"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
 
 [[registries]]
 type = "openvsx"
@@ -121,30 +121,30 @@ name = "openvsx"
 
 [registries.rbac]
 anonymous = ["releases:read", "source:read"]
-user      = ["releases:read", "source:read"]
-admin     = ["*"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
 
 [[registries]]
-type   = "maven"
-name   = "my-maven"
-mode   = "hybrid"
+type = "maven"
+name = "my-maven"
+mode = "hybrid"
 upstreams = ["https://repo1.maven.org/maven2/"]
 
 [registries.rbac]
 anonymous = ["releases:read", "source:read"]
-user      = ["releases:read", "source:read"]
-admin     = ["*"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
 
 [[registries]]
-type   = "rubygems"
-name   = "my-gems"
-mode   = "hybrid"
+type = "rubygems"
+name = "my-gems"
+mode = "hybrid"
 upstreams = ["https://rubygems.org"]
 
 [registries.rbac]
 anonymous = ["releases:read", "source:read"]
-user      = ["releases:read", "source:read"]
-admin     = ["*"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
 
 [[registries]]
 type = "terraform"
@@ -154,5 +154,16 @@ upstreams = ["https://registry.terraform.io/v1/"]
 
 [registries.rbac]
 anonymous = ["releases:read", "source:read"]
-user      = ["releases:read", "source:read"]
-admin     = ["*"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
+
+[[registries]]
+type = "composer"
+name = "my-composer"
+mode = "hybrid"
+upstreams = ["https://repo.packagist.org"]
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]

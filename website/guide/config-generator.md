@@ -1,3 +1,7 @@
+---
+aside: false
+---
+
 # Config Generator
 
 Fill in the form below to generate a `config.toml` for your BatleHub instance. The preview on the right updates live as you type.

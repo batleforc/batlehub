@@ -1,0 +1,10 @@
+[tools]
+node = "22"
+
+[env]
+PROXY_URL = "http://localhost:8080/proxy/my-openvsx"
+PROXY_TOKEN = "change-me-user-token"
+
+[tasks.install-extensions]
+description = "Install VS Code / VSCodium extensions through the Open VSX proxy"
+run = "bash install-extension.sh"

@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { blockPackage, unblockPackage, bulkBlockPackages, bulkUnblockPackages, listRegistries } from "@/client/sdk.gen";
 import type { RegistryInfo } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
+
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
+import Select from "@/components/ui/select/Select.vue";
 import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
 } from "@/components/ui/table";
@@ -52,6 +54,10 @@ interface PackageDetailResponse {
   recent_events: PackageEventDto[];
 }
 
+function isPreRelease(version: string): boolean {
+  return version.includes("-");
+}
+
 const route = useRoute();
 const router = useRouter();
 
@@ -93,6 +99,92 @@ const { data, error, loading, reload } = useApi<PackageDetailResponse>(
     }) as Promise<{ data?: unknown; error?: unknown }>,
   [token, registry, name],
 );
+
+interface BetaChannelMemberDto {
+  principal_type: string;
+  principal_id: string;
+  granted_by: string | null;
+}
+
+const {
+  data: betaMembers,
+  loading: betaLoading,
+  reload: reloadBeta,
+} = useApi<BetaChannelMemberDto[]>(
+  () => {
+    if (!registry.value) return Promise.resolve({ data: [] }) as Promise<{ data?: unknown; error?: unknown }>;
+    return fetch(
+      `${API_BASE}/api/v1/admin/registries/${encodeURIComponent(registry.value)}/beta-channel`,
+      { headers: token.value ? { Authorization: `Bearer ${token.value}` } : {} },
+    ).then(async (r) => {
+      if (!r.ok) throw new Error(await r.text());
+      return { data: await r.json() };
+    }) as Promise<{ data?: unknown; error?: unknown }>;
+  },
+  [token, registry],
+);
+
+const betaExpanded = ref(false);
+
+// ── Package visibility ────────────────────────────────────────────────────────
+
+type Visibility = "public" | "internal" | "team";
+
+const {
+  data: visibilityData,
+  reload: reloadVisibility,
+} = useApi<{ visibility: Visibility }>(
+  () => {
+    if (!registry.value || !name.value) {
+      return Promise.resolve({ data: undefined }) as Promise<{ data?: unknown; error?: unknown }>;
+    }
+    return fetch(
+      `${API_BASE}/api/v1/admin/registries/${encodeURIComponent(registry.value)}/packages/${name.value}/visibility`,
+      { headers: token.value ? { Authorization: `Bearer ${token.value}` } : {} },
+    ).then(async (r) => {
+      if (!r.ok) throw new Error(await r.text());
+      return { data: await r.json() };
+    }) as Promise<{ data?: unknown; error?: unknown }>;
+  },
+  [token, registry, name],
+);
+
+const selectedVisibility = ref<Visibility>("public");
+watch(visibilityData, (v) => { if (v) selectedVisibility.value = v.visibility; });
+
+const visibilityLoading = ref(false);
+const visibilityError = ref<string | null>(null);
+
+const visibilityOptions = [
+  { value: "public",   label: "Public — anyone can download" },
+  { value: "internal", label: "Internal — authenticated users only" },
+  { value: "team",     label: "Team — namespace group members only" },
+];
+
+async function saveVisibility() {
+  if (!registry.value || !name.value) return;
+  visibilityLoading.value = true;
+  visibilityError.value = null;
+  try {
+    const r = await fetch(
+      `${API_BASE}/api/v1/admin/registries/${encodeURIComponent(registry.value)}/packages/${name.value}/visibility`,
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token.value ? { Authorization: `Bearer ${token.value}` } : {}),
+        },
+        body: JSON.stringify({ visibility: selectedVisibility.value }),
+      },
+    );
+    if (!r.ok) throw new Error(await r.text());
+    reloadVisibility();
+  } catch (e) {
+    visibilityError.value = e instanceof Error ? e.message : "Unknown error";
+  } finally {
+    visibilityLoading.value = false;
+  }
+}
 
 const upstreamUrl = computed(() => {
   if (!registry.value || !name.value) return null;
@@ -327,7 +419,10 @@ async function bulkUnblockVersions() {
                     class="cursor-pointer"
                   />
                 </TableCell>
-                <TableCell class="font-mono text-xs">{{ v.version }}</TableCell>
+                <TableCell class="font-mono text-xs">
+                  {{ v.version }}
+                  <Badge v-if="isPreRelease(v.version)" variant="outline" class="ml-1 text-xs align-middle">pre-release</Badge>
+                </TableCell>
                 <TableCell class="font-mono text-xs text-muted-foreground">{{ v.artifact ?? "—" }}</TableCell>
                 <TableCell>
                   <div class="space-y-0.5">
@@ -390,6 +485,101 @@ async function bulkUnblockVersions() {
             </TableBody>
           </Table>
           <p v-if="data.versions.length === 0" class="p-6 text-sm text-muted-foreground text-center">No versions tracked yet.</p>
+        </CardContent>
+      </Card>
+
+      <!-- Beta channel access -->
+      <Card>
+        <CardHeader>
+          <div class="flex items-center justify-between">
+            <button
+              class="flex items-center gap-2 text-base font-semibold hover:text-primary transition-colors"
+              @click="betaExpanded = !betaExpanded"
+            >
+              Beta Channel Access
+              <span class="text-muted-foreground text-xs font-normal">
+                {{ betaExpanded ? "▲ hide" : "▼ show" }}
+              </span>
+              <Badge v-if="betaMembers && betaMembers.length > 0" variant="secondary" class="text-xs ml-1">
+                {{ betaMembers.length }} member{{ betaMembers.length > 1 ? "s" : "" }}
+              </Badge>
+            </button>
+            <Button
+              v-if="betaExpanded"
+              variant="outline"
+              size="sm"
+              :disabled="betaLoading"
+              @click="reloadBeta"
+            >
+              {{ betaLoading ? "Loading…" : "Refresh" }}
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent v-if="betaExpanded" class="p-0">
+          <p class="px-6 py-2 text-xs text-muted-foreground border-b">
+            Pre-release versions (marked <span class="font-mono">pre-release</span> above) are only accessible to the users and groups listed here.
+          </p>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Type</TableHead>
+                <TableHead>Principal ID</TableHead>
+                <TableHead>Granted by</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <TableRow
+                v-for="m in betaMembers"
+                :key="m.principal_type + ':' + m.principal_id"
+              >
+                <TableCell>
+                  <Badge :variant="m.principal_type === 'user' ? 'default' : 'secondary'" class="text-xs capitalize">
+                    {{ m.principal_type }}
+                  </Badge>
+                </TableCell>
+                <TableCell class="font-mono text-sm">{{ m.principal_id }}</TableCell>
+                <TableCell class="text-sm text-muted-foreground">{{ m.granted_by ?? "—" }}</TableCell>
+              </TableRow>
+            </TableBody>
+          </Table>
+          <p
+            v-if="!betaMembers || betaMembers.length === 0"
+            class="p-6 text-sm text-muted-foreground text-center"
+          >
+            No beta channel members — pre-release versions are not accessible to anyone.
+          </p>
+        </CardContent>
+      </Card>
+
+      <!-- Package visibility -->
+      <Card>
+        <CardHeader>
+          <CardTitle class="text-base">Package visibility</CardTitle>
+          <CardDescription>Controls who can download this package (all versions share the same setting).</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div class="flex items-center gap-3 flex-wrap">
+            <Badge
+              :variant="selectedVisibility === 'public' ? 'default' : selectedVisibility === 'internal' ? 'secondary' : 'outline'"
+              :class="selectedVisibility === 'team' ? 'border-blue-500 text-blue-600' : ''"
+              class="capitalize text-xs"
+            >
+              {{ visibilityData?.visibility ?? "public" }}
+            </Badge>
+            <Select
+              v-model="selectedVisibility"
+              :options="visibilityOptions"
+              class="w-72"
+            />
+            <Button
+              size="sm"
+              :disabled="visibilityLoading || selectedVisibility === (visibilityData?.visibility ?? 'public')"
+              @click="saveVisibility"
+            >
+              {{ visibilityLoading ? "Saving…" : "Save" }}
+            </Button>
+          </div>
+          <p v-if="visibilityError" class="mt-2 text-sm text-destructive">{{ visibilityError }}</p>
         </CardContent>
       </Card>
 

@@ -17,14 +17,15 @@ use utoipa_actix_web::AppExt;
 use batlehub_adapters::{
     auth::{
         KubernetesAuthProvider, OidcAuthProvider, OidcSsoFlow, StaticTokenAuthProvider,
-        UserTokenAuthProvider,
+        UserTokenAuthProvider, hash_static_token,
     },
-    db::{PgArtifactMetaRepository, PgOwnershipStore, PgPackageRepository, PgQuotaRepository},
+    db::{PgArtifactMetaRepository, PgBetaChannelStore, PgOwnershipStore, PgPackageRepository, PgQuotaRepository, PgTeamNamespaceStore},
     local_registry::PostgresLocalRegistry,
     registry::{
-        CargoRegistryClient, FanoutRegistryClient, GoProxyRegistryClient, GithubRegistryClient,
-        MavenRegistryClient, NpmRegistryClient, OpenVsxRegistryClient, RubyGemsRegistryClient,
-        TerraformRegistryClient, VsCodeMarketplaceRegistryClient, UpstreamHttpOptions,
+        CargoRegistryClient, ComposerRegistryClient, FanoutRegistryClient, GoProxyRegistryClient,
+        GithubRegistryClient, MavenRegistryClient, NpmRegistryClient, OpenVsxRegistryClient,
+        RubyGemsRegistryClient, TerraformRegistryClient, VsCodeMarketplaceRegistryClient,
+        UpstreamHttpOptions,
     },
     storage::{FilesystemStorageBackend, StorageRouter},
 };
@@ -35,12 +36,12 @@ use batlehub_config::{
 use batlehub_adapters::cache::{InMemoryCacheStore, PgCacheStore};
 #[cfg(feature = "cache-redis")]
 use batlehub_adapters::cache::RedisCacheStore;
-use batlehub_adapters::rate_limit::{InMemoryRateLimitStore, PgRateLimitStore};
+use batlehub_adapters::rate_limit::{InMemoryIpBlockStore, InMemoryRateLimitStore, PgIpBlockStore, PgRateLimitStore};
 #[cfg(feature = "cache-redis")]
-use batlehub_adapters::rate_limit::RedisRateLimitStore;
+use batlehub_adapters::rate_limit::{RedisIpBlockStore, RedisRateLimitStore};
 use batlehub_core::{
     entities::Role,
-    ports::{AuthProvider, CacheStore, RateLimitStore, UserTokenRepository},
+    ports::{AuthProvider, BetaChannelPort, CacheStore, IpBlockStore, RateLimitStore, UserTokenRepository},
     rules::{BlockListRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule},
     services::{
         AdminService, LocalRegistryService, ProxyMetrics, ProxyService, QuotaEnforcement,
@@ -49,7 +50,7 @@ use batlehub_core::{
     },
 };
 use batlehub_core::services::WarmingService;
-use batlehub_web::{configure_app, healthz, openapi_spec, prometheus_metrics, AccessConfig, ApiDoc, CargoIndexProxy, RegistryMap, RegistryModeMap, RateLimitMiddlewareFactory, RateLimitService, UpstreamMap};
+use batlehub_web::{configure_app, healthz, openapi_spec, prometheus_metrics, AccessConfig, ApiDoc, CargoIndexProxy, IpBlockMiddlewareFactory, RegistryMap, RegistryModeMap, RateLimitMiddlewareFactory, RateLimitService, UpstreamMap};
 use batlehub_web::handlers::back_office::warming::WarmingServiceMap;
 use metrics_exporter_prometheus::PrometheusBuilder;
 
@@ -104,6 +105,16 @@ struct Cli {
 enum Command {
     /// Print the OpenAPI spec to stdout and exit (for frontend code generation).
     DumpSpec,
+    /// Hash a plain-text token with Argon2id and print the result.
+    ///
+    /// Use the output as the `value` in `[[auth.tokens]]` to avoid storing
+    /// credentials in plain text.  Example:
+    ///
+    ///   batlehub hash-token my-secret-token
+    HashToken {
+        /// The plain-text token to hash.
+        token: String,
+    },
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -113,10 +124,17 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Handle subcommands before loading config or initialising anything heavy.
-    if let Some(Command::DumpSpec) = cli.command {
-        let spec = openapi_spec();
-        println!("{}", spec.to_pretty_json().expect("serialize openapi spec"));
-        return Ok(());
+    match cli.command {
+        Some(Command::DumpSpec) => {
+            let spec = openapi_spec();
+            println!("{}", spec.to_pretty_json().expect("serialize openapi spec"));
+            return Ok(());
+        }
+        Some(Command::HashToken { token }) => {
+            println!("{}", hash_static_token(&token));
+            return Ok(());
+        }
+        None => {}
     }
 
     let config =
@@ -381,6 +399,38 @@ async fn main() -> Result<()> {
         as Arc<dyn batlehub_core::ports::OwnershipPort>;
     let versioning_map = build_versioning_map(&config.registries);
     let signing_map = build_signing_map(&config.registries);
+    let beta_channel_store: Arc<dyn BetaChannelPort> =
+        Arc::new(PgBetaChannelStore::new(repo.pool()));
+    let beta_channel_map = build_beta_channel_map(Arc::clone(&beta_channel_store), &config.registries);
+    let team_namespace_store: Arc<dyn batlehub_core::ports::TeamNamespacePort> =
+        Arc::new(PgTeamNamespaceStore::new(repo.pool()));
+
+    // ── IP blocking store ─────────────────────────────────────────────────────
+    let ip_block_store: Arc<dyn IpBlockStore> = match config.cache.cache_type.as_str() {
+        "postgres" => {
+            tracing::info!("ip block store: postgres");
+            Arc::new(PgIpBlockStore::new(repo.pool()))
+        }
+        "redis" => {
+            #[cfg(feature = "cache-redis")]
+            {
+                let url = config.cache.url.as_deref().unwrap_or("redis://127.0.0.1:6379");
+                tracing::info!(url, "ip block store: redis");
+                Arc::new(
+                    RedisIpBlockStore::new(url)
+                        .await
+                        .context("connecting to Redis ip block store")?,
+                )
+            }
+            #[cfg(not(feature = "cache-redis"))]
+            {
+                tracing::warn!("compiled without cache-redis feature; falling back to in-memory ip block store");
+                Arc::new(InMemoryIpBlockStore::new())
+            }
+        }
+        _ => Arc::new(InMemoryIpBlockStore::new()),
+    };
+    let ip_blocking_cfg = config.ip_blocking.clone();
     let local_svc = Arc::new(LocalRegistryService {
         backend: local_registry_backend,
         storage: storage.clone(),
@@ -389,6 +439,8 @@ async fn main() -> Result<()> {
         ownership: Some(ownership_store),
         versioning: versioning_map,
         signing: signing_map,
+        beta_channel: beta_channel_map,
+        team_namespace: Some(Arc::clone(&team_namespace_store)),
     });
 
     // ── Warming services ──────────────────────────────────────────────────────
@@ -485,6 +537,10 @@ async fn main() -> Result<()> {
         let local_svc_inner = local_svc.clone();
         let quota_svc_inner = Arc::clone(&quota_svc);
         let registry_mode_map_inner = registry_mode_map.clone();
+        let ip_block_store_inner = Arc::clone(&ip_block_store);
+        let beta_channel_store_inner = Arc::clone(&beta_channel_store);
+        let team_namespace_store_inner = Arc::clone(&team_namespace_store);
+        let ip_blocking_cfg_inner = ip_blocking_cfg.clone();
 
         let (app, openapi) = App::new()
             .into_utoipa_app()
@@ -498,6 +554,9 @@ async fn main() -> Result<()> {
             .app_data(web::Data::new(local_svc_inner))
             .app_data(web::Data::new(quota_svc_inner))
             .app_data(web::Data::new(registry_mode_map_inner))
+            .app_data(web::Data::new(ip_block_store_inner))
+            .app_data(web::Data::new(beta_channel_store_inner))
+            .app_data(web::Data::new(team_namespace_store_inner))
             .service(prometheus_metrics)
             .service(healthz);
 
@@ -515,14 +574,23 @@ async fn main() -> Result<()> {
             cors_allowed_origins.iter().fold(cors_base, |c, origin| c.allowed_origin(origin))
         };
 
+        let enabled = ip_blocking_cfg_inner.as_ref().is_some_and(|c| c.enabled);
+        let ip_block_cfg_for_mw = ip_blocking_cfg_inner.clone().unwrap_or_default();
+
         // Middleware runs in reverse registration order (last-registered = outermost = first to run).
-        // Correct chain: cors → auth (sets Identity) → rate_limit (reads Identity) → tracing → handler
+        // Correct chain (outer→inner): ip_block → cors → auth (sets Identity) → rate_limit (reads Identity) → tracing → handler
         app.wrap(TracingLogger::<BatleHubSpanBuilder>::new())
             .wrap(RateLimitMiddlewareFactory::new(rate_limit_svc.clone()))
             .wrap(batlehub_web::AuthMiddlewareFactory::new(
                 auth_providers.clone(),
             ))
             .wrap(cors)
+            // IP blocking is the outermost middleware — it runs before auth so blocked IPs
+            // never reach the auth stack.
+            .wrap(actix_web::middleware::Condition::new(
+                enabled,
+                IpBlockMiddlewareFactory::new(Arc::clone(&ip_block_store), ip_block_cfg_for_mw),
+            ))
             .service(batlehub_web::swagger_ui(openapi))
             .configure(move |cfg| {
                 if let Some(ref dir) = static_dir_inner {
@@ -637,6 +705,7 @@ fn build_registry_client(reg: &RegistryConfig) -> anyhow::Result<Arc<dyn batlehu
             "maven" => Arc::new(MavenRegistryClient::new(url, opts)?),
             "terraform" => Arc::new(TerraformRegistryClient::new(url, opts)?),
             "rubygems" => Arc::new(RubyGemsRegistryClient::new(url, opts)?),
+            "composer" => Arc::new(ComposerRegistryClient::new(url, opts)?),
             other => anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in"),
         };
         Ok(client)
@@ -654,6 +723,7 @@ fn build_registry_client(reg: &RegistryConfig) -> anyhow::Result<Arc<dyn batlehu
         "maven" => resolve_urls(&reg.upstreams, "https://repo1.maven.org/maven2"),
         "terraform" => resolve_urls(&reg.upstreams, "https://registry.terraform.io"),
         "rubygems" => resolve_urls(&reg.upstreams, "https://rubygems.org"),
+        "composer" => resolve_urls(&reg.upstreams, "https://repo.packagist.org"),
         other => anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in"),
     };
 
@@ -763,6 +833,20 @@ fn build_signing_map(registries: &[RegistryConfig]) -> HashMap<String, CoreSigni
                 )
             })
         })
+        .collect()
+}
+
+/// Build per-registry `BetaChannelPort` map from registries that have `beta_channel.enabled = true`.
+///
+/// Each enabled registry gets a clone of the same shared store Arc; no new connections are opened.
+fn build_beta_channel_map(
+    store: Arc<dyn BetaChannelPort>,
+    registries: &[RegistryConfig],
+) -> HashMap<String, Arc<dyn BetaChannelPort>> {
+    registries
+        .iter()
+        .filter(|reg| reg.beta_channel.as_ref().is_some_and(|bc| bc.enabled))
+        .map(|reg| (reg.name.clone(), Arc::clone(&store)))
         .collect()
 }
 

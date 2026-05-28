@@ -1,0 +1,19 @@
+[tools]
+php = "8.3"
+composer = "2"
+
+[tasks.install]
+description = "Install PHP dependencies through the proxy"
+run = "composer install"
+
+[tasks.update]
+description = "Update dependencies and regenerate composer.lock"
+run = "composer update"
+
+[tasks.test]
+description = "Run PHPUnit tests"
+run = "vendor/bin/phpunit"
+
+[tasks.run]
+description = "Run the console application"
+run = "php src/App.php"

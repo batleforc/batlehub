@@ -10,18 +10,25 @@ To propose a feature or discuss an item, open an issue on the [project repositor
 
 ## New registry types {#new-registries}
 
-BatleHub currently supports npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, and Go modules. The following adapters are planned:
+BatleHub currently supports npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules, Maven / Gradle, RubyGems, Terraform, and Composer. The following adapters are planned:
 
-| Registry | Notes |
-|----------|-------|
-| **PyPI** | Python simple API + wheel / sdist downloads |
-| **Maven / Gradle** | Maven Central–compatible metadata XML + JAR / POM |
-| **RubyGems** | Gem downloads and version listing |
-| **NuGet** | .NET package protocol |
-| **Deb / RPM** | Debian APT and Red Hat YUM repository proxying |
-| **Terraform registry** | Provider and module proxy protocol |
-| **GitLab** | Releases and packages — similar to GitHub, different auth / pagination |
-| **Forgejo** | Gitea fork with minor API differences |
+| Registry | Status | Notes |
+|----------|--------|-------|
+| **npm** | ✅ Shipped | Package proxy + local/hybrid publishing |
+| **Cargo** | ✅ Shipped | Sparse index + crate downloads |
+| **GitHub** | ✅ Shipped | Release artifact proxy |
+| **OpenVSX** | ✅ Shipped | Extension proxy |
+| **VS Code Marketplace** | ✅ Shipped | Extension proxy |
+| **Go modules** | ✅ Shipped | GOPROXY protocol |
+| **Maven / Gradle** | ✅ Shipped | Maven Central–compatible metadata XML + JAR / POM; `mvn deploy` support |
+| **RubyGems** | ✅ Shipped | Gem downloads and version listing; publish/yank/unyank |
+| **Terraform registry** | ✅ Shipped | Provider and module proxy; private module + provider publishing |
+| **Composer** | ✅ Shipped | Packagist v2 protocol; packages.json + p2 metadata + dist downloads; private ZIP publishing in local/hybrid mode |
+| **PyPI** | Planned | Python simple API + wheel / sdist downloads |
+| **NuGet** | Planned | .NET package protocol |
+| **Deb / RPM** | Planned | Debian APT and Red Hat YUM repository proxying |
+| **GitLab** | Planned | Releases and packages — similar to GitHub, different auth / pagination |
+| **Forgejo** | Planned | Gitea fork with minor API differences |
 
 ::: info Docker / OCI not planned
 [Harbor](https://goharbor.io) covers this use case better than BatleHub could. If you have a concrete need, open an issue.
@@ -43,9 +50,9 @@ All planned cache policy features have shipped:
 
 ## Metrics & observability {#metrics}
 
-- **Prometheus endpoint** (`/metrics`) — request counts, cache hit/miss rates, latency percentiles, error rates per registry
-- **Health check** (`/healthz`) — verifies connectivity to the database and all configured storage backends
-- **Admin dashboard** — hits/misses and bandwidth saved, per-registry and aggregate, on the admin home screen
+- ✅ **Prometheus endpoint** (`/metrics`) — request counts, cache hit/miss rates, latency percentiles, error rates per registry
+- ✅ **Health check** (`/healthz`) — verifies connectivity to the database and all configured storage backends
+- ✅ **Admin dashboard** — hits/misses and bandwidth saved, per-registry and aggregate, on the admin home screen
 
 ---
 
@@ -69,20 +76,19 @@ BatleHub aims to be a trust boundary, not just a cache. Planned integrity featur
 
 ## Rate limiting & DoS protection {#rate-limiting}
 
-- Per-user, per-group, and per-registry rate limits with configurable thresholds and time windows
-- Configurable enforcement: hard block vs. soft warn on limit exceeded
-- Standard rate-limit headers (`Retry-After`, `X-RateLimit-*`) and UI warnings when approaching a limit
-- IP-based blocking for abusive clients
+- ✅ **Per-user and per-group rate limits** — fixed-window counters with configurable thresholds and time windows, backed by InMemory / PostgreSQL / Redis
+- ✅ **Configurable enforcement** — hard block (429) or soft warn; standard `Retry-After` and `X-RateLimit-*` headers
+- ✅ **IP-based blocking** — fail2ban-style: auto-block IPs that exceed a violation threshold; manual block/unblock via admin API; `X-Block-Expires` header; fail-open on store errors. See [Access Control guide](/guide/access-control#ip-blocking).
 - Integration with external IP reputation services
 
 ---
 
 ## Quota management {#quotas}
 
-- Per-user, per-group, and per-registry quotas on storage usage and number of published packages
-- Enforcement policies: block or warn on quota exceeded
-- Quota warning in API responses and admin UI
-- Admin API for resetting quotas
+- ✅ **Per-user, per-group, and per-registry quotas** — on storage usage and number of published packages
+- ✅ **Enforcement policies** — block or warn on quota exceeded
+- ✅ **Quota warnings** — in API responses and admin UI when a limit is being approached
+- ✅ **Admin API for resetting quotas** — for specific users, groups, or registries
 
 ---
 
@@ -112,17 +118,21 @@ Applies to registries running in `local` or `hybrid` mode. See the [User Guide](
 
 ### Per-registry additions
 
+- ✅ **Maven** — private artifact publishing via `mvn deploy`; POM-triggered three-phase publish; JAR/checksum pre-upload; dynamically generated `maven-metadata.xml`; `local` and `hybrid` modes
+- ✅ **Terraform** — private module publishing (tar.gz upload, `X-Terraform-Get` redirect); private provider publishing (version manifest + per-platform binary); `local` and `hybrid` modes
+- ✅ **Composer** — private PHP package publishing via ZIP upload; `composer.json` extracted automatically; `local` and `hybrid` modes
 - **npm** — versioning policies (enforce semantic versioning, restrict accepted patterns)
 - **Cargo** — versioning policies; full yank protocol compatibility
 - **VS Code extensions** — deprecation and unlisting; VSIX upload form in the UI
 
 ### For all private registry types
 
-- Artifact signing and verification (OpenPGP or similar)
-- Ownership and team management: multiple users / groups per package with distinct roles
-- Versioning policies: enforce semantic versioning or restrict accepted version patterns
-- Beta / pre-release channel: gate unpublished versions to specific users or groups
-- Bulk operations: bulk publish, bulk deprecation, bulk deletion
+- ✅ **Artifact signing** — publish-time `X-Artifact-Signature` / `X-Signature-Type` headers; stored and returned on download; configurable required enforcement and allowed-type allowlist
+- ✅ **Ownership management** — per-package owner list with roles; admin API for listing, adding, and removing owners
+- ✅ **Versioning policies** — enforce semver and/or restrict accepted version patterns per registry
+- ✅ **Beta/pre-release channel** — gate pre-release versions (semver `-pre` suffix) to specific users or groups; non-members see only stable versions. See [Access Control guide](/guide/access-control#beta-channel).
+- ✅ **Bulk operations** — bulk yank, unyank, and delete via admin API
+- Bulk publish, bulk deprecation
 - Content-addressable deduplication and integrity verification for stored artifacts
 
 ### CLI tool — `batlehub-cli`

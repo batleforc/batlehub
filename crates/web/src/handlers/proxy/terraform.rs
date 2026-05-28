@@ -66,7 +66,7 @@ pub async fn tf_provider_versions(
     let mode = mode_map.get(&registry);
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        match local_svc.get_tf_provider_versions_response(&registry, &name).await {
+        match local_svc.get_tf_provider_versions_response(&registry, &name, &identity).await {
             Ok(json) => return Ok(HttpResponse::Ok().json(json)),
             Err(batlehub_core::error::CoreError::NotFound(_)) if mode == RegistryMode::Hybrid => {}
             Err(batlehub_core::error::CoreError::NotFound(msg)) => return Err(AppError::not_found(msg)),
@@ -117,7 +117,7 @@ pub async fn tf_provider_download(
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
         let base_url = base_url_from_req(&req);
         match local_svc
-            .get_tf_provider_download_response(&registry, &name, &version, &os, &arch, &base_url, &registry)
+            .get_tf_provider_download_response(&registry, &name, &version, &os, &arch, &base_url, &registry, &identity)
             .await
         {
             Ok(json) => {
@@ -297,7 +297,8 @@ pub async fn tf_provider_artifact(
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, ptype, version, os, arch) = path.into_inner();
     require_terraform(&registry, &map)?;
-    let _ = &identity;
+
+    local_svc.check_prerelease_access(&registry, &version, &identity).await.map_err(AppError::from)?;
 
     let key = tf_provider_binary_storage_key(&registry, &namespace, &ptype, &version, &os, &arch);
     let artifact = local_svc
@@ -442,7 +443,7 @@ pub async fn tf_module_versions(
     let mode = mode_map.get(&registry);
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        match local_svc.get_tf_module_versions_response(&registry, &pkg_name).await {
+        match local_svc.get_tf_module_versions_response(&registry, &pkg_name, &identity).await {
             Ok(json) => return Ok(HttpResponse::Ok().json(json)),
             Err(batlehub_core::error::CoreError::NotFound(_)) if mode == RegistryMode::Hybrid => {}
             Err(batlehub_core::error::CoreError::NotFound(msg)) => return Err(AppError::not_found(msg)),
@@ -649,11 +650,12 @@ pub async fn tf_module_artifact(
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, name, provider, version) = path.into_inner();
     require_terraform(&registry, &map)?;
-    let _ = &identity;
+
+    local_svc.check_prerelease_access(&registry, &version, &identity).await.map_err(AppError::from)?;
 
     let pkg_name = format!("modules/{namespace}/{name}/{provider}");
     let bytes = local_svc
-        .get_artifact(&registry, &pkg_name, &version)
+        .get_artifact(&registry, &pkg_name, &version, &identity)
         .await
         .map_err(AppError::from)?;
 

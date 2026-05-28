@@ -1,0 +1,19 @@
+{
+  // Route all VS Code / Open VSX extension installs through batlehub.
+  // Use the Open VSX-compatible proxy (supports VSCodium, Gitpod, etc.).
+  //
+  // For VS Code: add --extensions-gallery-service-url to your argv.json
+  // (see https://code.visualstudio.com/docs/editor/extension-marketplace).
+  //
+  // For VSCodium: set the environment variable below, or edit product.json:
+  //   VSCODE_GALLERY_SERVICE_URL=http://localhost:8080/proxy/my-openvsx/vscode/gallery
+  //
+  // The download URL for individual VSIX files is:
+  //   http://localhost:8080/proxy/my-openvsx/{publisher}.{name}/{version}/vsix
+
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer"
+  }
+}

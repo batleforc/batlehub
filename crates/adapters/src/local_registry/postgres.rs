@@ -38,8 +38,8 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
         sqlx::query(
             "INSERT INTO local_packages \
                 (registry, name, version, checksum, yanked, index_metadata, \
-                 published_at, published_by, status, signature_bytes, signature_type) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $10)",
+                 published_at, published_by, status, signature_bytes, signature_type, visibility) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $10, $11)",
         )
         .bind(&pkg.registry)
         .bind(&pkg.name)
@@ -51,6 +51,7 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
         .bind(&pkg.published_by)
         .bind(&pkg.signature_bytes)
         .bind(&pkg.signature_type)
+        .bind(pkg.visibility.to_string())
         .execute(&self.pool)
         .await
         .map_err(|e| {
@@ -125,7 +126,7 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
     ) -> Result<Vec<PublishedPackage>, CoreError> {
         let rows = sqlx::query(
             "SELECT registry, name, version, checksum, yanked, index_metadata, \
-                    published_at, published_by, signature_bytes, signature_type \
+                    published_at, published_by, signature_bytes, signature_type, visibility \
              FROM local_packages \
              WHERE registry = $1 AND name = $2 AND status = 'published' \
              ORDER BY published_at ASC",
@@ -138,17 +139,24 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
 
         Ok(rows
             .into_iter()
-            .map(|r| PublishedPackage {
-                registry: r.get("registry"),
-                name: r.get("name"),
-                version: r.get("version"),
-                checksum: r.get("checksum"),
-                yanked: r.get("yanked"),
-                index_metadata: r.get("index_metadata"),
-                published_at: r.get("published_at"),
-                published_by: r.get("published_by"),
-                signature_bytes: r.get("signature_bytes"),
-                signature_type: r.get("signature_type"),
+            .map(|r| {
+                let vis = r
+                    .get::<String, _>("visibility")
+                    .parse()
+                    .unwrap_or_default();
+                PublishedPackage {
+                    registry: r.get("registry"),
+                    name: r.get("name"),
+                    version: r.get("version"),
+                    checksum: r.get("checksum"),
+                    yanked: r.get("yanked"),
+                    index_metadata: r.get("index_metadata"),
+                    published_at: r.get("published_at"),
+                    published_by: r.get("published_by"),
+                    signature_bytes: r.get("signature_bytes"),
+                    signature_type: r.get("signature_type"),
+                    visibility: vis,
+                }
             })
             .collect())
     }
@@ -198,5 +206,19 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
         .await
         .map_err(|e| CoreError::Database(e.to_string()))?;
         Ok(result.rows_affected())
+    }
+
+    async fn list_package_names(&self, registry: &str) -> Result<Vec<String>, CoreError> {
+        let rows = sqlx::query(
+            "SELECT DISTINCT name FROM local_packages \
+             WHERE registry = $1 AND status = 'published' \
+             ORDER BY name ASC",
+        )
+        .bind(registry)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::Database(e.to_string()))?;
+
+        Ok(rows.into_iter().map(|r| r.get::<String, _>("name")).collect())
     }
 }

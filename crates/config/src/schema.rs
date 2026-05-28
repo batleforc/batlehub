@@ -20,6 +20,9 @@ pub struct AppConfig {
     pub otel: Option<OtelConfig>,
     #[serde(default)]
     pub limits: LimitsConfig,
+    /// Optional global IP-based blocking (fail2ban) configuration.
+    #[serde(default)]
+    pub ip_blocking: Option<IpBlockingConfig>,
 }
 
 // ── Limits ────────────────────────────────────────────────────────────────────
@@ -59,10 +62,11 @@ impl AppConfig {
                         | "rubygems"
                         | "maven"
                         | "terraform"
+                        | "composer"
                 )
             {
                 bail!(
-                    "registry '{}': mode 'local'/'hybrid' is only supported for cargo, npm, openvsx, vscode-marketplace, goproxy, rubygems, maven, and terraform registries",
+                    "registry '{}': mode 'local'/'hybrid' is only supported for cargo, npm, openvsx, vscode-marketplace, goproxy, rubygems, maven, terraform, and composer registries",
                     registry.name
                 );
             }
@@ -470,6 +474,10 @@ pub struct RegistryConfig {
     /// Optional artifact signing configuration (local/hybrid mode only).
     #[serde(default)]
     pub signing: Option<SigningConfig>,
+    /// Optional beta-channel configuration (local/hybrid mode only).
+    /// When enabled, pre-release versions are only visible to registered beta-channel members.
+    #[serde(default)]
+    pub beta_channel: Option<BetaChannelConfig>,
 }
 
 // ── Versioning policy ─────────────────────────────────────────────────────────
@@ -544,6 +552,91 @@ pub struct QuotaConfig {
 }
 
 fn default_warn_pct() -> u8 { 80 }
+
+// ── Beta channel ──────────────────────────────────────────────────────────────
+
+/// Per-registry beta-channel configuration (local/hybrid mode only).
+///
+/// When `enabled` is `true`, pre-release versions (semver versions with a
+/// non-empty pre-release component, e.g. `1.0.0-beta.1`) are hidden from users
+/// who are not registered as beta-channel members. Non-members receive 404 on
+/// both index listings and artifact downloads for pre-release versions.
+///
+/// ```toml
+/// [registries.beta_channel]
+/// enabled = true
+/// ```
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct BetaChannelConfig {
+    /// Enable pre-release gating for this registry.
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+// ── IP-based blocking ─────────────────────────────────────────────────────────
+
+/// Global fail2ban-style IP blocking configuration.
+///
+/// The middleware counts "violation events" (responses with status codes in
+/// `trigger_on_status`) per client IP. When the count exceeds
+/// `violation_threshold` within `violation_window_secs`, the IP is automatically
+/// blocked for `ban_duration_secs`. Blocked IPs receive HTTP 403 immediately,
+/// before auth or rate-limit checks.
+///
+/// ```toml
+/// [ip_blocking]
+/// enabled               = true
+/// violation_threshold   = 10
+/// violation_window_secs = 300
+/// ban_duration_secs     = 3600
+/// trigger_on_status     = [429, 401]
+/// # List the exact IPs of your reverse proxies so that X-Forwarded-For is
+/// # trusted only from those hosts. Leave empty (the default) to always use
+/// # the TCP peer address — required when the server is exposed directly.
+/// trusted_proxies       = ["10.0.0.1", "10.0.0.2"]
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+pub struct IpBlockingConfig {
+    /// Enable IP-based blocking.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Number of violations in the window before auto-blocking the IP.
+    #[serde(default = "default_violation_threshold")]
+    pub violation_threshold: u32,
+    /// Length of the violation counting window in seconds.
+    #[serde(default = "default_violation_window")]
+    pub violation_window_secs: u32,
+    /// How long to keep a blocked IP banned, in seconds.
+    #[serde(default = "default_ban_duration")]
+    pub ban_duration_secs: u64,
+    /// HTTP status codes that increment the violation counter for the source IP.
+    #[serde(default = "default_trigger_on_status")]
+    pub trigger_on_status: Vec<u16>,
+    /// IPs of trusted reverse proxies. When the TCP peer address matches one of
+    /// these, the first entry of `X-Forwarded-For` is used as the client IP.
+    /// When empty (the default), the TCP peer address is always used and
+    /// `X-Forwarded-For` is ignored — preventing spoofed-header bypass.
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
+}
+
+impl Default for IpBlockingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            violation_threshold: default_violation_threshold(),
+            violation_window_secs: default_violation_window(),
+            ban_duration_secs: default_ban_duration(),
+            trigger_on_status: default_trigger_on_status(),
+            trusted_proxies: Vec::new(),
+        }
+    }
+}
+
+fn default_violation_threshold() -> u32 { 10 }
+fn default_violation_window() -> u32 { 300 }
+fn default_ban_duration() -> u64 { 3600 }
+fn default_trigger_on_status() -> Vec<u16> { vec![429, 401] }
 
 // ── Rate limiting ─────────────────────────────────────────────────────────────
 

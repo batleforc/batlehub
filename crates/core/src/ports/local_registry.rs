@@ -81,6 +81,13 @@ pub trait LocalRegistryBackend: Send + Sync {
         Ok(0)
     }
 
+    /// Return the distinct package names published in `registry`.
+    /// Used to build registry index files (e.g. Composer `packages.json`).
+    /// The default implementation returns an empty vec.
+    async fn list_package_names(&self, _registry: &str) -> Result<Vec<String>, CoreError> {
+        Ok(vec![])
+    }
+
     /// Yank multiple versions in one call.
     /// The default implementation loops over `yank`. Override for efficiency.
     async fn bulk_yank(

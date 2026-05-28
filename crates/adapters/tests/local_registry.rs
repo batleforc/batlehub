@@ -49,6 +49,7 @@ fn pkg(registry: &str, name: &str, version: &str) -> PublishedPackage {
         published_by: Some("test-user".to_owned()),
         signature_bytes: None,
         signature_type: None,
+        visibility: Default::default(),
     }
 }
 

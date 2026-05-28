@@ -1,5 +1,6 @@
 pub mod cargo;
 pub mod common;
+pub mod composer;
 pub mod github;
 pub mod goproxy;
 pub mod maven;

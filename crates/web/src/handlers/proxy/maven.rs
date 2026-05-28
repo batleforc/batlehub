@@ -279,7 +279,7 @@ pub async fn maven_get(
         RegistryMode::Local | RegistryMode::Hybrid => {
             match &kind {
                 MavenPathKind::Metadata { name } => {
-                    match local_svc.get_maven_versions(&registry, name).await {
+                    match local_svc.get_maven_versions(&registry, name, &identity).await {
                         Ok(versions) => {
                             let group_id = versions
                                 .first()
@@ -306,6 +306,13 @@ pub async fn maven_get(
                     }
                 }
                 MavenPathKind::Artifact { name, version, filename } => {
+                    // Gate must be enforced before falling through to upstream: a non-member
+                    // must not receive a pre-release artifact from the upstream registry.
+                    local_svc
+                        .check_prerelease_access(&registry, version, &identity)
+                        .await
+                        .map_err(AppError::from)?;
+                    {
                     let storage_key = if filename.ends_with(".pom") {
                         artifact_storage_key(&registry, name, version)
                     } else {
@@ -336,6 +343,7 @@ pub async fn maven_get(
                         }
                         Err(e) => return Err(AppError::from(e)),
                     }
+                    } // close else block for prerelease check
                 }
             }
         }
