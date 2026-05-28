@@ -47,7 +47,7 @@ RUN batlehub --config /etc/batlehub/config.toml dump-spec > openapi.json && \
     npm run build
 
 # ── Runtime image ─────────────────────────────────────────────────────────────
-FROM registry.access.redhat.com/hi/core-runtime:latest AS runtime
+FROM registry.access.redhat.com/hi/core-runtime:latest@sha256:c85f5e01b7f638cb30e75a8a79d06b0cbeb44209945f62572166448bb56b53e9 AS runtime
 
 COPY --from=builder   /build/target/release/batlehub /usr/local/bin/batlehub
 COPY --from=ui-builder /ui/dist                         /app/ui/dist
