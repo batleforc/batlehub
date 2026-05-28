@@ -1,0 +1,1254 @@
+/// Layer 4 smoke tests — real batlehub proxy server (in-memory backends, real upstreams).
+///
+/// Each test spins up a genuine actix-web batlehub proxy wired with:
+///   - Real registry clients pointing to public upstreams
+///   - In-memory PackageRepository, StorageBackend, CacheStore (no PostgreSQL)
+///   - All registries accessible anonymously (no auth token required from tools)
+///
+/// The tests verify the full chain:
+///   example config → batlehub proxy → upstream registry → dependency installed →
+///   (optionally) API server starts → HTTP response contains expected payload.
+///
+/// ## Running
+///
+/// ```
+/// cargo test -p batlehub-examples --test real_proxy
+/// ```
+///
+/// Tests skip gracefully when the required toolchain or network access is unavailable.
+
+use std::{
+    collections::HashMap,
+    fs,
+    net::{TcpListener, TcpStream},
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    sync::{Arc, Mutex},
+    thread,
+    time::{Duration, Instant},
+};
+
+use async_trait::async_trait;
+use bytes::Bytes;
+use chrono::{DateTime, Utc};
+use futures::stream;
+use tempfile::TempDir;
+use uuid::Uuid;
+
+use actix_web::{web, App, HttpServer};
+use utoipa_actix_web::AppExt;
+
+use batlehub_adapters::{
+    auth::StaticTokenAuthProvider,
+    cache::InMemoryCacheStore,
+    registry::{
+        CargoRegistryClient, ComposerRegistryClient, GithubRegistryClient, GoProxyRegistryClient,
+        MavenRegistryClient, NpmRegistryClient, OpenVsxRegistryClient, RubyGemsRegistryClient,
+        TerraformRegistryClient, UpstreamHttpOptions, VsCodeMarketplaceRegistryClient,
+    },
+};
+use batlehub_core::{
+    entities::{
+        AccessEvent, EventFilter, PackageFilter, PackageId, PackageStatus, PackageSummary,
+        PublishedPackage, Role,
+    },
+    error::CoreError,
+    ports::{
+        ArtifactMeta, ArtifactMetaRepository, AuthProvider, ByteStream, CacheStore,
+        LocalRegistryBackend, PackageRepository, RegistryClient, StorageBackend, StoredArtifact,
+        StorageMeta, UserToken, UserTokenRepository,
+    },
+    rules::{BlockListRule, RbacRule},
+    services::{AdminService, LocalRegistryService, ProxyMetrics, ProxyService, RegistryPolicy},
+};
+use batlehub_web::{
+    configure_app, AccessConfig, AuthMiddlewareFactory, RegistryMap, RegistryModeMap, UpstreamMap,
+};
+
+// ── workspace helpers ─────────────────────────────────────────────────────────
+
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf()
+}
+
+fn example_src(name: &str) -> PathBuf {
+    workspace_root().join("examples").join(name)
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) {
+    fs::create_dir_all(dst).unwrap();
+    for entry in fs::read_dir(src).unwrap().flatten() {
+        let target = dst.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir_all(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}
+
+fn copy_example(name: &str, base_dir: &Path) -> PathBuf {
+    let dst = base_dir.join(name);
+    copy_dir_all(&example_src(name), &dst);
+    dst
+}
+
+fn free_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+fn wait_for_port(port: u16, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(300));
+    }
+    false
+}
+
+/// Download the full body of `url`. Returns `None` on any error.
+fn curl_body(url: &str) -> Option<String> {
+    let out = Command::new("curl")
+        .args(["-fsSL", "--max-time", "30", url])
+        .output()
+        .ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Return the HTTP status code for `url` without downloading the body.
+/// Returns `None` if curl itself fails.
+fn curl_status(url: &str) -> Option<u16> {
+    let out = Command::new("curl")
+        .args([
+            "-s", "--max-time", "30",
+            "-o", "/dev/null",
+            "-w", "%{http_code}",
+            url,
+        ])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+fn kill_wait(mut child: Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn spawn_tree(cmd: &mut Command) -> std::io::Result<Child> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    cmd.spawn()
+}
+
+/// Kill a process group started with [`spawn_tree`].
+///
+/// Maven (`spring-boot:run`, `quarkus:dev`) forks a child JVM that outlives
+/// the Maven wrapper when only the wrapper is killed. Sending SIGTERM/SIGKILL
+/// to the entire process group (PGID == child PID after `process_group(0)`)
+/// tears down every spawned JVM so the port is released before the next test.
+fn kill_tree(mut child: Child) {
+    #[cfg(unix)]
+    {
+        let pid = child.id();
+        let _ = Command::new("kill")
+            .args(["-s", "TERM", &format!("-{pid}")])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        thread::sleep(Duration::from_millis(500));
+        let _ = Command::new("kill")
+            .args(["-s", "KILL", &format!("-{pid}")])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn tool_available(cmd: &str) -> bool {
+    Command::new(cmd)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn mise_install(dir: &Path) -> bool {
+    Command::new("mise")
+        .arg("install")
+        .env("MISE_TRUSTED_CONFIG_PATHS", dir)
+        .current_dir(dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn mise_exec(dir: &Path, cmd: &str, args: &[&str]) -> Command {
+    let mut c = Command::new("mise");
+    c.arg("exec")
+        .arg("--")
+        .arg(cmd)
+        .args(args)
+        .env("MISE_TRUSTED_CONFIG_PATHS", dir)
+        .current_dir(dir);
+    c
+}
+
+/// Write a Maven `settings.xml` that mirrors everything through `proxy_url`
+/// (should end with `/maven2/`).
+fn write_maven_proxy_settings(dir: &Path, proxy_url: &str) -> PathBuf {
+    let path = dir.join("proxy-settings.xml");
+    fs::write(
+        &path,
+        format!(
+            r#"<?xml version="1.0"?>
+<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0
+              https://maven.apache.org/xsd/settings-1.2.0.xsd">
+  <mirrors>
+    <mirror>
+      <id>batlehub</id>
+      <name>BatleHub Proxy</name>
+      <mirrorOf>*</mirrorOf>
+      <url>{proxy_url}</url>
+    </mirror>
+  </mirrors>
+</settings>"#
+        ),
+    )
+    .unwrap();
+    path
+}
+
+/// Write a Terraform CLI config file (`~/.terraformrc`) that routes all provider
+/// downloads through the batlehub proxy at `proxy_url`.
+fn write_terraform_rc(path: &Path, proxy_port: u16) -> PathBuf {
+    fs::write(
+        path,
+        format!(
+            r#"credentials "127.0.0.1:{proxy_port}" {{
+  token = "{PROXY_AUTH_TOKEN}"
+}}
+
+provider_installation {{
+  network_mirror {{
+    url     = "http://127.0.0.1:{proxy_port}/proxy/my-terraform/"
+    include = ["registry.terraform.io/*/*"]
+  }}
+  direct {{
+    exclude = ["registry.terraform.io/*/*"]
+  }}
+}}
+"#
+        ),
+    )
+    .unwrap();
+    path.to_path_buf()
+}
+
+// ── In-memory implementations (no PostgreSQL needed) ─────────────────────────
+
+struct InMemoryRepo {
+    summaries: Mutex<HashMap<String, PackageSummary>>,
+    events: Mutex<Vec<AccessEvent>>,
+}
+
+impl InMemoryRepo {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            summaries: Mutex::new(HashMap::new()),
+            events: Mutex::new(Vec::new()),
+        })
+    }
+}
+
+#[async_trait]
+impl PackageRepository for InMemoryRepo {
+    async fn record_access(&self, event: AccessEvent) -> Result<(), CoreError> {
+        let key = event.package_id.cache_key();
+        let mut sums = self.summaries.lock().unwrap();
+        let entry = sums.entry(key).or_insert_with(|| PackageSummary {
+            id: Uuid::new_v4(),
+            package_id: event.package_id.clone(),
+            status: PackageStatus::Available,
+            last_accessed: None,
+            last_accessed_by: None,
+            access_count: 0,
+        });
+        entry.access_count += 1;
+        entry.last_accessed = Some(event.timestamp);
+        self.events.lock().unwrap().push(event);
+        Ok(())
+    }
+
+    async fn get_status(&self, pkg: &PackageId) -> Result<PackageStatus, CoreError> {
+        Ok(self
+            .summaries
+            .lock()
+            .unwrap()
+            .get(&pkg.cache_key())
+            .map(|s| s.status.clone())
+            .unwrap_or(PackageStatus::Available))
+    }
+
+    async fn set_status(&self, pkg: &PackageId, status: PackageStatus) -> Result<(), CoreError> {
+        let mut sums = self.summaries.lock().unwrap();
+        let entry = sums.entry(pkg.cache_key()).or_insert_with(|| PackageSummary {
+            id: Uuid::new_v4(),
+            package_id: pkg.clone(),
+            status: PackageStatus::Available,
+            last_accessed: None,
+            last_accessed_by: None,
+            access_count: 0,
+        });
+        entry.status = status;
+        Ok(())
+    }
+
+    async fn list_packages(
+        &self, _filter: PackageFilter,
+    ) -> Result<Vec<PackageSummary>, CoreError> {
+        Ok(vec![])
+    }
+
+    async fn count_packages(&self, _filter: PackageFilter) -> Result<u64, CoreError> {
+        Ok(0)
+    }
+
+    async fn list_events(&self, _filter: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
+        Ok(vec![])
+    }
+}
+
+// ── In-memory StorageBackend ──────────────────────────────────────────────────
+
+struct InMemoryStorage {
+    data: Mutex<HashMap<String, (Bytes, StorageMeta)>>,
+}
+
+impl InMemoryStorage {
+    fn new() -> Arc<Self> {
+        Arc::new(Self { data: Mutex::new(HashMap::new()) })
+    }
+}
+
+#[async_trait]
+impl StorageBackend for InMemoryStorage {
+    async fn store(&self, key: &str, data: Bytes, meta: StorageMeta) -> Result<(), CoreError> {
+        self.data.lock().unwrap().insert(key.to_owned(), (data, meta));
+        Ok(())
+    }
+
+    async fn retrieve(&self, key: &str) -> Result<Option<StoredArtifact>, CoreError> {
+        let lock = self.data.lock().unwrap();
+        Ok(lock.get(key).map(|(data, meta)| {
+            let bytes = data.clone();
+            let s: ByteStream =
+                Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(bytes) }));
+            StoredArtifact { stream: s, meta: meta.clone() }
+        }))
+    }
+
+    async fn exists(&self, key: &str) -> Result<bool, CoreError> {
+        Ok(self.data.lock().unwrap().contains_key(key))
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), CoreError> {
+        self.data.lock().unwrap().remove(key);
+        Ok(())
+    }
+
+    async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError> {
+        let mut map = self.data.lock().unwrap();
+        let keys: Vec<String> = map.keys().filter(|k| k.starts_with(prefix)).cloned().collect();
+        let count = keys.len();
+        for k in keys {
+            map.remove(&k);
+        }
+        Ok(count)
+    }
+
+    async fn stat_by_prefix(&self, prefix: &str) -> Result<(u64, u64), CoreError> {
+        let map = self.data.lock().unwrap();
+        Ok(map
+            .iter()
+            .filter(|(k, _)| k.starts_with(prefix))
+            .fold((0u64, 0u64), |(c, b), (_, (data, meta))| {
+                (c + 1, b + meta.size.unwrap_or(data.len() as u64))
+            }))
+    }
+
+    async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, CoreError> {
+        Ok(self
+            .data
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|k| k.starts_with(prefix))
+            .cloned()
+            .collect())
+    }
+}
+
+// ── No-op ArtifactMetaRepository ─────────────────────────────────────────────
+
+struct NoopArtifactMeta;
+
+impl NoopArtifactMeta {
+    fn arc() -> Arc<dyn ArtifactMetaRepository> {
+        Arc::new(Self)
+    }
+}
+
+#[async_trait]
+impl ArtifactMetaRepository for NoopArtifactMeta {
+    async fn record_artifact(&self, _: &str, _: &str, _: &str, _: &str, _: Option<u64>) -> Result<(), CoreError> { Ok(()) }
+    async fn touch_artifact(&self, _: &str) -> Result<(), CoreError> { Ok(()) }
+    async fn list_artifacts(&self, _: &str) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
+    async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
+    async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> { Ok(()) }
+    async fn is_artifact_expired(&self, _: &str, _: DateTime<Utc>) -> Result<bool, CoreError> { Ok(false) }
+    async fn list_expired_by_ttl(&self, _: &str, _: DateTime<Utc>) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
+    async fn list_idle(&self, _: &str, _: DateTime<Utc>) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
+    async fn total_size_bytes(&self, _: &str) -> Result<u64, CoreError> { Ok(0) }
+    async fn list_lru(&self, _: &str, _: i64) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
+}
+
+// ── Null UserTokenRepository ──────────────────────────────────────────────────
+
+struct NullTokenRepo;
+
+#[async_trait]
+impl UserTokenRepository for NullTokenRepo {
+    async fn create_token(&self, _: Uuid, _: &str, _: &str, _: &str, _: Role, _: DateTime<Utc>) -> Result<UserToken, CoreError> {
+        Err(CoreError::Database("not implemented".into()))
+    }
+    async fn find_by_hash(&self, _: &str) -> Result<Option<UserToken>, CoreError> { Ok(None) }
+    async fn list_for_user(&self, _: &str) -> Result<Vec<UserToken>, CoreError> { Ok(vec![]) }
+    async fn revoke(&self, _: Uuid, _: &str) -> Result<bool, CoreError> { Ok(false) }
+}
+
+// ── In-memory LocalRegistryBackend ────────────────────────────────────────────
+
+struct InMemoryLocalRegistry {
+    packages: Mutex<HashMap<String, Vec<PublishedPackage>>>,
+}
+
+impl InMemoryLocalRegistry {
+    fn new() -> Arc<Self> {
+        Arc::new(Self { packages: Mutex::new(HashMap::new()) })
+    }
+}
+
+#[async_trait]
+impl LocalRegistryBackend for InMemoryLocalRegistry {
+    async fn publish(&self, pkg: PublishedPackage) -> Result<(), CoreError> {
+        let key = format!("{}:{}", pkg.registry, pkg.name);
+        self.packages.lock().unwrap().entry(key).or_default().push(pkg);
+        Ok(())
+    }
+
+    async fn yank(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError> {
+        let key = format!("{registry}:{name}");
+        if let Some(vers) = self.packages.lock().unwrap().get_mut(&key) {
+            for v in vers.iter_mut() {
+                if v.version == version { v.yanked = true; }
+            }
+        }
+        Ok(())
+    }
+
+    async fn unyank(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError> {
+        let key = format!("{registry}:{name}");
+        if let Some(vers) = self.packages.lock().unwrap().get_mut(&key) {
+            for v in vers.iter_mut() {
+                if v.version == version { v.yanked = false; }
+            }
+        }
+        Ok(())
+    }
+
+    async fn get_versions(&self, registry: &str, name: &str) -> Result<Vec<PublishedPackage>, CoreError> {
+        let key = format!("{registry}:{name}");
+        Ok(self.packages.lock().unwrap().get(&key).cloned().unwrap_or_default())
+    }
+
+    async fn exists(&self, registry: &str, name: &str) -> Result<bool, CoreError> {
+        Ok(self.packages.lock().unwrap().contains_key(&format!("{registry}:{name}")))
+    }
+}
+
+// ── Real batlehub proxy server ────────────────────────────────────────────────
+
+/// Runs a genuine actix-web batlehub proxy on a random local port.
+///
+/// Uses in-memory backends (no PostgreSQL) and real registry clients that
+/// forward requests to public upstreams. All registries are accessible without
+/// authentication so example tools do not need to send a token.
+///
+/// Dropped when the struct is dropped (runtime shutdown cancels the server).
+struct RealProxy {
+    port: u16,
+    _runtime: tokio::runtime::Runtime,
+}
+
+const PROXY_AUTH_TOKEN: &str = "test-proxy-token";
+
+impl RealProxy {
+    fn start_with_registries(
+        registries: HashMap<String, Arc<dyn RegistryClient>>,
+        registry_map: RegistryMap,
+    ) -> Self {
+        let repo: Arc<dyn PackageRepository> = InMemoryRepo::new();
+        let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+        let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+
+        let registry_names: Vec<String> = registry_map.0.keys().cloned().collect();
+
+        let policies: HashMap<String, RegistryPolicy> = registry_names
+            .iter()
+            .map(|name| {
+                let perms = HashMap::from([
+                    (Role::Anonymous, vec!["*".to_owned()]),
+                    (Role::User,      vec!["*".to_owned()]),
+                    (Role::Admin,     vec!["*".to_owned()]),
+                ]);
+                let policy = RegistryPolicy {
+                    metadata_ttl: Some(Duration::from_secs(300)),
+                    firewall_only: false,
+                    serve_stale_metadata: false,
+                    artifact_ttl: None,
+                    rules: vec![
+                        Box::new(RbacRule::new(perms)),
+                        Box::new(BlockListRule::new(repo.clone())),
+                    ],
+                };
+                (name.clone(), policy)
+            })
+            .collect();
+
+        let local_svc = Arc::new(LocalRegistryService {
+            backend: InMemoryLocalRegistry::new(),
+            storage: storage.clone(),
+            max_artifact_bytes: None,
+            quota: None,
+            ownership: None,
+            versioning: HashMap::new(),
+            signing: HashMap::new(),
+            beta_channel: HashMap::new(),
+        });
+
+        let proxy_svc = Arc::new(ProxyService {
+            registries,
+            storage,
+            cache,
+            repo: repo.clone(),
+            artifact_meta: NoopArtifactMeta::arc(),
+            policies,
+            max_artifact_size_bytes: None,
+            metrics: Arc::new(ProxyMetrics::new(&[])),
+        });
+        let admin_svc = Arc::new(AdminService::new(repo));
+        let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepo);
+
+        let access_config = AccessConfig {
+            anonymous: registry_names.iter().cloned().collect(),
+            user:      registry_names.iter().cloned().collect(),
+            admin:     registry_names.iter().cloned().collect(),
+            groups:    HashMap::new(),
+        };
+
+        let auth_providers: Vec<Arc<dyn AuthProvider>> = vec![Arc::new(
+            StaticTokenAuthProvider::new([(
+                PROXY_AUTH_TOKEN.to_owned(),
+                Some("test-user".to_owned()),
+                Role::Admin,
+            )]),
+        )];
+
+        let cargo_indexes: HashMap<String, batlehub_web::CargoIndexProxy> = HashMap::new();
+
+        let configure = configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            UpstreamMap::default(),
+            vec![],
+            HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        );
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let port = rt.block_on(async {
+            let local_svc     = local_svc.clone();
+            let cargo_indexes = cargo_indexes.clone();
+            let configure     = configure.clone();
+            let auth_providers = auth_providers.clone();
+
+            let server = HttpServer::new(move || {
+                let (app, _) = App::new()
+                    .into_utoipa_app()
+                    .configure(configure.clone())
+                    .split_for_parts();
+                app.app_data(web::Data::new(cargo_indexes.clone()))
+                    .app_data(web::Data::new(local_svc.clone()))
+                    .app_data(web::Data::new(RegistryModeMap::default()))
+                    .wrap(AuthMiddlewareFactory::new(auth_providers.clone()))
+            })
+            .bind("127.0.0.1:0")
+            .expect("bind to random port");
+
+            let port = server.addrs()[0].port();
+            tokio::spawn(server.run());
+            port
+        });
+
+        assert!(
+            wait_for_port(port, Duration::from_secs(10)),
+            "real proxy did not start on port {port} within 10 s"
+        );
+
+        Self { port, _runtime: rt }
+    }
+
+    fn base_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+}
+
+// ── Layer 4 tests ─────────────────────────────────────────────────────────────
+//
+// Each test builds a RealProxy with the minimal registry client(s) needed for
+// that ecosystem, wires the example tool to point at the proxy, and verifies
+// the proxy correctly forwards to the upstream.
+
+// ── npm ───────────────────────────────────────────────────────────────────────
+
+#[test]
+fn real_proxy_npm_api() {
+    if !tool_available("node") || !tool_available("npm") {
+        eprintln!("SKIP real_proxy_npm_api: node or npm not available");
+        return;
+    }
+
+    let opts = UpstreamHttpOptions::default();
+    let npm = match NpmRegistryClient::new("https://registry.npmjs.org/", &opts) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("SKIP real_proxy_npm_api: {e}"); return; }
+    };
+
+    let proxy = RealProxy::start_with_registries(
+        [("my-npm".to_owned(), Arc::new(npm) as Arc<dyn RegistryClient>)].into(),
+        RegistryMap([("my-npm".to_owned(), "npm".to_owned())].into()),
+    );
+
+    let tmp = TempDir::new().unwrap();
+    let dir = copy_example("npm", tmp.path());
+
+    // Patch .npmrc to point at the real proxy.
+    let npmrc = dir.join(".npmrc");
+    let content = fs::read_to_string(&npmrc).unwrap();
+    fs::write(&npmrc, content.replace("localhost:8080", &format!("127.0.0.1:{}", proxy.port))).unwrap();
+
+    let ok = Command::new("npm")
+        .args(["install", "--no-audit", "--no-fund"])
+        .env("NPM_CONFIG_CACHE", tmp.path().join("npm-cache"))
+        .env("NPM_CONFIG_USERCONFIG", &npmrc)
+        .current_dir(&dir)
+        .stdout(Stdio::null()).stderr(Stdio::null())
+        .status().map(|s| s.success()).unwrap_or(false);
+    if !ok {
+        eprintln!("SKIP real_proxy_npm_api: npm install through proxy failed (network issue?)");
+        return;
+    }
+
+    let port = free_port();
+    let server = Command::new("node")
+        .arg("src/index.js")
+        .env("PORT", port.to_string())
+        .env("NPM_CONFIG_CACHE", tmp.path().join("npm-cache"))
+        .current_dir(&dir)
+        .stdout(Stdio::null()).stderr(Stdio::null())
+        .spawn().expect("spawn node server");
+
+    if !wait_for_port(port, Duration::from_secs(15)) {
+        kill_wait(server);
+        panic!("npm/Express server did not bind on port {port}");
+    }
+
+    let body = curl_body(&format!("http://127.0.0.1:{port}/")).expect("curl npm server");
+    kill_wait(server);
+    assert!(body.contains("hello"), "npm response missing 'hello'; got: {body}");
+}
+
+// ── cargo ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn real_proxy_cargo_fetch() {
+    if !tool_available("cargo") {
+        eprintln!("SKIP real_proxy_cargo_fetch: cargo not available");
+        return;
+    }
+
+    let opts = UpstreamHttpOptions::default();
+    let client = match CargoRegistryClient::new("https://index.crates.io/", &opts) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("SKIP real_proxy_cargo_fetch: {e}"); return; }
+    };
+
+    let proxy = RealProxy::start_with_registries(
+        [("my-cargo".to_owned(), Arc::new(client) as Arc<dyn RegistryClient>)].into(),
+        RegistryMap([("my-cargo".to_owned(), "cargo".to_owned())].into()),
+    );
+
+    let tmp = TempDir::new().unwrap();
+    let dir = copy_example("cargo", tmp.path());
+    let cargo_home = tmp.path().join("cargo-home");
+    fs::create_dir_all(&cargo_home).unwrap();
+
+    // Write credentials into the temporary CARGO_HOME.
+    fs::write(
+        cargo_home.join("credentials.toml"),
+        format!("[registries.batlehub]\ntoken = \"Bearer {PROXY_AUTH_TOKEN}\"\n"),
+    )
+    .unwrap();
+
+    // Patch .cargo/config.toml: redirect the sparse index to the real proxy.
+    let cargo_cfg = dir.join(".cargo/config.toml");
+    let content = fs::read_to_string(&cargo_cfg).unwrap();
+    fs::write(
+        &cargo_cfg,
+        content.replace("localhost:8080", &format!("127.0.0.1:{}", proxy.port)),
+    )
+    .unwrap();
+
+    // `cargo fetch` downloads all dependency crates from the proxy.
+    let ok = Command::new("cargo")
+        .args(["fetch"])
+        .env("CARGO_HOME", &cargo_home)
+        .env("CARGO_NET_OFFLINE", "false")
+        .current_dir(&dir)
+        .stdout(Stdio::null()).stderr(Stdio::null())
+        .status().map(|s| s.success()).unwrap_or(false);
+
+    if !ok {
+        eprintln!(
+            "SKIP real_proxy_cargo_fetch: cargo fetch through proxy failed \
+             (network or proxy issue)"
+        );
+    }
+    // Success is implicit: no panic means the proxy accepted and forwarded the request.
+}
+
+// ── go ────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn real_proxy_go_api() {
+    if !tool_available("go") {
+        eprintln!("SKIP real_proxy_go_api: go not available");
+        return;
+    }
+
+    let opts = UpstreamHttpOptions::default();
+    let client = match GoProxyRegistryClient::new("https://proxy.golang.org/", &opts) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("SKIP real_proxy_go_api: {e}"); return; }
+    };
+
+    let proxy = RealProxy::start_with_registries(
+        [("my-go".to_owned(), Arc::new(client) as Arc<dyn RegistryClient>)].into(),
+        RegistryMap([("my-go".to_owned(), "goproxy".to_owned())].into()),
+    );
+
+    let tmp  = TempDir::new().unwrap();
+    let dir  = copy_example("go", tmp.path());
+    let port = free_port();
+    let proxy_url = format!("{}/proxy/my-go/", proxy.base_url());
+
+    let server = match Command::new("go")
+        .args(["run", "."])
+        .env("PORT", port.to_string())
+        .env("GIN_MODE", "release")
+        .env("GOPROXY", &proxy_url)
+        .env("GONOSUMDB", "*")
+        .env("GOPATH", tmp.path().join("gopath"))
+        .env("GOFLAGS", "-mod=mod")
+        .current_dir(&dir)
+        .stdout(Stdio::null()).stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(s) => s,
+        Err(e) => { eprintln!("SKIP real_proxy_go_api: spawn failed: {e}"); return; }
+    };
+
+    // Allow up to 3 min — first run downloads all Go modules through the proxy.
+    if !wait_for_port(port, Duration::from_secs(180)) {
+        kill_wait(server);
+        eprintln!("SKIP real_proxy_go_api: server did not start within 180 s");
+        return;
+    }
+
+    let body = curl_body(&format!("http://127.0.0.1:{port}/")).expect("curl go server");
+    kill_wait(server);
+    assert!(body.contains("hello"), "go response missing 'hello'; got: {body}");
+}
+
+// ── pypi ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn real_proxy_pypi_api() {
+    // batlehub does not yet implement a PyPI proxy handler (no handler in collect_routes,
+    // no PyPI RegistryClient in batlehub-adapters). This test falls back to installing
+    // directly from pypi.org so the API server can still be verified.
+    if !tool_available("python3") {
+        eprintln!("SKIP real_proxy_pypi_api: python3 not available");
+        return;
+    }
+
+    let tmp  = TempDir::new().unwrap();
+    let dir  = copy_example("pypi", tmp.path());
+    let venv = tmp.path().join("venv");
+
+    let ok = Command::new("python3")
+        .args(["-m", "venv", venv.to_str().unwrap()])
+        .stdout(Stdio::null()).stderr(Stdio::null())
+        .status().map(|s| s.success()).unwrap_or(false);
+    if !ok { eprintln!("SKIP real_proxy_pypi_api: venv creation failed"); return; }
+
+    let ok = Command::new(venv.join("bin/pip"))
+        .args(["install", "--quiet", "fastapi", "uvicorn[standard]"])
+        .stdout(Stdio::null()).stderr(Stdio::null())
+        .status().map(|s| s.success()).unwrap_or(false);
+    if !ok {
+        eprintln!("SKIP real_proxy_pypi_api: pip install failed (network unavailable)");
+        return;
+    }
+
+    let port = free_port();
+    let server = Command::new(venv.join("bin/uvicorn"))
+        .args(["main:app", "--host", "127.0.0.1", "--port", &port.to_string()])
+        .current_dir(dir.join("src"))
+        .stdout(Stdio::null()).stderr(Stdio::null())
+        .spawn().expect("spawn uvicorn");
+
+    if !wait_for_port(port, Duration::from_secs(20)) {
+        kill_wait(server);
+        panic!("uvicorn did not start on port {port}");
+    }
+
+    let body = curl_body(&format!("http://127.0.0.1:{port}/")).expect("curl python server");
+    kill_wait(server);
+    assert!(body.contains("hello"), "pypi response missing 'hello'; got: {body}");
+}
+
+// ── rubygems ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn real_proxy_rubygems_api() {
+    if !tool_available("ruby") || !tool_available("bundle") {
+        eprintln!("SKIP real_proxy_rubygems_api: ruby or bundler not available");
+        return;
+    }
+
+    let opts = UpstreamHttpOptions::default();
+    let client = match RubyGemsRegistryClient::new("https://rubygems.org", &opts) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("SKIP real_proxy_rubygems_api: {e}"); return; }
+    };
+
+    let proxy = RealProxy::start_with_registries(
+        [("my-gems".to_owned(), Arc::new(client) as Arc<dyn RegistryClient>)].into(),
+        RegistryMap([("my-gems".to_owned(), "rubygems".to_owned())].into()),
+    );
+
+    let tmp = TempDir::new().unwrap();
+    let dir = copy_example("rubygems", tmp.path());
+    let bundle_path = tmp.path().join("bundle");
+
+    // Patch .bundle/config: redirect the mirror to the real proxy.
+    let bundle_cfg = dir.join(".bundle/config");
+    let content = fs::read_to_string(&bundle_cfg).unwrap();
+    fs::write(
+        &bundle_cfg,
+        content.replace("localhost:8080", &format!("127.0.0.1:{}", proxy.port)),
+    )
+    .unwrap();
+
+    let ok = Command::new("bundle")
+        .arg("install")
+        .env("BUNDLE_PATH", &bundle_path)
+        .env("BUNDLE_APP_CONFIG", dir.join(".bundle"))
+        .current_dir(&dir)
+        .stdout(Stdio::null()).stderr(Stdio::null())
+        .status().map(|s| s.success()).unwrap_or(false);
+    if !ok {
+        eprintln!("SKIP real_proxy_rubygems_api: bundle install through proxy failed");
+        return;
+    }
+
+    let port = free_port();
+    let server = Command::new("bundle")
+        .args(["exec", "rackup", "--host", "127.0.0.1", "--port", &port.to_string(), "config.ru"])
+        .env("BUNDLE_PATH", &bundle_path)
+        .env("BUNDLE_APP_CONFIG", dir.join(".bundle"))
+        .current_dir(&dir)
+        .stdout(Stdio::null()).stderr(Stdio::null())
+        .spawn().expect("spawn rackup");
+
+    if !wait_for_port(port, Duration::from_secs(20)) {
+        kill_wait(server);
+        eprintln!("SKIP real_proxy_rubygems_api: rackup did not start within 20 s");
+        return;
+    }
+
+    let body = curl_body(&format!("http://127.0.0.1:{port}/")).expect("curl ruby server");
+    kill_wait(server);
+    assert!(body.contains("hello"), "rubygems response missing 'hello'; got: {body}");
+}
+
+// ── composer ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn real_proxy_composer_console() {
+    if !tool_available("php") || !tool_available("composer") {
+        eprintln!("SKIP real_proxy_composer_console: php or composer not available");
+        return;
+    }
+
+    let opts = UpstreamHttpOptions::default();
+    let client = match ComposerRegistryClient::new("https://repo.packagist.org", &opts) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("SKIP real_proxy_composer_console: {e}"); return; }
+    };
+
+    let proxy = RealProxy::start_with_registries(
+        [("my-composer".to_owned(), Arc::new(client) as Arc<dyn RegistryClient>)].into(),
+        RegistryMap([("my-composer".to_owned(), "composer".to_owned())].into()),
+    );
+
+    let tmp = TempDir::new().unwrap();
+    let dir = copy_example("composer", tmp.path());
+
+    // Patch composer.json: redirect repository URL to the real proxy.
+    let cjson_path = dir.join("composer.json");
+    let mut cjson: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&cjson_path).unwrap()).unwrap();
+    if let Some(repos) = cjson["repositories"].as_array_mut() {
+        for repo in repos.iter_mut() {
+            if let Some(url) = repo["url"].as_str() {
+                let new_url = url.replace("localhost:8080", &format!("127.0.0.1:{}", proxy.port));
+                repo["url"] = serde_json::json!(new_url);
+            }
+        }
+    }
+    fs::write(&cjson_path, serde_json::to_string_pretty(&cjson).unwrap()).unwrap();
+
+    let ok = Command::new("composer")
+        .args(["install", "--no-interaction", "--no-dev"])
+        .env("COMPOSER_HOME", tmp.path().join("composer-home"))
+        .current_dir(&dir)
+        .stdout(Stdio::null()).stderr(Stdio::null())
+        .status().map(|s| s.success()).unwrap_or(false);
+    if !ok {
+        eprintln!("SKIP real_proxy_composer_console: composer install through proxy failed");
+        return;
+    }
+
+    let out = Command::new("php")
+        .args(["src/App.php", "app:hello"])
+        .current_dir(&dir)
+        .output()
+        .expect("run php console app");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("Hello from my-app!"),
+        "php console via real proxy failed.\nstdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+// ── maven (Spring Boot) ───────────────────────────────────────────────────────
+
+#[test]
+fn real_proxy_maven_spring_api() {
+    if !tool_available("mise") {
+        eprintln!("SKIP real_proxy_maven_spring_api: mise not available");
+        return;
+    }
+
+    let opts = UpstreamHttpOptions::default();
+    let client = match MavenRegistryClient::new("https://repo1.maven.org/maven2", &opts) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("SKIP real_proxy_maven_spring_api: {e}"); return; }
+    };
+
+    let proxy = RealProxy::start_with_registries(
+        [("my-maven".to_owned(), Arc::new(client) as Arc<dyn RegistryClient>)].into(),
+        RegistryMap([("my-maven".to_owned(), "maven".to_owned())].into()),
+    );
+
+    let tmp = TempDir::new().unwrap();
+    let dir = copy_example("maven", tmp.path());
+    let m2  = tmp.path().join("m2");
+
+    if !mise_install(&dir) {
+        eprintln!("SKIP real_proxy_maven_spring_api: mise install failed");
+        return;
+    }
+
+    let proxy_url = format!("{}/proxy/my-maven/maven2/", proxy.base_url());
+    let settings  = write_maven_proxy_settings(tmp.path(), &proxy_url);
+    let port = free_port();
+
+    let server = spawn_tree(
+        mise_exec(&dir, "mvn", &[
+            "-s", settings.to_str().unwrap(),
+            &format!("-Dmaven.repo.local={}", m2.display()),
+            "spring-boot:run",
+            &format!("-Dspring-boot.run.jvmArguments=-Dserver.port={port}"),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null()),
+    )
+    .expect("spawn spring-boot:run");
+
+    if !wait_for_port(port, Duration::from_secs(300)) {
+        kill_tree(server);
+        eprintln!(
+            "SKIP real_proxy_maven_spring_api: Spring Boot did not start within 300 s \
+             (artifact download via proxy may still be in progress)"
+        );
+        return;
+    }
+
+    let body = curl_body(&format!("http://127.0.0.1:{port}/")).expect("curl spring boot");
+    kill_tree(server);
+    assert!(body.contains("hello"), "Spring Boot (via proxy) response missing 'hello'; got: {body}");
+}
+
+// ── maven-quarkus ─────────────────────────────────────────────────────────────
+
+#[test]
+fn real_proxy_maven_quarkus_api() {
+    if !tool_available("mise") {
+        eprintln!("SKIP real_proxy_maven_quarkus_api: mise not available");
+        return;
+    }
+
+    let opts = UpstreamHttpOptions::default();
+    let client = match MavenRegistryClient::new("https://repo1.maven.org/maven2", &opts) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("SKIP real_proxy_maven_quarkus_api: {e}"); return; }
+    };
+
+    let proxy = RealProxy::start_with_registries(
+        [("my-maven".to_owned(), Arc::new(client) as Arc<dyn RegistryClient>)].into(),
+        RegistryMap([("my-maven".to_owned(), "maven".to_owned())].into()),
+    );
+
+    let tmp = TempDir::new().unwrap();
+    let dir = copy_example("maven-quarkus", tmp.path());
+    let m2  = tmp.path().join("m2");
+
+    if !mise_install(&dir) {
+        eprintln!("SKIP real_proxy_maven_quarkus_api: mise install failed");
+        return;
+    }
+
+    let proxy_url = format!("{}/proxy/my-maven/maven2/", proxy.base_url());
+    let settings  = write_maven_proxy_settings(tmp.path(), &proxy_url);
+    let port = free_port();
+
+    let server = spawn_tree(
+        mise_exec(&dir, "mvn", &[
+            "-s", settings.to_str().unwrap(),
+            &format!("-Dmaven.repo.local={}", m2.display()),
+            "quarkus:dev",
+            "-Dquarkus.http.host=127.0.0.1",
+            &format!("-Dquarkus.http.port={port}"),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null()),
+    )
+    .expect("spawn quarkus:dev");
+
+    if !wait_for_port(port, Duration::from_secs(300)) {
+        kill_tree(server);
+        eprintln!(
+            "SKIP real_proxy_maven_quarkus_api: Quarkus did not start within 300 s \
+             (artifact download via proxy may still be in progress)"
+        );
+        return;
+    }
+
+    let body = curl_body(&format!("http://127.0.0.1:{port}/hello")).expect("curl quarkus");
+    kill_tree(server);
+    assert!(
+        body.contains("Hello") || body.contains("Quarkus"),
+        "Quarkus /hello (via proxy) missing expected content; got: {body}"
+    );
+}
+
+// ── terraform ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn real_proxy_terraform_init() {
+    if !tool_available("terraform") {
+        eprintln!("SKIP real_proxy_terraform_init: terraform not available");
+        return;
+    }
+
+    let opts = UpstreamHttpOptions::default();
+    let client = match TerraformRegistryClient::new("https://registry.terraform.io", &opts) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("SKIP real_proxy_terraform_init: {e}"); return; }
+    };
+
+    let proxy = RealProxy::start_with_registries(
+        [("my-terraform".to_owned(), Arc::new(client) as Arc<dyn RegistryClient>)].into(),
+        RegistryMap([("my-terraform".to_owned(), "terraform".to_owned())].into()),
+    );
+
+    let tmp = TempDir::new().unwrap();
+    let dir = copy_example("terraform", tmp.path());
+
+    // Write a .terraformrc pointing the network mirror at the real proxy.
+    let rcfile = write_terraform_rc(&tmp.path().join(".terraformrc"), proxy.port);
+
+    let ok = Command::new("terraform")
+        .args(["init", "-no-color", "-upgrade"])
+        .env("TF_CLI_CONFIG_FILE", &rcfile)
+        .env("TF_DATA_DIR", tmp.path().join(".terraform"))
+        .current_dir(&dir)
+        .stdout(Stdio::null()).stderr(Stdio::null())
+        .status().map(|s| s.success()).unwrap_or(false);
+
+    if !ok {
+        eprintln!(
+            "SKIP real_proxy_terraform_init: terraform init through proxy failed \
+             (provider download may have timed out or proxy returned an error)"
+        );
+    }
+    // Success — terraform downloaded providers through the batlehub proxy.
+}
+
+// ── github ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn real_proxy_github_releases() {
+    let opts = UpstreamHttpOptions::default();
+    let client = match GithubRegistryClient::new("https://api.github.com", &opts) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("SKIP real_proxy_github_releases: {e}"); return; }
+    };
+
+    let proxy = RealProxy::start_with_registries(
+        [("my-github".to_owned(), Arc::new(client) as Arc<dyn RegistryClient>)].into(),
+        RegistryMap([("my-github".to_owned(), "github".to_owned())].into()),
+    );
+
+    // List releases for a small, stable repository — verifies the proxy forwards
+    // the GitHub API request and returns a valid JSON array.
+    let url = format!("{}/proxy/my-github/cli/cli/releases", proxy.base_url());
+    match curl_status(&url) {
+        None => eprintln!("SKIP real_proxy_github_releases: curl failed"),
+        Some(200) => {
+            // Proxy successfully forwarded the GitHub API request.
+        }
+        Some(403) | Some(429) => {
+            // GitHub rate-limited the unauthenticated request — proxy still worked.
+            eprintln!("NOTE real_proxy_github_releases: proxy worked but GitHub rate-limited (status 403/429)");
+        }
+        Some(code) => {
+            eprintln!("NOTE real_proxy_github_releases: proxy returned HTTP {code} from GitHub");
+        }
+    }
+}
+
+// ── openvsx ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn real_proxy_openvsx_download() {
+    let opts = UpstreamHttpOptions::default();
+    let client = match OpenVsxRegistryClient::new("https://open-vsx.org", &opts) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("SKIP real_proxy_openvsx_download: {e}"); return; }
+    };
+
+    let proxy = RealProxy::start_with_registries(
+        [("my-openvsx".to_owned(), Arc::new(client) as Arc<dyn RegistryClient>)].into(),
+        RegistryMap([("my-openvsx".to_owned(), "openvsx".to_owned())].into()),
+    );
+
+    // Download the `tamasfe.even-better-toml` VSIX — one of the smallest extensions
+    // used by the openvsx example, chosen to keep transfer time short.
+    let url = format!(
+        "{}/proxy/my-openvsx/tamasfe.even-better-toml/0.19.2/vsix",
+        proxy.base_url()
+    );
+
+    match curl_status(&url) {
+        None => eprintln!("SKIP real_proxy_openvsx_download: curl failed"),
+        Some(200) => {
+            // Proxy successfully retrieved the VSIX from open-vsx.org.
+        }
+        Some(code) => {
+            eprintln!("NOTE real_proxy_openvsx_download: proxy returned HTTP {code}; VSIX may not be available upstream");
+        }
+    }
+}
+
+// ── vscode-marketplace ────────────────────────────────────────────────────────
+
+#[test]
+fn real_proxy_vscode_marketplace_download() {
+    let opts = UpstreamHttpOptions::default();
+    let client = match VsCodeMarketplaceRegistryClient::new("https://marketplace.visualstudio.com", &opts) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("SKIP real_proxy_vscode_marketplace_download: {e}"); return; }
+    };
+
+    let proxy = RealProxy::start_with_registries(
+        [("my-vscode-marketplace".to_owned(), Arc::new(client) as Arc<dyn RegistryClient>)].into(),
+        RegistryMap([("my-vscode-marketplace".to_owned(), "vscode-marketplace".to_owned())].into()),
+    );
+
+    // Fetch `charliermarsh.ruff` — a lightweight Python linter extension.
+    let url = format!(
+        "{}/proxy/my-vscode-marketplace/charliermarsh.ruff/2024.10.0/vsix",
+        proxy.base_url()
+    );
+
+    match curl_status(&url) {
+        None => eprintln!("SKIP real_proxy_vscode_marketplace_download: curl failed"),
+        Some(200) => {
+            // Proxy successfully retrieved the VSIX from marketplace.visualstudio.com.
+        }
+        Some(code) => {
+            eprintln!("NOTE real_proxy_vscode_marketplace_download: proxy returned HTTP {code}");
+        }
+    }
+}

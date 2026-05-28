@@ -360,6 +360,14 @@ impl LocalRegistryService {
             }
         }
 
+        // When no stable version is visible, fall back to the newest pre-release so that
+        // `dist-tags.latest` is always a valid (non-empty) version string.
+        if latest.is_empty() {
+            if let Some(p) = versions.last() {
+                latest = p.version.clone();
+            }
+        }
+
         Ok(serde_json::json!({
             "name": name,
             "_id": name,
@@ -436,10 +444,19 @@ impl LocalRegistryService {
 
     // ── Beta channel helpers ──────────────────────────────────────────────────
 
-    /// Returns `true` when `version` has a semver pre-release component (e.g. `1.0.0-beta.1`).
+    /// Returns `true` when `version` is a pre-release.
+    ///
+    /// Handles semver pre-release components (`1.0.0-beta.1`), optional `v` prefixes
+    /// (`v1.0.0-beta.1`), and Composer-style dev-branch aliases (`dev-main`, `1.x-dev`).
     fn is_prerelease(version: &str) -> bool {
-        semver::Version::parse(version)
-            .map(|v| !v.pre.is_empty())
+        // Composer dev-branch aliases are always pre-release.
+        if version.starts_with("dev-") || version.ends_with("-dev") {
+            return true;
+        }
+        // Strip optional leading 'v' before strict semver parse.
+        let v = version.strip_prefix('v').unwrap_or(version);
+        semver::Version::parse(v)
+            .map(|sv| !sv.pre.is_empty())
             .unwrap_or(false)
     }
 
@@ -859,6 +876,83 @@ impl LocalRegistryService {
         }
         Ok(resp)
     }
+    // ── Composer helpers ─────────────────────────────────────────────────────
+
+    /// Build a Packagist v2-compatible p2 JSON response for a locally published package.
+    ///
+    /// Returns `CoreError::NotFound` when no versions are published for `name`.
+    pub async fn get_composer_p2_response(
+        &self,
+        registry: &str,
+        name: &str,
+        base_url: &str,
+        identity: &Identity,
+    ) -> Result<serde_json::Value, CoreError> {
+        let versions = self.backend.get_versions(registry, name).await?;
+        let versions = self.filter_for_identity(registry, versions, identity).await?;
+
+        // Exclude yanked versions: Composer clients have no standard way to
+        // interpret a `yanked` field, so they would happily install yanked releases.
+        let versions: Vec<_> = versions.into_iter().filter(|p| !p.yanked).collect();
+
+        if versions.is_empty() {
+            return Err(CoreError::NotFound(format!(
+                "composer package '{name}' not found in local registry '{registry}'"
+            )));
+        }
+
+        // Split vendor/package so the dist URL segments are explicit.
+        // The upload handler already validates the vendor/package format, so
+        // a missing slash indicates a data integrity problem.
+        let (vendor, pkg_name) = name.split_once('/').ok_or_else(|| {
+            CoreError::Registry(format!("malformed composer package name: '{name}'"))
+        })?;
+
+        let base = base_url.trim_end_matches('/');
+        let entries: Vec<serde_json::Value> = versions
+            .iter()
+            .filter_map(|pkg| {
+                let mut entry = pkg.index_metadata.clone();
+                let obj = entry.as_object_mut()?;
+                // Inject/overwrite dist so downloads go through our proxy.
+                obj.insert(
+                    "dist".to_owned(),
+                    serde_json::json!({
+                        "type": "zip",
+                        "url": format!(
+                            "{base}/proxy/{registry}/dist/{vendor}/{pkg_name}/{version}",
+                            version = pkg.version
+                        ),
+                        "shasum": pkg.checksum,
+                    }),
+                );
+                obj.insert("name".to_owned(), serde_json::json!(name));
+                obj.insert("version".to_owned(), serde_json::json!(pkg.version));
+                obj.insert("time".to_owned(), serde_json::json!(pkg.published_at.to_rfc3339()));
+                Some(entry)
+            })
+            .collect();
+
+        if entries.is_empty() {
+            return Err(CoreError::NotFound(format!(
+                "composer package '{name}' has no valid versions in local registry '{registry}'"
+            )));
+        }
+
+        Ok(serde_json::json!({
+            "packages": { name: entries },
+            "minified": "composer/2.0"
+        }))
+    }
+
+    /// Return all distinct package names published in `registry`.
+    /// Used to populate `available-packages` in `packages.json`.
+    pub async fn get_composer_packages_list(
+        &self,
+        registry: &str,
+    ) -> Result<Vec<String>, CoreError> {
+        self.backend.list_package_names(registry).await
+    }
 }
 
 /// Stable storage key for a locally published artifact.
@@ -1214,16 +1308,16 @@ mod tests {
         assert_eq!(latest, "1.0.0");
     }
 
-    // npm packument: if all visible versions are pre-release, latest stays empty.
+    // npm packument: if all visible versions are pre-release, latest falls back to the newest pre-release.
     #[tokio::test]
     async fn npm_packument_latest_tag_only_prereleases() {
         let backend = InMemBackend::arc();
         backend.seed(pkg("reg", "pkg", "1.0.0-beta.1"));
         let s = svc_with_beta(backend, MemBetaChannel::with_users(&["beta"]));
         let doc = s.get_npm_packument("reg", "pkg", "http://localhost", &beta_user()).await.unwrap();
-        // No stable version exists; latest should be empty string (initial value).
+        // No stable version; latest must fall back to the newest pre-release, not "".
         let latest = doc["dist-tags"]["latest"].as_str().unwrap();
-        assert_eq!(latest, "");
+        assert_eq!(latest, "1.0.0-beta.1");
     }
 
     // go @latest: prefers last stable; falls back to last pre-release only if no stable exists.
@@ -1270,5 +1364,27 @@ mod tests {
         let stable = versions[1]["prerelease"].as_bool().unwrap();
         assert!(pre, "1.1.0-rc.1 should be marked prerelease=true");
         assert!(!stable, "1.0.0 should be marked prerelease=false");
+    }
+
+    // is_prerelease handles v-prefixed and Composer dev-branch versions.
+    #[test]
+    fn is_prerelease_handles_v_prefix_and_dev_branches() {
+        let check = |v: &str| LocalRegistryService::is_prerelease(v);
+        assert!(check("v1.0.0-beta.1"), "v-prefixed pre-release");
+        assert!(check("dev-main"), "dev- prefix");
+        assert!(check("dev-feature/branch"), "dev- with path");
+        assert!(check("1.0.0-dev"), "-dev suffix");
+        assert!(!check("v1.0.0"), "v-prefixed stable");
+        assert!(!check("1.0.0"), "plain stable");
+        assert!(!check("1.0.0.0"), "four-part (non-semver stable)");
+    }
+
+    // check_prerelease_access blocks non-members on Composer dev-branch versions.
+    #[tokio::test]
+    async fn check_prerelease_access_blocks_dev_branch_non_member() {
+        let backend = InMemBackend::arc();
+        let s = svc_with_beta(backend, MemBetaChannel::empty());
+        let err = s.check_prerelease_access("reg", "dev-main", &anon()).await.unwrap_err();
+        assert!(matches!(err, CoreError::NotFound(_)), "dev-main must be gated");
     }
 }

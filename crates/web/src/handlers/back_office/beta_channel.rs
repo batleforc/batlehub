@@ -4,20 +4,10 @@ use actix_web::{HttpResponse, Responder, delete, get, post, web};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use batlehub_core::{
-    entities::Role,
-    ports::{BetaChannelEntry, BetaChannelPort},
-};
+use batlehub_core::ports::{BetaChannelEntry, BetaChannelPort};
 
 use crate::{error::AppError, extractors::AuthIdentity};
-
-fn require_admin(identity: &AuthIdentity) -> Result<(), AppError> {
-    if identity.role != Role::Admin {
-        Err(AppError::forbidden("admin role required"))
-    } else {
-        Ok(())
-    }
-}
+use super::require_admin;
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BetaChannelMemberDto {

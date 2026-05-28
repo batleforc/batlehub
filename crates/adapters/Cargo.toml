@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = ["auth-token", "auth-oidc", "auth-kubernetes", "storage-fs", "registry-github", "registry-npm", "registry-cargo", "registry-openvsx", "registry-goproxy", "registry-vscode-marketplace", "registry-maven", "registry-terraform", "registry-rubygems", "db-postgres", "local-registry"]
+default = ["auth-token", "auth-oidc", "auth-kubernetes", "storage-fs", "registry-github", "registry-npm", "registry-cargo", "registry-openvsx", "registry-goproxy", "registry-vscode-marketplace", "registry-maven", "registry-terraform", "registry-rubygems", "registry-composer", "db-postgres", "local-registry"]
 auth-token = []
 auth-oidc = ["dep:jsonwebtoken"]
 auth-kubernetes = []
@@ -22,7 +22,7 @@ registry-maven = []
 registry-terraform = []
 registry-rubygems = ["dep:flate2", "dep:tar"]
 registry-pypi = []
-registry-composer = []
+registry-composer = ["dep:zip"]
 db-postgres = []
 local-registry = ["db-postgres"]
 
@@ -50,6 +50,7 @@ base64 = "0.22"
 sha2 = "0.10"
 flate2 = { version = "1", optional = true }
 tar = { version = "0.4", optional = true }
+zip = { version = "2", optional = true }
 rand = "0.8"
 hex = "0.4"
 

@@ -1,0 +1,19 @@
+[tools]
+python = "3.12"
+uv = "latest"
+
+[env]
+UV_INDEX_URL = "http://localhost:8080/proxy/my-pypi/simple/"
+PIP_CONFIG_FILE = "{{cwd}}/pip.conf"
+
+[tasks.install]
+description = "Install dependencies through the proxy"
+run = "uv pip install -r requirements.txt"
+
+[tasks.run]
+description = "Run the application"
+run = "python src/main.py"
+
+[tasks.test]
+description = "Run tests"
+run = "python -m pytest"

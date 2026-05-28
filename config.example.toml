@@ -370,6 +370,28 @@ name   = "my-gems"
 mode   = "hybrid"
 upstreams = ["https://rubygems.org"]
 
+# ── PHP Composer registry ────────────────────────────────────────────────────
+#
+# Proxy mode: mirrors Packagist metadata and dist artifacts.
+# Local/hybrid mode: accepts ZIP uploads for private packages.
+#
+# Point Composer clients at: http(s)://your-host/proxy/{name}
+# In your project's composer.json:
+#   "repositories": [{"type": "composer", "url": "https://your-host/proxy/packagist"}]
+#
+# [[registries]]
+# type = "composer"
+# name = "packagist"
+# # mode = "proxy"                              # default
+# # upstreams = ["https://repo.packagist.org"]  # default upstream
+#
+# # Hybrid example — serve private packages, fall through to Packagist for the rest:
+[[registries]]
+type   = "composer"
+name   = "my-composer"
+mode   = "hybrid"
+upstreams = ["https://repo.packagist.org"]
+
 # --- Maven Central registry --------------------------------------------------
 #
 # Proxy mode: mirrors Maven Central artifact downloads, POM info, and version listing.

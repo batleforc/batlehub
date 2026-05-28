@@ -1,13 +1,14 @@
 //! In-process, in-memory IP block store.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use tokio::sync::Mutex;
 
 use batlehub_core::error::CoreError;
 use batlehub_core::ports::{BlockedIpInfo, IpBlockStore};
+
+use super::now_unix;
 
 struct ViolationWindow {
     window_start: u64,
@@ -34,13 +35,6 @@ impl InMemoryIpBlockStore {
     pub fn new() -> Self {
         Self::default()
     }
-
-    fn now_unix() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-    }
 }
 
 #[async_trait]
@@ -53,15 +47,19 @@ impl IpBlockStore for InMemoryIpBlockStore {
         if window_secs == 0 {
             return Err(CoreError::Cache("window_secs must be > 0".into()));
         }
-        let now = Self::now_unix();
+        let now = now_unix();
         let ws = window_secs as u64;
         let window_start = (now / ws) * ws;
         let window_reset = window_start + ws;
 
-        let mut guard = self
-            .violations
-            .lock()
-            .map_err(|_| CoreError::Cache("ip_block violation lock poisoned".into()))?;
+        let mut guard = self.violations.lock().await;
+
+        // Opportunistic eviction: when the map exceeds 10 000 entries, drop all
+        // entries from windows older than 2 periods to bound memory growth.
+        if guard.len() > 10_000 {
+            let cutoff = window_start.saturating_sub(ws * 2);
+            guard.retain(|_, e| e.window_start >= cutoff);
+        }
 
         let entry = guard.entry(ip.to_owned()).or_insert(ViolationWindow {
             window_start,
@@ -76,22 +74,16 @@ impl IpBlockStore for InMemoryIpBlockStore {
     }
 
     async fn is_blocked(&self, ip: &str) -> Result<Option<u64>, CoreError> {
-        let now = Self::now_unix();
-        let guard = self
-            .blocks
-            .lock()
-            .map_err(|_| CoreError::Cache("ip_block blocks lock poisoned".into()))?;
+        let now = now_unix();
+        let guard = self.blocks.lock().await;
         Ok(guard.get(ip).and_then(|e| {
             if e.unblock_at > now { Some(e.unblock_at) } else { None }
         }))
     }
 
     async fn block_ip(&self, ip: &str, unblock_at: u64, reason: &str) -> Result<(), CoreError> {
-        let now = Self::now_unix();
-        let mut guard = self
-            .blocks
-            .lock()
-            .map_err(|_| CoreError::Cache("ip_block blocks lock poisoned".into()))?;
+        let now = now_unix();
+        let mut guard = self.blocks.lock().await;
         guard.insert(
             ip.to_owned(),
             BlockEntry { blocked_at: now, unblock_at, reason: reason.to_owned() },
@@ -100,23 +92,18 @@ impl IpBlockStore for InMemoryIpBlockStore {
     }
 
     async fn unblock_ip(&self, ip: &str) -> Result<(), CoreError> {
-        let mut guard = self
-            .blocks
-            .lock()
-            .map_err(|_| CoreError::Cache("ip_block blocks lock poisoned".into()))?;
+        let mut guard = self.blocks.lock().await;
         guard.remove(ip);
         Ok(())
     }
 
     async fn list_blocked(&self) -> Result<Vec<BlockedIpInfo>, CoreError> {
-        let now = Self::now_unix();
-        let guard = self
-            .blocks
-            .lock()
-            .map_err(|_| CoreError::Cache("ip_block blocks lock poisoned".into()))?;
+        let now = now_unix();
+        let mut guard = self.blocks.lock().await;
+        // Evict expired entries eagerly on every list call.
+        guard.retain(|_, e| e.unblock_at > now);
         Ok(guard
             .iter()
-            .filter(|(_, e)| e.unblock_at > now)
             .map(|(ip, e)| BlockedIpInfo {
                 ip: ip.clone(),
                 blocked_at: e.blocked_at,
@@ -129,11 +116,10 @@ impl IpBlockStore for InMemoryIpBlockStore {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{SystemTime, UNIX_EPOCH};
     use super::*;
 
     fn now() -> u64 {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+        now_unix()
     }
 
     #[tokio::test]

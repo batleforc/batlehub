@@ -1,0 +1,10 @@
+[tools]
+node = "22"
+
+[env]
+PROXY_URL = "http://localhost:8080/proxy/my-vscode-marketplace"
+PROXY_TOKEN = "change-me-user-token"
+
+[tasks.install-extensions]
+description = "Install VS Code extensions through the Marketplace proxy"
+run = "bash install-extension.sh"

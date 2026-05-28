@@ -62,7 +62,22 @@ pub async fn gem_download(
         })?;
 
     let mode = mode_map.get(&registry);
-    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+    if matches!(mode, RegistryMode::Local) {
+        local_svc
+            .check_prerelease_access(&registry, version, &identity)
+            .await
+            .map_err(AppError::from)?;
+        let bytes = local_svc
+            .get_artifact(&registry, name, version)
+            .await
+            .map_err(AppError::from)?;
+        let mut resp = HttpResponse::Ok();
+        resp.content_type("application/octet-stream");
+        append_signature_headers(&mut resp, &local_svc, &registry, name, version).await;
+        return Ok(resp.body(bytes));
+    }
+
+    if matches!(mode, RegistryMode::Hybrid) {
         if let Err(e) = local_svc.check_prerelease_access(&registry, version, &identity).await {
             if !matches!(e, batlehub_core::error::CoreError::NotFound(_)) {
                 return Err(AppError::from(e));
@@ -76,11 +91,7 @@ pub async fn gem_download(
                     append_signature_headers(&mut resp, &local_svc, &registry, name, version).await;
                     return Ok(resp.body(bytes));
                 }
-                Err(batlehub_core::error::CoreError::NotFound(_))
-                    if matches!(mode, RegistryMode::Hybrid) => {}
-                Err(batlehub_core::error::CoreError::NotFound(_)) => {
-                    return Err(AppError::not_found(format!("gem '{name}@{version}' not found")));
-                }
+                Err(batlehub_core::error::CoreError::NotFound(_)) => {} // fall through to proxy
                 Err(e) => return Err(AppError::from(e)),
             }
         }

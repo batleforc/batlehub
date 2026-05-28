@@ -1,0 +1,23 @@
+[tools]
+java = "temurin-21"
+maven = "3.9"
+
+[tasks.dev]
+description = "Start Quarkus in dev mode with live reload (downloads via proxy)"
+run = "mvn -s settings.xml quarkus:dev"
+
+[tasks.package]
+description = "Build a fast-jar through the proxy"
+run = "mvn -s settings.xml package -DskipTests"
+
+[tasks.package-native]
+description = "Build a native executable (requires GraalVM)"
+run = "mvn -s settings.xml package -Pnative -DskipTests"
+
+[tasks.test]
+description = "Run all tests (downloads via proxy)"
+run = "mvn -s settings.xml test"
+
+[tasks.clean]
+description = "Clean build artifacts"
+run = "mvn clean"

@@ -344,6 +344,11 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             // maven (literal "maven2" segment) >
             // openvsx vsix (literal "vsix") > npm audit (literal "/-/npm/v1/audit/quick") >
             // npm tarball (literal "tarball") > shared version metadata > shared packument
+            // composer: upload/yank (literal "api") > p2 (literal "p2") > dist > packages.json
+            composer::{
+                composer_dist, composer_packages_json, composer_p2_metadata,
+                composer_upload, composer_yank,
+            },
             cargo::{
                 cargo_owners, cargo_publish, cargo_registry_config, cargo_registry_index,
                 cargo_unyank, cargo_yank, download_crate,
@@ -427,6 +432,12 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(gem_specs_full);
     cfg.service(gem_specs_latest);
     cfg.service(gem_specs_prerelease);
+    // Composer: literal "api" routes before "p2" before "dist" before "packages.json"
+    cfg.service(composer_upload);         // POST …/api/upload
+    cfg.service(composer_yank);           // DELETE …/api/packages/{vendor}/{package}/versions/{version}
+    cfg.service(composer_p2_metadata);    // GET …/p2/{path:.*}
+    cfg.service(composer_dist);           // GET …/dist/{vendor}/{package}/{version}
+    cfg.service(composer_packages_json);  // GET …/packages.json
     // OpenVSX/VSCode VSIX publish (PUT) and download (GET) — same path, different method
     cfg.service(vsix_publish);
     cfg.service(download_vsix);

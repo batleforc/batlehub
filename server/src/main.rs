@@ -22,9 +22,10 @@ use batlehub_adapters::{
     db::{PgArtifactMetaRepository, PgBetaChannelStore, PgOwnershipStore, PgPackageRepository, PgQuotaRepository},
     local_registry::PostgresLocalRegistry,
     registry::{
-        CargoRegistryClient, FanoutRegistryClient, GoProxyRegistryClient, GithubRegistryClient,
-        MavenRegistryClient, NpmRegistryClient, OpenVsxRegistryClient, RubyGemsRegistryClient,
-        TerraformRegistryClient, VsCodeMarketplaceRegistryClient, UpstreamHttpOptions,
+        CargoRegistryClient, ComposerRegistryClient, FanoutRegistryClient, GoProxyRegistryClient,
+        GithubRegistryClient, MavenRegistryClient, NpmRegistryClient, OpenVsxRegistryClient,
+        RubyGemsRegistryClient, TerraformRegistryClient, VsCodeMarketplaceRegistryClient,
+        UpstreamHttpOptions,
     },
     storage::{FilesystemStorageBackend, StorageRouter},
 };
@@ -682,6 +683,7 @@ fn build_registry_client(reg: &RegistryConfig) -> anyhow::Result<Arc<dyn batlehu
             "maven" => Arc::new(MavenRegistryClient::new(url, opts)?),
             "terraform" => Arc::new(TerraformRegistryClient::new(url, opts)?),
             "rubygems" => Arc::new(RubyGemsRegistryClient::new(url, opts)?),
+            "composer" => Arc::new(ComposerRegistryClient::new(url, opts)?),
             other => anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in"),
         };
         Ok(client)
@@ -699,6 +701,7 @@ fn build_registry_client(reg: &RegistryConfig) -> anyhow::Result<Arc<dyn batlehu
         "maven" => resolve_urls(&reg.upstreams, "https://repo1.maven.org/maven2"),
         "terraform" => resolve_urls(&reg.upstreams, "https://registry.terraform.io"),
         "rubygems" => resolve_urls(&reg.upstreams, "https://rubygems.org"),
+        "composer" => resolve_urls(&reg.upstreams, "https://repo.packagist.org"),
         other => anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in"),
     };
 

@@ -58,6 +58,10 @@ pub async fn download_vsix(
     let mode = mode_map.get(&registry);
 
     if matches!(mode, RegistryMode::Local) {
+        local_svc
+            .check_prerelease_access(&registry, &version, &identity)
+            .await
+            .map_err(AppError::from)?;
         let bytes = local_svc
             .get_artifact(&registry, &extension_id, &version)
             .await
@@ -68,17 +72,27 @@ pub async fn download_vsix(
     }
 
     if matches!(mode, RegistryMode::Hybrid) {
-        match local_svc
-            .get_artifact(&registry, &extension_id, &version)
+        if let Err(e) = local_svc
+            .check_prerelease_access(&registry, &version, &identity)
             .await
         {
-            Ok(bytes) => {
-                return Ok(HttpResponse::Ok()
-                    .content_type("application/octet-stream")
-                    .body(bytes));
+            if !matches!(e, CoreError::NotFound(_)) {
+                return Err(AppError::from(e));
             }
-            Err(CoreError::NotFound(_)) => {}
-            Err(e) => return Err(AppError::from(e)),
+            // pre-release gated; fall through to proxy
+        } else {
+            match local_svc
+                .get_artifact(&registry, &extension_id, &version)
+                .await
+            {
+                Ok(bytes) => {
+                    return Ok(HttpResponse::Ok()
+                        .content_type("application/octet-stream")
+                        .body(bytes));
+                }
+                Err(CoreError::NotFound(_)) => {}
+                Err(e) => return Err(AppError::from(e)),
+            }
         }
     }
 

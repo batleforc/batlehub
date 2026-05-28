@@ -1,0 +1,15 @@
+[tools]
+# gh is used by install.sh to authenticate and download release assets
+gh = "latest"
+
+[env]
+PROXY_URL = "http://localhost:8080/proxy/my-github"
+PROXY_TOKEN = "change-me-user-token"
+
+[tasks.download]
+description = "Download a release asset through the proxy (OWNER= REPO= TAG= FILE=)"
+run = "bash download.sh"
+
+[tasks.install-gh]
+description = "Install the GitHub CLI through the proxy"
+run = "bash install.sh"

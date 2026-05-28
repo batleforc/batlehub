@@ -199,4 +199,18 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
         .map_err(|e| CoreError::Database(e.to_string()))?;
         Ok(result.rows_affected())
     }
+
+    async fn list_package_names(&self, registry: &str) -> Result<Vec<String>, CoreError> {
+        let rows = sqlx::query(
+            "SELECT DISTINCT name FROM local_packages \
+             WHERE registry = $1 AND status = 'published' \
+             ORDER BY name ASC",
+        )
+        .bind(registry)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::Database(e.to_string()))?;
+
+        Ok(rows.into_iter().map(|r| r.get::<String, _>("name")).collect())
+    }
 }

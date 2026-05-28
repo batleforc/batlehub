@@ -1,3 +1,12 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
+pub(crate) fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 pub mod in_memory;
 pub use in_memory::InMemoryRateLimitStore;
 

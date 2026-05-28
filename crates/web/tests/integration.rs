@@ -40,8 +40,10 @@ use batlehub_core::{
     rules::{BlockListRule, RbacRule},
     services::{AdminService, LocalRegistryService, ProxyMetrics, ProxyService, RegistryPolicy},
 };
-use batlehub_adapters::rate_limit::InMemoryRateLimitStore;
+use batlehub_adapters::rate_limit::{InMemoryIpBlockStore, InMemoryRateLimitStore};
 use batlehub_config::schema::{GroupRateLimitConfig, RateLimitConfig, RateLimitEnforcement, RegistryMode};
+use batlehub_core::entities::Identity;
+use batlehub_core::ports::{BetaChannelEntry, BetaChannelPort, IpBlockStore};
 use batlehub_web::{configure_app, healthz, prometheus_metrics, AuthMiddlewareFactory, RateLimitMiddlewareFactory, RateLimitService, RegistryModeMap};
 use metrics_exporter_prometheus::PrometheusBuilder;
 
@@ -409,6 +411,17 @@ impl LocalRegistryBackend for InMemoryLocalRegistry {
         let map = self.packages.lock().unwrap();
         Ok(map.contains_key(&key))
     }
+
+    async fn list_package_names(&self, registry: &str) -> Result<Vec<String>, CoreError> {
+        let prefix = format!("{registry}:");
+        let map = self.packages.lock().unwrap();
+        let mut names: Vec<String> = map
+            .keys()
+            .filter_map(|k| k.strip_prefix(&prefix).map(str::to_owned))
+            .collect();
+        names.sort();
+        Ok(names)
+    }
 }
 
 fn make_local_svc(storage: Arc<dyn StorageBackend>) -> Arc<LocalRegistryService> {
@@ -595,6 +608,187 @@ async fn make_app_ext(
         app.wrap(AuthMiddlewareFactory::new(test_auth_providers())),
     )
     .await
+}
+
+// ── In-memory BetaChannelPort ─────────────────────────────────────────────────
+
+#[derive(Default)]
+struct InMemoryBetaChannelStore {
+    entries: Mutex<Vec<(String, String, String, Option<String>)>>, // (registry, type, id, granted_by)
+}
+
+impl InMemoryBetaChannelStore {
+    fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+}
+
+#[async_trait]
+impl BetaChannelPort for InMemoryBetaChannelStore {
+    async fn is_member(&self, registry: &str, identity: &Identity) -> Result<bool, CoreError> {
+        let Some(user_id) = identity.user_id.as_deref() else { return Ok(false) };
+        let guard = self.entries.lock().unwrap();
+        Ok(guard.iter().any(|(r, t, id, _)| r == registry && t == "user" && id == user_id))
+    }
+
+    async fn add_member(&self, registry: &str, entry: BetaChannelEntry) -> Result<(), CoreError> {
+        self.entries.lock().unwrap().push((
+            registry.to_owned(),
+            entry.principal_type,
+            entry.principal_id,
+            entry.granted_by,
+        ));
+        Ok(())
+    }
+
+    async fn remove_member(
+        &self,
+        registry: &str,
+        principal_type: &str,
+        principal_id: &str,
+    ) -> Result<(), CoreError> {
+        self.entries.lock().unwrap().retain(|(r, t, id, _)| {
+            !(r == registry && t == principal_type && id == principal_id)
+        });
+        Ok(())
+    }
+
+    async fn list_members(&self, registry: &str) -> Result<Vec<BetaChannelEntry>, CoreError> {
+        let guard = self.entries.lock().unwrap();
+        Ok(guard
+            .iter()
+            .filter(|(r, _, _, _)| r == registry)
+            .map(|(_, t, id, gb)| BetaChannelEntry {
+                principal_type: t.clone(),
+                principal_id: id.clone(),
+                granted_by: gb.clone(),
+            })
+            .collect())
+    }
+}
+
+// ── App factories for back-office stores ──────────────────────────────────────
+
+async fn make_app_with_ip_store(
+    ip_store: Arc<dyn IpBlockStore>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo = InMemoryRepo::new();
+    let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
+    let policies: HashMap<String, RegistryPolicy> = HashMap::new();
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        registries,
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        policies,
+        max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = batlehub_web::AccessConfig {
+        anonymous: std::collections::HashSet::new(),
+        user: std::collections::HashSet::new(),
+        admin: std::collections::HashSet::new(),
+        groups: std::collections::HashMap::new(),
+    };
+    let registry_map = batlehub_web::RegistryMap(std::collections::HashMap::new());
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
+        .split_for_parts();
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(RegistryModeMap::default()))
+        .app_data(actix_web::web::Data::new(ip_store));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+}
+
+async fn make_app_with_beta_store(
+    beta_store: Arc<dyn BetaChannelPort>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo = InMemoryRepo::new();
+    let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
+    let policies: HashMap<String, RegistryPolicy> = HashMap::new();
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        registries,
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        policies,
+        max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = batlehub_web::AccessConfig {
+        anonymous: std::collections::HashSet::new(),
+        user: std::collections::HashSet::new(),
+        admin: std::collections::HashSet::new(),
+        groups: std::collections::HashMap::new(),
+    };
+    let registry_map = batlehub_web::RegistryMap(std::collections::HashMap::new());
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
+        .split_for_parts();
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(RegistryModeMap::default()))
+        .app_data(actix_web::web::Data::new(beta_store));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
 }
 
 // ── Rate-limited app factory ──────────────────────────────────────────────────
@@ -5656,4 +5850,723 @@ async fn terraform_provider_upload_returns_quota_headers() {
         .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 201);
+}
+
+// ── PHP Composer registry ─────────────────────────────────────────────────────
+
+async fn make_local_composer_app(
+    mode: RegistryMode,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
+        "local-composer".to_owned(),
+        FixedRegistry::new("composer") as Arc<dyn RegistryClient>,
+    )]
+    .into();
+    let policies: HashMap<String, RegistryPolicy> =
+        [("local-composer".to_owned(), rbac_policy(repo_dyn.clone()))].into();
+
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        registries,
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        policies,
+        max_artifact_size_bytes: None,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = batlehub_web::AccessConfig {
+        anonymous: [].iter().map(|s: &&str| s.to_string()).collect(),
+        user: ["local-composer"].iter().map(|s| s.to_string()).collect(),
+        admin: ["local-composer"].iter().map(|s| s.to_string()).collect(),
+        groups: std::collections::HashMap::new(),
+    };
+    let registry_map = batlehub_web::RegistryMap(
+        [("local-composer", "composer")]
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.to_string()))
+            .collect(),
+    );
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+    let mut mode_map = RegistryModeMap::default();
+    mode_map.0.insert("local-composer".to_owned(), mode);
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
+        .split_for_parts();
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(mode_map));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+}
+
+fn make_composer_zip(name: &str, version: &str) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut buf);
+        let opts = zip::write::SimpleFileOptions::default();
+        writer.start_file("composer.json", opts).unwrap();
+        let json = serde_json::json!({
+            "name": name,
+            "version": version,
+            "description": "Test package",
+            "type": "library",
+        });
+        writer.write_all(json.to_string().as_bytes()).unwrap();
+        writer.finish().unwrap();
+    }
+    buf.into_inner()
+}
+
+// ── packages.json ─────────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn composer_packages_json_proxy_mode_returns_metadata_url() {
+    let app = make_local_composer_app(RegistryMode::Proxy).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/packages.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let metadata_url = body["metadata-url"].as_str().unwrap();
+    assert!(
+        metadata_url.contains("/proxy/local-composer/p2/%package%.json"),
+        "metadata-url must point to our p2 endpoint"
+    );
+    assert_eq!(body["available-packages"], serde_json::json!([]));
+}
+
+#[actix_web::test]
+async fn composer_packages_json_local_mode_lists_published_packages() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+
+    // Publish a package first so it appears in the listing.
+    let zip = make_composer_zip("acme/my-pkg", "1.0.0");
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/packages.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let available = body["available-packages"].as_array().unwrap();
+    assert!(
+        available.iter().any(|v| v.as_str() == Some("acme/my-pkg")),
+        "available-packages must list published package name"
+    );
+}
+
+#[actix_web::test]
+async fn composer_packages_json_unknown_registry_returns_404() {
+    let app = make_local_composer_app(RegistryMode::Proxy).await;
+    let req = TestRequest::get()
+        .uri("/proxy/no-such-registry/packages.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+// ── p2 metadata ───────────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn composer_p2_proxy_mode_returns_artifact_body() {
+    let app = make_local_composer_app(RegistryMode::Proxy).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/p2/vendor/pkg.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body = read_body(resp).await;
+    // FixedRegistry returns "artifact:composer:…" — assert content originates from the registry call
+    let body_str = std::str::from_utf8(&body).expect("body is valid UTF-8");
+    assert!(
+        body_str.contains("vendor/pkg"),
+        "response body must reference the requested package name; got: {body_str:?}"
+    );
+}
+
+#[actix_web::test]
+async fn composer_p2_dev_variant_returns_200_and_body() {
+    let app = make_local_composer_app(RegistryMode::Proxy).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/p2/vendor/pkg~dev.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    // ~dev.json is a valid variant — the parse helper strips the suffix.
+    assert_eq!(resp.status(), 200);
+    let body = read_body(resp).await;
+    let body_str = std::str::from_utf8(&body).expect("body is valid UTF-8");
+    assert!(
+        body_str.contains("vendor/pkg"),
+        "response body must reference the requested package name; got: {body_str:?}"
+    );
+}
+
+#[actix_web::test]
+async fn composer_p2_local_mode_published_package_found() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+
+    let zip = make_composer_zip("acme/my-lib", "2.0.0");
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip)
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/p2/acme/my-lib.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert!(body["packages"]["acme/my-lib"].is_array());
+}
+
+#[actix_web::test]
+async fn composer_p2_local_mode_unknown_package_returns_404() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/p2/ghost/pkg.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn composer_p2_hybrid_mode_falls_back_to_proxy() {
+    // In hybrid mode with no local packages the request falls back to FixedRegistry.
+    let app = make_local_composer_app(RegistryMode::Hybrid).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/p2/vendor/remote-pkg.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+// ── dist artifact ─────────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn composer_dist_proxy_mode_streams_artifact() {
+    let app = make_local_composer_app(RegistryMode::Proxy).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/dist/vendor/pkg/1.0.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn composer_dist_local_mode_serves_stored_artifact() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+
+    let zip = make_composer_zip("acme/zippkg", "3.1.0");
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip.clone())
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/dist/acme/zippkg/3.1.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body = read_body(resp).await;
+    assert_eq!(body.as_ref(), zip.as_slice());
+}
+
+#[actix_web::test]
+async fn composer_dist_local_mode_unknown_version_returns_404() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/dist/ghost/pkg/9.9.9")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn composer_dist_hybrid_falls_back_to_proxy() {
+    let app = make_local_composer_app(RegistryMode::Hybrid).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/dist/vendor/remote/1.0.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+// ── upload ────────────────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn composer_upload_user_can_publish() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+    let zip = make_composer_zip("myvendor/mypkg", "1.0.0");
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["status"], "success");
+    assert_eq!(body["name"], "myvendor/mypkg");
+    assert_eq!(body["version"], "1.0.0");
+}
+
+#[actix_web::test]
+async fn composer_upload_version_override_via_query_param() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+    // ZIP has version "1.0.0" in composer.json but we override to "2.5.0".
+    let zip = make_composer_zip("myvendor/override-pkg", "1.0.0");
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload?version=2.5.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["version"], "2.5.0");
+}
+
+#[actix_web::test]
+async fn composer_upload_anonymous_returns_403() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+    let zip = make_composer_zip("myvendor/anon-pkg", "1.0.0");
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        // No Authorization header — anonymous identity.
+        .set_payload(zip)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn composer_upload_proxy_mode_returns_404() {
+    let app = make_local_composer_app(RegistryMode::Proxy).await;
+    let zip = make_composer_zip("myvendor/proxy-pkg", "1.0.0");
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn composer_upload_duplicate_version_returns_409() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+    let zip = make_composer_zip("myvendor/dup-pkg", "1.0.0");
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip.clone())
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 409);
+}
+
+#[actix_web::test]
+async fn composer_upload_invalid_zip_returns_422() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(b"this is not a zip file".as_slice())
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 422);
+}
+
+#[actix_web::test]
+async fn composer_upload_then_p2_shows_package() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+
+    let zip = make_composer_zip("acme/seq-pkg", "1.2.3");
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip)
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/p2/acme/seq-pkg.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let versions = body["packages"]["acme/seq-pkg"].as_array().unwrap();
+    assert!(!versions.is_empty());
+    assert_eq!(versions[0]["version"], "1.2.3");
+    assert!(versions[0]["dist"]["url"]
+        .as_str()
+        .unwrap()
+        .contains("/proxy/local-composer/dist/acme/seq-pkg/1.2.3"));
+}
+
+// ── yank ──────────────────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn composer_yank_excludes_version_from_p2() {
+    // Yanked versions are removed from the Packagist v2 response because Composer
+    // clients have no standard `yanked` field — they would otherwise install yanked releases.
+    let app = make_local_composer_app(RegistryMode::Local).await;
+
+    let zip = make_composer_zip("acme/yankable", "4.0.0");
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip)
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    // Verify the version appears before yanking.
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/p2/acme/yankable.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert!(!body["packages"]["acme/yankable"].as_array().unwrap().is_empty());
+
+    let req = TestRequest::delete()
+        .uri("/proxy/local-composer/api/packages/acme/yankable/versions/4.0.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    // After yanking the only version, the p2 endpoint should return 404.
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/p2/acme/yankable.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn composer_yank_anonymous_returns_403() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+    let req = TestRequest::delete()
+        .uri("/proxy/local-composer/api/packages/acme/anon-pkg/versions/1.0.0")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn composer_yank_proxy_mode_returns_404() {
+    let app = make_local_composer_app(RegistryMode::Proxy).await;
+    let req = TestRequest::delete()
+        .uri("/proxy/local-composer/api/packages/acme/proxy-pkg/versions/1.0.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+// ── misc ──────────────────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn composer_wrong_registry_type_returns_404() {
+    // "npm" registry exists but is type "npm", not "composer".
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/npm/packages.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+// ── /api/v1/admin/ip-blocks ───────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn ip_blocks_list_empty_returns_200_with_empty_array() {
+    let store: Arc<dyn IpBlockStore> = Arc::new(InMemoryIpBlockStore::new());
+    let app = make_app_with_ip_store(store).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/ip-blocks")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body, serde_json::json!([]));
+}
+
+#[actix_web::test]
+async fn ip_blocks_block_ip_returns_204() {
+    let store: Arc<dyn IpBlockStore> = Arc::new(InMemoryIpBlockStore::new());
+    let app = make_app_with_ip_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/ip-blocks")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"ip": "1.2.3.4"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 204);
+}
+
+#[actix_web::test]
+async fn ip_blocks_list_shows_blocked_ip() {
+    let store: Arc<dyn IpBlockStore> = Arc::new(InMemoryIpBlockStore::new());
+    let app = make_app_with_ip_store(Arc::clone(&store)).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/ip-blocks")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"ip": "10.0.0.1", "reason": "spam", "duration_secs": 3600}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/ip-blocks")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let list = body.as_array().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["ip"], "10.0.0.1");
+    assert_eq!(list[0]["reason"], "spam");
+}
+
+#[actix_web::test]
+async fn ip_blocks_unblock_ip_returns_204_and_removes_from_list() {
+    let store: Arc<dyn IpBlockStore> = Arc::new(InMemoryIpBlockStore::new());
+    let app = make_app_with_ip_store(Arc::clone(&store)).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/ip-blocks")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"ip": "5.6.7.8"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::delete()
+        .uri("/api/v1/admin/ip-blocks/5.6.7.8")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/ip-blocks")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body, serde_json::json!([]));
+}
+
+#[actix_web::test]
+async fn ip_blocks_block_invalid_ip_returns_400() {
+    let store: Arc<dyn IpBlockStore> = Arc::new(InMemoryIpBlockStore::new());
+    let app = make_app_with_ip_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/ip-blocks")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"ip": "not-an-ip"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
+async fn ip_blocks_block_zero_duration_returns_400() {
+    let store: Arc<dyn IpBlockStore> = Arc::new(InMemoryIpBlockStore::new());
+    let app = make_app_with_ip_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/ip-blocks")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"ip": "1.2.3.4", "duration_secs": 0}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
+async fn ip_blocks_requires_admin() {
+    let store: Arc<dyn IpBlockStore> = Arc::new(InMemoryIpBlockStore::new());
+    let app = make_app_with_ip_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/ip-blocks")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_json(serde_json::json!({"ip": "1.2.3.4"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+// ── /api/v1/admin/registries/{r}/beta-channel ────────────────────────────────
+
+#[actix_web::test]
+async fn beta_channel_list_empty_returns_200() {
+    let store: Arc<dyn BetaChannelPort> = InMemoryBetaChannelStore::new();
+    let app = make_app_with_beta_store(store).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-npm/beta-channel")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body, serde_json::json!([]));
+}
+
+#[actix_web::test]
+async fn beta_channel_add_member_returns_204() {
+    let store: Arc<dyn BetaChannelPort> = InMemoryBetaChannelStore::new();
+    let app = make_app_with_beta_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-npm/beta-channel")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"principal_type": "user", "principal_id": "alice"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 204);
+}
+
+#[actix_web::test]
+async fn beta_channel_list_shows_added_member() {
+    let store: Arc<dyn BetaChannelPort> = InMemoryBetaChannelStore::new();
+    let app = make_app_with_beta_store(Arc::clone(&store)).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-npm/beta-channel")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"principal_type": "user", "principal_id": "bob", "granted_by": "admin"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-npm/beta-channel")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let list = body.as_array().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["principal_type"], "user");
+    assert_eq!(list[0]["principal_id"], "bob");
+    assert_eq!(list[0]["granted_by"], "admin");
+}
+
+#[actix_web::test]
+async fn beta_channel_remove_member_returns_204() {
+    let store: Arc<dyn BetaChannelPort> = InMemoryBetaChannelStore::new();
+    let app = make_app_with_beta_store(Arc::clone(&store)).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-npm/beta-channel")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"principal_type": "user", "principal_id": "charlie"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::delete()
+        .uri("/api/v1/admin/registries/my-npm/beta-channel/user/charlie")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-npm/beta-channel")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body, serde_json::json!([]));
+}
+
+#[actix_web::test]
+async fn beta_channel_add_invalid_principal_type_returns_400() {
+    let store: Arc<dyn BetaChannelPort> = InMemoryBetaChannelStore::new();
+    let app = make_app_with_beta_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-npm/beta-channel")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"principal_type": "org", "principal_id": "acme"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
+async fn beta_channel_requires_admin() {
+    let store: Arc<dyn BetaChannelPort> = InMemoryBetaChannelStore::new();
+    let app = make_app_with_beta_store(store).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-npm/beta-channel")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_json(serde_json::json!({"principal_type": "user", "principal_id": "eve"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
 }

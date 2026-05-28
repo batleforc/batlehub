@@ -10,18 +10,25 @@ To propose a feature or discuss an item, open an issue on the [project repositor
 
 ## New registry types {#new-registries}
 
-BatleHub currently supports npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, and Go modules. The following adapters are planned:
+BatleHub currently supports npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules, Maven / Gradle, RubyGems, and Terraform. The following adapters are planned:
 
-| Registry | Notes |
-|----------|-------|
-| **PyPI** | Python simple API + wheel / sdist downloads |
-| **Maven / Gradle** | Maven Central–compatible metadata XML + JAR / POM |
-| **RubyGems** | Gem downloads and version listing |
-| **NuGet** | .NET package protocol |
-| **Deb / RPM** | Debian APT and Red Hat YUM repository proxying |
-| **Terraform registry** | Provider and module proxy protocol |
-| **GitLab** | Releases and packages — similar to GitHub, different auth / pagination |
-| **Forgejo** | Gitea fork with minor API differences |
+| Registry | Status | Notes |
+|----------|--------|-------|
+| **npm** | ✅ Shipped | Package proxy + local/hybrid publishing |
+| **Cargo** | ✅ Shipped | Sparse index + crate downloads |
+| **GitHub** | ✅ Shipped | Release artifact proxy |
+| **OpenVSX** | ✅ Shipped | Extension proxy |
+| **VS Code Marketplace** | ✅ Shipped | Extension proxy |
+| **Go modules** | ✅ Shipped | GOPROXY protocol |
+| **Maven / Gradle** | ✅ Shipped | Maven Central–compatible metadata XML + JAR / POM; `mvn deploy` support |
+| **RubyGems** | ✅ Shipped | Gem downloads and version listing; publish/yank/unyank |
+| **Terraform registry** | ✅ Shipped | Provider and module proxy; private module + provider publishing |
+| **PyPI** | Planned | Python simple API + wheel / sdist downloads |
+| **NuGet** | Planned | .NET package protocol |
+| **Deb / RPM** | Planned | Debian APT and Red Hat YUM repository proxying |
+| **GitLab** | Planned | Releases and packages — similar to GitHub, different auth / pagination |
+| **Forgejo** | Planned | Gitea fork with minor API differences |
+| **Composer** | Planned | PHP Composer repository |
 
 ::: info Docker / OCI not planned
 [Harbor](https://goharbor.io) covers this use case better than BatleHub could. If you have a concrete need, open an issue.
@@ -43,9 +50,9 @@ All planned cache policy features have shipped:
 
 ## Metrics & observability {#metrics}
 
-- **Prometheus endpoint** (`/metrics`) — request counts, cache hit/miss rates, latency percentiles, error rates per registry
-- **Health check** (`/healthz`) — verifies connectivity to the database and all configured storage backends
-- **Admin dashboard** — hits/misses and bandwidth saved, per-registry and aggregate, on the admin home screen
+- ✅ **Prometheus endpoint** (`/metrics`) — request counts, cache hit/miss rates, latency percentiles, error rates per registry
+- ✅ **Health check** (`/healthz`) — verifies connectivity to the database and all configured storage backends
+- ✅ **Admin dashboard** — hits/misses and bandwidth saved, per-registry and aggregate, on the admin home screen
 
 ---
 
@@ -78,10 +85,10 @@ BatleHub aims to be a trust boundary, not just a cache. Planned integrity featur
 
 ## Quota management {#quotas}
 
-- Per-user, per-group, and per-registry quotas on storage usage and number of published packages
-- Enforcement policies: block or warn on quota exceeded
-- Quota warning in API responses and admin UI
-- Admin API for resetting quotas
+- ✅ **Per-user, per-group, and per-registry quotas** — on storage usage and number of published packages
+- ✅ **Enforcement policies** — block or warn on quota exceeded
+- ✅ **Quota warnings** — in API responses and admin UI when a limit is being approached
+- ✅ **Admin API for resetting quotas** — for specific users, groups, or registries
 
 ---
 
@@ -111,6 +118,8 @@ Applies to registries running in `local` or `hybrid` mode. See the [User Guide](
 
 ### Per-registry additions
 
+- ✅ **Maven** — private artifact publishing via `mvn deploy`; POM-triggered three-phase publish; JAR/checksum pre-upload; dynamically generated `maven-metadata.xml`; `local` and `hybrid` modes
+- ✅ **Terraform** — private module publishing (tar.gz upload, `X-Terraform-Get` redirect); private provider publishing (version manifest + per-platform binary); `local` and `hybrid` modes
 - **npm** — versioning policies (enforce semantic versioning, restrict accepted patterns)
 - **Cargo** — versioning policies; full yank protocol compatibility
 - **VS Code extensions** — deprecation and unlisting; VSIX upload form in the UI

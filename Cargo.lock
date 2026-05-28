@@ -875,6 +875,7 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "uuid",
+ "zip 2.4.2",
 ]
 
 [[package]]
@@ -907,6 +908,32 @@ dependencies = [
  "tracing",
  "utoipa",
  "uuid",
+]
+
+[[package]]
+name = "batlehub-examples"
+version = "0.1.0"
+dependencies = [
+ "actix-web",
+ "async-trait",
+ "base64",
+ "batlehub-adapters",
+ "batlehub-config",
+ "batlehub-core",
+ "batlehub-web",
+ "bytes",
+ "chrono",
+ "flate2",
+ "futures",
+ "metrics-exporter-prometheus",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "tokio",
+ "toml",
+ "utoipa-actix-web",
+ "uuid",
+ "zip 2.4.2",
 ]
 
 [[package]]

@@ -62,10 +62,11 @@ impl AppConfig {
                         | "rubygems"
                         | "maven"
                         | "terraform"
+                        | "composer"
                 )
             {
                 bail!(
-                    "registry '{}': mode 'local'/'hybrid' is only supported for cargo, npm, openvsx, vscode-marketplace, goproxy, rubygems, maven, and terraform registries",
+                    "registry '{}': mode 'local'/'hybrid' is only supported for cargo, npm, openvsx, vscode-marketplace, goproxy, rubygems, maven, terraform, and composer registries",
                     registry.name
                 );
             }
@@ -589,6 +590,10 @@ pub struct BetaChannelConfig {
 /// violation_window_secs = 300
 /// ban_duration_secs     = 3600
 /// trigger_on_status     = [429, 401]
+/// # List the exact IPs of your reverse proxies so that X-Forwarded-For is
+/// # trusted only from those hosts. Leave empty (the default) to always use
+/// # the TCP peer address — required when the server is exposed directly.
+/// trusted_proxies       = ["10.0.0.1", "10.0.0.2"]
 /// ```
 #[derive(Debug, Clone, Deserialize)]
 pub struct IpBlockingConfig {
@@ -607,6 +612,12 @@ pub struct IpBlockingConfig {
     /// HTTP status codes that increment the violation counter for the source IP.
     #[serde(default = "default_trigger_on_status")]
     pub trigger_on_status: Vec<u16>,
+    /// IPs of trusted reverse proxies. When the TCP peer address matches one of
+    /// these, the first entry of `X-Forwarded-For` is used as the client IP.
+    /// When empty (the default), the TCP peer address is always used and
+    /// `X-Forwarded-For` is ignored — preventing spoofed-header bypass.
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
 }
 
 impl Default for IpBlockingConfig {
@@ -617,6 +628,7 @@ impl Default for IpBlockingConfig {
             violation_window_secs: default_violation_window(),
             ban_duration_secs: default_ban_duration(),
             trigger_on_status: default_trigger_on_status(),
+            trusted_proxies: Vec::new(),
         }
     }
 }

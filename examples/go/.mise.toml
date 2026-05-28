@@ -1,0 +1,21 @@
+[tools]
+go = "1.22"
+
+[env]
+_.file = ".env"
+
+[tasks.tidy]
+description = "Fetch modules through the proxy and tidy go.sum"
+run = "go mod tidy"
+
+[tasks.build]
+description = "Build the application"
+run = "go build -o bin/app ./..."
+
+[tasks.run]
+description = "Run the application"
+run = "go run ."
+
+[tasks.test]
+description = "Run all tests"
+run = "go test ./..."

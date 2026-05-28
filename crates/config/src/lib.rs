@@ -116,6 +116,31 @@ mod tests {
     }
 
     #[test]
+    fn composer_local_mode_passes_validation() {
+        let toml = format!("{}\n{}", minimal(), r#"
+        [[registries]]
+        type = "composer"
+        name = "my-composer"
+        mode = "local"
+        "#);
+        let config: AppConfig = toml::from_str(&toml).unwrap();
+        config.validate().expect("composer + local mode must be accepted");
+    }
+
+    #[test]
+    fn composer_hybrid_mode_passes_validation() {
+        let toml = format!("{}\n{}", minimal(), r#"
+        [[registries]]
+        type = "composer"
+        name = "my-composer"
+        mode = "hybrid"
+        upstreams = ["https://repo.packagist.org"]
+        "#);
+        let config: AppConfig = toml::from_str(&toml).unwrap();
+        config.validate().expect("composer + hybrid mode must be accepted");
+    }
+
+    #[test]
     fn server_defaults_applied_when_fields_absent() {
         let toml = r#"
         [server]

@@ -1,30 +1,15 @@
 use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use actix_web::{HttpResponse, Responder, delete, get, post, web};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use batlehub_core::{entities::Role, ports::{BlockedIpInfo, IpBlockStore}};
+use batlehub_core::ports::{BlockedIpInfo, IpBlockStore};
 
 use crate::{error::AppError, extractors::AuthIdentity};
-
-fn require_admin(identity: &AuthIdentity) -> Result<(), AppError> {
-    if identity.role != Role::Admin {
-        Err(AppError::forbidden("admin role required"))
-    } else {
-        Ok(())
-    }
-}
-
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
+use super::{now_unix, require_admin};
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BlockedIpDto {
@@ -108,7 +93,9 @@ pub async fn block_ip(
     if duration == 0 {
         return Err(AppError::bad_request("duration_secs must be greater than 0"));
     }
-    let unblock_at = now_unix() + duration;
+    let unblock_at = now_unix()
+        .checked_add(duration)
+        .ok_or_else(|| AppError::bad_request("duration_secs is too large"))?;
     let reason = body.reason.as_deref().unwrap_or("manual");
     store
         .block_ip(&body.ip, unblock_at, reason)
@@ -137,6 +124,30 @@ pub async fn unblock_ip(
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
     let (ip,) = path.into_inner();
+    IpAddr::from_str(&ip)
+        .map_err(|_| AppError::bad_request(format!("'{}' is not a valid IP address", ip)))?;
     store.unblock_ip(&ip).await.map_err(AppError::from)?;
     Ok(HttpResponse::NoContent().finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn block_ip_request_duration_overflow_is_caught() {
+        // now_unix() + u64::MAX must not silently wrap; checked_add catches it.
+        let now = super::super::now_unix();
+        assert!(now.checked_add(u64::MAX).is_none(), "overflow must be detected");
+        // A sane large value must succeed.
+        assert!(now.checked_add(3600).is_some());
+    }
+
+    #[test]
+    fn unblock_ip_rejects_non_ip_strings() {
+        // IpAddr::from_str is used for validation in both block_ip and unblock_ip.
+        assert!(IpAddr::from_str("not-an-ip").is_err());
+        assert!(IpAddr::from_str("1.2.3.4").is_ok());
+        assert!(IpAddr::from_str("::1").is_ok());
+    }
 }

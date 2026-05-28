@@ -16,7 +16,9 @@ batlehub is configured with a single TOML file. This document covers every optio
    - [storage](#34-storage)
    - [registries](#35-registries)
      - [rate_limit](#rate_limit)
-   - [otel](#36-otel-optional)
+     - [beta_channel](#registriesbeta_channel)
+   - [ip_blocking](#36-ip_blocking-optional)
+   - [otel](#37-otel-optional)
 4. [Permissions Reference](#4-permissions-reference)
 5. [Environment Variable Overrides](#5-environment-variable-overrides)
 6. [Worked Examples](#6-worked-examples)
@@ -799,7 +801,68 @@ window_secs         = 60
 
 ---
 
-### 3.6 `[otel]` (optional)
+#### `[registries.beta_channel]`
+
+Restricts pre-release versions (semver versions with a non-empty pre-release component, e.g. `1.0.0-beta.1`) so that only members of the registry's beta channel can see and download them. Non-members receive stable versions only and get HTTP 404 on direct pre-release artifact requests.
+
+Applies to registries in `local` or `hybrid` mode. Members are managed via the back-office API.
+
+```toml
+[[registries]]
+type = "npm"
+name = "my-npm"
+mode = "local"
+
+[registries.beta_channel]
+enabled = true
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | bool | `false` | Enable beta-channel access gating for this registry |
+
+**Member management API (admin only):**
+- `GET    /api/v1/admin/registries/{registry}/beta-channel` — list members
+- `POST   /api/v1/admin/registries/{registry}/beta-channel` — body: `{ "principal_type": "user"|"group", "principal_id": "...", "granted_by": "..." }`
+- `DELETE /api/v1/admin/registries/{registry}/beta-channel/{principal_type}/{principal_id}` — remove member
+
+---
+
+### 3.6 `[ip_blocking]` (optional)
+
+Automatically blocks IP addresses that trigger too many violation events within a rolling time window — similar to fail2ban. Blocked IPs receive HTTP 403 with an `X-Block-Expires` header until the ban expires.
+
+```toml
+[ip_blocking]
+enabled               = true
+violation_threshold   = 10      # violations before auto-block
+violation_window_secs = 300     # counting window in seconds (5 min)
+ban_duration_secs     = 3600    # how long to block the IP (1 hour)
+trigger_on_status     = [429, 401]   # HTTP response codes that count as violations
+trusted_proxies       = ["10.0.0.1"] # IPs whose X-Forwarded-For header is trusted
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | bool | `false` | Enable/disable the middleware |
+| `violation_threshold` | int | `10` | Number of violations before auto-block |
+| `violation_window_secs` | int | `300` | Window length for counting violations |
+| `ban_duration_secs` | int | `3600` | How long the auto-block lasts |
+| `trigger_on_status` | int[] | `[429, 401]` | Response status codes that count as violations |
+| `trusted_proxies` | string[] | `[]` | Upstream proxy IPs allowed to set `X-Forwarded-For` |
+
+**Backends:** Block state is stored in the same backend as the cache (`memory`, `postgres`, or `redis`). Use `postgres` or `redis` for multi-instance deployments.
+
+**Manual management:** Admins can manage blocks via the back-office API:
+- `GET    /api/v1/admin/ip-blocks` — list currently blocked IPs
+- `POST   /api/v1/admin/ip-blocks` — body: `{ "ip": "1.2.3.4", "reason": "...", "duration_secs": 3600 }`
+- `DELETE /api/v1/admin/ip-blocks/{ip}` — unblock an IP
+
+**Trusted proxies:** When a request arrives through a known reverse proxy, batlehub reads the real client IP from `X-Forwarded-For` only if the TCP peer address appears in `trusted_proxies`. Without this configuration, `X-Forwarded-For` is ignored to prevent header-spoofing attacks.
+
+---
+
+### 3.7 `[otel]` (optional)
 
 Enables OpenTelemetry distributed tracing via OTLP gRPC.
 
@@ -1907,6 +1970,63 @@ ca_cert_path = "/etc/ssl/corp-ca.pem"
 ### Supported registry types
 
 All registry types support `upstream_auth` and `tls`: `github`, `npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`. For `cargo`, the sparse index proxy (the `index_url` endpoint) also uses the same credentials and TLS settings.
+
+### Mixing a private upstream with a public fallback
+
+`upstream_auth` is per-registry block, not per-URL. When `upstreams` lists multiple URLs, the configured credentials are sent to **every** entry in that list. This causes problems when you want a private upstream as the primary source and a public registry as the unauthenticated fallback: credentials forwarded to the public registry may produce `401 Unauthorized` rather than `404 Not Found`, and the fanout only advances to the next upstream on `404` — so a `401` stops the chain immediately.
+
+The recommended pattern is:
+
+1. A **private registry block** pointing at the authenticated upstream, with `upstream_auth` configured and anonymous reads enabled so BatleHub can reach it without a client token.
+2. A **fanout registry block** that clients actually configure, whose `upstreams` list points at BatleHub's own proxy URL for the private registry first, then the public registry second.
+
+BatleHub handles the credentials internally when it fetches from itself, so the fanout block never needs its own `upstream_auth`.
+
+```toml
+# Step 1 — private Gitea registry with credentials.
+# anonymous source:read is required so the fanout block below can reach it
+# without forwarding a client token.
+[[registries]]
+type      = "cargo"
+name      = "internal-cargo"
+upstreams = ["https://gitea.corp.example.com/api/packages/myorg/cargo"]
+index_url = "https://gitea.corp.example.com/api/packages/myorg/cargo/index"
+
+[registries.upstream_auth]
+type  = "bearer"
+token = "npat-xxxx"
+
+[registries.rbac]
+anonymous = ["source:read"]
+user      = ["source:read"]
+admin     = ["*"]
+
+# Step 2 — fanout registry: private first (via BatleHub self-proxy), public fallback.
+# Clients only configure this one.
+[[registries]]
+type      = "cargo"
+name      = "cargo"
+upstreams = [
+  "http://localhost:8080/proxy/internal-cargo",  # BatleHub proxies with stored credentials
+  "https://static.crates.io/crates",             # public fallback — no auth needed
+]
+index_url = "https://index.crates.io"
+
+[registries.rbac]
+anonymous = ["source:read"]
+user      = ["source:read"]
+admin     = ["*"]
+```
+
+Clients configure only the fanout registry:
+
+```toml
+# ~/.cargo/config.toml
+[registries.cargo]
+index = "sparse+https://batlehub.example.com/proxy/cargo/registry/"
+```
+
+When BatleHub resolves a crate through the `cargo` registry it first fetches `http://localhost:8080/proxy/internal-cargo/…`; that self-request is served by the `internal-cargo` registry which injects the Gitea bearer token on the way out. If the crate is not found (404), BatleHub falls through to `crates.io` without any credentials. The client never knows the private registry exists.
 
 ### Secret management
 

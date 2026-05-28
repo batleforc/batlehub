@@ -1,0 +1,15 @@
+[tools]
+ruby = "3.3"
+bundler = "latest"
+
+[tasks.install]
+description = "Install gems through the proxy"
+run = "bundle install"
+
+[tasks.start]
+description = "Start the Rack application"
+run = "bundle exec rackup config.ru"
+
+[tasks.console]
+description = "Open an interactive Ruby console"
+run = "bundle exec irb"

@@ -1,4 +1,5 @@
 use std::future::{ready, Ready};
+use std::net::IpAddr;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,17 +15,34 @@ use futures::future::LocalBoxFuture;
 use batlehub_config::schema::IpBlockingConfig;
 use batlehub_core::ports::IpBlockStore;
 
-pub(crate) fn extract_client_ip(req: &ServiceRequest) -> String {
-    if let Some(xff) = req.headers().get("x-forwarded-for") {
-        if let Ok(s) = xff.to_str() {
-            if let Some(first) = s.split(',').next() {
-                return first.trim().to_owned();
+/// Extract the client IP. `X-Forwarded-For` is only trusted when the TCP peer
+/// address appears in `trusted_proxies`; otherwise the peer address is used
+/// directly to prevent spoofed-header bypass.
+pub(crate) fn extract_client_ip(req: &ServiceRequest, trusted_proxies: &[String]) -> String {
+    let peer_ip: Option<IpAddr> = req.peer_addr().map(|a| a.ip());
+    let peer = peer_ip.map(|ip| ip.to_string()).unwrap_or_default();
+
+    let peer_is_trusted = peer_ip.is_some_and(|ip| {
+        trusted_proxies
+            .iter()
+            .filter_map(|t| t.parse::<IpAddr>().ok())
+            .any(|t| t == ip)
+    });
+
+    if !trusted_proxies.is_empty() && peer_is_trusted {
+        if let Some(xff) = req.headers().get("x-forwarded-for") {
+            if let Ok(s) = xff.to_str() {
+                if let Some(first) = s.split(',').next() {
+                    let trimmed = first.trim().to_owned();
+                    if !trimmed.is_empty() {
+                        return trimmed;
+                    }
+                }
             }
         }
     }
-    req.peer_addr()
-        .map(|a| a.ip().to_string())
-        .unwrap_or_else(|| "unknown".to_owned())
+
+    if peer.is_empty() { "unknown".to_owned() } else { peer }
 }
 
 fn now_unix() -> u64 {
@@ -38,12 +56,12 @@ fn now_unix() -> u64 {
 
 pub struct IpBlockMiddlewareFactory {
     store: Arc<dyn IpBlockStore>,
-    config: IpBlockingConfig,
+    config: Arc<IpBlockingConfig>,
 }
 
 impl IpBlockMiddlewareFactory {
     pub fn new(store: Arc<dyn IpBlockStore>, config: IpBlockingConfig) -> Self {
-        Self { store, config }
+        Self { store, config: Arc::new(config) }
     }
 }
 
@@ -72,7 +90,7 @@ where
 pub struct IpBlockMiddleware<S> {
     service: Rc<S>,
     store: Arc<dyn IpBlockStore>,
-    config: IpBlockingConfig,
+    config: Arc<IpBlockingConfig>,
 }
 
 impl<S, B> Service<ServiceRequest> for IpBlockMiddleware<S>
@@ -92,7 +110,7 @@ where
         let config = self.config.clone();
 
         Box::pin(async move {
-            let ip = extract_client_ip(&req);
+            let ip = extract_client_ip(&req, &config.trusted_proxies);
 
             // Check if the IP is already blocked.
             match store.is_blocked(&ip).await {
@@ -168,33 +186,57 @@ mod tests {
             violation_window_secs: 300,
             ban_duration_secs: 3600,
             trigger_on_status: vec![429, 401],
+            trusted_proxies: Vec::new(),
         }
     }
 
     // ── extract_client_ip ─────────────────────────────────────────────────────
 
     #[test]
-    fn ip_extracted_from_x_forwarded_for() {
+    fn xff_ignored_when_no_trusted_proxies() {
+        // Without trusted_proxies, XFF must be ignored — peer addr wins.
         let req = TestRequest::get()
+            .peer_addr("10.0.0.99:1234".parse().unwrap())
             .insert_header(("x-forwarded-for", "203.0.113.5, 10.0.0.1"))
             .to_srv_request();
-        assert_eq!(extract_client_ip(&req), "203.0.113.5");
+        let ip = extract_client_ip(&req, &[]);
+        assert_eq!(ip, "10.0.0.99", "XFF must not be trusted without trusted_proxies");
     }
 
     #[test]
-    fn ip_extracted_from_single_xff() {
+    fn xff_used_when_peer_is_trusted_proxy() {
         let req = TestRequest::get()
+            .peer_addr("10.0.0.1:1234".parse().unwrap())
+            .insert_header(("x-forwarded-for", "203.0.113.5, 172.16.0.1"))
+            .to_srv_request();
+        let trusted = vec!["10.0.0.1".to_owned()];
+        assert_eq!(extract_client_ip(&req, &trusted), "203.0.113.5");
+    }
+
+    #[test]
+    fn xff_single_entry_with_trusted_proxy() {
+        let req = TestRequest::get()
+            .peer_addr("10.0.0.1:1234".parse().unwrap())
             .insert_header(("x-forwarded-for", "198.51.100.7"))
             .to_srv_request();
-        assert_eq!(extract_client_ip(&req), "198.51.100.7");
+        let trusted = vec!["10.0.0.1".to_owned()];
+        assert_eq!(extract_client_ip(&req, &trusted), "198.51.100.7");
+    }
+
+    #[test]
+    fn xff_not_used_when_peer_not_in_trusted_list() {
+        let req = TestRequest::get()
+            .peer_addr("192.0.2.1:1234".parse().unwrap())
+            .insert_header(("x-forwarded-for", "1.1.1.1"))
+            .to_srv_request();
+        let trusted = vec!["10.0.0.1".to_owned()]; // 192.0.2.1 is not trusted
+        assert_eq!(extract_client_ip(&req, &trusted), "192.0.2.1");
     }
 
     #[test]
     fn ip_falls_back_to_unknown_when_no_peer() {
-        // TestRequest has no peer_addr by default.
         let req = TestRequest::get().to_srv_request();
-        let ip = extract_client_ip(&req);
-        // No XFF and no peer_addr → "unknown" or whatever peer_addr resolves to.
+        let ip = extract_client_ip(&req, &[]);
         assert!(!ip.is_empty());
     }
 
@@ -229,10 +271,10 @@ mod tests {
     #[actix_web::test]
     async fn blocked_ip_gets_403() {
         let store: Arc<dyn IpBlockStore> = Arc::new(InMemoryIpBlockStore::new());
-        store.block_ip("127.0.0.1", now() + 3600, "test").await.unwrap();
+        store.block_ip("198.51.100.1", now() + 3600, "test").await.unwrap();
         let app = make_app!(Arc::clone(&store), default_config());
         let req = TestRequest::get()
-            .insert_header(("x-forwarded-for", "127.0.0.1"))
+            .peer_addr("198.51.100.1:1234".parse().unwrap())
             .uri("/ok")
             .to_request();
         let res = test::call_service(&app, req).await;
@@ -246,7 +288,7 @@ mod tests {
         store.block_ip("203.0.113.1", unblock_at, "test").await.unwrap();
         let app = make_app!(Arc::clone(&store), default_config());
         let req = TestRequest::get()
-            .insert_header(("x-forwarded-for", "203.0.113.1"))
+            .peer_addr("203.0.113.1:1234".parse().unwrap())
             .uri("/ok")
             .to_request();
         let res = test::call_service(&app, req).await;
@@ -265,10 +307,10 @@ mod tests {
         };
         let app = make_app!(Arc::clone(&store), config);
 
-        // First two 429s → violations recorded but not yet blocked.
+        // First two 429s → violations recorded but threshold not yet reached.
         for _ in 0..2 {
             let req = TestRequest::get()
-                .insert_header(("x-forwarded-for", "10.0.0.1"))
+                .peer_addr("10.0.0.1:1234".parse().unwrap())
                 .uri("/rate")
                 .to_request();
             let res = test::call_service(&app, req).await;
@@ -280,7 +322,7 @@ mod tests {
 
         // Next request returns 403, not 429.
         let req = TestRequest::get()
-            .insert_header(("x-forwarded-for", "10.0.0.1"))
+            .peer_addr("10.0.0.1:1234".parse().unwrap())
             .uri("/ok")
             .to_request();
         let res = test::call_service(&app, req).await;
@@ -299,7 +341,7 @@ mod tests {
 
         // 401 is not in trigger_on_status, so no violation recorded.
         let req = TestRequest::get()
-            .insert_header(("x-forwarded-for", "10.0.0.2"))
+            .peer_addr("10.0.0.2:1234".parse().unwrap())
             .uri("/auth")
             .to_request();
         test::call_service(&app, req).await;
@@ -317,10 +359,10 @@ mod tests {
         };
         let app = make_app!(Arc::clone(&store), config);
 
-        // Two violations from ip A reach the threshold.
+        // Two violations from IP A reach the threshold.
         for _ in 0..2 {
             let req = TestRequest::get()
-                .insert_header(("x-forwarded-for", "10.0.0.10"))
+                .peer_addr("10.0.0.10:1234".parse().unwrap())
                 .uri("/rate")
                 .to_request();
             test::call_service(&app, req).await;
@@ -328,7 +370,7 @@ mod tests {
 
         // IP B still allowed.
         let req = TestRequest::get()
-            .insert_header(("x-forwarded-for", "10.0.0.20"))
+            .peer_addr("10.0.0.20:1234".parse().unwrap())
             .uri("/ok")
             .to_request();
         let res = test::call_service(&app, req).await;

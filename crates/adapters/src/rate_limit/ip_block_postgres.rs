@@ -1,12 +1,12 @@
 //! PostgreSQL-backed IP block store.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use async_trait::async_trait;
 use sqlx::PgPool;
 
 use batlehub_core::error::CoreError;
 use batlehub_core::ports::{BlockedIpInfo, IpBlockStore};
+
+use super::now_unix;
 
 /// IP block store backed by the `ip_violation_counters` and `ip_blocks` tables.
 ///
@@ -22,13 +22,6 @@ impl PgIpBlockStore {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
-
-    fn now_unix() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-    }
 }
 
 #[async_trait]
@@ -41,7 +34,7 @@ impl IpBlockStore for PgIpBlockStore {
         if window_secs == 0 {
             return Err(CoreError::Database("window_secs must be > 0".into()));
         }
-        let now = Self::now_unix();
+        let now = now_unix();
         let ws = window_secs as i64;
         let window_start = ((now as i64) / ws) * ws;
         let window_reset = (window_start + ws) as u64;
@@ -73,7 +66,7 @@ impl IpBlockStore for PgIpBlockStore {
     }
 
     async fn is_blocked(&self, ip: &str) -> Result<Option<u64>, CoreError> {
-        let now = Self::now_unix() as i64;
+        let now = now_unix() as i64;
         let row: Option<i64> = sqlx::query_scalar(
             "SELECT unblock_at FROM ip_blocks WHERE ip = $1 AND unblock_at > $2",
         )
@@ -86,7 +79,7 @@ impl IpBlockStore for PgIpBlockStore {
     }
 
     async fn block_ip(&self, ip: &str, unblock_at: u64, reason: &str) -> Result<(), CoreError> {
-        let now = Self::now_unix() as i64;
+        let now = now_unix() as i64;
         sqlx::query(
             "INSERT INTO ip_blocks (ip, blocked_at, unblock_at, reason) \
              VALUES ($1, $2, $3, $4) \
@@ -115,7 +108,7 @@ impl IpBlockStore for PgIpBlockStore {
     }
 
     async fn list_blocked(&self) -> Result<Vec<BlockedIpInfo>, CoreError> {
-        let now = Self::now_unix() as i64;
+        let now = now_unix() as i64;
         let rows = sqlx::query(
             "SELECT ip, blocked_at, unblock_at, reason \
              FROM ip_blocks \
