@@ -40,12 +40,13 @@ jobs:
             context: .
             dockerfile: Containerfile
             image_name: batleforc/batlehub
+          - name: "Backend Hardened Container"
+            context: .
+            dockerfile: Containerfile.hardened
+            image_name: batleforc/batlehub-hardened
     permissions:
       contents: read
       id-token: write
-    outputs:
-      image_backend: ${{ env.REGISTRY }}/${{ github.repository_owner
-        }}/batlehub:${{ github.sha }}
     steps:
       - uses: https://git.batleforc.fr/action/checkout@v6
       - name: Create env var with vault CA certificate
