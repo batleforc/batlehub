@@ -1,0 +1,8 @@
+github:
+  user: "Forgejo Bot"
+  email: "bots@batleforc.io"
+  username: "forgejo-actions"
+  token: "GITHUB_TOKEN"
+  test: "v1.0"
+  owner: "batleforc"
+  repository: "batlehub"

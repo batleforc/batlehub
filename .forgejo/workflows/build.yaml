@@ -1,0 +1,87 @@
+name: Container Build
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "**/*.rs"
+      - "**/*.css"
+      - "**/*.js"
+      - "**/*.toml"
+      - "**/*.yaml"
+      - "**/*.json"
+      - "Cargo.lock"
+      - ".dockerignore"
+      - "Containerfile"
+  workflow_dispatch:
+  schedule:
+    - cron: "50 23 * * *"
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: registry.batleforc.fr
+
+concurrency:
+  # only run one build at a time
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build container images
+    enable-openid-connect: true # Required for vault authentication
+    runs-on: buildah
+    strategy:
+      matrix:
+        include:
+          - name: "Backend Container"
+            context: .
+            dockerfile: Containerfile
+            image_name: batleforc/batlehub
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image_backend: ${{ env.REGISTRY }}/${{ github.repository_owner
+        }}/batlehub:${{ github.sha }}
+    steps:
+      - uses: https://git.batleforc.fr/action/checkout@v6
+      - name: Create env var with vault CA certificate
+        id: cert
+        run: echo "VAULT_CA_CERTIFICATE=$(cat "$VAULT_CA_CERT" | base64 -w 0)">>
+          "$GITHUB_OUTPUT"
+      - name: Get env variables from vault
+        uses: https://git.batleforc.fr/action/hashicorp_vault-action@v3
+        id: vault
+        with:
+          url: https://vault.vault:8200
+          caCertificate: ${{ steps.cert.outputs.VAULT_CA_CERTIFICATE }}
+          method: jwt
+          path: forgejo_jwt
+          role: forgejo_action
+          jwtGithubAudience: forgejo_action
+          secrets: |
+            git-vault/data/batleforc/batlehub/registry username | REGISTRY_USER ;
+            git-vault/data/batleforc/batlehub/registry password | REGISTRY_PAT ;
+            git-vault/data/batleforc/batlehub/registry url | REGISTRY ;
+
+      - run: buildah login --username ${{ steps.vault.outputs.REGISTRY_USER }}
+          --password ${{ steps.vault.outputs.REGISTRY_PAT }} ${{
+          steps.vault.outputs.REGISTRY }}
+      - name: Build Image
+        run: |
+          IMAGE_TAG="${{ env.REGISTRY }}/${{ matrix.image_name }}:${GITHUB_SHA}"
+          IMAGE_TAG_BRANCH="${{ env.REGISTRY }}/${{ matrix.image_name }}:${GITHUB_REF_NAME}"
+          buildah bud  \
+            --platform linux/amd64 \
+            --layers \
+            --cache-to=${{ env.REGISTRY }}/${{ matrix.image_name }}/cache \
+            --cache-from=${{ env.REGISTRY }}/${{ matrix.image_name }}/cache \
+            --tag $IMAGE_TAG \
+            --tag $IMAGE_TAG_BRANCH \
+            --file ${{ matrix.dockerfile }} \
+            ${{ matrix.context }}
+          buildah push $IMAGE_TAG
+          buildah push $IMAGE_TAG_BRANCH

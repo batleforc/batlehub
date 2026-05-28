@@ -1,0 +1,16 @@
+policies:
+  - name: rust
+    config:
+      - .updatecli/manifest/rust.yaml
+    values:
+      - .updatecli/vars.yaml
+  - name: node
+    config:
+      - .updatecli/manifest/npm.yaml
+    values:
+      - .updatecli/vars.yaml
+  - name: docker
+    config:
+      - .updatecli/manifest/docker.yaml
+    values:
+      - .updatecli/vars.yaml

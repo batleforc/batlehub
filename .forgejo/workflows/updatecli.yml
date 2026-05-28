@@ -1,0 +1,42 @@
+name: Update version
+
+on:
+  schedule:
+    - cron: "0 0 * * *" # Run daily at midnight UTC
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+    paths:
+      - ".updatecli/**"
+      - "updatecli-compose.yaml"
+      - "Containerfile"
+      - "Cargo.toml"
+      - "package.json"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  updatecli:
+    runs-on: kubernetes
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Updatecli
+        uses: https://github.com/updatecli/updatecli-action@v3.1.3
+
+      - name: 🦀 Install Rust Toolchain
+        uses: https://github.com/dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.0.5
+        with:
+          version: 11
+
+      - name: Run Updatecli
+        run: updatecli compose apply
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
