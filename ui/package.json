@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@hey-api/client-fetch": "^0.13.1",
-    "@lucide/vue": "^1.16.0",
+    "@lucide/vue": "^1.17.0",
     "@vueuse/core": "^13.1.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
