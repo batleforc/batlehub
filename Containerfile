@@ -14,10 +14,11 @@ COPY crates/config/Cargo.toml      crates/config/Cargo.toml
 COPY crates/adapters/Cargo.toml    crates/adapters/Cargo.toml
 COPY crates/web/Cargo.toml         crates/web/Cargo.toml
 COPY server/Cargo.toml             server/Cargo.toml
+COPY patches/ patches/
 
 # Stub out every lib/main so cargo can resolve and compile deps.
 RUN for crate in crates/core crates/config crates/adapters crates/web; do \
-      mkdir -p $crate/src && echo "pub fn _stub() {}" > $crate/src/lib.rs; \
+    mkdir -p $crate/src && echo "pub fn _stub() {}" > $crate/src/lib.rs; \
     done && \
     mkdir -p server/src && echo "fn main() {}" > server/src/main.rs
 
