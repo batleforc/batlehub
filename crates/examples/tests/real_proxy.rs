@@ -33,6 +33,7 @@ use tempfile::TempDir;
 use actix_web::{web, App, HttpServer};
 use utoipa_actix_web::AppExt;
 
+use batlehub_config::schema::RegistryMode;
 use batlehub_adapters::{
     auth::StaticTokenAuthProvider,
     cache::InMemoryCacheStore,
@@ -389,6 +390,131 @@ impl RealProxy {
         assert!(
             wait_for_port(port, Duration::from_secs(10)),
             "real proxy did not start on port {port} within 10 s"
+        );
+
+        Self { port, _runtime: rt }
+    }
+
+    /// Start a proxy in Local mode (no upstream clients) on a random port.
+    ///
+    /// All registries in `registry_map` are set to `RegistryMode::Local` so
+    /// publish endpoints are active. Uses the same `PROXY_AUTH_TOKEN`.
+    fn start_local(registry_map: RegistryMap) -> Self {
+        let repo = InMemoryPackageRepository::new();
+        let storage = InMemoryStorageBackend::new();
+        let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+
+        let registry_names: Vec<String> = registry_map.0.keys().cloned().collect();
+
+        let policies: HashMap<String, RegistryPolicy> = registry_names
+            .iter()
+            .map(|name| {
+                let perms = HashMap::from([
+                    (Role::Anonymous, vec!["*".to_owned()]),
+                    (Role::User,      vec!["*".to_owned()]),
+                    (Role::Admin,     vec!["*".to_owned()]),
+                ]);
+                let policy = RegistryPolicy {
+                    metadata_ttl: Some(Duration::from_secs(300)),
+                    firewall_only: false,
+                    serve_stale_metadata: false,
+                    artifact_ttl: None,
+                    rules: vec![
+                        Box::new(RbacRule::new(perms)),
+                        Box::new(BlockListRule::new(repo.clone())),
+                    ],
+                };
+                (name.clone(), policy)
+            })
+            .collect();
+
+        let local_svc = Arc::new(LocalRegistryService {
+            backend: Arc::new(InMemoryLocalRegistry::new()),
+            storage: storage.clone(),
+            max_artifact_bytes: None,
+            quota: None,
+            ownership: None,
+            versioning: HashMap::new(),
+            signing: HashMap::new(),
+            beta_channel: HashMap::new(),
+        });
+
+        let proxy_svc = Arc::new(ProxyService {
+            registries: HashMap::new(),
+            storage,
+            cache,
+            repo: repo.clone(),
+            artifact_meta: NoopArtifactMetaRepository::arc(),
+            policies,
+            max_artifact_size_bytes: None,
+            metrics: Arc::new(ProxyMetrics::new(&[])),
+        });
+        let admin_svc = Arc::new(AdminService::new(repo));
+        let token_repo = NullUserTokenRepository::arc();
+
+        let access_config = AccessConfig {
+            anonymous: registry_names.iter().cloned().collect(),
+            user:      registry_names.iter().cloned().collect(),
+            admin:     registry_names.iter().cloned().collect(),
+            groups:    HashMap::new(),
+        };
+
+        let auth_providers: Vec<Arc<dyn AuthProvider>> = vec![Arc::new(
+            StaticTokenAuthProvider::new([(
+                PROXY_AUTH_TOKEN.to_owned(),
+                Some("test-user".to_owned()),
+                Role::Admin,
+            )]),
+        )];
+
+        let mode_map = RegistryModeMap(
+            registry_names.iter().map(|n| (n.clone(), RegistryMode::Local)).collect(),
+        );
+
+        let configure = configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            UpstreamMap::default(),
+            vec![],
+            HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        );
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let port = rt.block_on(async {
+            let local_svc     = local_svc.clone();
+            let mode_map      = mode_map.clone();
+            let configure     = configure.clone();
+            let auth_providers = auth_providers.clone();
+            let cargo_indexes: HashMap<String, batlehub_web::CargoIndexProxy> = HashMap::new();
+
+            let server = HttpServer::new(move || {
+                let (app, _) = App::new()
+                    .into_utoipa_app()
+                    .configure(configure.clone())
+                    .split_for_parts();
+                app.app_data(web::Data::new(cargo_indexes.clone()))
+                    .app_data(web::Data::new(local_svc.clone()))
+                    .app_data(web::Data::new(mode_map.clone()))
+                    .wrap(AuthMiddlewareFactory::new(auth_providers.clone()))
+            })
+            .bind("127.0.0.1:0")
+            .expect("bind to random port");
+
+            let port = server.addrs()[0].port();
+            tokio::spawn(server.run());
+            port
+        });
+
+        assert!(
+            wait_for_port(port, Duration::from_secs(10)),
+            "local proxy did not start on port {port} within 10 s"
         );
 
         Self { port, _runtime: rt }
@@ -1012,4 +1138,246 @@ fn real_proxy_vscode_marketplace_download() {
             eprintln!("NOTE real_proxy_vscode_marketplace_download: proxy returned HTTP {code}");
         }
     }
+}
+
+// ── npm publish ───────────────────────────────────────────────────────────────
+
+#[test]
+fn real_proxy_npm_publish() {
+    if !tool_available("npm") {
+        eprintln!("SKIP real_proxy_npm_publish: npm not available");
+        return;
+    }
+
+    let proxy = RealProxy::start_local(
+        RegistryMap([("my-npm".to_owned(), "npm".to_owned())].into()),
+    );
+
+    let tmp = TempDir::new().unwrap();
+    let pkg_dir = tmp.path().join("test-publish-pkg");
+    fs::create_dir_all(&pkg_dir).unwrap();
+
+    fs::write(
+        pkg_dir.join("package.json"),
+        r#"{"name":"test-publish-pkg","version":"1.0.0","description":"test"}"#,
+    ).unwrap();
+
+    let registry_url = format!("http://127.0.0.1:{}/proxy/my-npm/", proxy.port);
+    let npmrc = tmp.path().join(".npmrc");
+    fs::write(
+        &npmrc,
+        format!(
+            "registry={registry_url}\n\
+             //127.0.0.1:{port}/proxy/my-npm/:_authToken={PROXY_AUTH_TOKEN}\n",
+            port = proxy.port,
+        ),
+    ).unwrap();
+
+    let ok = Command::new("npm")
+        .args(["publish", "--registry", &registry_url])
+        .env("NPM_CONFIG_CACHE", tmp.path().join("npm-cache"))
+        .env("NPM_CONFIG_USERCONFIG", &npmrc)
+        .current_dir(&pkg_dir)
+        .stdout(Stdio::null()).stderr(Stdio::null())
+        .status().map(|s| s.success()).unwrap_or(false);
+
+    if !ok {
+        eprintln!("SKIP real_proxy_npm_publish: npm publish failed (proxy or tool issue)");
+        return;
+    }
+
+    let status = curl_status(&format!(
+        "http://127.0.0.1:{}/proxy/my-npm/test-publish-pkg",
+        proxy.port,
+    ));
+    assert_eq!(status, Some(200), "packument not found after npm publish");
+}
+
+// ── cargo publish ─────────────────────────────────────────────────────────────
+
+#[test]
+fn real_proxy_cargo_publish() {
+    if !tool_available("cargo") {
+        eprintln!("SKIP real_proxy_cargo_publish: cargo not available");
+        return;
+    }
+
+    let proxy = RealProxy::start_local(
+        RegistryMap([("my-cargo".to_owned(), "cargo".to_owned())].into()),
+    );
+
+    let tmp = TempDir::new().unwrap();
+    let pkg_dir = tmp.path().join("test-publish-crate");
+    let cargo_home = tmp.path().join("cargo-home");
+
+    fs::create_dir_all(pkg_dir.join("src")).unwrap();
+    fs::create_dir_all(&cargo_home).unwrap();
+
+    fs::write(
+        pkg_dir.join("Cargo.toml"),
+        "[package]\nname = \"test-publish-crate\"\nversion = \"1.0.0\"\nedition = \"2021\"\n",
+    ).unwrap();
+    fs::write(pkg_dir.join("src/lib.rs"), "").unwrap();
+
+    fs::write(
+        cargo_home.join("credentials.toml"),
+        format!("[registries.batlehub]\ntoken = \"Bearer {PROXY_AUTH_TOKEN}\"\n"),
+    ).unwrap();
+
+    fs::create_dir_all(pkg_dir.join(".cargo")).unwrap();
+    fs::write(
+        pkg_dir.join(".cargo/config.toml"),
+        format!(
+            "[registries.batlehub]\nindex = \"sparse+http://127.0.0.1:{}/proxy/my-cargo/registry/\"\n",
+            proxy.port,
+        ),
+    ).unwrap();
+
+    let ok = Command::new("cargo")
+        .args(["publish", "--registry", "batlehub", "--no-verify", "--allow-dirty"])
+        .env("CARGO_HOME", &cargo_home)
+        .current_dir(&pkg_dir)
+        .stdout(Stdio::null()).stderr(Stdio::null())
+        .status().map(|s| s.success()).unwrap_or(false);
+
+    if !ok {
+        eprintln!("SKIP real_proxy_cargo_publish: cargo publish failed (proxy or tool issue)");
+        return;
+    }
+
+    let status = curl_status(&format!(
+        "http://127.0.0.1:{}/proxy/my-cargo/test-publish-crate/1.0.0/download",
+        proxy.port,
+    ));
+    assert_eq!(status, Some(200), "crate artifact not found after cargo publish");
+}
+
+// ── rubygems publish ──────────────────────────────────────────────────────────
+
+#[test]
+fn real_proxy_rubygems_publish() {
+    if !tool_available("gem") {
+        eprintln!("SKIP real_proxy_rubygems_publish: gem not available");
+        return;
+    }
+
+    let proxy = RealProxy::start_local(
+        RegistryMap([("my-gems".to_owned(), "rubygems".to_owned())].into()),
+    );
+
+    let tmp = TempDir::new().unwrap();
+    let gem_dir = tmp.path().join("my-gem");
+    fs::create_dir_all(&gem_dir).unwrap();
+
+    fs::write(
+        gem_dir.join("test-publish-gem.gemspec"),
+        r#"Gem::Specification.new do |s|
+  s.name    = "test-publish-gem"
+  s.version = "1.0.0"
+  s.summary = "test"
+  s.authors = ["test"]
+  s.files   = []
+end
+"#,
+    ).unwrap();
+
+    let ok = Command::new("gem")
+        .args(["build", "test-publish-gem.gemspec"])
+        .current_dir(&gem_dir)
+        .stdout(Stdio::null()).stderr(Stdio::null())
+        .status().map(|s| s.success()).unwrap_or(false);
+    if !ok {
+        eprintln!("SKIP real_proxy_rubygems_publish: gem build failed");
+        return;
+    }
+
+    // GEM_HOST_API_KEY is sent verbatim as the Authorization header value.
+    // Setting it to "Bearer {token}" makes gem push send the correct Bearer auth.
+    let registry_url = format!("http://127.0.0.1:{}/proxy/my-gems/", proxy.port);
+    let ok = Command::new("gem")
+        .args(["push", "test-publish-gem-1.0.0.gem", "--host", &registry_url])
+        .env("GEM_HOST_API_KEY", format!("Bearer {PROXY_AUTH_TOKEN}"))
+        .env("HOME", tmp.path())
+        .current_dir(&gem_dir)
+        .stdout(Stdio::null()).stderr(Stdio::null())
+        .status().map(|s| s.success()).unwrap_or(false);
+
+    if !ok {
+        eprintln!("SKIP real_proxy_rubygems_publish: gem push failed (proxy or tool issue)");
+        return;
+    }
+
+    let status = curl_status(&format!(
+        "http://127.0.0.1:{}/proxy/my-gems/gems/test-publish-gem-1.0.0.gem",
+        proxy.port,
+    ));
+    assert_eq!(status, Some(200), "gem not found after gem push");
+}
+
+// ── maven publish ─────────────────────────────────────────────────────────────
+
+#[test]
+fn real_proxy_maven_publish() {
+    if !tool_available("mise") {
+        eprintln!("SKIP real_proxy_maven_publish: mise not available");
+        return;
+    }
+
+    let proxy = RealProxy::start_local(
+        RegistryMap([("my-maven".to_owned(), "maven".to_owned())].into()),
+    );
+
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().to_path_buf();
+
+    fs::write(
+        dir.join(".mise.toml"),
+        "[tools]\njava = \"temurin-21\"\nmaven = \"3.9\"\n",
+    ).unwrap();
+
+    if !mise_install(&dir) {
+        eprintln!("SKIP real_proxy_maven_publish: mise install failed (Java/Maven unavailable)");
+        return;
+    }
+
+    // A minimal JAR is a valid empty ZIP (end-of-central-directory record only).
+    let jar = dir.join("test-artifact-1.0.0.jar");
+    fs::write(&jar, b"PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00").unwrap();
+
+    // Minimal settings.xml — no auth, no mirrors (anonymous upload is allowed by
+    // the storage layer for non-POM artifacts; -DgeneratePom=false skips POM
+    // upload so the User-role check in publish() is never reached).
+    let settings = dir.join("settings.xml");
+    fs::write(
+        &settings,
+        r#"<?xml version="1.0"?><settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"/>"#,
+    ).unwrap();
+
+    let deploy_url = format!("http://127.0.0.1:{}/proxy/my-maven/maven2/", proxy.port);
+
+    let ok = mise_exec(&dir, "mvn", &[
+        "deploy:deploy-file",
+        &format!("-Durl={deploy_url}"),
+        "-DrepositoryId=batlehub",
+        &format!("-Dfile={}", jar.display()),
+        "-DgroupId=com.example",
+        "-DartifactId=test-artifact",
+        "-Dversion=1.0.0",
+        "-DgeneratePom=false",
+        "--no-transfer-progress",
+        "-s", settings.to_str().unwrap(),
+    ])
+    .stdout(Stdio::null()).stderr(Stdio::null())
+    .status().map(|s| s.success()).unwrap_or(false);
+
+    if !ok {
+        eprintln!("SKIP real_proxy_maven_publish: mvn deploy:deploy-file failed (proxy or tool issue)");
+        return;
+    }
+
+    let status = curl_status(&format!(
+        "http://127.0.0.1:{}/proxy/my-maven/maven2/com/example/test-artifact/1.0.0/test-artifact-1.0.0.jar",
+        proxy.port,
+    ));
+    assert_eq!(status, Some(200), "artifact not found after mvn deploy");
 }
