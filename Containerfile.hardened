@@ -1,5 +1,5 @@
 # ── Build stage ───────────────────────────────────────────────────────────────
-FROM registry.access.redhat.com/hi/rust:latest@sha256:b68d3d3a4f00008622649d22252c3e59ba2b4cc0a5491846c402a5249f64d6f3 AS builder
+FROM registry.access.redhat.com/hi/rust:latest-builder AS builder
 
 RUN dnf install -y openssl-devel pkgconfig && dnf clean all
 
