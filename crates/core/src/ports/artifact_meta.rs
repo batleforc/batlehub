@@ -74,9 +74,5 @@ pub trait ArtifactMetaRepository: Send + Sync {
 
     /// List artifacts for a registry sorted by `last_accessed_at ASC` (oldest first),
     /// up to `limit` rows. Used for LRU size-cap eviction.
-    async fn list_lru(
-        &self,
-        registry: &str,
-        limit: i64,
-    ) -> Result<Vec<ArtifactMeta>, CoreError>;
+    async fn list_lru(&self, registry: &str, limit: i64) -> Result<Vec<ArtifactMeta>, CoreError>;
 }

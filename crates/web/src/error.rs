@@ -1,5 +1,5 @@
-use actix_web::HttpResponse;
 use actix_web::http::StatusCode;
+use actix_web::HttpResponse;
 use serde::Serialize;
 
 use batlehub_core::error::CoreError;
@@ -17,31 +17,52 @@ pub struct AppError {
 
 impl AppError {
     pub fn not_found(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::NOT_FOUND, message: msg.into() }
+        Self {
+            status: StatusCode::NOT_FOUND,
+            message: msg.into(),
+        }
     }
 
     pub fn forbidden(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::FORBIDDEN, message: msg.into() }
+        Self {
+            status: StatusCode::FORBIDDEN,
+            message: msg.into(),
+        }
     }
 
     pub fn bad_request(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::BAD_REQUEST, message: msg.into() }
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: msg.into(),
+        }
     }
 
     pub fn internal(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: msg.into() }
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: msg.into(),
+        }
     }
 
     pub fn conflict(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::CONFLICT, message: msg.into() }
+        Self {
+            status: StatusCode::CONFLICT,
+            message: msg.into(),
+        }
     }
 
     pub fn unprocessable(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::UNPROCESSABLE_ENTITY, message: msg.into() }
+        Self {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            message: msg.into(),
+        }
     }
 
     pub fn service_unavailable(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::SERVICE_UNAVAILABLE, message: msg.into() }
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: msg.into(),
+        }
     }
 }
 
@@ -76,7 +97,9 @@ impl From<CoreError> for AppError {
         match e {
             CoreError::NotFound(msg) => Self::not_found(msg),
             CoreError::AccessDenied(msg) => Self::forbidden(msg),
-            CoreError::UnknownRegistry(name) => Self::bad_request(format!("unknown registry: {name}")),
+            CoreError::UnknownRegistry(name) => {
+                Self::bad_request(format!("unknown registry: {name}"))
+            }
             CoreError::Conflict(msg) => Self::conflict(msg),
             CoreError::PayloadTooLarge(msg) => Self {
                 status: StatusCode::PAYLOAD_TOO_LARGE,

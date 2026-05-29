@@ -16,6 +16,11 @@ use sqlx::PgPool;
 
 use batlehub_adapters::storage::{FilesystemStorageBackend, StorageRouter};
 use batlehub_core::ports::{StorageBackend, StorageMeta, StoredArtifact};
+use sha2::{Digest, Sha256};
+
+fn content_key(data: &[u8]) -> String {
+    format!("blob/{}", hex::encode(Sha256::digest(data)))
+}
 
 fn db_url() -> Option<String> {
     std::env::var("DATABASE_URL").ok()
@@ -23,10 +28,21 @@ fn db_url() -> Option<String> {
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-// Returns a unique key safe to use across parallel tests.
+// Returns a unique key safe to use across parallel tests AND across test runs.
+// PID is included so keys from different process invocations never collide in
+// the shared dedup tables.
 fn ukey(registry: &str, name: &str) -> String {
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("artifact:{registry}/t{id}-{name}")
+    let pid = std::process::id();
+    format!("artifact:{registry}/p{pid}-t{id}-{name}")
+}
+
+// Returns payload bytes that are unique per process invocation.
+// Embedding the PID guarantees a fresh content hash on every test run, so the
+// dedup system always writes a new physical blob (ref_count == 1) rather than
+// reusing a blob from a previous run that no longer exists on disk.
+fn upayload(label: &str) -> Bytes {
+    Bytes::from(format!("{label}-pid{}", std::process::id()))
 }
 
 async fn make_fs(label: &str) -> Arc<FilesystemStorageBackend> {
@@ -38,7 +54,10 @@ async fn make_fs(label: &str) -> Arc<FilesystemStorageBackend> {
 
 async fn pool(url: &str) -> PgPool {
     let p = PgPool::connect(url).await.expect("connect to postgres");
-    batlehub_adapters::migrations::embedded_migrator().run(&p).await.expect("run migrations");
+    batlehub_adapters::migrations::embedded_migrator()
+        .run(&p)
+        .await
+        .expect("run migrations");
     p
 }
 
@@ -65,9 +84,17 @@ async fn store_and_retrieve_round_trip() {
     let router = single_backend_router(make_fs("rr").await, pool(&url).await);
     let key = ukey("npm", "test-pkg");
 
-    router.store(&key, Bytes::from_static(b"hello, router"), StorageMeta::default()).await.unwrap();
-    let artifact = router.retrieve(&key).await.unwrap().expect("should be found");
-    assert_eq!(collect(artifact).await, b"hello, router");
+    let data = upayload("hello-router");
+    router
+        .store(&key, data.clone(), StorageMeta::default())
+        .await
+        .unwrap();
+    let artifact = router
+        .retrieve(&key)
+        .await
+        .unwrap()
+        .expect("should be found");
+    assert_eq!(collect(artifact).await, data.as_ref());
 }
 
 #[tokio::test]
@@ -85,7 +112,10 @@ async fn exists_before_and_after_store() {
     let key = ukey("npm", "ex-pkg");
 
     assert!(!router.exists(&key).await.unwrap());
-    router.store(&key, Bytes::from_static(b"data"), StorageMeta::default()).await.unwrap();
+    router
+        .store(&key, upayload("exists-data"), StorageMeta::default())
+        .await
+        .unwrap();
     assert!(router.exists(&key).await.unwrap());
 }
 
@@ -95,7 +125,10 @@ async fn delete_removes_artifact() {
     let router = single_backend_router(make_fs("del").await, pool(&url).await);
     let key = ukey("npm", "del-pkg");
 
-    router.store(&key, Bytes::from_static(b"bye"), StorageMeta::default()).await.unwrap();
+    router
+        .store(&key, upayload("bye"), StorageMeta::default())
+        .await
+        .unwrap();
     router.delete(&key).await.unwrap();
     assert!(!router.exists(&key).await.unwrap());
 }
@@ -115,11 +148,17 @@ async fn retrieve_falls_back_to_default_when_no_artifact_storage_record() {
     let key = ukey("npm", "direct-pkg");
 
     // Write directly to the FS backend — no artifact_storage record created.
-    fs.store(&key, Bytes::from_static(b"direct"), StorageMeta::default()).await.unwrap();
+    fs.store(&key, Bytes::from_static(b"direct"), StorageMeta::default())
+        .await
+        .unwrap();
 
     let router = single_backend_router(fs, pool(&url).await);
     // Router must fall back to resolve_backend_for_key and find the file.
-    let artifact = router.retrieve(&key).await.unwrap().expect("fallback must succeed");
+    let artifact = router
+        .retrieve(&key)
+        .await
+        .unwrap()
+        .expect("fallback must succeed");
     assert_eq!(collect(artifact).await, b"direct");
 }
 
@@ -140,15 +179,44 @@ async fn routes_to_correct_named_backend() {
     assignments.insert("npm".to_owned(), "backend-a".to_owned());
     assignments.insert("cargo".to_owned(), "backend-b".to_owned());
 
-    let router = StorageRouter::new(backends, "backend-a".to_owned(), assignments, pool(&url).await);
+    let router = StorageRouter::new(
+        backends,
+        "backend-a".to_owned(),
+        assignments,
+        pool(&url).await,
+    );
 
-    router.store(&npm_key, Bytes::from_static(b"npm-data"), StorageMeta::default()).await.unwrap();
-    router.store(&cargo_key, Bytes::from_static(b"cargo-data"), StorageMeta::default()).await.unwrap();
+    let npm_data = upayload("npm-data");
+    let cargo_data = upayload("cargo-data");
+    router
+        .store(&npm_key, npm_data.clone(), StorageMeta::default())
+        .await
+        .unwrap();
+    router
+        .store(&cargo_key, cargo_data.clone(), StorageMeta::default())
+        .await
+        .unwrap();
 
-    assert!(fs_a.exists(&npm_key).await.unwrap(), "npm artifact must land in backend-a");
-    assert!(!fs_b.exists(&npm_key).await.unwrap(), "npm artifact must NOT be in backend-b");
-    assert!(fs_b.exists(&cargo_key).await.unwrap(), "cargo artifact must land in backend-b");
-    assert!(!fs_a.exists(&cargo_key).await.unwrap(), "cargo artifact must NOT be in backend-a");
+    // Router stores blobs content-addressed as "blob/{sha256}", not under the logical key.
+    let npm_blob = content_key(&npm_data);
+    let cargo_blob = content_key(&cargo_data);
+
+    assert!(
+        fs_a.exists(&npm_blob).await.unwrap(),
+        "npm artifact must land in backend-a"
+    );
+    assert!(
+        !fs_b.exists(&npm_blob).await.unwrap(),
+        "npm artifact must NOT be in backend-b"
+    );
+    assert!(
+        fs_b.exists(&cargo_blob).await.unwrap(),
+        "cargo artifact must land in backend-b"
+    );
+    assert!(
+        !fs_a.exists(&cargo_blob).await.unwrap(),
+        "cargo artifact must NOT be in backend-a"
+    );
 }
 
 #[tokio::test]
@@ -167,9 +235,23 @@ async fn unknown_registry_uses_default_backend() {
     let mut assignments = HashMap::new();
     assignments.insert("npm".to_owned(), "other".to_owned());
 
-    let router = StorageRouter::new(backends, "default".to_owned(), assignments, pool(&url).await);
-    router.store(&key, Bytes::from_static(b"pypi-data"), StorageMeta::default()).await.unwrap();
+    let router = StorageRouter::new(
+        backends,
+        "default".to_owned(),
+        assignments,
+        pool(&url).await,
+    );
+    let pypi_data = upayload("pypi-data");
+    router
+        .store(&key, pypi_data.clone(), StorageMeta::default())
+        .await
+        .unwrap();
 
-    assert!(fs_default.exists(&key).await.unwrap(), "unassigned registry must use default backend");
-    assert!(!fs_other.exists(&key).await.unwrap());
+    // Router stores blobs content-addressed as "blob/{sha256}", not under the logical key.
+    let blob = content_key(&pypi_data);
+    assert!(
+        fs_default.exists(&blob).await.unwrap(),
+        "unassigned registry must use default backend"
+    );
+    assert!(!fs_other.exists(&blob).await.unwrap());
 }

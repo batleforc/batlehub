@@ -1,20 +1,21 @@
 use std::sync::Arc;
 
-use actix_web::{HttpRequest, Responder, get, web};
+use actix_web::{get, web, HttpRequest, Responder};
 
-use batlehub_core::{
-    entities::PackageId,
-    services::ProxyService,
-};
+use batlehub_core::{entities::PackageId, services::ProxyService};
 
-use crate::{RegistryMap, error::AppError, extractors::AuthIdentity};
 use super::common::proxy_stream;
+use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
 fn require_github(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry) {
         Some("github") => Ok(()),
-        Some(_) => Err(AppError::not_found(format!("registry '{registry}' is not a github registry"))),
-        None => Err(AppError::not_found(format!("unknown registry '{registry}'"))),
+        Some(_) => Err(AppError::not_found(format!(
+            "registry '{registry}' is not a github registry"
+        ))),
+        None => Err(AppError::not_found(format!(
+            "unknown registry '{registry}'"
+        ))),
     }
 }
 
@@ -108,12 +109,12 @@ pub async fn download_asset(
 ) -> Result<impl Responder, AppError> {
     let (registry, owner, repo, asset_id) = path.into_inner();
     require_github(&registry, &map)?;
-    let tag = web::Query::<std::collections::HashMap<String, String>>::from_query(req.query_string())
-        .ok()
-        .and_then(|q| q.into_inner().remove("tag"))
-        .unwrap_or_else(|| "unknown".to_owned());
-    let pkg = PackageId::new(&registry, format!("{owner}/{repo}"), tag)
-        .with_artifact(&asset_id);
+    let tag =
+        web::Query::<std::collections::HashMap<String, String>>::from_query(req.query_string())
+            .ok()
+            .and_then(|q| q.into_inner().remove("tag"))
+            .unwrap_or_else(|| "unknown".to_owned());
+    let pkg = PackageId::new(&registry, format!("{owner}/{repo}"), tag).with_artifact(&asset_id);
     proxy_stream(svc, pkg, identity, "releases:read", None).await
 }
 
@@ -209,8 +210,7 @@ pub async fn download_zipball(
 ) -> Result<impl Responder, AppError> {
     let (registry, owner, repo, tag) = path.into_inner();
     require_github(&registry, &map)?;
-    let pkg = PackageId::new(&registry, format!("{owner}/{repo}"), &tag)
-        .with_artifact("zipball");
+    let pkg = PackageId::new(&registry, format!("{owner}/{repo}"), &tag).with_artifact("zipball");
     proxy_stream(svc, pkg, identity, "source:read", None).await
 }
 

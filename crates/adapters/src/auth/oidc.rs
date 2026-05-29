@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use jsonwebtoken::{decode, decode_header, DecodingKey, Validation};
 use jsonwebtoken::jwk::JwkSet;
+use jsonwebtoken::{decode, decode_header, DecodingKey, Validation};
 use serde::Deserialize;
 use tokio::sync::RwLock;
 
@@ -175,9 +175,9 @@ impl OidcAuthProvider {
             .await
             .map_err(|e| anyhow::anyhow!("parsing OIDC discovery document: {e}"))?;
 
-        let keys = fetch_jwks(&http, &discovery.jwks_uri)
-            .await
-            .map_err(|e| anyhow::anyhow!("fetching initial JWKS from {}: {e}", discovery.jwks_uri))?;
+        let keys = fetch_jwks(&http, &discovery.jwks_uri).await.map_err(|e| {
+            anyhow::anyhow!("fetching initial JWKS from {}: {e}", discovery.jwks_uri)
+        })?;
 
         let sso = cfg.redirect_uri.as_ref().map(|redirect_uri| OidcSsoFlow {
             name: cfg.name.clone(),
@@ -371,9 +371,10 @@ impl AuthProvider for OidcAuthProvider {
         let raw_groups: Vec<String> = role_claim_value
             .map(|v| match v {
                 serde_json::Value::String(s) => vec![s.clone()],
-                serde_json::Value::Array(arr) => {
-                    arr.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()
-                }
+                serde_json::Value::Array(arr) => arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect(),
                 _ => vec![],
             })
             .unwrap_or_default();
@@ -381,7 +382,11 @@ impl AuthProvider for OidcAuthProvider {
         let groups: Vec<String> = raw_groups
             .into_iter()
             .map(|s| {
-                if self.role_mappings.contains_key(&s) { s } else { format!("{}:{s}", self.name) }
+                if self.role_mappings.contains_key(&s) {
+                    s
+                } else {
+                    format!("{}:{s}", self.name)
+                }
             })
             .collect();
 
@@ -397,10 +402,10 @@ impl AuthProvider for OidcAuthProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use std::time::{SystemTime, UNIX_EPOCH};
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
     use serde_json::json;
+    use std::collections::HashMap;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     // ECDSA P-256 test key pair taken from jsonwebtoken's own test fixtures.
     // Private: PKCS#8 PEM; public key encoded as JWK below.
@@ -424,12 +429,20 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
     }"#;
 
     fn future_exp() -> i64 {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64 + 3600
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 3600
     }
 
     fn past_exp() -> i64 {
         // Use an hour in the past to stay clear of jsonwebtoken's default 60-second leeway.
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64 - 3600
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            - 3600
     }
 
     fn test_jwks() -> JwkSet {
@@ -477,7 +490,10 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
     }
 
     fn no_auth() -> RawAuthRequest {
-        RawAuthRequest { headers: Default::default(), query_params: Default::default() }
+        RawAuthRequest {
+            headers: Default::default(),
+            query_params: Default::default(),
+        }
     }
 
     // ── Header parsing ────────────────────────────────────────────────────────
@@ -501,7 +517,10 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
     #[tokio::test]
     async fn malformed_token_string_returns_auth_error() {
         let p = default_provider();
-        let err = p.authenticate(&bearer("not.a.valid.jwt")).await.unwrap_err();
+        let err = p
+            .authenticate(&bearer("not.a.valid.jwt"))
+            .await
+            .unwrap_err();
         assert!(matches!(err, CoreError::Auth(_)));
     }
 
@@ -693,8 +712,14 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
             json!({ "sub": "alice", "role": ["admin", "team-a"], "exp": future_exp() }),
         );
         let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
-        assert!(id.groups.contains(&"admin".to_owned()), "mapped value stored without prefix");
-        assert!(id.groups.contains(&"oidc:team-a".to_owned()), "unmapped value stored with provider name prefix");
+        assert!(
+            id.groups.contains(&"admin".to_owned()),
+            "mapped value stored without prefix"
+        );
+        assert!(
+            id.groups.contains(&"oidc:team-a".to_owned()),
+            "unmapped value stored with provider name prefix"
+        );
     }
 
     #[tokio::test]
@@ -749,7 +774,10 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         assert!(encoded.contains("%20"), "space should be %20");
         assert!(encoded.contains("%2B"), "plus should be %2B");
         assert!(encoded.contains("%3D"), "equals should be %3D");
-        assert!(!encoded.contains(' '), "encoded string should have no raw spaces");
+        assert!(
+            !encoded.contains(' '),
+            "encoded string should have no raw spaces"
+        );
     }
 
     // ── OidcSsoFlow::authorization_url ────────────────────────────────────────
@@ -792,7 +820,8 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
             "jwks_uri": format!("{base_url}/jwks"),
             "authorization_endpoint": format!("{base_url}/auth"),
             "token_endpoint": format!("{base_url}/token"),
-        }).to_string()
+        })
+        .to_string()
     }
 
     #[tokio::test]
@@ -800,17 +829,21 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let mut server = mockito::Server::new_async().await;
         let base = server.url();
 
-        let _discovery = server.mock("GET", "/.well-known/openid-configuration")
+        let _discovery = server
+            .mock("GET", "/.well-known/openid-configuration")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(discovery_json(&base))
-            .create_async().await;
+            .create_async()
+            .await;
 
-        let _jwks = server.mock("GET", "/jwks")
+        let _jwks = server
+            .mock("GET", "/jwks")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(TEST_JWKS_JSON)
-            .create_async().await;
+            .create_async()
+            .await;
 
         use batlehub_config::schema::OidcAuthConfig;
         let cfg = OidcAuthConfig {
@@ -826,7 +859,9 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
             role_mappings: HashMap::new(),
         };
 
-        let provider = OidcAuthProvider::new(&cfg).await.expect("provider construction failed");
+        let provider = OidcAuthProvider::new(&cfg)
+            .await
+            .expect("provider construction failed");
         assert!(provider.sso_flow().is_none());
     }
 
@@ -835,17 +870,21 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let mut server = mockito::Server::new_async().await;
         let base = server.url();
 
-        let _discovery = server.mock("GET", "/.well-known/openid-configuration")
+        let _discovery = server
+            .mock("GET", "/.well-known/openid-configuration")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(discovery_json(&base))
-            .create_async().await;
+            .create_async()
+            .await;
 
-        let _jwks = server.mock("GET", "/jwks")
+        let _jwks = server
+            .mock("GET", "/jwks")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(TEST_JWKS_JSON)
-            .create_async().await;
+            .create_async()
+            .await;
 
         use batlehub_config::schema::OidcAuthConfig;
         let cfg = OidcAuthConfig {
@@ -861,8 +900,12 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
             role_mappings: HashMap::new(),
         };
 
-        let provider = OidcAuthProvider::new(&cfg).await.expect("provider construction failed");
-        let sso = provider.sso_flow().expect("sso_flow should be Some with redirect_uri");
+        let provider = OidcAuthProvider::new(&cfg)
+            .await
+            .expect("provider construction failed");
+        let sso = provider
+            .sso_flow()
+            .expect("sso_flow should be Some with redirect_uri");
         let auth_url = sso.authorization_url("test-state");
         assert!(auth_url.contains("state=test-state"));
     }
@@ -872,23 +915,29 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let mut server = mockito::Server::new_async().await;
         let base = server.url();
 
-        let _discovery = server.mock("GET", "/.well-known/openid-configuration")
+        let _discovery = server
+            .mock("GET", "/.well-known/openid-configuration")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(discovery_json(&base))
-            .create_async().await;
+            .create_async()
+            .await;
 
-        let _jwks = server.mock("GET", "/jwks")
+        let _jwks = server
+            .mock("GET", "/jwks")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(TEST_JWKS_JSON)
-            .create_async().await;
+            .create_async()
+            .await;
 
-        let _token = server.mock("POST", "/token")
+        let _token = server
+            .mock("POST", "/token")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"access_token":"at-123","refresh_token":"rt-xyz","expires_in":3600}"#)
-            .create_async().await;
+            .create_async()
+            .await;
 
         use batlehub_config::schema::OidcAuthConfig;
         let cfg = OidcAuthConfig {
@@ -917,23 +966,29 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let mut server = mockito::Server::new_async().await;
         let base = server.url();
 
-        let _discovery = server.mock("GET", "/.well-known/openid-configuration")
+        let _discovery = server
+            .mock("GET", "/.well-known/openid-configuration")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(discovery_json(&base))
-            .create_async().await;
+            .create_async()
+            .await;
 
-        let _jwks = server.mock("GET", "/jwks")
+        let _jwks = server
+            .mock("GET", "/jwks")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(TEST_JWKS_JSON)
-            .create_async().await;
+            .create_async()
+            .await;
 
-        let _token = server.mock("POST", "/token")
+        let _token = server
+            .mock("POST", "/token")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"access_token":"new-at","expires_in":1800}"#)
-            .create_async().await;
+            .create_async()
+            .await;
 
         use batlehub_config::schema::OidcAuthConfig;
         let cfg = OidcAuthConfig {
@@ -963,11 +1018,13 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let mut server = mockito::Server::new_async().await;
         let jwks_url = format!("{}/jwks", server.url());
 
-        let _m = server.mock("GET", "/jwks")
+        let _m = server
+            .mock("GET", "/jwks")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(TEST_JWKS_JSON)
-            .create_async().await;
+            .create_async()
+            .await;
 
         // Create a provider with a stale JWKS cache (older than JWKS_MIN_REFRESH).
         let p = OidcAuthProvider {

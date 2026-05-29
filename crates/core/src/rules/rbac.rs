@@ -22,7 +22,10 @@ pub struct RbacRule {
 
 impl RbacRule {
     pub fn new(permissions: HashMap<Role, Vec<String>>) -> Self {
-        Self { permissions, group_permissions: HashMap::new() }
+        Self {
+            permissions,
+            group_permissions: HashMap::new(),
+        }
     }
 
     pub fn with_groups(mut self, group_permissions: HashMap<String, Vec<String>>) -> Self {
@@ -59,11 +62,15 @@ impl RbacRule {
     fn is_permitted_by_group(&self, groups: &[String], resource_type: &str) -> bool {
         groups.iter().any(|g| {
             // Exact match: "oidc1:team-a"
-            if self.perms_allow(g, resource_type) { return true; }
+            if self.perms_allow(g, resource_type) {
+                return true;
+            }
             // Wildcard match: "*:team-a" covers any provider prefix
             if let Some(colon) = g.find(':') {
                 let wildcard = format!("*:{}", &g[colon + 1..]);
-                if self.perms_allow(&wildcard, resource_type) { return true; }
+                if self.perms_allow(&wildcard, resource_type) {
+                    return true;
+                }
             }
             false
         })
@@ -118,7 +125,10 @@ mod tests {
     fn make_rule() -> RbacRule {
         RbacRule::new(HashMap::from([
             (Role::Anonymous, vec!["releases:read".to_owned()]),
-            (Role::User, vec!["releases:read".to_owned(), "source:read".to_owned()]),
+            (
+                Role::User,
+                vec!["releases:read".to_owned(), "source:read".to_owned()],
+            ),
             (Role::Admin, vec!["*".to_owned()]),
         ]))
     }
@@ -136,7 +146,13 @@ mod tests {
             extra: serde_json::Value::Null,
             cache_control: None,
         };
-        let ctx = RuleContext { identity: &identity, package: &meta, resource_type: "releases:read", cache_entry: None, requested_version: None };
+        let ctx = RuleContext {
+            identity: &identity,
+            package: &meta,
+            resource_type: "releases:read",
+            cache_entry: None,
+            requested_version: None,
+        };
         assert!(matches!(rule.evaluate(&ctx).await, RuleDecision::Allow));
     }
 
@@ -153,8 +169,17 @@ mod tests {
             extra: serde_json::Value::Null,
             cache_control: None,
         };
-        let ctx = RuleContext { identity: &identity, package: &meta, resource_type: "source:read", cache_entry: None, requested_version: None };
-        assert!(matches!(rule.evaluate(&ctx).await, RuleDecision::Deny { .. }));
+        let ctx = RuleContext {
+            identity: &identity,
+            package: &meta,
+            resource_type: "source:read",
+            cache_entry: None,
+            requested_version: None,
+        };
+        assert!(matches!(
+            rule.evaluate(&ctx).await,
+            RuleDecision::Deny { .. }
+        ));
     }
 
     #[tokio::test]
@@ -170,7 +195,13 @@ mod tests {
             extra: serde_json::Value::Null,
             cache_control: None,
         };
-        let ctx = RuleContext { identity: &identity, package: &meta, resource_type: "actions:read", cache_entry: None, requested_version: None };
+        let ctx = RuleContext {
+            identity: &identity,
+            package: &meta,
+            resource_type: "actions:read",
+            cache_entry: None,
+            requested_version: None,
+        };
         assert!(matches!(rule.evaluate(&ctx).await, RuleDecision::Allow));
     }
 
@@ -181,7 +212,10 @@ mod tests {
             (Role::Admin, vec!["*".to_owned()]),
         ]))
         .with_groups(HashMap::from([
-            ("team-a".to_owned(), vec!["releases:read".to_owned(), "source:read".to_owned()]),
+            (
+                "team-a".to_owned(),
+                vec!["releases:read".to_owned(), "source:read".to_owned()],
+            ),
             ("team-b".to_owned(), vec!["releases:read".to_owned()]),
         ]))
     }
@@ -203,7 +237,13 @@ mod tests {
         let rule = make_group_rule();
         let identity = make_identity_with_groups(Role::Anonymous, vec!["team-a"]);
         let meta = make_meta();
-        let ctx = RuleContext { identity: &identity, package: &meta, resource_type: "source:read", cache_entry: None, requested_version: None };
+        let ctx = RuleContext {
+            identity: &identity,
+            package: &meta,
+            resource_type: "source:read",
+            cache_entry: None,
+            requested_version: None,
+        };
         assert!(matches!(rule.evaluate(&ctx).await, RuleDecision::Allow));
     }
 
@@ -212,8 +252,17 @@ mod tests {
         let rule = make_group_rule();
         let identity = make_identity_with_groups(Role::Anonymous, vec!["team-b"]);
         let meta = make_meta();
-        let ctx = RuleContext { identity: &identity, package: &meta, resource_type: "source:read", cache_entry: None, requested_version: None };
-        assert!(matches!(rule.evaluate(&ctx).await, RuleDecision::Deny { .. }));
+        let ctx = RuleContext {
+            identity: &identity,
+            package: &meta,
+            resource_type: "source:read",
+            cache_entry: None,
+            requested_version: None,
+        };
+        assert!(matches!(
+            rule.evaluate(&ctx).await,
+            RuleDecision::Deny { .. }
+        ));
     }
 
     #[tokio::test]
@@ -221,7 +270,13 @@ mod tests {
         let rule = make_group_rule();
         let identity = make_identity_with_groups(Role::Anonymous, vec!["team-b", "team-a"]);
         let meta = make_meta();
-        let ctx = RuleContext { identity: &identity, package: &meta, resource_type: "source:read", cache_entry: None, requested_version: None };
+        let ctx = RuleContext {
+            identity: &identity,
+            package: &meta,
+            resource_type: "source:read",
+            cache_entry: None,
+            requested_version: None,
+        };
         assert!(matches!(rule.evaluate(&ctx).await, RuleDecision::Allow));
     }
 
@@ -245,7 +300,13 @@ mod tests {
         let meta = make_meta();
         for provider_group in &["oidc1:team-a", "oidc2:team-a", "kubernetes:team-a"] {
             let identity = make_identity_with_groups(Role::Anonymous, vec![provider_group]);
-            let ctx = RuleContext { identity: &identity, package: &meta, resource_type: "releases:read", cache_entry: None, requested_version: None };
+            let ctx = RuleContext {
+                identity: &identity,
+                package: &meta,
+                resource_type: "releases:read",
+                cache_entry: None,
+                requested_version: None,
+            };
             assert!(
                 matches!(rule.evaluate(&ctx).await, RuleDecision::Allow),
                 "{provider_group} should match wildcard *:team-a"
@@ -259,8 +320,17 @@ mod tests {
         // "oidc2:team-b" has source:read; "oidc1:team-b" should NOT match (no wildcard for team-b)
         let identity = make_identity_with_groups(Role::Anonymous, vec!["oidc1:team-b"]);
         let meta = make_meta();
-        let ctx = RuleContext { identity: &identity, package: &meta, resource_type: "source:read", cache_entry: None, requested_version: None };
-        assert!(matches!(rule.evaluate(&ctx).await, RuleDecision::Deny { .. }));
+        let ctx = RuleContext {
+            identity: &identity,
+            package: &meta,
+            resource_type: "source:read",
+            cache_entry: None,
+            requested_version: None,
+        };
+        assert!(matches!(
+            rule.evaluate(&ctx).await,
+            RuleDecision::Deny { .. }
+        ));
     }
 
     #[tokio::test]
@@ -268,7 +338,13 @@ mod tests {
         let rule = make_wildcard_rule();
         let identity = make_identity_with_groups(Role::Anonymous, vec!["oidc2:team-b"]);
         let meta = make_meta();
-        let ctx = RuleContext { identity: &identity, package: &meta, resource_type: "source:read", cache_entry: None, requested_version: None };
+        let ctx = RuleContext {
+            identity: &identity,
+            package: &meta,
+            resource_type: "source:read",
+            cache_entry: None,
+            requested_version: None,
+        };
         assert!(matches!(rule.evaluate(&ctx).await, RuleDecision::Allow));
     }
 
@@ -277,8 +353,17 @@ mod tests {
         let rule = make_wildcard_rule();
         let identity = make_identity_with_groups(Role::Anonymous, vec!["no-prefix-group"]);
         let meta = make_meta();
-        let ctx = RuleContext { identity: &identity, package: &meta, resource_type: "releases:read", cache_entry: None, requested_version: None };
+        let ctx = RuleContext {
+            identity: &identity,
+            package: &meta,
+            resource_type: "releases:read",
+            cache_entry: None,
+            requested_version: None,
+        };
         // Should not match any entry and not panic
-        assert!(matches!(rule.evaluate(&ctx).await, RuleDecision::Deny { .. }));
+        assert!(matches!(
+            rule.evaluate(&ctx).await,
+            RuleDecision::Deny { .. }
+        ));
     }
 }

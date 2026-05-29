@@ -39,11 +39,7 @@ impl InMemoryIpBlockStore {
 
 #[async_trait]
 impl IpBlockStore for InMemoryIpBlockStore {
-    async fn record_violation(
-        &self,
-        ip: &str,
-        window_secs: u32,
-    ) -> Result<(u64, u64), CoreError> {
+    async fn record_violation(&self, ip: &str, window_secs: u32) -> Result<(u64, u64), CoreError> {
         if window_secs == 0 {
             return Err(CoreError::Cache("window_secs must be > 0".into()));
         }
@@ -77,7 +73,11 @@ impl IpBlockStore for InMemoryIpBlockStore {
         let now = now_unix();
         let guard = self.blocks.lock().await;
         Ok(guard.get(ip).and_then(|e| {
-            if e.unblock_at > now { Some(e.unblock_at) } else { None }
+            if e.unblock_at > now {
+                Some(e.unblock_at)
+            } else {
+                None
+            }
         }))
     }
 
@@ -86,7 +86,11 @@ impl IpBlockStore for InMemoryIpBlockStore {
         let mut guard = self.blocks.lock().await;
         guard.insert(
             ip.to_owned(),
-            BlockEntry { blocked_at: now, unblock_at, reason: reason.to_owned() },
+            BlockEntry {
+                blocked_at: now,
+                unblock_at,
+                reason: reason.to_owned(),
+            },
         );
         Ok(())
     }
@@ -159,14 +163,20 @@ mod tests {
     async fn expired_block_returns_none() {
         let store = InMemoryIpBlockStore::new();
         // unblock_at in the past
-        store.block_ip("1.2.3.4", now().saturating_sub(1), "old").await.unwrap();
+        store
+            .block_ip("1.2.3.4", now().saturating_sub(1), "old")
+            .await
+            .unwrap();
         assert!(store.is_blocked("1.2.3.4").await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn unblock_removes_block() {
         let store = InMemoryIpBlockStore::new();
-        store.block_ip("1.2.3.4", now() + 3600, "test").await.unwrap();
+        store
+            .block_ip("1.2.3.4", now() + 3600, "test")
+            .await
+            .unwrap();
         store.unblock_ip("1.2.3.4").await.unwrap();
         assert!(store.is_blocked("1.2.3.4").await.unwrap().is_none());
     }
@@ -174,8 +184,14 @@ mod tests {
     #[tokio::test]
     async fn list_blocked_shows_active_only() {
         let store = InMemoryIpBlockStore::new();
-        store.block_ip("1.1.1.1", now() + 3600, "active").await.unwrap();
-        store.block_ip("2.2.2.2", now().saturating_sub(1), "expired").await.unwrap();
+        store
+            .block_ip("1.1.1.1", now() + 3600, "active")
+            .await
+            .unwrap();
+        store
+            .block_ip("2.2.2.2", now().saturating_sub(1), "expired")
+            .await
+            .unwrap();
         let list = store.list_blocked().await.unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].ip, "1.1.1.1");
@@ -185,7 +201,10 @@ mod tests {
     async fn list_blocked_includes_reason_and_timestamps() {
         let store = InMemoryIpBlockStore::new();
         let unblock_at = now() + 100;
-        store.block_ip("9.9.9.9", unblock_at, "manual").await.unwrap();
+        store
+            .block_ip("9.9.9.9", unblock_at, "manual")
+            .await
+            .unwrap();
         let list = store.list_blocked().await.unwrap();
         assert_eq!(list[0].reason, "manual");
         assert_eq!(list[0].unblock_at, unblock_at);

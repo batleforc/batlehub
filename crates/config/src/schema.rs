@@ -102,31 +102,49 @@ impl AppConfig {
         let env = |key: &str| std::env::var(key).ok();
 
         // server
-        if let Some(v) = env("PROXY_CACHE__SERVER__HOST") { self.server.host = v; }
-        if let Some(v) = env("PROXY_CACHE__SERVER__PORT") {
-            if let Ok(p) = v.parse() { self.server.port = p; }
+        if let Some(v) = env("PROXY_CACHE__SERVER__HOST") {
+            self.server.host = v;
         }
-        if let Some(v) = env("PROXY_CACHE__SERVER__STATIC_DIR") { self.server.static_dir = Some(v); }
+        if let Some(v) = env("PROXY_CACHE__SERVER__PORT") {
+            if let Ok(p) = v.parse() {
+                self.server.port = p;
+            }
+        }
+        if let Some(v) = env("PROXY_CACHE__SERVER__STATIC_DIR") {
+            self.server.static_dir = Some(v);
+        }
 
         // database
-        if let Some(v) = env("PROXY_CACHE__DATABASE__URL") { self.database.url = v; }
+        if let Some(v) = env("PROXY_CACHE__DATABASE__URL") {
+            self.database.url = v;
+        }
         if let Some(v) = env("PROXY_CACHE__DATABASE__MAX_CONNECTIONS") {
-            if let Ok(n) = v.parse() { self.database.max_connections = n; }
+            if let Ok(n) = v.parse() {
+                self.database.max_connections = n;
+            }
         }
 
         // storage env overrides (only supported for legacy single-backend config)
         if let StoragesConfig::Single(ref mut backend) = self.storage {
             if let Some(v) = env("PROXY_CACHE__STORAGE__PATH") {
-                if let StorageBackendConfig::Filesystem(fs) = backend { fs.path = v; }
+                if let StorageBackendConfig::Filesystem(fs) = backend {
+                    fs.path = v;
+                }
             }
             if let Some(v) = env("PROXY_CACHE__STORAGE__BUCKET") {
-                if let StorageBackendConfig::S3(s3) = backend { s3.bucket = v; }
+                if let StorageBackendConfig::S3(s3) = backend {
+                    s3.bucket = v;
+                }
             }
             if let Some(v) = env("PROXY_CACHE__STORAGE__REGION") {
-                if let StorageBackendConfig::S3(s3) = backend { s3.region = v; }
+                if let StorageBackendConfig::S3(s3) = backend {
+                    s3.region = v;
+                }
             }
             if let Some(v) = env("PROXY_CACHE__STORAGE__ENDPOINT_URL") {
-                if let StorageBackendConfig::S3(s3) = backend { s3.endpoint_url = Some(v); }
+                if let StorageBackendConfig::S3(s3) = backend {
+                    s3.endpoint_url = Some(v);
+                }
             }
         }
 
@@ -134,11 +152,18 @@ impl AppConfig {
         if let Some(v) = env("PROXY_CACHE__OTEL__ENDPOINT") {
             match &mut self.otel {
                 Some(otel) => otel.endpoint = v,
-                None => self.otel = Some(OtelConfig { endpoint: v, service_name: default_service_name() }),
+                None => {
+                    self.otel = Some(OtelConfig {
+                        endpoint: v,
+                        service_name: default_service_name(),
+                    })
+                }
             }
         }
         if let Some(v) = env("PROXY_CACHE__OTEL__SERVICE_NAME") {
-            if let Some(otel) = &mut self.otel { otel.service_name = v; }
+            if let Some(otel) = &mut self.otel {
+                otel.service_name = v;
+            }
         }
     }
 }
@@ -249,7 +274,11 @@ fn default_oidc_name() -> String {
 }
 
 fn default_oidc_scopes() -> Vec<String> {
-    vec!["openid".to_owned(), "profile".to_owned(), "email".to_owned()]
+    vec![
+        "openid".to_owned(),
+        "profile".to_owned(),
+        "email".to_owned(),
+    ]
 }
 
 fn default_sub() -> String {
@@ -403,7 +432,10 @@ fn default_cache_type() -> String {
 
 impl Default for CacheConfig {
     fn default() -> Self {
-        Self { cache_type: default_cache_type(), url: None }
+        Self {
+            cache_type: default_cache_type(),
+            url: None,
+        }
     }
 }
 
@@ -497,7 +529,9 @@ pub struct VersioningPolicy {
     pub version_pattern: Option<String>,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 // ── Artifact signing ──────────────────────────────────────────────────────────
 
@@ -551,7 +585,9 @@ pub struct QuotaConfig {
     pub enforcement: QuotaEnforcement,
 }
 
-fn default_warn_pct() -> u8 { 80 }
+fn default_warn_pct() -> u8 {
+    80
+}
 
 // ── Beta channel ──────────────────────────────────────────────────────────────
 
@@ -633,10 +669,18 @@ impl Default for IpBlockingConfig {
     }
 }
 
-fn default_violation_threshold() -> u32 { 10 }
-fn default_violation_window() -> u32 { 300 }
-fn default_ban_duration() -> u64 { 3600 }
-fn default_trigger_on_status() -> Vec<u16> { vec![429, 401] }
+fn default_violation_threshold() -> u32 {
+    10
+}
+fn default_violation_window() -> u32 {
+    300
+}
+fn default_ban_duration() -> u64 {
+    3600
+}
+fn default_trigger_on_status() -> Vec<u16> {
+    vec![429, 401]
+}
 
 // ── Rate limiting ─────────────────────────────────────────────────────────────
 
@@ -909,7 +953,10 @@ mod tests {
     fn cache_policy_partial_config_uses_defaults_for_unset_fields() {
         let raw = "artifact_ttl_secs = 7200";
         let p: CachePolicy = toml::from_str(raw).unwrap();
-        assert_eq!(p.metadata_ttl_secs, 300, "metadata_ttl_secs should use default");
+        assert_eq!(
+            p.metadata_ttl_secs, 300,
+            "metadata_ttl_secs should use default"
+        );
         assert!(p.serve_stale, "serve_stale should default to true");
         assert_eq!(p.artifact_ttl_secs, Some(7200));
         assert!(p.idle_days.is_none());

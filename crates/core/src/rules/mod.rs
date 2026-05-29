@@ -39,7 +39,10 @@ pub enum RuleDecision {
 
 impl RuleDecision {
     pub fn is_deny(&self) -> bool {
-        matches!(self, RuleDecision::Deny { .. } | RuleDecision::RequireRole { .. })
+        matches!(
+            self,
+            RuleDecision::Deny { .. } | RuleDecision::RequireRole { .. }
+        )
     }
 
     /// Resolve `RequireRole` against the actual identity, returning a `Deny` if insufficient.

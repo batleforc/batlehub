@@ -13,8 +13,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use chrono::Utc;
-use redis::AsyncCommands as _;
 use redis::aio::ConnectionManager;
+use redis::AsyncCommands as _;
 
 use batlehub_adapters::cache::RedisCacheStore;
 use batlehub_core::{
@@ -62,7 +62,11 @@ impl TestStore {
             .query_async(&mut self.conn)
             .await
             .unwrap();
-        if ttl >= 0 { Some(ttl) } else { None }
+        if ttl >= 0 {
+            Some(ttl)
+        } else {
+            None
+        }
     }
 
     /// Return `true` if the stale-shadow key exists in Redis.
@@ -81,7 +85,11 @@ async fn make_store(url: &str) -> TestStore {
     let conn = ConnectionManager::new(client)
         .await
         .expect("open Redis connection manager for test manipulation");
-    TestStore { store, conn, prefix }
+    TestStore {
+        store,
+        conn,
+        prefix,
+    }
 }
 
 fn dummy_meta(name: &str) -> PackageMetadata {
@@ -97,7 +105,11 @@ fn dummy_meta(name: &str) -> PackageMetadata {
 }
 
 fn fresh_entry(name: &str) -> CacheEntry {
-    CacheEntry { metadata: dummy_meta(name), cached_at: Utc::now(), expires_at: None }
+    CacheEntry {
+        metadata: dummy_meta(name),
+        cached_at: Utc::now(),
+        expires_at: None,
+    }
 }
 
 // ── CacheStore contract tests (mirror pg_cache.rs) ────────────────────────────
@@ -113,8 +125,16 @@ async fn get_returns_none_for_missing_key() {
 async fn set_and_get_round_trip() {
     let Some(url) = redis_url() else { return };
     let s = make_store(&url).await;
-    s.store.set(&s.key("k1"), fresh_entry("pkg-a"), None).await.unwrap();
-    let got = s.store.get(&s.key("k1")).await.unwrap().expect("entry should be present");
+    s.store
+        .set(&s.key("k1"), fresh_entry("pkg-a"), None)
+        .await
+        .unwrap();
+    let got = s
+        .store
+        .get(&s.key("k1"))
+        .await
+        .unwrap()
+        .expect("entry should be present");
     assert_eq!(got.metadata.id.name, "pkg-a");
     assert!(got.expires_at.is_none());
 }
@@ -123,8 +143,14 @@ async fn set_and_get_round_trip() {
 async fn set_overwrites_existing_entry() {
     let Some(url) = redis_url() else { return };
     let s = make_store(&url).await;
-    s.store.set(&s.key("k1"), fresh_entry("first"), None).await.unwrap();
-    s.store.set(&s.key("k1"), fresh_entry("second"), None).await.unwrap();
+    s.store
+        .set(&s.key("k1"), fresh_entry("first"), None)
+        .await
+        .unwrap();
+    s.store
+        .set(&s.key("k1"), fresh_entry("second"), None)
+        .await
+        .unwrap();
     let got = s.store.get(&s.key("k1")).await.unwrap().unwrap();
     assert_eq!(got.metadata.id.name, "second");
 }
@@ -134,19 +160,32 @@ async fn set_with_ttl_stores_expires_at_in_payload() {
     let Some(url) = redis_url() else { return };
     let s = make_store(&url).await;
     s.store
-        .set(&s.key("k1"), fresh_entry("pkg-ttl"), Some(Duration::from_secs(300)))
+        .set(
+            &s.key("k1"),
+            fresh_entry("pkg-ttl"),
+            Some(Duration::from_secs(300)),
+        )
         .await
         .unwrap();
     let got = s.store.get(&s.key("k1")).await.unwrap().unwrap();
-    assert!(got.expires_at.is_some(), "expires_at should be serialised in the payload");
-    assert!(got.expires_at.unwrap() > Utc::now(), "expires_at should be in the future");
+    assert!(
+        got.expires_at.is_some(),
+        "expires_at should be serialised in the payload"
+    );
+    assert!(
+        got.expires_at.unwrap() > Utc::now(),
+        "expires_at should be in the future"
+    );
 }
 
 #[tokio::test]
 async fn expired_live_key_treated_as_miss_by_get() {
     let Some(url) = redis_url() else { return };
     let mut s = make_store(&url).await;
-    s.store.set(&s.key("k1"), fresh_entry("stale-pkg"), None).await.unwrap();
+    s.store
+        .set(&s.key("k1"), fresh_entry("stale-pkg"), None)
+        .await
+        .unwrap();
     s.expire_live_key("k1").await; // simulate Redis TTL firing
     assert!(
         s.store.get(&s.key("k1")).await.unwrap().is_none(),
@@ -158,7 +197,10 @@ async fn expired_live_key_treated_as_miss_by_get() {
 async fn get_stale_returns_entry_when_live_key_expired() {
     let Some(url) = redis_url() else { return };
     let mut s = make_store(&url).await;
-    s.store.set(&s.key("k1"), fresh_entry("stale"), None).await.unwrap();
+    s.store
+        .set(&s.key("k1"), fresh_entry("stale"), None)
+        .await
+        .unwrap();
     s.expire_live_key("k1").await;
     assert!(
         s.store.get(&s.key("k1")).await.unwrap().is_none(),
@@ -174,14 +216,22 @@ async fn get_stale_returns_entry_when_live_key_expired() {
 async fn get_stale_returns_none_for_missing_key() {
     let Some(url) = redis_url() else { return };
     let s = make_store(&url).await;
-    assert!(s.store.get_stale(&s.key("never-set")).await.unwrap().is_none());
+    assert!(s
+        .store
+        .get_stale(&s.key("never-set"))
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
 async fn get_stale_returns_non_expired_entry() {
     let Some(url) = redis_url() else { return };
     let s = make_store(&url).await;
-    s.store.set(&s.key("k1"), fresh_entry("live"), None).await.unwrap();
+    s.store
+        .set(&s.key("k1"), fresh_entry("live"), None)
+        .await
+        .unwrap();
     assert!(s.store.get_stale(&s.key("k1")).await.unwrap().is_some());
 }
 
@@ -202,7 +252,10 @@ async fn invalidate_removes_stale_shadow_too() {
     let k = s.key("k1");
     s.store.set(&k, fresh_entry("pkg"), None).await.unwrap();
     s.expire_live_key("k1").await; // stale key still exists
-    assert!(s.store.get_stale(&k).await.unwrap().is_some(), "stale shadow should exist before invalidate");
+    assert!(
+        s.store.get_stale(&k).await.unwrap().is_some(),
+        "stale shadow should exist before invalidate"
+    );
     s.store.invalidate(&k).await.unwrap();
     assert!(
         s.store.get_stale(&k).await.unwrap().is_none(),
@@ -223,7 +276,10 @@ async fn invalidate_missing_key_is_ok() {
 async fn set_without_ttl_live_key_has_no_redis_expiry() {
     let Some(url) = redis_url() else { return };
     let mut s = make_store(&url).await;
-    s.store.set(&s.key("k1"), fresh_entry("persistent"), None).await.unwrap();
+    s.store
+        .set(&s.key("k1"), fresh_entry("persistent"), None)
+        .await
+        .unwrap();
     assert!(
         s.live_key_ttl_secs("k1").await.is_none(),
         "live key should have no Redis TTL when set() is called without a TTL"
@@ -235,12 +291,22 @@ async fn set_with_ttl_live_key_has_redis_expiry() {
     let Some(url) = redis_url() else { return };
     let mut s = make_store(&url).await;
     s.store
-        .set(&s.key("k1"), fresh_entry("ephemeral"), Some(Duration::from_secs(120)))
+        .set(
+            &s.key("k1"),
+            fresh_entry("ephemeral"),
+            Some(Duration::from_secs(120)),
+        )
         .await
         .unwrap();
     let ttl = s.live_key_ttl_secs("k1").await;
-    assert!(ttl.is_some(), "live key should carry a Redis TTL when set() is called with a TTL");
-    assert!(ttl.unwrap() <= 120, "TTL should not exceed the requested value");
+    assert!(
+        ttl.is_some(),
+        "live key should carry a Redis TTL when set() is called with a TTL"
+    );
+    assert!(
+        ttl.unwrap() <= 120,
+        "TTL should not exceed the requested value"
+    );
     assert!(ttl.unwrap() > 0, "TTL should be positive");
 }
 
@@ -250,7 +316,11 @@ async fn stale_key_always_has_no_redis_expiry() {
     let mut s = make_store(&url).await;
     // Even when set() receives a TTL, the stale shadow must have no Redis TTL.
     s.store
-        .set(&s.key("k1"), fresh_entry("pkg"), Some(Duration::from_secs(60)))
+        .set(
+            &s.key("k1"),
+            fresh_entry("pkg"),
+            Some(Duration::from_secs(60)),
+        )
         .await
         .unwrap();
     let stale_key = format!("batlehub:cache:{}:stale", s.key("k1"));
@@ -268,7 +338,11 @@ async fn redis_native_ttl_evicts_live_key_but_stale_persists() {
     let s = make_store(&url).await;
     // Use a real 1-second TTL so Redis itself evicts the live key.
     s.store
-        .set(&s.key("k1"), fresh_entry("short-lived"), Some(Duration::from_secs(1)))
+        .set(
+            &s.key("k1"),
+            fresh_entry("short-lived"),
+            Some(Duration::from_secs(1)),
+        )
         .await
         .unwrap();
     assert!(
@@ -293,12 +367,19 @@ async fn invalidate_after_ttl_expiry_removes_stale_shadow() {
     let Some(url) = redis_url() else { return };
     let s = make_store(&url).await;
     s.store
-        .set(&s.key("k1"), fresh_entry("pkg"), Some(Duration::from_secs(1)))
+        .set(
+            &s.key("k1"),
+            fresh_entry("pkg"),
+            Some(Duration::from_secs(1)),
+        )
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(1200)).await;
 
-    assert!(s.store.get(&s.key("k1")).await.unwrap().is_none(), "live key should have expired");
+    assert!(
+        s.store.get(&s.key("k1")).await.unwrap().is_none(),
+        "live key should have expired"
+    );
     s.store.invalidate(&s.key("k1")).await.unwrap();
     assert!(
         s.store.get_stale(&s.key("k1")).await.unwrap().is_none(),
@@ -310,21 +391,42 @@ async fn invalidate_after_ttl_expiry_removes_stale_shadow() {
 async fn stale_shadow_exists_independently_of_live_key() {
     let Some(url) = redis_url() else { return };
     let mut s = make_store(&url).await;
-    s.store.set(&s.key("k1"), fresh_entry("pkg"), None).await.unwrap();
-    assert!(s.stale_key_exists("k1").await, "stale shadow should be created on set");
+    s.store
+        .set(&s.key("k1"), fresh_entry("pkg"), None)
+        .await
+        .unwrap();
+    assert!(
+        s.stale_key_exists("k1").await,
+        "stale shadow should be created on set"
+    );
     s.expire_live_key("k1").await;
-    assert!(s.stale_key_exists("k1").await, "stale shadow should survive live key deletion");
+    assert!(
+        s.stale_key_exists("k1").await,
+        "stale shadow should survive live key deletion"
+    );
     s.store.invalidate(&s.key("k1")).await.unwrap();
-    assert!(!s.stale_key_exists("k1").await, "stale shadow should be gone after invalidate");
+    assert!(
+        !s.stale_key_exists("k1").await,
+        "stale shadow should be gone after invalidate"
+    );
 }
 
 #[tokio::test]
 async fn set_updates_stale_shadow_on_overwrite() {
     let Some(url) = redis_url() else { return };
     let s = make_store(&url).await;
-    s.store.set(&s.key("k1"), fresh_entry("v1"), None).await.unwrap();
-    s.store.set(&s.key("k1"), fresh_entry("v2"), None).await.unwrap();
+    s.store
+        .set(&s.key("k1"), fresh_entry("v1"), None)
+        .await
+        .unwrap();
+    s.store
+        .set(&s.key("k1"), fresh_entry("v2"), None)
+        .await
+        .unwrap();
     // After overwrite the stale shadow must hold the latest value.
     let stale = s.store.get_stale(&s.key("k1")).await.unwrap().unwrap();
-    assert_eq!(stale.metadata.id.name, "v2", "stale shadow must reflect the latest set() call");
+    assert_eq!(
+        stale.metadata.id.name, "v2",
+        "stale shadow must reflect the latest set() call"
+    );
 }

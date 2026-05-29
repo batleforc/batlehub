@@ -1,10 +1,13 @@
 use std::sync::Arc;
 
-use actix_web::{HttpResponse, Responder, get, put, web};
+use actix_web::{get, put, web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use batlehub_core::{entities::{Role, Visibility}, ports::TeamNamespacePort};
+use batlehub_core::{
+    entities::{Role, Visibility},
+    ports::TeamNamespacePort,
+};
 
 use crate::{error::AppError, extractors::AuthIdentity};
 
@@ -32,8 +35,19 @@ async fn require_admin_or_namespace_member(
     if !identity.has_role_at_least(&Role::User) {
         return Err(AppError::forbidden("authentication required"));
     }
-    match store.find_namespace(registry, package).await.map_err(AppError::from)? {
-        Some(ns) if identity.groups.iter().any(|g| g.replace(' ', "") == ns.group_id.replace(' ', "")) => Ok(()),
+    match store
+        .find_namespace(registry, package)
+        .await
+        .map_err(AppError::from)?
+    {
+        Some(ns)
+            if identity
+                .groups
+                .iter()
+                .any(|g| g.replace(' ', "") == ns.group_id.replace(' ', "")) =>
+        {
+            Ok(())
+        }
         Some(ns) => Err(AppError::forbidden(format!(
             "package namespace '{}' is owned by group '{}'; you are not a member",
             ns.prefix, ns.group_id
@@ -72,7 +86,9 @@ pub async fn get_package_visibility(
         .get_visibility(&registry, &name)
         .await
         .map_err(AppError::from)?;
-    Ok(HttpResponse::Ok().json(VisibilityResponse { visibility: vis.to_string() }))
+    Ok(HttpResponse::Ok().json(VisibilityResponse {
+        visibility: vis.to_string(),
+    }))
 }
 
 /// Set the visibility of a package (all versions simultaneously).

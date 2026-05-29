@@ -1,4 +1,4 @@
-use actix_web::{HttpResponse, Responder, get, post, web};
+use actix_web::{get, post, web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -26,12 +26,12 @@ pub struct OidcProviderInfo {
     ),
 )]
 #[get("/api/v1/auth/oidc/providers")]
-pub async fn list_oidc_providers(
-    flows: web::Data<Vec<OidcSsoFlow>>,
-) -> impl Responder {
+pub async fn list_oidc_providers(flows: web::Data<Vec<OidcSsoFlow>>) -> impl Responder {
     let providers: Vec<OidcProviderInfo> = flows
         .iter()
-        .map(|sso| OidcProviderInfo { name: sso.name.clone() })
+        .map(|sso| OidcProviderInfo {
+            name: sso.name.clone(),
+        })
         .collect();
     HttpResponse::Ok().json(providers)
 }
@@ -150,14 +150,18 @@ pub async fn oidc_callback(
 
     let code = match query.code.as_deref() {
         Some(c) => c.to_owned(),
-        None => return spa_error_redirect(&fallback_base, "Authorization code missing from callback."),
+        None => {
+            return spa_error_redirect(&fallback_base, "Authorization code missing from callback.")
+        }
     };
 
     // The state is encoded as "<provider>:<user-csrf>" by oidc_login.
     let raw_state = query.state.as_deref().unwrap_or("");
     let (provider_name, user_state) = split_combined_state(raw_state);
 
-    let sso = flows.iter().find(|f| f.name == provider_name)
+    let sso = flows
+        .iter()
+        .find(|f| f.name == provider_name)
         .or_else(|| flows.first());
 
     let Some(sso) = sso else {
@@ -259,8 +263,7 @@ pub async fn oidc_refresh(
         }),
         Err(e) => {
             tracing::warn!(error = %e, "OIDC token refresh failed");
-            HttpResponse::BadRequest()
-                .json(serde_json::json!({ "error": e.to_string() }))
+            HttpResponse::BadRequest().json(serde_json::json!({ "error": e.to_string() }))
         }
     }
 }
@@ -269,7 +272,10 @@ pub async fn oidc_refresh(
 
 fn spa_error_redirect(base: &str, msg: &str) -> HttpResponse {
     HttpResponse::Found()
-        .insert_header(("Location", format!("{base}/?oidc_error={}", url_encode(msg))))
+        .insert_header((
+            "Location",
+            format!("{base}/?oidc_error={}", url_encode(msg)),
+        ))
         .finish()
 }
 

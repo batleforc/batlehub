@@ -31,7 +31,11 @@ impl OpenVsxRegistryClient {
             .user_agent("batlehub/0.1")
             .redirect(reqwest::redirect::Policy::limited(10));
         let http = apply_upstream_options(builder, opts)?;
-        Ok(Self { http, base_url: base_url.into(), basic_auth: opts.basic_auth.clone() })
+        Ok(Self {
+            http,
+            base_url: base_url.into(),
+            basic_auth: opts.basic_auth.clone(),
+        })
     }
 
     fn get(&self, url: &str) -> reqwest::RequestBuilder {
@@ -43,10 +47,11 @@ impl OpenVsxRegistryClient {
     }
 
     fn parse_id(name: &str) -> Result<(&str, &str), CoreError> {
-        name.split_once('.')
-            .ok_or_else(|| CoreError::Registry(format!(
+        name.split_once('.').ok_or_else(|| {
+            CoreError::Registry(format!(
                 "invalid OpenVSX extension id '{name}': expected '{{publisher}}.{{name}}'"
-            )))
+            ))
+        })
     }
 }
 
@@ -89,9 +94,12 @@ impl RegistryClient for OpenVsxRegistryClient {
 
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
         let (publisher, ext_name) = Self::parse_id(&pkg.name)?;
-        let ext = self.fetch_extension(publisher, ext_name, &pkg.version).await?;
+        let ext = self
+            .fetch_extension(publisher, ext_name, &pkg.version)
+            .await?;
 
-        let published_at = ext.timestamp
+        let published_at = ext
+            .timestamp
             .as_deref()
             .and_then(|ts| DateTime::parse_from_rfc3339(ts).ok())
             .map(|dt| dt.with_timezone(&chrono::Utc));
@@ -140,7 +148,9 @@ impl RegistryClient for OpenVsxRegistryClient {
 
     async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
         let (publisher, ext_name) = Self::parse_id(&pkg.name)?;
-        let ext = self.fetch_extension(publisher, ext_name, &pkg.version).await?;
+        let ext = self
+            .fetch_extension(publisher, ext_name, &pkg.version)
+            .await?;
 
         let download_url = ext.files.download.ok_or_else(|| {
             CoreError::NotFound(format!(
@@ -169,7 +179,10 @@ impl RegistryClient for OpenVsxRegistryClient {
             .bytes_stream()
             .map_err(|e| CoreError::Registry(e.to_string()));
 
-        Ok(FetchedArtifact { stream: Box::pin(stream), cache_control })
+        Ok(FetchedArtifact {
+            stream: Box::pin(stream),
+            cache_control,
+        })
     }
 }
 
@@ -218,8 +231,7 @@ mod tests {
         PackageId::new("openvsx", name, version)
     }
 
-    const EXT_BODY: &str =
-        r#"{"namespace":"ms-python","name":"python","version":"2023.20.0"}"#;
+    const EXT_BODY: &str = r#"{"namespace":"ms-python","name":"python","version":"2023.20.0"}"#;
 
     // ── parse_id ──────────────────────────────────────────────────────────────
 
@@ -258,7 +270,10 @@ mod tests {
             .await;
 
         let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let meta = client.resolve_metadata(&pkg("ms-python.python", "latest")).await.unwrap();
+        let meta = client
+            .resolve_metadata(&pkg("ms-python.python", "latest"))
+            .await
+            .unwrap();
 
         assert_eq!(meta.id.version, "2023.20.0");
     }
@@ -275,8 +290,10 @@ mod tests {
             .await;
 
         let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let meta =
-            client.resolve_metadata(&pkg("ms-python.python", "2023.20.0")).await.unwrap();
+        let meta = client
+            .resolve_metadata(&pkg("ms-python.python", "2023.20.0"))
+            .await
+            .unwrap();
 
         assert_eq!(meta.id.version, "2023.20.0");
     }
@@ -294,8 +311,10 @@ mod tests {
             .await;
 
         let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let meta =
-            client.resolve_metadata(&pkg("ms-python.python", "2023.20.0")).await.unwrap();
+        let meta = client
+            .resolve_metadata(&pkg("ms-python.python", "2023.20.0"))
+            .await
+            .unwrap();
 
         assert!(meta.download_url.is_none());
     }
@@ -316,7 +335,10 @@ mod tests {
         let p = pkg("ms-python.python", "2023.20.0").with_artifact("vsix");
         let meta = client.resolve_metadata(&p).await.unwrap();
 
-        assert_eq!(meta.download_url.as_deref(), Some("http://example.com/ext.vsix"));
+        assert_eq!(
+            meta.download_url.as_deref(),
+            Some("http://example.com/ext.vsix")
+        );
     }
 
     #[tokio::test]
@@ -332,8 +354,10 @@ mod tests {
             .await;
 
         let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let meta =
-            client.resolve_metadata(&pkg("ms-python.python", "2023.20.0")).await.unwrap();
+        let meta = client
+            .resolve_metadata(&pkg("ms-python.python", "2023.20.0"))
+            .await
+            .unwrap();
 
         assert_eq!(meta.is_signed, Some(true));
     }
@@ -350,8 +374,10 @@ mod tests {
             .await;
 
         let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let meta =
-            client.resolve_metadata(&pkg("ms-python.python", "2023.20.0")).await.unwrap();
+        let meta = client
+            .resolve_metadata(&pkg("ms-python.python", "2023.20.0"))
+            .await
+            .unwrap();
 
         assert_eq!(meta.is_signed, Some(false));
     }
@@ -369,8 +395,10 @@ mod tests {
             .await;
 
         let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let meta =
-            client.resolve_metadata(&pkg("ms-python.python", "2023.20.0")).await.unwrap();
+        let meta = client
+            .resolve_metadata(&pkg("ms-python.python", "2023.20.0"))
+            .await
+            .unwrap();
 
         assert!(meta.published_at.is_some());
     }
@@ -385,7 +413,9 @@ mod tests {
             .await;
 
         let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let result = client.resolve_metadata(&pkg("ms-python.python", "9.9.9")).await;
+        let result = client
+            .resolve_metadata(&pkg("ms-python.python", "9.9.9"))
+            .await;
 
         assert!(matches!(result, Err(CoreError::NotFound(_))));
     }
@@ -417,8 +447,10 @@ mod tests {
             .await;
 
         let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let fetched =
-            client.fetch_artifact(&pkg("ms-python.python", "2023.20.0")).await.unwrap();
+        let fetched = client
+            .fetch_artifact(&pkg("ms-python.python", "2023.20.0"))
+            .await
+            .unwrap();
         let chunks: Vec<bytes::Bytes> = fetched.stream.try_collect().await.unwrap();
         let content: Vec<u8> = chunks.into_iter().flat_map(|b| b.to_vec()).collect();
         assert_eq!(content, b"fake vsix content");
@@ -436,7 +468,9 @@ mod tests {
             .await;
 
         let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let result = client.fetch_artifact(&pkg("ms-python.python", "2023.20.0")).await;
+        let result = client
+            .fetch_artifact(&pkg("ms-python.python", "2023.20.0"))
+            .await;
 
         assert!(matches!(result, Err(CoreError::NotFound(_))));
     }
@@ -451,7 +485,9 @@ mod tests {
             .await;
 
         let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let result = client.fetch_artifact(&pkg("ms-python.python", "9.9.9")).await;
+        let result = client
+            .fetch_artifact(&pkg("ms-python.python", "9.9.9"))
+            .await;
 
         assert!(matches!(result, Err(CoreError::NotFound(_))));
     }
@@ -466,7 +502,9 @@ mod tests {
             .await;
 
         let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let result = client.fetch_artifact(&pkg("ms-python.python", "2023.20.0")).await;
+        let result = client
+            .fetch_artifact(&pkg("ms-python.python", "2023.20.0"))
+            .await;
 
         assert!(matches!(result, Err(CoreError::Registry(_))));
     }
@@ -544,7 +582,9 @@ mod tests {
             .await;
 
         let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let result = client.fetch_artifact(&pkg("ms-python.python", "2023.20.0")).await;
+        let result = client
+            .fetch_artifact(&pkg("ms-python.python", "2023.20.0"))
+            .await;
 
         assert!(matches!(result, Err(CoreError::Registry(_))));
     }

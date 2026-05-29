@@ -1,8 +1,8 @@
 //! Redis-backed IP block store (requires the `cache-redis` feature).
 
 use async_trait::async_trait;
-use redis::AsyncCommands;
 use redis::aio::ConnectionManager;
+use redis::AsyncCommands;
 
 use batlehub_core::error::CoreError;
 use batlehub_core::ports::{BlockedIpInfo, IpBlockStore};
@@ -22,9 +22,9 @@ impl RedisIpBlockStore {
     pub async fn new(url: &str) -> Result<Self, CoreError> {
         let client = redis::Client::open(url)
             .map_err(|e| CoreError::Cache(format!("invalid Redis URL for IP block store: {e}")))?;
-        let conn = ConnectionManager::new(client)
-            .await
-            .map_err(|e| CoreError::Cache(format!("Redis IP block store connection failed: {e}")))?;
+        let conn = ConnectionManager::new(client).await.map_err(|e| {
+            CoreError::Cache(format!("Redis IP block store connection failed: {e}"))
+        })?;
         Ok(Self { conn })
     }
 
@@ -39,11 +39,7 @@ impl RedisIpBlockStore {
 
 #[async_trait]
 impl IpBlockStore for RedisIpBlockStore {
-    async fn record_violation(
-        &self,
-        ip: &str,
-        window_secs: u32,
-    ) -> Result<(u64, u64), CoreError> {
+    async fn record_violation(&self, ip: &str, window_secs: u32) -> Result<(u64, u64), CoreError> {
         if window_secs == 0 {
             return Err(CoreError::Cache("window_secs must be > 0".into()));
         }
@@ -63,10 +59,7 @@ impl IpBlockStore for RedisIpBlockStore {
         // Set TTL on the first write. Logged but not fatal: a missed EXPIRE means
         // the key won't auto-delete, but it will be ignored once the window changes.
         if count == 1 {
-            if let Err(e) = conn
-                .expire::<_, ()>(&key, (window_secs + 1) as i64)
-                .await
-            {
+            if let Err(e) = conn.expire::<_, ()>(&key, (window_secs + 1) as i64).await {
                 tracing::warn!(error = %e, %key, "failed to set TTL on violation counter; key may not expire");
             }
         }
@@ -87,12 +80,13 @@ impl IpBlockStore for RedisIpBlockStore {
         // Format: "{blocked_at}:{unblock_at}:{reason}"
         let mut parts = s.splitn(3, ':');
         let _blocked_at = parts.next();
-        let unblock_at: u64 = parts
-            .next()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
+        let unblock_at: u64 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
         let now = now_unix();
-        if unblock_at > now { Ok(Some(unblock_at)) } else { Ok(None) }
+        if unblock_at > now {
+            Ok(Some(unblock_at))
+        } else {
+            Ok(None)
+        }
     }
 
     async fn block_ip(&self, ip: &str, unblock_at: u64, reason: &str) -> Result<(), CoreError> {
@@ -167,7 +161,12 @@ impl IpBlockStore for RedisIpBlockStore {
                     .strip_prefix("batlehub:ipblock:")
                     .unwrap_or(&key)
                     .to_owned();
-                Some(BlockedIpInfo { ip, blocked_at, unblock_at, reason })
+                Some(BlockedIpInfo {
+                    ip,
+                    blocked_at,
+                    unblock_at,
+                    reason,
+                })
             })
             .collect();
         Ok(result)

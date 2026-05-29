@@ -3,8 +3,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use actix_web::{
+    dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
     Error, HttpMessage,
-    dev::{Service, ServiceRequest, ServiceResponse, Transform, forward_ready},
 };
 use futures::future::LocalBoxFuture;
 

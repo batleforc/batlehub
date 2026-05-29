@@ -65,11 +65,26 @@ mod access_config_tests {
     fn make_config() -> AccessConfig {
         AccessConfig {
             anonymous: ["public"].iter().map(|s| s.to_string()).collect(),
-            user: ["public", "user-only"].iter().map(|s| s.to_string()).collect(),
-            admin: ["public", "user-only", "admin-only"].iter().map(|s| s.to_string()).collect(),
+            user: ["public", "user-only"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            admin: ["public", "user-only", "admin-only"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             groups: [
-                ("team-a".to_owned(), ["group-a-reg"].iter().map(|s| s.to_string()).collect()),
-                ("team-b".to_owned(), ["group-b-reg", "public"].iter().map(|s| s.to_string()).collect()),
+                (
+                    "team-a".to_owned(),
+                    ["group-a-reg"].iter().map(|s| s.to_string()).collect(),
+                ),
+                (
+                    "team-b".to_owned(),
+                    ["group-b-reg", "public"]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                ),
             ]
             .into_iter()
             .collect(),
@@ -101,9 +116,18 @@ mod access_config_tests {
         let cfg = make_config();
         let id = identity(Role::Anonymous, vec!["team-a"]);
         let accessible = cfg.accessible_registries_for(&id);
-        assert!(accessible.contains("group-a-reg"), "team-a should see group-a-reg");
-        assert!(accessible.contains("public"), "anonymous role still applies");
-        assert!(!accessible.contains("group-b-reg"), "team-a should not see group-b-reg");
+        assert!(
+            accessible.contains("group-a-reg"),
+            "team-a should see group-a-reg"
+        );
+        assert!(
+            accessible.contains("public"),
+            "anonymous role still applies"
+        );
+        assert!(
+            !accessible.contains("group-b-reg"),
+            "team-a should not see group-b-reg"
+        );
     }
 
     #[test]
@@ -123,9 +147,12 @@ mod access_config_tests {
             anonymous: [].iter().cloned().collect(),
             user: [].iter().cloned().collect(),
             admin: [].iter().cloned().collect(),
-            groups: [("team-a".to_owned(), ["group-a-reg".to_string()].into_iter().collect())]
-                .into_iter()
-                .collect(),
+            groups: [(
+                "team-a".to_owned(),
+                ["group-a-reg".to_string()].into_iter().collect(),
+            )]
+            .into_iter()
+            .collect(),
         };
         let id = identity(Role::Anonymous, vec!["team-a"]);
         assert!(anon_cfg.has_registry_access(&id));
@@ -158,9 +185,15 @@ mod access_config_tests {
             admin: ["all-reg".to_owned()].into_iter().collect(),
             groups: [
                 // Wildcard: any provider's "team-a" gets "shared-reg"
-                ("*:team-a".to_owned(), ["shared-reg".to_owned()].into_iter().collect()),
+                (
+                    "*:team-a".to_owned(),
+                    ["shared-reg".to_owned()].into_iter().collect(),
+                ),
                 // Exact: only oidc2's "team-b" gets "oidc2-reg"
-                ("oidc2:team-b".to_owned(), ["oidc2-reg".to_owned()].into_iter().collect()),
+                (
+                    "oidc2:team-b".to_owned(),
+                    ["oidc2-reg".to_owned()].into_iter().collect(),
+                ),
             ]
             .into_iter()
             .collect(),
@@ -185,7 +218,10 @@ mod access_config_tests {
         let cfg = make_wildcard_config();
         let id = identity(Role::Anonymous, vec!["oidc1:team-b"]);
         let accessible = cfg.accessible_registries_for(&id);
-        assert!(!accessible.contains("oidc2-reg"), "oidc1:team-b should not match oidc2:team-b");
+        assert!(
+            !accessible.contains("oidc2-reg"),
+            "oidc1:team-b should not match oidc2:team-b"
+        );
     }
 
     #[test]
@@ -201,7 +237,10 @@ mod access_config_tests {
         let cfg = make_wildcard_config();
         let id = identity(Role::Anonymous, vec!["raw-group"]);
         let accessible = cfg.accessible_registries_for(&id);
-        assert!(!accessible.contains("shared-reg"), "bare group name should not match wildcards");
+        assert!(
+            !accessible.contains("shared-reg"),
+            "bare group name should not match wildcards"
+        );
     }
 
     #[test]
@@ -209,8 +248,14 @@ mod access_config_tests {
         let cfg = make_wildcard_config();
         let id = identity(Role::Anonymous, vec!["oidc1:team-a", "oidc2:team-b"]);
         let accessible = cfg.accessible_registries_for(&id);
-        assert!(accessible.contains("shared-reg"), "wildcard match for oidc1:team-a");
-        assert!(accessible.contains("oidc2-reg"), "exact match for oidc2:team-b");
+        assert!(
+            accessible.contains("shared-reg"),
+            "wildcard match for oidc1:team-a"
+        );
+        assert!(
+            accessible.contains("oidc2-reg"),
+            "exact match for oidc2:team-b"
+        );
     }
 }
 
@@ -258,9 +303,9 @@ impl RegistryMap {
 
 use actix_web::web;
 use handlers::back_office::warming::WarmingServiceMap;
-use utoipa::OpenApi;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
-use utoipa_actix_web::{AppExt, service_config::ServiceConfig as UtoipaServiceConfig};
+use utoipa::OpenApi;
+use utoipa_actix_web::{service_config::ServiceConfig as UtoipaServiceConfig, AppExt};
 use utoipa_swagger_ui::SwaggerUi;
 
 use sqlx::PgPool;
@@ -327,10 +372,18 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             health::{clear_registry_cache, registry_health},
             ip_blocks::{block_ip, list_blocked_ips, unblock_ip},
             ownership::{add_package_owner, list_package_owners, remove_package_owner},
-            packages::{block_package, bulk_block_packages, bulk_unblock_packages, invalidate_package, list_packages as admin_list_packages, package_detail, unblock_package},
-            quota::{get_quota_for_user, list_quota, list_quota_for_registry, reset_quota_for_user},
+            packages::{
+                block_package, bulk_block_packages, bulk_unblock_packages, invalidate_package,
+                list_packages as admin_list_packages, package_detail, unblock_package,
+            },
+            quota::{
+                get_quota_for_user, list_quota, list_quota_for_registry, reset_quota_for_user,
+            },
             stats::admin_stats,
-            team_namespaces::{claim_namespace, list_namespaces, my_namespace_packages, my_namespaces, release_namespace},
+            team_namespaces::{
+                claim_namespace, list_namespaces, my_namespace_packages, my_namespaces,
+                release_namespace,
+            },
             visibility::{get_package_visibility, set_package_visibility},
             warming::warm_registry,
         },
@@ -340,6 +393,10 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             registries::list_registries,
         },
         proxy::{
+            cargo::{
+                cargo_owners, cargo_publish, cargo_registry_config, cargo_registry_index,
+                cargo_unyank, cargo_yank, download_crate,
+            },
             // Register most-specific patterns first so actix-web resolves correctly:
             // cargo api/v1 (literal "api" segment) > cargo index (literal "registry" segment) >
             // github (owner/repo/verb) > cargo download (literal "download") >
@@ -348,27 +405,29 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             // npm tarball (literal "tarball") > shared version metadata > shared packument
             // composer: upload/yank (literal "api") > p2 (literal "p2") > dist > packages.json
             composer::{
-                composer_dist, composer_packages_json, composer_p2_metadata,
-                composer_upload, composer_yank,
+                composer_dist, composer_p2_metadata, composer_packages_json, composer_upload,
+                composer_yank,
             },
-            cargo::{
-                cargo_owners, cargo_publish, cargo_registry_config, cargo_registry_index,
-                cargo_unyank, cargo_yank, download_crate,
+            github::{
+                download_asset, download_asset_by_name, download_raw, download_tarball,
+                download_zipball, get_release, list_releases,
             },
-            github::{download_asset, download_asset_by_name, download_raw, download_tarball, download_zipball, get_release, list_releases},
-            npm::{audit_quick, download_tarball as npm_download_tarball, get_packument, get_version, npm_publish},
-            openvsx::{download_vsix, vsix_publish},
             goproxy::{goproxy_file, goproxy_latest, goproxy_list, goproxy_publish},
             maven::{maven_get, maven_put},
+            npm::{
+                audit_quick, download_tarball as npm_download_tarball, get_packument, get_version,
+                npm_publish,
+            },
+            openvsx::{download_vsix, vsix_publish},
             rubygems::{
-                gem_download, gem_gemspec, gem_info, gem_publish, gem_specs_full,
-                gem_specs_latest, gem_specs_prerelease, gem_unyank, gem_versions, gem_yank,
+                gem_download, gem_gemspec, gem_info, gem_publish, gem_specs_full, gem_specs_latest,
+                gem_specs_prerelease, gem_unyank, gem_versions, gem_yank,
             },
             terraform::{
-                tf_module_artifact, tf_module_download, tf_module_upload, tf_module_unyank,
-                tf_module_versions, tf_module_yank,
-                tf_provider_artifact, tf_provider_binary_upload, tf_provider_download,
-                tf_provider_unyank, tf_provider_upload, tf_provider_versions, tf_provider_yank,
+                tf_module_artifact, tf_module_download, tf_module_unyank, tf_module_upload,
+                tf_module_versions, tf_module_yank, tf_provider_artifact,
+                tf_provider_binary_upload, tf_provider_download, tf_provider_unyank,
+                tf_provider_upload, tf_provider_versions, tf_provider_yank,
             },
         },
     };
@@ -408,21 +467,21 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(maven_put);
     cfg.service(maven_get);
     // Terraform modules — longer paths first (unyank > yank > artifact > upload > download > versions)
-    cfg.service(tf_module_unyank);          // POST …/versions/{ver}/unyank
-    cfg.service(tf_module_yank);            // DELETE …/versions/{ver}
-    cfg.service(tf_module_artifact);        // GET …/{ver}/artifact
-    cfg.service(tf_module_upload);          // POST …/{ver}
-    cfg.service(tf_module_download);        // GET …/{ver}/download
-    cfg.service(tf_module_versions);        // GET …/versions
-    // Terraform providers — binary PUT/GET before download, unyank/yank before upload/versions
-    cfg.service(tf_provider_unyank);        // POST …/versions/{ver}/unyank
-    cfg.service(tf_provider_yank);          // DELETE …/versions/{ver}
+    cfg.service(tf_module_unyank); // POST …/versions/{ver}/unyank
+    cfg.service(tf_module_yank); // DELETE …/versions/{ver}
+    cfg.service(tf_module_artifact); // GET …/{ver}/artifact
+    cfg.service(tf_module_upload); // POST …/{ver}
+    cfg.service(tf_module_download); // GET …/{ver}/download
+    cfg.service(tf_module_versions); // GET …/versions
+                                     // Terraform providers — binary PUT/GET before download, unyank/yank before upload/versions
+    cfg.service(tf_provider_unyank); // POST …/versions/{ver}/unyank
+    cfg.service(tf_provider_yank); // DELETE …/versions/{ver}
     cfg.service(tf_provider_binary_upload); // PUT …/{ver}/artifact/{os}/{arch}
-    cfg.service(tf_provider_artifact);      // GET …/{ver}/artifact/{os}/{arch}
-    cfg.service(tf_provider_download);      // GET …/{ver}/download/{os}/{arch}
-    cfg.service(tf_provider_upload);        // POST …/versions (write)
-    cfg.service(tf_provider_versions);      // GET …/versions
-    // RubyGems — yank/unyank/publish before download (same /api/v1/gems prefix, different methods)
+    cfg.service(tf_provider_artifact); // GET …/{ver}/artifact/{os}/{arch}
+    cfg.service(tf_provider_download); // GET …/{ver}/download/{os}/{arch}
+    cfg.service(tf_provider_upload); // POST …/versions (write)
+    cfg.service(tf_provider_versions); // GET …/versions
+                                       // RubyGems — yank/unyank/publish before download (same /api/v1/gems prefix, different methods)
     cfg.service(gem_yank);
     cfg.service(gem_unyank);
     cfg.service(gem_publish);
@@ -435,12 +494,12 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(gem_specs_latest);
     cfg.service(gem_specs_prerelease);
     // Composer: literal "api" routes before "p2" before "dist" before "packages.json"
-    cfg.service(composer_upload);         // POST …/api/upload
-    cfg.service(composer_yank);           // DELETE …/api/packages/{vendor}/{package}/versions/{version}
-    cfg.service(composer_p2_metadata);    // GET …/p2/{path:.*}
-    cfg.service(composer_dist);           // GET …/dist/{vendor}/{package}/{version}
-    cfg.service(composer_packages_json);  // GET …/packages.json
-    // OpenVSX/VSCode VSIX publish (PUT) and download (GET) — same path, different method
+    cfg.service(composer_upload); // POST …/api/upload
+    cfg.service(composer_yank); // DELETE …/api/packages/{vendor}/{package}/versions/{version}
+    cfg.service(composer_p2_metadata); // GET …/p2/{path:.*}
+    cfg.service(composer_dist); // GET …/dist/{vendor}/{package}/{version}
+    cfg.service(composer_packages_json); // GET …/packages.json
+                                         // OpenVSX/VSCode VSIX publish (PUT) and download (GET) — same path, different method
     cfg.service(vsix_publish);
     cfg.service(download_vsix);
     // npm audit pass-through (literal "/-/npm/v1/audit/quick" path)
@@ -484,10 +543,10 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(list_namespaces);
     cfg.service(claim_namespace);
     cfg.service(release_namespace); // wildcard {prefix:.*}
-    // Team namespace user-facing
+                                    // Team namespace user-facing
     cfg.service(my_namespaces);
     cfg.service(my_namespace_packages); // wildcard {prefix:.*}
-    // Bulk operations admin
+                                        // Bulk operations admin
     cfg.service(bulk_yank_handler);
     cfg.service(bulk_unyank);
     cfg.service(bulk_delete);

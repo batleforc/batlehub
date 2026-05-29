@@ -30,7 +30,6 @@
 /// # All tests (includes maven, which downloads artifacts on first run):
 /// cargo test -p batlehub-examples --test smoke
 /// ```
-
 use std::{
     fs,
     io::{Read, Write},
@@ -92,7 +91,11 @@ impl MockProxy {
     }
 
     fn was_requested(&self, path_fragment: &str) -> bool {
-        self.log.lock().unwrap().iter().any(|p| p.contains(path_fragment))
+        self.log
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|p| p.contains(path_fragment))
     }
 
     fn all_requests(&self) -> Vec<String> {
@@ -150,7 +153,9 @@ fn curl_body(url: &str) -> Option<String> {
         .args(["-fsSL", "--max-time", "15", url])
         .output()
         .ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 fn curl_with_headers(url: &str) -> Option<String> {
@@ -158,7 +163,9 @@ fn curl_with_headers(url: &str) -> Option<String> {
         .args(["-fsSL", "--max-time", "15", "-D", "-", url])
         .output()
         .ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 fn kill_wait(mut child: Child) {
@@ -311,18 +318,54 @@ fn proxy_curl_endpoints() {
     }
 
     let cases = [
-        Case { name: "npm",                path: "/proxy/my-npm/" },
-        Case { name: "cargo",              path: "/proxy/my-cargo/" },
-        Case { name: "go",                 path: "/proxy/my-go/" },
-        Case { name: "pypi",               path: "/proxy/my-pypi/simple/" },
-        Case { name: "rubygems",           path: "/proxy/my-gems/" },
-        Case { name: "composer",           path: "/proxy/my-composer/" },
-        Case { name: "maven",              path: "/proxy/my-maven/maven2/" },
-        Case { name: "maven-quarkus",      path: "/proxy/my-maven/maven2/" },
-        Case { name: "terraform",          path: "/proxy/my-terraform/" },
-        Case { name: "github",             path: "/proxy/my-github/" },
-        Case { name: "openvsx",            path: "/proxy/my-openvsx/" },
-        Case { name: "vscode-marketplace", path: "/proxy/my-vscode-marketplace/" },
+        Case {
+            name: "npm",
+            path: "/proxy/my-npm/",
+        },
+        Case {
+            name: "cargo",
+            path: "/proxy/my-cargo/",
+        },
+        Case {
+            name: "go",
+            path: "/proxy/my-go/",
+        },
+        Case {
+            name: "pypi",
+            path: "/proxy/my-pypi/simple/",
+        },
+        Case {
+            name: "rubygems",
+            path: "/proxy/my-gems/",
+        },
+        Case {
+            name: "composer",
+            path: "/proxy/my-composer/",
+        },
+        Case {
+            name: "maven",
+            path: "/proxy/my-maven/maven2/",
+        },
+        Case {
+            name: "maven-quarkus",
+            path: "/proxy/my-maven/maven2/",
+        },
+        Case {
+            name: "terraform",
+            path: "/proxy/my-terraform/",
+        },
+        Case {
+            name: "github",
+            path: "/proxy/my-github/",
+        },
+        Case {
+            name: "openvsx",
+            path: "/proxy/my-openvsx/",
+        },
+        Case {
+            name: "vscode-marketplace",
+            path: "/proxy/my-vscode-marketplace/",
+        },
     ];
 
     let mut failures = Vec::new();
@@ -340,7 +383,9 @@ fn proxy_curl_endpoints() {
                 if !mp.was_requested(c.path.trim_end_matches('/')) {
                     failures.push(format!(
                         "[{}] mock proxy did not log request at '{}'; logged: {:?}",
-                        c.name, c.path, mp.all_requests()
+                        c.name,
+                        c.path,
+                        mp.all_requests()
                     ));
                 }
             }
@@ -361,8 +406,14 @@ fn vsix_downloads_via_proxy() {
     let mp = MockProxy::start();
 
     let cases = [
-        ("openvsx",            "/proxy/my-openvsx/rust-lang.rust-analyzer/0.3.1920/vsix"),
-        ("vscode-marketplace", "/proxy/my-vscode-marketplace/ms-python.python/2024.2.1/vsix"),
+        (
+            "openvsx",
+            "/proxy/my-openvsx/rust-lang.rust-analyzer/0.3.1920/vsix",
+        ),
+        (
+            "vscode-marketplace",
+            "/proxy/my-vscode-marketplace/ms-python.python/2024.2.1/vsix",
+        ),
     ];
 
     let mut failures = Vec::new();
@@ -384,7 +435,11 @@ fn vsix_downloads_via_proxy() {
     }
 
     if !failures.is_empty() {
-        panic!("\n{} VSIX failure(s):\n  • {}\n", failures.len(), failures.join("\n  • "));
+        panic!(
+            "\n{} VSIX failure(s):\n  • {}\n",
+            failures.len(),
+            failures.join("\n  • ")
+        );
     }
 }
 
@@ -392,7 +447,8 @@ fn vsix_downloads_via_proxy() {
 fn github_asset_download_via_proxy() {
     let mp = MockProxy::start();
 
-    let path = "/proxy/my-github/kubernetes/kubernetes/releases/download/v1.30.0/kubectl-linux-amd64";
+    let path =
+        "/proxy/my-github/kubernetes/kubernetes/releases/download/v1.30.0/kubectl-linux-amd64";
     let output = curl_with_headers(&format!("{}{}", mp.base_url(), path))
         .expect("curl to mock proxy for GitHub release asset");
 
@@ -453,7 +509,10 @@ fn api_npm() {
     let body = curl_body(&format!("http://127.0.0.1:{port}/")).expect("curl npm server");
     kill_wait(server);
 
-    assert!(body.contains("hello"), "npm response missing 'hello'; got: {body}");
+    assert!(
+        body.contains("hello"),
+        "npm response missing 'hello'; got: {body}"
+    );
 }
 
 #[test]
@@ -494,7 +553,10 @@ fn api_go() {
     let body = curl_body(&format!("http://127.0.0.1:{port}/")).expect("curl go server");
     kill_wait(server);
 
-    assert!(body.contains("hello"), "go response missing 'hello'; got: {body}");
+    assert!(
+        body.contains("hello"),
+        "go response missing 'hello'; got: {body}"
+    );
 }
 
 #[test]
@@ -534,7 +596,13 @@ fn api_python() {
 
     let port = free_port();
     let server = Command::new(venv.join("bin/uvicorn"))
-        .args(["main:app", "--host", "127.0.0.1", "--port", &port.to_string()])
+        .args([
+            "main:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+        ])
         .current_dir(dir.join("src"))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -549,7 +617,10 @@ fn api_python() {
     let body = curl_body(&format!("http://127.0.0.1:{port}/")).expect("curl python server");
     kill_wait(server);
 
-    assert!(body.contains("hello"), "python response missing 'hello'; got: {body}");
+    assert!(
+        body.contains("hello"),
+        "python response missing 'hello'; got: {body}"
+    );
 }
 
 #[test]
@@ -579,7 +650,15 @@ fn api_ruby() {
 
     let port = free_port();
     let server = Command::new("bundle")
-        .args(["exec", "rackup", "--host", "127.0.0.1", "--port", &port.to_string(), "config.ru"])
+        .args([
+            "exec",
+            "rackup",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "config.ru",
+        ])
         .env("BUNDLE_PATH", &bundle_cache)
         .current_dir(&dir)
         .stdout(Stdio::null())
@@ -596,7 +675,10 @@ fn api_ruby() {
     let body = curl_body(&format!("http://127.0.0.1:{port}/")).expect("curl ruby server");
     kill_wait(server);
 
-    assert!(body.contains("hello"), "ruby response missing 'hello'; got: {body}");
+    assert!(
+        body.contains("hello"),
+        "ruby response missing 'hello'; got: {body}"
+    );
 }
 
 #[test]
@@ -627,7 +709,9 @@ fn api_composer_console() {
         .map(|s| s.success())
         .unwrap_or(false);
     if !ok {
-        eprintln!("SKIP api_composer_console: composer install failed (network may be unavailable)");
+        eprintln!(
+            "SKIP api_composer_console: composer install failed (network may be unavailable)"
+        );
         return;
     }
 
@@ -671,12 +755,17 @@ fn api_maven_spring() {
     let port = free_port();
 
     let server = spawn_tree(
-        mise_exec(&dir, "mvn", &[
-            "-s", central.to_str().unwrap(),
-            &format!("-Dmaven.repo.local={}", m2.display()),
-            "spring-boot:run",
-            &format!("-Dspring-boot.run.jvmArguments=-Dserver.port={port}"),
-        ])
+        mise_exec(
+            &dir,
+            "mvn",
+            &[
+                "-s",
+                central.to_str().unwrap(),
+                &format!("-Dmaven.repo.local={}", m2.display()),
+                "spring-boot:run",
+                &format!("-Dspring-boot.run.jvmArguments=-Dserver.port={port}"),
+            ],
+        )
         .stdout(Stdio::null())
         .stderr(Stdio::null()),
     )
@@ -695,7 +784,10 @@ fn api_maven_spring() {
     let body = curl_body(&format!("http://127.0.0.1:{port}/")).expect("curl spring boot");
     kill_tree(server);
 
-    assert!(body.contains("hello"), "Spring Boot response missing 'hello'; got: {body}");
+    assert!(
+        body.contains("hello"),
+        "Spring Boot response missing 'hello'; got: {body}"
+    );
 }
 
 /// Maven / Quarkus — `mise install` provisions java + maven, then
@@ -722,13 +814,18 @@ fn api_maven_quarkus() {
     let port = free_port();
 
     let server = spawn_tree(
-        mise_exec(&dir, "mvn", &[
-            "-s", central.to_str().unwrap(),
-            &format!("-Dmaven.repo.local={}", m2.display()),
-            "quarkus:dev",
-            "-Dquarkus.http.host=127.0.0.1",
-            &format!("-Dquarkus.http.port={port}"),
-        ])
+        mise_exec(
+            &dir,
+            "mvn",
+            &[
+                "-s",
+                central.to_str().unwrap(),
+                &format!("-Dmaven.repo.local={}", m2.display()),
+                "quarkus:dev",
+                "-Dquarkus.http.host=127.0.0.1",
+                &format!("-Dquarkus.http.port={port}"),
+            ],
+        )
         .stdout(Stdio::null())
         .stderr(Stdio::null()),
     )
@@ -855,8 +952,7 @@ fn mise_install_tasks_route_through_proxy() {
 
         if !mp.was_requested("/proxy/my-openvsx/rust-lang.rust-analyzer/0.3.1920/vsix") {
             failures.push(
-                "openvsx: mise exec did not route VSIX download through the mock proxy"
-                    .to_string(),
+                "openvsx: mise exec did not route VSIX download through the mock proxy".to_string(),
             );
         }
     }
@@ -873,12 +969,17 @@ fn mise_install_tasks_route_through_proxy() {
             // `dependency:resolve -U` explicitly resolves all declared dependencies
             // and forces Maven to contact the mirror — `validate` is not enough as
             // it performs only structural checks without any network I/O.
-            let _ = mise_exec(&dir, "mvn", &[
-                "-s", mock_settings.to_str().unwrap(),
-                &format!("-Dmaven.repo.local={}", m2.display()),
-                "-U",
-                "dependency:resolve",
-            ])
+            let _ = mise_exec(
+                &dir,
+                "mvn",
+                &[
+                    "-s",
+                    mock_settings.to_str().unwrap(),
+                    &format!("-Dmaven.repo.local={}", m2.display()),
+                    "-U",
+                    "dependency:resolve",
+                ],
+            )
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
@@ -890,7 +991,9 @@ fn mise_install_tasks_route_through_proxy() {
                 );
             }
         } else {
-            eprintln!("NOTE mise_install_tasks_route_through_proxy/maven: skipped (mise install failed)");
+            eprintln!(
+                "NOTE mise_install_tasks_route_through_proxy/maven: skipped (mise install failed)"
+            );
         }
     }
 

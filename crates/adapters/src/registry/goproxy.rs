@@ -42,7 +42,11 @@ impl GoProxyRegistryClient {
             .user_agent("batlehub/0.1")
             .redirect(reqwest::redirect::Policy::limited(10));
         let http = apply_upstream_options(builder, opts)?;
-        Ok(Self { http, base_url: base_url.into(), basic_auth: opts.basic_auth.clone() })
+        Ok(Self {
+            http,
+            base_url: base_url.into(),
+            basic_auth: opts.basic_auth.clone(),
+        })
     }
 
     fn get(&self, url: &str) -> reqwest::RequestBuilder {
@@ -122,7 +126,11 @@ impl RegistryClient for GoProxyRegistryClient {
             .await
             .map_err(|e| CoreError::Registry(e.to_string()))?;
 
-        Ok(text.lines().filter(|l| !l.trim().is_empty()).map(str::to_owned).collect())
+        Ok(text
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(str::to_owned)
+            .collect())
     }
 
     async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
@@ -178,7 +186,10 @@ impl RegistryClient for GoProxyRegistryClient {
             .bytes_stream()
             .map_err(|e| CoreError::Registry(e.to_string()));
 
-        Ok(FetchedArtifact { stream: Box::pin(stream), cache_control })
+        Ok(FetchedArtifact {
+            stream: Box::pin(stream),
+            cache_control,
+        })
     }
 }
 
@@ -252,7 +263,10 @@ mod tests {
             .await;
 
         let client = GoProxyRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let meta = client.resolve_metadata(&pkg("golang.org/x/text", "latest")).await.unwrap();
+        let meta = client
+            .resolve_metadata(&pkg("golang.org/x/text", "latest"))
+            .await
+            .unwrap();
 
         assert_eq!(meta.id.version, "v0.14.0");
         assert!(meta.published_at.is_some());
@@ -270,7 +284,10 @@ mod tests {
             .await;
 
         let client = GoProxyRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let meta = client.resolve_metadata(&pkg("golang.org/x/text", "v0.3.7")).await.unwrap();
+        let meta = client
+            .resolve_metadata(&pkg("golang.org/x/text", "v0.3.7"))
+            .await
+            .unwrap();
 
         assert_eq!(meta.id.version, "v0.3.7");
         assert!(meta.published_at.is_some());
@@ -286,7 +303,9 @@ mod tests {
             .await;
 
         let client = GoProxyRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let result = client.resolve_metadata(&pkg("example.com/unknown", "latest")).await;
+        let result = client
+            .resolve_metadata(&pkg("example.com/unknown", "latest"))
+            .await;
 
         assert!(matches!(result, Err(CoreError::NotFound(_))));
     }
@@ -303,9 +322,15 @@ mod tests {
             .await;
 
         let client = GoProxyRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let fetched = client.fetch_artifact(&pkg("golang.org/x/text", "v0.3.7")).await.unwrap();
+        let fetched = client
+            .fetch_artifact(&pkg("golang.org/x/text", "v0.3.7"))
+            .await
+            .unwrap();
         let bytes: Vec<bytes::Bytes> = fetched.stream.try_collect().await.unwrap();
-        let content = bytes.into_iter().flat_map(|b| b.to_vec()).collect::<Vec<u8>>();
+        let content = bytes
+            .into_iter()
+            .flat_map(|b| b.to_vec())
+            .collect::<Vec<u8>>();
         let content = String::from_utf8(content).unwrap();
         assert!(content.contains("v0.3.7"));
     }
@@ -373,7 +398,10 @@ mod tests {
         let pkg_list = pkg("golang.org/x/text", "latest").with_artifact("list");
         let fetched = client.fetch_artifact(&pkg_list).await.unwrap();
         let bytes: Vec<bytes::Bytes> = fetched.stream.try_collect().await.unwrap();
-        let content = bytes.into_iter().flat_map(|b| b.to_vec()).collect::<Vec<u8>>();
+        let content = bytes
+            .into_iter()
+            .flat_map(|b| b.to_vec())
+            .collect::<Vec<u8>>();
         let content = String::from_utf8(content).unwrap();
         assert!(content.contains("v0.3.7"));
     }

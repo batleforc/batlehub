@@ -41,7 +41,11 @@ impl TerraformRegistryClient {
             .user_agent("batlehub/0.1")
             .redirect(reqwest::redirect::Policy::limited(10));
         let http = apply_upstream_options(builder, opts)?;
-        Ok(Self { http, base_url: base_url.into(), basic_auth: opts.basic_auth.clone() })
+        Ok(Self {
+            http,
+            base_url: base_url.into(),
+            basic_auth: opts.basic_auth.clone(),
+        })
     }
 
     fn get(&self, url: &str) -> reqwest::RequestBuilder {
@@ -82,7 +86,10 @@ impl TerraformRegistryClient {
                             "terraform: invalid provider platform '{platform}': expected 'os/arch'"
                         ))
                     })?;
-                    Ok(format!("{base}/v1/{}/{}/download/{os}/{arch}", pkg.name, pkg.version))
+                    Ok(format!(
+                        "{base}/v1/{}/{}/download/{os}/{arch}",
+                        pkg.name, pkg.version
+                    ))
                 }
             }
         } else {
@@ -172,11 +179,10 @@ impl RegistryClient for TerraformRegistryClient {
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
         let url = self.artifact_url(pkg)?;
 
-        let resp = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(format!("terraform metadata request failed: {e}")))?;
+        let resp =
+            self.get(&url).send().await.map_err(|e| {
+                CoreError::Registry(format!("terraform metadata request failed: {e}"))
+            })?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(CoreError::NotFound(format!(
@@ -252,7 +258,10 @@ impl RegistryClient for TerraformRegistryClient {
             .bytes_stream()
             .map_err(|e| CoreError::Registry(e.to_string()));
 
-        Ok(FetchedArtifact { stream: Box::pin(stream), cache_control })
+        Ok(FetchedArtifact {
+            stream: Box::pin(stream),
+            cache_control,
+        })
     }
 
     async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
@@ -309,7 +318,11 @@ mod tests {
     }
 
     fn module_pkg(namespace: &str, name: &str, provider: &str, version: &str) -> PackageId {
-        PackageId::new("tf", format!("modules/{namespace}/{name}/{provider}"), version)
+        PackageId::new(
+            "tf",
+            format!("modules/{namespace}/{name}/{provider}"),
+            version,
+        )
     }
 
     #[tokio::test]
@@ -324,7 +337,10 @@ mod tests {
             .await;
 
         let client = TerraformRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let versions = client.list_versions("providers/hashicorp/aws").await.unwrap();
+        let versions = client
+            .list_versions("providers/hashicorp/aws")
+            .await
+            .unwrap();
         assert_eq!(versions, vec!["5.0.0", "4.67.0"]);
     }
 
@@ -340,7 +356,10 @@ mod tests {
             .await;
 
         let client = TerraformRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let versions = client.list_versions("modules/hashicorp/consul/aws").await.unwrap();
+        let versions = client
+            .list_versions("modules/hashicorp/consul/aws")
+            .await
+            .unwrap();
         assert_eq!(versions, vec!["0.1.0", "0.2.0"]);
     }
 
@@ -354,7 +373,10 @@ mod tests {
             .await;
 
         let client = TerraformRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let versions = client.list_versions("providers/example/unknown").await.unwrap();
+        let versions = client
+            .list_versions("providers/example/unknown")
+            .await
+            .unwrap();
         assert!(versions.is_empty());
     }
 
@@ -374,16 +396,23 @@ mod tests {
         let pkg = provider_pkg("hashicorp", "aws", "versions");
         let fetched = client.fetch_artifact(&pkg).await.unwrap();
         let bytes: Vec<bytes::Bytes> = fetched.stream.try_collect().await.unwrap();
-        let content = bytes.into_iter().flat_map(|b| b.to_vec()).collect::<Vec<u8>>();
+        let content = bytes
+            .into_iter()
+            .flat_map(|b| b.to_vec())
+            .collect::<Vec<u8>>();
         assert!(String::from_utf8(content).unwrap().contains("5.0.0"));
     }
 
     #[tokio::test]
     async fn fetch_artifact_provider_download_info() {
-        let body = r#"{"os":"linux","arch":"amd64","download_url":"https://releases.hashicorp.com/..."}"#;
+        let body =
+            r#"{"os":"linux","arch":"amd64","download_url":"https://releases.hashicorp.com/..."}"#;
         let mut server = Server::new_async().await;
         let _mock = server
-            .mock("GET", "/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64")
+            .mock(
+                "GET",
+                "/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64",
+            )
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(body)
@@ -394,7 +423,10 @@ mod tests {
         let pkg = provider_pkg("hashicorp", "aws", "5.0.0").with_artifact("linux/amd64");
         let fetched = client.fetch_artifact(&pkg).await.unwrap();
         let bytes: Vec<bytes::Bytes> = fetched.stream.try_collect().await.unwrap();
-        let content = bytes.into_iter().flat_map(|b| b.to_vec()).collect::<Vec<u8>>();
+        let content = bytes
+            .into_iter()
+            .flat_map(|b| b.to_vec())
+            .collect::<Vec<u8>>();
         assert!(String::from_utf8(content).unwrap().contains("linux"));
     }
 
@@ -414,7 +446,10 @@ mod tests {
         let pkg = module_pkg("hashicorp", "consul", "aws", "versions");
         let fetched = client.fetch_artifact(&pkg).await.unwrap();
         let bytes: Vec<bytes::Bytes> = fetched.stream.try_collect().await.unwrap();
-        let content = bytes.into_iter().flat_map(|b| b.to_vec()).collect::<Vec<u8>>();
+        let content = bytes
+            .into_iter()
+            .flat_map(|b| b.to_vec())
+            .collect::<Vec<u8>>();
         assert!(String::from_utf8(content).unwrap().contains("0.1.0"));
     }
 
@@ -471,7 +506,10 @@ mod tests {
             TerraformRegistryClient::new("https://registry.terraform.io", &Default::default())
                 .unwrap();
         let pkg = PackageId::new("tf", "bad-name", "versions");
-        assert!(matches!(client.fetch_artifact(&pkg).await, Err(CoreError::Registry(_))));
+        assert!(matches!(
+            client.fetch_artifact(&pkg).await,
+            Err(CoreError::Registry(_))
+        ));
     }
 
     #[tokio::test]
@@ -530,7 +568,10 @@ mod tests {
         let client = TerraformRegistryClient::new(server.url(), &Default::default()).unwrap();
         let pkg = module_pkg("hashicorp", "consul", "aws", "0.1.0");
         let ts = client.fetch_version_published_at(&pkg).await;
-        assert!(ts.is_some(), "published_at should be populated from module detail endpoint");
+        assert!(
+            ts.is_some(),
+            "published_at should be populated from module detail endpoint"
+        );
         let dt = ts.unwrap();
         assert_eq!(dt.to_rfc3339(), "2024-03-15T12:34:56+00:00");
     }
@@ -549,7 +590,10 @@ mod tests {
         let client = TerraformRegistryClient::new(server.url(), &Default::default()).unwrap();
         let pkg = provider_pkg("hashicorp", "aws", "5.0.0");
         let ts = client.fetch_version_published_at(&pkg).await;
-        assert!(ts.is_some(), "published_at should be populated from provider detail endpoint");
+        assert!(
+            ts.is_some(),
+            "published_at should be populated from provider detail endpoint"
+        );
     }
 
     #[tokio::test]

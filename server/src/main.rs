@@ -14,44 +14,59 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 use utoipa::OpenApi as _;
 use utoipa_actix_web::AppExt;
 
+#[cfg(feature = "cache-redis")]
+use batlehub_adapters::cache::RedisCacheStore;
+use batlehub_adapters::cache::{InMemoryCacheStore, PgCacheStore};
+use batlehub_adapters::rate_limit::{
+    InMemoryIpBlockStore, InMemoryRateLimitStore, PgIpBlockStore, PgRateLimitStore,
+};
+#[cfg(feature = "cache-redis")]
+use batlehub_adapters::rate_limit::{RedisIpBlockStore, RedisRateLimitStore};
 use batlehub_adapters::{
     auth::{
-        KubernetesAuthProvider, OidcAuthProvider, OidcSsoFlow, StaticTokenAuthProvider,
-        UserTokenAuthProvider, hash_static_token,
+        hash_static_token, KubernetesAuthProvider, OidcAuthProvider, OidcSsoFlow,
+        StaticTokenAuthProvider, UserTokenAuthProvider,
     },
-    db::{PgArtifactMetaRepository, PgBetaChannelStore, PgOwnershipStore, PgPackageRepository, PgQuotaRepository, PgTeamNamespaceStore},
+    db::{
+        PgArtifactMetaRepository, PgBetaChannelStore, PgOwnershipStore, PgPackageRepository,
+        PgQuotaRepository, PgTeamNamespaceStore,
+    },
     local_registry::PostgresLocalRegistry,
     registry::{
-        CargoRegistryClient, ComposerRegistryClient, FanoutRegistryClient, GoProxyRegistryClient,
-        GithubRegistryClient, MavenRegistryClient, NpmRegistryClient, OpenVsxRegistryClient,
-        RubyGemsRegistryClient, TerraformRegistryClient, VsCodeMarketplaceRegistryClient,
-        UpstreamHttpOptions,
+        CargoRegistryClient, ComposerRegistryClient, FanoutRegistryClient, GithubRegistryClient,
+        GoProxyRegistryClient, MavenRegistryClient, NpmRegistryClient, OpenVsxRegistryClient,
+        RubyGemsRegistryClient, TerraformRegistryClient, UpstreamHttpOptions,
+        VsCodeMarketplaceRegistryClient,
     },
     storage::{FilesystemStorageBackend, StorageRouter},
 };
 use batlehub_config::{
     load,
-    schema::{AuthConfig, OtelConfig, QuotaEnforcement as ConfigQuotaEnforcement, RegistryConfig, RegistryMode, RuleConfig, StorageBackendConfig, StoragesConfig, UpstreamAuthConfig},
-};
-use batlehub_adapters::cache::{InMemoryCacheStore, PgCacheStore};
-#[cfg(feature = "cache-redis")]
-use batlehub_adapters::cache::RedisCacheStore;
-use batlehub_adapters::rate_limit::{InMemoryIpBlockStore, InMemoryRateLimitStore, PgIpBlockStore, PgRateLimitStore};
-#[cfg(feature = "cache-redis")]
-use batlehub_adapters::rate_limit::{RedisIpBlockStore, RedisRateLimitStore};
-use batlehub_core::{
-    entities::Role,
-    ports::{AuthProvider, BetaChannelPort, CacheStore, IpBlockStore, RateLimitStore, UserTokenRepository},
-    rules::{BlockListRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule},
-    services::{
-        AdminService, LocalRegistryService, ProxyMetrics, ProxyService, QuotaEnforcement,
-        QuotaService, RegistryPolicy, RegistryQuotaConfig,
-        local_registry::{SigningConfig as CoreSigningConfig, VersioningPolicy},
+    schema::{
+        AuthConfig, OtelConfig, QuotaEnforcement as ConfigQuotaEnforcement, RegistryConfig,
+        RegistryMode, RuleConfig, StorageBackendConfig, StoragesConfig, UpstreamAuthConfig,
     },
 };
 use batlehub_core::services::WarmingService;
-use batlehub_web::{configure_app, healthz, openapi_spec, prometheus_metrics, AccessConfig, ApiDoc, CargoIndexProxy, IpBlockMiddlewareFactory, RegistryMap, RegistryModeMap, RateLimitMiddlewareFactory, RateLimitService, UpstreamMap};
+use batlehub_core::{
+    entities::Role,
+    ports::{
+        AuthProvider, BetaChannelPort, CacheStore, IpBlockStore, RateLimitStore,
+        UserTokenRepository,
+    },
+    rules::{BlockListRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule},
+    services::{
+        local_registry::{SigningConfig as CoreSigningConfig, VersioningPolicy},
+        AdminService, LocalRegistryService, ProxyMetrics, ProxyService, QuotaEnforcement,
+        QuotaService, RegistryPolicy, RegistryQuotaConfig,
+    },
+};
 use batlehub_web::handlers::back_office::warming::WarmingServiceMap;
+use batlehub_web::{
+    configure_app, healthz, openapi_spec, prometheus_metrics, AccessConfig, ApiDoc,
+    CargoIndexProxy, IpBlockMiddlewareFactory, RateLimitMiddlewareFactory, RateLimitService,
+    RegistryMap, RegistryModeMap, UpstreamMap,
+};
 use metrics_exporter_prometheus::PrometheusBuilder;
 
 // ── Tracing span builder ──────────────────────────────────────────────────────
@@ -261,7 +276,11 @@ async fn main() -> Result<()> {
         "redis" => {
             #[cfg(feature = "cache-redis")]
             {
-                let url = config.cache.url.as_deref().unwrap_or("redis://127.0.0.1:6379");
+                let url = config
+                    .cache
+                    .url
+                    .as_deref()
+                    .unwrap_or("redis://127.0.0.1:6379");
                 tracing::info!(url, "metadata cache: redis");
                 Arc::new(
                     RedisCacheStore::new(url)
@@ -271,7 +290,9 @@ async fn main() -> Result<()> {
             }
             #[cfg(not(feature = "cache-redis"))]
             {
-                tracing::warn!("compiled without cache-redis feature; falling back to in-memory cache");
+                tracing::warn!(
+                    "compiled without cache-redis feature; falling back to in-memory cache"
+                );
                 Arc::new(InMemoryCacheStore::new())
             }
         }
@@ -337,7 +358,10 @@ async fn main() -> Result<()> {
     let registry_mode_map = RegistryModeMap(registry_mode_map_inner);
 
     // ── Rate limiting ──────────────────────────────────────────────────────────
-    let rate_limit_configs: std::collections::HashMap<String, batlehub_config::schema::RateLimitConfig> = config
+    let rate_limit_configs: std::collections::HashMap<
+        String,
+        batlehub_config::schema::RateLimitConfig,
+    > = config
         .registries
         .iter()
         .filter_map(|r| r.rate_limit.clone().map(|rl| (r.name.clone(), rl)))
@@ -350,7 +374,11 @@ async fn main() -> Result<()> {
         "redis" => {
             #[cfg(feature = "cache-redis")]
             {
-                let url = config.cache.url.as_deref().unwrap_or("redis://127.0.0.1:6379");
+                let url = config
+                    .cache
+                    .url
+                    .as_deref()
+                    .unwrap_or("redis://127.0.0.1:6379");
                 tracing::info!(url, "rate limit store: redis");
                 Arc::new(
                     RedisRateLimitStore::new(url)
@@ -401,7 +429,8 @@ async fn main() -> Result<()> {
     let signing_map = build_signing_map(&config.registries);
     let beta_channel_store: Arc<dyn BetaChannelPort> =
         Arc::new(PgBetaChannelStore::new(repo.pool()));
-    let beta_channel_map = build_beta_channel_map(Arc::clone(&beta_channel_store), &config.registries);
+    let beta_channel_map =
+        build_beta_channel_map(Arc::clone(&beta_channel_store), &config.registries);
     let team_namespace_store: Arc<dyn batlehub_core::ports::TeamNamespacePort> =
         Arc::new(PgTeamNamespaceStore::new(repo.pool()));
 
@@ -414,7 +443,11 @@ async fn main() -> Result<()> {
         "redis" => {
             #[cfg(feature = "cache-redis")]
             {
-                let url = config.cache.url.as_deref().unwrap_or("redis://127.0.0.1:6379");
+                let url = config
+                    .cache
+                    .url
+                    .as_deref()
+                    .unwrap_or("redis://127.0.0.1:6379");
                 tracing::info!(url, "ip block store: redis");
                 Arc::new(
                     RedisIpBlockStore::new(url)
@@ -466,21 +499,32 @@ async fn main() -> Result<()> {
     let mut group_access: HashMap<String, HashSet<String>> = HashMap::new();
     for r in &config.registries {
         for group_name in r.rbac.groups.keys() {
-            group_access.entry(group_name.clone()).or_default().insert(r.name.clone());
+            group_access
+                .entry(group_name.clone())
+                .or_default()
+                .insert(r.name.clone());
         }
     }
 
     let access_config = AccessConfig {
-        anonymous: config.registries.iter()
+        anonymous: config
+            .registries
+            .iter()
             .filter(|r| !r.rbac.anonymous.is_empty())
             .map(|r| r.name.clone())
             .collect(),
-        user: config.registries.iter()
+        user: config
+            .registries
+            .iter()
             .filter(|r| !r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty())
             .map(|r| r.name.clone())
             .collect(),
-        admin: config.registries.iter()
-            .filter(|r| !r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty() || !r.rbac.admin.is_empty())
+        admin: config
+            .registries
+            .iter()
+            .filter(|r| {
+                !r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty() || !r.rbac.admin.is_empty()
+            })
             .map(|r| r.name.clone())
             .collect(),
         groups: group_access,
@@ -491,7 +535,11 @@ async fn main() -> Result<()> {
     // ── HTTP server ───────────────────────────────────────────────────────────
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
     let static_dir = config.server.static_dir.clone();
-    let cors_allowed_origins = config.server.cors_allowed_origins.clone().unwrap_or_default();
+    let cors_allowed_origins = config
+        .server
+        .cors_allowed_origins
+        .clone()
+        .unwrap_or_default();
     let db_pool = repo.pool();
 
     tracing::info!(addr = %bind_addr, "listening");
@@ -571,7 +619,9 @@ async fn main() -> Result<()> {
         let cors = if cors_allowed_origins.is_empty() {
             cors_base.allow_any_origin()
         } else {
-            cors_allowed_origins.iter().fold(cors_base, |c, origin| c.allowed_origin(origin))
+            cors_allowed_origins
+                .iter()
+                .fold(cors_base, |c, origin| c.allowed_origin(origin))
         };
 
         let enabled = ip_blocking_cfg_inner.as_ref().is_some_and(|c| c.enabled);
@@ -627,9 +677,9 @@ async fn build_single_backend(
             #[cfg(feature = "storage-s3")]
             {
                 use batlehub_adapters::storage::S3StorageBackend;
-                let backend = S3StorageBackend::new(_s3)
-                    .await
-                    .with_context(|| format!("initialising S3 storage for bucket '{}'", _s3.bucket))?;
+                let backend = S3StorageBackend::new(_s3).await.with_context(|| {
+                    format!("initialising S3 storage for bucket '{}'", _s3.bucket)
+                })?;
                 return Ok(Arc::new(backend));
             }
             #[cfg(not(feature = "storage-s3"))]
@@ -649,8 +699,12 @@ fn parse_role(s: &str) -> Role {
 fn upstream_options(reg: &RegistryConfig) -> UpstreamHttpOptions {
     let (bearer_token, basic_auth, custom_header) = match &reg.upstream_auth {
         Some(UpstreamAuthConfig::Bearer(b)) => (Some(b.token.clone()), None, None),
-        Some(UpstreamAuthConfig::Basic(b)) => (None, Some((b.username.clone(), b.password.clone())), None),
-        Some(UpstreamAuthConfig::Header(h)) => (None, None, Some((h.name.clone(), h.value.clone()))),
+        Some(UpstreamAuthConfig::Basic(b)) => {
+            (None, Some((b.username.clone(), b.password.clone())), None)
+        }
+        Some(UpstreamAuthConfig::Header(h)) => {
+            (None, None, Some((h.name.clone(), h.value.clone())))
+        }
         None => (None, None, None),
     };
     UpstreamHttpOptions {
@@ -665,7 +719,11 @@ fn build_cargo_index(reg: &RegistryConfig) -> anyhow::Result<CargoIndexProxy> {
     let index_url = if let Some(ref url) = reg.index_url {
         url.clone()
     } else {
-        let upstream = reg.upstreams.first().map(|s| s.as_str()).unwrap_or("https://crates.io");
+        let upstream = reg
+            .upstreams
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("https://crates.io");
         if upstream.contains("crates.io") {
             "https://index.crates.io".to_owned()
         } else {
@@ -681,7 +739,9 @@ fn build_cargo_index(reg: &RegistryConfig) -> anyhow::Result<CargoIndexProxy> {
     Ok(CargoIndexProxy { http, index_url })
 }
 
-fn build_registry_client(reg: &RegistryConfig) -> anyhow::Result<Arc<dyn batlehub_core::ports::RegistryClient>> {
+fn build_registry_client(
+    reg: &RegistryConfig,
+) -> anyhow::Result<Arc<dyn batlehub_core::ports::RegistryClient>> {
     fn resolve_urls(configured: &[String], default: &str) -> Vec<String> {
         if configured.is_empty() {
             vec![default.to_owned()]
@@ -706,7 +766,9 @@ fn build_registry_client(reg: &RegistryConfig) -> anyhow::Result<Arc<dyn batlehu
             "terraform" => Arc::new(TerraformRegistryClient::new(url, opts)?),
             "rubygems" => Arc::new(RubyGemsRegistryClient::new(url, opts)?),
             "composer" => Arc::new(ComposerRegistryClient::new(url, opts)?),
-            other => anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in"),
+            other => {
+                anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in")
+            }
         };
         Ok(client)
     }
@@ -719,12 +781,16 @@ fn build_registry_client(reg: &RegistryConfig) -> anyhow::Result<Arc<dyn batlehu
         "cargo" => resolve_urls(&reg.upstreams, "https://crates.io"),
         "openvsx" => resolve_urls(&reg.upstreams, "https://open-vsx.org"),
         "goproxy" => resolve_urls(&reg.upstreams, "https://proxy.golang.org"),
-        "vscode-marketplace" => resolve_urls(&reg.upstreams, "https://marketplace.visualstudio.com"),
+        "vscode-marketplace" => {
+            resolve_urls(&reg.upstreams, "https://marketplace.visualstudio.com")
+        }
         "maven" => resolve_urls(&reg.upstreams, "https://repo1.maven.org/maven2"),
         "terraform" => resolve_urls(&reg.upstreams, "https://registry.terraform.io"),
         "rubygems" => resolve_urls(&reg.upstreams, "https://rubygems.org"),
         "composer" => resolve_urls(&reg.upstreams, "https://repo.packagist.org"),
-        other => anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in"),
+        other => {
+            anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in")
+        }
     };
 
     if urls.len() == 1 {
@@ -734,7 +800,10 @@ fn build_registry_client(reg: &RegistryConfig) -> anyhow::Result<Arc<dyn batlehu
             .iter()
             .map(|u| make_one(&reg.registry_type, u, &opts))
             .collect::<anyhow::Result<Vec<_>>>()?;
-        Ok(Arc::new(FanoutRegistryClient::new(&reg.registry_type, clients)))
+        Ok(Arc::new(FanoutRegistryClient::new(
+            &reg.registry_type,
+            clients,
+        )))
     }
 }
 
@@ -796,15 +865,19 @@ fn build_versioning_map(registries: &[RegistryConfig]) -> HashMap<String, Versio
         .iter()
         .filter_map(|reg| {
             reg.versioning.as_ref().map(|v| {
-                let pattern = v.version_pattern.as_deref().and_then(|pat| {
-                    match regex::Regex::new(pat) {
+                let pattern = v
+                    .version_pattern
+                    .as_deref()
+                    .and_then(|pat| match regex::Regex::new(pat) {
                         Ok(re) => Some(re),
                         Err(e) => {
-                            tracing::warn!("invalid version_pattern for registry '{}': {e}", reg.name);
+                            tracing::warn!(
+                                "invalid version_pattern for registry '{}': {e}",
+                                reg.name
+                            );
                             None
                         }
-                    }
-                });
+                    });
                 (
                     reg.name.clone(),
                     VersioningPolicy {

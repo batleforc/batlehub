@@ -13,8 +13,8 @@ pub mod warming;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use batlehub_core::entities::Role;
 use crate::{error::AppError, extractors::AuthIdentity};
+use batlehub_core::entities::Role;
 
 pub(super) fn require_admin(identity: &AuthIdentity) -> Result<(), AppError> {
     if identity.role != Role::Admin {

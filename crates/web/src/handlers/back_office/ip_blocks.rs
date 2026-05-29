@@ -2,14 +2,14 @@ use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use actix_web::{HttpResponse, Responder, delete, get, post, web};
+use actix_web::{delete, get, post, web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use batlehub_core::ports::{BlockedIpInfo, IpBlockStore};
 
-use crate::{error::AppError, extractors::AuthIdentity};
 use super::{now_unix, require_admin};
+use crate::{error::AppError, extractors::AuthIdentity};
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BlockedIpDto {
@@ -91,7 +91,9 @@ pub async fn block_ip(
         .map_err(|_| AppError::bad_request(format!("'{}' is not a valid IP address", body.ip)))?;
     let duration = body.duration_secs.unwrap_or(3600);
     if duration == 0 {
-        return Err(AppError::bad_request("duration_secs must be greater than 0"));
+        return Err(AppError::bad_request(
+            "duration_secs must be greater than 0",
+        ));
     }
     let unblock_at = now_unix()
         .checked_add(duration)
@@ -138,7 +140,10 @@ mod tests {
     fn block_ip_request_duration_overflow_is_caught() {
         // now_unix() + u64::MAX must not silently wrap; checked_add catches it.
         let now = super::super::now_unix();
-        assert!(now.checked_add(u64::MAX).is_none(), "overflow must be detected");
+        assert!(
+            now.checked_add(u64::MAX).is_none(),
+            "overflow must be detected"
+        );
         // A sane large value must succeed.
         assert!(now.checked_add(3600).is_some());
     }

@@ -31,7 +31,12 @@ impl CacheEntry {
 pub trait CacheStore: Send + Sync {
     async fn get(&self, key: &str) -> Result<Option<CacheEntry>, CoreError>;
 
-    async fn set(&self, key: &str, entry: CacheEntry, ttl: Option<Duration>) -> Result<(), CoreError>;
+    async fn set(
+        &self,
+        key: &str,
+        entry: CacheEntry,
+        ttl: Option<Duration>,
+    ) -> Result<(), CoreError>;
 
     async fn invalidate(&self, key: &str) -> Result<(), CoreError>;
 

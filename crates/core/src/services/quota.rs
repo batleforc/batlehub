@@ -141,8 +141,15 @@ impl QuotaService {
         self.repo.record_publish(&user_id, registry, bytes).await?;
 
         // Build QuotaCheck with updated counts
-        let warning = is_warning(new_bytes, config.max_storage_bytes_per_user, config.warn_threshold)
-            || is_warning(new_count as u64, config.max_packages_per_user.map(|x| x as u64), config.warn_threshold);
+        let warning = is_warning(
+            new_bytes,
+            config.max_storage_bytes_per_user,
+            config.warn_threshold,
+        ) || is_warning(
+            new_count as u64,
+            config.max_packages_per_user.map(|x| x as u64),
+            config.warn_threshold,
+        );
 
         Ok(QuotaCheck {
             bytes_used: new_bytes,
@@ -169,18 +176,11 @@ impl QuotaService {
         Ok(())
     }
 
-    pub async fn get_usage(
-        &self,
-        user_id: &str,
-        registry: &str,
-    ) -> Result<QuotaUsage, CoreError> {
+    pub async fn get_usage(&self, user_id: &str, registry: &str) -> Result<QuotaUsage, CoreError> {
         self.repo.get_usage(user_id, registry).await
     }
 
-    pub async fn list_usage(
-        &self,
-        registry: Option<&str>,
-    ) -> Result<Vec<QuotaUsage>, CoreError> {
+    pub async fn list_usage(&self, registry: Option<&str>) -> Result<Vec<QuotaUsage>, CoreError> {
         self.repo.list_usage(registry).await
     }
 

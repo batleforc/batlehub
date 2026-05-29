@@ -13,7 +13,6 @@
 /// ```
 /// cargo test -p batlehub-examples --test local_registry
 /// ```
-
 use std::{
     collections::HashMap,
     fs,
@@ -51,7 +50,6 @@ use batlehub_web::{
     configure_app, AccessConfig, AuthMiddlewareFactory, RegistryMap, RegistryModeMap, UpstreamMap,
 };
 
-
 // ── Local proxy server ────────────────────────────────────────────────────────
 
 /// Runs a genuine actix-web batlehub proxy in **Local** mode on a random port.
@@ -81,8 +79,8 @@ impl LocalProxy {
             .map(|name| {
                 let perms = HashMap::from([
                     (Role::Anonymous, vec!["*".to_owned()]),
-                    (Role::User,      vec!["*".to_owned()]),
-                    (Role::Admin,     vec!["*".to_owned()]),
+                    (Role::User, vec!["*".to_owned()]),
+                    (Role::Admin, vec!["*".to_owned()]),
                 ]);
                 (
                     name.clone(),
@@ -130,18 +128,17 @@ impl LocalProxy {
 
         let access_config = AccessConfig {
             anonymous: registry_names.iter().cloned().collect(),
-            user:      registry_names.iter().cloned().collect(),
-            admin:     registry_names.iter().cloned().collect(),
-            groups:    HashMap::new(),
+            user: registry_names.iter().cloned().collect(),
+            admin: registry_names.iter().cloned().collect(),
+            groups: HashMap::new(),
         };
 
-        let auth_providers: Vec<Arc<dyn AuthProvider>> = vec![Arc::new(
-            StaticTokenAuthProvider::new([(
+        let auth_providers: Vec<Arc<dyn AuthProvider>> =
+            vec![Arc::new(StaticTokenAuthProvider::new([(
                 AUTH_TOKEN.to_owned(),
                 Some("test-user".to_owned()),
                 Role::Admin,
-            )]),
-        )];
+            )]))];
 
         // All registries run in Local mode.
         let mode_map = RegistryModeMap(
@@ -167,9 +164,9 @@ impl LocalProxy {
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let port = rt.block_on(async {
-            let local_svc     = local_svc.clone();
-            let mode_map      = mode_map.clone();
-            let configure     = configure.clone();
+            let local_svc = local_svc.clone();
+            let mode_map = mode_map.clone();
+            let configure = configure.clone();
             let auth_providers = auth_providers.clone();
             let cargo_indexes: HashMap<String, batlehub_web::CargoIndexProxy> = HashMap::new();
 
@@ -213,7 +210,9 @@ impl LocalProxy {
 fn wait_for_port(port: u16, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if TcpStream::connect(("127.0.0.1", port)).is_ok() { return true; }
+        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            return true;
+        }
         thread::sleep(Duration::from_millis(300));
     }
     false
@@ -223,12 +222,24 @@ fn wait_for_port(port: u16, timeout: Duration) -> bool {
 fn get_status(url: &str) -> u16 {
     Command::new("curl")
         .args([
-            "-s", "--max-time", "10",
-            "-H", &format!("Authorization: Bearer {AUTH_TOKEN}"),
-            "-o", "/dev/null", "-w", "%{http_code}", url,
+            "-s",
+            "--max-time",
+            "10",
+            "-H",
+            &format!("Authorization: Bearer {AUTH_TOKEN}"),
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            url,
         ])
         .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().parse().unwrap_or(0))
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse()
+                .unwrap_or(0)
+        })
         .unwrap_or(0)
 }
 
@@ -236,9 +247,14 @@ fn get_status(url: &str) -> u16 {
 fn get(url: &str) -> (u16, String) {
     let out = Command::new("curl")
         .args([
-            "-s", "--max-time", "10",
-            "-H", &format!("Authorization: Bearer {AUTH_TOKEN}"),
-            "-w", "\n%{http_code}", url,
+            "-s",
+            "--max-time",
+            "10",
+            "-H",
+            &format!("Authorization: Bearer {AUTH_TOKEN}"),
+            "-w",
+            "\n%{http_code}",
+            url,
         ])
         .output()
         .expect("curl GET");
@@ -250,17 +266,30 @@ fn get(url: &str) -> (u16, String) {
 fn upload_file(method: &str, url: &str, file: &Path, content_type: &str) -> u16 {
     Command::new("curl")
         .args([
-            "-s", "--max-time", "15",
-            "-X", method,
-            "-H", &format!("Authorization: Bearer {AUTH_TOKEN}"),
-            "-H", &format!("Content-Type: {content_type}"),
-            "--data-binary", &format!("@{}", file.display()),
-            "-o", "/dev/null",
-            "-w", "%{http_code}",
+            "-s",
+            "--max-time",
+            "15",
+            "-X",
+            method,
+            "-H",
+            &format!("Authorization: Bearer {AUTH_TOKEN}"),
+            "-H",
+            &format!("Content-Type: {content_type}"),
+            "--data-binary",
+            &format!("@{}", file.display()),
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
             url,
         ])
         .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().parse().unwrap_or(0))
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse()
+                .unwrap_or(0)
+        })
         .unwrap_or(0)
 }
 
@@ -323,7 +352,8 @@ fn go_module_zip(module: &str, version: &str) -> Vec<u8> {
     {
         let mut zw = zip::ZipWriter::new(&mut buf);
         let opts = zip::write::SimpleFileOptions::default();
-        zw.start_file(format!("{module}@{version}/go.mod"), opts).unwrap();
+        zw.start_file(format!("{module}@{version}/go.mod"), opts)
+            .unwrap();
         zw.write_all(go_mod.as_bytes()).unwrap();
         zw.finish().unwrap();
     }
@@ -346,7 +376,9 @@ fn minimal_gem(name: &str, version: &str) -> Vec<u8> {
     header.set_size(metadata_gz.len() as u64);
     header.set_mode(0o644);
     header.set_cksum();
-    builder.append_data(&mut header, "metadata.gz", metadata_gz.as_slice()).unwrap();
+    builder
+        .append_data(&mut header, "metadata.gz", metadata_gz.as_slice())
+        .unwrap();
     builder.into_inner().unwrap()
 }
 
@@ -398,8 +430,14 @@ fn local_npm_publish_pull() {
         "packument missing version 1.0.0: {packument}"
     );
 
-    let dl_status = get_status(&format!("{}/test-pkg/1.0.0/tarball", proxy.proxy_url("my-npm")));
-    assert_eq!(dl_status, 200, "npm tarball download: expected 200, got {dl_status}");
+    let dl_status = get_status(&format!(
+        "{}/test-pkg/1.0.0/tarball",
+        proxy.proxy_url("my-npm")
+    ));
+    assert_eq!(
+        dl_status, 200,
+        "npm tarball download: expected 200, got {dl_status}"
+    );
 }
 
 // ── cargo: publish + download ─────────────────────────────────────────────────
@@ -426,7 +464,10 @@ fn local_cargo_publish_pull() {
         "{}/test-crate/1.0.0/download",
         proxy.proxy_url("my-cargo")
     ));
-    assert_eq!(dl_status, 200, "cargo download: expected 200, got {dl_status}");
+    assert_eq!(
+        dl_status, 200,
+        "cargo download: expected 200, got {dl_status}"
+    );
 }
 
 // ── goproxy: publish + list + mod + zip ──────────────────────────────────────
@@ -454,24 +495,32 @@ fn local_go_publish_pull() {
     assert_eq!(status, 200, "go publish: expected 200, got {status}");
 
     // GET /{module}@v/list → newline-separated version list
-    let (list_status, list_body) =
-        get(&format!("{}/{MODULE}@v/list", proxy.proxy_url("my-go")));
+    let (list_status, list_body) = get(&format!("{}/{MODULE}@v/list", proxy.proxy_url("my-go")));
     assert_eq!(list_status, 200, "go list: expected 200, got {list_status}");
-    assert!(list_body.contains(VERSION), "go list missing {VERSION}: {list_body}");
+    assert!(
+        list_body.contains(VERSION),
+        "go list missing {VERSION}: {list_body}"
+    );
 
     // GET /{module}@v/{version}.mod
     let mod_status = get_status(&format!(
         "{}/{MODULE}@v/{VERSION}.mod",
         proxy.proxy_url("my-go")
     ));
-    assert_eq!(mod_status, 200, "go mod download: expected 200, got {mod_status}");
+    assert_eq!(
+        mod_status, 200,
+        "go mod download: expected 200, got {mod_status}"
+    );
 
     // GET /{module}@v/{version}.zip
     let zip_status = get_status(&format!(
         "{}/{MODULE}@v/{VERSION}.zip",
         proxy.proxy_url("my-go")
     ));
-    assert_eq!(zip_status, 200, "go zip download: expected 200, got {zip_status}");
+    assert_eq!(
+        zip_status, 200,
+        "go zip download: expected 200, got {zip_status}"
+    );
 }
 
 // ── rubygems: publish + download ──────────────────────────────────────────────
@@ -494,8 +543,14 @@ fn local_rubygems_publish_pull() {
     );
     assert_eq!(status, 200, "rubygems publish: expected 200, got {status}");
 
-    let dl_status = get_status(&format!("{}/gems/test-gem-1.0.0.gem", proxy.proxy_url("my-gems")));
-    assert_eq!(dl_status, 200, "rubygems download: expected 200, got {dl_status}");
+    let dl_status = get_status(&format!(
+        "{}/gems/test-gem-1.0.0.gem",
+        proxy.proxy_url("my-gems")
+    ));
+    assert_eq!(
+        dl_status, 200,
+        "rubygems download: expected 200, got {dl_status}"
+    );
 }
 
 // ── composer: upload + p2 metadata + dist artifact ───────────────────────────
@@ -519,9 +574,14 @@ fn local_composer_publish_pull() {
     assert_eq!(status, 200, "composer upload: expected 200, got {status}");
 
     // GET p2 metadata: /p2/{vendor}/{pkg}.json
-    let (p2_status, p2_body) =
-        get(&format!("{}/p2/myvendor/mypkg.json", proxy.proxy_url("my-composer")));
-    assert_eq!(p2_status, 200, "composer p2 metadata: expected 200, got {p2_status}");
+    let (p2_status, p2_body) = get(&format!(
+        "{}/p2/myvendor/mypkg.json",
+        proxy.proxy_url("my-composer")
+    ));
+    assert_eq!(
+        p2_status, 200,
+        "composer p2 metadata: expected 200, got {p2_status}"
+    );
     let p2: serde_json::Value = serde_json::from_str(&p2_body).expect("p2 not JSON");
     assert!(
         p2["packages"].is_object() || p2["packages"].is_array(),
@@ -533,7 +593,10 @@ fn local_composer_publish_pull() {
         "{}/dist/myvendor/mypkg/1.0.0",
         proxy.proxy_url("my-composer")
     ));
-    assert_eq!(dist_status, 200, "composer dist download: expected 200, got {dist_status}");
+    assert_eq!(
+        dist_status, 200,
+        "composer dist download: expected 200, got {dist_status}"
+    );
 }
 
 // ── maven: PUT artifact + GET artifact ───────────────────────────────────────
@@ -562,7 +625,10 @@ fn local_maven_publish_pull() {
         "{}/maven2/{MAVEN_PATH}",
         proxy.proxy_url("my-maven")
     ));
-    assert_eq!(get_status_code, 200, "maven GET: expected 200, got {get_status_code}");
+    assert_eq!(
+        get_status_code, 200,
+        "maven GET: expected 200, got {get_status_code}"
+    );
 }
 
 // ── openvsx: PUT VSIX + GET VSIX ─────────────────────────────────────────────
@@ -580,17 +646,26 @@ fn local_openvsx_publish_pull() {
     // PUT /proxy/{registry}/{publisher}.{name}/{version}/vsix
     let put_status = upload_file(
         "PUT",
-        &format!("{}/test.extension/1.0.0/vsix", proxy.proxy_url("my-openvsx")),
+        &format!(
+            "{}/test.extension/1.0.0/vsix",
+            proxy.proxy_url("my-openvsx")
+        ),
         &vsix_file,
         "application/octet-stream",
     );
-    assert_eq!(put_status, 200, "openvsx publish: expected 200, got {put_status}");
+    assert_eq!(
+        put_status, 200,
+        "openvsx publish: expected 200, got {put_status}"
+    );
 
     let dl_status = get_status(&format!(
         "{}/test.extension/1.0.0/vsix",
         proxy.proxy_url("my-openvsx")
     ));
-    assert_eq!(dl_status, 200, "openvsx download: expected 200, got {dl_status}");
+    assert_eq!(
+        dl_status, 200,
+        "openvsx download: expected 200, got {dl_status}"
+    );
 }
 
 // ── terraform module: POST + versions + artifact ─────────────────────────────
@@ -615,14 +690,20 @@ fn local_terraform_module_publish_pull() {
         &module_file,
         "application/octet-stream",
     );
-    assert_eq!(post_status, 201, "terraform module upload: expected 201, got {post_status}");
+    assert_eq!(
+        post_status, 201,
+        "terraform module upload: expected 201, got {post_status}"
+    );
 
     // GET versions list
     let (versions_status, versions_body) = get(&format!(
         "{}/v1/modules/hashicorp/testmod/aws/versions",
         proxy.proxy_url("my-terraform")
     ));
-    assert_eq!(versions_status, 200, "terraform versions: expected 200, got {versions_status}");
+    assert_eq!(
+        versions_status, 200,
+        "terraform versions: expected 200, got {versions_status}"
+    );
     let versions: serde_json::Value =
         serde_json::from_str(&versions_body).expect("versions not JSON");
     assert!(
@@ -635,5 +716,8 @@ fn local_terraform_module_publish_pull() {
         "{}/v1/modules/hashicorp/testmod/aws/1.0.0/artifact",
         proxy.proxy_url("my-terraform")
     ));
-    assert_eq!(artifact_status, 200, "terraform artifact: expected 200, got {artifact_status}");
+    assert_eq!(
+        artifact_status, 200,
+        "terraform artifact: expected 200, got {artifact_status}"
+    );
 }

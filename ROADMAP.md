@@ -19,6 +19,7 @@ Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules, 
 - [ ] **GitLab releases and packages** — similar to GitHub but with different auth and pagination
 - [ ] **Forgejo releases and packages** — Gitea fork with minor API differences
 - [x] **Composer** — PHP Composer registry (Packagist v2 protocol — `packages.json`, p2 metadata, dist downloads); private package publishing via ZIP upload in `local`/`hybrid` mode
+- [ ] **Anaconda / Conda** — Python data science package registry with complex dependency resolution
 
 > **Not planned:** Docker / OCI artifacts. [Harbor](https://goharbor.io) solves this better than we could, unless concrete demand arises.
 

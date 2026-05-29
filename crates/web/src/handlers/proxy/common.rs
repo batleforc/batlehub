@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actix_web::{HttpRequest, HttpResponse, web};
+use actix_web::{web, HttpRequest, HttpResponse};
 use bytes::{Bytes, BytesMut};
 use futures::StreamExt;
 
@@ -11,13 +11,13 @@ use batlehub_core::{
     services::{LocalRegistryService, ProxyRequest, ProxyResponse, ProxyService},
 };
 
-use crate::{RegistryModeMap, error::AppError, extractors::AuthIdentity};
+use crate::{error::AppError, extractors::AuthIdentity, RegistryModeMap};
 
 /// Decode `X-Artifact-Signature` (base64) and `X-Signature-Type` headers from a request.
 ///
 /// Returns `(signature_bytes, signature_type)`. Either or both may be `None`.
 pub fn extract_signature_headers(req: &HttpRequest) -> (Option<Vec<u8>>, Option<String>) {
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
     let sig_bytes = req
         .headers()
         .get("X-Artifact-Signature")
@@ -40,7 +40,7 @@ pub async fn append_signature_headers(
     name: &str,
     version: &str,
 ) {
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
     if let Some(meta) = local_svc.get_version_meta(registry, name, version).await {
         if let Some(ref sig) = meta.signature_bytes {
             resp.insert_header(("X-Artifact-Signature", STANDARD.encode(sig)));
@@ -99,9 +99,8 @@ pub async fn proxy_stream(
     match svc.handle(req).await.map_err(AppError::from)? {
         ProxyResponse::Denied { reason } => Err(AppError::forbidden(reason)),
         ProxyResponse::Stream(stream) => {
-            let body = stream.filter_map(|chunk| async move {
-                chunk.ok().map(Ok::<Bytes, actix_web::Error>)
-            });
+            let body = stream
+                .filter_map(|chunk| async move { chunk.ok().map(Ok::<Bytes, actix_web::Error>) });
             let mut resp = HttpResponse::Ok();
             if let Some(ct) = content_type {
                 resp.content_type(ct);

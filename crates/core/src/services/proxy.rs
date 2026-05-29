@@ -245,13 +245,17 @@ impl ProxyService {
         // ── 4. Check artifact cache ────────────────────────────────────────────
         let artifact_key = format!("artifact:{}", req.package_id.cache_key());
 
-        let artifact_ttl = self.policies.get(registry_name).and_then(|p| p.artifact_ttl);
+        let artifact_ttl = self
+            .policies
+            .get(registry_name)
+            .and_then(|p| p.artifact_ttl);
         let cached_artifact_is_fresh = if self.storage.exists(&artifact_key).await? {
             // When an artifact TTL is set, do a point-lookup for this specific key.
             if let Some(ttl) = artifact_ttl {
                 match chrono::Duration::from_std(ttl) {
                     Ok(d) => {
-                        let expired = self.artifact_meta
+                        let expired = self
+                            .artifact_meta
                             .is_artifact_expired(&artifact_key, Utc::now() - d)
                             .await?;
                         !expired
@@ -273,11 +277,11 @@ impl ProxyService {
             tracing::debug!(key = %artifact_key, "artifact cache hit");
             metrics::counter!("batlehub_artifact_cache_hits_total", "registry" => registry_label.clone()).increment(1);
             self.metrics.record_artifact_hit(registry_name);
-            let artifact = self
-                .storage
-                .retrieve(&artifact_key)
-                .await?
-                .ok_or_else(|| CoreError::Registry(format!("artifact '{artifact_key}' vanished between exists and retrieve")))?;
+            let artifact = self.storage.retrieve(&artifact_key).await?.ok_or_else(|| {
+                CoreError::Registry(format!(
+                    "artifact '{artifact_key}' vanished between exists and retrieve"
+                ))
+            })?;
 
             // Update last-accessed timestamp without blocking the response.
             let meta_repo = Arc::clone(&self.artifact_meta);
@@ -360,13 +364,17 @@ impl ProxyService {
                 .await?;
 
             // Record artifact metadata for eviction tracking.
-            if let Err(e) = self.artifact_meta.record_artifact(
-                &artifact_key,
-                registry_name,
-                &req.package_id.name,
-                &req.package_id.version,
-                Some(data.len() as u64),
-            ).await {
+            if let Err(e) = self
+                .artifact_meta
+                .record_artifact(
+                    &artifact_key,
+                    registry_name,
+                    &req.package_id.name,
+                    &req.package_id.version,
+                    Some(data.len() as u64),
+                )
+                .await
+            {
                 tracing::warn!(key = %artifact_key, error = %e, "record_artifact failed");
             }
         } else {
@@ -384,7 +392,8 @@ impl ProxyService {
             "allowed download",
         );
         metrics::counter!("batlehub_requests_total", "registry" => registry_label.clone(), "outcome" => "allowed").increment(1);
-        metrics::histogram!("batlehub_request_duration_seconds", "registry" => registry_label).record(start.elapsed().as_secs_f64());
+        metrics::histogram!("batlehub_request_duration_seconds", "registry" => registry_label)
+            .record(start.elapsed().as_secs_f64());
 
         let stream = futures::stream::once(async move { Ok(data) });
         Ok(ProxyResponse::Stream(Box::pin(stream)))
@@ -402,16 +411,16 @@ mod tests {
     use futures::stream;
 
     use super::*;
-    use crate::services::metrics::ProxyMetrics;
     use crate::entities::{
-        AccessEvent, AccessResult, EventFilter, Identity, PackageFilter, PackageId, PackageMetadata,
-        PackageStatus, PackageSummary,
-    };
-    use crate::ports::{
-        ArtifactMeta, ArtifactMetaRepository, CacheStore, FetchedArtifact,
-        PackageRepository, RegistryClient, StorageBackend, StorageMeta, StoredArtifact,
+        AccessEvent, AccessResult, EventFilter, Identity, PackageFilter, PackageId,
+        PackageMetadata, PackageStatus, PackageSummary,
     };
     use crate::ports::ByteStream;
+    use crate::ports::{
+        ArtifactMeta, ArtifactMetaRepository, CacheStore, FetchedArtifact, PackageRepository,
+        RegistryClient, StorageBackend, StorageMeta, StoredArtifact,
+    };
+    use crate::services::metrics::ProxyMetrics;
 
     // ── Minimal in-memory mocks ───────────────────────────────────────────────
 
@@ -423,16 +432,59 @@ mod tests {
     }
     #[async_trait]
     impl ArtifactMetaRepository for NoopArtifactMeta {
-        async fn record_artifact(&self, _key: &str, _registry: &str, _name: &str, _ver: &str, _size: Option<u64>) -> Result<(), CoreError> { Ok(()) }
-        async fn touch_artifact(&self, _key: &str) -> Result<(), CoreError> { Ok(()) }
-        async fn list_artifacts(&self, _registry: &str) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
-        async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
-        async fn delete_artifact_meta(&self, _key: &str) -> Result<(), CoreError> { Ok(()) }
-        async fn is_artifact_expired(&self, _key: &str, _older_than: chrono::DateTime<chrono::Utc>) -> Result<bool, CoreError> { Ok(false) }
-        async fn list_expired_by_ttl(&self, _registry: &str, _older_than: chrono::DateTime<chrono::Utc>) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
-        async fn list_idle(&self, _registry: &str, _idle_since: chrono::DateTime<chrono::Utc>) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
-        async fn total_size_bytes(&self, _registry: &str) -> Result<u64, CoreError> { Ok(0) }
-        async fn list_lru(&self, _registry: &str, _limit: i64) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
+        async fn record_artifact(
+            &self,
+            _key: &str,
+            _registry: &str,
+            _name: &str,
+            _ver: &str,
+            _size: Option<u64>,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn touch_artifact(&self, _key: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn list_artifacts(&self, _registry: &str) -> Result<Vec<ArtifactMeta>, CoreError> {
+            Ok(vec![])
+        }
+        async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> {
+            Ok(vec![])
+        }
+        async fn delete_artifact_meta(&self, _key: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn is_artifact_expired(
+            &self,
+            _key: &str,
+            _older_than: chrono::DateTime<chrono::Utc>,
+        ) -> Result<bool, CoreError> {
+            Ok(false)
+        }
+        async fn list_expired_by_ttl(
+            &self,
+            _registry: &str,
+            _older_than: chrono::DateTime<chrono::Utc>,
+        ) -> Result<Vec<ArtifactMeta>, CoreError> {
+            Ok(vec![])
+        }
+        async fn list_idle(
+            &self,
+            _registry: &str,
+            _idle_since: chrono::DateTime<chrono::Utc>,
+        ) -> Result<Vec<ArtifactMeta>, CoreError> {
+            Ok(vec![])
+        }
+        async fn total_size_bytes(&self, _registry: &str) -> Result<u64, CoreError> {
+            Ok(0)
+        }
+        async fn list_lru(
+            &self,
+            _registry: &str,
+            _limit: i64,
+        ) -> Result<Vec<ArtifactMeta>, CoreError> {
+            Ok(vec![])
+        }
     }
 
     /// Records `record_artifact` and `touch_artifact` calls; returns configurable
@@ -457,12 +509,23 @@ mod tests {
                 expired: Mutex::new(expired),
             })
         }
-        fn recorded_keys(&self) -> Vec<String> { self.recorded.lock().unwrap().clone() }
-        fn touched_keys(&self) -> Vec<String> { self.touched.lock().unwrap().clone() }
+        fn recorded_keys(&self) -> Vec<String> {
+            self.recorded.lock().unwrap().clone()
+        }
+        fn touched_keys(&self) -> Vec<String> {
+            self.touched.lock().unwrap().clone()
+        }
     }
     #[async_trait]
     impl ArtifactMetaRepository for SpyArtifactMeta {
-        async fn record_artifact(&self, key: &str, _: &str, _: &str, _: &str, _: Option<u64>) -> Result<(), CoreError> {
+        async fn record_artifact(
+            &self,
+            key: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: Option<u64>,
+        ) -> Result<(), CoreError> {
             self.recorded.lock().unwrap().push(key.to_owned());
             Ok(())
         }
@@ -470,29 +533,55 @@ mod tests {
             self.touched.lock().unwrap().push(key.to_owned());
             Ok(())
         }
-        async fn list_artifacts(&self, _: &str) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
-        async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
-        async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> { Ok(()) }
-        async fn is_artifact_expired(&self, key: &str, older_than: chrono::DateTime<chrono::Utc>) -> Result<bool, CoreError> {
+        async fn list_artifacts(&self, _: &str) -> Result<Vec<ArtifactMeta>, CoreError> {
+            Ok(vec![])
+        }
+        async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> {
+            Ok(vec![])
+        }
+        async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn is_artifact_expired(
+            &self,
+            key: &str,
+            older_than: chrono::DateTime<chrono::Utc>,
+        ) -> Result<bool, CoreError> {
             // If the key has been "recorded" (has metadata) and is NOT explicitly in the
             // expired list, treat it as fresh.  If no metadata has been recorded, treat
             // it as expired (matches PgArtifactMetaRepository semantics: missing row → expired).
             let recorded = self.recorded.lock().unwrap();
             let expired = self.expired.lock().unwrap();
-            let has_meta = recorded.contains(&key.to_owned())
-                || expired.iter().any(|m| m.artifact_key == key);
+            let has_meta =
+                recorded.contains(&key.to_owned()) || expired.iter().any(|m| m.artifact_key == key);
             if !has_meta {
                 return Ok(true);
             }
-            let is_expired = expired.iter().any(|m| m.artifact_key == key && m.cached_at < older_than);
+            let is_expired = expired
+                .iter()
+                .any(|m| m.artifact_key == key && m.cached_at < older_than);
             Ok(is_expired)
         }
-        async fn list_expired_by_ttl(&self, _: &str, _: chrono::DateTime<chrono::Utc>) -> Result<Vec<ArtifactMeta>, CoreError> {
+        async fn list_expired_by_ttl(
+            &self,
+            _: &str,
+            _: chrono::DateTime<chrono::Utc>,
+        ) -> Result<Vec<ArtifactMeta>, CoreError> {
             Ok(self.expired.lock().unwrap().clone())
         }
-        async fn list_idle(&self, _: &str, _: chrono::DateTime<chrono::Utc>) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
-        async fn total_size_bytes(&self, _: &str) -> Result<u64, CoreError> { Ok(0) }
-        async fn list_lru(&self, _: &str, _: i64) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
+        async fn list_idle(
+            &self,
+            _: &str,
+            _: chrono::DateTime<chrono::Utc>,
+        ) -> Result<Vec<ArtifactMeta>, CoreError> {
+            Ok(vec![])
+        }
+        async fn total_size_bytes(&self, _: &str) -> Result<u64, CoreError> {
+            Ok(0)
+        }
+        async fn list_lru(&self, _: &str, _: i64) -> Result<Vec<ArtifactMeta>, CoreError> {
+            Ok(vec![])
+        }
     }
 
     struct TestCacheStore {
@@ -501,7 +590,9 @@ mod tests {
 
     impl TestCacheStore {
         fn new() -> Arc<Self> {
-            Arc::new(Self { data: Mutex::new(HashMap::new()) })
+            Arc::new(Self {
+                data: Mutex::new(HashMap::new()),
+            })
         }
 
         fn seed_expired(&self, key: &str, metadata: PackageMetadata) {
@@ -520,9 +611,15 @@ mod tests {
             let map = self.data.lock().unwrap();
             Ok(map.get(key).filter(|e| !e.is_expired()).cloned())
         }
-        async fn set(&self, key: &str, mut entry: crate::ports::CacheEntry, ttl: Option<std::time::Duration>) -> Result<(), CoreError> {
+        async fn set(
+            &self,
+            key: &str,
+            mut entry: crate::ports::CacheEntry,
+            ttl: Option<std::time::Duration>,
+        ) -> Result<(), CoreError> {
             if let Some(ttl) = ttl {
-                entry.expires_at = Some(Utc::now() + chrono::Duration::from_std(ttl).unwrap_or_default());
+                entry.expires_at =
+                    Some(Utc::now() + chrono::Duration::from_std(ttl).unwrap_or_default());
             }
             self.data.lock().unwrap().insert(key.to_owned(), entry);
             Ok(())
@@ -531,7 +628,10 @@ mod tests {
             self.data.lock().unwrap().remove(key);
             Ok(())
         }
-        async fn get_stale(&self, key: &str) -> Result<Option<crate::ports::CacheEntry>, CoreError> {
+        async fn get_stale(
+            &self,
+            key: &str,
+        ) -> Result<Option<crate::ports::CacheEntry>, CoreError> {
             Ok(self.data.lock().unwrap().get(key).cloned())
         }
     }
@@ -542,7 +642,9 @@ mod tests {
 
     impl SpyRepo {
         fn new() -> Arc<Self> {
-            Arc::new(Self { events: Mutex::new(vec![]) })
+            Arc::new(Self {
+                events: Mutex::new(vec![]),
+            })
         }
 
         fn events(&self) -> Vec<AccessEvent> {
@@ -559,10 +661,17 @@ mod tests {
         async fn get_status(&self, _pkg: &PackageId) -> Result<PackageStatus, CoreError> {
             Ok(PackageStatus::Available)
         }
-        async fn set_status(&self, _pkg: &PackageId, _status: PackageStatus) -> Result<(), CoreError> {
+        async fn set_status(
+            &self,
+            _pkg: &PackageId,
+            _status: PackageStatus,
+        ) -> Result<(), CoreError> {
             Ok(())
         }
-        async fn list_packages(&self, _filter: PackageFilter) -> Result<Vec<PackageSummary>, CoreError> {
+        async fn list_packages(
+            &self,
+            _filter: PackageFilter,
+        ) -> Result<Vec<PackageSummary>, CoreError> {
             Ok(vec![])
         }
         async fn count_packages(&self, _filter: PackageFilter) -> Result<u64, CoreError> {
@@ -579,7 +688,9 @@ mod tests {
 
     impl MemStorage {
         fn new() -> Arc<Self> {
-            Arc::new(Self { data: Mutex::new(HashMap::new()) })
+            Arc::new(Self {
+                data: Mutex::new(HashMap::new()),
+            })
         }
     }
 
@@ -593,8 +704,12 @@ mod tests {
             let lock = self.data.lock().unwrap();
             Ok(lock.get(key).map(|bytes| {
                 let b = bytes.clone();
-                let s: ByteStream = Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(b) }));
-                StoredArtifact { stream: s, meta: StorageMeta::default() }
+                let s: ByteStream =
+                    Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(b) }));
+                StoredArtifact {
+                    stream: s,
+                    meta: StorageMeta::default(),
+                }
             }))
         }
         async fn exists(&self, key: &str) -> Result<bool, CoreError> {
@@ -606,21 +721,32 @@ mod tests {
         }
         async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError> {
             let mut map = self.data.lock().unwrap();
-            let keys: Vec<String> = map.keys().filter(|k| k.starts_with(prefix)).cloned().collect();
+            let keys: Vec<String> = map
+                .keys()
+                .filter(|k| k.starts_with(prefix))
+                .cloned()
+                .collect();
             let count = keys.len();
-            for k in keys { map.remove(&k); }
+            for k in keys {
+                map.remove(&k);
+            }
             Ok(count)
         }
         async fn stat_by_prefix(&self, prefix: &str) -> Result<(u64, u64), CoreError> {
             let map = self.data.lock().unwrap();
-            let (count, bytes) = map.iter()
+            let (count, bytes) = map
+                .iter()
                 .filter(|(k, _)| k.starts_with(prefix))
                 .fold((0u64, 0u64), |(c, b), (_, v)| (c + 1, b + v.len() as u64));
             Ok((count, bytes))
         }
         async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, CoreError> {
             let map = self.data.lock().unwrap();
-            Ok(map.keys().filter(|k| k.starts_with(prefix)).cloned().collect())
+            Ok(map
+                .keys()
+                .filter(|k| k.starts_with(prefix))
+                .cloned()
+                .collect())
         }
     }
 
@@ -628,7 +754,9 @@ mod tests {
 
     #[async_trait]
     impl RegistryClient for FixedRegistry {
-        fn registry_type(&self) -> &str { "test" }
+        fn registry_type(&self) -> &str {
+            "test"
+        }
 
         async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
             Ok(PackageMetadata {
@@ -655,7 +783,9 @@ mod tests {
 
     #[async_trait]
     impl RegistryClient for DenyRegistry {
-        fn registry_type(&self) -> &str { "test" }
+        fn registry_type(&self) -> &str {
+            "test"
+        }
         async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
             Ok(PackageMetadata {
                 id: pkg.clone(),
@@ -676,9 +806,16 @@ mod tests {
 
     #[async_trait]
     impl crate::rules::Rule for AlwaysDenyRule {
-        fn name(&self) -> &str { "always_deny" }
-        async fn evaluate(&self, _ctx: &crate::rules::RuleContext<'_>) -> crate::rules::RuleDecision {
-            crate::rules::RuleDecision::Deny { reason: "test denial".to_owned() }
+        fn name(&self) -> &str {
+            "always_deny"
+        }
+        async fn evaluate(
+            &self,
+            _ctx: &crate::rules::RuleContext<'_>,
+        ) -> crate::rules::RuleDecision {
+            crate::rules::RuleDecision::Deny {
+                reason: "test denial".to_owned(),
+            }
         }
     }
 
@@ -699,7 +836,16 @@ mod tests {
         let mut registries = HashMap::new();
         registries.insert(registry_name.to_owned(), client);
         let mut policies = HashMap::new();
-        policies.insert(registry_name.to_owned(), RegistryPolicy { metadata_ttl: None, firewall_only: false, serve_stale_metadata: false, artifact_ttl: None, rules });
+        policies.insert(
+            registry_name.to_owned(),
+            RegistryPolicy {
+                metadata_ttl: None,
+                firewall_only: false,
+                serve_stale_metadata: false,
+                artifact_ttl: None,
+                rules,
+            },
+        );
         ProxyService {
             registries,
             storage: MemStorage::new(),
@@ -728,7 +874,10 @@ mod tests {
         let svc = ProxyService {
             registries: {
                 let mut m = HashMap::new();
-                m.insert("npm".to_owned(), Arc::new(FixedRegistry) as Arc<dyn RegistryClient>);
+                m.insert(
+                    "npm".to_owned(),
+                    Arc::new(FixedRegistry) as Arc<dyn RegistryClient>,
+                );
                 m
             },
             storage: MemStorage::new(),
@@ -737,7 +886,16 @@ mod tests {
             artifact_meta: NoopArtifactMeta::arc(),
             policies: {
                 let mut m = HashMap::new();
-                m.insert("npm".to_owned(), RegistryPolicy { metadata_ttl: Some(Duration::from_secs(300)), firewall_only: false, serve_stale_metadata: false, artifact_ttl: None, rules: vec![] });
+                m.insert(
+                    "npm".to_owned(),
+                    RegistryPolicy {
+                        metadata_ttl: Some(Duration::from_secs(300)),
+                        firewall_only: false,
+                        serve_stale_metadata: false,
+                        artifact_ttl: None,
+                        rules: vec![],
+                    },
+                );
                 m
             },
             max_artifact_size_bytes: None,
@@ -750,17 +908,28 @@ mod tests {
         assert!(cache.get(&cache_key).await.unwrap().is_none());
         let resp = svc.handle(req("npm")).await.unwrap();
         assert!(matches!(resp, ProxyResponse::Stream(_)));
-        assert!(cache.get(&cache_key).await.unwrap().is_some(), "metadata should be cached after first call");
+        assert!(
+            cache.get(&cache_key).await.unwrap().is_some(),
+            "metadata should be cached after first call"
+        );
 
         // Second call: cache hit — lines 86-87 are exercised
         let resp2 = svc.handle(req("npm")).await.unwrap();
-        assert!(matches!(resp2, ProxyResponse::Stream(_)), "second call must still return Stream");
+        assert!(
+            matches!(resp2, ProxyResponse::Stream(_)),
+            "second call must still return Stream"
+        );
     }
 
     #[tokio::test]
     async fn rule_denial_returns_denied_and_records_event() {
         let repo = SpyRepo::new();
-        let svc = proxy("npm", Arc::new(DenyRegistry), repo.clone(), vec![Box::new(AlwaysDenyRule)]);
+        let svc = proxy(
+            "npm",
+            Arc::new(DenyRegistry),
+            repo.clone(),
+            vec![Box::new(AlwaysDenyRule)],
+        );
 
         let resp = svc.handle(req("npm")).await.unwrap();
         assert!(
@@ -778,13 +947,23 @@ mod tests {
         let pkg = PackageId::new("npm", "test-pkg", "1.0.0");
         let artifact_key = format!("artifact:{}", pkg.cache_key());
         // Pre-populate storage
-        storage.store(&artifact_key, Bytes::from("cached!"), StorageMeta::default()).await.unwrap();
+        storage
+            .store(
+                &artifact_key,
+                Bytes::from("cached!"),
+                StorageMeta::default(),
+            )
+            .await
+            .unwrap();
 
         let repo = SpyRepo::new();
         let svc = ProxyService {
             registries: {
                 let mut m = HashMap::new();
-                m.insert("npm".to_owned(), Arc::new(FixedRegistry) as Arc<dyn RegistryClient>);
+                m.insert(
+                    "npm".to_owned(),
+                    Arc::new(FixedRegistry) as Arc<dyn RegistryClient>,
+                );
                 m
             },
             storage: storage.clone(),
@@ -793,7 +972,16 @@ mod tests {
             artifact_meta: NoopArtifactMeta::arc(),
             policies: {
                 let mut m = HashMap::new();
-                m.insert("npm".to_owned(), RegistryPolicy { metadata_ttl: None, firewall_only: false, serve_stale_metadata: false, artifact_ttl: None, rules: vec![] });
+                m.insert(
+                    "npm".to_owned(),
+                    RegistryPolicy {
+                        metadata_ttl: None,
+                        firewall_only: false,
+                        serve_stale_metadata: false,
+                        artifact_ttl: None,
+                        rules: vec![],
+                    },
+                );
                 m
             },
             max_artifact_size_bytes: None,
@@ -821,7 +1009,10 @@ mod tests {
         assert!(matches!(resp, ProxyResponse::Stream(_)));
 
         // Artifact should now be stored
-        assert!(svc.storage.exists(&artifact_key).await.unwrap(), "artifact should be stored after fetch");
+        assert!(
+            svc.storage.exists(&artifact_key).await.unwrap(),
+            "artifact should be stored after fetch"
+        );
         assert!(!repo.events().is_empty(), "access event should be recorded");
     }
 
@@ -831,7 +1022,10 @@ mod tests {
         let svc = ProxyService {
             registries: {
                 let mut m = HashMap::new();
-                m.insert("npm".to_owned(), Arc::new(FixedRegistry) as Arc<dyn RegistryClient>);
+                m.insert(
+                    "npm".to_owned(),
+                    Arc::new(FixedRegistry) as Arc<dyn RegistryClient>,
+                );
                 m
             },
             storage: MemStorage::new(),
@@ -840,7 +1034,16 @@ mod tests {
             artifact_meta: NoopArtifactMeta::arc(),
             policies: {
                 let mut m = HashMap::new();
-                m.insert("npm".to_owned(), RegistryPolicy { metadata_ttl: None, firewall_only: false, serve_stale_metadata: false, artifact_ttl: None, rules: vec![] });
+                m.insert(
+                    "npm".to_owned(),
+                    RegistryPolicy {
+                        metadata_ttl: None,
+                        firewall_only: false,
+                        serve_stale_metadata: false,
+                        artifact_ttl: None,
+                        rules: vec![],
+                    },
+                );
                 m
             },
             max_artifact_size_bytes: Some(5), // FixedRegistry sends >5 bytes
@@ -857,7 +1060,10 @@ mod tests {
         let svc = ProxyService {
             registries: {
                 let mut m = HashMap::new();
-                m.insert("npm".to_owned(), Arc::new(FixedRegistry) as Arc<dyn RegistryClient>);
+                m.insert(
+                    "npm".to_owned(),
+                    Arc::new(FixedRegistry) as Arc<dyn RegistryClient>,
+                );
                 m
             },
             storage: MemStorage::new(),
@@ -880,7 +1086,10 @@ mod tests {
         let svc = ProxyService {
             registries: {
                 let mut m = HashMap::new();
-                m.insert("npm".to_owned(), Arc::new(FixedRegistry) as Arc<dyn RegistryClient>);
+                m.insert(
+                    "npm".to_owned(),
+                    Arc::new(FixedRegistry) as Arc<dyn RegistryClient>,
+                );
                 m
             },
             storage: storage.clone(),
@@ -889,7 +1098,16 @@ mod tests {
             artifact_meta: NoopArtifactMeta::arc(),
             policies: {
                 let mut m = HashMap::new();
-                m.insert("npm".to_owned(), RegistryPolicy { metadata_ttl: None, firewall_only: true, serve_stale_metadata: false, artifact_ttl: None, rules: vec![] });
+                m.insert(
+                    "npm".to_owned(),
+                    RegistryPolicy {
+                        metadata_ttl: None,
+                        firewall_only: true,
+                        serve_stale_metadata: false,
+                        artifact_ttl: None,
+                        rules: vec![],
+                    },
+                );
                 m
             },
             max_artifact_size_bytes: None,
@@ -901,7 +1119,10 @@ mod tests {
 
         let resp = svc.handle(req("npm")).await.unwrap();
         assert!(matches!(resp, ProxyResponse::Stream(_)));
-        assert!(!storage.exists(&artifact_key).await.unwrap(), "firewall-only: artifact must not be stored");
+        assert!(
+            !storage.exists(&artifact_key).await.unwrap(),
+            "firewall-only: artifact must not be stored"
+        );
         assert!(!repo.events().is_empty(), "access event should be recorded");
     }
 
@@ -909,7 +1130,9 @@ mod tests {
 
     #[async_trait]
     impl RegistryClient for UnavailableRegistry {
-        fn registry_type(&self) -> &str { "test" }
+        fn registry_type(&self) -> &str {
+            "test"
+        }
         async fn resolve_metadata(&self, _pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
             Err(CoreError::Registry("upstream down".into()))
         }
@@ -931,13 +1154,16 @@ mod tests {
         let mut registries = HashMap::new();
         registries.insert("npm".to_owned(), client);
         let mut policies = HashMap::new();
-        policies.insert("npm".to_owned(), RegistryPolicy {
-            metadata_ttl: Some(Duration::from_secs(300)),
-            firewall_only: false,
-            serve_stale_metadata: serve_stale,
-            artifact_ttl: None,
-            rules: vec![],
-        });
+        policies.insert(
+            "npm".to_owned(),
+            RegistryPolicy {
+                metadata_ttl: Some(Duration::from_secs(300)),
+                firewall_only: false,
+                serve_stale_metadata: serve_stale,
+                artifact_ttl: None,
+                rules: vec![],
+            },
+        );
         ProxyService {
             registries,
             storage: MemStorage::new(),
@@ -969,9 +1195,14 @@ mod tests {
 
         let svc = proxy_with_stale(Arc::new(UnavailableRegistry), repo.clone(), cache, true);
         let resp = svc.handle(req("npm")).await.unwrap();
-        assert!(matches!(resp, ProxyResponse::Stream(_)), "stale fallback should succeed");
         assert!(
-            repo.events().iter().all(|e| !matches!(e.result, AccessResult::ProxyError { .. })),
+            matches!(resp, ProxyResponse::Stream(_)),
+            "stale fallback should succeed"
+        );
+        assert!(
+            repo.events()
+                .iter()
+                .all(|e| !matches!(e.result, AccessResult::ProxyError { .. })),
             "no proxy_error should be recorded when stale metadata is served"
         );
     }
@@ -995,9 +1226,14 @@ mod tests {
 
         let svc = proxy_with_stale(Arc::new(UnavailableRegistry), repo.clone(), cache, false);
         let result = svc.handle(req("npm")).await;
-        assert!(matches!(result, Err(CoreError::Registry(_))), "should propagate the upstream error");
         assert!(
-            repo.events().iter().any(|e| matches!(e.result, AccessResult::ProxyError { .. })),
+            matches!(result, Err(CoreError::Registry(_))),
+            "should propagate the upstream error"
+        );
+        assert!(
+            repo.events()
+                .iter()
+                .any(|e| matches!(e.result, AccessResult::ProxyError { .. })),
             "proxy_error must be recorded"
         );
     }
@@ -1009,7 +1245,10 @@ mod tests {
 
         let svc = proxy_with_stale(Arc::new(UnavailableRegistry), repo.clone(), cache, true);
         let result = svc.handle(req("npm")).await;
-        assert!(matches!(result, Err(CoreError::Registry(_))), "no stale entry + upstream down must return error");
+        assert!(
+            matches!(result, Err(CoreError::Registry(_))),
+            "no stale entry + upstream down must return error"
+        );
     }
 
     #[tokio::test]
@@ -1017,8 +1256,13 @@ mod tests {
         struct NotFoundRegistry;
         #[async_trait]
         impl RegistryClient for NotFoundRegistry {
-            fn registry_type(&self) -> &str { "test" }
-            async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
+            fn registry_type(&self) -> &str {
+                "test"
+            }
+            async fn resolve_metadata(
+                &self,
+                pkg: &PackageId,
+            ) -> Result<PackageMetadata, CoreError> {
                 Err(CoreError::NotFound(pkg.name.clone()))
             }
             async fn fetch_artifact(&self, _pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
@@ -1043,7 +1287,10 @@ mod tests {
 
         let svc = proxy_with_stale(Arc::new(NotFoundRegistry), repo.clone(), cache, true);
         let result = svc.handle(req("npm")).await;
-        assert!(matches!(result, Err(CoreError::NotFound(_))), "NotFound must not fall back to stale");
+        assert!(
+            matches!(result, Err(CoreError::NotFound(_))),
+            "NotFound must not fall back to stale"
+        );
     }
 
     // ── Cache-Control and ArtifactMeta integration tests ─────────────────────
@@ -1052,7 +1299,9 @@ mod tests {
 
     #[async_trait]
     impl RegistryClient for NoStoreMetaRegistry {
-        fn registry_type(&self) -> &str { "test" }
+        fn registry_type(&self) -> &str {
+            "test"
+        }
         async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
             Ok(PackageMetadata {
                 id: pkg.clone(),
@@ -1066,7 +1315,10 @@ mod tests {
         }
         async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
             let data = Bytes::from(format!("artifact:{}", pkg.cache_key()));
-            Ok(FetchedArtifact { stream: Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(data) })), cache_control: None })
+            Ok(FetchedArtifact {
+                stream: Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(data) })),
+                cache_control: None,
+            })
         }
     }
 
@@ -1074,7 +1326,9 @@ mod tests {
 
     #[async_trait]
     impl RegistryClient for NoStoreArtifactRegistry {
-        fn registry_type(&self) -> &str { "test" }
+        fn registry_type(&self) -> &str {
+            "test"
+        }
         async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
             Ok(PackageMetadata {
                 id: pkg.clone(),
@@ -1100,15 +1354,21 @@ mod tests {
         let repo = SpyRepo::new();
         let cache = TestCacheStore::new();
         let mut registries = HashMap::new();
-        registries.insert("npm".to_owned(), Arc::new(NoStoreMetaRegistry) as Arc<dyn RegistryClient>);
+        registries.insert(
+            "npm".to_owned(),
+            Arc::new(NoStoreMetaRegistry) as Arc<dyn RegistryClient>,
+        );
         let mut policies = HashMap::new();
-        policies.insert("npm".to_owned(), RegistryPolicy {
-            metadata_ttl: Some(Duration::from_secs(300)),
-            firewall_only: false,
-            serve_stale_metadata: false,
-            artifact_ttl: None,
-            rules: vec![],
-        });
+        policies.insert(
+            "npm".to_owned(),
+            RegistryPolicy {
+                metadata_ttl: Some(Duration::from_secs(300)),
+                firewall_only: false,
+                serve_stale_metadata: false,
+                artifact_ttl: None,
+                rules: vec![],
+            },
+        );
         let svc = ProxyService {
             registries,
             storage: MemStorage::new(),
@@ -1122,7 +1382,10 @@ mod tests {
 
         let cache_key = format!("meta:{}", req("npm").package_id.cache_key());
         let resp = svc.handle(req("npm")).await.unwrap();
-        assert!(matches!(resp, ProxyResponse::Stream(_)), "response must still be a stream");
+        assert!(
+            matches!(resp, ProxyResponse::Stream(_)),
+            "response must still be a stream"
+        );
         assert!(
             cache.get(&cache_key).await.unwrap().is_none(),
             "metadata must NOT be cached when upstream returns Cache-Control: no-store"
@@ -1134,7 +1397,10 @@ mod tests {
         let repo = SpyRepo::new();
         let storage = MemStorage::new();
         let mut registries = HashMap::new();
-        registries.insert("npm".to_owned(), Arc::new(NoStoreArtifactRegistry) as Arc<dyn RegistryClient>);
+        registries.insert(
+            "npm".to_owned(),
+            Arc::new(NoStoreArtifactRegistry) as Arc<dyn RegistryClient>,
+        );
         let svc = ProxyService {
             registries,
             storage: storage.clone(),
@@ -1150,7 +1416,10 @@ mod tests {
         let artifact_key = format!("artifact:{}", pkg.cache_key());
 
         let resp = svc.handle(req("npm")).await.unwrap();
-        assert!(matches!(resp, ProxyResponse::Stream(_)), "response must still be a stream");
+        assert!(
+            matches!(resp, ProxyResponse::Stream(_)),
+            "response must still be a stream"
+        );
         assert!(
             !storage.exists(&artifact_key).await.unwrap(),
             "artifact must NOT be stored when upstream returns Cache-Control: no-store"
@@ -1162,7 +1431,14 @@ mod tests {
         let storage = MemStorage::new();
         let pkg = PackageId::new("npm", "test-pkg", "1.0.0");
         let artifact_key = format!("artifact:{}", pkg.cache_key());
-        storage.store(&artifact_key, Bytes::from("stale-bytes"), StorageMeta::default()).await.unwrap();
+        storage
+            .store(
+                &artifact_key,
+                Bytes::from("stale-bytes"),
+                StorageMeta::default(),
+            )
+            .await
+            .unwrap();
 
         // Spy meta says artifact is expired
         let expired_meta = ArtifactMeta {
@@ -1178,15 +1454,21 @@ mod tests {
 
         let repo = SpyRepo::new();
         let mut registries = HashMap::new();
-        registries.insert("npm".to_owned(), Arc::new(FixedRegistry) as Arc<dyn RegistryClient>);
+        registries.insert(
+            "npm".to_owned(),
+            Arc::new(FixedRegistry) as Arc<dyn RegistryClient>,
+        );
         let mut policies = HashMap::new();
-        policies.insert("npm".to_owned(), RegistryPolicy {
-            metadata_ttl: None,
-            firewall_only: false,
-            serve_stale_metadata: false,
-            artifact_ttl: Some(Duration::from_secs(3600)), // 1h TTL
-            rules: vec![],
-        });
+        policies.insert(
+            "npm".to_owned(),
+            RegistryPolicy {
+                metadata_ttl: None,
+                firewall_only: false,
+                serve_stale_metadata: false,
+                artifact_ttl: Some(Duration::from_secs(3600)), // 1h TTL
+                rules: vec![],
+            },
+        );
         let svc = ProxyService {
             registries,
             storage: storage.clone(),
@@ -1201,7 +1483,10 @@ mod tests {
         let resp = svc.handle(req("npm")).await.unwrap();
         assert!(matches!(resp, ProxyResponse::Stream(_)));
         // After re-fetch, record_artifact should have been called
-        assert!(!spy_meta.recorded_keys().is_empty(), "record_artifact must be called after re-fetch");
+        assert!(
+            !spy_meta.recorded_keys().is_empty(),
+            "record_artifact must be called after re-fetch"
+        );
         // Storage should now contain the freshly fetched artifact
         assert!(storage.exists(&artifact_key).await.unwrap());
     }
@@ -1211,23 +1496,39 @@ mod tests {
         let storage = MemStorage::new();
         let pkg = PackageId::new("npm", "test-pkg", "1.0.0");
         let artifact_key = format!("artifact:{}", pkg.cache_key());
-        storage.store(&artifact_key, Bytes::from("cached!"), StorageMeta::default()).await.unwrap();
+        storage
+            .store(
+                &artifact_key,
+                Bytes::from("cached!"),
+                StorageMeta::default(),
+            )
+            .await
+            .unwrap();
 
         // Pre-seed the artifact metadata to simulate a previous record_artifact call.
         // Without this, is_artifact_expired treats the missing row as expired (correct
         // production behavior) and the proxy re-fetches instead of serving from cache.
         let spy_meta = SpyArtifactMeta::new();
-        spy_meta.record_artifact(&artifact_key, "npm", "test-pkg", "1.0.0", None).await.unwrap();
+        spy_meta
+            .record_artifact(&artifact_key, "npm", "test-pkg", "1.0.0", None)
+            .await
+            .unwrap();
         let mut registries = HashMap::new();
-        registries.insert("npm".to_owned(), Arc::new(FixedRegistry) as Arc<dyn RegistryClient>);
+        registries.insert(
+            "npm".to_owned(),
+            Arc::new(FixedRegistry) as Arc<dyn RegistryClient>,
+        );
         let mut policies = HashMap::new();
-        policies.insert("npm".to_owned(), RegistryPolicy {
-            metadata_ttl: None,
-            firewall_only: false,
-            serve_stale_metadata: false,
-            artifact_ttl: Some(Duration::from_secs(3600)),
-            rules: vec![],
-        });
+        policies.insert(
+            "npm".to_owned(),
+            RegistryPolicy {
+                metadata_ttl: None,
+                firewall_only: false,
+                serve_stale_metadata: false,
+                artifact_ttl: Some(Duration::from_secs(3600)),
+                rules: vec![],
+            },
+        );
         let svc = ProxyService {
             registries,
             storage: storage.clone(),
@@ -1254,7 +1555,10 @@ mod tests {
         let spy_meta = SpyArtifactMeta::new();
         let repo = SpyRepo::new();
         let mut registries = HashMap::new();
-        registries.insert("npm".to_owned(), Arc::new(FixedRegistry) as Arc<dyn RegistryClient>);
+        registries.insert(
+            "npm".to_owned(),
+            Arc::new(FixedRegistry) as Arc<dyn RegistryClient>,
+        );
         let svc = ProxyService {
             registries,
             storage: MemStorage::new(),
@@ -1284,7 +1588,10 @@ mod tests {
         let svc = ProxyService {
             registries: {
                 let mut m = HashMap::new();
-                m.insert("npm".to_owned(), Arc::new(FixedRegistry) as Arc<dyn RegistryClient>);
+                m.insert(
+                    "npm".to_owned(),
+                    Arc::new(FixedRegistry) as Arc<dyn RegistryClient>,
+                );
                 m
             },
             storage: storage.clone(),
@@ -1293,13 +1600,16 @@ mod tests {
             artifact_meta: NoopArtifactMeta::arc(),
             policies: {
                 let mut m = HashMap::new();
-                m.insert("npm".to_owned(), RegistryPolicy {
-                    metadata_ttl: Some(Duration::from_secs(300)),
-                    firewall_only: false,
-                    serve_stale_metadata: false,
-                    artifact_ttl: None,
-                    rules: vec![],
-                });
+                m.insert(
+                    "npm".to_owned(),
+                    RegistryPolicy {
+                        metadata_ttl: Some(Duration::from_secs(300)),
+                        firewall_only: false,
+                        serve_stale_metadata: false,
+                        artifact_ttl: None,
+                        rules: vec![],
+                    },
+                );
                 m
             },
             max_artifact_size_bytes: None,

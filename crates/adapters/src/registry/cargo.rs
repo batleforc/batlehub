@@ -29,7 +29,11 @@ impl CargoRegistryClient {
             .user_agent("batlehub/0.1")
             .redirect(reqwest::redirect::Policy::limited(10));
         let http = apply_upstream_options(builder, opts)?;
-        Ok(Self { http, base_url: base_url.into(), basic_auth: opts.basic_auth.clone() })
+        Ok(Self {
+            http,
+            base_url: base_url.into(),
+            basic_auth: opts.basic_auth.clone(),
+        })
     }
 
     fn get(&self, url: &str) -> reqwest::RequestBuilder {
@@ -114,7 +118,9 @@ impl RegistryClient for CargoRegistryClient {
     async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
         let resp = self.fetch_crate_info(package).await?;
         // Return non-yanked versions sorted oldest-first (crates.io returns newest-first).
-        let mut versions: Vec<String> = resp.versions.into_iter()
+        let mut versions: Vec<String> = resp
+            .versions
+            .into_iter()
             .filter(|v| !v.yanked)
             .map(|v| v.num)
             .collect();
@@ -146,7 +152,10 @@ impl RegistryClient for CargoRegistryClient {
             .bytes_stream()
             .map_err(|e| CoreError::Registry(e.to_string()));
 
-        Ok(FetchedArtifact { stream: Box::pin(stream), cache_control })
+        Ok(FetchedArtifact {
+            stream: Box::pin(stream),
+            cache_control,
+        })
     }
 }
 
@@ -163,15 +172,18 @@ impl CargoRegistryClient {
         resp.versions
             .iter()
             .find(|v| v.num == resolved && !v.yanked)
-            .ok_or_else(|| CoreError::NotFound(format!(
-                "crate {}@{} not found or yanked",
-                pkg.name, resolved
-            )))
+            .ok_or_else(|| {
+                CoreError::NotFound(format!(
+                    "crate {}@{} not found or yanked",
+                    pkg.name, resolved
+                ))
+            })
     }
 
     async fn fetch_crate_info(&self, name: &str) -> Result<CratesIoResponse, CoreError> {
         let url = format!("{}/api/v1/crates/{}", self.base_url, name);
-        let resp = self.get(&url)
+        let resp = self
+            .get(&url)
             .send()
             .await
             .map_err(|e| CoreError::Registry(e.to_string()))?;

@@ -3,8 +3,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use redis::AsyncCommands;
 use redis::aio::ConnectionManager;
+use redis::AsyncCommands;
 
 use batlehub_core::error::CoreError;
 use batlehub_core::ports::RateLimitStore;

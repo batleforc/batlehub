@@ -8,7 +8,10 @@ use regex::Regex;
 use crate::{
     entities::{Identity, PublishedPackage, Role, Visibility},
     error::CoreError,
-    ports::{BetaChannelPort, LocalRegistryBackend, OwnershipPort, StorageBackend, StorageMeta, TeamNamespacePort},
+    ports::{
+        BetaChannelPort, LocalRegistryBackend, OwnershipPort, StorageBackend, StorageMeta,
+        TeamNamespacePort,
+    },
     services::quota::{QuotaCheck, QuotaService},
 };
 
@@ -142,7 +145,11 @@ impl LocalRegistryService {
             if let Some(ns) = ns_port.find_namespace(&req.registry, &req.name).await? {
                 let norm_id = ns.group_id.replace(' ', "");
                 let ok = req.publisher.is_admin()
-                    || req.publisher.groups.iter().any(|g| g.replace(' ', "") == norm_id);
+                    || req
+                        .publisher
+                        .groups
+                        .iter()
+                        .any(|g| g.replace(' ', "") == norm_id);
                 if !ok {
                     return Err(CoreError::AccessDenied(format!(
                         "namespace '{}' in registry '{}' is owned by group '{}'; \
@@ -158,7 +165,9 @@ impl LocalRegistryService {
         let is_new_package = if let Some(ref ownership) = self.ownership {
             let package_exists = self.backend.exists(&req.registry, &req.name).await?;
             if package_exists
-                && !ownership.can_publish(&req.registry, &req.name, &req.publisher).await?
+                && !ownership
+                    .can_publish(&req.registry, &req.name, &req.publisher)
+                    .await?
             {
                 return Err(CoreError::AccessDenied(format!(
                     "you are not an owner of '{}' in registry '{}'",
@@ -219,7 +228,8 @@ impl LocalRegistryService {
         // Step 1: reserve the version (inserted as 'pending', invisible to readers).
         if let Err(e) = self.backend.publish(pkg).await {
             // Row was not inserted; only quota needs rollback.
-            self.revoke_quota(&req.publisher, &req.registry, bytes).await;
+            self.revoke_quota(&req.publisher, &req.registry, bytes)
+                .await;
             return Err(e);
         }
 
@@ -237,8 +247,10 @@ impl LocalRegistryService {
             )
             .await
         {
-            self.remove_pending(&req.registry, &req.name, &req.version).await;
-            self.revoke_quota(&req.publisher, &req.registry, bytes).await;
+            self.remove_pending(&req.registry, &req.name, &req.version)
+                .await;
+            self.revoke_quota(&req.publisher, &req.registry, bytes)
+                .await;
             return Err(e);
         }
 
@@ -249,18 +261,19 @@ impl LocalRegistryService {
             .commit_publish(&req.registry, &req.name, &req.version)
             .await
         {
-            self.remove_pending(&req.registry, &req.name, &req.version).await;
+            self.remove_pending(&req.registry, &req.name, &req.version)
+                .await;
             if let Err(err) = self.storage.delete(&storage_key).await {
                 tracing::error!("storage cleanup after commit failure: {err}");
             }
-            self.revoke_quota(&req.publisher, &req.registry, bytes).await;
+            self.revoke_quota(&req.publisher, &req.registry, bytes)
+                .await;
             return Err(e);
         }
 
         // Step 4: on first publish, register the publisher as the package admin.
         if is_new_package {
-            if let (Some(ref ownership), Some(ref uid)) =
-                (&self.ownership, &req.publisher.user_id)
+            if let (Some(ref ownership), Some(ref uid)) = (&self.ownership, &req.publisher.user_id)
             {
                 if let Err(err) = ownership
                     .initialize_owner(&req.registry, &req.name, uid)
@@ -286,7 +299,8 @@ impl LocalRegistryService {
                 "yank requires at least User role".into(),
             ));
         }
-        self.check_namespace_membership(registry, name, identity).await?;
+        self.check_namespace_membership(registry, name, identity)
+            .await?;
         self.backend.yank(registry, name, version).await
     }
 
@@ -302,7 +316,8 @@ impl LocalRegistryService {
                 "unyank requires at least User role".into(),
             ));
         }
-        self.check_namespace_membership(registry, name, identity).await?;
+        self.check_namespace_membership(registry, name, identity)
+            .await?;
         self.backend.unyank(registry, name, version).await
     }
 
@@ -322,7 +337,10 @@ impl LocalRegistryService {
         };
         if let Some(ns) = ns_port.find_namespace(registry, package).await? {
             let norm_id = ns.group_id.replace(' ', "");
-            let ok = identity.groups.iter().any(|g| g.replace(' ', "") == norm_id);
+            let ok = identity
+                .groups
+                .iter()
+                .any(|g| g.replace(' ', "") == norm_id);
             if !ok {
                 return Err(CoreError::AccessDenied(format!(
                     "namespace '{}' in registry '{}' is owned by group '{}'; \
@@ -358,7 +376,9 @@ impl LocalRegistryService {
     ) -> Result<String, CoreError> {
         self.check_visibility(registry, name, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
-        let versions = self.filter_for_identity(registry, versions, identity).await?;
+        let versions = self
+            .filter_for_identity(registry, versions, identity)
+            .await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "crate '{}' not found in local registry '{}'",
@@ -384,7 +404,9 @@ impl LocalRegistryService {
     ) -> Result<serde_json::Value, CoreError> {
         self.check_visibility(registry, name, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
-        let versions = self.filter_for_identity(registry, versions, identity).await?;
+        let versions = self
+            .filter_for_identity(registry, versions, identity)
+            .await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "package '{}' not found in local registry '{}'",
@@ -400,9 +422,7 @@ impl LocalRegistryService {
         for pkg in &versions {
             let mut meta = pkg.index_metadata.clone();
             if let Some(obj) = meta.as_object_mut() {
-                let dist = obj
-                    .entry("dist")
-                    .or_insert_with(|| serde_json::json!({}));
+                let dist = obj.entry("dist").or_insert_with(|| serde_json::json!({}));
                 if let Some(d) = dist.as_object_mut() {
                     d.insert(
                         "tarball".to_owned(),
@@ -450,7 +470,8 @@ impl LocalRegistryService {
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
         self.check_visibility(registry, name, identity).await?;
-        self.check_prerelease_access(registry, version, identity).await?;
+        self.check_prerelease_access(registry, version, identity)
+            .await?;
         let versions = self.backend.get_versions(registry, name).await?;
         let pkg = versions
             .into_iter()
@@ -465,15 +486,11 @@ impl LocalRegistryService {
         let base = base_url.trim_end_matches('/');
         let mut meta = pkg.index_metadata.clone();
         if let Some(obj) = meta.as_object_mut() {
-            let dist = obj
-                .entry("dist")
-                .or_insert_with(|| serde_json::json!({}));
+            let dist = obj.entry("dist").or_insert_with(|| serde_json::json!({}));
             if let Some(d) = dist.as_object_mut() {
                 d.insert(
                     "tarball".to_owned(),
-                    serde_json::json!(format!(
-                        "{base}/proxy/{registry}/{name}/{version}/tarball"
-                    )),
+                    serde_json::json!(format!("{base}/proxy/{registry}/{name}/{version}/tarball")),
                 );
             }
         }
@@ -490,16 +507,12 @@ impl LocalRegistryService {
     ) -> Result<Bytes, CoreError> {
         self.check_visibility(registry, name, identity).await?;
         let key = artifact_storage_key(registry, name, version);
-        let artifact = self
-            .storage
-            .retrieve(&key)
-            .await?
-            .ok_or_else(|| {
-                CoreError::NotFound(format!(
-                    "{}/{}@{} not found in local registry",
-                    registry, name, version
-                ))
-            })?;
+        let artifact = self.storage.retrieve(&key).await?.ok_or_else(|| {
+            CoreError::NotFound(format!(
+                "{}/{}@{} not found in local registry",
+                registry, name, version
+            ))
+        })?;
         let mut buf = Vec::new();
         let mut stream = artifact.stream;
         while let Some(chunk) = stream.next().await {
@@ -546,7 +559,14 @@ impl LocalRegistryService {
             }
             Visibility::Team => {
                 match ns_port.find_namespace(registry, package).await? {
-                    Some(ns) if identity.groups.iter().any(|g| g.replace(' ', "") == ns.group_id.replace(' ', "")) => Ok(()),
+                    Some(ns)
+                        if identity
+                            .groups
+                            .iter()
+                            .any(|g| g.replace(' ', "") == ns.group_id.replace(' ', "")) =>
+                    {
+                        Ok(())
+                    }
                     Some(ns) => Err(CoreError::AccessDenied(format!(
                         "package visibility is 'team'; must be a member of group '{}'",
                         ns.group_id
@@ -596,7 +616,10 @@ impl LocalRegistryService {
         if beta_port.is_member(registry, identity).await? {
             return Ok(versions);
         }
-        Ok(versions.into_iter().filter(|p| !Self::is_prerelease(&p.version)).collect())
+        Ok(versions
+            .into_iter()
+            .filter(|p| !Self::is_prerelease(&p.version))
+            .collect())
     }
 
     /// Returns `CoreError::NotFound` if `version` is a pre-release and the caller
@@ -647,7 +670,9 @@ impl LocalRegistryService {
     ) -> Result<String, CoreError> {
         self.check_visibility(registry, module, identity).await?;
         let versions = self.backend.get_versions(registry, module).await?;
-        let versions = self.filter_for_identity(registry, versions, identity).await?;
+        let versions = self
+            .filter_for_identity(registry, versions, identity)
+            .await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "module '{}' not found in local registry '{}'",
@@ -676,7 +701,8 @@ impl LocalRegistryService {
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
         self.check_visibility(registry, module, identity).await?;
-        self.check_prerelease_access(registry, version, identity).await?;
+        self.check_prerelease_access(registry, version, identity)
+            .await?;
         let pkg = self
             .backend
             .get_versions(registry, module)
@@ -711,7 +737,8 @@ impl LocalRegistryService {
         identity: &Identity,
     ) -> Result<String, CoreError> {
         self.check_visibility(registry, module, identity).await?;
-        self.check_prerelease_access(registry, version, identity).await?;
+        self.check_prerelease_access(registry, version, identity)
+            .await?;
         let pkg = self
             .backend
             .get_versions(registry, module)
@@ -745,7 +772,9 @@ impl LocalRegistryService {
     ) -> Result<serde_json::Value, CoreError> {
         self.check_visibility(registry, module, identity).await?;
         let versions = self.backend.get_versions(registry, module).await?;
-        let versions = self.filter_for_identity(registry, versions, identity).await?;
+        let versions = self
+            .filter_for_identity(registry, versions, identity)
+            .await?;
         let pkg = versions
             .iter()
             .rev()
@@ -780,7 +809,9 @@ impl LocalRegistryService {
     ) -> Result<serde_json::Value, CoreError> {
         self.check_visibility(registry, name, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
-        let versions = self.filter_for_identity(registry, versions, identity).await?;
+        let versions = self
+            .filter_for_identity(registry, versions, identity)
+            .await?;
         let latest = versions
             .iter()
             .rev()
@@ -816,7 +847,9 @@ impl LocalRegistryService {
     ) -> Result<Vec<serde_json::Value>, CoreError> {
         self.check_visibility(registry, name, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
-        let versions = self.filter_for_identity(registry, versions, identity).await?;
+        let versions = self
+            .filter_for_identity(registry, versions, identity)
+            .await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "gem '{name}' not found in local registry '{registry}'"
@@ -854,7 +887,9 @@ impl LocalRegistryService {
     ) -> Result<Vec<PublishedPackage>, CoreError> {
         self.check_visibility(registry, name, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
-        let versions = self.filter_for_identity(registry, versions, identity).await?;
+        let versions = self
+            .filter_for_identity(registry, versions, identity)
+            .await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "artifact '{name}' not found in local registry '{registry}'"
@@ -872,7 +907,9 @@ impl LocalRegistryService {
     ) -> Result<serde_json::Value, CoreError> {
         self.check_visibility(registry, name, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
-        let versions = self.filter_for_identity(registry, versions, identity).await?;
+        let versions = self
+            .filter_for_identity(registry, versions, identity)
+            .await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "module '{name}' not found in local registry '{registry}'"
@@ -895,7 +932,9 @@ impl LocalRegistryService {
     ) -> Result<serde_json::Value, CoreError> {
         self.check_visibility(registry, name, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
-        let versions = self.filter_for_identity(registry, versions, identity).await?;
+        let versions = self
+            .filter_for_identity(registry, versions, identity)
+            .await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "provider '{name}' not found in local registry '{registry}'"
@@ -949,7 +988,8 @@ impl LocalRegistryService {
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
         self.check_visibility(registry, name, identity).await?;
-        self.check_prerelease_access(registry, version, identity).await?;
+        self.check_prerelease_access(registry, version, identity)
+            .await?;
         let versions = self.backend.get_versions(registry, name).await?;
         let pkg = versions
             .into_iter()
@@ -1001,8 +1041,11 @@ impl LocalRegistryService {
             obj.insert("arch".to_owned(), serde_json::json!(arch));
             obj.insert("download_url".to_owned(), serde_json::json!(download_url));
             let meta = &pkg.index_metadata;
-            obj.entry("protocols")
-                .or_insert_with(|| meta.get("protocols").cloned().unwrap_or(serde_json::json!([])));
+            obj.entry("protocols").or_insert_with(|| {
+                meta.get("protocols")
+                    .cloned()
+                    .unwrap_or(serde_json::json!([]))
+            });
             obj.entry("signing_keys")
                 .or_insert_with(|| serde_json::json!({"gpg_public_keys": []}));
         }
@@ -1022,7 +1065,9 @@ impl LocalRegistryService {
     ) -> Result<serde_json::Value, CoreError> {
         self.check_visibility(registry, name, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
-        let versions = self.filter_for_identity(registry, versions, identity).await?;
+        let versions = self
+            .filter_for_identity(registry, versions, identity)
+            .await?;
 
         // Exclude yanked versions: Composer clients have no standard way to
         // interpret a `yanked` field, so they would happily install yanked releases.
@@ -1061,7 +1106,10 @@ impl LocalRegistryService {
                 );
                 obj.insert("name".to_owned(), serde_json::json!(name));
                 obj.insert("version".to_owned(), serde_json::json!(pkg.version));
-                obj.insert("time".to_owned(), serde_json::json!(pkg.published_at.to_rfc3339()));
+                obj.insert(
+                    "time".to_owned(),
+                    serde_json::json!(pkg.published_at.to_rfc3339()),
+                );
                 Some(entry)
             })
             .collect();
@@ -1140,7 +1188,9 @@ mod tests {
     }
 
     impl InMemBackend {
-        fn arc() -> Arc<Self> { Arc::new(Self::default()) }
+        fn arc() -> Arc<Self> {
+            Arc::new(Self::default())
+        }
         fn seed(&self, pkg: PublishedPackage) {
             self.versions.lock().unwrap().push(pkg);
         }
@@ -1152,16 +1202,33 @@ mod tests {
             self.versions.lock().unwrap().push(pkg);
             Ok(())
         }
-        async fn yank(&self, _: &str, _: &str, _: &str) -> Result<(), CoreError> { Ok(()) }
-        async fn unyank(&self, _: &str, _: &str, _: &str) -> Result<(), CoreError> { Ok(()) }
-        async fn get_versions(&self, registry: &str, name: &str) -> Result<Vec<PublishedPackage>, CoreError> {
-            Ok(self.versions.lock().unwrap().iter()
+        async fn yank(&self, _: &str, _: &str, _: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn unyank(&self, _: &str, _: &str, _: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn get_versions(
+            &self,
+            registry: &str,
+            name: &str,
+        ) -> Result<Vec<PublishedPackage>, CoreError> {
+            Ok(self
+                .versions
+                .lock()
+                .unwrap()
+                .iter()
                 .filter(|p| p.registry == registry && p.name == name)
                 .cloned()
                 .collect())
         }
         async fn exists(&self, registry: &str, name: &str) -> Result<bool, CoreError> {
-            Ok(self.versions.lock().unwrap().iter().any(|p| p.registry == registry && p.name == name))
+            Ok(self
+                .versions
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| p.registry == registry && p.name == name))
         }
     }
 
@@ -1169,13 +1236,27 @@ mod tests {
 
     #[async_trait]
     impl StorageBackend for NoopStorage {
-        async fn store(&self, _: &str, _: Bytes, _: StorageMeta) -> Result<(), CoreError> { Ok(()) }
-        async fn retrieve(&self, _: &str) -> Result<Option<StoredArtifact>, CoreError> { Ok(None) }
-        async fn exists(&self, _: &str) -> Result<bool, CoreError> { Ok(false) }
-        async fn delete(&self, _: &str) -> Result<(), CoreError> { Ok(()) }
-        async fn delete_by_prefix(&self, _: &str) -> Result<usize, CoreError> { Ok(0) }
-        async fn stat_by_prefix(&self, _: &str) -> Result<(u64, u64), CoreError> { Ok((0, 0)) }
-        async fn list_keys(&self, _: &str) -> Result<Vec<String>, CoreError> { Ok(vec![]) }
+        async fn store(&self, _: &str, _: Bytes, _: StorageMeta) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn retrieve(&self, _: &str) -> Result<Option<StoredArtifact>, CoreError> {
+            Ok(None)
+        }
+        async fn exists(&self, _: &str) -> Result<bool, CoreError> {
+            Ok(false)
+        }
+        async fn delete(&self, _: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn delete_by_prefix(&self, _: &str) -> Result<usize, CoreError> {
+            Ok(0)
+        }
+        async fn stat_by_prefix(&self, _: &str) -> Result<(u64, u64), CoreError> {
+            Ok((0, 0))
+        }
+        async fn list_keys(&self, _: &str) -> Result<Vec<String>, CoreError> {
+            Ok(vec![])
+        }
     }
 
     fn svc(backend: Arc<InMemBackend>, max_bytes: Option<u64>) -> LocalRegistryService {
@@ -1209,11 +1290,21 @@ mod tests {
     }
 
     fn anon() -> Identity {
-        Identity { user_id: None, role: Role::Anonymous, auth_provider: None, groups: vec![] }
+        Identity {
+            user_id: None,
+            role: Role::Anonymous,
+            auth_provider: None,
+            groups: vec![],
+        }
     }
 
     fn user() -> Identity {
-        Identity { user_id: Some("u1".into()), role: Role::User, auth_provider: None, groups: vec![] }
+        Identity {
+            user_id: Some("u1".into()),
+            role: Role::User,
+            auth_provider: None,
+            groups: vec![],
+        }
     }
 
     // ── publish error paths ───────────────────────────────────────────────────
@@ -1242,14 +1333,20 @@ mod tests {
     #[tokio::test]
     async fn yank_requires_user_role() {
         let s = svc(InMemBackend::arc(), None);
-        let err = s.yank("cargo", "serde", "1.0.0", &anon()).await.unwrap_err();
+        let err = s
+            .yank("cargo", "serde", "1.0.0", &anon())
+            .await
+            .unwrap_err();
         assert!(matches!(err, CoreError::AccessDenied(_)));
     }
 
     #[tokio::test]
     async fn unyank_requires_user_role() {
         let s = svc(InMemBackend::arc(), None);
-        let err = s.unyank("cargo", "serde", "1.0.0", &anon()).await.unwrap_err();
+        let err = s
+            .unyank("cargo", "serde", "1.0.0", &anon())
+            .await
+            .unwrap_err();
         assert!(matches!(err, CoreError::AccessDenied(_)));
     }
 
@@ -1258,7 +1355,10 @@ mod tests {
     #[tokio::test]
     async fn get_npm_packument_not_found_when_no_versions() {
         let s = svc(InMemBackend::arc(), None);
-        let err = s.get_npm_packument("npm", "unknown", "http://localhost", &anon()).await.unwrap_err();
+        let err = s
+            .get_npm_packument("npm", "unknown", "http://localhost", &anon())
+            .await
+            .unwrap_err();
         assert!(matches!(err, CoreError::NotFound(_)));
     }
 
@@ -1267,7 +1367,10 @@ mod tests {
         let backend = InMemBackend::arc();
         backend.seed(pkg("npm", "express", "4.0.0"));
         let s = svc(backend, None);
-        let err = s.get_npm_version("npm", "express", "9.9.9", "http://localhost", &anon()).await.unwrap_err();
+        let err = s
+            .get_npm_version("npm", "express", "9.9.9", "http://localhost", &anon())
+            .await
+            .unwrap_err();
         assert!(matches!(err, CoreError::NotFound(_)));
     }
 
@@ -1276,7 +1379,10 @@ mod tests {
     #[tokio::test]
     async fn get_go_version_list_not_found_when_empty() {
         let s = svc(InMemBackend::arc(), None);
-        let err = s.get_go_version_list("go", "example.com/mod", &anon()).await.unwrap_err();
+        let err = s
+            .get_go_version_list("go", "example.com/mod", &anon())
+            .await
+            .unwrap_err();
         assert!(matches!(err, CoreError::NotFound(_)));
     }
 
@@ -1285,7 +1391,10 @@ mod tests {
         let backend = InMemBackend::arc();
         backend.seed(pkg("go", "example.com/mod", "v1.0.0"));
         let s = svc(backend, None);
-        let err = s.get_go_info("go", "example.com/mod", "v9.9.9", &anon()).await.unwrap_err();
+        let err = s
+            .get_go_info("go", "example.com/mod", "v9.9.9", &anon())
+            .await
+            .unwrap_err();
         assert!(matches!(err, CoreError::NotFound(_)));
     }
 
@@ -1294,7 +1403,10 @@ mod tests {
         let backend = InMemBackend::arc();
         backend.seed(pkg("go", "example.com/mod", "v1.0.0"));
         let s = svc(backend, None);
-        let err = s.get_go_mod("go", "example.com/mod", "v9.9.9", &anon()).await.unwrap_err();
+        let err = s
+            .get_go_mod("go", "example.com/mod", "v9.9.9", &anon())
+            .await
+            .unwrap_err();
         assert!(matches!(err, CoreError::NotFound(_)));
     }
 
@@ -1304,14 +1416,20 @@ mod tests {
         // Package exists but index_metadata has no "go_mod" key
         backend.seed(pkg("go", "example.com/mod", "v1.0.0"));
         let s = svc(backend, None);
-        let err = s.get_go_mod("go", "example.com/mod", "v1.0.0", &anon()).await.unwrap_err();
+        let err = s
+            .get_go_mod("go", "example.com/mod", "v1.0.0", &anon())
+            .await
+            .unwrap_err();
         assert!(matches!(err, CoreError::NotFound(_)));
     }
 
     #[tokio::test]
     async fn get_go_latest_not_found_when_no_versions() {
         let s = svc(InMemBackend::arc(), None);
-        let err = s.get_go_latest("go", "example.com/mod", &anon()).await.unwrap_err();
+        let err = s
+            .get_go_latest("go", "example.com/mod", &anon())
+            .await
+            .unwrap_err();
         assert!(matches!(err, CoreError::NotFound(_)));
     }
 
@@ -1329,23 +1447,48 @@ mod tests {
             })
         }
         fn empty() -> Arc<Self> {
-            Arc::new(Self { members: std::collections::HashSet::new() })
+            Arc::new(Self {
+                members: std::collections::HashSet::new(),
+            })
         }
     }
 
     #[async_trait]
     impl crate::ports::BetaChannelPort for MemBetaChannel {
         async fn is_member(&self, _registry: &str, identity: &Identity) -> Result<bool, CoreError> {
-            Ok(identity.user_id.as_ref().map(|id| self.members.contains(id)).unwrap_or(false))
+            Ok(identity
+                .user_id
+                .as_ref()
+                .map(|id| self.members.contains(id))
+                .unwrap_or(false))
         }
-        async fn add_member(&self, _: &str, _: crate::ports::BetaChannelEntry) -> Result<(), CoreError> { Ok(()) }
-        async fn remove_member(&self, _: &str, _: &str, _: &str) -> Result<(), CoreError> { Ok(()) }
-        async fn list_members(&self, _: &str) -> Result<Vec<crate::ports::BetaChannelEntry>, CoreError> { Ok(vec![]) }
+        async fn add_member(
+            &self,
+            _: &str,
+            _: crate::ports::BetaChannelEntry,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn remove_member(&self, _: &str, _: &str, _: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn list_members(
+            &self,
+            _: &str,
+        ) -> Result<Vec<crate::ports::BetaChannelEntry>, CoreError> {
+            Ok(vec![])
+        }
     }
 
-    fn svc_with_beta(backend: Arc<InMemBackend>, beta: Arc<dyn crate::ports::BetaChannelPort>) -> LocalRegistryService {
+    fn svc_with_beta(
+        backend: Arc<InMemBackend>,
+        beta: Arc<dyn crate::ports::BetaChannelPort>,
+    ) -> LocalRegistryService {
         let mut bc = HashMap::new();
-        bc.insert("reg".to_owned(), beta as Arc<dyn crate::ports::BetaChannelPort>);
+        bc.insert(
+            "reg".to_owned(),
+            beta as Arc<dyn crate::ports::BetaChannelPort>,
+        );
         LocalRegistryService {
             backend,
             storage: Arc::new(NoopStorage),
@@ -1360,7 +1503,12 @@ mod tests {
     }
 
     fn beta_user() -> Identity {
-        Identity { user_id: Some("beta".into()), role: Role::User, auth_provider: None, groups: vec![] }
+        Identity {
+            user_id: Some("beta".into()),
+            role: Role::User,
+            auth_provider: None,
+            groups: vec![],
+        }
     }
 
     // No beta channel configured → all versions visible to everyone (tested via npm packument).
@@ -1370,7 +1518,10 @@ mod tests {
         backend.seed(pkg("reg", "lib", "1.0.0"));
         backend.seed(pkg("reg", "lib", "1.1.0-beta.1"));
         let s = svc(backend, None);
-        let doc = s.get_npm_packument("reg", "lib", "http://localhost", &anon()).await.unwrap();
+        let doc = s
+            .get_npm_packument("reg", "lib", "http://localhost", &anon())
+            .await
+            .unwrap();
         assert_eq!(doc["versions"].as_object().unwrap().len(), 2);
     }
 
@@ -1381,7 +1532,10 @@ mod tests {
         backend.seed(pkg("reg", "lib", "1.0.0"));
         backend.seed(pkg("reg", "lib", "1.1.0-beta.1"));
         let s = svc_with_beta(backend, MemBetaChannel::empty());
-        let doc = s.get_npm_packument("reg", "lib", "http://localhost", &anon()).await.unwrap();
+        let doc = s
+            .get_npm_packument("reg", "lib", "http://localhost", &anon())
+            .await
+            .unwrap();
         let versions = doc["versions"].as_object().unwrap();
         assert_eq!(versions.len(), 1);
         assert!(versions.contains_key("1.0.0"));
@@ -1394,7 +1548,10 @@ mod tests {
         backend.seed(pkg("reg", "lib", "1.0.0"));
         backend.seed(pkg("reg", "lib", "1.1.0-beta.1"));
         let s = svc_with_beta(backend, MemBetaChannel::with_users(&["beta"]));
-        let doc = s.get_npm_packument("reg", "lib", "http://localhost", &beta_user()).await.unwrap();
+        let doc = s
+            .get_npm_packument("reg", "lib", "http://localhost", &beta_user())
+            .await
+            .unwrap();
         assert_eq!(doc["versions"].as_object().unwrap().len(), 2);
     }
 
@@ -1403,7 +1560,9 @@ mod tests {
     async fn check_prerelease_access_stable_always_ok() {
         let backend = InMemBackend::arc();
         let s = svc_with_beta(backend, MemBetaChannel::empty());
-        s.check_prerelease_access("reg", "1.0.0", &anon()).await.unwrap();
+        s.check_prerelease_access("reg", "1.0.0", &anon())
+            .await
+            .unwrap();
     }
 
     // check_prerelease_access blocks non-members on pre-release versions.
@@ -1411,7 +1570,10 @@ mod tests {
     async fn check_prerelease_access_blocks_non_member() {
         let backend = InMemBackend::arc();
         let s = svc_with_beta(backend, MemBetaChannel::empty());
-        let err = s.check_prerelease_access("reg", "1.1.0-beta.1", &anon()).await.unwrap_err();
+        let err = s
+            .check_prerelease_access("reg", "1.1.0-beta.1", &anon())
+            .await
+            .unwrap_err();
         assert!(matches!(err, CoreError::NotFound(_)));
     }
 
@@ -1420,7 +1582,9 @@ mod tests {
     async fn check_prerelease_access_allows_member() {
         let backend = InMemBackend::arc();
         let s = svc_with_beta(backend, MemBetaChannel::with_users(&["beta"]));
-        s.check_prerelease_access("reg", "1.1.0-beta.1", &beta_user()).await.unwrap();
+        s.check_prerelease_access("reg", "1.1.0-beta.1", &beta_user())
+            .await
+            .unwrap();
     }
 
     // check_prerelease_access passes when no beta channel is configured (open access).
@@ -1428,7 +1592,9 @@ mod tests {
     async fn check_prerelease_access_no_channel_open() {
         let backend = InMemBackend::arc();
         let s = svc(backend, None);
-        s.check_prerelease_access("reg", "1.1.0-beta.1", &anon()).await.unwrap();
+        s.check_prerelease_access("reg", "1.1.0-beta.1", &anon())
+            .await
+            .unwrap();
     }
 
     // npm packument: dist-tags.latest must point to latest stable, not pre-release.
@@ -1439,7 +1605,10 @@ mod tests {
         backend.seed(pkg("reg", "pkg", "2.0.0-alpha.1"));
         // Even beta members should not see a pre-release as `latest`.
         let s = svc_with_beta(backend, MemBetaChannel::with_users(&["beta"]));
-        let doc = s.get_npm_packument("reg", "pkg", "http://localhost", &beta_user()).await.unwrap();
+        let doc = s
+            .get_npm_packument("reg", "pkg", "http://localhost", &beta_user())
+            .await
+            .unwrap();
         let latest = doc["dist-tags"]["latest"].as_str().unwrap();
         assert_eq!(latest, "1.0.0");
     }
@@ -1450,7 +1619,10 @@ mod tests {
         let backend = InMemBackend::arc();
         backend.seed(pkg("reg", "pkg", "1.0.0-beta.1"));
         let s = svc_with_beta(backend, MemBetaChannel::with_users(&["beta"]));
-        let doc = s.get_npm_packument("reg", "pkg", "http://localhost", &beta_user()).await.unwrap();
+        let doc = s
+            .get_npm_packument("reg", "pkg", "http://localhost", &beta_user())
+            .await
+            .unwrap();
         // No stable version; latest must fall back to the newest pre-release, not "".
         let latest = doc["dist-tags"]["latest"].as_str().unwrap();
         assert_eq!(latest, "1.0.0-beta.1");
@@ -1483,7 +1655,10 @@ mod tests {
         backend.seed(pkg("reg", "gem", "1.0.0"));
         backend.seed(pkg("reg", "gem", "1.1.0-pre"));
         let s = svc_with_beta(backend, MemBetaChannel::with_users(&["beta"]));
-        let info = s.get_rubygems_gem_info("reg", "gem", &beta_user()).await.unwrap();
+        let info = s
+            .get_rubygems_gem_info("reg", "gem", &beta_user())
+            .await
+            .unwrap();
         assert_eq!(info["version"].as_str().unwrap(), "1.0.0");
     }
 
@@ -1494,7 +1669,10 @@ mod tests {
         backend.seed(pkg("reg", "gem", "1.0.0"));
         backend.seed(pkg("reg", "gem", "1.1.0-rc.1"));
         let s = svc_with_beta(backend, MemBetaChannel::with_users(&["beta"]));
-        let versions = s.get_rubygems_versions("reg", "gem", &beta_user()).await.unwrap();
+        let versions = s
+            .get_rubygems_versions("reg", "gem", &beta_user())
+            .await
+            .unwrap();
         // Newest first; 1.1.0-rc.1 is index 0.
         let pre = versions[0]["prerelease"].as_bool().unwrap();
         let stable = versions[1]["prerelease"].as_bool().unwrap();
@@ -1520,8 +1698,14 @@ mod tests {
     async fn check_prerelease_access_blocks_dev_branch_non_member() {
         let backend = InMemBackend::arc();
         let s = svc_with_beta(backend, MemBetaChannel::empty());
-        let err = s.check_prerelease_access("reg", "dev-main", &anon()).await.unwrap_err();
-        assert!(matches!(err, CoreError::NotFound(_)), "dev-main must be gated");
+        let err = s
+            .check_prerelease_access("reg", "dev-main", &anon())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, CoreError::NotFound(_)),
+            "dev-main must be gated"
+        );
     }
 
     // ── Team namespace enforcement tests ─────────────────────────────────────
@@ -1533,60 +1717,113 @@ mod tests {
     }
 
     impl MockTeamNamespace {
-        fn arc() -> Arc<Self> { Arc::new(Self::default()) }
+        fn arc() -> Arc<Self> {
+            Arc::new(Self::default())
+        }
         fn with_namespace(registry: &str, prefix: &str, group: &str) -> Arc<Self> {
             let s = Self::arc();
-            s.namespaces.lock().unwrap().push(crate::entities::TeamNamespace {
-                registry: registry.to_owned(),
-                prefix: prefix.to_owned(),
-                group_id: group.to_owned(),
-                claimed_by: None,
-            });
+            s.namespaces
+                .lock()
+                .unwrap()
+                .push(crate::entities::TeamNamespace {
+                    registry: registry.to_owned(),
+                    prefix: prefix.to_owned(),
+                    group_id: group.to_owned(),
+                    claimed_by: None,
+                });
             s
         }
         fn with_visibility(registry: &str, package: &str, vis: Visibility) -> Arc<Self> {
             let s = Self::arc();
-            s.visibility.lock().unwrap().insert(
-                (registry.to_owned(), package.to_owned()),
-                vis,
-            );
+            s.visibility
+                .lock()
+                .unwrap()
+                .insert((registry.to_owned(), package.to_owned()), vis);
             s
         }
     }
 
     #[async_trait]
     impl TeamNamespacePort for MockTeamNamespace {
-        async fn find_namespace(&self, registry: &str, package: &str) -> Result<Option<crate::entities::TeamNamespace>, CoreError> {
+        async fn find_namespace(
+            &self,
+            registry: &str,
+            package: &str,
+        ) -> Result<Option<crate::entities::TeamNamespace>, CoreError> {
             let ns = self.namespaces.lock().unwrap();
-            let result = ns.iter()
-                .filter(|n| n.registry == registry
-                    && (package == n.prefix
-                        || (package.len() > n.prefix.len()
-                            && package[..n.prefix.len() + 1] == format!("{}/", n.prefix))))
+            let result = ns
+                .iter()
+                .filter(|n| {
+                    n.registry == registry
+                        && (package == n.prefix
+                            || (package.len() > n.prefix.len()
+                                && package[..n.prefix.len() + 1] == format!("{}/", n.prefix)))
+                })
                 .max_by_key(|n| n.prefix.len())
                 .cloned();
             Ok(result)
         }
-        async fn list_namespaces(&self, _: &str) -> Result<Vec<crate::entities::TeamNamespace>, CoreError> { Ok(vec![]) }
-        async fn claim_namespace(&self, _: crate::entities::TeamNamespace) -> Result<(), CoreError> { Ok(()) }
-        async fn release_namespace(&self, _: &str, _: &str) -> Result<(), CoreError> { Ok(()) }
-        async fn set_visibility(&self, _: &str, _: &str, _: Visibility) -> Result<(), CoreError> { Ok(()) }
-        async fn get_visibility(&self, registry: &str, package: &str) -> Result<Visibility, CoreError> {
-            Ok(self.visibility.lock().unwrap()
+        async fn list_namespaces(
+            &self,
+            _: &str,
+        ) -> Result<Vec<crate::entities::TeamNamespace>, CoreError> {
+            Ok(vec![])
+        }
+        async fn claim_namespace(
+            &self,
+            _: crate::entities::TeamNamespace,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn release_namespace(&self, _: &str, _: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn set_visibility(&self, _: &str, _: &str, _: Visibility) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn get_visibility(
+            &self,
+            registry: &str,
+            package: &str,
+        ) -> Result<Visibility, CoreError> {
+            Ok(self
+                .visibility
+                .lock()
+                .unwrap()
                 .get(&(registry.to_owned(), package.to_owned()))
                 .cloned()
                 .unwrap_or_default())
         }
-        async fn list_namespaces_for_groups(&self, groups: &[String]) -> Result<Vec<crate::entities::TeamNamespace>, CoreError> {
+        async fn list_namespaces_for_groups(
+            &self,
+            groups: &[String],
+        ) -> Result<Vec<crate::entities::TeamNamespace>, CoreError> {
             let ns = self.namespaces.lock().unwrap();
-            Ok(ns.iter().filter(|n| groups.iter().any(|g| g.replace(' ', "") == n.group_id.replace(' ', ""))).cloned().collect())
+            Ok(ns
+                .iter()
+                .filter(|n| {
+                    groups
+                        .iter()
+                        .any(|g| g.replace(' ', "") == n.group_id.replace(' ', ""))
+                })
+                .cloned()
+                .collect())
         }
-        async fn list_packages_in_namespace(&self, _: &str, _: &str, _: u64, _: u64) -> Result<Vec<crate::entities::NamespacePackage>, CoreError> {
+        async fn list_packages_in_namespace(
+            &self,
+            _: &str,
+            _: &str,
+            _: u64,
+            _: u64,
+        ) -> Result<Vec<crate::entities::NamespacePackage>, CoreError> {
             Ok(vec![])
         }
     }
 
-    fn svc_with_ns(backend: Arc<InMemBackend>, ns: Arc<dyn TeamNamespacePort>) -> LocalRegistryService {
+    fn svc_with_ns(
+        backend: Arc<InMemBackend>,
+        ns: Arc<dyn TeamNamespacePort>,
+    ) -> LocalRegistryService {
         LocalRegistryService {
             backend,
             storage: Arc::new(NoopStorage),
@@ -1610,11 +1847,21 @@ mod tests {
     }
 
     fn non_member() -> Identity {
-        Identity { user_id: Some("u2".into()), role: Role::User, auth_provider: None, groups: vec![] }
+        Identity {
+            user_id: Some("u2".into()),
+            role: Role::User,
+            auth_provider: None,
+            groups: vec![],
+        }
     }
 
     fn admin_id() -> Identity {
-        Identity { user_id: Some("adm".into()), role: Role::Admin, auth_provider: None, groups: vec![] }
+        Identity {
+            user_id: Some("adm".into()),
+            role: Role::Admin,
+            auth_provider: None,
+            groups: vec![],
+        }
     }
 
     #[tokio::test]
@@ -1634,7 +1881,10 @@ mod tests {
             signature_type: None,
         };
         let err = s.publish(req).await.unwrap_err();
-        assert!(matches!(err, CoreError::AccessDenied(_)), "non-member must be denied");
+        assert!(
+            matches!(err, CoreError::AccessDenied(_)),
+            "non-member must be denied"
+        );
     }
 
     #[tokio::test]
@@ -1672,7 +1922,10 @@ mod tests {
             signature_bytes: None,
             signature_type: None,
         };
-        assert!(s.publish(req).await.is_ok(), "admin must bypass namespace gate");
+        assert!(
+            s.publish(req).await.is_ok(),
+            "admin must bypass namespace gate"
+        );
     }
 
     #[tokio::test]
@@ -1691,7 +1944,10 @@ mod tests {
             signature_bytes: None,
             signature_type: None,
         };
-        assert!(s.publish(req).await.is_ok(), "unclaimed namespace allows any user");
+        assert!(
+            s.publish(req).await.is_ok(),
+            "unclaimed namespace allows any user"
+        );
     }
 
     // ── check_visibility tests ────────────────────────────────────────────────
@@ -1715,7 +1971,10 @@ mod tests {
     async fn visibility_internal_allows_user() {
         let ns = MockTeamNamespace::with_visibility("reg", "pkg", Visibility::Internal);
         let s = svc_with_ns(InMemBackend::arc(), ns);
-        assert!(s.check_visibility("reg", "pkg", &non_member()).await.is_ok());
+        assert!(s
+            .check_visibility("reg", "pkg", &non_member())
+            .await
+            .is_ok());
     }
 
     #[tokio::test]
@@ -1724,26 +1983,33 @@ mod tests {
         // override visibility map
         let mock = {
             let inner = Arc::try_unwrap(mock).unwrap();
-            inner.visibility.lock().unwrap().insert(
-                ("reg".into(), "frontend/pkg".into()),
-                Visibility::Team,
-            );
+            inner
+                .visibility
+                .lock()
+                .unwrap()
+                .insert(("reg".into(), "frontend/pkg".into()), Visibility::Team);
             Arc::new(inner)
         };
         let s = svc_with_ns(InMemBackend::arc(), mock);
-        let err = s.check_visibility("reg", "frontend/pkg", &non_member()).await.unwrap_err();
+        let err = s
+            .check_visibility("reg", "frontend/pkg", &non_member())
+            .await
+            .unwrap_err();
         assert!(matches!(err, CoreError::AccessDenied(_)));
     }
 
     #[tokio::test]
     async fn visibility_team_allows_member() {
         let mock = MockTeamNamespace::with_namespace("reg", "frontend", "team-a");
-        mock.visibility.lock().unwrap().insert(
-            ("reg".into(), "frontend/pkg".into()),
-            Visibility::Team,
-        );
+        mock.visibility
+            .lock()
+            .unwrap()
+            .insert(("reg".into(), "frontend/pkg".into()), Visibility::Team);
         let s = svc_with_ns(InMemBackend::arc(), mock);
-        assert!(s.check_visibility("reg", "frontend/pkg", &member()).await.is_ok());
+        assert!(s
+            .check_visibility("reg", "frontend/pkg", &member())
+            .await
+            .is_ok());
     }
 
     #[tokio::test]
@@ -1761,7 +2027,10 @@ mod tests {
         // Visibility is Team but no namespace claim is seeded.
         let ns = MockTeamNamespace::with_visibility("reg", "pkg", Visibility::Team);
         let s = svc_with_ns(InMemBackend::arc(), ns);
-        let err = s.check_visibility("reg", "pkg", &non_member()).await.unwrap_err();
+        let err = s
+            .check_visibility("reg", "pkg", &non_member())
+            .await
+            .unwrap_err();
         assert!(matches!(err, CoreError::AccessDenied(_)));
     }
 
@@ -1782,10 +2051,10 @@ mod tests {
 
         // Seed visibility = Internal for the first version.
         let ns = MockTeamNamespace::arc();
-        ns.visibility.lock().unwrap().insert(
-            ("reg".into(), "my-pkg".into()),
-            Visibility::Internal,
-        );
+        ns.visibility
+            .lock()
+            .unwrap()
+            .insert(("reg".into(), "my-pkg".into()), Visibility::Internal);
         let s = svc_with_ns(backend, ns);
 
         let req = PublishRequest {
@@ -1804,8 +2073,11 @@ mod tests {
         // The newly published version must carry the inherited visibility.
         let versions = s.backend.get_versions("reg", "my-pkg").await.unwrap();
         let v2 = versions.iter().find(|v| v.version == "2.0.0").unwrap();
-        assert_eq!(v2.visibility, Visibility::Internal,
-            "second version must inherit Internal visibility from the package");
+        assert_eq!(
+            v2.visibility,
+            Visibility::Internal,
+            "second version must inherit Internal visibility from the package"
+        );
     }
 
     // ── yank/unyank namespace enforcement ────────────────────────────────────
@@ -1816,8 +2088,14 @@ mod tests {
         backend.seed(pkg("reg", "frontend/utils", "1.0.0"));
         let ns = MockTeamNamespace::with_namespace("reg", "frontend", "team-a");
         let s = svc_with_ns(backend, ns);
-        let err = s.yank("reg", "frontend/utils", "1.0.0", &non_member()).await.unwrap_err();
-        assert!(matches!(err, CoreError::AccessDenied(_)), "non-member must not yank namespace package");
+        let err = s
+            .yank("reg", "frontend/utils", "1.0.0", &non_member())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, CoreError::AccessDenied(_)),
+            "non-member must not yank namespace package"
+        );
     }
 
     #[tokio::test]
@@ -1826,7 +2104,10 @@ mod tests {
         backend.seed(pkg("reg", "frontend/utils", "1.0.0"));
         let ns = MockTeamNamespace::with_namespace("reg", "frontend", "team-a");
         let s = svc_with_ns(backend, ns);
-        assert!(s.yank("reg", "frontend/utils", "1.0.0", &member()).await.is_ok());
+        assert!(s
+            .yank("reg", "frontend/utils", "1.0.0", &member())
+            .await
+            .is_ok());
     }
 
     #[tokio::test]
@@ -1835,7 +2116,10 @@ mod tests {
         backend.seed(pkg("reg", "frontend/utils", "1.0.0"));
         let ns = MockTeamNamespace::with_namespace("reg", "frontend", "team-a");
         let s = svc_with_ns(backend, ns);
-        assert!(s.yank("reg", "frontend/utils", "1.0.0", &admin_id()).await.is_ok());
+        assert!(s
+            .yank("reg", "frontend/utils", "1.0.0", &admin_id())
+            .await
+            .is_ok());
     }
 
     #[tokio::test]
@@ -1844,7 +2128,10 @@ mod tests {
         backend.seed(pkg("reg", "unclaimed/pkg", "1.0.0"));
         let ns = MockTeamNamespace::arc(); // no claims
         let s = svc_with_ns(backend, ns);
-        assert!(s.yank("reg", "unclaimed/pkg", "1.0.0", &non_member()).await.is_ok());
+        assert!(s
+            .yank("reg", "unclaimed/pkg", "1.0.0", &non_member())
+            .await
+            .is_ok());
     }
 
     #[tokio::test]
@@ -1853,7 +2140,10 @@ mod tests {
         backend.seed(pkg("reg", "frontend/utils", "1.0.0"));
         let ns = MockTeamNamespace::with_namespace("reg", "frontend", "team-a");
         let s = svc_with_ns(backend, ns);
-        let err = s.unyank("reg", "frontend/utils", "1.0.0", &non_member()).await.unwrap_err();
+        let err = s
+            .unyank("reg", "frontend/utils", "1.0.0", &non_member())
+            .await
+            .unwrap_err();
         assert!(matches!(err, CoreError::AccessDenied(_)));
     }
 
@@ -1863,6 +2153,9 @@ mod tests {
         backend.seed(pkg("reg", "frontend/utils", "1.0.0"));
         let ns = MockTeamNamespace::with_namespace("reg", "frontend", "team-a");
         let s = svc_with_ns(backend, ns);
-        assert!(s.unyank("reg", "frontend/utils", "1.0.0", &member()).await.is_ok());
+        assert!(s
+            .unyank("reg", "frontend/utils", "1.0.0", &member())
+            .await
+            .is_ok());
     }
 }

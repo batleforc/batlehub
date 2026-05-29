@@ -40,7 +40,11 @@ impl RubyGemsRegistryClient {
     pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
         let builder = reqwest::Client::builder().user_agent("batlehub/0.1");
         let http = apply_upstream_options(builder, opts)?;
-        Ok(Self { http, base_url: base_url.into(), basic_auth: opts.basic_auth.clone() })
+        Ok(Self {
+            http,
+            base_url: base_url.into(),
+            basic_auth: opts.basic_auth.clone(),
+        })
     }
 
     fn get(&self, url: &str) -> reqwest::RequestBuilder {
@@ -69,9 +73,9 @@ impl RubyGemsRegistryClient {
 
         match pkg.artifact.as_deref() {
             Some("gem") => Ok(format!("{base}/gems/{name}-{version}.gem")),
-            Some("gemspec") => {
-                Ok(format!("{base}/quick/Marshal.4.8/{name}-{version}.gemspec.rz"))
-            }
+            Some("gemspec") => Ok(format!(
+                "{base}/quick/Marshal.4.8/{name}-{version}.gemspec.rz"
+            )),
             None => match version.as_str() {
                 "versions" => Ok(format!("{base}/api/v1/versions/{name}.json")),
                 _ => Ok(format!("{base}/api/v1/gems/{name}.json")),
@@ -111,11 +115,10 @@ impl RegistryClient for RubyGemsRegistryClient {
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
         let url = self.artifact_url(pkg)?;
 
-        let resp = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(format!("rubygems metadata request failed: {e}")))?;
+        let resp =
+            self.get(&url).send().await.map_err(|e| {
+                CoreError::Registry(format!("rubygems metadata request failed: {e}"))
+            })?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(CoreError::NotFound(format!(
@@ -203,10 +206,14 @@ impl RegistryClient for RubyGemsRegistryClient {
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
 
-        let stream =
-            response.bytes_stream().map_err(|e| CoreError::Registry(e.to_string()));
+        let stream = response
+            .bytes_stream()
+            .map_err(|e| CoreError::Registry(e.to_string()));
 
-        Ok(FetchedArtifact { stream: Box::pin(stream), cache_control })
+        Ok(FetchedArtifact {
+            stream: Box::pin(stream),
+            cache_control,
+        })
     }
 
     async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
@@ -314,8 +321,7 @@ fn extract_yaml_value<'a>(yaml: &'a str, key: &str) -> Option<&'a str> {
 
 fn strip_yaml_quotes(s: &str) -> &str {
     if s.len() >= 2
-        && ((s.starts_with('\'') && s.ends_with('\''))
-            || (s.starts_with('"') && s.ends_with('"')))
+        && ((s.starts_with('\'') && s.ends_with('\'')) || (s.starts_with('"') && s.ends_with('"')))
     {
         &s[1..s.len() - 1]
     } else {
@@ -360,7 +366,9 @@ fn parse_gem_yaml(yaml: &str) -> Result<GemMetadata, CoreError> {
         })?
     };
 
-    let platform = extract_yaml_value(yaml, "platform: ").unwrap_or("ruby").to_owned();
+    let platform = extract_yaml_value(yaml, "platform: ")
+        .unwrap_or("ruby")
+        .to_owned();
     let summary = extract_yaml_value(yaml, "summary: ").map(str::to_owned);
 
     let mut authors = Vec::new();
@@ -380,7 +388,13 @@ fn parse_gem_yaml(yaml: &str) -> Result<GemMetadata, CoreError> {
         }
     }
 
-    Ok(GemMetadata { name, version, platform, summary, authors })
+    Ok(GemMetadata {
+        name,
+        version,
+        platform,
+        summary,
+        authors,
+    })
 }
 
 /// Split a gem filename stem (without `.gem`) into `(name, version)`.
@@ -417,7 +431,10 @@ mod tests {
 
     #[test]
     fn split_gem_stem_hyphenated_name() {
-        assert_eq!(split_gem_stem("json-jwt-1.0.0"), Some(("json-jwt", "1.0.0")));
+        assert_eq!(
+            split_gem_stem("json-jwt-1.0.0"),
+            Some(("json-jwt", "1.0.0"))
+        );
     }
 
     #[test]
@@ -440,9 +457,7 @@ mod tests {
             .mock("GET", "/api/v1/versions/rails.json")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(
-                r#"[{"number":"7.1.0"},{"number":"7.0.8"},{"number":"6.1.7"}]"#,
-            )
+            .with_body(r#"[{"number":"7.1.0"},{"number":"7.0.8"},{"number":"6.1.7"}]"#)
             .create_async()
             .await;
 
@@ -497,7 +512,10 @@ mod tests {
 
         let c = client(&server.url());
         let pkg = PackageId::new("rg", "missing", "1.0.0").with_artifact("gem");
-        assert!(matches!(c.fetch_artifact(&pkg).await, Err(CoreError::NotFound(_))));
+        assert!(matches!(
+            c.fetch_artifact(&pkg).await,
+            Err(CoreError::NotFound(_))
+        ));
     }
 
     #[tokio::test]
@@ -556,7 +574,10 @@ summary: Full-stack web application framework.
         assert_eq!(meta.name, "rails");
         assert_eq!(meta.version, "7.1.0");
         assert_eq!(meta.platform, "ruby");
-        assert_eq!(meta.summary.as_deref(), Some("Full-stack web application framework."));
+        assert_eq!(
+            meta.summary.as_deref(),
+            Some("Full-stack web application framework.")
+        );
         assert_eq!(meta.authors, vec!["David Heinemeier Hansson"]);
     }
 }

@@ -18,7 +18,6 @@ impl PgCacheStore {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
-
 }
 
 #[async_trait]
@@ -36,7 +35,12 @@ impl CacheStore for PgCacheStore {
         row.map(|r| decode_row(&r)).transpose()
     }
 
-    async fn set(&self, key: &str, entry: CacheEntry, ttl: Option<Duration>) -> Result<(), CoreError> {
+    async fn set(
+        &self,
+        key: &str,
+        entry: CacheEntry,
+        ttl: Option<Duration>,
+    ) -> Result<(), CoreError> {
         let expires_at = ttl.and_then(|d| match chrono::Duration::from_std(d) {
             Ok(cd) => Some(Utc::now() + cd),
             Err(e) => {

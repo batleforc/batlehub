@@ -40,7 +40,11 @@ impl ComposerRegistryClient {
         let http = apply_upstream_options(builder, opts)?;
         // Normalise once so per-method callers don't need to trim.
         let base_url = base_url.into().trim_end_matches('/').to_owned();
-        Ok(Self { http, base_url, basic_auth: opts.basic_auth.clone() })
+        Ok(Self {
+            http,
+            base_url,
+            basic_auth: opts.basic_auth.clone(),
+        })
     }
 
     fn get(&self, url: &str) -> reqwest::RequestBuilder {
@@ -78,10 +82,7 @@ impl ComposerRegistryClient {
         Ok(resp)
     }
 
-    async fn fetch_p2_response(
-        &self,
-        package: &str,
-    ) -> Result<PackagistV2Response, CoreError> {
+    async fn fetch_p2_response(&self, package: &str) -> Result<PackagistV2Response, CoreError> {
         let url = format!("{}/p2/{package}.json", self.base_url);
         let resp = self.send_p2_request(&url, package).await?;
         resp.json::<PackagistV2Response>()
@@ -223,10 +224,12 @@ impl RegistryClient for ComposerRegistryClient {
             Some(art @ ("p2" | "p2~dev")) => {
                 let suffix = if art == "p2~dev" { "~dev" } else { "" };
                 let (bytes, cache_control) = self.fetch_p2_bytes(&pkg.name, suffix).await?;
-                let once = futures::stream::once(async move {
-                    Ok::<bytes::Bytes, CoreError>(bytes)
+                let once =
+                    futures::stream::once(async move { Ok::<bytes::Bytes, CoreError>(bytes) });
+                return Ok(FetchedArtifact {
+                    stream: Box::pin(once),
+                    cache_control,
                 });
-                return Ok(FetchedArtifact { stream: Box::pin(once), cache_control });
             }
             _ => {}
         }
@@ -250,16 +253,12 @@ impl RegistryClient for ComposerRegistryClient {
                 ))
             })?;
 
-        let dist_url = entry
-            .dist
-            .as_ref()
-            .map(|d| d.url.clone())
-            .ok_or_else(|| {
-                CoreError::NotFound(format!(
-                    "no dist URL for composer package '{}@{}'",
-                    pkg.name, pkg.version
-                ))
-            })?;
+        let dist_url = entry.dist.as_ref().map(|d| d.url.clone()).ok_or_else(|| {
+            CoreError::NotFound(format!(
+                "no dist URL for composer package '{}@{}'",
+                pkg.name, pkg.version
+            ))
+        })?;
 
         tracing::debug!(url = %dist_url, "fetching composer dist artifact");
 
@@ -294,7 +293,10 @@ impl RegistryClient for ComposerRegistryClient {
             .bytes_stream()
             .map_err(|e| CoreError::Registry(e.to_string()));
 
-        Ok(FetchedArtifact { stream: Box::pin(stream), cache_control })
+        Ok(FetchedArtifact {
+            stream: Box::pin(stream),
+            cache_control,
+        })
     }
 
     async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
@@ -350,9 +352,9 @@ pub fn parse_composer_zip(
     let version = version_override
         .map(str::to_owned)
         .or(parsed.version)
-        .ok_or_else(|| anyhow::anyhow!(
-            "composer.json has no 'version' field and no version was provided"
-        ))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("composer.json has no 'version' field and no version was provided")
+        })?;
 
     // Validate name: exactly "vendor/package" with safe characters in each segment.
     // A bare contains('/') check would allow traversal sequences like "a/../../etc".
@@ -383,10 +385,14 @@ pub fn parse_composer_zip(
 /// Returns true when every character in `s` is alphanumeric, a hyphen, underscore, or dot.
 /// Used to validate both Composer package name segments and ZIP path components.
 fn is_valid_composer_name_segment(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
-fn find_composer_json(archive: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>) -> anyhow::Result<String> {
+fn find_composer_json(
+    archive: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>,
+) -> anyhow::Result<String> {
     use std::io::Read;
 
     // Try root-level composer.json first.
@@ -465,7 +471,11 @@ mod tests {
             .mock("GET", "/p2/symfony/console.json")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(p2_json("symfony/console", "v7.2.0", "https://example.com/dist.zip"))
+            .with_body(p2_json(
+                "symfony/console",
+                "v7.2.0",
+                "https://example.com/dist.zip",
+            ))
             .create_async()
             .await;
 
@@ -530,7 +540,10 @@ mod tests {
 
         let c = client(&server.url());
         let pkg = PackageId::new("pkgist", "missing/pkg", "v1.0.0");
-        assert!(matches!(c.resolve_metadata(&pkg).await, Err(CoreError::NotFound(_))));
+        assert!(matches!(
+            c.resolve_metadata(&pkg).await,
+            Err(CoreError::NotFound(_))
+        ));
     }
 
     #[tokio::test]
@@ -545,7 +558,10 @@ mod tests {
 
         let c = client(&server.url());
         let pkg = PackageId::new("pkgist", "vendor/pkg", "v9.9.9");
-        assert!(matches!(c.resolve_metadata(&pkg).await, Err(CoreError::NotFound(_))));
+        assert!(matches!(
+            c.resolve_metadata(&pkg).await,
+            Err(CoreError::NotFound(_))
+        ));
     }
 
     // ── fetch_artifact ────────────────────────────────────────────────────────
@@ -611,7 +627,10 @@ mod tests {
 
         let c = client(&server.url());
         let pkg = PackageId::new("pkgist", "missing/pkg", "v1.0.0").with_artifact("dist");
-        assert!(matches!(c.fetch_artifact(&pkg).await, Err(CoreError::NotFound(_))));
+        assert!(matches!(
+            c.fetch_artifact(&pkg).await,
+            Err(CoreError::NotFound(_))
+        ));
     }
 
     #[tokio::test]
@@ -770,7 +789,12 @@ mod tests {
     #[test]
     fn parse_composer_zip_path_traversal_name_rejected() {
         // Names with '..' components must be rejected to prevent storage path traversal.
-        for bad_name in &["vendor/../../etc/shadow", "a/../b/c", "../vendor/pkg", "vendor/pkg/extra"] {
+        for bad_name in &[
+            "vendor/../../etc/shadow",
+            "a/../b/c",
+            "../vendor/pkg",
+            "vendor/pkg/extra",
+        ] {
             let json = serde_json::json!({ "name": bad_name, "version": "v1.0.0" })
                 .to_string()
                 .into_bytes();
@@ -798,6 +822,9 @@ mod tests {
             writer.finish().unwrap();
         }
         let data = Bytes::from(buf.into_inner());
-        assert!(parse_composer_zip(&data, None).is_err(), "ambiguous multi-root ZIP must fail");
+        assert!(
+            parse_composer_zip(&data, None).is_err(),
+            "ambiguous multi-root ZIP must fail"
+        );
     }
 }

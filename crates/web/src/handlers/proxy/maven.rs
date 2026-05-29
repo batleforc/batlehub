@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
-use actix_web::{HttpResponse, Responder, get, put, web};
-use quick_xml::{Writer, events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event}};
+use actix_web::{get, put, web, HttpResponse, Responder};
+use quick_xml::{
+    events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event},
+    Writer,
+};
 use sha2::{Digest, Sha256};
 
 use batlehub_config::schema::RegistryMode;
@@ -9,13 +12,13 @@ use batlehub_core::{
     entities::PackageId,
     ports::StorageMeta,
     services::{
-        LocalRegistryService, PublishRequest, ProxyService,
-        artifact_storage_key, maven_artifact_storage_key,
+        artifact_storage_key, maven_artifact_storage_key, LocalRegistryService, ProxyService,
+        PublishRequest,
     },
 };
 
-use crate::{RegistryMap, RegistryModeMap, error::AppError, extractors::AuthIdentity};
 use super::common::{collect_payload, proxy_stream, require_local_mode};
+use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 fn require_maven(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry) {
@@ -23,7 +26,9 @@ fn require_maven(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
         Some(_) => Err(AppError::not_found(format!(
             "registry '{registry}' is not a Maven registry"
         ))),
-        None => Err(AppError::not_found(format!("unknown registry '{registry}'"))),
+        None => Err(AppError::not_found(format!(
+            "unknown registry '{registry}'"
+        ))),
     }
 }
 
@@ -47,7 +52,11 @@ enum MavenPathKind {
     /// `maven-metadata.xml` request — carries the resolved `groupId:artifactId` name.
     Metadata { name: String },
     /// Normal artifact — jar, pom, checksum, etc.
-    Artifact { name: String, version: String, filename: String },
+    Artifact {
+        name: String,
+        version: String,
+        filename: String,
+    },
 }
 
 fn parse_maven_path(_registry: &str, maven_path: &str) -> Result<MavenPathKind, AppError> {
@@ -175,8 +184,8 @@ struct PomMetadata {
 }
 
 fn parse_pom(bytes: &[u8]) -> Result<PomMetadata, AppError> {
-    use quick_xml::Reader;
     use quick_xml::events::Event as XE;
+    use quick_xml::Reader;
 
     let mut reader = Reader::from_reader(bytes);
     reader.config_mut().trim_text(true);
@@ -199,7 +208,8 @@ fn parse_pom(bytes: &[u8]) -> Result<PomMetadata, AppError> {
                 }
             }
             Ok(XE::Text(e)) if depth == 2 => {
-                let text = e.unescape()
+                let text = e
+                    .unescape()
                     .map_err(|e| AppError::unprocessable(format!("pom parse: {e}")))?
                     .into_owned();
                 match current_tag.as_str() {
@@ -234,7 +244,13 @@ fn parse_pom(bytes: &[u8]) -> Result<PomMetadata, AppError> {
         .ok_or_else(|| AppError::unprocessable("POM missing <artifactId>"))?;
     let version = version.unwrap_or_default();
 
-    Ok(PomMetadata { group_id, artifact_id, version, packaging, description })
+    Ok(PomMetadata {
+        group_id,
+        artifact_id,
+        version,
+        packaging,
+        description,
+    })
 }
 
 /// Proxy or serve a Maven repository request.
@@ -279,7 +295,10 @@ pub async fn maven_get(
         RegistryMode::Local | RegistryMode::Hybrid => {
             match &kind {
                 MavenPathKind::Metadata { name } => {
-                    match local_svc.get_maven_versions(&registry, name, &identity).await {
+                    match local_svc
+                        .get_maven_versions(&registry, name, &identity)
+                        .await
+                    {
                         Ok(versions) => {
                             let group_id = versions
                                 .first()
@@ -298,14 +317,19 @@ pub async fn maven_get(
                                 .content_type("application/xml")
                                 .body(xml));
                         }
-                        Err(batlehub_core::error::CoreError::NotFound(_)) if mode == RegistryMode::Hybrid => {}
+                        Err(batlehub_core::error::CoreError::NotFound(_))
+                            if mode == RegistryMode::Hybrid => {}
                         Err(batlehub_core::error::CoreError::NotFound(msg)) => {
                             return Err(AppError::not_found(msg));
                         }
                         Err(e) => return Err(AppError::from(e)),
                     }
                 }
-                MavenPathKind::Artifact { name, version, filename } => {
+                MavenPathKind::Artifact {
+                    name,
+                    version,
+                    filename,
+                } => {
                     // Gate must be enforced before falling through to upstream: a non-member
                     // must not receive a pre-release artifact from the upstream registry.
                     local_svc
@@ -313,36 +337,36 @@ pub async fn maven_get(
                         .await
                         .map_err(AppError::from)?;
                     {
-                    let storage_key = if filename.ends_with(".pom") {
-                        artifact_storage_key(&registry, name, version)
-                    } else {
-                        maven_artifact_storage_key(&registry, name, version, filename)
-                    };
-                    match local_svc.storage.retrieve(&storage_key).await {
-                        Ok(Some(artifact)) => {
-                            use futures::StreamExt;
-                            let mut buf = Vec::new();
-                            let mut stream = artifact.stream;
-                            while let Some(chunk) = stream.next().await {
-                                buf.extend_from_slice(
-                                    &chunk.map_err(|e| AppError::internal(e.to_string()))?,
-                                );
+                        let storage_key = if filename.ends_with(".pom") {
+                            artifact_storage_key(&registry, name, version)
+                        } else {
+                            maven_artifact_storage_key(&registry, name, version, filename)
+                        };
+                        match local_svc.storage.retrieve(&storage_key).await {
+                            Ok(Some(artifact)) => {
+                                use futures::StreamExt;
+                                let mut buf = Vec::new();
+                                let mut stream = artifact.stream;
+                                while let Some(chunk) = stream.next().await {
+                                    buf.extend_from_slice(
+                                        &chunk.map_err(|e| AppError::internal(e.to_string()))?,
+                                    );
+                                }
+                                return Ok(HttpResponse::Ok()
+                                    .content_type(content_type_for(filename))
+                                    .body(buf));
                             }
-                            return Ok(HttpResponse::Ok()
-                                .content_type(content_type_for(filename))
-                                .body(buf));
+                            Ok(None) if mode == RegistryMode::Hybrid => {}
+                            Ok(None) => {
+                                return Err(AppError::not_found(format!(
+                                    "{name}@{version}/{filename} not found in local registry"
+                                )));
+                            }
+                            Err(e) if mode == RegistryMode::Hybrid => {
+                                tracing::warn!("local storage error, falling back to proxy: {e}");
+                            }
+                            Err(e) => return Err(AppError::from(e)),
                         }
-                        Ok(None) if mode == RegistryMode::Hybrid => {}
-                        Ok(None) => {
-                            return Err(AppError::not_found(format!(
-                                "{name}@{version}/{filename} not found in local registry"
-                            )));
-                        }
-                        Err(e) if mode == RegistryMode::Hybrid => {
-                            tracing::warn!("local storage error, falling back to proxy: {e}");
-                        }
-                        Err(e) => return Err(AppError::from(e)),
-                    }
                     } // close else block for prerelease check
                 }
             }
@@ -355,16 +379,25 @@ pub async fn maven_get(
         MavenPathKind::Metadata { name } => {
             PackageId::new(&registry, name.clone(), "maven-metadata.xml")
         }
-        MavenPathKind::Artifact { name, version, filename } => {
-            PackageId::new(&registry, name.clone(), version.as_str())
-                .with_artifact(filename.as_str())
-        }
+        MavenPathKind::Artifact {
+            name,
+            version,
+            filename,
+        } => PackageId::new(&registry, name.clone(), version.as_str())
+            .with_artifact(filename.as_str()),
     };
     let filename = match &kind {
         MavenPathKind::Metadata { .. } => "maven-metadata.xml",
         MavenPathKind::Artifact { filename, .. } => filename.as_str(),
     };
-    proxy_stream(svc, pkg, identity, "releases:read", Some(content_type_for(filename))).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        "releases:read",
+        Some(content_type_for(filename)),
+    )
+    .await
 }
 
 /// Upload a Maven artifact to the local registry.
@@ -413,7 +446,11 @@ pub async fn maven_put(
             // Silently accept and ignore client-uploaded metadata.xml — generated dynamically.
             return Ok(HttpResponse::Ok().finish());
         }
-        MavenPathKind::Artifact { name, version, filename } => {
+        MavenPathKind::Artifact {
+            name,
+            version,
+            filename,
+        } => {
             let bytes = collect_payload(payload).await?;
 
             if filename == "maven-metadata.xml" {

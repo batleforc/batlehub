@@ -39,10 +39,7 @@ impl GithubRegistryClient {
             reqwest::header::ACCEPT,
             "application/vnd.github+json".parse().unwrap(),
         );
-        headers.insert(
-            "X-GitHub-Api-Version",
-            "2022-11-28".parse().unwrap(),
-        );
+        headers.insert("X-GitHub-Api-Version", "2022-11-28".parse().unwrap());
         let auth_headers = upstream_auth_headers(opts)?;
         headers.extend(auth_headers);
 
@@ -67,7 +64,13 @@ impl GithubRegistryClient {
             (host.to_owned(), host.to_owned())
         };
 
-        Ok(Self { http, base_url, raw_base_url, archive_base_url, basic_auth: opts.basic_auth.clone() })
+        Ok(Self {
+            http,
+            base_url,
+            raw_base_url,
+            archive_base_url,
+            basic_auth: opts.basic_auth.clone(),
+        })
     }
 
     fn get(&self, url: &str) -> reqwest::RequestBuilder {
@@ -176,21 +179,28 @@ impl RegistryClient for GithubRegistryClient {
                     .map(|dt| dt.with_timezone(&chrono::Utc));
 
                 // Check for a .asc or .sig asset (detached GPG signature).
-                let asset_names: Vec<&str> = release.assets.iter().map(|a| a.name.as_str()).collect();
-                let is_signed = asset_names.iter().any(|n| n.ends_with(".asc") || n.ends_with(".sig"));
+                let asset_names: Vec<&str> =
+                    release.assets.iter().map(|a| a.name.as_str()).collect();
+                let is_signed = asset_names
+                    .iter()
+                    .any(|n| n.ends_with(".asc") || n.ends_with(".sig"));
 
                 // If an artifact was requested, resolve the download URL.
                 let download_url = if let Some(artifact_str) = &pkg.artifact {
                     if let Some(filename) = artifact_str.strip_prefix("filename/") {
                         // Lookup by filename (used by the releases/download/{tag}/{file} route).
-                        release.assets.iter()
+                        release
+                            .assets
+                            .iter()
                             .find(|a| a.name == filename)
                             .map(|a| a.browser_download_url.clone())
                     } else {
-                        let asset_id: u64 = artifact_str
-                            .parse()
-                            .map_err(|_| CoreError::Registry(format!("invalid asset id: {artifact_str}")))?;
-                        release.assets.iter()
+                        let asset_id: u64 = artifact_str.parse().map_err(|_| {
+                            CoreError::Registry(format!("invalid asset id: {artifact_str}"))
+                        })?;
+                        release
+                            .assets
+                            .iter()
                             .find(|a| a.id == asset_id)
                             .map(|a| a.browser_download_url.clone())
                     }
@@ -228,22 +238,35 @@ impl RegistryClient for GithubRegistryClient {
         let download_url = if let Some(artifact) = &pkg.artifact {
             if artifact.starts_with("tarball/") {
                 // github.com/{owner}/{repo}/archive/{ref}.tar.gz — no API involved
-                format!("{}/{}/archive/{}.tar.gz", self.archive_base_url, owner_repo, git_ref)
+                format!(
+                    "{}/{}/archive/{}.tar.gz",
+                    self.archive_base_url, owner_repo, git_ref
+                )
             } else if artifact == "zipball" {
                 // github.com/{owner}/{repo}/archive/{ref}.zip — no API involved
-                format!("{}/{}/archive/{}.zip", self.archive_base_url, owner_repo, git_ref)
+                format!(
+                    "{}/{}/archive/{}.zip",
+                    self.archive_base_url, owner_repo, git_ref
+                )
             } else if let Some(file_path) = artifact.strip_prefix("raw/") {
                 // raw.githubusercontent.com/{owner}/{repo}/{ref}/{path} — no API involved
-                format!("{}/{}/{}/{}", self.raw_base_url, owner_repo, git_ref, file_path)
+                format!(
+                    "{}/{}/{}/{}",
+                    self.raw_base_url, owner_repo, git_ref, file_path
+                )
             } else if let Some(filename) = artifact.strip_prefix("filename/") {
                 // Resolve asset by filename against the release tag.
                 let release = self.fetch_release_by_tag(owner_repo, git_ref).await?;
-                release.assets.iter()
+                release
+                    .assets
+                    .iter()
                     .find(|a| a.name == filename)
                     .map(|a| a.browser_download_url.clone())
-                    .ok_or_else(|| CoreError::NotFound(
-                        format!("no asset named '{filename}' in {owner_repo}@{git_ref}")
-                    ))?
+                    .ok_or_else(|| {
+                        CoreError::NotFound(format!(
+                            "no asset named '{filename}' in {owner_repo}@{git_ref}"
+                        ))
+                    })?
             } else {
                 // asset ID — first resolve the download URL via API
                 let asset_id: u64 = artifact
@@ -279,7 +302,8 @@ impl RegistryClient for GithubRegistryClient {
 
         tracing::debug!(url = %download_url, "fetching GitHub artifact");
 
-        let response = self.get(&download_url)
+        let response = self
+            .get(&download_url)
             .send()
             .await
             .map_err(|e| CoreError::Registry(e.to_string()))?
@@ -296,17 +320,25 @@ impl RegistryClient for GithubRegistryClient {
             .bytes_stream()
             .map_err(|e| CoreError::Registry(e.to_string()));
 
-        Ok(FetchedArtifact { stream: Box::pin(stream), cache_control })
+        Ok(FetchedArtifact {
+            stream: Box::pin(stream),
+            cache_control,
+        })
     }
 }
 
 impl GithubRegistryClient {
-    async fn fetch_release_by_tag(&self, owner_repo: &str, tag: &str) -> Result<GhRelease, CoreError> {
+    async fn fetch_release_by_tag(
+        &self,
+        owner_repo: &str,
+        tag: &str,
+    ) -> Result<GhRelease, CoreError> {
         let url = format!(
             "{}/repos/{}/releases/tags/{}",
             self.base_url, owner_repo, tag
         );
-        let resp = self.get(&url)
+        let resp = self
+            .get(&url)
             .send()
             .await
             .map_err(|e| CoreError::Registry(e.to_string()))?;

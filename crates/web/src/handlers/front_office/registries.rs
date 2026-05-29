@@ -1,8 +1,8 @@
-use actix_web::{Responder, get, web};
+use actix_web::{get, web, Responder};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::{AccessConfig, RegistryMap, RegistryModeMap, extractors::AuthIdentity};
+use crate::{extractors::AuthIdentity, AccessConfig, RegistryMap, RegistryModeMap};
 
 #[derive(Serialize, ToSchema)]
 pub struct RegistryInfo {
@@ -41,7 +41,8 @@ pub async fn list_registries(
                 batlehub_config::schema::RegistryMode::Proxy => "proxy",
                 batlehub_config::schema::RegistryMode::Local => "local",
                 batlehub_config::schema::RegistryMode::Hybrid => "hybrid",
-            }.to_string(),
+            }
+            .to_string(),
         })
         .collect();
     registries.sort_by(|a, b| a.name.cmp(&b.name));

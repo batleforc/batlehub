@@ -18,7 +18,11 @@ pub struct PackageId {
 }
 
 impl PackageId {
-    pub fn new(registry: impl Into<String>, name: impl Into<String>, version: impl Into<String>) -> Self {
+    pub fn new(
+        registry: impl Into<String>,
+        name: impl Into<String>,
+        version: impl Into<String>,
+    ) -> Self {
         Self {
             registry: registry.into(),
             name: name.into(),

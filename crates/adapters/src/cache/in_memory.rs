@@ -24,13 +24,20 @@ impl InMemoryCacheStore {
         Self::default()
     }
 
-    pub async fn seed_expired(&self, key: &str, metadata: batlehub_core::entities::PackageMetadata) {
+    pub async fn seed_expired(
+        &self,
+        key: &str,
+        metadata: batlehub_core::entities::PackageMetadata,
+    ) {
         let entry = CacheEntry {
             metadata,
             cached_at: Utc::now() - chrono::Duration::hours(2),
             expires_at: Some(Utc::now() - chrono::Duration::hours(1)),
         };
-        self.inner.write().await.insert(key.to_owned(), InnerEntry { entry });
+        self.inner
+            .write()
+            .await
+            .insert(key.to_owned(), InnerEntry { entry });
     }
 }
 
@@ -45,14 +52,24 @@ impl CacheStore for InMemoryCacheStore {
         }
     }
 
-    async fn set(&self, key: &str, mut entry: CacheEntry, ttl: Option<Duration>) -> Result<(), CoreError> {
+    async fn set(
+        &self,
+        key: &str,
+        mut entry: CacheEntry,
+        ttl: Option<Duration>,
+    ) -> Result<(), CoreError> {
         if let Some(ttl) = ttl {
             match chrono::Duration::from_std(ttl) {
                 Ok(d) => entry.expires_at = Some(Utc::now() + d),
-                Err(e) => tracing::warn!(key, error = %e, "TTL overflows chrono::Duration; entry stored without expiry"),
+                Err(e) => {
+                    tracing::warn!(key, error = %e, "TTL overflows chrono::Duration; entry stored without expiry")
+                }
             }
         }
-        self.inner.write().await.insert(key.to_owned(), InnerEntry { entry });
+        self.inner
+            .write()
+            .await
+            .insert(key.to_owned(), InnerEntry { entry });
         Ok(())
     }
 
@@ -87,7 +104,11 @@ mod tests {
     }
 
     fn entry() -> CacheEntry {
-        CacheEntry { metadata: dummy_meta(), cached_at: Utc::now(), expires_at: None }
+        CacheEntry {
+            metadata: dummy_meta(),
+            cached_at: Utc::now(),
+            expires_at: None,
+        }
     }
 
     fn expired_entry() -> CacheEntry {
@@ -124,8 +145,16 @@ mod tests {
     #[tokio::test]
     async fn expired_entry_treated_as_miss() {
         let store = InMemoryCacheStore::new();
-        store.inner.write().await.insert("k2".to_owned(), InnerEntry { entry: expired_entry() });
-        assert!(store.get("k2").await.unwrap().is_none(), "expired entry should be treated as a cache miss");
+        store.inner.write().await.insert(
+            "k2".to_owned(),
+            InnerEntry {
+                entry: expired_entry(),
+            },
+        );
+        assert!(
+            store.get("k2").await.unwrap().is_none(),
+            "expired entry should be treated as a cache miss"
+        );
     }
 
     #[tokio::test]
@@ -144,9 +173,20 @@ mod tests {
     #[tokio::test]
     async fn get_stale_returns_expired_entry_that_get_skips() {
         let store = InMemoryCacheStore::new();
-        store.inner.write().await.insert("k1".to_owned(), InnerEntry { entry: expired_entry() });
-        assert!(store.get("k1").await.unwrap().is_none(), "get should skip expired entry");
-        assert!(store.get_stale("k1").await.unwrap().is_some(), "get_stale should return expired entry");
+        store.inner.write().await.insert(
+            "k1".to_owned(),
+            InnerEntry {
+                entry: expired_entry(),
+            },
+        );
+        assert!(
+            store.get("k1").await.unwrap().is_none(),
+            "get should skip expired entry"
+        );
+        assert!(
+            store.get_stale("k1").await.unwrap().is_some(),
+            "get_stale should return expired entry"
+        );
     }
 
     #[tokio::test]
@@ -165,7 +205,12 @@ mod tests {
     #[tokio::test]
     async fn get_stale_returns_none_after_invalidate() {
         let store = InMemoryCacheStore::new();
-        store.inner.write().await.insert("k1".to_owned(), InnerEntry { entry: expired_entry() });
+        store.inner.write().await.insert(
+            "k1".to_owned(),
+            InnerEntry {
+                entry: expired_entry(),
+            },
+        );
         store.invalidate("k1").await.unwrap();
         assert!(store.get_stale("k1").await.unwrap().is_none());
     }

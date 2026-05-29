@@ -99,14 +99,12 @@ impl TeamNamespacePort for PgTeamNamespaceStore {
     }
 
     async fn release_namespace(&self, registry: &str, prefix: &str) -> Result<(), CoreError> {
-        sqlx::query(
-            "DELETE FROM team_namespaces WHERE registry = $1 AND prefix = $2",
-        )
-        .bind(registry)
-        .bind(prefix)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        sqlx::query("DELETE FROM team_namespaces WHERE registry = $1 AND prefix = $2")
+            .bind(registry)
+            .bind(prefix)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| CoreError::Database(e.to_string()))?;
         Ok(())
     }
 

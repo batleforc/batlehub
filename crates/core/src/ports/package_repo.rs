@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 
-use crate::entities::{AccessEvent, EventFilter, PackageFilter, PackageId, PackageStatus, PackageSummary};
+use crate::entities::{
+    AccessEvent, EventFilter, PackageFilter, PackageId, PackageStatus, PackageSummary,
+};
 use crate::error::CoreError;
 
 /// Persistent store for package statuses and access audit logs.

@@ -46,5 +46,5 @@ pub enum CoreError {
 }
 
 // Allow adapters to use anyhow for context
-pub use anyhow::Context as AnyhowContext;
 pub use anyhow::anyhow;
+pub use anyhow::Context as AnyhowContext;

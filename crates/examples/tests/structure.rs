@@ -351,10 +351,7 @@ fn all_examples_are_complete() {
         let dir = examples.join(spec.name);
 
         if !dir.is_dir() {
-            failures.push(format!(
-                "examples/{}: directory does not exist",
-                spec.name
-            ));
+            failures.push(format!("examples/{}: directory does not exist", spec.name));
             continue;
         }
 

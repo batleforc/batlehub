@@ -15,24 +15,28 @@ use std::time::Duration;
 
 use actix_web::test::{call_service, init_service, read_body, read_body_json, TestRequest};
 use actix_web::App;
-use utoipa_actix_web::AppExt;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Utc;
 use futures::stream;
 use serde_json::Value;
+use utoipa_actix_web::AppExt;
 
 use base64::Engine as _;
 use batlehub_adapters::auth::StaticTokenAuthProvider;
 use batlehub_adapters::cache::InMemoryCacheStore;
 use batlehub_adapters::in_memory::{
-    InMemoryPackageRepository as InMemoryRepo,
-    InMemoryStorageBackend as InMemoryStorage,
-    NoopArtifactMetaRepository as NoopArtifactMeta,
-    NullUserTokenRepository as NullTokenRepository,
+    InMemoryPackageRepository as InMemoryRepo, InMemoryStorageBackend as InMemoryStorage,
+    NoopArtifactMetaRepository as NoopArtifactMeta, NullUserTokenRepository as NullTokenRepository,
 };
 use batlehub_adapters::local_registry::InMemoryLocalRegistry;
-use uuid::Uuid;
+use batlehub_adapters::rate_limit::{InMemoryIpBlockStore, InMemoryRateLimitStore};
+use batlehub_config::schema::{
+    GroupRateLimitConfig, RateLimitConfig, RateLimitEnforcement, RegistryMode,
+};
+use batlehub_core::entities::Identity;
+use batlehub_core::entities::{NamespacePackage, TeamNamespace, Visibility};
+use batlehub_core::ports::{BetaChannelEntry, BetaChannelPort, IpBlockStore, TeamNamespacePort};
 use batlehub_core::{
     entities::{
         AccessEvent, EventFilter, PackageFilter, PackageId, PackageMetadata, PackageStatus,
@@ -41,19 +45,18 @@ use batlehub_core::{
     error::CoreError,
     ports::{
         ArtifactMeta, ArtifactMetaRepository, AuthProvider, ByteStream, CacheStore,
-        FetchedArtifact, LocalRegistryBackend, PackageRepository, RegistryClient,
-        StorageBackend, StoredArtifact, StorageMeta, UserToken, UserTokenRepository,
+        FetchedArtifact, LocalRegistryBackend, PackageRepository, RegistryClient, StorageBackend,
+        StorageMeta, StoredArtifact, UserToken, UserTokenRepository,
     },
     rules::{BlockListRule, RbacRule},
     services::{AdminService, LocalRegistryService, ProxyMetrics, ProxyService, RegistryPolicy},
 };
-use batlehub_adapters::rate_limit::{InMemoryIpBlockStore, InMemoryRateLimitStore};
-use batlehub_config::schema::{GroupRateLimitConfig, RateLimitConfig, RateLimitEnforcement, RegistryMode};
-use batlehub_core::entities::Identity;
-use batlehub_core::ports::{BetaChannelEntry, BetaChannelPort, IpBlockStore, TeamNamespacePort};
-use batlehub_core::entities::{NamespacePackage, TeamNamespace, Visibility};
-use batlehub_web::{configure_app, healthz, prometheus_metrics, AuthMiddlewareFactory, RateLimitMiddlewareFactory, RateLimitService, RegistryModeMap};
+use batlehub_web::{
+    configure_app, healthz, prometheus_metrics, AuthMiddlewareFactory, RateLimitMiddlewareFactory,
+    RateLimitService, RegistryModeMap,
+};
 use metrics_exporter_prometheus::PrometheusBuilder;
+use uuid::Uuid;
 
 // ── Fixed (deterministic) RegistryClient ─────────────────────────────────────
 
@@ -63,7 +66,9 @@ struct FixedRegistry {
 
 impl FixedRegistry {
     fn new(registry_type: impl Into<String>) -> Arc<Self> {
-        Arc::new(Self { registry_type: registry_type.into() })
+        Arc::new(Self {
+            registry_type: registry_type.into(),
+        })
     }
 }
 
@@ -110,7 +115,11 @@ fn bearer(token: &str) -> String {
 
 fn test_auth_providers() -> Vec<Arc<dyn AuthProvider>> {
     vec![Arc::new(StaticTokenAuthProvider::new([
-        (ADMIN_TOKEN.to_owned(), Some("admin".to_owned()), Role::Admin),
+        (
+            ADMIN_TOKEN.to_owned(),
+            Some("admin".to_owned()),
+            Role::Admin,
+        ),
         (USER_TOKEN.to_owned(), Some("user-1".to_owned()), Role::User),
     ]))]
 }
@@ -129,12 +138,13 @@ fn make_local_svc(storage: Arc<dyn StorageBackend>) -> Arc<LocalRegistryService>
     })
 }
 
-fn rbac_policy(
-    repo: Arc<dyn PackageRepository>,
-) -> RegistryPolicy {
+fn rbac_policy(repo: Arc<dyn PackageRepository>) -> RegistryPolicy {
     let perms = HashMap::from([
         (Role::Anonymous, vec!["releases:read".to_owned()]),
-        (Role::User, vec!["releases:read".to_owned(), "source:read".to_owned()]),
+        (
+            Role::User,
+            vec!["releases:read".to_owned(), "source:read".to_owned()],
+        ),
         (Role::Admin, vec!["*".to_owned()]),
     ]);
     RegistryPolicy {
@@ -163,12 +173,30 @@ async fn make_app(
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
 
     let registries: HashMap<String, Arc<dyn RegistryClient>> = [
-        ("github".to_owned(), FixedRegistry::new("github") as Arc<dyn RegistryClient>),
-        ("npm".to_owned(), FixedRegistry::new("npm") as Arc<dyn RegistryClient>),
-        ("cargo".to_owned(), FixedRegistry::new("cargo") as Arc<dyn RegistryClient>),
-        ("openvsx".to_owned(), FixedRegistry::new("openvsx") as Arc<dyn RegistryClient>),
-        ("go".to_owned(), FixedRegistry::new("goproxy") as Arc<dyn RegistryClient>),
-        ("vscode".to_owned(), FixedRegistry::new("vscode-marketplace") as Arc<dyn RegistryClient>),
+        (
+            "github".to_owned(),
+            FixedRegistry::new("github") as Arc<dyn RegistryClient>,
+        ),
+        (
+            "npm".to_owned(),
+            FixedRegistry::new("npm") as Arc<dyn RegistryClient>,
+        ),
+        (
+            "cargo".to_owned(),
+            FixedRegistry::new("cargo") as Arc<dyn RegistryClient>,
+        ),
+        (
+            "openvsx".to_owned(),
+            FixedRegistry::new("openvsx") as Arc<dyn RegistryClient>,
+        ),
+        (
+            "go".to_owned(),
+            FixedRegistry::new("goproxy") as Arc<dyn RegistryClient>,
+        ),
+        (
+            "vscode".to_owned(),
+            FixedRegistry::new("vscode-marketplace") as Arc<dyn RegistryClient>,
+        ),
     ]
     .into();
 
@@ -197,32 +225,57 @@ async fn make_app(
 
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
     let access_config = batlehub_web::AccessConfig {
-        anonymous: ["github", "npm", "cargo", "openvsx", "go", "vscode"].iter().map(|s| s.to_string()).collect(),
-        user: ["github", "npm", "cargo", "openvsx", "go", "vscode"].iter().map(|s| s.to_string()).collect(),
-        admin: ["github", "npm", "cargo", "openvsx", "go", "vscode"].iter().map(|s| s.to_string()).collect(),
+        anonymous: ["github", "npm", "cargo", "openvsx", "go", "vscode"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        user: ["github", "npm", "cargo", "openvsx", "go", "vscode"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        admin: ["github", "npm", "cargo", "openvsx", "go", "vscode"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
         groups: std::collections::HashMap::new(),
     };
     let registry_map = batlehub_web::RegistryMap(
-        [("github", "github"), ("npm", "npm"), ("cargo", "cargo"), ("openvsx", "openvsx"), ("go", "goproxy"), ("vscode", "vscode-marketplace")]
-            .iter()
-            .map(|(n, t)| (n.to_string(), t.to_string()))
-            .collect(),
+        [
+            ("github", "github"),
+            ("npm", "npm"),
+            ("cargo", "cargo"),
+            ("openvsx", "openvsx"),
+            ("go", "goproxy"),
+            ("vscode", "vscode-marketplace"),
+        ]
+        .iter()
+        .map(|(n, t)| (n.to_string(), t.to_string()))
+        .collect(),
     );
     let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
         std::collections::HashMap::new();
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None))
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(cargo_indexes))
         .app_data(actix_web::web::Data::new(local_svc))
         .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
 
-    init_service(
-        app.wrap(AuthMiddlewareFactory::new(test_auth_providers())),
-    )
-    .await
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
 }
 
 /// Variant of `make_app` that accepts a caller-supplied `proxy_metrics` so
@@ -240,12 +293,30 @@ async fn make_app_ext(
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
 
     let registries: HashMap<String, Arc<dyn RegistryClient>> = [
-        ("github".to_owned(), FixedRegistry::new("github") as Arc<dyn RegistryClient>),
-        ("npm".to_owned(), FixedRegistry::new("npm") as Arc<dyn RegistryClient>),
-        ("cargo".to_owned(), FixedRegistry::new("cargo") as Arc<dyn RegistryClient>),
-        ("openvsx".to_owned(), FixedRegistry::new("openvsx") as Arc<dyn RegistryClient>),
-        ("go".to_owned(), FixedRegistry::new("goproxy") as Arc<dyn RegistryClient>),
-        ("vscode".to_owned(), FixedRegistry::new("vscode-marketplace") as Arc<dyn RegistryClient>),
+        (
+            "github".to_owned(),
+            FixedRegistry::new("github") as Arc<dyn RegistryClient>,
+        ),
+        (
+            "npm".to_owned(),
+            FixedRegistry::new("npm") as Arc<dyn RegistryClient>,
+        ),
+        (
+            "cargo".to_owned(),
+            FixedRegistry::new("cargo") as Arc<dyn RegistryClient>,
+        ),
+        (
+            "openvsx".to_owned(),
+            FixedRegistry::new("openvsx") as Arc<dyn RegistryClient>,
+        ),
+        (
+            "go".to_owned(),
+            FixedRegistry::new("goproxy") as Arc<dyn RegistryClient>,
+        ),
+        (
+            "vscode".to_owned(),
+            FixedRegistry::new("vscode-marketplace") as Arc<dyn RegistryClient>,
+        ),
     ]
     .into();
 
@@ -274,32 +345,57 @@ async fn make_app_ext(
 
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
     let access_config = batlehub_web::AccessConfig {
-        anonymous: ["github", "npm", "cargo", "openvsx", "go", "vscode"].iter().map(|s| s.to_string()).collect(),
-        user: ["github", "npm", "cargo", "openvsx", "go", "vscode"].iter().map(|s| s.to_string()).collect(),
-        admin: ["github", "npm", "cargo", "openvsx", "go", "vscode"].iter().map(|s| s.to_string()).collect(),
+        anonymous: ["github", "npm", "cargo", "openvsx", "go", "vscode"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        user: ["github", "npm", "cargo", "openvsx", "go", "vscode"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        admin: ["github", "npm", "cargo", "openvsx", "go", "vscode"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
         groups: std::collections::HashMap::new(),
     };
     let registry_map = batlehub_web::RegistryMap(
-        [("github", "github"), ("npm", "npm"), ("cargo", "cargo"), ("openvsx", "openvsx"), ("go", "goproxy"), ("vscode", "vscode-marketplace")]
-            .iter()
-            .map(|(n, t)| (n.to_string(), t.to_string()))
-            .collect(),
+        [
+            ("github", "github"),
+            ("npm", "npm"),
+            ("cargo", "cargo"),
+            ("openvsx", "openvsx"),
+            ("go", "goproxy"),
+            ("vscode", "vscode-marketplace"),
+        ]
+        .iter()
+        .map(|(n, t)| (n.to_string(), t.to_string()))
+        .collect(),
     );
     let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
         std::collections::HashMap::new();
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new(), proxy_metrics, None))
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            proxy_metrics,
+            None,
+        ))
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(cargo_indexes))
         .app_data(actix_web::web::Data::new(local_svc))
         .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
 
-    init_service(
-        app.wrap(AuthMiddlewareFactory::new(test_auth_providers())),
-    )
-    .await
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
 }
 
 // ── In-memory BetaChannelPort ─────────────────────────────────────────────────
@@ -318,9 +414,13 @@ impl InMemoryBetaChannelStore {
 #[async_trait]
 impl BetaChannelPort for InMemoryBetaChannelStore {
     async fn is_member(&self, registry: &str, identity: &Identity) -> Result<bool, CoreError> {
-        let Some(user_id) = identity.user_id.as_deref() else { return Ok(false) };
+        let Some(user_id) = identity.user_id.as_deref() else {
+            return Ok(false);
+        };
         let guard = self.entries.lock().unwrap();
-        Ok(guard.iter().any(|(r, t, id, _)| r == registry && t == "user" && id == user_id))
+        Ok(guard
+            .iter()
+            .any(|(r, t, id, _)| r == registry && t == "user" && id == user_id))
     }
 
     async fn add_member(&self, registry: &str, entry: BetaChannelEntry) -> Result<(), CoreError> {
@@ -339,9 +439,10 @@ impl BetaChannelPort for InMemoryBetaChannelStore {
         principal_type: &str,
         principal_id: &str,
     ) -> Result<(), CoreError> {
-        self.entries.lock().unwrap().retain(|(r, t, id, _)| {
-            !(r == registry && t == principal_type && id == principal_id)
-        });
+        self.entries
+            .lock()
+            .unwrap()
+            .retain(|(r, t, id, _)| !(r == registry && t == principal_type && id == principal_id));
         Ok(())
     }
 
@@ -492,7 +593,11 @@ const GROUP_NAME: &str = "ci-bots";
 fn test_auth_providers_with_groups() -> Vec<Arc<dyn AuthProvider>> {
     vec![Arc::new(
         StaticTokenAuthProvider::new([
-            (ADMIN_TOKEN.to_owned(), Some("admin".to_owned()), Role::Admin),
+            (
+                ADMIN_TOKEN.to_owned(),
+                Some("admin".to_owned()),
+                Role::Admin,
+            ),
             (USER_TOKEN.to_owned(), Some("user-1".to_owned()), Role::User),
         ])
         .with_group_entries([
@@ -522,22 +627,23 @@ async fn make_rate_limited_app(
     auth_providers: Vec<Arc<dyn AuthProvider>>,
 ) -> impl actix_web::dev::Service<
     actix_http::Request,
-    Response = actix_web::dev::ServiceResponse<actix_web::body::EitherBody<actix_web::body::BoxBody>>,
+    Response = actix_web::dev::ServiceResponse<
+        actix_web::body::EitherBody<actix_web::body::BoxBody>,
+    >,
     Error = actix_web::Error,
 > {
     let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
 
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = [
-        ("npm".to_owned(), FixedRegistry::new("npm") as Arc<dyn RegistryClient>),
-    ]
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
+        "npm".to_owned(),
+        FixedRegistry::new("npm") as Arc<dyn RegistryClient>,
+    )]
     .into();
 
-    let policies: HashMap<String, RegistryPolicy> = [
-        ("npm".to_owned(), rbac_policy(repo_dyn.clone())),
-    ]
-    .into();
+    let policies: HashMap<String, RegistryPolicy> =
+        [("npm".to_owned(), rbac_policy(repo_dyn.clone()))].into();
 
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
@@ -560,7 +666,10 @@ async fn make_rate_limited_app(
         groups: std::collections::HashMap::new(),
     };
     let registry_map = batlehub_web::RegistryMap(
-        [("npm", "npm")].iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+        [("npm", "npm")]
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.to_string()))
+            .collect(),
     );
 
     let (app, _) = App::new()
@@ -580,16 +689,16 @@ async fn make_rate_limited_app(
         ))
         .split_for_parts();
     let app = app
-        .app_data(actix_web::web::Data::new(
-            std::collections::HashMap::<String, batlehub_web::CargoIndexProxy>::new(),
-        ))
+        .app_data(actix_web::web::Data::new(std::collections::HashMap::<
+            String,
+            batlehub_web::CargoIndexProxy,
+        >::new()))
         .app_data(actix_web::web::Data::new(local_svc))
         .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
 
     // Auth (outer) must run before rate limiting (inner) so Identity is set.
     init_service(
-        app
-            .wrap(RateLimitMiddlewareFactory::new(rl_svc))
+        app.wrap(RateLimitMiddlewareFactory::new(rl_svc))
             .wrap(AuthMiddlewareFactory::new(auth_providers)),
     )
     .await
@@ -621,7 +730,12 @@ fn warn_rl_svc(registry: &str, requests_per_window: u32) -> Arc<RateLimitService
     Arc::new(RateLimitService::new(&m, store))
 }
 
-fn group_rl_svc(registry: &str, user_limit: u32, group: &str, group_limit: u32) -> Arc<RateLimitService> {
+fn group_rl_svc(
+    registry: &str,
+    user_limit: u32,
+    group: &str,
+    group_limit: u32,
+) -> Arc<RateLimitService> {
     let store = Arc::new(InMemoryRateLimitStore::new());
     let cfg = RateLimitConfig {
         requests_per_window: user_limit,
@@ -707,21 +821,38 @@ async fn block_mode_response_carries_required_headers() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 429);
 
-    let retry_after = resp.headers().get("retry-after")
+    let retry_after = resp
+        .headers()
+        .get("retry-after")
         .expect("429 must carry Retry-After")
-        .to_str().unwrap().parse::<u64>().unwrap();
+        .to_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
     assert!(retry_after >= 1, "Retry-After must be at least 1 second");
 
-    let reset_ts = resp.headers().get("x-ratelimit-reset")
+    let reset_ts = resp
+        .headers()
+        .get("x-ratelimit-reset")
         .expect("429 must carry X-RateLimit-Reset")
-        .to_str().unwrap().parse::<u64>().unwrap();
+        .to_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
     let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     assert!(reset_ts > now, "X-RateLimit-Reset must be in the future");
 
-    let limit = resp.headers().get("x-ratelimit-limit")
+    let limit = resp
+        .headers()
+        .get("x-ratelimit-limit")
         .expect("429 must carry X-RateLimit-Limit")
-        .to_str().unwrap().parse::<u64>().unwrap();
+        .to_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
     assert_eq!(limit, 1);
 }
 
@@ -739,7 +870,10 @@ async fn block_mode_response_body_is_json_with_error_field() {
 
     let body: Value = read_body_json(resp).await;
     assert_eq!(body["error"], "Too Many Requests");
-    assert!(body["message"].as_str().map(|m| m.contains("retry after")).unwrap_or(false));
+    assert!(body["message"]
+        .as_str()
+        .map(|m| m.contains("retry after"))
+        .unwrap_or(false));
 }
 
 #[actix_web::test]
@@ -773,13 +907,22 @@ async fn warn_mode_sets_warning_headers_on_over_limit() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
 
-    let warning = resp.headers().get("x-ratelimit-warning")
+    let warning = resp
+        .headers()
+        .get("x-ratelimit-warning")
         .expect("over-limit warn response must carry X-RateLimit-Warning")
-        .to_str().unwrap();
+        .to_str()
+        .unwrap();
     assert_eq!(warning, "rate-limit-exceeded");
 
-    assert!(resp.headers().get("x-ratelimit-limit").is_some(), "must carry X-RateLimit-Limit");
-    assert!(resp.headers().get("retry-after").is_some(), "must carry Retry-After");
+    assert!(
+        resp.headers().get("x-ratelimit-limit").is_some(),
+        "must carry X-RateLimit-Limit"
+    );
+    assert!(
+        resp.headers().get("retry-after").is_some(),
+        "must carry Retry-After"
+    );
 }
 
 #[actix_web::test]
@@ -798,7 +941,11 @@ async fn anonymous_request_is_rate_limited_by_ip() {
     // Third anonymous request = ip bucket exhausted = 429.
     let req = TestRequest::get().uri("/proxy/npm/lodash").to_request();
     let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 429, "anonymous request must be blocked after limit");
+    assert_eq!(
+        resp.status(),
+        429,
+        "anonymous request must be blocked after limit"
+    );
 }
 
 #[actix_web::test]
@@ -812,7 +959,11 @@ async fn authenticated_user_has_separate_bucket_from_anonymous() {
     call_service(&app, req).await;
     let req = TestRequest::get().uri("/proxy/npm/lodash").to_request();
     let anon_resp = call_service(&app, req).await;
-    assert_eq!(anon_resp.status(), 429, "anonymous bucket should be exhausted");
+    assert_eq!(
+        anon_resp.status(),
+        429,
+        "anonymous bucket should be exhausted"
+    );
 
     // Authenticated user has a separate bucket → first request succeeds.
     let req = TestRequest::get()
@@ -820,7 +971,11 @@ async fn authenticated_user_has_separate_bucket_from_anonymous() {
         .insert_header(("Authorization", bearer(USER_TOKEN)))
         .to_request();
     let auth_resp = call_service(&app, req).await;
-    assert_eq!(auth_resp.status(), 200, "authenticated user must have an independent bucket");
+    assert_eq!(
+        auth_resp.status(),
+        200,
+        "authenticated user must have an independent bucket"
+    );
 }
 
 #[actix_web::test]
@@ -839,7 +994,11 @@ async fn two_different_users_have_independent_buckets() {
         .insert_header(("Authorization", bearer(USER_TOKEN)))
         .to_request();
     let user1_resp = call_service(&app, req).await;
-    assert_eq!(user1_resp.status(), 429, "user-1 must be blocked after limit");
+    assert_eq!(
+        user1_resp.status(),
+        429,
+        "user-1 must be blocked after limit"
+    );
 
     // admin has a different user_id → its bucket is untouched.
     let req = TestRequest::get()
@@ -847,7 +1006,11 @@ async fn two_different_users_have_independent_buckets() {
         .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
         .to_request();
     let admin_resp = call_service(&app, req).await;
-    assert_eq!(admin_resp.status(), 200, "admin must have an independent bucket");
+    assert_eq!(
+        admin_resp.status(),
+        200,
+        "admin must have an independent bucket"
+    );
 }
 
 #[actix_web::test]
@@ -878,7 +1041,11 @@ async fn group_shared_pool_is_counted_across_members() {
         .insert_header(("Authorization", bearer(GROUP_TOKEN_1)))
         .to_request();
     let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 429, "group pool exhausted — third request must be blocked");
+    assert_eq!(
+        resp.status(),
+        429,
+        "group pool exhausted — third request must be blocked"
+    );
 }
 
 #[actix_web::test]
@@ -906,7 +1073,11 @@ async fn non_group_member_is_unaffected_by_group_limit() {
         .insert_header(("Authorization", bearer(USER_TOKEN)))
         .to_request();
     let user_resp = call_service(&app, req).await;
-    assert_eq!(user_resp.status(), 200, "non-group member must not be blocked by group limit");
+    assert_eq!(
+        user_resp.status(),
+        200,
+        "non-group member must not be blocked by group limit"
+    );
 }
 
 #[actix_web::test]
@@ -922,7 +1093,11 @@ async fn registry_without_rate_limit_config_passes_through_freely() {
     for _ in 0..20 {
         let req = TestRequest::get().uri("/proxy/npm/lodash").to_request();
         let resp = call_service(&app, req).await;
-        assert_eq!(resp.status(), 200, "unconfigured registry must never be rate limited");
+        assert_eq!(
+            resp.status(),
+            200,
+            "unconfigured registry must never be rate limited"
+        );
         assert!(
             resp.headers().get("x-ratelimit-limit").is_none(),
             "unconfigured registry must not emit X-RateLimit-Limit"
@@ -1064,7 +1239,9 @@ async fn access_check_returns_false_for_blocked_package() {
 #[actix_web::test]
 async fn admin_packages_returns_403_for_anonymous() {
     let app = make_app(InMemoryRepo::new()).await;
-    let req = TestRequest::get().uri("/api/v1/admin/packages").to_request();
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/packages")
+        .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 403);
 }
@@ -1193,7 +1370,9 @@ async fn admin_unblock_restores_proxy_access() {
 #[actix_web::test]
 async fn audit_log_returns_403_for_anonymous() {
     let app = make_app(InMemoryRepo::new()).await;
-    let req = TestRequest::get().uri("/api/v1/admin/audit-log").to_request();
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/audit-log")
+        .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 403);
 }
@@ -1202,9 +1381,13 @@ async fn audit_log_returns_403_for_anonymous() {
 async fn audit_log_returns_events_for_admin() {
     let repo = InMemoryRepo::new();
     let pkg = PackageId::new("npm", "lodash", "4.17.21");
-    repo.record_access(AccessEvent::allowed_download(pkg, Some("user-1".to_owned()), Role::User))
-        .await
-        .unwrap();
+    repo.record_access(AccessEvent::allowed_download(
+        pkg,
+        Some("user-1".to_owned()),
+        Role::User,
+    ))
+    .await
+    .unwrap();
 
     let app = make_app(repo).await;
     let req = TestRequest::get()
@@ -1312,9 +1495,7 @@ async fn proxy_cargo_download_blocked_for_anonymous() {
 #[actix_web::test]
 async fn proxy_response_contains_artifact_bytes() {
     let app = make_app(InMemoryRepo::new()).await;
-    let req = TestRequest::get()
-        .uri("/proxy/npm/lodash")
-        .to_request();
+    let req = TestRequest::get().uri("/proxy/npm/lodash").to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
     let body = actix_web::test::read_body(resp).await;
@@ -1347,12 +1528,20 @@ async fn proxy_unknown_registry_returns_400() {
 #[actix_web::test]
 async fn error_response_has_error_and_message_fields() {
     let app = make_app(InMemoryRepo::new()).await;
-    let req = TestRequest::get().uri("/api/v1/admin/packages").to_request();
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/packages")
+        .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 403);
     let body: Value = read_body_json(resp).await;
-    assert!(body["error"].is_string(), "response must have an 'error' field");
-    assert!(body["message"].is_string(), "response must have a 'message' field");
+    assert!(
+        body["error"].is_string(),
+        "response must have an 'error' field"
+    );
+    assert!(
+        body["message"].is_string(),
+        "response must have a 'message' field"
+    );
     // HTTP reason phrase for 403
     assert_eq!(body["error"], "Forbidden");
 }
@@ -1381,7 +1570,10 @@ async fn proxy_access_is_recorded_in_audit_log() {
     assert_eq!(audit_resp.status(), 200);
     let events: Value = read_body_json(audit_resp).await;
     let events = events.as_array().unwrap();
-    assert!(!events.is_empty(), "at least one access event should be recorded");
+    assert!(
+        !events.is_empty(),
+        "at least one access event should be recorded"
+    );
     assert_eq!(events[0]["package_id"]["name"], "express");
     assert_eq!(events[0]["result"]["outcome"], "allowed");
 }
@@ -1426,7 +1618,11 @@ async fn denied_proxy_access_is_recorded_as_denied_in_audit_log() {
 fn group_auth_providers() -> Vec<Arc<dyn AuthProvider>> {
     vec![Arc::new(
         StaticTokenAuthProvider::new([
-            (ADMIN_TOKEN.to_owned(), Some("admin".to_owned()), Role::Admin),
+            (
+                ADMIN_TOKEN.to_owned(),
+                Some("admin".to_owned()),
+                Role::Admin,
+            ),
             (USER_TOKEN.to_owned(), Some("user-1".to_owned()), Role::User),
         ])
         .with_group_entries([
@@ -1459,7 +1655,10 @@ fn rbac_policy_group_registry(repo: Arc<dyn PackageRepository>) -> RegistryPolic
         (Role::Admin, vec!["*".to_owned()]),
     ]);
     let group_perms = HashMap::from([
-        ("team-a".to_owned(), vec!["releases:read".to_owned(), "source:read".to_owned()]),
+        (
+            "team-a".to_owned(),
+            vec!["releases:read".to_owned(), "source:read".to_owned()],
+        ),
         ("team-b".to_owned(), vec!["releases:read".to_owned()]),
     ]);
     RegistryPolicy {
@@ -1486,14 +1685,23 @@ async fn make_group_app(
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
 
     let registries: HashMap<String, Arc<dyn RegistryClient>> = [
-        ("github".to_owned(), FixedRegistry::new("github") as Arc<dyn RegistryClient>),
-        ("github2".to_owned(), FixedRegistry::new("github") as Arc<dyn RegistryClient>),
+        (
+            "github".to_owned(),
+            FixedRegistry::new("github") as Arc<dyn RegistryClient>,
+        ),
+        (
+            "github2".to_owned(),
+            FixedRegistry::new("github") as Arc<dyn RegistryClient>,
+        ),
     ]
     .into();
 
     let policies: HashMap<String, RegistryPolicy> = [
         ("github".to_owned(), rbac_policy(repo_dyn.clone())),
-        ("github2".to_owned(), rbac_policy_group_registry(repo_dyn.clone())),
+        (
+            "github2".to_owned(),
+            rbac_policy_group_registry(repo_dyn.clone()),
+        ),
     ]
     .into();
 
@@ -1516,7 +1724,10 @@ async fn make_group_app(
     let access_config = batlehub_web::AccessConfig {
         anonymous: ["github"].iter().map(|s| s.to_string()).collect(),
         user: ["github"].iter().map(|s| s.to_string()).collect(),
-        admin: ["github", "github2"].iter().map(|s| s.to_string()).collect(),
+        admin: ["github", "github2"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
         groups: [
             (
                 "team-a".to_owned(),
@@ -1540,17 +1751,26 @@ async fn make_group_app(
         std::collections::HashMap::new();
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None))
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(cargo_indexes))
         .app_data(actix_web::web::Data::new(local_svc))
         .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
 
-    init_service(
-        app.wrap(AuthMiddlewareFactory::new(group_auth_providers())),
-    )
-    .await
+    init_service(app.wrap(AuthMiddlewareFactory::new(group_auth_providers()))).await
 }
 
 // ── /api/v1/registries with groups ───────────────────────────────────────────
@@ -1565,11 +1785,17 @@ async fn group_member_sees_group_restricted_registry_in_listing() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
-    let names: Vec<&str> = body.as_array().unwrap().iter()
+    let names: Vec<&str> = body
+        .as_array()
+        .unwrap()
+        .iter()
         .filter_map(|r| r["name"].as_str())
         .collect();
     assert!(names.contains(&"github2"), "team-a should see github2");
-    assert!(names.contains(&"github"), "team-a should also see role-based github");
+    assert!(
+        names.contains(&"github"),
+        "team-a should also see role-based github"
+    );
 }
 
 #[actix_web::test]
@@ -1582,26 +1808,36 @@ async fn user_without_group_cannot_see_group_restricted_registry() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
-    let names: Vec<&str> = body.as_array().unwrap().iter()
+    let names: Vec<&str> = body
+        .as_array()
+        .unwrap()
+        .iter()
         .filter_map(|r| r["name"].as_str())
         .collect();
-    assert!(!names.contains(&"github2"), "user without group should not see github2");
+    assert!(
+        !names.contains(&"github2"),
+        "user without group should not see github2"
+    );
     assert!(names.contains(&"github"));
 }
 
 #[actix_web::test]
 async fn anonymous_without_group_cannot_see_group_restricted_registry() {
     let app = make_group_app(InMemoryRepo::new()).await;
-    let req = TestRequest::get()
-        .uri("/api/v1/registries")
-        .to_request();
+    let req = TestRequest::get().uri("/api/v1/registries").to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
-    let names: Vec<&str> = body.as_array().unwrap().iter()
+    let names: Vec<&str> = body
+        .as_array()
+        .unwrap()
+        .iter()
         .filter_map(|r| r["name"].as_str())
         .collect();
-    assert!(!names.contains(&"github2"), "anonymous should not see github2");
+    assert!(
+        !names.contains(&"github2"),
+        "anonymous should not see github2"
+    );
 }
 
 #[actix_web::test]
@@ -1615,11 +1851,20 @@ async fn multi_group_user_sees_union_of_registries() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
-    let names: Vec<&str> = body.as_array().unwrap().iter()
+    let names: Vec<&str> = body
+        .as_array()
+        .unwrap()
+        .iter()
         .filter_map(|r| r["name"].as_str())
         .collect();
-    assert!(names.contains(&"github"), "team-ab should see github (anonymous role)");
-    assert!(names.contains(&"github2"), "team-ab should see github2 (team-a or team-b group)");
+    assert!(
+        names.contains(&"github"),
+        "team-ab should see github (anonymous role)"
+    );
+    assert!(
+        names.contains(&"github2"),
+        "team-ab should see github2 (team-a or team-b group)"
+    );
 }
 
 // ── Proxy access with group permissions ──────────────────────────────────────
@@ -1698,10 +1943,20 @@ async fn me_endpoint_returns_groups_for_group_token() {
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
     assert_eq!(body["role"], "anonymous");
-    let groups: Vec<&str> = body["groups"].as_array().unwrap()
-        .iter().filter_map(|v| v.as_str()).collect();
-    assert!(groups.contains(&"team-a"), "groups field should contain team-a");
-    assert_eq!(body["has_registry_access"], true, "team-a has registry access via group");
+    let groups: Vec<&str> = body["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(
+        groups.contains(&"team-a"),
+        "groups field should contain team-a"
+    );
+    assert_eq!(
+        body["has_registry_access"], true,
+        "team-a has registry access via group"
+    );
 }
 
 #[actix_web::test]
@@ -1715,7 +1970,10 @@ async fn me_endpoint_returns_empty_groups_for_regular_token() {
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
     let groups = body["groups"].as_array().unwrap();
-    assert!(groups.is_empty(), "regular user token should have no groups");
+    assert!(
+        groups.is_empty(),
+        "regular user token should have no groups"
+    );
 }
 
 // ── Group access recorded in audit log ───────────────────────────────────────
@@ -1752,7 +2010,9 @@ struct InMemoryTokenRepository {
 
 impl InMemoryTokenRepository {
     fn new() -> Arc<Self> {
-        Arc::new(Self { tokens: Mutex::new(vec![]) })
+        Arc::new(Self {
+            tokens: Mutex::new(vec![]),
+        })
     }
 }
 
@@ -1769,8 +2029,14 @@ impl UserTokenRepository for InMemoryTokenRepository {
     ) -> Result<UserToken, CoreError> {
         // Check uniqueness by name per user
         let mut tokens = self.tokens.lock().unwrap();
-        if tokens.iter().any(|t| t.user_id == user_id && t.name == name && t.revoked_at.is_none()) {
-            return Err(CoreError::Conflict(format!("a token named '{}' already exists", name)));
+        if tokens
+            .iter()
+            .any(|t| t.user_id == user_id && t.name == name && t.revoked_at.is_none())
+        {
+            return Err(CoreError::Conflict(format!(
+                "a token named '{}' already exists",
+                name
+            )));
         }
         let tok = UserToken {
             id,
@@ -1791,7 +2057,8 @@ impl UserTokenRepository for InMemoryTokenRepository {
 
     async fn list_for_user(&self, user_id: &str) -> Result<Vec<UserToken>, CoreError> {
         let tokens = self.tokens.lock().unwrap();
-        Ok(tokens.iter()
+        Ok(tokens
+            .iter()
             .filter(|t| t.user_id == user_id && t.revoked_at.is_none())
             .map(|t| t.clone_token())
             .collect())
@@ -1841,11 +2108,18 @@ struct OidcStyleAuthProvider;
 
 #[async_trait]
 impl AuthProvider for OidcStyleAuthProvider {
-    fn name(&self) -> &str { "oidc" }
+    fn name(&self) -> &str {
+        "oidc"
+    }
 
-    async fn authenticate(&self, req: &RawAuthRequest) -> Result<Option<batlehub_core::entities::Identity>, CoreError> {
+    async fn authenticate(
+        &self,
+        req: &RawAuthRequest,
+    ) -> Result<Option<batlehub_core::entities::Identity>, CoreError> {
         use batlehub_core::entities::Identity;
-        let auth = req.headers.get("authorization")
+        let auth = req
+            .headers
+            .get("authorization")
             .or_else(|| req.headers.get("Authorization"))
             .and_then(|v| v.strip_prefix("Bearer "));
         match auth {
@@ -1879,12 +2153,13 @@ async fn make_app_with_tokens(
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
 
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = [
-        ("npm".to_owned(), FixedRegistry::new("npm") as Arc<dyn RegistryClient>),
-    ].into();
-    let policies: HashMap<String, RegistryPolicy> = [
-        ("npm".to_owned(), rbac_policy(repo_dyn.clone())),
-    ].into();
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
+        "npm".to_owned(),
+        FixedRegistry::new("npm") as Arc<dyn RegistryClient>,
+    )]
+    .into();
+    let policies: HashMap<String, RegistryPolicy> =
+        [("npm".to_owned(), rbac_policy(repo_dyn.clone()))].into();
 
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
@@ -1906,14 +2181,29 @@ async fn make_app_with_tokens(
         groups: std::collections::HashMap::new(),
     };
     let registry_map = batlehub_web::RegistryMap(
-        [("npm", "npm")].iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+        [("npm", "npm")]
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.to_string()))
+            .collect(),
     );
     let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
         std::collections::HashMap::new();
 
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, tok_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None))
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            tok_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(cargo_indexes))
@@ -1922,7 +2212,11 @@ async fn make_app_with_tokens(
 
     let providers: Vec<Arc<dyn AuthProvider>> = vec![
         Arc::new(StaticTokenAuthProvider::new([
-            (ADMIN_TOKEN.to_owned(), Some("admin".to_owned()), Role::Admin),
+            (
+                ADMIN_TOKEN.to_owned(),
+                Some("admin".to_owned()),
+                Role::Admin,
+            ),
             (USER_TOKEN.to_owned(), Some("user-1".to_owned()), Role::User),
         ])),
         Arc::new(OidcStyleAuthProvider),
@@ -2126,12 +2420,23 @@ async fn admin_packages_list_blocked_only_filter() {
     let available = PackageId::new("npm", "lodash", "4.17.21");
     let blocked = PackageId::new("npm", "evil-pkg", "1.0.0");
 
-    repo.record_access(AccessEvent::allowed_download(available, Some("u".to_owned()), Role::User))
-        .await.unwrap();
+    repo.record_access(AccessEvent::allowed_download(
+        available,
+        Some("u".to_owned()),
+        Role::User,
+    ))
+    .await
+    .unwrap();
     repo.set_status(
         &blocked,
-        PackageStatus::Blocked { reason: "vuln".to_owned(), blocked_by: "admin".to_owned(), blocked_at: Utc::now() },
-    ).await.unwrap();
+        PackageStatus::Blocked {
+            reason: "vuln".to_owned(),
+            blocked_by: "admin".to_owned(),
+            blocked_at: Utc::now(),
+        },
+    )
+    .await
+    .unwrap();
 
     let app = make_app(repo).await;
     let req = TestRequest::get()
@@ -2142,7 +2447,10 @@ async fn admin_packages_list_blocked_only_filter() {
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
     let items = body.as_array().unwrap();
-    assert!(items.iter().all(|i| i["status"]["status"] == "blocked"), "only blocked packages expected");
+    assert!(
+        items.iter().all(|i| i["status"]["status"] == "blocked"),
+        "only blocked packages expected"
+    );
 }
 
 #[actix_web::test]
@@ -2157,9 +2465,7 @@ async fn audit_log_denied_only_filter() {
     let _ = call_service(&app, req).await;
 
     // Also cause an allowed event
-    let req = TestRequest::get()
-        .uri("/proxy/npm/lodash")
-        .to_request();
+    let req = TestRequest::get().uri("/proxy/npm/lodash").to_request();
     let _ = call_service(&app, req).await;
 
     let audit_req = TestRequest::get()
@@ -2171,7 +2477,10 @@ async fn audit_log_denied_only_filter() {
     let events: Value = read_body_json(resp).await;
     let events = events.as_array().unwrap();
     assert!(!events.is_empty(), "at least one denied event expected");
-    assert!(events.iter().all(|e| e["result"]["outcome"] == "denied"), "only denied events expected");
+    assert!(
+        events.iter().all(|e| e["result"]["outcome"] == "denied"),
+        "only denied events expected"
+    );
 }
 
 #[actix_web::test]
@@ -2184,7 +2493,10 @@ async fn registries_endpoint_returns_list_for_anonymous() {
     let registries = body.as_array().unwrap();
     // Anonymous has access to github, npm, cargo in make_app
     assert!(!registries.is_empty(), "should see at least one registry");
-    let names: Vec<&str> = registries.iter().filter_map(|r| r["name"].as_str()).collect();
+    let names: Vec<&str> = registries
+        .iter()
+        .filter_map(|r| r["name"].as_str())
+        .collect();
     assert!(names.contains(&"npm"));
 }
 
@@ -2217,12 +2529,13 @@ async fn make_app_with_cargo_index(
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
 
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = [
-        ("cargo".to_owned(), FixedRegistry::new("cargo") as Arc<dyn RegistryClient>),
-    ].into();
-    let policies: HashMap<String, RegistryPolicy> = [
-        ("cargo".to_owned(), rbac_policy(repo_dyn.clone())),
-    ].into();
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
+        "cargo".to_owned(),
+        FixedRegistry::new("cargo") as Arc<dyn RegistryClient>,
+    )]
+    .into();
+    let policies: HashMap<String, RegistryPolicy> =
+        [("cargo".to_owned(), rbac_policy(repo_dyn.clone()))].into();
 
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
@@ -2244,20 +2557,38 @@ async fn make_app_with_cargo_index(
         groups: std::collections::HashMap::new(),
     };
     let registry_map = batlehub_web::RegistryMap(
-        [("cargo", "cargo")].iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+        [("cargo", "cargo")]
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.to_string()))
+            .collect(),
     );
 
     // Wire up a real CargoIndexProxy entry so cargo_registry_config can return a config
     let mut cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
         std::collections::HashMap::new();
-    cargo_indexes.insert("cargo".to_owned(), batlehub_web::CargoIndexProxy {
-        http: reqwest::Client::new(),
-        index_url: "https://index.crates.io".to_owned(),
-    });
+    cargo_indexes.insert(
+        "cargo".to_owned(),
+        batlehub_web::CargoIndexProxy {
+            http: reqwest::Client::new(),
+            index_url: "https://index.crates.io".to_owned(),
+        },
+    );
 
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None))
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(cargo_indexes))
@@ -2276,7 +2607,10 @@ async fn cargo_registry_config_returns_dl_url() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
-    assert!(body["dl"].as_str().unwrap().contains("/proxy/cargo/{crate}/{version}/download"));
+    assert!(body["dl"]
+        .as_str()
+        .unwrap()
+        .contains("/proxy/cargo/{crate}/{version}/download"));
 }
 
 #[actix_web::test]
@@ -2331,8 +2665,20 @@ async fn packages_list_filters_out_inaccessible_registry() {
     // Record a package in an inaccessible registry
     let pkg_npm = PackageId::new("npm", "lodash", "4.17.21");
     let pkg_github = PackageId::new("github", "rust-lang/rust", "v1.80.0");
-    repo.record_access(AccessEvent::allowed_download(pkg_npm, Some("u".to_owned()), Role::User)).await.unwrap();
-    repo.record_access(AccessEvent::allowed_download(pkg_github, Some("u".to_owned()), Role::User)).await.unwrap();
+    repo.record_access(AccessEvent::allowed_download(
+        pkg_npm,
+        Some("u".to_owned()),
+        Role::User,
+    ))
+    .await
+    .unwrap();
+    repo.record_access(AccessEvent::allowed_download(
+        pkg_github,
+        Some("u".to_owned()),
+        Role::User,
+    ))
+    .await
+    .unwrap();
 
     let app = make_app(repo).await;
 
@@ -2405,7 +2751,13 @@ async fn packages_list_returns_empty_for_inaccessible_registry_filter() {
     // When a user asks for packages from a registry they can't access, they get empty results
     let repo = InMemoryRepo::new();
     let pkg = PackageId::new("github", "rust-lang/rust", "v1.80.0");
-    repo.record_access(AccessEvent::allowed_download(pkg, Some("u".to_owned()), Role::User)).await.unwrap();
+    repo.record_access(AccessEvent::allowed_download(
+        pkg,
+        Some("u".to_owned()),
+        Role::User,
+    ))
+    .await
+    .unwrap();
 
     // make_app gives anonymous access to github, so anon CAN see it normally.
     // But filtering for a completely unknown registry should return empty.
@@ -2802,7 +3154,9 @@ struct UnavailableRegistry;
 
 #[async_trait]
 impl RegistryClient for UnavailableRegistry {
-    fn registry_type(&self) -> &str { "npm" }
+    fn registry_type(&self) -> &str {
+        "npm"
+    }
 
     async fn resolve_metadata(&self, _pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
         Err(CoreError::Registry("upstream down".into()))
@@ -2830,12 +3184,18 @@ async fn make_unavailable_npm_app(
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache_dyn: Arc<dyn CacheStore> = cache;
 
-    let registries: HashMap<String, Arc<dyn RegistryClient>> =
-        [("npm".to_owned(), Arc::new(UnavailableRegistry) as Arc<dyn RegistryClient>)].into();
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
+        "npm".to_owned(),
+        Arc::new(UnavailableRegistry) as Arc<dyn RegistryClient>,
+    )]
+    .into();
 
     let perms = HashMap::from([
         (Role::Anonymous, vec!["releases:read".to_owned()]),
-        (Role::User, vec!["releases:read".to_owned(), "source:read".to_owned()]),
+        (
+            Role::User,
+            vec!["releases:read".to_owned(), "source:read".to_owned()],
+        ),
         (Role::Admin, vec!["*".to_owned()]),
     ]);
     let policies: HashMap<String, RegistryPolicy> = [(
@@ -2873,7 +3233,10 @@ async fn make_unavailable_npm_app(
         groups: std::collections::HashMap::new(),
     };
     let registry_map = batlehub_web::RegistryMap(
-        [("npm", "npm")].iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+        [("npm", "npm")]
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.to_string()))
+            .collect(),
     );
     let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
         std::collections::HashMap::new();
@@ -2888,7 +3251,9 @@ async fn make_unavailable_npm_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None,
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
         ))
         .split_for_parts();
     let app = app
@@ -2916,21 +3281,35 @@ async fn upstream_down_with_stale_metadata_returns_200() {
     let cache = Arc::new(InMemoryCacheStore::new());
     let pkg = PackageId::new("npm", "lodash", "4.17.21");
     let cache_key = format!("meta:{}", pkg.cache_key());
-    cache.seed_expired(&cache_key, stale_npm_meta("lodash", "4.17.21")).await;
+    cache
+        .seed_expired(&cache_key, stale_npm_meta("lodash", "4.17.21"))
+        .await;
 
     let app = make_unavailable_npm_app(InMemoryRepo::new(), cache, true).await;
-    let req = TestRequest::get().uri("/proxy/npm/lodash/4.17.21").to_request();
+    let req = TestRequest::get()
+        .uri("/proxy/npm/lodash/4.17.21")
+        .to_request();
     let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 200, "stale metadata should be served when upstream is down");
+    assert_eq!(
+        resp.status(),
+        200,
+        "stale metadata should be served when upstream is down"
+    );
 }
 
 #[actix_web::test]
 async fn upstream_down_no_stale_returns_502() {
     let cache = Arc::new(InMemoryCacheStore::new()); // empty — no stale entry
     let app = make_unavailable_npm_app(InMemoryRepo::new(), cache, true).await;
-    let req = TestRequest::get().uri("/proxy/npm/lodash/4.17.21").to_request();
+    let req = TestRequest::get()
+        .uri("/proxy/npm/lodash/4.17.21")
+        .to_request();
     let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 502, "no stale + upstream down must return 502");
+    assert_eq!(
+        resp.status(),
+        502,
+        "no stale + upstream down must return 502"
+    );
 }
 
 #[actix_web::test]
@@ -2939,12 +3318,20 @@ async fn upstream_down_serve_stale_disabled_returns_502() {
     let cache = Arc::new(InMemoryCacheStore::new());
     let pkg = PackageId::new("npm", "lodash", "4.17.21");
     let cache_key = format!("meta:{}", pkg.cache_key());
-    cache.seed_expired(&cache_key, stale_npm_meta("lodash", "4.17.21")).await;
+    cache
+        .seed_expired(&cache_key, stale_npm_meta("lodash", "4.17.21"))
+        .await;
 
     let app = make_unavailable_npm_app(InMemoryRepo::new(), cache, false).await;
-    let req = TestRequest::get().uri("/proxy/npm/lodash/4.17.21").to_request();
+    let req = TestRequest::get()
+        .uri("/proxy/npm/lodash/4.17.21")
+        .to_request();
     let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 502, "serve_stale=false must not use the stale entry");
+    assert_eq!(
+        resp.status(),
+        502,
+        "serve_stale=false must not use the stale entry"
+    );
 }
 
 // ── /api/v1/admin/health ──────────────────────────────────────────────────────
@@ -3246,12 +3633,13 @@ async fn audit_quick_forwards_to_upstream_and_returns_response() {
     let repo_dyn: Arc<dyn batlehub_core::ports::PackageRepository> = InMemoryRepo::new();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = [
-        ("npm".to_owned(), FixedRegistry::new("npm") as Arc<dyn RegistryClient>),
-    ].into();
-    let policies: HashMap<String, batlehub_core::services::RegistryPolicy> = [
-        ("npm".to_owned(), rbac_policy(repo_dyn.clone())),
-    ].into();
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
+        "npm".to_owned(),
+        FixedRegistry::new("npm") as Arc<dyn RegistryClient>,
+    )]
+    .into();
+    let policies: HashMap<String, batlehub_core::services::RegistryPolicy> =
+        [("npm".to_owned(), rbac_policy(repo_dyn.clone()))].into();
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         registries,
@@ -3272,7 +3660,10 @@ async fn audit_quick_forwards_to_upstream_and_returns_response() {
         groups: std::collections::HashMap::new(),
     };
     let registry_map = batlehub_web::RegistryMap(
-        [("npm", "npm")].iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+        [("npm", "npm")]
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.to_string()))
+            .collect(),
     );
     let mut upstream_entries = std::collections::HashMap::new();
     upstream_entries.insert("npm".to_owned(), upstream_url);
@@ -3281,7 +3672,19 @@ async fn audit_quick_forwards_to_upstream_and_returns_response() {
         std::collections::HashMap::new();
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, upstream_map, vec![], std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None))
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            upstream_map,
+            vec![],
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(cargo_indexes))
@@ -3362,7 +3765,8 @@ async fn access_check_returns_proxy_url_for_github_asset_by_name() {
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
     let proxy_url = body["proxy_url"].as_str().unwrap();
-    assert!(proxy_url.contains("/proxy/github/rust-lang/rust/releases/assets/rustc-1.80.0-x86_64.tar.gz"));
+    assert!(proxy_url
+        .contains("/proxy/github/rust-lang/rust/releases/assets/rustc-1.80.0-x86_64.tar.gz"));
 }
 
 #[actix_web::test]
@@ -3436,12 +3840,13 @@ async fn cargo_registry_index_fetches_from_upstream_and_returns_content() {
     let repo_dyn: Arc<dyn batlehub_core::ports::PackageRepository> = InMemoryRepo::new();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = [
-        ("cargo".to_owned(), FixedRegistry::new("cargo") as Arc<dyn RegistryClient>),
-    ].into();
-    let policies: HashMap<String, RegistryPolicy> = [
-        ("cargo".to_owned(), rbac_policy(repo_dyn.clone())),
-    ].into();
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
+        "cargo".to_owned(),
+        FixedRegistry::new("cargo") as Arc<dyn RegistryClient>,
+    )]
+    .into();
+    let policies: HashMap<String, RegistryPolicy> =
+        [("cargo".to_owned(), rbac_policy(repo_dyn.clone()))].into();
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         registries,
@@ -3462,17 +3867,35 @@ async fn cargo_registry_index_fetches_from_upstream_and_returns_content() {
         groups: std::collections::HashMap::new(),
     };
     let registry_map = batlehub_web::RegistryMap(
-        [("cargo", "cargo")].iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+        [("cargo", "cargo")]
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.to_string()))
+            .collect(),
     );
     let mut cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
         std::collections::HashMap::new();
-    cargo_indexes.insert("cargo".to_owned(), batlehub_web::CargoIndexProxy {
-        http: reqwest::Client::new(),
-        index_url,
-    });
+    cargo_indexes.insert(
+        "cargo".to_owned(),
+        batlehub_web::CargoIndexProxy {
+            http: reqwest::Client::new(),
+            index_url,
+        },
+    );
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(proxy_svc, admin_svc, token_repo, None, access_config, registry_map, batlehub_web::UpstreamMap::default(), vec![], std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None))
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(cargo_indexes))
@@ -3609,7 +4032,9 @@ async fn make_local_registry_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None,
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
         ))
         .split_for_parts();
     let app = app
@@ -3650,7 +4075,10 @@ async fn hybrid_cargo_config_returns_api_url() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
-    assert!(body["api"].as_str().is_some(), "api field must be present for hybrid mode");
+    assert!(
+        body["api"].as_str().is_some(),
+        "api field must be present for hybrid mode"
+    );
 }
 
 // ── cargo publish ─────────────────────────────────────────────────────────────
@@ -3666,7 +4094,10 @@ async fn cargo_publish_user_can_publish() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
-    assert!(body["warnings"].is_object(), "response must have warnings shape");
+    assert!(
+        body["warnings"].is_object(),
+        "response must have warnings shape"
+    );
 }
 
 #[actix_web::test]
@@ -3750,7 +4181,10 @@ async fn local_cargo_index_returns_entry_after_publish() {
     assert_eq!(entry["name"], "idx-crate");
     assert_eq!(entry["vers"], "0.1.0");
     assert!(
-        entry["cksum"].as_str().map(|s| s.len() == 64).unwrap_or(false),
+        entry["cksum"]
+            .as_str()
+            .map(|s| s.len() == 64)
+            .unwrap_or(false),
         "cksum must be 64-char hex SHA-256"
     );
 }
@@ -3986,7 +4420,9 @@ async fn make_local_npm_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None,
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
         ))
         .split_for_parts();
     let app = app
@@ -4097,7 +4533,10 @@ async fn npm_packument_returns_published_version() {
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
     assert_eq!(body["name"], "my-pkg");
-    assert!(body["versions"]["2.0.0"].is_object(), "published version must appear in packument");
+    assert!(
+        body["versions"]["2.0.0"].is_object(),
+        "published version must appear in packument"
+    );
     assert!(
         body["versions"]["2.0.0"]["dist"]["tarball"]
             .as_str()
@@ -4232,7 +4671,9 @@ async fn make_local_vsx_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None,
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
         ))
         .split_for_parts();
     let app = app
@@ -4428,7 +4869,9 @@ async fn make_local_go_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(), Arc::new(ProxyMetrics::new(&[])), None,
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
         ))
         .split_for_parts();
     let app = app
@@ -4526,7 +4969,10 @@ async fn go_version_list_returns_published_version() {
     assert_eq!(resp.status(), 200);
     let body = read_body(resp).await;
     let list = std::str::from_utf8(&body).unwrap();
-    assert!(list.contains("v1.0.0"), "version list must include published version");
+    assert!(
+        list.contains("v1.0.0"),
+        "version list must include published version"
+    );
 }
 
 #[actix_web::test]
@@ -4550,7 +4996,10 @@ async fn go_info_returns_version_metadata() {
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
     assert_eq!(body["Version"], "v2.0.0");
-    assert!(body["Time"].as_str().is_some(), "Time field must be present");
+    assert!(
+        body["Time"].as_str().is_some(),
+        "Time field must be present"
+    );
 }
 
 #[actix_web::test]
@@ -4707,10 +5156,7 @@ async fn healthz_is_unauthenticated() {
 
 #[actix_web::test]
 async fn metrics_returns_503_without_handle() {
-    let app = init_service(
-        actix_web::App::new().service(prometheus_metrics),
-    )
-    .await;
+    let app = init_service(actix_web::App::new().service(prometheus_metrics)).await;
 
     let req = TestRequest::get().uri("/metrics").to_request();
     let resp = call_service(&app, req).await;
@@ -4732,8 +5178,16 @@ async fn metrics_returns_200_with_handle() {
     let req = TestRequest::get().uri("/metrics").to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
-    let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
-    assert!(ct.starts_with("text/plain"), "unexpected content-type: {ct}");
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(
+        ct.starts_with("text/plain"),
+        "unexpected content-type: {ct}"
+    );
 }
 
 // ── /api/v1/admin/stats ───────────────────────────────────────────────────────
@@ -4766,7 +5220,10 @@ async fn admin_stats_returns_zero_counts_initially() {
     let body: Value = read_body_json(resp).await;
     assert_eq!(body["aggregate"]["artifact_hits"], 0);
     assert_eq!(body["aggregate"]["artifact_misses"], 0);
-    assert!(body["aggregate"]["hit_rate"].is_null(), "hit_rate must be null when there are no requests");
+    assert!(
+        body["aggregate"]["hit_rate"].is_null(),
+        "hit_rate must be null when there are no requests"
+    );
     assert!(body["since_startup"].is_string());
     assert!(body["per_registry"].is_array());
 }
@@ -4790,8 +5247,13 @@ async fn admin_stats_reflects_counter_updates() {
     assert_eq!(body["aggregate"]["artifact_hits"], 2);
     assert_eq!(body["aggregate"]["artifact_misses"], 1);
 
-    let hit_rate = body["aggregate"]["hit_rate"].as_f64().expect("hit_rate must be present");
-    assert!((hit_rate - 2.0 / 3.0).abs() < 1e-9, "expected hit_rate ≈ 0.667, got {hit_rate}");
+    let hit_rate = body["aggregate"]["hit_rate"]
+        .as_f64()
+        .expect("hit_rate must be present");
+    assert!(
+        (hit_rate - 2.0 / 3.0).abs() < 1e-9,
+        "expected hit_rate ≈ 0.667, got {hit_rate}"
+    );
 
     let per_npm = body["per_registry"]
         .as_array()
@@ -4910,7 +5372,10 @@ async fn maven_put_pom_creates_version() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
     let body = String::from_utf8(read_body(resp).await.to_vec()).unwrap();
-    assert!(body.contains("<version>1.0.0</version>"), "metadata should contain version");
+    assert!(
+        body.contains("<version>1.0.0</version>"),
+        "metadata should contain version"
+    );
     assert!(body.contains("<groupId>com.example</groupId>"));
     assert!(body.contains("<artifactId>mylib</artifactId>"));
 }
@@ -5138,9 +5603,15 @@ async fn terraform_module_download_local_returns_204_with_header() {
         .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 204);
-    let header = resp.headers().get("X-Terraform-Get").expect("X-Terraform-Get header must be present");
+    let header = resp
+        .headers()
+        .get("X-Terraform-Get")
+        .expect("X-Terraform-Get header must be present");
     let url = header.to_str().unwrap();
-    assert!(url.contains("/artifact"), "X-Terraform-Get should point at /artifact");
+    assert!(
+        url.contains("/artifact"),
+        "X-Terraform-Get should point at /artifact"
+    );
 }
 
 #[actix_web::test]
@@ -5475,7 +5946,9 @@ async fn terraform_module_upload_with_signature_preserved_on_artifact_download()
         "X-Artifact-Signature header must be present on artifact download"
     );
     assert_eq!(
-        resp.headers().get("X-Signature-Type").and_then(|v| v.to_str().ok()),
+        resp.headers()
+            .get("X-Signature-Type")
+            .and_then(|v| v.to_str().ok()),
         Some("ed25519")
     );
 }
@@ -5507,7 +5980,9 @@ async fn terraform_provider_upload_with_signature_preserved_on_download_info() {
         "X-Artifact-Signature header must be present on provider download info"
     );
     assert_eq!(
-        resp.headers().get("X-Signature-Type").and_then(|v| v.to_str().ok()),
+        resp.headers()
+            .get("X-Signature-Type")
+            .and_then(|v| v.to_str().ok()),
         Some("ed25519")
     );
 }
@@ -5983,7 +6458,10 @@ async fn composer_yank_excludes_version_from_p2() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
-    assert!(!body["packages"]["acme/yankable"].as_array().unwrap().is_empty());
+    assert!(!body["packages"]["acme/yankable"]
+        .as_array()
+        .unwrap()
+        .is_empty());
 
     let req = TestRequest::delete()
         .uri("/proxy/local-composer/api/packages/acme/yankable/versions/4.0.0")
@@ -6278,7 +6756,10 @@ impl InMemoryTeamNamespaceStore {
     }
 
     fn with_backend(backend: Arc<dyn LocalRegistryBackend>) -> Arc<Self> {
-        Arc::new(Self { backend: Some(backend), ..Self::default() })
+        Arc::new(Self {
+            backend: Some(backend),
+            ..Self::default()
+        })
     }
 }
 
@@ -6326,7 +6807,10 @@ impl TeamNamespacePort for InMemoryTeamNamespaceStore {
 
     async fn claim_namespace(&self, ns: TeamNamespace) -> Result<(), CoreError> {
         let mut guard = self.namespaces.lock().unwrap();
-        if guard.iter().any(|(r, p, _, _)| r == &ns.registry && p == &ns.prefix) {
+        if guard
+            .iter()
+            .any(|(r, p, _, _)| r == &ns.registry && p == &ns.prefix)
+        {
             return Err(CoreError::Conflict(format!(
                 "namespace '{}' in '{}' already claimed",
                 ns.prefix, ns.registry
@@ -6337,7 +6821,10 @@ impl TeamNamespacePort for InMemoryTeamNamespaceStore {
     }
 
     async fn release_namespace(&self, registry: &str, prefix: &str) -> Result<(), CoreError> {
-        self.namespaces.lock().unwrap().retain(|(r, p, _, _)| !(r == registry && p == prefix));
+        self.namespaces
+            .lock()
+            .unwrap()
+            .retain(|(r, p, _, _)| !(r == registry && p == prefix));
         Ok(())
     }
 
@@ -6347,10 +6834,10 @@ impl TeamNamespacePort for InMemoryTeamNamespaceStore {
         package: &str,
         vis: Visibility,
     ) -> Result<(), CoreError> {
-        self.visibility.lock().unwrap().insert(
-            (registry.to_owned(), package.to_owned()),
-            vis.to_string(),
-        );
+        self.visibility
+            .lock()
+            .unwrap()
+            .insert((registry.to_owned(), package.to_owned()), vis.to_string());
         Ok(())
     }
 
@@ -6386,13 +6873,17 @@ impl TeamNamespacePort for InMemoryTeamNamespaceStore {
         limit: u64,
         offset: u64,
     ) -> Result<Vec<NamespacePackage>, CoreError> {
-        let Some(backend) = &self.backend else { return Ok(vec![]); };
+        let Some(backend) = &self.backend else {
+            return Ok(vec![]);
+        };
         let all_names = backend.list_package_names(registry).await?;
         let mut matching: Vec<NamespacePackage> = vec![];
         for name in all_names {
             let matches = name == prefix
                 || (name.len() > prefix.len() && name.starts_with(&format!("{prefix}/")));
-            if !matches { continue; }
+            if !matches {
+                continue;
+            }
             let versions = backend.get_versions(registry, &name).await?;
             let vis_guard = self.visibility.lock().unwrap();
             for pkg in versions {
@@ -6413,7 +6904,11 @@ impl TeamNamespacePort for InMemoryTeamNamespaceStore {
         matching.sort_by(|a, b| a.name.cmp(&b.name).then(a.version.cmp(&b.version)));
         let start = offset as usize;
         let end = (offset + limit) as usize;
-        Ok(matching.into_iter().skip(start).take(end.saturating_sub(start)).collect())
+        Ok(matching
+            .into_iter()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .collect())
     }
 }
 
@@ -6427,8 +6922,16 @@ const NS_PLAIN_USER_TOKEN: &str = "ns-plain-user-token";
 fn team_ns_auth_providers() -> Vec<Arc<dyn AuthProvider>> {
     vec![Arc::new(
         StaticTokenAuthProvider::new([
-            (ADMIN_TOKEN.to_owned(), Some("admin".to_owned()), Role::Admin),
-            (NS_PLAIN_USER_TOKEN.to_owned(), Some("plain-user".to_owned()), Role::User),
+            (
+                ADMIN_TOKEN.to_owned(),
+                Some("admin".to_owned()),
+                Role::Admin,
+            ),
+            (
+                NS_PLAIN_USER_TOKEN.to_owned(),
+                Some("plain-user".to_owned()),
+                Role::User,
+            ),
         ])
         .with_group_entries([(
             NS_MEMBER_TOKEN.to_owned(),
@@ -6518,8 +7021,11 @@ async fn make_ns_cargo_app(
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
 
-    let registries: HashMap<String, Arc<dyn RegistryClient>> =
-        [("local-cargo".to_owned(), FixedRegistry::new("cargo") as Arc<dyn RegistryClient>)].into();
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
+        "local-cargo".to_owned(),
+        FixedRegistry::new("cargo") as Arc<dyn RegistryClient>,
+    )]
+    .into();
     let policies: HashMap<String, RegistryPolicy> =
         [("local-cargo".to_owned(), rbac_policy(repo_dyn.clone()))].into();
 
@@ -6556,12 +7062,17 @@ async fn make_ns_cargo_app(
         groups: std::collections::HashMap::new(),
     };
     let registry_map = batlehub_web::RegistryMap(
-        [("local-cargo", "cargo")].iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+        [("local-cargo", "cargo")]
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.to_string()))
+            .collect(),
     );
     let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
         std::collections::HashMap::new();
     let mut mode_map = RegistryModeMap::default();
-    mode_map.0.insert("local-cargo".to_owned(), RegistryMode::Local);
+    mode_map
+        .0
+        .insert("local-cargo".to_owned(), RegistryMode::Local);
 
     let (app, _) = App::new()
         .into_utoipa_app()
@@ -6604,11 +7115,16 @@ async fn make_ns_cargo_app_seeded(
     >,
 ) {
     let backend: Arc<InMemoryLocalRegistry> = Arc::new(InMemoryLocalRegistry::new());
-    let ns_store = InMemoryTeamNamespaceStore::with_backend(backend.clone() as Arc<dyn LocalRegistryBackend>);
+    let ns_store =
+        InMemoryTeamNamespaceStore::with_backend(backend.clone() as Arc<dyn LocalRegistryBackend>);
     for claim in claims {
         ns_store.claim_namespace(claim).await.unwrap();
     }
-    let app = make_ns_cargo_app_with_backend(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>, backend).await;
+    let app = make_ns_cargo_app_with_backend(
+        Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>,
+        backend,
+    )
+    .await;
     (ns_store, app)
 }
 
@@ -6624,8 +7140,11 @@ async fn make_ns_cargo_app_with_backend(
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
 
-    let registries: HashMap<String, Arc<dyn RegistryClient>> =
-        [("local-cargo".to_owned(), FixedRegistry::new("cargo") as Arc<dyn RegistryClient>)].into();
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
+        "local-cargo".to_owned(),
+        FixedRegistry::new("cargo") as Arc<dyn RegistryClient>,
+    )]
+    .into();
     let policies: HashMap<String, RegistryPolicy> =
         [("local-cargo".to_owned(), rbac_policy(repo_dyn.clone()))].into();
 
@@ -6660,12 +7179,17 @@ async fn make_ns_cargo_app_with_backend(
         groups: std::collections::HashMap::new(),
     };
     let registry_map = batlehub_web::RegistryMap(
-        [("local-cargo", "cargo")].iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+        [("local-cargo", "cargo")]
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.to_string()))
+            .collect(),
     );
     let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
         std::collections::HashMap::new();
     let mut mode_map = RegistryModeMap::default();
-    mode_map.0.insert("local-cargo".to_owned(), RegistryMode::Local);
+    mode_map
+        .0
+        .insert("local-cargo".to_owned(), RegistryMode::Local);
 
     let (app, _) = App::new()
         .into_utoipa_app()
@@ -6863,7 +7387,11 @@ async fn ns_list_multiple_registries_are_isolated() {
     let resp = call_service(&app, req).await;
     let body: Value = read_body_json(resp).await;
     let list = body.as_array().unwrap();
-    assert_eq!(list.len(), 2, "reg-a should have exactly 2 namespace claims");
+    assert_eq!(
+        list.len(),
+        2,
+        "reg-a should have exactly 2 namespace claims"
+    );
     // Sorted by prefix ascending.
     assert_eq!(list[0]["prefix"], "lib");
     assert_eq!(list[1]["prefix"], "util");
@@ -7209,7 +7737,10 @@ async fn cargo_download_internal_package_blocks_anonymous() {
 
     publish_and_get_name(&app, "my-crate", "1.0.0").await;
     // Set to internal directly via the store.
-    ns_store.set_visibility("local-cargo", "my-crate", Visibility::Internal).await.unwrap();
+    ns_store
+        .set_visibility("local-cargo", "my-crate", Visibility::Internal)
+        .await
+        .unwrap();
 
     let req = TestRequest::get()
         .uri("/proxy/local-cargo/my-crate/1.0.0/download")
@@ -7223,7 +7754,10 @@ async fn cargo_download_internal_package_allows_authenticated_user() {
     let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
 
     publish_and_get_name(&app, "my-crate", "1.0.0").await;
-    ns_store.set_visibility("local-cargo", "my-crate", Visibility::Internal).await.unwrap();
+    ns_store
+        .set_visibility("local-cargo", "my-crate", Visibility::Internal)
+        .await
+        .unwrap();
 
     let req = TestRequest::get()
         .uri("/proxy/local-cargo/my-crate/1.0.0/download")
@@ -7249,7 +7783,10 @@ async fn cargo_download_team_package_blocks_non_member() {
 
     // Admin publishes so the publish gate is bypassed.
     publish_and_get_name(&app, "secured/pkg", "1.0.0").await;
-    ns_store.set_visibility("local-cargo", "secured/pkg", Visibility::Team).await.unwrap();
+    ns_store
+        .set_visibility("local-cargo", "secured/pkg", Visibility::Team)
+        .await
+        .unwrap();
 
     // NS_PLAIN_USER_TOKEN has no groups.
     let req = TestRequest::get()
@@ -7274,7 +7811,10 @@ async fn cargo_download_team_package_allows_member() {
     let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
 
     publish_and_get_name(&app, "secured/pkg", "1.0.0").await;
-    ns_store.set_visibility("local-cargo", "secured/pkg", Visibility::Team).await.unwrap();
+    ns_store
+        .set_visibility("local-cargo", "secured/pkg", Visibility::Team)
+        .await
+        .unwrap();
 
     // NS_MEMBER_TOKEN has group "team-alpha".
     let req = TestRequest::get()
@@ -7290,7 +7830,10 @@ async fn cargo_download_admin_bypasses_team_visibility() {
     let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
 
     publish_and_get_name(&app, "secret-crate", "1.0.0").await;
-    ns_store.set_visibility("local-cargo", "secret-crate", Visibility::Team).await.unwrap();
+    ns_store
+        .set_visibility("local-cargo", "secret-crate", Visibility::Team)
+        .await
+        .unwrap();
 
     let req = TestRequest::get()
         .uri("/proxy/local-cargo/secret-crate/1.0.0/download")
@@ -7307,7 +7850,10 @@ async fn cargo_index_internal_blocks_anonymous() {
     let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
 
     publish_and_get_name(&app, "my-lib", "1.0.0").await;
-    ns_store.set_visibility("local-cargo", "my-lib", Visibility::Internal).await.unwrap();
+    ns_store
+        .set_visibility("local-cargo", "my-lib", Visibility::Internal)
+        .await
+        .unwrap();
 
     let req = TestRequest::get()
         .uri("/proxy/local-cargo/registry/my/li/my-lib")
@@ -7321,7 +7867,10 @@ async fn cargo_index_internal_allows_user() {
     let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
 
     publish_and_get_name(&app, "my-lib", "1.0.0").await;
-    ns_store.set_visibility("local-cargo", "my-lib", Visibility::Internal).await.unwrap();
+    ns_store
+        .set_visibility("local-cargo", "my-lib", Visibility::Internal)
+        .await
+        .unwrap();
 
     let req = TestRequest::get()
         .uri("/proxy/local-cargo/registry/my/li/my-lib")
@@ -7347,7 +7896,10 @@ async fn cargo_index_team_blocks_non_member() {
     // Admin publishes (bypasses namespace gate).
     let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
     publish_and_get_name(&app, "priv-tool", "1.0.0").await;
-    ns_store.set_visibility("local-cargo", "priv-tool", Visibility::Team).await.unwrap();
+    ns_store
+        .set_visibility("local-cargo", "priv-tool", Visibility::Team)
+        .await
+        .unwrap();
 
     let req = TestRequest::get()
         .uri("/proxy/local-cargo/registry/pr/iv/priv-tool")
@@ -7370,7 +7922,10 @@ async fn cargo_index_team_allows_member() {
         .unwrap();
     let app = make_ns_cargo_app(Arc::clone(&ns_store) as Arc<dyn TeamNamespacePort>).await;
     publish_and_get_name(&app, "priv-tool", "1.0.0").await;
-    ns_store.set_visibility("local-cargo", "priv-tool", Visibility::Team).await.unwrap();
+    ns_store
+        .set_visibility("local-cargo", "priv-tool", Visibility::Team)
+        .await
+        .unwrap();
 
     let req = TestRequest::get()
         .uri("/proxy/local-cargo/registry/pr/iv/priv-tool")
@@ -7529,17 +8084,18 @@ async fn make_ns_upload_app(
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
     let access_config = batlehub_web::AccessConfig {
         anonymous: [].iter().cloned().collect(),
-        user:  [registry_name].iter().map(|s| s.to_string()).collect(),
+        user: [registry_name].iter().map(|s| s.to_string()).collect(),
         admin: [registry_name].iter().map(|s| s.to_string()).collect(),
         groups: std::collections::HashMap::new(),
     };
-    let registry_map = batlehub_web::RegistryMap(
-        [(registry_name.to_string(), registry_type.to_string())].into(),
-    );
+    let registry_map =
+        batlehub_web::RegistryMap([(registry_name.to_string(), registry_type.to_string())].into());
     let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
         std::collections::HashMap::new();
     let mut mode_map = RegistryModeMap::default();
-    mode_map.0.insert(registry_name.to_owned(), RegistryMode::Local);
+    mode_map
+        .0
+        .insert(registry_name.to_owned(), RegistryMode::Local);
 
     let (app, _) = App::new()
         .into_utoipa_app()
@@ -7599,7 +8155,8 @@ fn ns_go_module_zip(module: &str, version: &str) -> Vec<u8> {
     {
         let mut zw = zip::ZipWriter::new(&mut buf);
         let opts = zip::write::SimpleFileOptions::default();
-        zw.start_file(format!("{module}@{version}/go.mod"), opts).unwrap();
+        zw.start_file(format!("{module}@{version}/go.mod"), opts)
+            .unwrap();
         zw.write_all(go_mod.as_bytes()).unwrap();
         zw.finish().unwrap();
     }
@@ -7959,9 +8516,7 @@ async fn me_namespaces_requires_authentication() {
     let ns_store = InMemoryTeamNamespaceStore::new();
     let app = make_ns_cargo_app(ns_store as Arc<dyn TeamNamespacePort>).await;
 
-    let req = TestRequest::get()
-        .uri("/api/v1/me/namespaces")
-        .to_request();
+    let req = TestRequest::get().uri("/api/v1/me/namespaces").to_request();
     assert_eq!(call_service(&app, req).await.status(), 403);
 }
 
@@ -7974,7 +8529,8 @@ async fn me_namespace_packages_lists_published_packages() {
         prefix: "internal".to_owned(),
         group_id: "team-alpha".to_owned(),
         claimed_by: None,
-    }]).await;
+    }])
+    .await;
 
     // Publish two packages under the namespace.
     for name in &["internal/lib-a", "internal/lib-b"] {
@@ -8029,7 +8585,8 @@ async fn me_namespace_packages_admin_can_query_any_namespace() {
         prefix: "internal".to_owned(),
         group_id: "team-alpha".to_owned(),
         claimed_by: None,
-    }]).await;
+    }])
+    .await;
 
     // Publish as member.
     let req = TestRequest::put()
@@ -8057,7 +8614,8 @@ async fn me_namespace_packages_pagination() {
         prefix: "paged".to_owned(),
         group_id: "team-alpha".to_owned(),
         claimed_by: None,
-    }]).await;
+    }])
+    .await;
 
     // Publish three packages.
     for i in 0..3u8 {
@@ -8076,7 +8634,14 @@ async fn me_namespace_packages_pagination() {
         .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
-    assert_eq!(read_body_json::<Value, _>(resp).await.as_array().unwrap().len(), 2);
+    assert_eq!(
+        read_body_json::<Value, _>(resp)
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
 
     // Page 1, size 2 → 1 result.
     let req = TestRequest::get()
@@ -8085,5 +8650,12 @@ async fn me_namespace_packages_pagination() {
         .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
-    assert_eq!(read_body_json::<Value, _>(resp).await.as_array().unwrap().len(), 1);
+    assert_eq!(
+        read_body_json::<Value, _>(resp)
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 }

@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use actix_web::{Responder, post, web};
+use actix_web::{post, web, Responder};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use batlehub_core::{entities::Role, services::WarmingService};
 
-use crate::{RegistryMap, error::AppError, extractors::AuthIdentity};
+use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
 /// Map of registry name → WarmingService, injected as app data.
 pub type WarmingServiceMap = HashMap<String, Arc<WarmingService>>;

@@ -21,8 +21,8 @@ pub fn apply_upstream_tls(
     opts: &UpstreamHttpOptions,
 ) -> anyhow::Result<reqwest::ClientBuilder> {
     if let Some(ref path) = opts.ca_cert_path {
-        let pem = std::fs::read(path)
-            .map_err(|e| anyhow::anyhow!("reading CA cert '{}': {e}", path))?;
+        let pem =
+            std::fs::read(path).map_err(|e| anyhow::anyhow!("reading CA cert '{}': {e}", path))?;
         let cert = reqwest::Certificate::from_pem(&pem)
             .map_err(|e| anyhow::anyhow!("parsing CA cert '{}': {e}", path))?;
         builder = builder.add_root_certificate(cert);
@@ -103,7 +103,10 @@ mod tests {
 
     #[test]
     fn debug_format_contains_field_names() {
-        let opts = UpstreamHttpOptions { bearer_token: Some("t".to_owned()), ..Default::default() };
+        let opts = UpstreamHttpOptions {
+            bearer_token: Some("t".to_owned()),
+            ..Default::default()
+        };
         let s = format!("{opts:?}");
         assert!(s.contains("bearer_token"));
     }
@@ -116,7 +119,10 @@ mod tests {
 
     #[test]
     fn upstream_auth_headers_bearer_injects_authorization_header() {
-        let opts = UpstreamHttpOptions { bearer_token: Some("mytoken".to_owned()), ..Default::default() };
+        let opts = UpstreamHttpOptions {
+            bearer_token: Some("mytoken".to_owned()),
+            ..Default::default()
+        };
         let headers = upstream_auth_headers(&opts).unwrap();
         let auth = headers.get("authorization").unwrap().to_str().unwrap();
         assert_eq!(auth, "Bearer mytoken");
@@ -171,7 +177,10 @@ mod tests {
 
     #[test]
     fn apply_upstream_options_with_bearer_builds_client() {
-        let opts = UpstreamHttpOptions { bearer_token: Some("tok".to_owned()), ..Default::default() };
+        let opts = UpstreamHttpOptions {
+            bearer_token: Some("tok".to_owned()),
+            ..Default::default()
+        };
         let client = apply_upstream_options(reqwest::Client::builder(), &opts);
         assert!(client.is_ok());
     }

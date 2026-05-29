@@ -67,12 +67,16 @@ impl AuthProvider for UserTokenAuthProvider {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use batlehub_core::{
+        entities::Role,
+        error::CoreError,
+        ports::{RawAuthRequest, UserToken, UserTokenRepository},
+    };
+    use chrono::DateTime;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use async_trait::async_trait;
-    use chrono::DateTime;
-    use batlehub_core::{entities::Role, error::CoreError, ports::{RawAuthRequest, UserToken, UserTokenRepository}};
-    use super::*;
 
     fn req(auth: &str) -> RawAuthRequest {
         RawAuthRequest {
@@ -82,7 +86,10 @@ mod tests {
     }
 
     fn no_auth_req() -> RawAuthRequest {
-        RawAuthRequest { headers: HashMap::new(), query_params: HashMap::new() }
+        RawAuthRequest {
+            headers: HashMap::new(),
+            query_params: HashMap::new(),
+        }
     }
 
     struct StubRepo(Option<UserToken>);
@@ -101,7 +108,15 @@ mod tests {
 
     #[async_trait]
     impl UserTokenRepository for StubRepo {
-        async fn create_token(&self, _: uuid::Uuid, _: &str, _: &str, _: &str, _: Role, _: DateTime<chrono::Utc>) -> Result<UserToken, CoreError> {
+        async fn create_token(
+            &self,
+            _: uuid::Uuid,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: Role,
+            _: DateTime<chrono::Utc>,
+        ) -> Result<UserToken, CoreError> {
             Ok(stub_token())
         }
         async fn find_by_hash(&self, _: &str) -> Result<Option<UserToken>, CoreError> {
@@ -115,8 +130,12 @@ mod tests {
                 revoked_at: t.revoked_at,
             }))
         }
-        async fn list_for_user(&self, _: &str) -> Result<Vec<UserToken>, CoreError> { Ok(vec![]) }
-        async fn revoke(&self, _: uuid::Uuid, _: &str) -> Result<bool, CoreError> { Ok(true) }
+        async fn list_for_user(&self, _: &str) -> Result<Vec<UserToken>, CoreError> {
+            Ok(vec![])
+        }
+        async fn revoke(&self, _: uuid::Uuid, _: &str) -> Result<bool, CoreError> {
+            Ok(true)
+        }
     }
 
     #[test]
@@ -142,21 +161,37 @@ mod tests {
     #[tokio::test]
     async fn non_bearer_header_returns_none() {
         let p = UserTokenAuthProvider::new(Arc::new(StubRepo(None)));
-        assert!(p.authenticate(&req("Basic dXNlcjpwYXNz")).await.unwrap().is_none());
+        assert!(p
+            .authenticate(&req("Basic dXNlcjpwYXNz"))
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
     async fn jwt_dot_in_token_short_circuits_without_repo_call() {
         // Repo would return a token, but the JWT detection must bypass it.
         let p = UserTokenAuthProvider::new(Arc::new(StubRepo(Some(stub_token()))));
-        let result = p.authenticate(&req("Bearer header.payload.sig")).await.unwrap();
-        assert!(result.is_none(), "JWT tokens must not be looked up in the repo");
+        let result = p
+            .authenticate(&req("Bearer header.payload.sig"))
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "JWT tokens must not be looked up in the repo"
+        );
     }
 
     #[tokio::test]
     async fn valid_hex_token_returns_identity() {
         let p = UserTokenAuthProvider::new(Arc::new(StubRepo(Some(stub_token()))));
-        let id = p.authenticate(&req("Bearer abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")).await.unwrap().unwrap();
+        let id = p
+            .authenticate(&req(
+                "Bearer abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            ))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(id.user_id.as_deref(), Some("carol"));
         assert_eq!(id.role, Role::User);
     }
@@ -164,7 +199,12 @@ mod tests {
     #[tokio::test]
     async fn unknown_token_returns_none() {
         let p = UserTokenAuthProvider::new(Arc::new(StubRepo(None)));
-        let result = p.authenticate(&req("Bearer abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")).await.unwrap();
+        let result = p
+            .authenticate(&req(
+                "Bearer abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            ))
+            .await
+            .unwrap();
         assert!(result.is_none());
     }
 }

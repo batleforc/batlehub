@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actix_web::{Responder, get, web};
+use actix_web::{get, web, Responder};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use utoipa::IntoParams;
@@ -62,6 +62,9 @@ pub async fn audit_log(
         offset: query.page * query.per_page,
     };
 
-    let events = admin_svc.list_events(filter).await.map_err(AppError::from)?;
+    let events = admin_svc
+        .list_events(filter)
+        .await
+        .map_err(AppError::from)?;
     Ok(web::Json(events))
 }

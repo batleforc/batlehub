@@ -28,7 +28,11 @@ impl NpmRegistryClient {
     pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
         let builder = reqwest::Client::builder().user_agent("batlehub/0.1");
         let http = apply_upstream_options(builder, opts)?;
-        Ok(Self { http, base_url: base_url.into(), basic_auth: opts.basic_auth.clone() })
+        Ok(Self {
+            http,
+            base_url: base_url.into(),
+            basic_auth: opts.basic_auth.clone(),
+        })
     }
 
     fn get(&self, url: &str) -> reqwest::RequestBuilder {
@@ -96,13 +100,12 @@ impl RegistryClient for NpmRegistryClient {
             .cloned()
             .unwrap_or_else(|| pkg.version.clone());
 
-        let version_meta = packument
-            .versions
-            .get(&resolved_version)
-            .ok_or_else(|| CoreError::NotFound(format!(
+        let version_meta = packument.versions.get(&resolved_version).ok_or_else(|| {
+            CoreError::NotFound(format!(
                 "npm package {}@{} not found",
                 pkg.name, resolved_version
-            )))?;
+            ))
+        })?;
 
         let download_url = if pkg.artifact.as_deref() == Some("tarball") {
             Some(version_meta.dist.tarball.clone())
@@ -161,13 +164,12 @@ impl RegistryClient for NpmRegistryClient {
             .cloned()
             .unwrap_or_else(|| pkg.version.clone());
 
-        let version_meta = packument
-            .versions
-            .get(&resolved_version)
-            .ok_or_else(|| CoreError::NotFound(format!(
+        let version_meta = packument.versions.get(&resolved_version).ok_or_else(|| {
+            CoreError::NotFound(format!(
                 "npm package {}@{} not found",
                 pkg.name, resolved_version
-            )))?;
+            ))
+        })?;
 
         let tarball_url = &version_meta.dist.tarball;
         tracing::debug!(url = %tarball_url, "fetching npm tarball");
@@ -190,7 +192,10 @@ impl RegistryClient for NpmRegistryClient {
             .bytes_stream()
             .map_err(|e| CoreError::Registry(e.to_string()));
 
-        Ok(FetchedArtifact { stream: Box::pin(stream), cache_control })
+        Ok(FetchedArtifact {
+            stream: Box::pin(stream),
+            cache_control,
+        })
     }
 }
 
@@ -200,7 +205,8 @@ impl NpmRegistryClient {
         let encoded = name.replace('/', "%2F");
         let url = format!("{}/{}", self.base_url, encoded);
 
-        let resp = self.get(&url)
+        let resp = self
+            .get(&url)
             .header("Accept", "application/json")
             .send()
             .await

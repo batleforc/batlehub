@@ -17,9 +17,13 @@ pub enum AccessAction {
 #[serde(tag = "outcome", rename_all = "lowercase")]
 pub enum AccessResult {
     Allowed,
-    Denied { reason: String },
+    Denied {
+        reason: String,
+    },
     #[serde(rename = "error")]
-    ProxyError { reason: String },
+    ProxyError {
+        reason: String,
+    },
 }
 
 impl AccessResult {
@@ -40,7 +44,11 @@ pub struct AccessEvent {
 }
 
 impl AccessEvent {
-    pub fn allowed_download(package_id: PackageId, user_id: Option<String>, user_role: Role) -> Self {
+    pub fn allowed_download(
+        package_id: PackageId,
+        user_id: Option<String>,
+        user_role: Role,
+    ) -> Self {
         Self {
             id: Uuid::new_v4(),
             user_id,

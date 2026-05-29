@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actix_web::{HttpResponse, Responder, post, web};
+use actix_web::{post, web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -80,7 +80,11 @@ pub async fn bulk_yank(
         failed: result
             .failed
             .into_iter()
-            .map(|(name, version, error)| BulkPackageFailureDto { name, version, error })
+            .map(|(name, version, error)| BulkPackageFailureDto {
+                name,
+                version,
+                error,
+            })
             .collect(),
     }))
 }
@@ -124,7 +128,11 @@ pub async fn bulk_unyank(
         failed: result
             .failed
             .into_iter()
-            .map(|(name, version, error)| BulkPackageFailureDto { name, version, error })
+            .map(|(name, version, error)| BulkPackageFailureDto {
+                name,
+                version,
+                error,
+            })
             .collect(),
     }))
 }
@@ -168,7 +176,11 @@ pub async fn bulk_delete(
         failed: result
             .failed
             .into_iter()
-            .map(|(name, version, error)| BulkPackageFailureDto { name, version, error })
+            .map(|(name, version, error)| BulkPackageFailureDto {
+                name,
+                version,
+                error,
+            })
             .collect(),
     }))
 }

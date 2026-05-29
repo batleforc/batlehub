@@ -16,7 +16,6 @@
 /// ```
 ///
 /// Tests skip gracefully when the required toolchain or network access is unavailable.
-
 use std::{
     collections::HashMap,
     fs,
@@ -33,7 +32,6 @@ use tempfile::TempDir;
 use actix_web::{web, App, HttpServer};
 use utoipa_actix_web::AppExt;
 
-use batlehub_config::schema::RegistryMode;
 use batlehub_adapters::{
     auth::StaticTokenAuthProvider,
     cache::InMemoryCacheStore,
@@ -48,6 +46,7 @@ use batlehub_adapters::{
         TerraformRegistryClient, UpstreamHttpOptions, VsCodeMarketplaceRegistryClient,
     },
 };
+use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
     entities::Role,
     ports::{AuthProvider, CacheStore, RegistryClient},
@@ -92,7 +91,11 @@ fn copy_example(name: &str, base_dir: &Path) -> PathBuf {
 }
 
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 fn wait_for_port(port: u16, timeout: Duration) -> bool {
@@ -112,7 +115,9 @@ fn curl_body(url: &str) -> Option<String> {
         .args(["-fsSL", "--max-time", "30", url])
         .output()
         .ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Return the HTTP status code for `url` without downloading the body.
@@ -120,9 +125,13 @@ fn curl_body(url: &str) -> Option<String> {
 fn curl_status(url: &str) -> Option<u16> {
     let out = Command::new("curl")
         .args([
-            "-s", "--max-time", "30",
-            "-o", "/dev/null",
-            "-w", "%{http_code}",
+            "-s",
+            "--max-time",
+            "30",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
             url,
         ])
         .output()
@@ -256,7 +265,6 @@ provider_installation {{
     path.to_path_buf()
 }
 
-
 // ── Real batlehub proxy server ────────────────────────────────────────────────
 
 /// Runs a genuine actix-web batlehub proxy on a random local port.
@@ -289,8 +297,8 @@ impl RealProxy {
             .map(|name| {
                 let perms = HashMap::from([
                     (Role::Anonymous, vec!["*".to_owned()]),
-                    (Role::User,      vec!["*".to_owned()]),
-                    (Role::Admin,     vec!["*".to_owned()]),
+                    (Role::User, vec!["*".to_owned()]),
+                    (Role::Admin, vec!["*".to_owned()]),
                 ]);
                 let policy = RegistryPolicy {
                     metadata_ttl: Some(Duration::from_secs(300)),
@@ -333,18 +341,17 @@ impl RealProxy {
 
         let access_config = AccessConfig {
             anonymous: registry_names.iter().cloned().collect(),
-            user:      registry_names.iter().cloned().collect(),
-            admin:     registry_names.iter().cloned().collect(),
-            groups:    HashMap::new(),
+            user: registry_names.iter().cloned().collect(),
+            admin: registry_names.iter().cloned().collect(),
+            groups: HashMap::new(),
         };
 
-        let auth_providers: Vec<Arc<dyn AuthProvider>> = vec![Arc::new(
-            StaticTokenAuthProvider::new([(
+        let auth_providers: Vec<Arc<dyn AuthProvider>> =
+            vec![Arc::new(StaticTokenAuthProvider::new([(
                 PROXY_AUTH_TOKEN.to_owned(),
                 Some("test-user".to_owned()),
                 Role::Admin,
-            )]),
-        )];
+            )]))];
 
         let cargo_indexes: HashMap<String, batlehub_web::CargoIndexProxy> = HashMap::new();
 
@@ -365,9 +372,9 @@ impl RealProxy {
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         let port = rt.block_on(async {
-            let local_svc     = local_svc.clone();
+            let local_svc = local_svc.clone();
             let cargo_indexes = cargo_indexes.clone();
-            let configure     = configure.clone();
+            let configure = configure.clone();
             let auth_providers = auth_providers.clone();
 
             let server = HttpServer::new(move || {
@@ -412,8 +419,8 @@ impl RealProxy {
             .map(|name| {
                 let perms = HashMap::from([
                     (Role::Anonymous, vec!["*".to_owned()]),
-                    (Role::User,      vec!["*".to_owned()]),
-                    (Role::Admin,     vec!["*".to_owned()]),
+                    (Role::User, vec!["*".to_owned()]),
+                    (Role::Admin, vec!["*".to_owned()]),
                 ]);
                 let policy = RegistryPolicy {
                     metadata_ttl: Some(Duration::from_secs(300)),
@@ -456,21 +463,23 @@ impl RealProxy {
 
         let access_config = AccessConfig {
             anonymous: registry_names.iter().cloned().collect(),
-            user:      registry_names.iter().cloned().collect(),
-            admin:     registry_names.iter().cloned().collect(),
-            groups:    HashMap::new(),
+            user: registry_names.iter().cloned().collect(),
+            admin: registry_names.iter().cloned().collect(),
+            groups: HashMap::new(),
         };
 
-        let auth_providers: Vec<Arc<dyn AuthProvider>> = vec![Arc::new(
-            StaticTokenAuthProvider::new([(
+        let auth_providers: Vec<Arc<dyn AuthProvider>> =
+            vec![Arc::new(StaticTokenAuthProvider::new([(
                 PROXY_AUTH_TOKEN.to_owned(),
                 Some("test-user".to_owned()),
                 Role::Admin,
-            )]),
-        )];
+            )]))];
 
         let mode_map = RegistryModeMap(
-            registry_names.iter().map(|n| (n.clone(), RegistryMode::Local)).collect(),
+            registry_names
+                .iter()
+                .map(|n| (n.clone(), RegistryMode::Local))
+                .collect(),
         );
 
         let configure = configure_app(
@@ -490,9 +499,9 @@ impl RealProxy {
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         let port = rt.block_on(async {
-            let local_svc     = local_svc.clone();
-            let mode_map      = mode_map.clone();
-            let configure     = configure.clone();
+            let local_svc = local_svc.clone();
+            let mode_map = mode_map.clone();
+            let configure = configure.clone();
             let auth_providers = auth_providers.clone();
             let cargo_indexes: HashMap<String, batlehub_web::CargoIndexProxy> = HashMap::new();
 
@@ -545,11 +554,18 @@ fn real_proxy_npm_api() {
     let opts = UpstreamHttpOptions::default();
     let npm = match NpmRegistryClient::new("https://registry.npmjs.org/", &opts) {
         Ok(c) => c,
-        Err(e) => { eprintln!("SKIP real_proxy_npm_api: {e}"); return; }
+        Err(e) => {
+            eprintln!("SKIP real_proxy_npm_api: {e}");
+            return;
+        }
     };
 
     let proxy = RealProxy::start_with_registries(
-        [("my-npm".to_owned(), Arc::new(npm) as Arc<dyn RegistryClient>)].into(),
+        [(
+            "my-npm".to_owned(),
+            Arc::new(npm) as Arc<dyn RegistryClient>,
+        )]
+        .into(),
         RegistryMap([("my-npm".to_owned(), "npm".to_owned())].into()),
     );
 
@@ -559,15 +575,22 @@ fn real_proxy_npm_api() {
     // Patch .npmrc to point at the real proxy.
     let npmrc = dir.join(".npmrc");
     let content = fs::read_to_string(&npmrc).unwrap();
-    fs::write(&npmrc, content.replace("localhost:8080", &format!("127.0.0.1:{}", proxy.port))).unwrap();
+    fs::write(
+        &npmrc,
+        content.replace("localhost:8080", &format!("127.0.0.1:{}", proxy.port)),
+    )
+    .unwrap();
 
     let ok = Command::new("npm")
         .args(["install", "--no-audit", "--no-fund"])
         .env("NPM_CONFIG_CACHE", tmp.path().join("npm-cache"))
         .env("NPM_CONFIG_USERCONFIG", &npmrc)
         .current_dir(&dir)
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .status().map(|s| s.success()).unwrap_or(false);
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
     if !ok {
         eprintln!("SKIP real_proxy_npm_api: npm install through proxy failed (network issue?)");
         return;
@@ -579,8 +602,10 @@ fn real_proxy_npm_api() {
         .env("PORT", port.to_string())
         .env("NPM_CONFIG_CACHE", tmp.path().join("npm-cache"))
         .current_dir(&dir)
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .spawn().expect("spawn node server");
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn node server");
 
     if !wait_for_port(port, Duration::from_secs(15)) {
         kill_wait(server);
@@ -589,7 +614,10 @@ fn real_proxy_npm_api() {
 
     let body = curl_body(&format!("http://127.0.0.1:{port}/")).expect("curl npm server");
     kill_wait(server);
-    assert!(body.contains("hello"), "npm response missing 'hello'; got: {body}");
+    assert!(
+        body.contains("hello"),
+        "npm response missing 'hello'; got: {body}"
+    );
 }
 
 // ── cargo ─────────────────────────────────────────────────────────────────────
@@ -604,11 +632,18 @@ fn real_proxy_cargo_fetch() {
     let opts = UpstreamHttpOptions::default();
     let client = match CargoRegistryClient::new("https://index.crates.io/", &opts) {
         Ok(c) => c,
-        Err(e) => { eprintln!("SKIP real_proxy_cargo_fetch: {e}"); return; }
+        Err(e) => {
+            eprintln!("SKIP real_proxy_cargo_fetch: {e}");
+            return;
+        }
     };
 
     let proxy = RealProxy::start_with_registries(
-        [("my-cargo".to_owned(), Arc::new(client) as Arc<dyn RegistryClient>)].into(),
+        [(
+            "my-cargo".to_owned(),
+            Arc::new(client) as Arc<dyn RegistryClient>,
+        )]
+        .into(),
         RegistryMap([("my-cargo".to_owned(), "cargo".to_owned())].into()),
     );
 
@@ -639,8 +674,11 @@ fn real_proxy_cargo_fetch() {
         .env("CARGO_HOME", &cargo_home)
         .env("CARGO_NET_OFFLINE", "false")
         .current_dir(&dir)
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .status().map(|s| s.success()).unwrap_or(false);
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
 
     if !ok {
         eprintln!(
@@ -663,16 +701,23 @@ fn real_proxy_go_api() {
     let opts = UpstreamHttpOptions::default();
     let client = match GoProxyRegistryClient::new("https://proxy.golang.org/", &opts) {
         Ok(c) => c,
-        Err(e) => { eprintln!("SKIP real_proxy_go_api: {e}"); return; }
+        Err(e) => {
+            eprintln!("SKIP real_proxy_go_api: {e}");
+            return;
+        }
     };
 
     let proxy = RealProxy::start_with_registries(
-        [("my-go".to_owned(), Arc::new(client) as Arc<dyn RegistryClient>)].into(),
+        [(
+            "my-go".to_owned(),
+            Arc::new(client) as Arc<dyn RegistryClient>,
+        )]
+        .into(),
         RegistryMap([("my-go".to_owned(), "goproxy".to_owned())].into()),
     );
 
-    let tmp  = TempDir::new().unwrap();
-    let dir  = copy_example("go", tmp.path());
+    let tmp = TempDir::new().unwrap();
+    let dir = copy_example("go", tmp.path());
     let port = free_port();
     let proxy_url = format!("{}/proxy/my-go/", proxy.base_url());
 
@@ -685,11 +730,15 @@ fn real_proxy_go_api() {
         .env("GOPATH", tmp.path().join("gopath"))
         .env("GOFLAGS", "-mod=mod")
         .current_dir(&dir)
-        .stdout(Stdio::null()).stderr(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
     {
         Ok(s) => s,
-        Err(e) => { eprintln!("SKIP real_proxy_go_api: spawn failed: {e}"); return; }
+        Err(e) => {
+            eprintln!("SKIP real_proxy_go_api: spawn failed: {e}");
+            return;
+        }
     };
 
     // Allow up to 3 min — first run downloads all Go modules through the proxy.
@@ -701,7 +750,10 @@ fn real_proxy_go_api() {
 
     let body = curl_body(&format!("http://127.0.0.1:{port}/")).expect("curl go server");
     kill_wait(server);
-    assert!(body.contains("hello"), "go response missing 'hello'; got: {body}");
+    assert!(
+        body.contains("hello"),
+        "go response missing 'hello'; got: {body}"
+    );
 }
 
 // ── pypi ──────────────────────────────────────────────────────────────────────
@@ -716,20 +768,29 @@ fn real_proxy_pypi_api() {
         return;
     }
 
-    let tmp  = TempDir::new().unwrap();
-    let dir  = copy_example("pypi", tmp.path());
+    let tmp = TempDir::new().unwrap();
+    let dir = copy_example("pypi", tmp.path());
     let venv = tmp.path().join("venv");
 
     let ok = Command::new("python3")
         .args(["-m", "venv", venv.to_str().unwrap()])
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .status().map(|s| s.success()).unwrap_or(false);
-    if !ok { eprintln!("SKIP real_proxy_pypi_api: venv creation failed"); return; }
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        eprintln!("SKIP real_proxy_pypi_api: venv creation failed");
+        return;
+    }
 
     let ok = Command::new(venv.join("bin/pip"))
         .args(["install", "--quiet", "fastapi", "uvicorn[standard]"])
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .status().map(|s| s.success()).unwrap_or(false);
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
     if !ok {
         eprintln!("SKIP real_proxy_pypi_api: pip install failed (network unavailable)");
         return;
@@ -737,10 +798,18 @@ fn real_proxy_pypi_api() {
 
     let port = free_port();
     let server = Command::new(venv.join("bin/uvicorn"))
-        .args(["main:app", "--host", "127.0.0.1", "--port", &port.to_string()])
+        .args([
+            "main:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+        ])
         .current_dir(dir.join("src"))
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .spawn().expect("spawn uvicorn");
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn uvicorn");
 
     if !wait_for_port(port, Duration::from_secs(20)) {
         kill_wait(server);
@@ -749,7 +818,10 @@ fn real_proxy_pypi_api() {
 
     let body = curl_body(&format!("http://127.0.0.1:{port}/")).expect("curl python server");
     kill_wait(server);
-    assert!(body.contains("hello"), "pypi response missing 'hello'; got: {body}");
+    assert!(
+        body.contains("hello"),
+        "pypi response missing 'hello'; got: {body}"
+    );
 }
 
 // ── rubygems ──────────────────────────────────────────────────────────────────
@@ -764,11 +836,18 @@ fn real_proxy_rubygems_api() {
     let opts = UpstreamHttpOptions::default();
     let client = match RubyGemsRegistryClient::new("https://rubygems.org", &opts) {
         Ok(c) => c,
-        Err(e) => { eprintln!("SKIP real_proxy_rubygems_api: {e}"); return; }
+        Err(e) => {
+            eprintln!("SKIP real_proxy_rubygems_api: {e}");
+            return;
+        }
     };
 
     let proxy = RealProxy::start_with_registries(
-        [("my-gems".to_owned(), Arc::new(client) as Arc<dyn RegistryClient>)].into(),
+        [(
+            "my-gems".to_owned(),
+            Arc::new(client) as Arc<dyn RegistryClient>,
+        )]
+        .into(),
         RegistryMap([("my-gems".to_owned(), "rubygems".to_owned())].into()),
     );
 
@@ -790,8 +869,11 @@ fn real_proxy_rubygems_api() {
         .env("BUNDLE_PATH", &bundle_path)
         .env("BUNDLE_APP_CONFIG", dir.join(".bundle"))
         .current_dir(&dir)
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .status().map(|s| s.success()).unwrap_or(false);
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
     if !ok {
         eprintln!("SKIP real_proxy_rubygems_api: bundle install through proxy failed");
         return;
@@ -799,12 +881,22 @@ fn real_proxy_rubygems_api() {
 
     let port = free_port();
     let server = Command::new("bundle")
-        .args(["exec", "rackup", "--host", "127.0.0.1", "--port", &port.to_string(), "config.ru"])
+        .args([
+            "exec",
+            "rackup",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "config.ru",
+        ])
         .env("BUNDLE_PATH", &bundle_path)
         .env("BUNDLE_APP_CONFIG", dir.join(".bundle"))
         .current_dir(&dir)
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .spawn().expect("spawn rackup");
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn rackup");
 
     if !wait_for_port(port, Duration::from_secs(20)) {
         kill_wait(server);
@@ -814,7 +906,10 @@ fn real_proxy_rubygems_api() {
 
     let body = curl_body(&format!("http://127.0.0.1:{port}/")).expect("curl ruby server");
     kill_wait(server);
-    assert!(body.contains("hello"), "rubygems response missing 'hello'; got: {body}");
+    assert!(
+        body.contains("hello"),
+        "rubygems response missing 'hello'; got: {body}"
+    );
 }
 
 // ── composer ──────────────────────────────────────────────────────────────────
@@ -829,11 +924,18 @@ fn real_proxy_composer_console() {
     let opts = UpstreamHttpOptions::default();
     let client = match ComposerRegistryClient::new("https://repo.packagist.org", &opts) {
         Ok(c) => c,
-        Err(e) => { eprintln!("SKIP real_proxy_composer_console: {e}"); return; }
+        Err(e) => {
+            eprintln!("SKIP real_proxy_composer_console: {e}");
+            return;
+        }
     };
 
     let proxy = RealProxy::start_with_registries(
-        [("my-composer".to_owned(), Arc::new(client) as Arc<dyn RegistryClient>)].into(),
+        [(
+            "my-composer".to_owned(),
+            Arc::new(client) as Arc<dyn RegistryClient>,
+        )]
+        .into(),
         RegistryMap([("my-composer".to_owned(), "composer".to_owned())].into()),
     );
 
@@ -858,8 +960,11 @@ fn real_proxy_composer_console() {
         .args(["install", "--no-interaction", "--no-dev"])
         .env("COMPOSER_HOME", tmp.path().join("composer-home"))
         .current_dir(&dir)
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .status().map(|s| s.success()).unwrap_or(false);
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
     if !ok {
         eprintln!("SKIP real_proxy_composer_console: composer install through proxy failed");
         return;
@@ -891,17 +996,24 @@ fn real_proxy_maven_spring_api() {
     let opts = UpstreamHttpOptions::default();
     let client = match MavenRegistryClient::new("https://repo1.maven.org/maven2", &opts) {
         Ok(c) => c,
-        Err(e) => { eprintln!("SKIP real_proxy_maven_spring_api: {e}"); return; }
+        Err(e) => {
+            eprintln!("SKIP real_proxy_maven_spring_api: {e}");
+            return;
+        }
     };
 
     let proxy = RealProxy::start_with_registries(
-        [("my-maven".to_owned(), Arc::new(client) as Arc<dyn RegistryClient>)].into(),
+        [(
+            "my-maven".to_owned(),
+            Arc::new(client) as Arc<dyn RegistryClient>,
+        )]
+        .into(),
         RegistryMap([("my-maven".to_owned(), "maven".to_owned())].into()),
     );
 
     let tmp = TempDir::new().unwrap();
     let dir = copy_example("maven", tmp.path());
-    let m2  = tmp.path().join("m2");
+    let m2 = tmp.path().join("m2");
 
     if !mise_install(&dir) {
         eprintln!("SKIP real_proxy_maven_spring_api: mise install failed");
@@ -909,16 +1021,21 @@ fn real_proxy_maven_spring_api() {
     }
 
     let proxy_url = format!("{}/proxy/my-maven/maven2/", proxy.base_url());
-    let settings  = write_maven_proxy_settings(tmp.path(), &proxy_url);
+    let settings = write_maven_proxy_settings(tmp.path(), &proxy_url);
     let port = free_port();
 
     let server = spawn_tree(
-        mise_exec(&dir, "mvn", &[
-            "-s", settings.to_str().unwrap(),
-            &format!("-Dmaven.repo.local={}", m2.display()),
-            "spring-boot:run",
-            &format!("-Dspring-boot.run.jvmArguments=-Dserver.port={port}"),
-        ])
+        mise_exec(
+            &dir,
+            "mvn",
+            &[
+                "-s",
+                settings.to_str().unwrap(),
+                &format!("-Dmaven.repo.local={}", m2.display()),
+                "spring-boot:run",
+                &format!("-Dspring-boot.run.jvmArguments=-Dserver.port={port}"),
+            ],
+        )
         .stdout(Stdio::null())
         .stderr(Stdio::null()),
     )
@@ -935,7 +1052,10 @@ fn real_proxy_maven_spring_api() {
 
     let body = curl_body(&format!("http://127.0.0.1:{port}/")).expect("curl spring boot");
     kill_tree(server);
-    assert!(body.contains("hello"), "Spring Boot (via proxy) response missing 'hello'; got: {body}");
+    assert!(
+        body.contains("hello"),
+        "Spring Boot (via proxy) response missing 'hello'; got: {body}"
+    );
 }
 
 // ── maven-quarkus ─────────────────────────────────────────────────────────────
@@ -950,17 +1070,24 @@ fn real_proxy_maven_quarkus_api() {
     let opts = UpstreamHttpOptions::default();
     let client = match MavenRegistryClient::new("https://repo1.maven.org/maven2", &opts) {
         Ok(c) => c,
-        Err(e) => { eprintln!("SKIP real_proxy_maven_quarkus_api: {e}"); return; }
+        Err(e) => {
+            eprintln!("SKIP real_proxy_maven_quarkus_api: {e}");
+            return;
+        }
     };
 
     let proxy = RealProxy::start_with_registries(
-        [("my-maven".to_owned(), Arc::new(client) as Arc<dyn RegistryClient>)].into(),
+        [(
+            "my-maven".to_owned(),
+            Arc::new(client) as Arc<dyn RegistryClient>,
+        )]
+        .into(),
         RegistryMap([("my-maven".to_owned(), "maven".to_owned())].into()),
     );
 
     let tmp = TempDir::new().unwrap();
     let dir = copy_example("maven-quarkus", tmp.path());
-    let m2  = tmp.path().join("m2");
+    let m2 = tmp.path().join("m2");
 
     if !mise_install(&dir) {
         eprintln!("SKIP real_proxy_maven_quarkus_api: mise install failed");
@@ -968,17 +1095,22 @@ fn real_proxy_maven_quarkus_api() {
     }
 
     let proxy_url = format!("{}/proxy/my-maven/maven2/", proxy.base_url());
-    let settings  = write_maven_proxy_settings(tmp.path(), &proxy_url);
+    let settings = write_maven_proxy_settings(tmp.path(), &proxy_url);
     let port = free_port();
 
     let server = spawn_tree(
-        mise_exec(&dir, "mvn", &[
-            "-s", settings.to_str().unwrap(),
-            &format!("-Dmaven.repo.local={}", m2.display()),
-            "quarkus:dev",
-            "-Dquarkus.http.host=127.0.0.1",
-            &format!("-Dquarkus.http.port={port}"),
-        ])
+        mise_exec(
+            &dir,
+            "mvn",
+            &[
+                "-s",
+                settings.to_str().unwrap(),
+                &format!("-Dmaven.repo.local={}", m2.display()),
+                "quarkus:dev",
+                "-Dquarkus.http.host=127.0.0.1",
+                &format!("-Dquarkus.http.port={port}"),
+            ],
+        )
         .stdout(Stdio::null())
         .stderr(Stdio::null()),
     )
@@ -1013,11 +1145,18 @@ fn real_proxy_terraform_init() {
     let opts = UpstreamHttpOptions::default();
     let client = match TerraformRegistryClient::new("https://registry.terraform.io", &opts) {
         Ok(c) => c,
-        Err(e) => { eprintln!("SKIP real_proxy_terraform_init: {e}"); return; }
+        Err(e) => {
+            eprintln!("SKIP real_proxy_terraform_init: {e}");
+            return;
+        }
     };
 
     let proxy = RealProxy::start_with_registries(
-        [("my-terraform".to_owned(), Arc::new(client) as Arc<dyn RegistryClient>)].into(),
+        [(
+            "my-terraform".to_owned(),
+            Arc::new(client) as Arc<dyn RegistryClient>,
+        )]
+        .into(),
         RegistryMap([("my-terraform".to_owned(), "terraform".to_owned())].into()),
     );
 
@@ -1032,8 +1171,11 @@ fn real_proxy_terraform_init() {
         .env("TF_CLI_CONFIG_FILE", &rcfile)
         .env("TF_DATA_DIR", tmp.path().join(".terraform"))
         .current_dir(&dir)
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .status().map(|s| s.success()).unwrap_or(false);
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
 
     if !ok {
         eprintln!(
@@ -1051,11 +1193,18 @@ fn real_proxy_github_releases() {
     let opts = UpstreamHttpOptions::default();
     let client = match GithubRegistryClient::new("https://api.github.com", &opts) {
         Ok(c) => c,
-        Err(e) => { eprintln!("SKIP real_proxy_github_releases: {e}"); return; }
+        Err(e) => {
+            eprintln!("SKIP real_proxy_github_releases: {e}");
+            return;
+        }
     };
 
     let proxy = RealProxy::start_with_registries(
-        [("my-github".to_owned(), Arc::new(client) as Arc<dyn RegistryClient>)].into(),
+        [(
+            "my-github".to_owned(),
+            Arc::new(client) as Arc<dyn RegistryClient>,
+        )]
+        .into(),
         RegistryMap([("my-github".to_owned(), "github".to_owned())].into()),
     );
 
@@ -1084,11 +1233,18 @@ fn real_proxy_openvsx_download() {
     let opts = UpstreamHttpOptions::default();
     let client = match OpenVsxRegistryClient::new("https://open-vsx.org", &opts) {
         Ok(c) => c,
-        Err(e) => { eprintln!("SKIP real_proxy_openvsx_download: {e}"); return; }
+        Err(e) => {
+            eprintln!("SKIP real_proxy_openvsx_download: {e}");
+            return;
+        }
     };
 
     let proxy = RealProxy::start_with_registries(
-        [("my-openvsx".to_owned(), Arc::new(client) as Arc<dyn RegistryClient>)].into(),
+        [(
+            "my-openvsx".to_owned(),
+            Arc::new(client) as Arc<dyn RegistryClient>,
+        )]
+        .into(),
         RegistryMap([("my-openvsx".to_owned(), "openvsx".to_owned())].into()),
     );
 
@@ -1115,14 +1271,28 @@ fn real_proxy_openvsx_download() {
 #[test]
 fn real_proxy_vscode_marketplace_download() {
     let opts = UpstreamHttpOptions::default();
-    let client = match VsCodeMarketplaceRegistryClient::new("https://marketplace.visualstudio.com", &opts) {
-        Ok(c) => c,
-        Err(e) => { eprintln!("SKIP real_proxy_vscode_marketplace_download: {e}"); return; }
-    };
+    let client =
+        match VsCodeMarketplaceRegistryClient::new("https://marketplace.visualstudio.com", &opts) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("SKIP real_proxy_vscode_marketplace_download: {e}");
+                return;
+            }
+        };
 
     let proxy = RealProxy::start_with_registries(
-        [("my-vscode-marketplace".to_owned(), Arc::new(client) as Arc<dyn RegistryClient>)].into(),
-        RegistryMap([("my-vscode-marketplace".to_owned(), "vscode-marketplace".to_owned())].into()),
+        [(
+            "my-vscode-marketplace".to_owned(),
+            Arc::new(client) as Arc<dyn RegistryClient>,
+        )]
+        .into(),
+        RegistryMap(
+            [(
+                "my-vscode-marketplace".to_owned(),
+                "vscode-marketplace".to_owned(),
+            )]
+            .into(),
+        ),
     );
 
     // Fetch `charliermarsh.ruff` — a lightweight Python linter extension.
@@ -1151,9 +1321,9 @@ fn real_proxy_npm_publish() {
         return;
     }
 
-    let proxy = RealProxy::start_local(
-        RegistryMap([("my-npm".to_owned(), "npm".to_owned())].into()),
-    );
+    let proxy = RealProxy::start_local(RegistryMap(
+        [("my-npm".to_owned(), "npm".to_owned())].into(),
+    ));
 
     let tmp = TempDir::new().unwrap();
     let pkg_dir = tmp.path().join("test-publish-pkg");
@@ -1162,7 +1332,8 @@ fn real_proxy_npm_publish() {
     fs::write(
         pkg_dir.join("package.json"),
         r#"{"name":"test-publish-pkg","version":"1.0.0","description":"test"}"#,
-    ).unwrap();
+    )
+    .unwrap();
 
     let registry_url = format!("http://127.0.0.1:{}/proxy/my-npm/", proxy.port);
     let npmrc = tmp.path().join(".npmrc");
@@ -1173,15 +1344,19 @@ fn real_proxy_npm_publish() {
              //127.0.0.1:{port}/proxy/my-npm/:_authToken={PROXY_AUTH_TOKEN}\n",
             port = proxy.port,
         ),
-    ).unwrap();
+    )
+    .unwrap();
 
     let ok = Command::new("npm")
         .args(["publish", "--registry", &registry_url])
         .env("NPM_CONFIG_CACHE", tmp.path().join("npm-cache"))
         .env("NPM_CONFIG_USERCONFIG", &npmrc)
         .current_dir(&pkg_dir)
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .status().map(|s| s.success()).unwrap_or(false);
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
 
     if !ok {
         eprintln!("SKIP real_proxy_npm_publish: npm publish failed (proxy or tool issue)");
@@ -1204,9 +1379,9 @@ fn real_proxy_cargo_publish() {
         return;
     }
 
-    let proxy = RealProxy::start_local(
-        RegistryMap([("my-cargo".to_owned(), "cargo".to_owned())].into()),
-    );
+    let proxy = RealProxy::start_local(RegistryMap(
+        [("my-cargo".to_owned(), "cargo".to_owned())].into(),
+    ));
 
     let tmp = TempDir::new().unwrap();
     let pkg_dir = tmp.path().join("test-publish-crate");
@@ -1218,13 +1393,15 @@ fn real_proxy_cargo_publish() {
     fs::write(
         pkg_dir.join("Cargo.toml"),
         "[package]\nname = \"test-publish-crate\"\nversion = \"1.0.0\"\nedition = \"2021\"\n",
-    ).unwrap();
+    )
+    .unwrap();
     fs::write(pkg_dir.join("src/lib.rs"), "").unwrap();
 
     fs::write(
         cargo_home.join("credentials.toml"),
         format!("[registries.batlehub]\ntoken = \"Bearer {PROXY_AUTH_TOKEN}\"\n"),
-    ).unwrap();
+    )
+    .unwrap();
 
     fs::create_dir_all(pkg_dir.join(".cargo")).unwrap();
     fs::write(
@@ -1236,11 +1413,20 @@ fn real_proxy_cargo_publish() {
     ).unwrap();
 
     let ok = Command::new("cargo")
-        .args(["publish", "--registry", "batlehub", "--no-verify", "--allow-dirty"])
+        .args([
+            "publish",
+            "--registry",
+            "batlehub",
+            "--no-verify",
+            "--allow-dirty",
+        ])
         .env("CARGO_HOME", &cargo_home)
         .current_dir(&pkg_dir)
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .status().map(|s| s.success()).unwrap_or(false);
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
 
     if !ok {
         eprintln!("SKIP real_proxy_cargo_publish: cargo publish failed (proxy or tool issue)");
@@ -1251,7 +1437,11 @@ fn real_proxy_cargo_publish() {
         "http://127.0.0.1:{}/proxy/my-cargo/test-publish-crate/1.0.0/download",
         proxy.port,
     ));
-    assert_eq!(status, Some(200), "crate artifact not found after cargo publish");
+    assert_eq!(
+        status,
+        Some(200),
+        "crate artifact not found after cargo publish"
+    );
 }
 
 // ── rubygems publish ──────────────────────────────────────────────────────────
@@ -1263,9 +1453,9 @@ fn real_proxy_rubygems_publish() {
         return;
     }
 
-    let proxy = RealProxy::start_local(
-        RegistryMap([("my-gems".to_owned(), "rubygems".to_owned())].into()),
-    );
+    let proxy = RealProxy::start_local(RegistryMap(
+        [("my-gems".to_owned(), "rubygems".to_owned())].into(),
+    ));
 
     let tmp = TempDir::new().unwrap();
     let gem_dir = tmp.path().join("my-gem");
@@ -1281,13 +1471,17 @@ fn real_proxy_rubygems_publish() {
   s.files   = []
 end
 "#,
-    ).unwrap();
+    )
+    .unwrap();
 
     let ok = Command::new("gem")
         .args(["build", "test-publish-gem.gemspec"])
         .current_dir(&gem_dir)
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .status().map(|s| s.success()).unwrap_or(false);
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
     if !ok {
         eprintln!("SKIP real_proxy_rubygems_publish: gem build failed");
         return;
@@ -1297,12 +1491,20 @@ end
     // Setting it to "Bearer {token}" makes gem push send the correct Bearer auth.
     let registry_url = format!("http://127.0.0.1:{}/proxy/my-gems/", proxy.port);
     let ok = Command::new("gem")
-        .args(["push", "test-publish-gem-1.0.0.gem", "--host", &registry_url])
+        .args([
+            "push",
+            "test-publish-gem-1.0.0.gem",
+            "--host",
+            &registry_url,
+        ])
         .env("GEM_HOST_API_KEY", format!("Bearer {PROXY_AUTH_TOKEN}"))
         .env("HOME", tmp.path())
         .current_dir(&gem_dir)
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .status().map(|s| s.success()).unwrap_or(false);
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
 
     if !ok {
         eprintln!("SKIP real_proxy_rubygems_publish: gem push failed (proxy or tool issue)");
@@ -1325,9 +1527,9 @@ fn real_proxy_maven_publish() {
         return;
     }
 
-    let proxy = RealProxy::start_local(
-        RegistryMap([("my-maven".to_owned(), "maven".to_owned())].into()),
-    );
+    let proxy = RealProxy::start_local(RegistryMap(
+        [("my-maven".to_owned(), "maven".to_owned())].into(),
+    ));
 
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path().to_path_buf();
@@ -1335,7 +1537,8 @@ fn real_proxy_maven_publish() {
     fs::write(
         dir.join(".mise.toml"),
         "[tools]\njava = \"temurin-21\"\nmaven = \"3.9\"\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     if !mise_install(&dir) {
         eprintln!("SKIP real_proxy_maven_publish: mise install failed (Java/Maven unavailable)");
@@ -1344,7 +1547,11 @@ fn real_proxy_maven_publish() {
 
     // A minimal JAR is a valid empty ZIP (end-of-central-directory record only).
     let jar = dir.join("test-artifact-1.0.0.jar");
-    fs::write(&jar, b"PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00").unwrap();
+    fs::write(
+        &jar,
+        b"PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+    )
+    .unwrap();
 
     // Minimal settings.xml — no auth, no mirrors (anonymous upload is allowed by
     // the storage layer for non-POM artifacts; -DgeneratePom=false skips POM
@@ -1353,27 +1560,38 @@ fn real_proxy_maven_publish() {
     fs::write(
         &settings,
         r#"<?xml version="1.0"?><settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"/>"#,
-    ).unwrap();
+    )
+    .unwrap();
 
     let deploy_url = format!("http://127.0.0.1:{}/proxy/my-maven/maven2/", proxy.port);
 
-    let ok = mise_exec(&dir, "mvn", &[
-        "deploy:deploy-file",
-        &format!("-Durl={deploy_url}"),
-        "-DrepositoryId=batlehub",
-        &format!("-Dfile={}", jar.display()),
-        "-DgroupId=com.example",
-        "-DartifactId=test-artifact",
-        "-Dversion=1.0.0",
-        "-DgeneratePom=false",
-        "--no-transfer-progress",
-        "-s", settings.to_str().unwrap(),
-    ])
-    .stdout(Stdio::null()).stderr(Stdio::null())
-    .status().map(|s| s.success()).unwrap_or(false);
+    let ok = mise_exec(
+        &dir,
+        "mvn",
+        &[
+            "deploy:deploy-file",
+            &format!("-Durl={deploy_url}"),
+            "-DrepositoryId=batlehub",
+            &format!("-Dfile={}", jar.display()),
+            "-DgroupId=com.example",
+            "-DartifactId=test-artifact",
+            "-Dversion=1.0.0",
+            "-DgeneratePom=false",
+            "--no-transfer-progress",
+            "-s",
+            settings.to_str().unwrap(),
+        ],
+    )
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .map(|s| s.success())
+    .unwrap_or(false);
 
     if !ok {
-        eprintln!("SKIP real_proxy_maven_publish: mvn deploy:deploy-file failed (proxy or tool issue)");
+        eprintln!(
+            "SKIP real_proxy_maven_publish: mvn deploy:deploy-file failed (proxy or tool issue)"
+        );
         return;
     }
 

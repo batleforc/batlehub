@@ -1,20 +1,22 @@
 use std::sync::Arc;
 
-use actix_web::{HttpRequest, HttpResponse, Responder, delete, get, post, put, web};
+use actix_web::{delete, get, post, put, web, HttpRequest, HttpResponse, Responder};
 use sha2::{Digest, Sha256};
 
 use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
     entities::PackageId,
     ports::StorageMeta,
-    services::{LocalRegistryService, PublishRequest, ProxyService, tf_provider_binary_storage_key},
+    services::{
+        tf_provider_binary_storage_key, LocalRegistryService, ProxyService, PublishRequest,
+    },
 };
 
-use crate::{RegistryMap, RegistryModeMap, UpstreamMap, error::AppError, extractors::AuthIdentity};
 use super::common::{
     append_signature_headers, collect_payload, extract_signature_headers, proxy_stream,
     require_local_mode,
 };
+use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
 
 fn require_terraform(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry) {
@@ -22,7 +24,9 @@ fn require_terraform(registry: &str, map: &RegistryMap) -> Result<(), AppError> 
         Some(_) => Err(AppError::not_found(format!(
             "registry '{registry}' is not a Terraform registry"
         ))),
-        None => Err(AppError::not_found(format!("unknown registry '{registry}'"))),
+        None => Err(AppError::not_found(format!(
+            "unknown registry '{registry}'"
+        ))),
     }
 }
 
@@ -66,16 +70,28 @@ pub async fn tf_provider_versions(
     let mode = mode_map.get(&registry);
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        match local_svc.get_tf_provider_versions_response(&registry, &name, &identity).await {
+        match local_svc
+            .get_tf_provider_versions_response(&registry, &name, &identity)
+            .await
+        {
             Ok(json) => return Ok(HttpResponse::Ok().json(json)),
             Err(batlehub_core::error::CoreError::NotFound(_)) if mode == RegistryMode::Hybrid => {}
-            Err(batlehub_core::error::CoreError::NotFound(msg)) => return Err(AppError::not_found(msg)),
+            Err(batlehub_core::error::CoreError::NotFound(msg)) => {
+                return Err(AppError::not_found(msg))
+            }
             Err(e) => return Err(AppError::from(e)),
         }
     }
 
     let pkg = PackageId::new(&registry, name, "versions");
-    proxy_stream(svc, pkg, identity, "releases:read", Some("application/json")).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        "releases:read",
+        Some("application/json"),
+    )
+    .await
 }
 
 /// Get download information for a specific Terraform provider version and platform.
@@ -117,7 +133,9 @@ pub async fn tf_provider_download(
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
         let base_url = base_url_from_req(&req);
         match local_svc
-            .get_tf_provider_download_response(&registry, &name, &version, &os, &arch, &base_url, &registry, &identity)
+            .get_tf_provider_download_response(
+                &registry, &name, &version, &os, &arch, &base_url, &registry, &identity,
+            )
             .await
         {
             Ok(json) => {
@@ -126,13 +144,22 @@ pub async fn tf_provider_download(
                 return Ok(resp.json(json));
             }
             Err(batlehub_core::error::CoreError::NotFound(_)) if mode == RegistryMode::Hybrid => {}
-            Err(batlehub_core::error::CoreError::NotFound(msg)) => return Err(AppError::not_found(msg)),
+            Err(batlehub_core::error::CoreError::NotFound(msg)) => {
+                return Err(AppError::not_found(msg))
+            }
             Err(e) => return Err(AppError::from(e)),
         }
     }
 
     let pkg = PackageId::new(&registry, name, &version).with_artifact(format!("{os}/{arch}"));
-    proxy_stream(svc, pkg, identity, "releases:read", Some("application/json")).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        "releases:read",
+        Some("application/json"),
+    )
+    .await
 }
 
 /// Upload a Terraform provider version manifest (JSON describing version + platforms).
@@ -298,7 +325,10 @@ pub async fn tf_provider_artifact(
     let (registry, namespace, ptype, version, os, arch) = path.into_inner();
     require_terraform(&registry, &map)?;
 
-    local_svc.check_prerelease_access(&registry, &version, &identity).await.map_err(AppError::from)?;
+    local_svc
+        .check_prerelease_access(&registry, &version, &identity)
+        .await
+        .map_err(AppError::from)?;
 
     let key = tf_provider_binary_storage_key(&registry, &namespace, &ptype, &version, &os, &arch);
     let artifact = local_svc
@@ -443,16 +473,28 @@ pub async fn tf_module_versions(
     let mode = mode_map.get(&registry);
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        match local_svc.get_tf_module_versions_response(&registry, &pkg_name, &identity).await {
+        match local_svc
+            .get_tf_module_versions_response(&registry, &pkg_name, &identity)
+            .await
+        {
             Ok(json) => return Ok(HttpResponse::Ok().json(json)),
             Err(batlehub_core::error::CoreError::NotFound(_)) if mode == RegistryMode::Hybrid => {}
-            Err(batlehub_core::error::CoreError::NotFound(msg)) => return Err(AppError::not_found(msg)),
+            Err(batlehub_core::error::CoreError::NotFound(msg)) => {
+                return Err(AppError::not_found(msg))
+            }
             Err(e) => return Err(AppError::from(e)),
         }
     }
 
     let pkg = PackageId::new(&registry, pkg_name, "versions");
-    proxy_stream(svc, pkg, identity, "releases:read", Some("application/json")).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        "releases:read",
+        Some("application/json"),
+    )
+    .await
 }
 
 /// Get the download URL for a specific Terraform module version.
@@ -651,7 +693,10 @@ pub async fn tf_module_artifact(
     let (registry, namespace, name, provider, version) = path.into_inner();
     require_terraform(&registry, &map)?;
 
-    local_svc.check_prerelease_access(&registry, &version, &identity).await.map_err(AppError::from)?;
+    local_svc
+        .check_prerelease_access(&registry, &version, &identity)
+        .await
+        .map_err(AppError::from)?;
 
     let pkg_name = format!("modules/{namespace}/{name}/{provider}");
     let bytes = local_svc

@@ -1,14 +1,17 @@
 use std::sync::Arc;
 
-use actix_web::{HttpResponse, Responder, delete, get, post, web};
+use actix_web::{delete, get, post, web, HttpResponse, Responder};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use batlehub_core::{entities::{Role, TeamNamespace}, ports::TeamNamespacePort};
+use batlehub_core::{
+    entities::{Role, TeamNamespace},
+    ports::TeamNamespacePort,
+};
 
-use crate::{error::AppError, extractors::AuthIdentity};
 use super::require_admin;
+use crate::{error::AppError, extractors::AuthIdentity};
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TeamNamespaceDto {
@@ -161,7 +164,8 @@ pub async fn my_namespaces(
     if !identity.has_role_at_least(&Role::User) {
         return Err(AppError::forbidden("authentication required"));
     }
-    let normalized_groups: Vec<String> = identity.groups.iter().map(|g| g.replace(' ', "")).collect();
+    let normalized_groups: Vec<String> =
+        identity.groups.iter().map(|g| g.replace(' ', "")).collect();
     let namespaces: Vec<TeamNamespaceDto> = store
         .list_namespaces_for_groups(&normalized_groups)
         .await
@@ -231,7 +235,11 @@ pub async fn my_namespace_packages(
             .await
             .map_err(AppError::from)?;
         match ns {
-            Some(ns) if identity.groups.iter().any(|g| g.replace(' ', "") == ns.group_id.replace(' ', "")) => {}
+            Some(ns)
+                if identity
+                    .groups
+                    .iter()
+                    .any(|g| g.replace(' ', "") == ns.group_id.replace(' ', "")) => {}
             Some(ns) => {
                 return Err(AppError::forbidden(format!(
                     "namespace '{}' is owned by group '{}'; you are not a member",

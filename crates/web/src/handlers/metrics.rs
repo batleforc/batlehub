@@ -1,4 +1,4 @@
-use actix_web::{HttpResponse, Responder, get, web};
+use actix_web::{get, web, HttpResponse, Responder};
 use metrics_exporter_prometheus::PrometheusHandle;
 
 /// Prometheus metrics endpoint — scraped by Prometheus or compatible tools.

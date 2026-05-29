@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actix_web::{HttpRequest, HttpResponse, Responder, delete, get, post, web};
+use actix_web::{delete, get, post, web, HttpRequest, HttpResponse, Responder};
 use sha2::{Digest, Sha256};
 
 use batlehub_config::schema::RegistryMode;
@@ -10,8 +10,8 @@ use batlehub_core::{
     services::{LocalRegistryService, ProxyService, PublishRequest},
 };
 
-use crate::{RegistryMap, RegistryModeMap, error::AppError, extractors::AuthIdentity};
 use super::common::{collect_payload, proxy_stream, require_local_mode};
+use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 fn require_composer(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry) {
@@ -19,7 +19,9 @@ fn require_composer(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
         Some(_) => Err(AppError::not_found(format!(
             "registry '{registry}' is not a Composer registry"
         ))),
-        None => Err(AppError::not_found(format!("unknown registry '{registry}'"))),
+        None => Err(AppError::not_found(format!(
+            "unknown registry '{registry}'"
+        ))),
     }
 }
 
@@ -123,9 +125,8 @@ pub async fn composer_p2_metadata(
     // Parse the path: "vendor/package.json" or "vendor/package~dev.json".
     // The `~dev` suffix is significant — Packagist serves different JSON for dev variants,
     // so the cache key must distinguish them.
-    let package_name = parse_p2_package_name(&p2_path).ok_or_else(|| {
-        AppError::bad_request(format!("invalid Composer p2 path: '{p2_path}'"))
-    })?;
+    let package_name = parse_p2_package_name(&p2_path)
+        .ok_or_else(|| AppError::bad_request(format!("invalid Composer p2 path: '{p2_path}'")))?;
     let is_dev = p2_path.contains('~');
     let p2_artifact = if is_dev { "p2~dev" } else { "p2" };
 
@@ -157,7 +158,14 @@ pub async fn composer_p2_metadata(
     // Proxy mode (or hybrid fallback): fetch from upstream via ProxyService.
     // Use version="_index" so the artifact key is stable; p2_artifact encodes the ~dev variant.
     let pkg = PackageId::new(&registry, &package_name, "_index").with_artifact(p2_artifact);
-    proxy_stream(svc, pkg, identity, "releases:read", Some("application/json")).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        "releases:read",
+        Some("application/json"),
+    )
+    .await
 }
 
 // ── dist artifact download ────────────────────────────────────────────────────
@@ -200,7 +208,10 @@ pub async fn composer_dist(
             .check_prerelease_access(&registry, &version, &identity.0)
             .await
             .map_err(AppError::from)?;
-        match local_svc.get_artifact(&registry, &name, &version, &identity).await {
+        match local_svc
+            .get_artifact(&registry, &name, &version, &identity)
+            .await
+        {
             Ok(bytes) => {
                 return Ok(HttpResponse::Ok()
                     .content_type("application/zip")
@@ -226,7 +237,10 @@ pub async fn composer_dist(
 
         // Gate passed — try local artifact; fall through to proxy only when we truly
         // don't have it locally (NotFound = "not published here, go upstream").
-        match local_svc.get_artifact(&registry, &name, &version, &identity).await {
+        match local_svc
+            .get_artifact(&registry, &name, &version, &identity)
+            .await
+        {
             Ok(bytes) => {
                 return Ok(HttpResponse::Ok()
                     .content_type("application/zip")
@@ -285,11 +299,9 @@ pub async fn composer_upload(
 
     let data = collect_payload(payload).await?;
 
-    let meta = batlehub_adapters::registry::composer::parse_composer_zip(
-        &data,
-        query.version.as_deref(),
-    )
-    .map_err(|e| AppError::unprocessable(e.to_string()))?;
+    let meta =
+        batlehub_adapters::registry::composer::parse_composer_zip(&data, query.version.as_deref())
+            .map_err(|e| AppError::unprocessable(e.to_string()))?;
 
     let checksum = hex::encode(Sha256::digest(&data));
 
@@ -379,11 +391,13 @@ pub async fn composer_yank(
 /// contain characters outside the set allowed by Composer.
 fn validate_version_param(v: &str) -> Result<(), AppError> {
     if v.len() > 128 {
-        return Err(AppError::unprocessable("version parameter too long".to_owned()));
+        return Err(AppError::unprocessable(
+            "version parameter too long".to_owned(),
+        ));
     }
-    let ok = v.chars().all(|c| {
-        c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | '~' | '_' | 'v' | 'V')
-    });
+    let ok = v
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | '~' | '_' | 'v' | 'V'));
     if !ok {
         return Err(AppError::unprocessable(format!(
             "invalid characters in version parameter: '{v}'"
@@ -425,7 +439,9 @@ fn parse_p2_package_name(path: &str) -> Option<String> {
 /// Returns `true` when every character in `s` is a safe Composer name segment
 /// character: ASCII alphanumeric, hyphen, underscore, or dot.
 fn is_valid_composer_segment(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 #[cfg(test)]

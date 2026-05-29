@@ -1,7 +1,10 @@
 use async_trait::async_trait;
 use sqlx::{PgPool, Row};
 
-use batlehub_core::{error::CoreError, ports::{QuotaRepository, QuotaUsage}};
+use batlehub_core::{
+    error::CoreError,
+    ports::{QuotaRepository, QuotaUsage},
+};
 
 pub struct PgQuotaRepository {
     pool: PgPool,

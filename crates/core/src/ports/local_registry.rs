@@ -95,11 +95,17 @@ pub trait LocalRegistryBackend: Send + Sync {
         registry: &str,
         items: &[(String, String)],
     ) -> Result<BulkResult, CoreError> {
-        let mut result = BulkResult { processed: items.len(), succeeded: 0, failed: vec![] };
+        let mut result = BulkResult {
+            processed: items.len(),
+            succeeded: 0,
+            failed: vec![],
+        };
         for (name, version) in items {
             match self.yank(registry, name, version).await {
                 Ok(()) => result.succeeded += 1,
-                Err(e) => result.failed.push((name.clone(), version.clone(), e.to_string())),
+                Err(e) => result
+                    .failed
+                    .push((name.clone(), version.clone(), e.to_string())),
             }
         }
         Ok(result)
@@ -112,11 +118,17 @@ pub trait LocalRegistryBackend: Send + Sync {
         registry: &str,
         items: &[(String, String)],
     ) -> Result<BulkResult, CoreError> {
-        let mut result = BulkResult { processed: items.len(), succeeded: 0, failed: vec![] };
+        let mut result = BulkResult {
+            processed: items.len(),
+            succeeded: 0,
+            failed: vec![],
+        };
         for (name, version) in items {
             match self.unyank(registry, name, version).await {
                 Ok(()) => result.succeeded += 1,
-                Err(e) => result.failed.push((name.clone(), version.clone(), e.to_string())),
+                Err(e) => result
+                    .failed
+                    .push((name.clone(), version.clone(), e.to_string())),
             }
         }
         Ok(result)
@@ -129,11 +141,17 @@ pub trait LocalRegistryBackend: Send + Sync {
         registry: &str,
         items: &[(String, String)],
     ) -> Result<BulkResult, CoreError> {
-        let mut result = BulkResult { processed: items.len(), succeeded: 0, failed: vec![] };
+        let mut result = BulkResult {
+            processed: items.len(),
+            succeeded: 0,
+            failed: vec![],
+        };
         for (name, version) in items {
             match self.remove_version(registry, name, version).await {
                 Ok(()) => result.succeeded += 1,
-                Err(e) => result.failed.push((name.clone(), version.clone(), e.to_string())),
+                Err(e) => result
+                    .failed
+                    .push((name.clone(), version.clone(), e.to_string())),
             }
         }
         Ok(result)

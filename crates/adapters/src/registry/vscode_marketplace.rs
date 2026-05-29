@@ -29,7 +29,10 @@ impl VsCodeMarketplaceRegistryClient {
             .user_agent("batlehub/0.1")
             .redirect(reqwest::redirect::Policy::limited(10));
         let http = apply_upstream_options(builder, opts)?;
-        Ok(Self { http, base_url: base_url.into() })
+        Ok(Self {
+            http,
+            base_url: base_url.into(),
+        })
     }
 
     fn parse_id(name: &str) -> Result<(&str, &str), CoreError> {
@@ -125,7 +128,9 @@ impl RegistryClient for VsCodeMarketplaceRegistryClient {
 
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
         let (publisher, ext_name) = Self::parse_id(&pkg.name)?;
-        let resolved = self.query_extension(publisher, ext_name, &pkg.version).await?;
+        let resolved = self
+            .query_extension(publisher, ext_name, &pkg.version)
+            .await?;
 
         let published_at = resolved
             .version_info
@@ -141,7 +146,11 @@ impl RegistryClient for VsCodeMarketplaceRegistryClient {
             .find(|f| f.asset_type == VSIX_ASSET_TYPE)
             .map(|f| f.source.clone());
 
-        let download_url = if pkg.artifact.as_deref() == Some("vsix") { vsix_url } else { None };
+        let download_url = if pkg.artifact.as_deref() == Some("vsix") {
+            vsix_url
+        } else {
+            None
+        };
 
         let extra = serde_json::json!({
             "resolved_version": resolved.version_info.version,
@@ -150,7 +159,10 @@ impl RegistryClient for VsCodeMarketplaceRegistryClient {
         });
 
         Ok(PackageMetadata {
-            id: PackageId { version: resolved.version_info.version, ..pkg.clone() },
+            id: PackageId {
+                version: resolved.version_info.version,
+                ..pkg.clone()
+            },
             published_at,
             download_url,
             checksum: None,
@@ -200,7 +212,10 @@ impl RegistryClient for VsCodeMarketplaceRegistryClient {
             .bytes_stream()
             .map_err(|e| CoreError::Registry(e.to_string()));
 
-        Ok(FetchedArtifact { stream: Box::pin(stream), cache_control })
+        Ok(FetchedArtifact {
+            stream: Box::pin(stream),
+            cache_control,
+        })
     }
 }
 
@@ -213,7 +228,9 @@ impl VsCodeMarketplaceRegistryClient {
     ) -> Result<ResolvedExtension, CoreError> {
         let (flags, criteria) = if version == "latest" {
             (
-                FLAG_INCLUDE_VERSIONS | FLAG_INCLUDE_FILES | FLAG_INCLUDE_ASSET_URI
+                FLAG_INCLUDE_VERSIONS
+                    | FLAG_INCLUDE_FILES
+                    | FLAG_INCLUDE_ASSET_URI
                     | FLAG_INCLUDE_LATEST_ONLY,
                 vec![ExtensionQueryCriteria {
                     filter_type: FILTER_EXTENSION_NAME,
@@ -323,8 +340,7 @@ mod tests {
 
     #[test]
     fn parse_id_multiple_dots() {
-        let (publisher, name) =
-            VsCodeMarketplaceRegistryClient::parse_id("pub.ext.extra").unwrap();
+        let (publisher, name) = VsCodeMarketplaceRegistryClient::parse_id("pub.ext.extra").unwrap();
         assert_eq!(publisher, "pub");
         assert_eq!(name, "ext.extra");
     }
@@ -348,8 +364,12 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let meta = client.resolve_metadata(&pkg("ms-python.python", "latest")).await.unwrap();
+        let client =
+            VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let meta = client
+            .resolve_metadata(&pkg("ms-python.python", "latest"))
+            .await
+            .unwrap();
 
         assert_eq!(meta.id.version, "2024.2.1");
     }
@@ -365,9 +385,12 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let meta =
-            client.resolve_metadata(&pkg("ms-python.python", "2024.2.1")).await.unwrap();
+        let client =
+            VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let meta = client
+            .resolve_metadata(&pkg("ms-python.python", "2024.2.1"))
+            .await
+            .unwrap();
 
         assert_eq!(meta.id.version, "2024.2.1");
     }
@@ -383,8 +406,12 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let meta = client.resolve_metadata(&pkg("ms-python.python", "latest")).await.unwrap();
+        let client =
+            VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let meta = client
+            .resolve_metadata(&pkg("ms-python.python", "latest"))
+            .await
+            .unwrap();
 
         assert!(meta.published_at.is_some());
     }
@@ -400,8 +427,12 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let meta = client.resolve_metadata(&pkg("ms-python.python", "2024.2.1")).await.unwrap();
+        let client =
+            VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let meta = client
+            .resolve_metadata(&pkg("ms-python.python", "2024.2.1"))
+            .await
+            .unwrap();
 
         assert!(meta.download_url.is_none());
     }
@@ -417,11 +448,15 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let client =
+            VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
         let p = pkg("ms-python.python", "2024.2.1").with_artifact("vsix");
         let meta = client.resolve_metadata(&p).await.unwrap();
 
-        assert_eq!(meta.download_url.as_deref(), Some("http://example.com/python.vsix"));
+        assert_eq!(
+            meta.download_url.as_deref(),
+            Some("http://example.com/python.vsix")
+        );
     }
 
     #[tokio::test]
@@ -435,8 +470,12 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let meta = client.resolve_metadata(&pkg("ms-python.python", "2024.2.1")).await.unwrap();
+        let client =
+            VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let meta = client
+            .resolve_metadata(&pkg("ms-python.python", "2024.2.1"))
+            .await
+            .unwrap();
 
         assert_eq!(meta.is_signed, Some(false));
     }
@@ -452,8 +491,11 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let result = client.resolve_metadata(&pkg("ms-python.python", "9.9.9")).await;
+        let client =
+            VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let result = client
+            .resolve_metadata(&pkg("ms-python.python", "9.9.9"))
+            .await;
 
         assert!(matches!(result, Err(CoreError::NotFound(_))));
     }
@@ -467,8 +509,11 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let result = client.resolve_metadata(&pkg("ms-python.python", "2024.2.1")).await;
+        let client =
+            VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let result = client
+            .resolve_metadata(&pkg("ms-python.python", "2024.2.1"))
+            .await;
 
         assert!(matches!(result, Err(CoreError::Registry(_))));
     }
@@ -487,9 +532,12 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let fetched =
-            client.fetch_artifact(&pkg("ms-python.python", "2024.2.1")).await.unwrap();
+        let client =
+            VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let fetched = client
+            .fetch_artifact(&pkg("ms-python.python", "2024.2.1"))
+            .await
+            .unwrap();
         let chunks: Vec<bytes::Bytes> = fetched.stream.try_collect().await.unwrap();
         let content: Vec<u8> = chunks.into_iter().flat_map(|b| b.to_vec()).collect();
         assert_eq!(content, b"fake vsix content");
@@ -506,8 +554,11 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let result = client.fetch_artifact(&pkg("ms-python.python", "9.9.9")).await;
+        let client =
+            VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let result = client
+            .fetch_artifact(&pkg("ms-python.python", "9.9.9"))
+            .await;
 
         assert!(matches!(result, Err(CoreError::NotFound(_))));
     }
@@ -523,8 +574,11 @@ mod tests {
             .create_async()
             .await;
 
-        let client = VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
-        let result = client.fetch_artifact(&pkg("ms-python.python", "2024.2.1")).await;
+        let client =
+            VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let result = client
+            .fetch_artifact(&pkg("ms-python.python", "2024.2.1"))
+            .await;
 
         assert!(matches!(result, Err(CoreError::Registry(_))));
     }

@@ -140,10 +140,7 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
         Ok(rows
             .into_iter()
             .map(|r| {
-                let vis = r
-                    .get::<String, _>("visibility")
-                    .parse()
-                    .unwrap_or_default();
+                let vis = r.get::<String, _>("visibility").parse().unwrap_or_default();
                 PublishedPackage {
                     registry: r.get("registry"),
                     name: r.get("name"),
@@ -219,6 +216,9 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
         .await
         .map_err(|e| CoreError::Database(e.to_string()))?;
 
-        Ok(rows.into_iter().map(|r| r.get::<String, _>("name")).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| r.get::<String, _>("name"))
+            .collect())
     }
 }

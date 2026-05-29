@@ -53,16 +53,38 @@ mod tests {
 
     #[test]
     fn is_admin_true_only_for_admin_role() {
-        assert!(Identity { user_id: None, role: Role::Admin, auth_provider: None, groups: vec![] }.is_admin());
-        assert!(!Identity { user_id: None, role: Role::User, auth_provider: None, groups: vec![] }.is_admin());
+        assert!(Identity {
+            user_id: None,
+            role: Role::Admin,
+            auth_provider: None,
+            groups: vec![]
+        }
+        .is_admin());
+        assert!(!Identity {
+            user_id: None,
+            role: Role::User,
+            auth_provider: None,
+            groups: vec![]
+        }
+        .is_admin());
         assert!(!Identity::anonymous().is_admin());
     }
 
     #[test]
     fn has_role_at_least_respects_ordering() {
-        let admin = Identity { user_id: None, role: Role::Admin, auth_provider: None, groups: vec![] };
-        let user  = Identity { user_id: None, role: Role::User,  auth_provider: None, groups: vec![] };
-        let anon  = Identity::anonymous();
+        let admin = Identity {
+            user_id: None,
+            role: Role::Admin,
+            auth_provider: None,
+            groups: vec![],
+        };
+        let user = Identity {
+            user_id: None,
+            role: Role::User,
+            auth_provider: None,
+            groups: vec![],
+        };
+        let anon = Identity::anonymous();
 
         assert!(admin.has_role_at_least(&Role::Admin));
         assert!(admin.has_role_at_least(&Role::User));

@@ -42,8 +42,15 @@ async fn make_store(url: &str) -> TestStore {
     let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
     let prefix = format!("t{id}");
     let pool = PgPool::connect(url).await.expect("connect to postgres");
-    batlehub_adapters::migrations::embedded_migrator().run(&pool).await.expect("run migrations");
-    TestStore { store: PgCacheStore::new(pool.clone()), pool, prefix }
+    batlehub_adapters::migrations::embedded_migrator()
+        .run(&pool)
+        .await
+        .expect("run migrations");
+    TestStore {
+        store: PgCacheStore::new(pool.clone()),
+        pool,
+        prefix,
+    }
 }
 
 fn dummy_meta(name: &str) -> PackageMetadata {
@@ -59,7 +66,11 @@ fn dummy_meta(name: &str) -> PackageMetadata {
 }
 
 fn fresh_entry(name: &str) -> CacheEntry {
-    CacheEntry { metadata: dummy_meta(name), cached_at: Utc::now(), expires_at: None }
+    CacheEntry {
+        metadata: dummy_meta(name),
+        cached_at: Utc::now(),
+        expires_at: None,
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -75,8 +86,16 @@ async fn get_returns_none_for_missing_key() {
 async fn set_and_get_round_trip() {
     let Some(url) = db_url() else { return };
     let s = make_store(&url).await;
-    s.store.set(&s.key("k1"), fresh_entry("pkg-a"), None).await.unwrap();
-    let got = s.store.get(&s.key("k1")).await.unwrap().expect("entry should be present");
+    s.store
+        .set(&s.key("k1"), fresh_entry("pkg-a"), None)
+        .await
+        .unwrap();
+    let got = s
+        .store
+        .get(&s.key("k1"))
+        .await
+        .unwrap()
+        .expect("entry should be present");
     assert_eq!(got.metadata.id.name, "pkg-a");
     assert!(got.expires_at.is_none());
 }
@@ -85,8 +104,14 @@ async fn set_and_get_round_trip() {
 async fn set_overwrites_existing_entry() {
     let Some(url) = db_url() else { return };
     let s = make_store(&url).await;
-    s.store.set(&s.key("k1"), fresh_entry("first"), None).await.unwrap();
-    s.store.set(&s.key("k1"), fresh_entry("second"), None).await.unwrap();
+    s.store
+        .set(&s.key("k1"), fresh_entry("first"), None)
+        .await
+        .unwrap();
+    s.store
+        .set(&s.key("k1"), fresh_entry("second"), None)
+        .await
+        .unwrap();
     let got = s.store.get(&s.key("k1")).await.unwrap().unwrap();
     assert_eq!(got.metadata.id.name, "second");
 }
@@ -95,10 +120,23 @@ async fn set_overwrites_existing_entry() {
 async fn set_with_ttl_stores_expires_at() {
     let Some(url) = db_url() else { return };
     let s = make_store(&url).await;
-    s.store.set(&s.key("k1"), fresh_entry("pkg-ttl"), Some(Duration::from_secs(300))).await.unwrap();
+    s.store
+        .set(
+            &s.key("k1"),
+            fresh_entry("pkg-ttl"),
+            Some(Duration::from_secs(300)),
+        )
+        .await
+        .unwrap();
     let got = s.store.get(&s.key("k1")).await.unwrap().unwrap();
-    assert!(got.expires_at.is_some(), "expires_at should be set when a TTL is provided");
-    assert!(got.expires_at.unwrap() > Utc::now(), "expires_at should be in the future");
+    assert!(
+        got.expires_at.is_some(),
+        "expires_at should be set when a TTL is provided"
+    );
+    assert!(
+        got.expires_at.unwrap() > Utc::now(),
+        "expires_at should be in the future"
+    );
 }
 
 #[tokio::test]
@@ -106,7 +144,10 @@ async fn expired_entry_treated_as_miss_by_get() {
     let Some(url) = db_url() else { return };
     let s = make_store(&url).await;
     let k = s.key("k1");
-    s.store.set(&k, fresh_entry("stale-pkg"), None).await.unwrap();
+    s.store
+        .set(&k, fresh_entry("stale-pkg"), None)
+        .await
+        .unwrap();
     sqlx::query(
         "UPDATE metadata_cache SET expires_at = NOW() - INTERVAL '1 hour' WHERE cache_key = $1",
     )
@@ -114,7 +155,10 @@ async fn expired_entry_treated_as_miss_by_get() {
     .execute(&s.pool)
     .await
     .unwrap();
-    assert!(s.store.get(&k).await.unwrap().is_none(), "expired entry must be a cache miss");
+    assert!(
+        s.store.get(&k).await.unwrap().is_none(),
+        "expired entry must be a cache miss"
+    );
 }
 
 #[tokio::test]
@@ -131,22 +175,36 @@ async fn get_stale_returns_expired_entry_that_get_skips() {
     .await
     .unwrap();
 
-    assert!(s.store.get(&k).await.unwrap().is_none(), "get should skip expired");
-    assert!(s.store.get_stale(&k).await.unwrap().is_some(), "get_stale should return expired entry");
+    assert!(
+        s.store.get(&k).await.unwrap().is_none(),
+        "get should skip expired"
+    );
+    assert!(
+        s.store.get_stale(&k).await.unwrap().is_some(),
+        "get_stale should return expired entry"
+    );
 }
 
 #[tokio::test]
 async fn get_stale_returns_none_for_missing_key() {
     let Some(url) = db_url() else { return };
     let s = make_store(&url).await;
-    assert!(s.store.get_stale(&s.key("never-set")).await.unwrap().is_none());
+    assert!(s
+        .store
+        .get_stale(&s.key("never-set"))
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
 async fn get_stale_returns_non_expired_entry() {
     let Some(url) = db_url() else { return };
     let s = make_store(&url).await;
-    s.store.set(&s.key("k1"), fresh_entry("live"), None).await.unwrap();
+    s.store
+        .set(&s.key("k1"), fresh_entry("live"), None)
+        .await
+        .unwrap();
     assert!(s.store.get_stale(&s.key("k1")).await.unwrap().is_some());
 }
 

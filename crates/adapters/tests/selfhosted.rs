@@ -16,9 +16,9 @@
 
 use std::sync::Arc;
 
-use mockito::Matcher;
 use batlehub_adapters::registry::{GoProxyRegistryClient, UpstreamHttpOptions};
 use batlehub_core::{entities::PackageId, error::CoreError, ports::RegistryClient};
+use mockito::Matcher;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -59,10 +59,14 @@ async fn spawn_tls_server(
 
     tokio::spawn(async move {
         loop {
-            let Ok((stream, _)) = listener.accept().await else { break };
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
             let acceptor = acceptor.clone();
             tokio::spawn(async move {
-                let Ok(mut tls) = acceptor.accept(stream).await else { return };
+                let Ok(mut tls) = acceptor.accept(stream).await else {
+                    return;
+                };
                 // Drain the HTTP request so reqwest can finish writing it.
                 let mut buf = [0u8; 4096];
                 let _ = tls.read(&mut buf).await;
@@ -195,10 +199,8 @@ async fn custom_ca_cert_enables_https_connection() {
         ca_cert_path: Some(ca_path.to_str().unwrap().to_owned()),
         ..Default::default()
     };
-    let client = GoProxyRegistryClient::new(
-        format!("https://localhost:{}", addr.port()),
-        &opts,
-    ).unwrap();
+    let client =
+        GoProxyRegistryClient::new(format!("https://localhost:{}", addr.port()), &opts).unwrap();
 
     // 5. Make a real HTTPS request through the registry client.
     let result = client.resolve_metadata(&test_pkg()).await;
@@ -228,7 +230,8 @@ async fn untrusted_ca_cert_rejects_https_connection() {
     let client = GoProxyRegistryClient::new(
         format!("https://localhost:{}", addr.port()),
         &Default::default(),
-    ).unwrap();
+    )
+    .unwrap();
 
     let result = client.resolve_metadata(&test_pkg()).await;
 

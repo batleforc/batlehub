@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use aws_config::BehaviorVersion;
-use aws_sdk_s3::{Client, config::Builder as S3ConfigBuilder};
+use aws_sdk_s3::{config::Builder as S3ConfigBuilder, Client};
 use bytes::Bytes;
 use futures::stream;
 
@@ -47,14 +47,20 @@ impl S3StorageBackend {
             .bucket(&cfg.bucket)
             .send()
             .await
-            .map_err(|e| CoreError::Storage(format!(
-                "S3 bucket '{}' is not reachable: {}",
-                cfg.bucket, e
-            )))?;
+            .map_err(|e| {
+                CoreError::Storage(format!(
+                    "S3 bucket '{}' is not reachable: {}",
+                    cfg.bucket, e
+                ))
+            })?;
 
         tracing::info!(bucket = %cfg.bucket, "S3 bucket reachability check passed");
 
-        Ok(Self { client, bucket: cfg.bucket.clone(), prefix })
+        Ok(Self {
+            client,
+            bucket: cfg.bucket.clone(),
+            prefix,
+        })
     }
 
     fn object_key(&self, key: &str) -> String {
@@ -76,7 +82,11 @@ impl S3StorageBackend {
 #[doc(hidden)]
 impl S3StorageBackend {
     pub fn from_client(client: Client, bucket: String, prefix: String) -> Self {
-        Self { client, bucket, prefix }
+        Self {
+            client,
+            bucket,
+            prefix,
+        }
     }
 }
 
@@ -124,7 +134,9 @@ impl StorageBackend for S3StorageBackend {
                 if Self::is_not_found(&sdk_err.into()) {
                     return Ok(None);
                 }
-                return Err(CoreError::Storage(format!("S3 get_object {obj_key}: {err_str}")));
+                return Err(CoreError::Storage(format!(
+                    "S3 get_object {obj_key}: {err_str}"
+                )));
             }
         };
 
@@ -142,7 +154,11 @@ impl StorageBackend for S3StorageBackend {
 
         Ok(Some(StoredArtifact {
             stream,
-            meta: StorageMeta { size, content_type, ..Default::default() },
+            meta: StorageMeta {
+                size,
+                content_type,
+                ..Default::default()
+            },
         }))
     }
 
@@ -164,7 +180,9 @@ impl StorageBackend for S3StorageBackend {
                 if Self::is_not_found(&sdk_err.into()) {
                     return Ok(false);
                 }
-                Err(CoreError::Storage(format!("S3 head_object {obj_key}: {err_str}")))
+                Err(CoreError::Storage(format!(
+                    "S3 head_object {obj_key}: {err_str}"
+                )))
             }
         }
     }
@@ -188,7 +206,9 @@ impl StorageBackend for S3StorageBackend {
                 if Self::is_not_found(&sdk_err.into()) {
                     return Ok(());
                 }
-                Err(CoreError::Storage(format!("S3 delete_object {obj_key}: {err_str}")))
+                Err(CoreError::Storage(format!(
+                    "S3 delete_object {obj_key}: {err_str}"
+                )))
             }
         }
     }

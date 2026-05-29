@@ -5,10 +5,10 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use actix_web::{
-    Error, HttpResponse,
     body::EitherBody,
-    dev::{Service, ServiceRequest, ServiceResponse, Transform, forward_ready},
+    dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
     http::StatusCode,
+    Error, HttpResponse,
 };
 use futures::future::LocalBoxFuture;
 
@@ -42,7 +42,11 @@ pub(crate) fn extract_client_ip(req: &ServiceRequest, trusted_proxies: &[String]
         }
     }
 
-    if peer.is_empty() { "unknown".to_owned() } else { peer }
+    if peer.is_empty() {
+        "unknown".to_owned()
+    } else {
+        peer
+    }
 }
 
 fn now_unix() -> u64 {
@@ -61,7 +65,10 @@ pub struct IpBlockMiddlewareFactory {
 
 impl IpBlockMiddlewareFactory {
     pub fn new(store: Arc<dyn IpBlockStore>, config: IpBlockingConfig) -> Self {
-        Self { store, config: Arc::new(config) }
+        Self {
+            store,
+            config: Arc::new(config),
+        }
     }
 }
 
@@ -136,7 +143,10 @@ where
 
             let status = res.status().as_u16();
             if config.trigger_on_status.contains(&status) {
-                match store.record_violation(&ip, config.violation_window_secs).await {
+                match store
+                    .record_violation(&ip, config.violation_window_secs)
+                    .await
+                {
                     Ok((count, _)) => {
                         if count >= config.violation_threshold as u64 {
                             let unblock_at = now_unix() + config.ban_duration_secs;
@@ -164,10 +174,9 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use actix_web::{
-        App, HttpResponse,
         http::StatusCode,
         test::{self, TestRequest},
-        web,
+        web, App, HttpResponse,
     };
     use batlehub_adapters::rate_limit::InMemoryIpBlockStore;
     use batlehub_config::schema::IpBlockingConfig;
@@ -176,7 +185,10 @@ mod tests {
     use super::*;
 
     fn now() -> u64 {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
     }
 
     fn default_config() -> IpBlockingConfig {
@@ -200,7 +212,10 @@ mod tests {
             .insert_header(("x-forwarded-for", "203.0.113.5, 10.0.0.1"))
             .to_srv_request();
         let ip = extract_client_ip(&req, &[]);
-        assert_eq!(ip, "10.0.0.99", "XFF must not be trusted without trusted_proxies");
+        assert_eq!(
+            ip, "10.0.0.99",
+            "XFF must not be trusted without trusted_proxies"
+        );
     }
 
     #[test]
@@ -247,13 +262,18 @@ mod tests {
             test::init_service(
                 App::new()
                     .wrap(IpBlockMiddlewareFactory::new($store, $config))
-                    .route("/ok", web::get().to(|| async { HttpResponse::Ok().finish() }))
-                    .route("/rate", web::get().to(|| async {
-                        HttpResponse::TooManyRequests().finish()
-                    }))
-                    .route("/auth", web::get().to(|| async {
-                        HttpResponse::Unauthorized().finish()
-                    })),
+                    .route(
+                        "/ok",
+                        web::get().to(|| async { HttpResponse::Ok().finish() }),
+                    )
+                    .route(
+                        "/rate",
+                        web::get().to(|| async { HttpResponse::TooManyRequests().finish() }),
+                    )
+                    .route(
+                        "/auth",
+                        web::get().to(|| async { HttpResponse::Unauthorized().finish() }),
+                    ),
             )
             .await
         };
@@ -271,7 +291,10 @@ mod tests {
     #[actix_web::test]
     async fn blocked_ip_gets_403() {
         let store: Arc<dyn IpBlockStore> = Arc::new(InMemoryIpBlockStore::new());
-        store.block_ip("198.51.100.1", now() + 3600, "test").await.unwrap();
+        store
+            .block_ip("198.51.100.1", now() + 3600, "test")
+            .await
+            .unwrap();
         let app = make_app!(Arc::clone(&store), default_config());
         let req = TestRequest::get()
             .peer_addr("198.51.100.1:1234".parse().unwrap())
@@ -285,7 +308,10 @@ mod tests {
     async fn blocked_ip_response_has_x_block_expires_header() {
         let store: Arc<dyn IpBlockStore> = Arc::new(InMemoryIpBlockStore::new());
         let unblock_at = now() + 3600;
-        store.block_ip("203.0.113.1", unblock_at, "test").await.unwrap();
+        store
+            .block_ip("203.0.113.1", unblock_at, "test")
+            .await
+            .unwrap();
         let app = make_app!(Arc::clone(&store), default_config());
         let req = TestRequest::get()
             .peer_addr("203.0.113.1:1234".parse().unwrap())

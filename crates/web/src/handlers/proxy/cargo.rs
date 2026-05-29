@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use actix_web::{HttpRequest, HttpResponse, Responder, delete, get, put, web};
+use actix_web::{delete, get, put, web, HttpRequest, HttpResponse, Responder};
 use bytes::{Buf, Bytes};
 use sha2::{Digest, Sha256};
 
@@ -12,9 +12,11 @@ use batlehub_core::{
     services::{LocalRegistryService, ProxyService, PublishRequest},
 };
 
-
-use crate::{RegistryMap, RegistryModeMap, error::AppError, extractors::AuthIdentity};
-use super::common::{append_signature_headers, collect_payload, extract_signature_headers, proxy_stream, require_local_mode};
+use super::common::{
+    append_signature_headers, collect_payload, extract_signature_headers, proxy_stream,
+    require_local_mode,
+};
+use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 // ── Sparse index proxy ────────────────────────────────────────────────────────
 
@@ -29,11 +31,14 @@ pub struct CargoIndexProxy {
 fn require_cargo(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry) {
         Some("cargo") => Ok(()),
-        Some(_) => Err(AppError::not_found(format!("registry '{registry}' is not a cargo registry"))),
-        None => Err(AppError::not_found(format!("unknown registry '{registry}'"))),
+        Some(_) => Err(AppError::not_found(format!(
+            "registry '{registry}' is not a cargo registry"
+        ))),
+        None => Err(AppError::not_found(format!(
+            "unknown registry '{registry}'"
+        ))),
     }
 }
-
 
 /// Cargo sparse registry `config.json`.
 #[utoipa::path(
@@ -81,7 +86,9 @@ pub async fn cargo_registry_config(
         resp["api"] = serde_json::Value::String(format!("{scheme}://{host}/proxy/{registry}"));
     }
 
-    HttpResponse::Ok().content_type("application/json").json(resp)
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .json(resp)
 }
 
 /// Cargo sparse registry index entries.
@@ -116,7 +123,9 @@ pub async fn cargo_registry_index(
     let mode = mode_map.get(&registry);
 
     match mode {
-        RegistryMode::Local => serve_local_index(&local_svc, &registry, &index_path, &identity).await,
+        RegistryMode::Local => {
+            serve_local_index(&local_svc, &registry, &index_path, &identity).await
+        }
         RegistryMode::Hybrid => {
             let local = serve_local_index(&local_svc, &registry, &index_path, &identity).await;
             if local.status() != actix_web::http::StatusCode::NOT_FOUND {
@@ -148,9 +157,7 @@ async fn serve_local_index(
         Err(CoreError::NotFound(_)) => {
             HttpResponse::NotFound().body(format!("crate '{name}' not found in local registry"))
         }
-        Err(CoreError::AccessDenied(msg)) => {
-            HttpResponse::Forbidden().body(msg)
-        }
+        Err(CoreError::AccessDenied(msg)) => HttpResponse::Forbidden().body(msg),
         Err(e) => {
             tracing::error!(error = %e, "local index lookup failed");
             HttpResponse::InternalServerError().body(e.to_string())
@@ -238,7 +245,10 @@ pub async fn download_crate(
             .check_prerelease_access(&registry, &version, &identity)
             .await
             .map_err(AppError::from)?;
-        match local_svc.get_artifact(&registry, &name, &version, &identity).await {
+        match local_svc
+            .get_artifact(&registry, &name, &version, &identity)
+            .await
+        {
             Ok(bytes) => {
                 let mut resp = HttpResponse::Ok();
                 resp.content_type("application/octet-stream");
@@ -287,8 +297,7 @@ pub async fn cargo_publish(
 
     let body = collect_payload(payload).await?;
 
-    let (meta_json, crate_bytes) =
-        parse_publish_body(body).map_err(AppError::bad_request)?;
+    let (meta_json, crate_bytes) = parse_publish_body(body).map_err(AppError::bad_request)?;
 
     let name = meta_json
         .get("name")
@@ -303,8 +312,8 @@ pub async fn cargo_publish(
 
     let checksum = hex::encode(Sha256::digest(&crate_bytes));
 
-    let mut entry = metadata_to_index_entry(&meta_json, &checksum)
-        .map_err(AppError::bad_request)?;
+    let mut entry =
+        metadata_to_index_entry(&meta_json, &checksum).map_err(AppError::bad_request)?;
 
     // Cargo-specific: validate caller-declared checksum against computed value.
     if !entry.cksum.is_empty() && entry.cksum != checksum {
@@ -315,8 +324,8 @@ pub async fn cargo_publish(
     }
     entry.cksum = checksum.clone();
 
-    let index_metadata = serde_json::to_value(&entry)
-        .map_err(|e| AppError::bad_request(e.to_string()))?;
+    let index_metadata =
+        serde_json::to_value(&entry).map_err(|e| AppError::bad_request(e.to_string()))?;
 
     let (signature_bytes, signature_type) = extract_signature_headers(&req);
 
@@ -507,14 +516,8 @@ fn metadata_to_index_entry(
     meta: &serde_json::Value,
     checksum: &str,
 ) -> Result<CargoIndexEntry, String> {
-    let name = meta["name"]
-        .as_str()
-        .ok_or("missing 'name'")?
-        .to_owned();
-    let vers = meta["vers"]
-        .as_str()
-        .ok_or("missing 'vers'")?
-        .to_owned();
+    let name = meta["name"].as_str().ok_or("missing 'name'")?.to_owned();
+    let vers = meta["vers"].as_str().ok_or("missing 'vers'")?.to_owned();
 
     let deps = meta
         .get("deps")
@@ -600,4 +603,3 @@ fn metadata_to_index_entry(
         v: None,
     })
 }
-

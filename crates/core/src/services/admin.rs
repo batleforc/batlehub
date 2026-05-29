@@ -96,9 +96,15 @@ impl AdminService {
         items: Vec<BulkBlockItem>,
         by_identity: &Identity,
     ) -> BulkActionResult {
-        let mut result = BulkActionResult { succeeded: vec![], failed: vec![] };
+        let mut result = BulkActionResult {
+            succeeded: vec![],
+            failed: vec![],
+        };
         for item in items {
-            match self.block_package(&item.package_id, item.reason, by_identity).await {
+            match self
+                .block_package(&item.package_id, item.reason, by_identity)
+                .await
+            {
                 Ok(()) => result.succeeded.push(item.package_id),
                 Err(e) => result.failed.push((item.package_id, e.to_string())),
             }
@@ -111,7 +117,10 @@ impl AdminService {
         items: Vec<PackageId>,
         by_identity: &Identity,
     ) -> BulkActionResult {
-        let mut result = BulkActionResult { succeeded: vec![], failed: vec![] };
+        let mut result = BulkActionResult {
+            succeeded: vec![],
+            failed: vec![],
+        };
         for pkg in items {
             match self.unblock_package(&pkg, by_identity).await {
                 Ok(()) => result.succeeded.push(pkg),
@@ -121,7 +130,10 @@ impl AdminService {
         result
     }
 
-    pub async fn list_packages(&self, filter: PackageFilter) -> Result<Vec<PackageSummary>, CoreError> {
+    pub async fn list_packages(
+        &self,
+        filter: PackageFilter,
+    ) -> Result<Vec<PackageSummary>, CoreError> {
         self.repo.list_packages(filter).await
     }
 
@@ -186,8 +198,15 @@ mod tests {
                 .cloned()
                 .unwrap_or(PackageStatus::Available))
         }
-        async fn set_status(&self, pkg: &PackageId, status: PackageStatus) -> Result<(), CoreError> {
-            self.statuses.lock().unwrap().insert(pkg.cache_key(), status);
+        async fn set_status(
+            &self,
+            pkg: &PackageId,
+            status: PackageStatus,
+        ) -> Result<(), CoreError> {
+            self.statuses
+                .lock()
+                .unwrap()
+                .insert(pkg.cache_key(), status);
             Ok(())
         }
         async fn list_packages(&self, _f: PackageFilter) -> Result<Vec<PackageSummary>, CoreError> {
@@ -202,7 +221,12 @@ mod tests {
     }
 
     fn admin_identity(user_id: &str) -> Identity {
-        Identity { user_id: Some(user_id.to_owned()), role: Role::Admin, auth_provider: None, groups: vec![] }
+        Identity {
+            user_id: Some(user_id.to_owned()),
+            role: Role::Admin,
+            auth_provider: None,
+            groups: vec![],
+        }
     }
 
     fn anon_identity() -> Identity {
@@ -215,9 +239,13 @@ mod tests {
         let svc = AdminService::new(repo.clone());
         let pkg = PackageId::new("npm", "evil", "1.0.0");
 
-        svc.block_package(&pkg, "supply chain risk".to_owned(), &admin_identity("alice"))
-            .await
-            .unwrap();
+        svc.block_package(
+            &pkg,
+            "supply chain risk".to_owned(),
+            &admin_identity("alice"),
+        )
+        .await
+        .unwrap();
 
         let status = repo.get_status(&pkg).await.unwrap();
         assert!(status.is_blocked());
@@ -229,7 +257,9 @@ mod tests {
         let svc = AdminService::new(repo.clone());
         let pkg = PackageId::new("npm", "evil", "1.0.0");
 
-        svc.block_package(&pkg, "reason".to_owned(), &admin_identity("alice")).await.unwrap();
+        svc.block_package(&pkg, "reason".to_owned(), &admin_identity("alice"))
+            .await
+            .unwrap();
 
         let status = repo.get_status(&pkg).await.unwrap();
         match status {
@@ -244,7 +274,9 @@ mod tests {
         let svc = AdminService::new(repo.clone());
         let pkg = PackageId::new("npm", "evil", "1.0.0");
 
-        svc.block_package(&pkg, "reason".to_owned(), &anon_identity()).await.unwrap();
+        svc.block_package(&pkg, "reason".to_owned(), &anon_identity())
+            .await
+            .unwrap();
 
         let status = repo.get_status(&pkg).await.unwrap();
         match status {
@@ -259,7 +291,9 @@ mod tests {
         let svc = AdminService::new(repo.clone());
         let pkg = PackageId::new("npm", "evil", "1.0.0");
 
-        svc.block_package(&pkg, "reason".to_owned(), &admin_identity("alice")).await.unwrap();
+        svc.block_package(&pkg, "reason".to_owned(), &admin_identity("alice"))
+            .await
+            .unwrap();
 
         let events = repo.events();
         assert_eq!(events.len(), 1, "one event expected");
@@ -273,8 +307,12 @@ mod tests {
         let pkg = PackageId::new("npm", "evil", "1.0.0");
 
         // Block first, then unblock
-        svc.block_package(&pkg, "r".to_owned(), &admin_identity("a")).await.unwrap();
-        svc.unblock_package(&pkg, &admin_identity("a")).await.unwrap();
+        svc.block_package(&pkg, "r".to_owned(), &admin_identity("a"))
+            .await
+            .unwrap();
+        svc.unblock_package(&pkg, &admin_identity("a"))
+            .await
+            .unwrap();
 
         let status = repo.get_status(&pkg).await.unwrap();
         assert!(!status.is_blocked());
@@ -286,8 +324,12 @@ mod tests {
         let svc = AdminService::new(repo.clone());
         let pkg = PackageId::new("npm", "evil", "1.0.0");
 
-        svc.block_package(&pkg, "r".to_owned(), &admin_identity("a")).await.unwrap();
-        svc.unblock_package(&pkg, &admin_identity("a")).await.unwrap();
+        svc.block_package(&pkg, "r".to_owned(), &admin_identity("a"))
+            .await
+            .unwrap();
+        svc.unblock_package(&pkg, &admin_identity("a"))
+            .await
+            .unwrap();
 
         let events = repo.events();
         assert_eq!(events.len(), 2, "block + unblock events expected");
@@ -319,7 +361,9 @@ mod tests {
         let svc = AdminService::new(repo.clone());
         let pkg = PackageId::new("npm", "pkg", "1.0.0");
 
-        svc.block_package(&pkg, "r".to_owned(), &admin_identity("a")).await.unwrap();
+        svc.block_package(&pkg, "r".to_owned(), &admin_identity("a"))
+            .await
+            .unwrap();
 
         let events = svc.list_events(EventFilter::new()).await.unwrap();
         assert!(!events.is_empty());
@@ -330,14 +374,30 @@ mod tests {
         let repo = MemRepo::new();
         let svc = AdminService::new(repo.clone());
         let items = vec![
-            BulkBlockItem { package_id: PackageId::new("npm", "a", "1.0.0"), reason: "r1".into() },
-            BulkBlockItem { package_id: PackageId::new("npm", "b", "2.0.0"), reason: "r2".into() },
+            BulkBlockItem {
+                package_id: PackageId::new("npm", "a", "1.0.0"),
+                reason: "r1".into(),
+            },
+            BulkBlockItem {
+                package_id: PackageId::new("npm", "b", "2.0.0"),
+                reason: "r2".into(),
+            },
         ];
-        let result = svc.bulk_block_packages(items, &admin_identity("alice")).await;
+        let result = svc
+            .bulk_block_packages(items, &admin_identity("alice"))
+            .await;
         assert_eq!(result.succeeded.len(), 2);
         assert_eq!(result.failed.len(), 0);
-        assert!(repo.get_status(&PackageId::new("npm", "a", "1.0.0")).await.unwrap().is_blocked());
-        assert!(repo.get_status(&PackageId::new("npm", "b", "2.0.0")).await.unwrap().is_blocked());
+        assert!(repo
+            .get_status(&PackageId::new("npm", "a", "1.0.0"))
+            .await
+            .unwrap()
+            .is_blocked());
+        assert!(repo
+            .get_status(&PackageId::new("npm", "b", "2.0.0"))
+            .await
+            .unwrap()
+            .is_blocked());
     }
 
     #[tokio::test]
@@ -346,10 +406,16 @@ mod tests {
         let svc = AdminService::new(repo.clone());
         let pkg_a = PackageId::new("npm", "a", "1.0.0");
         let pkg_b = PackageId::new("npm", "b", "2.0.0");
-        svc.block_package(&pkg_a, "r".into(), &admin_identity("alice")).await.unwrap();
-        svc.block_package(&pkg_b, "r".into(), &admin_identity("alice")).await.unwrap();
+        svc.block_package(&pkg_a, "r".into(), &admin_identity("alice"))
+            .await
+            .unwrap();
+        svc.block_package(&pkg_b, "r".into(), &admin_identity("alice"))
+            .await
+            .unwrap();
 
-        let result = svc.bulk_unblock_packages(vec![pkg_a.clone(), pkg_b.clone()], &admin_identity("alice")).await;
+        let result = svc
+            .bulk_unblock_packages(vec![pkg_a.clone(), pkg_b.clone()], &admin_identity("alice"))
+            .await;
         assert_eq!(result.succeeded.len(), 2);
         assert_eq!(result.failed.len(), 0);
         assert!(!repo.get_status(&pkg_a).await.unwrap().is_blocked());

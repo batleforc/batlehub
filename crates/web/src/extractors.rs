@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use actix_web::{FromRequest, HttpMessage, HttpRequest, dev::Payload};
-use futures::future::{Ready, ready};
+use actix_web::{dev::Payload, FromRequest, HttpMessage, HttpRequest};
+use futures::future::{ready, Ready};
 
 use batlehub_core::entities::Identity;
 
@@ -40,7 +40,10 @@ pub fn raw_auth_from_request(req: &HttpRequest) -> batlehub_core::ports::RawAuth
         .headers()
         .iter()
         .filter_map(|(name, value)| {
-            value.to_str().ok().map(|v| (name.to_string(), v.to_owned()))
+            value
+                .to_str()
+                .ok()
+                .map(|v| (name.to_string(), v.to_owned()))
         })
         .collect::<HashMap<_, _>>();
 
@@ -55,5 +58,8 @@ pub fn raw_auth_from_request(req: &HttpRequest) -> batlehub_core::ports::RawAuth
         })
         .collect::<HashMap<_, _>>();
 
-    batlehub_core::ports::RawAuthRequest { headers, query_params }
+    batlehub_core::ports::RawAuthRequest {
+        headers,
+        query_params,
+    }
 }

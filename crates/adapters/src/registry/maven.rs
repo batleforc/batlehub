@@ -37,7 +37,11 @@ impl MavenRegistryClient {
             .user_agent("batlehub/0.1")
             .redirect(reqwest::redirect::Policy::limited(10));
         let http = apply_upstream_options(builder, opts)?;
-        Ok(Self { http, base_url: base_url.into(), basic_auth: opts.basic_auth.clone() })
+        Ok(Self {
+            http,
+            base_url: base_url.into(),
+            basic_auth: opts.basic_auth.clone(),
+        })
     }
 
     fn get(&self, url: &str) -> reqwest::RequestBuilder {
@@ -63,13 +67,18 @@ impl MavenRegistryClient {
         let base = self.base_url.trim_end_matches('/');
 
         if pkg.version == "maven-metadata.xml" {
-            Ok(format!("{base}/{group_path}/{artifact_id}/maven-metadata.xml"))
+            Ok(format!(
+                "{base}/{group_path}/{artifact_id}/maven-metadata.xml"
+            ))
         } else {
             let filename = match pkg.artifact.as_deref() {
                 Some(f) => f.to_owned(),
                 None => format!("{artifact_id}-{}.pom", pkg.version),
             };
-            Ok(format!("{base}/{group_path}/{artifact_id}/{}/{filename}", pkg.version))
+            Ok(format!(
+                "{base}/{group_path}/{artifact_id}/{}/{filename}",
+                pkg.version
+            ))
         }
     }
 
@@ -99,7 +108,10 @@ impl MavenRegistryClient {
             .and_then(parse_http_date)
     }
 
-    async fn fetch_metadata_xml(&self, pkg: &PackageId) -> Result<(String, Option<String>), CoreError> {
+    async fn fetch_metadata_xml(
+        &self,
+        pkg: &PackageId,
+    ) -> Result<(String, Option<String>), CoreError> {
         let (group_id, artifact_id) = decode_name(&pkg.name)?;
         let group_path = group_id.replace('.', "/");
         let base = self.base_url.trim_end_matches('/');
@@ -211,7 +223,8 @@ impl RegistryClient for MavenRegistryClient {
         // timestamp (more accurate than the artifact-collection <lastUpdated>).
         // Fall back to <lastUpdated> if the HEAD request fails or returns no date.
         let published_at = if pkg.version != "maven-metadata.xml" {
-            self.head_pom_last_modified(pkg).await
+            self.head_pom_last_modified(pkg)
+                .await
                 .or_else(|| extract_xml_tag(&xml, "lastUpdated").and_then(parse_last_updated))
         } else {
             extract_xml_tag(&xml, "lastUpdated").and_then(parse_last_updated)
@@ -324,7 +337,10 @@ mod tests {
         let pkg = PackageId::new("maven", "com.example:mylib", "maven-metadata.xml");
         let meta = c.resolve_metadata(&pkg).await.unwrap();
         // For metadata-xml requests: uses <lastUpdated>
-        assert!(meta.published_at.is_some(), "published_at should be set from lastUpdated");
+        assert!(
+            meta.published_at.is_some(),
+            "published_at should be set from lastUpdated"
+        );
         let ts = meta.published_at.unwrap();
         assert_eq!(ts.format("%Y-%m-%d").to_string(), "2024-03-15");
     }
@@ -352,7 +368,10 @@ mod tests {
         let pkg = PackageId::new("maven", "com.example:mylib", "1.0.0");
         let meta = c.resolve_metadata(&pkg).await.unwrap();
         // For specific-version requests: uses POM Last-Modified (more accurate)
-        assert!(meta.published_at.is_some(), "published_at should be set from POM Last-Modified");
+        assert!(
+            meta.published_at.is_some(),
+            "published_at should be set from POM Last-Modified"
+        );
         let ts = meta.published_at.unwrap();
         assert_eq!(ts.format("%Y-%m-%d").to_string(), "2024-03-01");
     }
@@ -378,7 +397,10 @@ mod tests {
         let pkg = PackageId::new("maven", "com.example:mylib", "1.0.0");
         let meta = c.resolve_metadata(&pkg).await.unwrap();
         // Falls back to <lastUpdated> from metadata XML
-        assert!(meta.published_at.is_some(), "should fall back to lastUpdated");
+        assert!(
+            meta.published_at.is_some(),
+            "should fall back to lastUpdated"
+        );
     }
 
     #[tokio::test]
@@ -408,7 +430,10 @@ mod tests {
     #[test]
     fn parse_http_date_valid() {
         let dt = parse_http_date("Fri, 15 Mar 2024 12:34:56 GMT").unwrap();
-        assert_eq!(dt.format("%Y-%m-%d %H:%M:%S").to_string(), "2024-03-15 12:34:56");
+        assert_eq!(
+            dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+            "2024-03-15 12:34:56"
+        );
     }
 
     #[test]

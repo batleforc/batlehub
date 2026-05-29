@@ -1,7 +1,7 @@
 use std::io::Read as _;
 use std::sync::Arc;
 
-use actix_web::{HttpRequest, HttpResponse, Responder, get, put, web};
+use actix_web::{get, put, web, HttpRequest, HttpResponse, Responder};
 use sha2::{Digest, Sha256};
 
 use batlehub_config::schema::RegistryMode;
@@ -11,8 +11,8 @@ use batlehub_core::{
     services::{LocalRegistryService, ProxyService, PublishRequest},
 };
 
-use crate::{RegistryMap, RegistryModeMap, error::AppError, extractors::AuthIdentity};
 use super::common::{collect_payload, extract_signature_headers, proxy_stream, require_local_mode};
+use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 pub fn require_goproxy(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry) {
@@ -20,7 +20,9 @@ pub fn require_goproxy(registry: &str, map: &RegistryMap) -> Result<(), AppError
         Some(_) => Err(AppError::not_found(format!(
             "registry '{registry}' is not a goproxy registry"
         ))),
-        None => Err(AppError::not_found(format!("unknown registry '{registry}'"))),
+        None => Err(AppError::not_found(format!(
+            "unknown registry '{registry}'"
+        ))),
     }
 }
 
@@ -80,7 +82,11 @@ pub async fn goproxy_latest(
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
         match local_svc.get_go_latest(&registry, module, &identity).await {
-            Ok(info) => return Ok(HttpResponse::Ok().content_type("application/json").json(info)),
+            Ok(info) => {
+                return Ok(HttpResponse::Ok()
+                    .content_type("application/json")
+                    .json(info))
+            }
             Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}
             Err(CoreError::NotFound(_)) => {
                 return Err(AppError::not_found(format!("module '{module}' not found")));
@@ -90,7 +96,14 @@ pub async fn goproxy_latest(
     }
 
     let pkg = PackageId::new(&registry, module, "latest");
-    proxy_stream(svc, pkg, identity, "releases:read", Some("application/json")).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        "releases:read",
+        Some("application/json"),
+    )
+    .await
 }
 
 /// List known versions for a Go module.
@@ -124,7 +137,10 @@ pub async fn goproxy_list(
     let mode = mode_map.get(&registry);
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        match local_svc.get_go_version_list(&registry, module, &identity).await {
+        match local_svc
+            .get_go_version_list(&registry, module, &identity)
+            .await
+        {
             Ok(list) => {
                 return Ok(HttpResponse::Ok().content_type("text/plain").body(list));
             }
@@ -189,13 +205,12 @@ pub async fn goproxy_file(
             "mod" => local_svc
                 .get_go_mod(&registry, module, version, &identity)
                 .await
-                .map(|content| {
-                    HttpResponse::Ok()
-                        .content_type("text/plain")
-                        .body(content)
-                }),
+                .map(|content| HttpResponse::Ok().content_type("text/plain").body(content)),
             "zip" => {
-                if let Err(e) = local_svc.check_prerelease_access(&registry, version, &identity).await {
+                if let Err(e) = local_svc
+                    .check_prerelease_access(&registry, version, &identity)
+                    .await
+                {
                     Err(e)
                 } else {
                     local_svc
@@ -208,7 +223,11 @@ pub async fn goproxy_file(
                         })
                 }
             }
-            _ => return Err(AppError::not_found(format!("unknown goproxy file extension '.{ext}'"))),
+            _ => {
+                return Err(AppError::not_found(format!(
+                    "unknown goproxy file extension '.{ext}'"
+                )))
+            }
         };
 
         match local_result {

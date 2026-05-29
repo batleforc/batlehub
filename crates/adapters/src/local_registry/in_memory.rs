@@ -74,7 +74,11 @@ impl LocalRegistryBackend for InMemoryLocalRegistry {
 
         versions.insert(
             pkg.version.clone(),
-            Record { pkg, status: RecordStatus::Pending, inserted_at: Utc::now() },
+            Record {
+                pkg,
+                status: RecordStatus::Pending,
+                inserted_at: Utc::now(),
+            },
         );
         Ok(())
     }
@@ -178,8 +182,7 @@ impl LocalRegistryBackend for InMemoryLocalRegistry {
         let mut removed = 0u64;
         for versions in map.values_mut() {
             let before = versions.len();
-            versions
-                .retain(|_, r| !(r.status == RecordStatus::Pending && r.inserted_at < cutoff));
+            versions.retain(|_, r| !(r.status == RecordStatus::Pending && r.inserted_at < cutoff));
             removed += (before - versions.len()) as u64;
         }
         Ok(removed)
@@ -212,7 +215,9 @@ mod tests {
 
     use chrono::Utc;
 
-    use batlehub_core::{entities::PublishedPackage, error::CoreError, ports::LocalRegistryBackend};
+    use batlehub_core::{
+        entities::PublishedPackage, error::CoreError, ports::LocalRegistryBackend,
+    };
 
     use super::InMemoryLocalRegistry;
 
@@ -287,7 +292,10 @@ mod tests {
 
         let versions = store.get_versions("reg", "foo").await.unwrap();
         assert!(versions[0].yanked);
-        assert_eq!(versions[0].index_metadata["yanked"], serde_json::Value::Bool(true));
+        assert_eq!(
+            versions[0].index_metadata["yanked"],
+            serde_json::Value::Bool(true)
+        );
     }
 
     /// Unyank reverses a yank.
@@ -301,7 +309,10 @@ mod tests {
 
         let versions = store.get_versions("reg", "foo").await.unwrap();
         assert!(!versions[0].yanked);
-        assert_eq!(versions[0].index_metadata["yanked"], serde_json::Value::Bool(false));
+        assert_eq!(
+            versions[0].index_metadata["yanked"],
+            serde_json::Value::Bool(false)
+        );
     }
 
     /// `remove_version` deletes a record regardless of its status.
@@ -353,7 +364,10 @@ mod tests {
             }
         }
 
-        let removed = store.cleanup_pending(Duration::from_secs(3600)).await.unwrap();
+        let removed = store
+            .cleanup_pending(Duration::from_secs(3600))
+            .await
+            .unwrap();
         assert_eq!(removed, 1, "expected 1 pending row removed");
 
         // Published 1.0.0 must still be visible.
@@ -369,7 +383,10 @@ mod tests {
     async fn cleanup_pending_leaves_fresh_pending_intact() {
         let store = InMemoryLocalRegistry::new();
         store.publish(pkg("reg", "foo", "1.0.0")).await.unwrap();
-        let removed = store.cleanup_pending(Duration::from_secs(3600)).await.unwrap();
+        let removed = store
+            .cleanup_pending(Duration::from_secs(3600))
+            .await
+            .unwrap();
         assert_eq!(removed, 0);
     }
 
@@ -389,8 +406,14 @@ mod tests {
         store.publish(pkg("reg", "delta", "1.0.0")).await.unwrap();
 
         // Different registry — must not appear.
-        store.publish(pkg("other-reg", "zeta", "1.0.0")).await.unwrap();
-        store.commit_publish("other-reg", "zeta", "1.0.0").await.unwrap();
+        store
+            .publish(pkg("other-reg", "zeta", "1.0.0"))
+            .await
+            .unwrap();
+        store
+            .commit_publish("other-reg", "zeta", "1.0.0")
+            .await
+            .unwrap();
 
         let names = store.list_package_names("reg").await.unwrap();
         assert_eq!(names, vec!["alpha", "beta", "charlie"]);
@@ -438,16 +461,32 @@ mod tests {
         }
 
         let result = store
-            .bulk_yank("reg", &[("foo".to_owned(), "1.0.0".to_owned()), ("foo".to_owned(), "2.0.0".to_owned())])
+            .bulk_yank(
+                "reg",
+                &[
+                    ("foo".to_owned(), "1.0.0".to_owned()),
+                    ("foo".to_owned(), "2.0.0".to_owned()),
+                ],
+            )
             .await
             .unwrap();
         assert_eq!(result.succeeded, 2);
         assert!(result.failed.is_empty());
 
         let versions = store.get_versions("reg", "foo").await.unwrap();
-        let yanked: Vec<&str> = versions.iter().filter(|p| p.yanked).map(|p| p.version.as_str()).collect();
+        let yanked: Vec<&str> = versions
+            .iter()
+            .filter(|p| p.yanked)
+            .map(|p| p.version.as_str())
+            .collect();
         assert_eq!(yanked, vec!["1.0.0", "2.0.0"]);
-        assert!(!versions.iter().find(|p| p.version == "3.0.0").unwrap().yanked);
+        assert!(
+            !versions
+                .iter()
+                .find(|p| p.version == "3.0.0")
+                .unwrap()
+                .yanked
+        );
     }
 
     /// `bulk_unyank` reverses a bulk yank.
@@ -461,7 +500,13 @@ mod tests {
         }
 
         let result = store
-            .bulk_unyank("reg", &[("foo".to_owned(), "1.0.0".to_owned()), ("foo".to_owned(), "2.0.0".to_owned())])
+            .bulk_unyank(
+                "reg",
+                &[
+                    ("foo".to_owned(), "1.0.0".to_owned()),
+                    ("foo".to_owned(), "2.0.0".to_owned()),
+                ],
+            )
             .await
             .unwrap();
         assert_eq!(result.succeeded, 2);
@@ -480,7 +525,13 @@ mod tests {
         }
 
         let result = store
-            .bulk_remove_versions("reg", &[("foo".to_owned(), "1.0.0".to_owned()), ("foo".to_owned(), "3.0.0".to_owned())])
+            .bulk_remove_versions(
+                "reg",
+                &[
+                    ("foo".to_owned(), "1.0.0".to_owned()),
+                    ("foo".to_owned(), "3.0.0".to_owned()),
+                ],
+            )
             .await
             .unwrap();
         assert_eq!(result.succeeded, 2);

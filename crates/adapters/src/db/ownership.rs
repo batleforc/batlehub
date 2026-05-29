@@ -1,7 +1,11 @@
 use async_trait::async_trait;
 use sqlx::{PgPool, Row};
 
-use batlehub_core::{entities::Identity, error::CoreError, ports::{OwnerEntry, OwnershipPort}};
+use batlehub_core::{
+    entities::Identity,
+    error::CoreError,
+    ports::{OwnerEntry, OwnershipPort},
+};
 
 pub struct PgOwnershipStore {
     pool: PgPool,

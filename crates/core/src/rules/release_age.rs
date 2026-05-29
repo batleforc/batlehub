@@ -18,7 +18,10 @@ pub struct ReleaseAgeGateRule {
 
 impl ReleaseAgeGateRule {
     pub fn new(min_age: Duration, bypass_roles: Vec<Role>) -> Self {
-        Self { min_age, bypass_roles }
+        Self {
+            min_age,
+            bypass_roles,
+        }
     }
 }
 
@@ -78,7 +81,12 @@ mod tests {
     }
 
     fn make_identity(role: Role) -> Identity {
-        Identity { user_id: None, role, auth_provider: None, groups: vec![] }
+        Identity {
+            user_id: None,
+            role,
+            auth_provider: None,
+            groups: vec![],
+        }
     }
 
     #[tokio::test]
@@ -86,7 +94,13 @@ mod tests {
         let rule = ReleaseAgeGateRule::new(Duration::from_secs(3600), vec![Role::Admin]);
         let meta = make_meta(Utc::now() - CDuration::hours(2));
         let identity = make_identity(Role::Anonymous);
-        let ctx = RuleContext { identity: &identity, package: &meta, resource_type: "releases:read", cache_entry: None, requested_version: None };
+        let ctx = RuleContext {
+            identity: &identity,
+            package: &meta,
+            resource_type: "releases:read",
+            cache_entry: None,
+            requested_version: None,
+        };
         assert!(matches!(rule.evaluate(&ctx).await, RuleDecision::Allow));
     }
 
@@ -95,8 +109,17 @@ mod tests {
         let rule = ReleaseAgeGateRule::new(Duration::from_secs(3600), vec![Role::Admin]);
         let meta = make_meta(Utc::now() - CDuration::minutes(5));
         let identity = make_identity(Role::Anonymous);
-        let ctx = RuleContext { identity: &identity, package: &meta, resource_type: "releases:read", cache_entry: None, requested_version: None };
-        assert!(matches!(rule.evaluate(&ctx).await, RuleDecision::Deny { .. }));
+        let ctx = RuleContext {
+            identity: &identity,
+            package: &meta,
+            resource_type: "releases:read",
+            cache_entry: None,
+            requested_version: None,
+        };
+        assert!(matches!(
+            rule.evaluate(&ctx).await,
+            RuleDecision::Deny { .. }
+        ));
     }
 
     #[tokio::test]
@@ -104,7 +127,13 @@ mod tests {
         let rule = ReleaseAgeGateRule::new(Duration::from_secs(3600), vec![Role::Admin]);
         let meta = make_meta(Utc::now() - CDuration::minutes(5));
         let identity = make_identity(Role::Admin);
-        let ctx = RuleContext { identity: &identity, package: &meta, resource_type: "releases:read", cache_entry: None, requested_version: None };
+        let ctx = RuleContext {
+            identity: &identity,
+            package: &meta,
+            resource_type: "releases:read",
+            cache_entry: None,
+            requested_version: None,
+        };
         assert!(matches!(rule.evaluate(&ctx).await, RuleDecision::Allow));
     }
 }

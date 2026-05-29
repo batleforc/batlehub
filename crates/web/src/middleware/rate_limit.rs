@@ -30,10 +30,10 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use actix_web::{
-    Error, HttpMessage, HttpResponse,
     body::EitherBody,
-    dev::{Service, ServiceRequest, ServiceResponse, Transform, forward_ready},
+    dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
     http::StatusCode,
+    Error, HttpMessage, HttpResponse,
 };
 use futures::future::LocalBoxFuture;
 
@@ -55,7 +55,10 @@ pub struct RateLimitService {
 
 impl RateLimitService {
     pub fn new(configs: &HashMap<String, RateLimitConfig>, store: Arc<dyn RateLimitStore>) -> Self {
-        Self { configs: configs.clone(), store }
+        Self {
+            configs: configs.clone(),
+            store,
+        }
     }
 
     /// Check and consume one request token for the given user and groups in `registry`.
@@ -83,37 +86,45 @@ impl RateLimitService {
 
         let user_store_key = format!("rl:{registry}:user:{user_key}");
         // Fail-open: if the store is unavailable, skip rate limiting rather than blocking the request.
-        let (user_count, user_reset) = match self
-            .store
-            .increment(&user_store_key, cfg.window_secs)
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    registry = %registry,
-                    "rate-limit store unavailable for user bucket; failing open"
-                );
-                return None;
-            }
-        };
+        let (user_count, user_reset) =
+            match self.store.increment(&user_store_key, cfg.window_secs).await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        registry = %registry,
+                        "rate-limit store unavailable for user bucket; failing open"
+                    );
+                    return None;
+                }
+            };
 
         let mut binding_limit = cfg.requests_per_window;
         let mut worst: Option<(Duration, u32, RateLimitEnforcement, u64)> = None;
 
         if user_count > cfg.requests_per_window as u64 {
             let wait = wait_from_reset(user_reset);
-            worst = Some((wait, cfg.requests_per_window, cfg.enforcement.clone(), user_reset));
+            worst = Some((
+                wait,
+                cfg.requests_per_window,
+                cfg.enforcement.clone(),
+                user_reset,
+            ));
         }
 
         for group in user_groups {
-            let Some(grp) = cfg.groups.iter().find(|g| &g.name == group) else { continue };
+            let Some(grp) = cfg.groups.iter().find(|g| &g.name == group) else {
+                continue;
+            };
             binding_limit = binding_limit.min(grp.requests_per_window);
 
             let group_store_key = format!("rl:{registry}:group:{group}");
             // Fail-open: skip this group bucket on store error.
-            let (grp_count, grp_reset) = match self.store.increment(&group_store_key, grp.window_secs).await {
+            let (grp_count, grp_reset) = match self
+                .store
+                .increment(&group_store_key, grp.window_secs)
+                .await
+            {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!(
@@ -127,9 +138,15 @@ impl RateLimitService {
             };
 
             if grp_count > grp.requests_per_window as u64 {
-                let effective = grp.enforcement.clone().unwrap_or_else(|| cfg.enforcement.clone());
+                let effective = grp
+                    .enforcement
+                    .clone()
+                    .unwrap_or_else(|| cfg.enforcement.clone());
                 let wait = wait_from_reset(grp_reset);
-                worst = Some(merge_failure(worst, (wait, grp.requests_per_window, effective, grp_reset)));
+                worst = Some(merge_failure(
+                    worst,
+                    (wait, grp.requests_per_window, effective, grp_reset),
+                ));
             }
         }
 
@@ -165,7 +182,13 @@ fn merge_failure(
     match (a_blocks, b_blocks) {
         (true, false) => a,
         (false, true) => b,
-        _ => if b.0 > a.0 { b } else { a },
+        _ => {
+            if b.0 > a.0 {
+                b
+            } else {
+                a
+            }
+        }
     }
 }
 
@@ -308,9 +331,18 @@ where
                     RateLimitEnforcement::Warn => {
                         let retry_after = wait.as_secs().max(1);
                         let mut res = service.call(req).await?.map_into_left_body();
-                        res.headers_mut().insert(header_name("x-ratelimit-warning"), header_value("rate-limit-exceeded"));
-                        res.headers_mut().insert(header_name("x-ratelimit-limit"), header_value(&limit.to_string()));
-                        res.headers_mut().insert(header_name("retry-after"), header_value(&retry_after.to_string()));
+                        res.headers_mut().insert(
+                            header_name("x-ratelimit-warning"),
+                            header_value("rate-limit-exceeded"),
+                        );
+                        res.headers_mut().insert(
+                            header_name("x-ratelimit-limit"),
+                            header_value(&limit.to_string()),
+                        );
+                        res.headers_mut().insert(
+                            header_name("retry-after"),
+                            header_value(&retry_after.to_string()),
+                        );
                         Ok(res)
                     }
                 },
@@ -345,8 +377,14 @@ mod tests {
 
     #[test]
     fn extract_registry_proxy_path() {
-        assert_eq!(extract_registry_from_path("/proxy/myregistry/v1/foo"), Some("myregistry"));
-        assert_eq!(extract_registry_from_path("/proxy/npm/package/-/tarball"), Some("npm"));
+        assert_eq!(
+            extract_registry_from_path("/proxy/myregistry/v1/foo"),
+            Some("myregistry")
+        );
+        assert_eq!(
+            extract_registry_from_path("/proxy/npm/package/-/tarball"),
+            Some("npm")
+        );
     }
 
     #[test]
@@ -358,43 +396,80 @@ mod tests {
 
     #[tokio::test]
     async fn user_allowed_within_limit() {
-        let svc = svc_from("r", RateLimitConfig {
-            requests_per_window: 10,
-            window_secs: 60,
-            enforcement: RateLimitEnforcement::Block,
-            groups: vec![],
-        });
+        let svc = svc_from(
+            "r",
+            RateLimitConfig {
+                requests_per_window: 10,
+                window_secs: 60,
+                enforcement: RateLimitEnforcement::Block,
+                groups: vec![],
+            },
+        );
         for _ in 0..10 {
-            assert!(svc.check("r", "u1", &[]).await.map(|r| r.is_ok()).unwrap_or(false));
+            assert!(svc
+                .check("r", "u1", &[])
+                .await
+                .map(|r| r.is_ok())
+                .unwrap_or(false));
         }
     }
 
     #[tokio::test]
     async fn user_blocked_after_limit() {
-        let svc = svc_from("r", RateLimitConfig {
-            requests_per_window: 2,
-            window_secs: 60,
-            enforcement: RateLimitEnforcement::Block,
-            groups: vec![],
-        });
-        assert!(svc.check("r", "u1", &[]).await.map(|r| r.is_ok()).unwrap_or(false));
-        assert!(svc.check("r", "u1", &[]).await.map(|r| r.is_ok()).unwrap_or(false));
-        assert!(svc.check("r", "u1", &[]).await.map(|r| r.is_err()).unwrap_or(false));
+        let svc = svc_from(
+            "r",
+            RateLimitConfig {
+                requests_per_window: 2,
+                window_secs: 60,
+                enforcement: RateLimitEnforcement::Block,
+                groups: vec![],
+            },
+        );
+        assert!(svc
+            .check("r", "u1", &[])
+            .await
+            .map(|r| r.is_ok())
+            .unwrap_or(false));
+        assert!(svc
+            .check("r", "u1", &[])
+            .await
+            .map(|r| r.is_ok())
+            .unwrap_or(false));
+        assert!(svc
+            .check("r", "u1", &[])
+            .await
+            .map(|r| r.is_err())
+            .unwrap_or(false));
     }
 
     #[tokio::test]
     async fn user_buckets_are_independent() {
-        let svc = svc_from("r", RateLimitConfig {
-            requests_per_window: 1,
-            window_secs: 60,
-            enforcement: RateLimitEnforcement::Block,
-            groups: vec![],
-        });
-        assert!(svc.check("r", "u1", &[]).await.map(|r| r.is_ok()).unwrap_or(false));
+        let svc = svc_from(
+            "r",
+            RateLimitConfig {
+                requests_per_window: 1,
+                window_secs: 60,
+                enforcement: RateLimitEnforcement::Block,
+                groups: vec![],
+            },
+        );
+        assert!(svc
+            .check("r", "u1", &[])
+            .await
+            .map(|r| r.is_ok())
+            .unwrap_or(false));
         // Different user still allowed.
-        assert!(svc.check("r", "u2", &[]).await.map(|r| r.is_ok()).unwrap_or(false));
+        assert!(svc
+            .check("r", "u2", &[])
+            .await
+            .map(|r| r.is_ok())
+            .unwrap_or(false));
         // u1 is blocked.
-        assert!(svc.check("r", "u1", &[]).await.map(|r| r.is_err()).unwrap_or(false));
+        assert!(svc
+            .check("r", "u1", &[])
+            .await
+            .map(|r| r.is_err())
+            .unwrap_or(false));
     }
 
     #[tokio::test]
@@ -406,83 +481,127 @@ mod tests {
 
     #[tokio::test]
     async fn group_bucket_shared_by_members() {
-        let svc = svc_from("r", RateLimitConfig {
-            requests_per_window: 100,
-            window_secs: 60,
-            enforcement: RateLimitEnforcement::Block,
-            groups: vec![GroupRateLimitConfig {
-                name: "ci-bots".to_owned(),
-                requests_per_window: 2,
+        let svc = svc_from(
+            "r",
+            RateLimitConfig {
+                requests_per_window: 100,
                 window_secs: 60,
-                enforcement: None,
-            }],
-        });
+                enforcement: RateLimitEnforcement::Block,
+                groups: vec![GroupRateLimitConfig {
+                    name: "ci-bots".to_owned(),
+                    requests_per_window: 2,
+                    window_secs: 60,
+                    enforcement: None,
+                }],
+            },
+        );
 
         let groups = vec!["ci-bots".to_owned()];
         // Both bot1 and bot2 draw from the shared "ci-bots" pool (limit = 2).
-        assert!(svc.check("r", "bot1", &groups).await.map(|r| r.is_ok()).unwrap_or(false));
-        assert!(svc.check("r", "bot2", &groups).await.map(|r| r.is_ok()).unwrap_or(false));
+        assert!(svc
+            .check("r", "bot1", &groups)
+            .await
+            .map(|r| r.is_ok())
+            .unwrap_or(false));
+        assert!(svc
+            .check("r", "bot2", &groups)
+            .await
+            .map(|r| r.is_ok())
+            .unwrap_or(false));
         // Pool exhausted — third request (from any group member) is blocked.
-        assert!(svc.check("r", "bot3", &groups).await.map(|r| r.is_err()).unwrap_or(false));
+        assert!(svc
+            .check("r", "bot3", &groups)
+            .await
+            .map(|r| r.is_err())
+            .unwrap_or(false));
     }
 
     #[tokio::test]
     async fn non_group_member_not_affected_by_group_limit() {
-        let svc = svc_from("r", RateLimitConfig {
-            requests_per_window: 100,
-            window_secs: 60,
-            enforcement: RateLimitEnforcement::Block,
-            groups: vec![GroupRateLimitConfig {
-                name: "ci-bots".to_owned(),
-                requests_per_window: 1,
+        let svc = svc_from(
+            "r",
+            RateLimitConfig {
+                requests_per_window: 100,
                 window_secs: 60,
-                enforcement: None,
-            }],
-        });
+                enforcement: RateLimitEnforcement::Block,
+                groups: vec![GroupRateLimitConfig {
+                    name: "ci-bots".to_owned(),
+                    requests_per_window: 1,
+                    window_secs: 60,
+                    enforcement: None,
+                }],
+            },
+        );
 
         // Exhaust the ci-bots pool.
         let bot_groups = vec!["ci-bots".to_owned()];
-        assert!(svc.check("r", "bot1", &bot_groups).await.map(|r| r.is_ok()).unwrap_or(false));
-        assert!(svc.check("r", "bot1", &bot_groups).await.map(|r| r.is_err()).unwrap_or(false));
+        assert!(svc
+            .check("r", "bot1", &bot_groups)
+            .await
+            .map(|r| r.is_ok())
+            .unwrap_or(false));
+        assert!(svc
+            .check("r", "bot1", &bot_groups)
+            .await
+            .map(|r| r.is_err())
+            .unwrap_or(false));
 
         // A user not in ci-bots is unaffected by the group limit.
-        assert!(svc.check("r", "regular-user", &[]).await.map(|r| r.is_ok()).unwrap_or(false));
+        assert!(svc
+            .check("r", "regular-user", &[])
+            .await
+            .map(|r| r.is_ok())
+            .unwrap_or(false));
     }
 
     #[tokio::test]
     async fn user_and_group_both_checked() {
         // User limit = 3; group limit = 1.
-        let svc = svc_from("r", RateLimitConfig {
-            requests_per_window: 3,
-            window_secs: 60,
-            enforcement: RateLimitEnforcement::Block,
-            groups: vec![GroupRateLimitConfig {
-                name: "g".to_owned(),
-                requests_per_window: 1,
+        let svc = svc_from(
+            "r",
+            RateLimitConfig {
+                requests_per_window: 3,
                 window_secs: 60,
-                enforcement: None,
-            }],
-        });
+                enforcement: RateLimitEnforcement::Block,
+                groups: vec![GroupRateLimitConfig {
+                    name: "g".to_owned(),
+                    requests_per_window: 1,
+                    window_secs: 60,
+                    enforcement: None,
+                }],
+            },
+        );
         let groups = vec!["g".to_owned()];
         // First request OK — both user bucket and group bucket have tokens.
-        assert!(svc.check("r", "u1", &groups).await.map(|r| r.is_ok()).unwrap_or(false));
+        assert!(svc
+            .check("r", "u1", &groups)
+            .await
+            .map(|r| r.is_ok())
+            .unwrap_or(false));
         // Second request: group bucket exhausted (limit=1), blocks even though user bucket still has tokens.
-        assert!(svc.check("r", "u1", &groups).await.map(|r| r.is_err()).unwrap_or(false));
+        assert!(svc
+            .check("r", "u1", &groups)
+            .await
+            .map(|r| r.is_err())
+            .unwrap_or(false));
     }
 
     #[tokio::test]
     async fn group_enforcement_overrides_parent() {
-        let svc = svc_from("r", RateLimitConfig {
-            requests_per_window: 10,
-            window_secs: 60,
-            enforcement: RateLimitEnforcement::Block,  // parent = block
-            groups: vec![GroupRateLimitConfig {
-                name: "vip".to_owned(),
-                requests_per_window: 2,
+        let svc = svc_from(
+            "r",
+            RateLimitConfig {
+                requests_per_window: 10,
                 window_secs: 60,
-                enforcement: Some(RateLimitEnforcement::Warn),  // group overrides to warn
-            }],
-        });
+                enforcement: RateLimitEnforcement::Block, // parent = block
+                groups: vec![GroupRateLimitConfig {
+                    name: "vip".to_owned(),
+                    requests_per_window: 2,
+                    window_secs: 60,
+                    enforcement: Some(RateLimitEnforcement::Warn), // group overrides to warn
+                }],
+            },
+        );
         let groups = vec!["vip".to_owned()];
         svc.check("r", "u1", &groups).await.unwrap().ok();
         svc.check("r", "u1", &groups).await.unwrap().ok();
@@ -495,8 +614,18 @@ mod tests {
 
     #[test]
     fn merge_failure_block_beats_warn() {
-        let warn = (Duration::from_secs(10), 100u32, RateLimitEnforcement::Warn, 0u64);
-        let block = (Duration::from_secs(5), 50u32, RateLimitEnforcement::Block, 0u64);
+        let warn = (
+            Duration::from_secs(10),
+            100u32,
+            RateLimitEnforcement::Warn,
+            0u64,
+        );
+        let block = (
+            Duration::from_secs(5),
+            50u32,
+            RateLimitEnforcement::Block,
+            0u64,
+        );
 
         let (_, _, e, _) = merge_failure(Some(warn.clone()), block.clone());
         assert_eq!(e, RateLimitEnforcement::Block);
@@ -507,8 +636,18 @@ mod tests {
 
     #[test]
     fn merge_failure_longer_wait_wins() {
-        let short = (Duration::from_secs(5), 100u32, RateLimitEnforcement::Block, 0u64);
-        let long = (Duration::from_secs(30), 50u32, RateLimitEnforcement::Block, 0u64);
+        let short = (
+            Duration::from_secs(5),
+            100u32,
+            RateLimitEnforcement::Block,
+            0u64,
+        );
+        let long = (
+            Duration::from_secs(30),
+            50u32,
+            RateLimitEnforcement::Block,
+            0u64,
+        );
 
         let (wait, _, _, _) = merge_failure(Some(short), long);
         assert_eq!(wait, Duration::from_secs(30));

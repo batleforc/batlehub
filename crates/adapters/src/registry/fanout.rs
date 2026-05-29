@@ -19,11 +19,11 @@ pub struct FanoutRegistryClient {
 }
 
 impl FanoutRegistryClient {
-    pub fn new(
-        registry_type: impl Into<String>,
-        clients: Vec<Arc<dyn RegistryClient>>,
-    ) -> Self {
-        Self { registry_type: registry_type.into(), clients }
+    pub fn new(registry_type: impl Into<String>, clients: Vec<Arc<dyn RegistryClient>>) -> Self {
+        Self {
+            registry_type: registry_type.into(),
+            clients,
+        }
     }
 }
 
@@ -59,7 +59,8 @@ impl RegistryClient for FanoutRegistryClient {
     }
 
     async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
-        let mut last = CoreError::NotFound(format!("{} artifact not found in any upstream", pkg.name));
+        let mut last =
+            CoreError::NotFound(format!("{} artifact not found in any upstream", pkg.name));
         for client in &self.clients {
             match client.fetch_artifact(pkg).await {
                 Ok(fetched) => return Ok(fetched),
@@ -104,7 +105,11 @@ mod tests {
 
     impl MockRegistry {
         fn new(label: &'static str, meta: MockOutcome, artifact: MockOutcome) -> Arc<Self> {
-            Arc::new(Self { label, meta, artifact })
+            Arc::new(Self {
+                label,
+                meta,
+                artifact,
+            })
         }
     }
 
@@ -124,7 +129,10 @@ mod tests {
         let stream = futures::stream::once(async {
             Ok::<Bytes, CoreError>(Bytes::from_static(b"artifact-data"))
         });
-        FetchedArtifact { stream: Box::pin(stream), cache_control: None }
+        FetchedArtifact {
+            stream: Box::pin(stream),
+            cache_control: None,
+        }
     }
 
     #[async_trait]
@@ -135,25 +143,29 @@ mod tests {
 
         async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
             match self.meta {
-                MockOutcome::Hit  => Ok(dummy_meta(pkg)),
-                MockOutcome::Miss => Err(CoreError::NotFound(
-                    format!("[{}] {} not found", self.label, pkg.name),
-                )),
-                MockOutcome::Fail => Err(CoreError::Registry(
-                    format!("[{}] internal error", self.label),
-                )),
+                MockOutcome::Hit => Ok(dummy_meta(pkg)),
+                MockOutcome::Miss => Err(CoreError::NotFound(format!(
+                    "[{}] {} not found",
+                    self.label, pkg.name
+                ))),
+                MockOutcome::Fail => Err(CoreError::Registry(format!(
+                    "[{}] internal error",
+                    self.label
+                ))),
             }
         }
 
         async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
             match self.artifact {
-                MockOutcome::Hit  => Ok(dummy_fetched()),
-                MockOutcome::Miss => Err(CoreError::NotFound(
-                    format!("[{}] {} artifact not found", self.label, pkg.name),
-                )),
-                MockOutcome::Fail => Err(CoreError::Registry(
-                    format!("[{}] internal error", self.label),
-                )),
+                MockOutcome::Hit => Ok(dummy_fetched()),
+                MockOutcome::Miss => Err(CoreError::NotFound(format!(
+                    "[{}] {} artifact not found",
+                    self.label, pkg.name
+                ))),
+                MockOutcome::Fail => Err(CoreError::Registry(format!(
+                    "[{}] internal error",
+                    self.label
+                ))),
             }
         }
     }
@@ -174,7 +186,7 @@ mod tests {
     async fn meta_first_upstream_hits() {
         let f = fanout(vec![
             MockRegistry::new("private", MockOutcome::Hit, MockOutcome::Miss),
-            MockRegistry::new("public",  MockOutcome::Hit, MockOutcome::Miss),
+            MockRegistry::new("public", MockOutcome::Hit, MockOutcome::Miss),
         ]);
         // Should return immediately from "private" — "public" is never called.
         assert!(f.resolve_metadata(&pkg()).await.is_ok());
@@ -184,41 +196,53 @@ mod tests {
     async fn meta_falls_through_to_second_on_not_found() {
         let f = fanout(vec![
             MockRegistry::new("private", MockOutcome::Miss, MockOutcome::Miss),
-            MockRegistry::new("public",  MockOutcome::Hit,  MockOutcome::Miss),
+            MockRegistry::new("public", MockOutcome::Hit, MockOutcome::Miss),
         ]);
         let result = f.resolve_metadata(&pkg()).await;
-        assert!(result.is_ok(), "expected hit from public fallback, got {result:?}");
+        assert!(
+            result.is_ok(),
+            "expected hit from public fallback, got {result:?}"
+        );
     }
 
     #[tokio::test]
     async fn meta_all_miss_returns_not_found() {
         let f = fanout(vec![
             MockRegistry::new("private", MockOutcome::Miss, MockOutcome::Miss),
-            MockRegistry::new("public",  MockOutcome::Miss, MockOutcome::Miss),
+            MockRegistry::new("public", MockOutcome::Miss, MockOutcome::Miss),
         ]);
         let err = f.resolve_metadata(&pkg()).await.unwrap_err();
-        assert!(matches!(err, CoreError::NotFound(_)), "expected NotFound, got {err:?}");
+        assert!(
+            matches!(err, CoreError::NotFound(_)),
+            "expected NotFound, got {err:?}"
+        );
     }
 
     #[tokio::test]
     async fn meta_hard_error_stops_fanout() {
         let f = fanout(vec![
             MockRegistry::new("private", MockOutcome::Fail, MockOutcome::Miss),
-            MockRegistry::new("public",  MockOutcome::Hit,  MockOutcome::Miss),
+            MockRegistry::new("public", MockOutcome::Hit, MockOutcome::Miss),
         ]);
         // A Registry error from the first upstream must NOT fall through.
         let err = f.resolve_metadata(&pkg()).await.unwrap_err();
-        assert!(matches!(err, CoreError::Registry(_)), "expected Registry error, got {err:?}");
+        assert!(
+            matches!(err, CoreError::Registry(_)),
+            "expected Registry error, got {err:?}"
+        );
     }
 
     #[tokio::test]
     async fn meta_miss_then_hard_error_propagates() {
         let f = fanout(vec![
             MockRegistry::new("private", MockOutcome::Miss, MockOutcome::Miss),
-            MockRegistry::new("public",  MockOutcome::Fail, MockOutcome::Miss),
+            MockRegistry::new("public", MockOutcome::Fail, MockOutcome::Miss),
         ]);
         let err = f.resolve_metadata(&pkg()).await.unwrap_err();
-        assert!(matches!(err, CoreError::Registry(_)), "expected Registry error, got {err:?}");
+        assert!(
+            matches!(err, CoreError::Registry(_)),
+            "expected Registry error, got {err:?}"
+        );
     }
 
     #[tokio::test]
@@ -234,7 +258,7 @@ mod tests {
     async fn artifact_first_upstream_hits() {
         let f = fanout(vec![
             MockRegistry::new("private", MockOutcome::Miss, MockOutcome::Hit),
-            MockRegistry::new("public",  MockOutcome::Miss, MockOutcome::Hit),
+            MockRegistry::new("public", MockOutcome::Miss, MockOutcome::Hit),
         ]);
         assert!(f.fetch_artifact(&pkg()).await.is_ok());
     }
@@ -243,10 +267,17 @@ mod tests {
     async fn artifact_falls_through_to_second_on_not_found() {
         let f = fanout(vec![
             MockRegistry::new("private", MockOutcome::Miss, MockOutcome::Miss),
-            MockRegistry::new("public",  MockOutcome::Miss, MockOutcome::Hit),
+            MockRegistry::new("public", MockOutcome::Miss, MockOutcome::Hit),
         ]);
-        let fetched = f.fetch_artifact(&pkg()).await.expect("expected stream from public fallback");
-        let chunks: Vec<_> = fetched.stream.try_collect().await.expect("stream should yield data");
+        let fetched = f
+            .fetch_artifact(&pkg())
+            .await
+            .expect("expected stream from public fallback");
+        let chunks: Vec<_> = fetched
+            .stream
+            .try_collect()
+            .await
+            .expect("stream should yield data");
         assert_eq!(chunks, vec![Bytes::from_static(b"artifact-data")]);
     }
 
@@ -254,26 +285,38 @@ mod tests {
     async fn artifact_all_miss_returns_not_found() {
         let f = fanout(vec![
             MockRegistry::new("private", MockOutcome::Miss, MockOutcome::Miss),
-            MockRegistry::new("public",  MockOutcome::Miss, MockOutcome::Miss),
+            MockRegistry::new("public", MockOutcome::Miss, MockOutcome::Miss),
         ]);
-        let Err(err) = f.fetch_artifact(&pkg()).await else { panic!("expected error") };
-        assert!(matches!(err, CoreError::NotFound(_)), "expected NotFound, got {err:?}");
+        let Err(err) = f.fetch_artifact(&pkg()).await else {
+            panic!("expected error")
+        };
+        assert!(
+            matches!(err, CoreError::NotFound(_)),
+            "expected NotFound, got {err:?}"
+        );
     }
 
     #[tokio::test]
     async fn artifact_hard_error_stops_fanout() {
         let f = fanout(vec![
             MockRegistry::new("private", MockOutcome::Miss, MockOutcome::Fail),
-            MockRegistry::new("public",  MockOutcome::Miss, MockOutcome::Hit),
+            MockRegistry::new("public", MockOutcome::Miss, MockOutcome::Hit),
         ]);
-        let Err(err) = f.fetch_artifact(&pkg()).await else { panic!("expected error") };
-        assert!(matches!(err, CoreError::Registry(_)), "expected Registry error, got {err:?}");
+        let Err(err) = f.fetch_artifact(&pkg()).await else {
+            panic!("expected error")
+        };
+        assert!(
+            matches!(err, CoreError::Registry(_)),
+            "expected Registry error, got {err:?}"
+        );
     }
 
     #[tokio::test]
     async fn artifact_empty_client_list_returns_not_found() {
         let f = fanout(vec![]);
-        let Err(err) = f.fetch_artifact(&pkg()).await else { panic!("expected error") };
+        let Err(err) = f.fetch_artifact(&pkg()).await else {
+            panic!("expected error")
+        };
         assert!(matches!(err, CoreError::NotFound(_)));
     }
 }

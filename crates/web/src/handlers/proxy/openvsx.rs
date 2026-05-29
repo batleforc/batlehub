@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actix_web::{HttpRequest, HttpResponse, Responder, get, put, web};
+use actix_web::{get, put, web, HttpRequest, HttpResponse, Responder};
 use sha2::{Digest, Sha256};
 
 use batlehub_config::schema::RegistryMode;
@@ -10,8 +10,8 @@ use batlehub_core::{
     services::{LocalRegistryService, ProxyService, PublishRequest},
 };
 
-use crate::{RegistryMap, RegistryModeMap, error::AppError, extractors::AuthIdentity};
 use super::common::{collect_payload, extract_signature_headers, proxy_stream, require_local_mode};
+use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 pub fn require_openvsx(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry) {
@@ -19,10 +19,11 @@ pub fn require_openvsx(registry: &str, map: &RegistryMap) -> Result<(), AppError
         Some(_) => Err(AppError::not_found(format!(
             "registry '{registry}' is not an openvsx or vscode-marketplace registry"
         ))),
-        None => Err(AppError::not_found(format!("unknown registry '{registry}'"))),
+        None => Err(AppError::not_found(format!(
+            "unknown registry '{registry}'"
+        ))),
     }
 }
-
 
 /// Download a VS Code extension VSIX package.
 ///

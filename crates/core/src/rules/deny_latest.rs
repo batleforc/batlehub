@@ -30,13 +30,17 @@ impl Rule for DenyLatestRule {
 
         if self.bypass_roles.is_empty() {
             return RuleDecision::Deny {
-                reason: "requests for the 'latest' version tag are not allowed; pin an explicit version".to_owned(),
+                reason:
+                    "requests for the 'latest' version tag are not allowed; pin an explicit version"
+                        .to_owned(),
             };
         }
 
         // Use the least-privileged bypass role as the minimum required.
         let minimum = self.bypass_roles.iter().min().expect("non-empty");
-        RuleDecision::RequireRole { minimum: minimum.clone() }
+        RuleDecision::RequireRole {
+            minimum: minimum.clone(),
+        }
     }
 }
 
@@ -60,10 +64,19 @@ mod tests {
     }
 
     fn identity(role: Role) -> Identity {
-        Identity { user_id: None, role, auth_provider: None, groups: vec![] }
+        Identity {
+            user_id: None,
+            role,
+            auth_provider: None,
+            groups: vec![],
+        }
     }
 
-    fn ctx<'a>(meta: &'a PackageMetadata, identity: &'a Identity, requested: &'a str) -> RuleContext<'a> {
+    fn ctx<'a>(
+        meta: &'a PackageMetadata,
+        identity: &'a Identity,
+        requested: &'a str,
+    ) -> RuleContext<'a> {
         RuleContext {
             identity,
             package: meta,
@@ -97,7 +110,12 @@ mod tests {
         let m = meta();
         let id = identity(Role::Anonymous);
         let decision = rule.evaluate(&ctx(&m, &id, "latest")).await;
-        assert!(matches!(decision, RuleDecision::RequireRole { minimum: Role::Admin }));
+        assert!(matches!(
+            decision,
+            RuleDecision::RequireRole {
+                minimum: Role::Admin
+            }
+        ));
     }
 
     #[tokio::test]
@@ -123,8 +141,14 @@ mod tests {
         let rule = DenyLatestRule::new(vec![Role::Admin, Role::User]);
         let m = meta();
         let user_id = identity(Role::User);
-        let decision = rule.evaluate(&ctx(&m, &user_id, "latest")).await.resolve(&user_id);
-        assert!(matches!(decision, RuleDecision::Allow), "User should bypass when User is in bypass_roles");
+        let decision = rule
+            .evaluate(&ctx(&m, &user_id, "latest"))
+            .await
+            .resolve(&user_id);
+        assert!(
+            matches!(decision, RuleDecision::Allow),
+            "User should bypass when User is in bypass_roles"
+        );
     }
 
     #[tokio::test]

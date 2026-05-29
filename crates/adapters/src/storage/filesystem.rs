@@ -43,12 +43,12 @@ impl StorageBackend for FilesystemStorageBackend {
                 CoreError::Storage(format!("create dirs for {}: {e}", path.display()))
             })?;
         }
-        let mut file = tokio::fs::File::create(&path).await.map_err(|e| {
-            CoreError::Storage(format!("create file {}: {e}", path.display()))
-        })?;
-        file.write_all(&data).await.map_err(|e| {
-            CoreError::Storage(format!("write file {}: {e}", path.display()))
-        })?;
+        let mut file = tokio::fs::File::create(&path)
+            .await
+            .map_err(|e| CoreError::Storage(format!("create file {}: {e}", path.display())))?;
+        file.write_all(&data)
+            .await
+            .map_err(|e| CoreError::Storage(format!("write file {}: {e}", path.display())))?;
         tracing::debug!(key = %key, bytes = data.len(), "stored artifact on filesystem");
         Ok(())
     }
@@ -226,8 +226,18 @@ mod tests {
     async fn store_and_retrieve_round_trip() {
         let b = make_backend().await;
         let data = Bytes::from_static(b"hello, fs");
-        b.store("artifact:npm/test-pkg", data.clone(), StorageMeta::default()).await.unwrap();
-        let artifact = b.retrieve("artifact:npm/test-pkg").await.unwrap().expect("should exist");
+        b.store(
+            "artifact:npm/test-pkg",
+            data.clone(),
+            StorageMeta::default(),
+        )
+        .await
+        .unwrap();
+        let artifact = b
+            .retrieve("artifact:npm/test-pkg")
+            .await
+            .unwrap()
+            .expect("should exist");
         assert_eq!(collect(artifact).await, b"hello, fs");
     }
 
@@ -241,14 +251,26 @@ mod tests {
     async fn exists_before_and_after_store() {
         let b = make_backend().await;
         assert!(!b.exists("artifact:npm/ex-pkg").await.unwrap());
-        b.store("artifact:npm/ex-pkg", Bytes::from_static(b"data"), StorageMeta::default()).await.unwrap();
+        b.store(
+            "artifact:npm/ex-pkg",
+            Bytes::from_static(b"data"),
+            StorageMeta::default(),
+        )
+        .await
+        .unwrap();
         assert!(b.exists("artifact:npm/ex-pkg").await.unwrap());
     }
 
     #[tokio::test]
     async fn delete_removes_file() {
         let b = make_backend().await;
-        b.store("artifact:npm/del-pkg", Bytes::from_static(b"bye"), StorageMeta::default()).await.unwrap();
+        b.store(
+            "artifact:npm/del-pkg",
+            Bytes::from_static(b"bye"),
+            StorageMeta::default(),
+        )
+        .await
+        .unwrap();
         b.delete("artifact:npm/del-pkg").await.unwrap();
         assert!(!b.exists("artifact:npm/del-pkg").await.unwrap());
     }
@@ -262,7 +284,13 @@ mod tests {
     #[tokio::test]
     async fn colon_in_key_is_stored_and_retrieved() {
         let b = make_backend().await;
-        b.store("artifact:npm/colon-test", Bytes::from_static(b"x"), StorageMeta::default()).await.unwrap();
+        b.store(
+            "artifact:npm/colon-test",
+            Bytes::from_static(b"x"),
+            StorageMeta::default(),
+        )
+        .await
+        .unwrap();
         assert!(b.exists("artifact:npm/colon-test").await.unwrap());
     }
 
@@ -273,7 +301,10 @@ mod tests {
             b.store(
                 &format!("artifact:npm/stat-pkg-{i}"),
                 Bytes::from(vec![i; 100]),
-                StorageMeta { size: Some(100), ..Default::default() },
+                StorageMeta {
+                    size: Some(100),
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();
@@ -304,7 +335,13 @@ mod tests {
             .await
             .unwrap();
         }
-        b.store("artifact:cargo/keep", Bytes::from_static(b"keep"), StorageMeta::default()).await.unwrap();
+        b.store(
+            "artifact:cargo/keep",
+            Bytes::from_static(b"keep"),
+            StorageMeta::default(),
+        )
+        .await
+        .unwrap();
 
         let deleted = b.delete_by_prefix("artifact:npm/").await.unwrap();
         assert!(deleted >= 3, "at least 3 npm artifacts should be deleted");
@@ -312,7 +349,10 @@ mod tests {
         let (remaining, _) = b.stat_by_prefix("artifact:npm/").await.unwrap();
         assert_eq!(remaining, 0, "no npm artifacts should remain");
 
-        assert!(b.exists("artifact:cargo/keep").await.unwrap(), "cargo artifact must survive");
+        assert!(
+            b.exists("artifact:cargo/keep").await.unwrap(),
+            "cargo artifact must survive"
+        );
     }
 
     #[tokio::test]

@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
-use actix_web::{HttpResponse, Responder, delete, get, post, web};
+use actix_web::{delete, get, post, web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use batlehub_core::ports::{BetaChannelEntry, BetaChannelPort};
 
-use crate::{error::AppError, extractors::AuthIdentity};
 use super::require_admin;
+use crate::{error::AppError, extractors::AuthIdentity};
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BetaChannelMemberDto {

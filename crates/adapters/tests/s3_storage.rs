@@ -11,11 +11,11 @@
 //!     cargo test -p batlehub-adapters --features storage-s3 --test s3_storage
 
 use aws_config::BehaviorVersion;
-use aws_sdk_s3::{Client, config::Builder as S3ConfigBuilder};
-use bytes::Bytes;
-use futures::StreamExt;
+use aws_sdk_s3::{config::Builder as S3ConfigBuilder, Client};
 use batlehub_adapters::storage::S3StorageBackend;
 use batlehub_core::ports::{StorageBackend, StorageMeta, StoredArtifact};
+use bytes::Bytes;
+use futures::StreamExt;
 
 const BUCKET: &str = "test-artifacts";
 const REGION: &str = "us-east-1";
@@ -63,15 +63,23 @@ async fn store_and_retrieve_round_trip() {
 
     let data = Bytes::from_static(b"hello, s3");
     backend
-        .store("key-rt", data.clone(), StorageMeta {
-            content_type: Some("text/plain".to_owned()),
-            size: Some(data.len() as u64),
-            ..Default::default()
-        })
+        .store(
+            "key-rt",
+            data.clone(),
+            StorageMeta {
+                content_type: Some("text/plain".to_owned()),
+                size: Some(data.len() as u64),
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
 
-    let artifact = backend.retrieve("key-rt").await.unwrap().expect("should exist");
+    let artifact = backend
+        .retrieve("key-rt")
+        .await
+        .unwrap()
+        .expect("should exist");
     assert_eq!(collect(artifact).await, b"hello, s3");
 }
 
@@ -90,7 +98,11 @@ async fn exists_before_and_after_store() {
     assert!(!backend.exists("key-ex").await.unwrap());
 
     backend
-        .store("key-ex", Bytes::from_static(b"data"), StorageMeta::default())
+        .store(
+            "key-ex",
+            Bytes::from_static(b"data"),
+            StorageMeta::default(),
+        )
         .await
         .unwrap();
 
@@ -103,7 +115,11 @@ async fn delete_removes_artifact() {
     let backend = make_backend(&ep).await;
 
     backend
-        .store("key-del", Bytes::from_static(b"bye"), StorageMeta::default())
+        .store(
+            "key-del",
+            Bytes::from_static(b"bye"),
+            StorageMeta::default(),
+        )
         .await
         .unwrap();
 
@@ -130,13 +146,19 @@ async fn stat_by_prefix_counts_and_sums_sizes() {
             .store(
                 &format!("artifact:npm/stat-pkg-{i}"),
                 Bytes::from(vec![i; 100]),
-                StorageMeta { size: Some(100), ..Default::default() },
+                StorageMeta {
+                    size: Some(100),
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();
     }
 
-    let (count, bytes) = backend.stat_by_prefix("artifact:npm/stat-pkg-").await.unwrap();
+    let (count, bytes) = backend
+        .stat_by_prefix("artifact:npm/stat-pkg-")
+        .await
+        .unwrap();
     assert_eq!(count, 3);
     assert_eq!(bytes, 300);
 }
@@ -158,14 +180,24 @@ async fn delete_by_prefix_removes_only_matching_keys() {
     }
     // A key under a different prefix that must survive.
     backend
-        .store("artifact:cargo/del-pkg-0", Bytes::from_static(b"keep"), StorageMeta::default())
+        .store(
+            "artifact:cargo/del-pkg-0",
+            Bytes::from_static(b"keep"),
+            StorageMeta::default(),
+        )
         .await
         .unwrap();
 
-    let deleted = backend.delete_by_prefix("artifact:npm/del-pkg-").await.unwrap();
+    let deleted = backend
+        .delete_by_prefix("artifact:npm/del-pkg-")
+        .await
+        .unwrap();
     assert_eq!(deleted, 3);
 
-    let (remaining, _) = backend.stat_by_prefix("artifact:npm/del-pkg-").await.unwrap();
+    let (remaining, _) = backend
+        .stat_by_prefix("artifact:npm/del-pkg-")
+        .await
+        .unwrap();
     assert_eq!(remaining, 0);
 
     assert!(backend.exists("artifact:cargo/del-pkg-0").await.unwrap());

@@ -38,13 +38,11 @@ impl TestStore {
 
     /// Read the raw row count for a key prefix from the DB (for pruning assertions).
     async fn raw_row_count(&self, key: &str) -> i64 {
-        sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM rate_limit_counters WHERE key = $1",
-        )
-        .bind(key)
-        .fetch_one(&self.pool)
-        .await
-        .unwrap_or(0)
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM rate_limit_counters WHERE key = $1")
+            .bind(key)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(0)
     }
 }
 
@@ -56,7 +54,11 @@ async fn make_store(url: &str) -> TestStore {
         .run(&pool)
         .await
         .expect("run migrations");
-    TestStore { store: PgRateLimitStore::new(pool.clone()), pool, prefix }
+    TestStore {
+        store: PgRateLimitStore::new(pool.clone()),
+        pool,
+        prefix,
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -76,7 +78,10 @@ async fn repeated_increments_accumulate() {
     let key = s.key("k");
     for expected in 1u64..=10 {
         let (count, _) = s.store.increment(&key, 60).await.unwrap();
-        assert_eq!(count, expected, "increment #{expected} should return {expected}");
+        assert_eq!(
+            count, expected,
+            "increment #{expected} should return {expected}"
+        );
     }
 }
 
@@ -101,17 +106,32 @@ async fn reset_unix_is_at_window_boundary() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let (_, reset) = s.store.increment(&s.key("k"), window_secs as u32).await.unwrap();
+    let (_, reset) = s
+        .store
+        .increment(&s.key("k"), window_secs as u32)
+        .await
+        .unwrap();
     let after = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
 
     // reset must be strictly after the call started and at most one window from now
-    assert!(reset > before, "reset {reset} must be after call start {before}");
-    assert!(reset <= after + window_secs, "reset {reset} must be ≤ {}", after + window_secs);
+    assert!(
+        reset > before,
+        "reset {reset} must be after call start {before}"
+    );
+    assert!(
+        reset <= after + window_secs,
+        "reset {reset} must be ≤ {}",
+        after + window_secs
+    );
     // reset must fall on a window boundary (multiple of window_secs)
-    assert_eq!(reset % window_secs, 0, "reset {reset} must be a multiple of {window_secs}");
+    assert_eq!(
+        reset % window_secs,
+        0,
+        "reset {reset} must be a multiple of {window_secs}"
+    );
 }
 
 #[tokio::test]
@@ -121,20 +141,22 @@ async fn old_window_rows_are_pruned_on_write() {
     let key = s.key("prune");
 
     // Insert a fake row from a long-past window directly.
-    sqlx::query(
-        "INSERT INTO rate_limit_counters (key, window_start, count) VALUES ($1, 0, 999)",
-    )
-    .bind(&key)
-    .execute(&s.pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO rate_limit_counters (key, window_start, count) VALUES ($1, 0, 999)")
+        .bind(&key)
+        .execute(&s.pool)
+        .await
+        .unwrap();
     assert_eq!(s.raw_row_count(&key).await, 1, "seeded row should exist");
 
     // Any new increment should prune the stale row and insert the current window.
     s.store.increment(&key, 60).await.unwrap();
 
     // After pruning + insert there should be exactly one row (current window).
-    assert_eq!(s.raw_row_count(&key).await, 1, "stale row should have been pruned");
+    assert_eq!(
+        s.raw_row_count(&key).await,
+        1,
+        "stale row should have been pruned"
+    );
 }
 
 #[tokio::test]
@@ -161,7 +183,11 @@ async fn concurrent_increments_are_atomic() {
 
     let counts: std::collections::HashSet<u64> = results.iter().map(|(c, _)| *c).collect();
     // Every concurrent increment must produce a unique count value (1..=20).
-    assert_eq!(counts.len(), 20, "expected 20 unique counts; got: {counts:?}");
+    assert_eq!(
+        counts.len(),
+        20,
+        "expected 20 unique counts; got: {counts:?}"
+    );
     assert_eq!(*counts.iter().max().unwrap(), 20, "max count should be 20");
 }
 
@@ -179,5 +205,8 @@ async fn different_window_secs_produce_independent_windows() {
     // (The 60-window row gets pruned since its window_start < current 3600-window - 3600,
     // which only happens if now > 2*3600 from epoch — always true.)
     assert!(c3600 >= 1, "count for 3600-window should be ≥ 1");
-    assert!(reset3600 > reset60 || reset3600 >= reset60, "3600-window resets later than 60-window");
+    assert!(
+        reset3600 > reset60 || reset3600 >= reset60,
+        "3600-window resets later than 60-window"
+    );
 }

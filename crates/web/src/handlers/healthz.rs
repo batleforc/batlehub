@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actix_web::{HttpResponse, Responder, get, http::StatusCode, web};
+use actix_web::{get, http::StatusCode, web, HttpResponse, Responder};
 use serde::Serialize;
 use sqlx::PgPool;
 
@@ -44,7 +44,11 @@ pub async fn healthz(
     };
 
     let ok = db != STATUS_ERROR && storage != STATUS_ERROR;
-    let status = if ok { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+    let status = if ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
 
     HttpResponse::build(status).json(HealthResponse { ok, db, storage })
 }

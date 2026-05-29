@@ -26,11 +26,7 @@ impl PgIpBlockStore {
 
 #[async_trait]
 impl IpBlockStore for PgIpBlockStore {
-    async fn record_violation(
-        &self,
-        ip: &str,
-        window_secs: u32,
-    ) -> Result<(u64, u64), CoreError> {
+    async fn record_violation(&self, ip: &str, window_secs: u32) -> Result<(u64, u64), CoreError> {
         if window_secs == 0 {
             return Err(CoreError::Database("window_secs must be > 0".into()));
         }
@@ -40,14 +36,12 @@ impl IpBlockStore for PgIpBlockStore {
         let window_reset = (window_start + ws) as u64;
 
         // Prune expired windows for this IP.
-        sqlx::query(
-            "DELETE FROM ip_violation_counters WHERE ip = $1 AND window_start < $2",
-        )
-        .bind(ip)
-        .bind(window_start)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| CoreError::Database(format!("ip_block prune: {e}")))?;
+        sqlx::query("DELETE FROM ip_violation_counters WHERE ip = $1 AND window_start < $2")
+            .bind(ip)
+            .bind(window_start)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| CoreError::Database(format!("ip_block prune: {e}")))?;
 
         let count: i64 = sqlx::query_scalar(
             "INSERT INTO ip_violation_counters (ip, window_start, count) \

@@ -8,8 +8,7 @@ use std::path::Path;
 pub fn load(path: impl AsRef<Path>) -> Result<AppConfig> {
     let raw = std::fs::read_to_string(path.as_ref())
         .with_context(|| format!("reading config file: {}", path.as_ref().display()))?;
-    let mut config: AppConfig =
-        toml::from_str(&raw).with_context(|| "parsing config TOML")?;
+    let mut config: AppConfig = toml::from_str(&raw).with_context(|| "parsing config TOML")?;
     config.apply_env_overrides();
     config.validate()?;
     Ok(config)
@@ -49,19 +48,26 @@ mod tests {
         assert_eq!(cfg.database.url, "postgresql://user:pass@localhost/db");
         assert!(cfg.registries.is_empty());
         assert!(cfg.auth.is_empty());
-        assert!(matches!(cfg.storage, StoragesConfig::Single(StorageBackendConfig::Filesystem(_))));
+        assert!(matches!(
+            cfg.storage,
+            StoragesConfig::Single(StorageBackendConfig::Filesystem(_))
+        ));
     }
 
     #[test]
     fn parse_config_with_static_token_auth() {
-        let toml = format!("{}\n{}", minimal(), r#"
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
         [[auth]]
         type = "token"
         [[auth.tokens]]
         value = "secret"
         role = "admin"
         user_id = "alice"
-        "#);
+        "#
+        );
         let cfg = parse(&toml);
         assert_eq!(cfg.auth.len(), 1);
         assert!(matches!(cfg.auth[0], AuthConfig::Token(_)));
@@ -69,23 +75,31 @@ mod tests {
 
     #[test]
     fn parse_config_with_oidc_auth() {
-        let toml = format!("{}\n{}", minimal(), r#"
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
         [[auth]]
         type = "oidc"
         issuer_url = "https://idp.example.com"
         client_id = "my-client"
-        "#);
+        "#
+        );
         let cfg = parse(&toml);
         assert!(matches!(cfg.auth[0], AuthConfig::Oidc(_)));
     }
 
     #[test]
     fn parse_config_with_registry() {
-        let toml = format!("{}\n{}", minimal(), r#"
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
         [[registries]]
         type = "github"
         name = "gh"
-        "#);
+        "#
+        );
         let cfg = parse(&toml);
         assert_eq!(cfg.registries.len(), 1);
         assert_eq!(cfg.registries[0].name, "gh");
@@ -94,50 +108,75 @@ mod tests {
 
     #[test]
     fn unknown_registry_type_returns_validation_error() {
-        let toml = format!("{}\n{}", minimal(), r#"
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
         [[registries]]
         type = "bogus-registry"
         name = "my-bogus"
-        "#);
+        "#
+        );
         let config: AppConfig = toml::from_str(&toml).unwrap();
-        let err = config.validate().expect_err("unknown registry type should fail validation");
+        let err = config
+            .validate()
+            .expect_err("unknown registry type should fail validation");
         assert!(err.to_string().contains("bogus-registry"));
     }
 
     #[test]
     fn registry_missing_name_returns_validation_error() {
-        let toml = format!("{}\n{}", minimal(), r#"
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
         [[registries]]
         type = "github"
         name = ""
-        "#);
+        "#
+        );
         let config: AppConfig = toml::from_str(&toml).unwrap();
-        assert!(config.validate().is_err(), "empty registry name should fail validation");
+        assert!(
+            config.validate().is_err(),
+            "empty registry name should fail validation"
+        );
     }
 
     #[test]
     fn composer_local_mode_passes_validation() {
-        let toml = format!("{}\n{}", minimal(), r#"
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
         [[registries]]
         type = "composer"
         name = "my-composer"
         mode = "local"
-        "#);
+        "#
+        );
         let config: AppConfig = toml::from_str(&toml).unwrap();
-        config.validate().expect("composer + local mode must be accepted");
+        config
+            .validate()
+            .expect("composer + local mode must be accepted");
     }
 
     #[test]
     fn composer_hybrid_mode_passes_validation() {
-        let toml = format!("{}\n{}", minimal(), r#"
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
         [[registries]]
         type = "composer"
         name = "my-composer"
         mode = "hybrid"
         upstreams = ["https://repo.packagist.org"]
-        "#);
+        "#
+        );
         let config: AppConfig = toml::from_str(&toml).unwrap();
-        config.validate().expect("composer + hybrid mode must be accepted");
+        config
+            .validate()
+            .expect("composer + hybrid mode must be accepted");
     }
 
     #[test]
@@ -209,50 +248,69 @@ mod tests {
 
     #[test]
     fn cache_config_explicit_postgres() {
-        let toml = format!("{}\n{}", minimal(), r#"
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
         [cache]
         type = "postgres"
-        "#);
+        "#
+        );
         let cfg: AppConfig = toml::from_str(&toml).unwrap();
         assert_eq!(cfg.cache.cache_type, "postgres");
     }
 
     #[test]
     fn cache_policy_serve_stale_defaults_to_true() {
-        let toml = format!("{}\n{}", minimal(), r#"
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
         [[registries]]
         type = "npm"
         name = "npmjs"
         [registries.cache]
         metadata_ttl_secs = 300
-        "#);
+        "#
+        );
         let cfg: AppConfig = toml::from_str(&toml).unwrap();
-        assert!(cfg.registries[0].cache.serve_stale, "serve_stale should default to true");
+        assert!(
+            cfg.registries[0].cache.serve_stale,
+            "serve_stale should default to true"
+        );
     }
 
     #[test]
     fn cache_policy_serve_stale_can_be_disabled() {
-        let toml = format!("{}\n{}", minimal(), r#"
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
         [[registries]]
         type = "npm"
         name = "npmjs"
         [registries.cache]
         metadata_ttl_secs = 300
         serve_stale = false
-        "#);
+        "#
+        );
         let cfg: AppConfig = toml::from_str(&toml).unwrap();
         assert!(!cfg.registries[0].cache.serve_stale);
     }
 
     #[test]
     fn parse_config_with_kubernetes_auth() {
-        let toml = format!("{}\n{}", minimal(), r#"
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
         [[auth]]
         type = "kubernetes"
         api_server = "https://k8s.example.com"
         [auth.role_mappings]
         "system:masters" = "admin"
-        "#);
+        "#
+        );
         let cfg: AppConfig = toml::from_str(&toml).unwrap();
         assert!(matches!(cfg.auth[0], AuthConfig::Kubernetes(_)));
         if let AuthConfig::Kubernetes(k8s) = &cfg.auth[0] {
@@ -280,7 +338,10 @@ mod tests {
         force_path_style = true
         "#;
         let cfg: AppConfig = toml::from_str(toml).unwrap();
-        assert!(matches!(cfg.storage, StoragesConfig::Single(StorageBackendConfig::S3(_))));
+        assert!(matches!(
+            cfg.storage,
+            StoragesConfig::Single(StorageBackendConfig::S3(_))
+        ));
     }
 
     #[test]
@@ -377,11 +438,15 @@ mod tests {
 
     #[test]
     fn env_override_otel_service_name_when_section_present() {
-        let toml = format!("{}\n{}", minimal(), r#"
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
         [otel]
         endpoint = "http://otel:4317"
         service_name = "old-name"
-        "#);
+        "#
+        );
         let mut cfg: AppConfig = toml::from_str(&toml).unwrap();
         std::env::set_var("PROXY_CACHE__OTEL__SERVICE_NAME", "new-name");
         cfg.apply_env_overrides();
@@ -409,22 +474,32 @@ mod tests {
 
     #[test]
     fn parse_config_with_upstream_bearer_auth() {
-        let toml = format!("{}\n{}", minimal(), r#"
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
         [[registries]]
         type = "npm"
         name = "private-npm"
         [registries.upstream_auth]
         type = "bearer"
         token = "secret-token"
-        "#);
+        "#
+        );
         let cfg: AppConfig = toml::from_str(&toml).unwrap();
         assert!(cfg.registries[0].upstream_auth.is_some());
-        assert!(matches!(cfg.registries[0].upstream_auth, Some(crate::schema::UpstreamAuthConfig::Bearer(_))));
+        assert!(matches!(
+            cfg.registries[0].upstream_auth,
+            Some(crate::schema::UpstreamAuthConfig::Bearer(_))
+        ));
     }
 
     #[test]
     fn parse_config_with_upstream_basic_auth() {
-        let toml = format!("{}\n{}", minimal(), r#"
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
         [[registries]]
         type = "cargo"
         name = "private-cargo"
@@ -432,14 +507,21 @@ mod tests {
         type = "basic"
         username = "user"
         password = "pass"
-        "#);
+        "#
+        );
         let cfg: AppConfig = toml::from_str(&toml).unwrap();
-        assert!(matches!(cfg.registries[0].upstream_auth, Some(crate::schema::UpstreamAuthConfig::Basic(_))));
+        assert!(matches!(
+            cfg.registries[0].upstream_auth,
+            Some(crate::schema::UpstreamAuthConfig::Basic(_))
+        ));
     }
 
     #[test]
     fn parse_config_with_upstream_header_auth() {
-        let toml = format!("{}\n{}", minimal(), r#"
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
         [[registries]]
         type = "npm"
         name = "api-keyed-npm"
@@ -447,14 +529,21 @@ mod tests {
         type = "header"
         name = "X-API-Key"
         value = "my-key"
-        "#);
+        "#
+        );
         let cfg: AppConfig = toml::from_str(&toml).unwrap();
-        assert!(matches!(cfg.registries[0].upstream_auth, Some(crate::schema::UpstreamAuthConfig::Header(_))));
+        assert!(matches!(
+            cfg.registries[0].upstream_auth,
+            Some(crate::schema::UpstreamAuthConfig::Header(_))
+        ));
     }
 
     #[test]
     fn parse_config_with_release_age_gate_rule() {
-        let toml = format!("{}\n{}", minimal(), r#"
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
         [[registries]]
         type = "npm"
         name = "npmjs"
@@ -462,20 +551,28 @@ mod tests {
         kind = "release_age_gate"
         min_age_secs = 7200
         bypass_roles = ["admin"]
-        "#);
+        "#
+        );
         let cfg: AppConfig = toml::from_str(&toml).unwrap();
         assert_eq!(cfg.registries[0].rules.len(), 1);
-        assert!(matches!(cfg.registries[0].rules[0], crate::schema::RuleConfig::ReleaseAgeGate(_)));
+        assert!(matches!(
+            cfg.registries[0].rules[0],
+            crate::schema::RuleConfig::ReleaseAgeGate(_)
+        ));
     }
 
     #[test]
     fn parse_config_firewall_only() {
-        let toml = format!("{}\n{}", minimal(), r#"
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
         [[registries]]
         type = "npm"
         name = "npmjs"
         firewall_only = true
-        "#);
+        "#
+        );
         let cfg: AppConfig = toml::from_str(&toml).unwrap();
         assert!(cfg.registries[0].firewall_only);
     }

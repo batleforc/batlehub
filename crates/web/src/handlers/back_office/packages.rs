@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actix_web::{Responder, get, post, web};
+use actix_web::{get, post, web, Responder};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
@@ -8,7 +8,9 @@ use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use batlehub_core::{
-    entities::{AccessAction, AccessResult, EventFilter, PackageFilter, PackageId, PackageStatus, Role},
+    entities::{
+        AccessAction, AccessResult, EventFilter, PackageFilter, PackageId, PackageStatus, Role,
+    },
     services::{AdminService, BulkBlockItem, ProxyService},
 };
 
@@ -70,7 +72,10 @@ pub async fn list_packages(
         offset: query.page * query.per_page,
     };
 
-    let packages = admin_svc.list_packages(filter).await.map_err(AppError::from)?;
+    let packages = admin_svc
+        .list_packages(filter)
+        .await
+        .map_err(AppError::from)?;
     Ok(web::Json(packages))
 }
 
@@ -361,8 +366,16 @@ pub async fn invalidate_package(
     let storage_key = format!("artifact:{}", pkg.cache_key());
     let meta_key = format!("meta:{}", pkg.cache_key());
 
-    proxy_svc.storage.delete(&storage_key).await.map_err(AppError::from)?;
-    proxy_svc.cache.invalidate(&meta_key).await.map_err(AppError::from)?;
+    proxy_svc
+        .storage
+        .delete(&storage_key)
+        .await
+        .map_err(AppError::from)?;
+    proxy_svc
+        .cache
+        .invalidate(&meta_key)
+        .await
+        .map_err(AppError::from)?;
 
     Ok(web::Json(ActionResponse {
         success: true,
@@ -399,7 +412,11 @@ pub struct PackageVersionDetail {
 #[serde(tag = "status", rename_all = "lowercase")]
 pub enum PackageStatusDetail {
     Available,
-    Blocked { reason: String, blocked_by: String, blocked_at: DateTime<Utc> },
+    Blocked {
+        reason: String,
+        blocked_by: String,
+        blocked_at: DateTime<Utc>,
+    },
 }
 
 #[derive(Serialize, ToSchema)]
@@ -454,12 +471,19 @@ pub async fn package_detail(
         limit: 200,
         offset: 0,
     };
-    let summaries = admin_svc.list_packages(filter).await.map_err(AppError::from)?;
+    let summaries = admin_svc
+        .list_packages(filter)
+        .await
+        .map_err(AppError::from)?;
 
     let mut versions = Vec::with_capacity(summaries.len());
     for s in summaries {
         let storage_key = format!("artifact:{}", s.package_id.cache_key());
-        let cached = proxy_svc.storage.exists(&storage_key).await.unwrap_or(false);
+        let cached = proxy_svc
+            .storage
+            .exists(&storage_key)
+            .await
+            .unwrap_or(false);
         let (storage_backend, cached_at) = if let Some(ref p) = pool {
             let row = sqlx::query(
                 "SELECT backend_name, stored_at FROM artifact_storage WHERE storage_key = $1",
@@ -469,7 +493,9 @@ pub async fn package_detail(
             .await
             .ok()
             .flatten();
-            let backend = row.as_ref().and_then(|r| r.try_get::<String, _>("backend_name").ok());
+            let backend = row
+                .as_ref()
+                .and_then(|r| r.try_get::<String, _>("backend_name").ok());
             let at = row.and_then(|r| r.try_get::<DateTime<Utc>, _>("stored_at").ok());
             (backend, at)
         } else {
@@ -477,9 +503,15 @@ pub async fn package_detail(
         };
         let status = match s.status {
             PackageStatus::Available => PackageStatusDetail::Available,
-            PackageStatus::Blocked { reason, blocked_by, blocked_at } => {
-                PackageStatusDetail::Blocked { reason, blocked_by, blocked_at }
-            }
+            PackageStatus::Blocked {
+                reason,
+                blocked_by,
+                blocked_at,
+            } => PackageStatusDetail::Blocked {
+                reason,
+                blocked_by,
+                blocked_at,
+            },
         };
         versions.push(PackageVersionDetail {
             id: s.id,
@@ -506,7 +538,10 @@ pub async fn package_detail(
         limit: 50,
         offset: 0,
     };
-    let events = admin_svc.list_events(event_filter).await.map_err(AppError::from)?;
+    let events = admin_svc
+        .list_events(event_filter)
+        .await
+        .map_err(AppError::from)?;
 
     let recent_events = events
         .into_iter()

@@ -159,7 +159,9 @@ impl PackageRepository for PgPackageRepository {
                 let status: String = r.get("status");
                 if status == "blocked" {
                     Ok(PackageStatus::Blocked {
-                        reason: r.get::<Option<String>, _>("block_reason").unwrap_or_default(),
+                        reason: r
+                            .get::<Option<String>, _>("block_reason")
+                            .unwrap_or_default(),
                         blocked_by: r.get::<Option<String>, _>("blocked_by").unwrap_or_default(),
                         blocked_at: r
                             .get::<Option<DateTime<Utc>>, _>("blocked_at")
@@ -180,9 +182,16 @@ impl PackageRepository for PgPackageRepository {
             Option<DateTime<Utc>>,
         ) = match &status {
             PackageStatus::Available => ("available", None, None, None),
-            PackageStatus::Blocked { reason, blocked_by, blocked_at } => {
-                ("blocked", Some(reason.clone()), Some(blocked_by.clone()), Some(*blocked_at))
-            }
+            PackageStatus::Blocked {
+                reason,
+                blocked_by,
+                blocked_at,
+            } => (
+                "blocked",
+                Some(reason.clone()),
+                Some(blocked_by.clone()),
+                Some(*blocked_at),
+            ),
         };
 
         sqlx::query(
@@ -263,7 +272,11 @@ impl PackageRepository for PgPackageRepository {
         .bind(filter.limit as i64)
         .bind(filter.offset as i64)
         .bind(&filter.name_exact)
-        .bind(if filter.registries.is_empty() { None } else { Some(filter.registries.clone()) })
+        .bind(if filter.registries.is_empty() {
+            None
+        } else {
+            Some(filter.registries.clone())
+        })
         .fetch_all(&self.pool)
         .await
         .map_err(|e| CoreError::Database(e.to_string()))?;
@@ -274,7 +287,9 @@ impl PackageRepository for PgPackageRepository {
                 let status: String = r.get("status");
                 let pkg_status = if status == "blocked" {
                     PackageStatus::Blocked {
-                        reason: r.get::<Option<String>, _>("block_reason").unwrap_or_default(),
+                        reason: r
+                            .get::<Option<String>, _>("block_reason")
+                            .unwrap_or_default(),
                         blocked_by: r.get::<Option<String>, _>("blocked_by").unwrap_or_default(),
                         blocked_at: r
                             .get::<Option<DateTime<Utc>>, _>("blocked_at")
@@ -320,7 +335,11 @@ impl PackageRepository for PgPackageRepository {
         .bind(&filter.name_contains)
         .bind(filter.blocked_only)
         .bind(&filter.name_exact)
-        .bind(if filter.registries.is_empty() { None } else { Some(filter.registries) })
+        .bind(if filter.registries.is_empty() {
+            None
+        } else {
+            Some(filter.registries)
+        })
         .fetch_one(&self.pool)
         .await
         .map_err(|e| CoreError::Database(e.to_string()))?;

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actix_web::{HttpRequest, HttpResponse, Responder, get, post, put, web};
+use actix_web::{get, post, put, web, HttpRequest, HttpResponse, Responder};
 use base64::Engine as _;
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
@@ -12,8 +12,8 @@ use batlehub_core::{
     services::{LocalRegistryService, ProxyService, PublishRequest},
 };
 
-use crate::{RegistryMap, RegistryModeMap, UpstreamMap, error::AppError, extractors::AuthIdentity};
 use super::common::{collect_payload, extract_signature_headers, proxy_stream, require_local_mode};
+use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
 
 fn require_npm_or_cargo(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry) {
@@ -21,15 +21,21 @@ fn require_npm_or_cargo(registry: &str, map: &RegistryMap) -> Result<(), AppErro
         Some(_) => Err(AppError::not_found(format!(
             "registry '{registry}' is not an npm, cargo, or openvsx registry"
         ))),
-        None => Err(AppError::not_found(format!("unknown registry '{registry}'"))),
+        None => Err(AppError::not_found(format!(
+            "unknown registry '{registry}'"
+        ))),
     }
 }
 
 fn require_npm(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry) {
         Some("npm") => Ok(()),
-        Some(_) => Err(AppError::not_found(format!("registry '{registry}' is not an npm registry"))),
-        None => Err(AppError::not_found(format!("unknown registry '{registry}'"))),
+        Some(_) => Err(AppError::not_found(format!(
+            "registry '{registry}' is not an npm registry"
+        ))),
+        None => Err(AppError::not_found(format!(
+            "unknown registry '{registry}'"
+        ))),
     }
 }
 
@@ -71,7 +77,10 @@ pub async fn get_packument(
 
     if map.is_type(&registry, "npm") && matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
         let url = base_url(&req);
-        match local_svc.get_npm_packument(&registry, &package, &url, &identity).await {
+        match local_svc
+            .get_npm_packument(&registry, &package, &url, &identity)
+            .await
+        {
             Ok(packument) => {
                 return Ok(HttpResponse::Ok().json(packument));
             }
@@ -79,7 +88,9 @@ pub async fn get_packument(
                 // fall through to proxy
             }
             Err(CoreError::NotFound(_)) => {
-                return Err(AppError::not_found(format!("package '{package}' not found")));
+                return Err(AppError::not_found(format!(
+                    "package '{package}' not found"
+                )));
             }
             Err(e) => return Err(AppError::from(e)),
         }
@@ -123,11 +134,16 @@ pub async fn get_version(
 
     if map.is_type(&registry, "npm") && matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
         let url = base_url(&req);
-        match local_svc.get_npm_version(&registry, &package, &version, &url, &identity).await {
+        match local_svc
+            .get_npm_version(&registry, &package, &version, &url, &identity)
+            .await
+        {
             Ok(meta) => return Ok(HttpResponse::Ok().json(meta)),
             Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}
             Err(CoreError::NotFound(_)) => {
-                return Err(AppError::not_found(format!("{package}@{version} not found")));
+                return Err(AppError::not_found(format!(
+                    "{package}@{version} not found"
+                )));
             }
             Err(e) => return Err(AppError::from(e)),
         }
@@ -189,7 +205,10 @@ pub async fn download_tarball(
             .check_prerelease_access(&registry, &version, &identity)
             .await
             .map_err(AppError::from)?;
-        match local_svc.get_artifact(&registry, &package, &version, &identity).await {
+        match local_svc
+            .get_artifact(&registry, &package, &version, &identity)
+            .await
+        {
             Ok(bytes) => {
                 return Ok(HttpResponse::Ok()
                     .content_type("application/octet-stream")
@@ -267,9 +286,9 @@ pub async fn npm_publish(
         .and_then(|d| d.as_str())
         .ok_or_else(|| AppError::bad_request("missing 'data' in attachment"))?;
 
-    let tarball_bytes =
-        base64::engine::general_purpose::STANDARD.decode(data_b64)
-            .map_err(|e| AppError::bad_request(format!("invalid base64 in attachment: {e}")))?;
+    let tarball_bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_b64)
+        .map_err(|e| AppError::bad_request(format!("invalid base64 in attachment: {e}")))?;
     let tarball_bytes = Bytes::from(tarball_bytes);
 
     let checksum = hex::encode(Sha256::digest(&tarball_bytes));

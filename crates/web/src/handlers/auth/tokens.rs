@@ -1,21 +1,15 @@
 use std::sync::Arc;
 
-use actix_web::{HttpResponse, Responder, delete, get, post, web};
+use actix_web::{delete, get, post, web, HttpResponse, Responder};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 use batlehub_adapters::auth::generate_token;
-use batlehub_core::{
-    entities::Role,
-    ports::UserTokenRepository,
-};
+use batlehub_core::{entities::Role, ports::UserTokenRepository};
 
-use crate::{
-    error::AppError,
-    extractors::AuthIdentity,
-};
+use crate::{error::AppError, extractors::AuthIdentity};
 
 // ── Create token ──────────────────────────────────────────────────────────────
 
@@ -60,21 +54,29 @@ pub async fn create_token(
     body: web::Json<CreateTokenRequest>,
 ) -> Result<impl Responder, AppError> {
     if identity.auth_provider.as_deref() != Some("oidc") {
-        return Err(AppError::forbidden("only OIDC sessions can create API tokens"));
+        return Err(AppError::forbidden(
+            "only OIDC sessions can create API tokens",
+        ));
     }
     let Some(ref user_id) = identity.user_id else {
-        return Err(AppError::forbidden("cannot create token for anonymous identity"));
+        return Err(AppError::forbidden(
+            "cannot create token for anonymous identity",
+        ));
     };
 
     if body.expires_in_days == 0 || body.expires_in_days > 90 {
-        return Err(AppError::bad_request("expires_in_days must be between 1 and 90"));
+        return Err(AppError::bad_request(
+            "expires_in_days must be between 1 and 90",
+        ));
     }
 
     let requested_role = parse_role(&body.role)
         .ok_or_else(|| AppError::bad_request("role must be 'user' or 'admin'"))?;
 
     if requested_role > identity.role {
-        return Err(AppError::forbidden("token role cannot exceed your own role"));
+        return Err(AppError::forbidden(
+            "token role cannot exceed your own role",
+        ));
     }
 
     let name = body.name.trim();
@@ -82,14 +84,20 @@ pub async fn create_token(
         return Err(AppError::bad_request("token name cannot be empty"));
     }
 
-    let expires_at = Utc::now()
-        + chrono::Duration::days(body.expires_in_days as i64);
+    let expires_at = Utc::now() + chrono::Duration::days(body.expires_in_days as i64);
 
     let (raw_token, token_hash) = generate_token();
     let id = Uuid::new_v4();
 
     let tok = repo
-        .create_token(id, user_id, name, &token_hash, requested_role.clone(), expires_at)
+        .create_token(
+            id,
+            user_id,
+            name,
+            &token_hash,
+            requested_role.clone(),
+            expires_at,
+        )
         .await
         .map_err(AppError::from)?;
 
@@ -170,7 +178,9 @@ pub async fn revoke_token(
     path: web::Path<Uuid>,
 ) -> Result<impl Responder, AppError> {
     let Some(ref user_id) = identity.user_id else {
-        return Err(AppError::forbidden("must be authenticated to revoke tokens"));
+        return Err(AppError::forbidden(
+            "must be authenticated to revoke tokens",
+        ));
     };
 
     let id = path.into_inner();

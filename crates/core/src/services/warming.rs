@@ -87,7 +87,10 @@ impl WarmingService {
                         error = %e,
                         "warming: failed to list versions"
                     );
-                    return WarmingReport { errors: 1, ..Default::default() };
+                    return WarmingReport {
+                        errors: 1,
+                        ..Default::default()
+                    };
                 }
             }
         };
@@ -96,10 +99,7 @@ impl WarmingService {
         let mut handles = Vec::with_capacity(versions.len());
 
         for version in versions {
-            let artifact_key = format!(
-                "artifact:{}/{name}:{version}",
-                self.registry_name
-            );
+            let artifact_key = format!("artifact:{}/{name}:{version}", self.registry_name);
             let storage = Arc::clone(&self.storage);
             let artifact_meta = Arc::clone(&self.artifact_meta);
             let client = Arc::clone(&self.client);
@@ -224,35 +224,96 @@ mod tests {
 
     #[async_trait]
     impl RegistryClient for PanicClient {
-        fn registry_type(&self) -> &str { "test" }
-        async fn resolve_metadata(&self, _: &PackageId) -> Result<PackageMetadata, CoreError> { panic!("should not be called") }
-        async fn fetch_artifact(&self, _: &PackageId) -> Result<FetchedArtifact, CoreError> { panic!("should not be called") }
-        async fn list_versions(&self, _: &str) -> Result<Vec<String>, CoreError> { panic!("should not be called") }
+        fn registry_type(&self) -> &str {
+            "test"
+        }
+        async fn resolve_metadata(&self, _: &PackageId) -> Result<PackageMetadata, CoreError> {
+            panic!("should not be called")
+        }
+        async fn fetch_artifact(&self, _: &PackageId) -> Result<FetchedArtifact, CoreError> {
+            panic!("should not be called")
+        }
+        async fn list_versions(&self, _: &str) -> Result<Vec<String>, CoreError> {
+            panic!("should not be called")
+        }
     }
 
     #[async_trait]
     impl StorageBackend for PanicStorage {
-        async fn store(&self, _: &str, _: bytes::Bytes, _: StorageMeta) -> Result<(), CoreError> { panic!("should not be called") }
-        async fn retrieve(&self, _: &str) -> Result<Option<StoredArtifact>, CoreError> { panic!("should not be called") }
-        async fn exists(&self, _: &str) -> Result<bool, CoreError> { panic!("should not be called") }
-        async fn delete(&self, _: &str) -> Result<(), CoreError> { panic!("should not be called") }
-        async fn delete_by_prefix(&self, _: &str) -> Result<usize, CoreError> { panic!("should not be called") }
-        async fn stat_by_prefix(&self, _: &str) -> Result<(u64, u64), CoreError> { panic!("should not be called") }
-        async fn list_keys(&self, _: &str) -> Result<Vec<String>, CoreError> { panic!("should not be called") }
+        async fn store(&self, _: &str, _: bytes::Bytes, _: StorageMeta) -> Result<(), CoreError> {
+            panic!("should not be called")
+        }
+        async fn retrieve(&self, _: &str) -> Result<Option<StoredArtifact>, CoreError> {
+            panic!("should not be called")
+        }
+        async fn exists(&self, _: &str) -> Result<bool, CoreError> {
+            panic!("should not be called")
+        }
+        async fn delete(&self, _: &str) -> Result<(), CoreError> {
+            panic!("should not be called")
+        }
+        async fn delete_by_prefix(&self, _: &str) -> Result<usize, CoreError> {
+            panic!("should not be called")
+        }
+        async fn stat_by_prefix(&self, _: &str) -> Result<(u64, u64), CoreError> {
+            panic!("should not be called")
+        }
+        async fn list_keys(&self, _: &str) -> Result<Vec<String>, CoreError> {
+            panic!("should not be called")
+        }
     }
 
     #[async_trait]
     impl ArtifactMetaRepository for PanicMeta {
-        async fn record_artifact(&self, _: &str, _: &str, _: &str, _: &str, _: Option<u64>) -> Result<(), CoreError> { panic!("should not be called") }
-        async fn touch_artifact(&self, _: &str) -> Result<(), CoreError> { panic!("should not be called") }
-        async fn list_artifacts(&self, _: &str) -> Result<Vec<ArtifactMeta>, CoreError> { panic!("should not be called") }
-        async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> { panic!("should not be called") }
-        async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> { panic!("should not be called") }
-        async fn is_artifact_expired(&self, _: &str, _: chrono::DateTime<Utc>) -> Result<bool, CoreError> { panic!("should not be called") }
-        async fn list_expired_by_ttl(&self, _: &str, _: chrono::DateTime<Utc>) -> Result<Vec<ArtifactMeta>, CoreError> { panic!("should not be called") }
-        async fn list_idle(&self, _: &str, _: chrono::DateTime<Utc>) -> Result<Vec<ArtifactMeta>, CoreError> { panic!("should not be called") }
-        async fn total_size_bytes(&self, _: &str) -> Result<u64, CoreError> { panic!("should not be called") }
-        async fn list_lru(&self, _: &str, _: i64) -> Result<Vec<ArtifactMeta>, CoreError> { panic!("should not be called") }
+        async fn record_artifact(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: Option<u64>,
+        ) -> Result<(), CoreError> {
+            panic!("should not be called")
+        }
+        async fn touch_artifact(&self, _: &str) -> Result<(), CoreError> {
+            panic!("should not be called")
+        }
+        async fn list_artifacts(&self, _: &str) -> Result<Vec<ArtifactMeta>, CoreError> {
+            panic!("should not be called")
+        }
+        async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> {
+            panic!("should not be called")
+        }
+        async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> {
+            panic!("should not be called")
+        }
+        async fn is_artifact_expired(
+            &self,
+            _: &str,
+            _: chrono::DateTime<Utc>,
+        ) -> Result<bool, CoreError> {
+            panic!("should not be called")
+        }
+        async fn list_expired_by_ttl(
+            &self,
+            _: &str,
+            _: chrono::DateTime<Utc>,
+        ) -> Result<Vec<ArtifactMeta>, CoreError> {
+            panic!("should not be called")
+        }
+        async fn list_idle(
+            &self,
+            _: &str,
+            _: chrono::DateTime<Utc>,
+        ) -> Result<Vec<ArtifactMeta>, CoreError> {
+            panic!("should not be called")
+        }
+        async fn total_size_bytes(&self, _: &str) -> Result<u64, CoreError> {
+            panic!("should not be called")
+        }
+        async fn list_lru(&self, _: &str, _: i64) -> Result<Vec<ArtifactMeta>, CoreError> {
+            panic!("should not be called")
+        }
     }
 
     fn disabled_svc() -> WarmingService {

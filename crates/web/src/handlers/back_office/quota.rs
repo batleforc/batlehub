@@ -1,14 +1,10 @@
 use std::sync::Arc;
 
-use actix_web::{HttpResponse, Responder, delete, get, web};
+use actix_web::{delete, get, web, HttpResponse, Responder};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use batlehub_core::{
-    entities::Role,
-    ports::QuotaUsage,
-    services::QuotaService,
-};
+use batlehub_core::{entities::Role, ports::QuotaUsage, services::QuotaService};
 
 use crate::{error::AppError, extractors::AuthIdentity};
 
@@ -56,10 +52,7 @@ pub async fn list_quota(
     quota_svc: web::Data<Arc<QuotaService>>,
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
-    let rows = quota_svc
-        .list_usage(None)
-        .await
-        .map_err(AppError::from)?;
+    let rows = quota_svc.list_usage(None).await.map_err(AppError::from)?;
     let dtos: Vec<QuotaUsageDto> = rows.into_iter().map(Into::into).collect();
     Ok(HttpResponse::Ok().json(dtos))
 }

@@ -1,10 +1,10 @@
-use actix_web::{Responder, get, web};
+use actix_web::{get, web, Responder};
 use serde::Serialize;
 use utoipa::ToSchema;
 
 use batlehub_core::entities::Role;
 
-use crate::{AccessConfig, extractors::AuthIdentity};
+use crate::{extractors::AuthIdentity, AccessConfig};
 
 #[derive(Serialize, ToSchema)]
 pub struct MeResponse {

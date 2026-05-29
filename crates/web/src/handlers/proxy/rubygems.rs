@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actix_web::{HttpRequest, HttpResponse, Responder, delete, get, post, put, web};
+use actix_web::{delete, get, post, put, web, HttpRequest, HttpResponse, Responder};
 use sha2::{Digest, Sha256};
 
 use batlehub_config::schema::RegistryMode;
@@ -9,8 +9,11 @@ use batlehub_core::{
     services::{LocalRegistryService, ProxyService, PublishRequest},
 };
 
-use crate::{RegistryMap, RegistryModeMap, error::AppError, extractors::AuthIdentity};
-use super::common::{append_signature_headers, collect_payload, extract_signature_headers, proxy_stream, require_local_mode};
+use super::common::{
+    append_signature_headers, collect_payload, extract_signature_headers, proxy_stream,
+    require_local_mode,
+};
+use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 fn require_rubygems(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry) {
@@ -18,7 +21,9 @@ fn require_rubygems(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
         Some(_) => Err(AppError::not_found(format!(
             "registry '{registry}' is not a RubyGems registry"
         ))),
-        None => Err(AppError::not_found(format!("unknown registry '{registry}'"))),
+        None => Err(AppError::not_found(format!(
+            "unknown registry '{registry}'"
+        ))),
     }
 }
 
@@ -56,10 +61,8 @@ pub async fn gem_download(
         .strip_suffix(".gem")
         .ok_or_else(|| AppError::bad_request(format!("invalid gem filename: {filename}")))?;
 
-    let (name, version) =
-        batlehub_adapters::registry::rubygems::split_gem_stem(stem).ok_or_else(|| {
-            AppError::bad_request(format!("cannot parse gem filename: {filename}"))
-        })?;
+    let (name, version) = batlehub_adapters::registry::rubygems::split_gem_stem(stem)
+        .ok_or_else(|| AppError::bad_request(format!("cannot parse gem filename: {filename}")))?;
 
     let mode = mode_map.get(&registry);
     if matches!(mode, RegistryMode::Local) {
@@ -84,7 +87,10 @@ pub async fn gem_download(
             .check_prerelease_access(&registry, version, &identity)
             .await
             .map_err(AppError::from)?;
-        match local_svc.get_artifact(&registry, name, version, &identity).await {
+        match local_svc
+            .get_artifact(&registry, name, version, &identity)
+            .await
+        {
             Ok(bytes) => {
                 let mut resp = HttpResponse::Ok();
                 resp.content_type("application/octet-stream");
@@ -97,7 +103,14 @@ pub async fn gem_download(
     }
 
     let pkg = PackageId::new(&registry, name, version).with_artifact("gem");
-    proxy_stream(svc, pkg, identity, "releases:read", Some("application/octet-stream")).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        "releases:read",
+        Some("application/octet-stream"),
+    )
+    .await
 }
 
 /// Get gem information JSON (latest version).
@@ -130,7 +143,10 @@ pub async fn gem_info(
 
     let mode = mode_map.get(&registry);
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        match local_svc.get_rubygems_gem_info(&registry, &name, &identity).await {
+        match local_svc
+            .get_rubygems_gem_info(&registry, &name, &identity)
+            .await
+        {
             Ok(info) => return Ok(HttpResponse::Ok().json(info)),
             Err(batlehub_core::error::CoreError::NotFound(_))
                 if matches!(mode, RegistryMode::Hybrid) => {}
@@ -142,7 +158,14 @@ pub async fn gem_info(
     }
 
     let pkg = PackageId::new(&registry, &name, "info");
-    proxy_stream(svc, pkg, identity, "releases:read", Some("application/json")).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        "releases:read",
+        Some("application/json"),
+    )
+    .await
 }
 
 /// List all versions of a gem.
@@ -175,7 +198,10 @@ pub async fn gem_versions(
 
     let mode = mode_map.get(&registry);
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        match local_svc.get_rubygems_versions(&registry, &name, &identity).await {
+        match local_svc
+            .get_rubygems_versions(&registry, &name, &identity)
+            .await
+        {
             Ok(versions) => return Ok(HttpResponse::Ok().json(versions)),
             Err(batlehub_core::error::CoreError::NotFound(_))
                 if matches!(mode, RegistryMode::Hybrid) => {}
@@ -187,7 +213,14 @@ pub async fn gem_versions(
     }
 
     let pkg = PackageId::new(&registry, &name, "versions");
-    proxy_stream(svc, pkg, identity, "releases:read", Some("application/json")).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        "releases:read",
+        Some("application/json"),
+    )
+    .await
 }
 
 /// Serve the full gem index (specs.4.8.gz).
@@ -220,7 +253,14 @@ pub async fn gem_specs_full(
     }
 
     let pkg = PackageId::new(&registry, "_index", "specs");
-    proxy_stream(svc, pkg, identity, "releases:read", Some("application/octet-stream")).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        "releases:read",
+        Some("application/octet-stream"),
+    )
+    .await
 }
 
 /// Serve the latest-versions gem index (latest_specs.4.8.gz).
@@ -253,7 +293,14 @@ pub async fn gem_specs_latest(
     }
 
     let pkg = PackageId::new(&registry, "_index", "latest_specs");
-    proxy_stream(svc, pkg, identity, "releases:read", Some("application/octet-stream")).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        "releases:read",
+        Some("application/octet-stream"),
+    )
+    .await
 }
 
 /// Serve the prerelease gem index (prerelease_specs.4.8.gz).
@@ -286,7 +333,14 @@ pub async fn gem_specs_prerelease(
     }
 
     let pkg = PackageId::new(&registry, "_index", "prerelease_specs");
-    proxy_stream(svc, pkg, identity, "releases:read", Some("application/octet-stream")).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        "releases:read",
+        Some("application/octet-stream"),
+    )
+    .await
 }
 
 /// Serve a compressed gemspec file.
@@ -325,7 +379,14 @@ pub async fn gem_gemspec(
         })?;
 
     let pkg = PackageId::new(&registry, name, version).with_artifact("gemspec");
-    proxy_stream(svc, pkg, identity, "releases:read", Some("application/octet-stream")).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        "releases:read",
+        Some("application/octet-stream"),
+    )
+    .await
 }
 
 // ── Local / hybrid write routes ───────────────────────────────────────────────

@@ -52,8 +52,14 @@ impl RateLimitStore for InMemoryRateLimitStore {
         // Include window_secs in the map key so two callers using the same logical
         // key with different window sizes get independent counters.
         let map_key = format!("{key}@{window_secs}");
-        let mut map = self.inner.lock().map_err(|_| CoreError::Cache("rate_limit lock poisoned".into()))?;
-        let entry = map.entry(map_key).or_insert(WindowEntry { window_start, count: 0 });
+        let mut map = self
+            .inner
+            .lock()
+            .map_err(|_| CoreError::Cache("rate_limit lock poisoned".into()))?;
+        let entry = map.entry(map_key).or_insert(WindowEntry {
+            window_start,
+            count: 0,
+        });
 
         if entry.window_start != window_start {
             entry.window_start = window_start;
@@ -70,14 +76,20 @@ impl InMemoryRateLimitStore {
     fn force_old_window(&self, key: &str, window_secs: u32, old_start: u64, count: u64) {
         let map_key = format!("{key}@{window_secs}");
         let mut map = self.inner.lock().unwrap();
-        map.insert(map_key, WindowEntry { window_start: old_start, count });
+        map.insert(
+            map_key,
+            WindowEntry {
+                window_start: old_start,
+                count,
+            },
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use super::*;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn increments_within_window() {
@@ -138,12 +150,18 @@ mod tests {
         // Seed the store with a counter from the Unix epoch (definitely a past window).
         store.force_old_window("k", 60, 0, 999);
         let (count, reset) = store.increment("k", 60).await.unwrap();
-        assert_eq!(count, 1, "stale window should be discarded and counter reset to 1");
+        assert_eq!(
+            count, 1,
+            "stale window should be discarded and counter reset to 1"
+        );
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        assert!(reset > now, "reset after rollover should still be in the future");
+        assert!(
+            reset > now,
+            "reset after rollover should still be in the future"
+        );
     }
 
     #[tokio::test]
@@ -153,7 +171,10 @@ mod tests {
         let (c60, _) = store.increment("k", 60).await.unwrap();
         let (c3600, _) = store.increment("k", 3600).await.unwrap();
         assert_eq!(c60, 1);
-        assert_eq!(c3600, 1, "different window_secs must give independent counters");
+        assert_eq!(
+            c3600, 1,
+            "different window_secs must give independent counters"
+        );
     }
 
     #[tokio::test]
@@ -165,10 +186,17 @@ mod tests {
                 tokio::spawn(async move { s.increment("concurrent", 60).await.unwrap() })
             })
             .collect();
-        let results: Vec<(u64, u64)> =
-            futures::future::join_all(handles).await.into_iter().map(|r| r.unwrap()).collect();
+        let results: Vec<(u64, u64)> = futures::future::join_all(handles)
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect();
         let counts: std::collections::HashSet<u64> = results.iter().map(|(c, _)| *c).collect();
-        assert_eq!(counts.len(), 20, "concurrent increments must produce 20 unique counts 1..=20");
+        assert_eq!(
+            counts.len(),
+            20,
+            "concurrent increments must produce 20 unique counts 1..=20"
+        );
         assert_eq!(*counts.iter().max().unwrap(), 20);
     }
 }

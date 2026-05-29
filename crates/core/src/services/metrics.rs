@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn unknown_registry_is_silently_ignored() {
         let m = ProxyMetrics::new(&names(&["npm"]));
-        m.record_artifact_hit("unknown");   // should not panic
+        m.record_artifact_hit("unknown"); // should not panic
         m.record_artifact_miss("unknown");
         assert!(m.all().get("unknown").is_none());
     }

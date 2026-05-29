@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use argon2::password_hash::{rand_core::OsRng, SaltString};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
-use argon2::password_hash::{SaltString, rand_core::OsRng};
 use async_trait::async_trait;
 use base64::Engine as _;
 use tokio::task::spawn_blocking;
@@ -51,7 +51,11 @@ impl StaticTokenAuthProvider {
         let mut plain = HashMap::new();
         let mut hashed = Vec::new();
         for (value, user_id, role) in entries {
-            let record = TokenRecord { user_id, role, groups: vec![] };
+            let record = TokenRecord {
+                user_id,
+                role,
+                groups: vec![],
+            };
             if is_argon2_hash(&value) {
                 hashed.push((value, record));
             } else {
@@ -67,7 +71,11 @@ impl StaticTokenAuthProvider {
         entries: impl IntoIterator<Item = (String, Option<String>, Role, Vec<String>)>,
     ) -> Self {
         for (value, user_id, role, groups) in entries {
-            let record = TokenRecord { user_id, role, groups };
+            let record = TokenRecord {
+                user_id,
+                role,
+                groups,
+            };
             if is_argon2_hash(&value) {
                 self.hashed.push((value, record));
             } else {
@@ -132,7 +140,9 @@ impl AuthProvider for StaticTokenAuthProvider {
             let result = spawn_blocking(move || {
                 let argon2 = Argon2::default();
                 for (hash_str, record) in candidates.iter() {
-                    let Ok(parsed) = PasswordHash::new(hash_str) else { continue };
+                    let Ok(parsed) = PasswordHash::new(hash_str) else {
+                        continue;
+                    };
                     if argon2.verify_password(token.as_bytes(), &parsed).is_ok() {
                         return Some(to_identity(record));
                     }
@@ -160,9 +170,9 @@ fn to_identity(record: &TokenRecord) -> Identity {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use batlehub_core::{entities::Role, ports::RawAuthRequest};
     use super::*;
+    use batlehub_core::{entities::Role, ports::RawAuthRequest};
+    use std::collections::HashMap;
 
     fn req(auth: &str) -> RawAuthRequest {
         RawAuthRequest {
@@ -172,43 +182,60 @@ mod tests {
     }
 
     fn provider() -> StaticTokenAuthProvider {
-        StaticTokenAuthProvider::new([
-            ("secret".to_owned(), Some("alice".to_owned()), Role::Admin),
-        ])
+        StaticTokenAuthProvider::new([("secret".to_owned(), Some("alice".to_owned()), Role::Admin)])
     }
 
     #[tokio::test]
     async fn no_auth_header_returns_none() {
         let p = provider();
-        let r = RawAuthRequest { headers: HashMap::new(), query_params: HashMap::new() };
+        let r = RawAuthRequest {
+            headers: HashMap::new(),
+            query_params: HashMap::new(),
+        };
         assert!(p.authenticate(&r).await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn lowercase_bearer_prefix_works() {
         let p = provider();
-        let id = p.authenticate(&req("bearer secret")).await.unwrap().unwrap();
+        let id = p
+            .authenticate(&req("bearer secret"))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(id.role, Role::Admin);
     }
 
     #[tokio::test]
     async fn unknown_token_returns_none() {
         let p = provider();
-        assert!(p.authenticate(&req("Bearer wrong")).await.unwrap().is_none());
+        assert!(p
+            .authenticate(&req("Bearer wrong"))
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
     async fn basic_auth_extracts_token_from_password_field() {
         // base64("user:secret") = "dXNlcjpzZWNyZXQ="
         let p = provider();
-        let id = p.authenticate(&req("Basic dXNlcjpzZWNyZXQ=")).await.unwrap().unwrap();
+        let id = p
+            .authenticate(&req("Basic dXNlcjpzZWNyZXQ="))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(id.user_id.as_deref(), Some("alice"));
     }
 
     #[tokio::test]
     async fn basic_auth_invalid_base64_returns_none() {
         let p = provider();
-        assert!(p.authenticate(&req("Basic !!!not-base64!!!")).await.unwrap().is_none());
+        assert!(p
+            .authenticate(&req("Basic !!!not-base64!!!"))
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -216,13 +243,21 @@ mod tests {
         use base64::Engine as _;
         let encoded = base64::engine::general_purpose::STANDARD.encode("secretonly");
         let p = provider();
-        assert!(p.authenticate(&req(&format!("Basic {encoded}"))).await.unwrap().is_none());
+        assert!(p
+            .authenticate(&req(&format!("Basic {encoded}")))
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
     async fn with_group_entries_populates_groups() {
-        let p = StaticTokenAuthProvider::new([])
-            .with_group_entries([("tok".to_owned(), Some("bob".to_owned()), Role::User, vec!["team-a".to_owned()])]);
+        let p = StaticTokenAuthProvider::new([]).with_group_entries([(
+            "tok".to_owned(),
+            Some("bob".to_owned()),
+            Role::User,
+            vec!["team-a".to_owned()],
+        )]);
         let id = p.authenticate(&req("Bearer tok")).await.unwrap().unwrap();
         assert_eq!(id.groups, vec!["team-a"]);
         assert_eq!(id.role, Role::User);
@@ -231,7 +266,11 @@ mod tests {
     #[tokio::test]
     async fn unrecognised_scheme_returns_none() {
         let p = provider();
-        assert!(p.authenticate(&req("Digest something")).await.unwrap().is_none());
+        assert!(p
+            .authenticate(&req("Digest something"))
+            .await
+            .unwrap()
+            .is_none());
     }
 
     // ── Argon2 hashed token tests ─────────────────────────────────────────────
@@ -239,10 +278,12 @@ mod tests {
     #[tokio::test]
     async fn argon2_hashed_token_authenticates() {
         let hash = hash_static_token("my-secret");
-        let p = StaticTokenAuthProvider::new([
-            (hash, Some("carol".to_owned()), Role::User),
-        ]);
-        let id = p.authenticate(&req("Bearer my-secret")).await.unwrap().unwrap();
+        let p = StaticTokenAuthProvider::new([(hash, Some("carol".to_owned()), Role::User)]);
+        let id = p
+            .authenticate(&req("Bearer my-secret"))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(id.user_id.as_deref(), Some("carol"));
         assert_eq!(id.role, Role::User);
     }
@@ -250,23 +291,37 @@ mod tests {
     #[tokio::test]
     async fn argon2_hashed_token_wrong_value_returns_none() {
         let hash = hash_static_token("my-secret");
-        let p = StaticTokenAuthProvider::new([
-            (hash, Some("carol".to_owned()), Role::User),
-        ]);
-        assert!(p.authenticate(&req("Bearer wrong")).await.unwrap().is_none());
+        let p = StaticTokenAuthProvider::new([(hash, Some("carol".to_owned()), Role::User)]);
+        assert!(p
+            .authenticate(&req("Bearer wrong"))
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
     async fn plain_and_hashed_coexist() {
         let hash = hash_static_token("hashed-tok");
         let p = StaticTokenAuthProvider::new([
-            ("plain-tok".to_owned(), Some("alice".to_owned()), Role::Admin),
+            (
+                "plain-tok".to_owned(),
+                Some("alice".to_owned()),
+                Role::Admin,
+            ),
             (hash, Some("bob".to_owned()), Role::User),
         ]);
-        let id_plain = p.authenticate(&req("Bearer plain-tok")).await.unwrap().unwrap();
+        let id_plain = p
+            .authenticate(&req("Bearer plain-tok"))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(id_plain.user_id.as_deref(), Some("alice"));
 
-        let id_hashed = p.authenticate(&req("Bearer hashed-tok")).await.unwrap().unwrap();
+        let id_hashed = p
+            .authenticate(&req("Bearer hashed-tok"))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(id_hashed.user_id.as_deref(), Some("bob"));
     }
 

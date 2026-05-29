@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actix_web::{Responder, get, web};
+use actix_web::{get, web, Responder};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
@@ -9,7 +9,7 @@ use batlehub_core::{
     services::AdminService,
 };
 
-use crate::{AccessConfig, error::AppError, extractors::AuthIdentity};
+use crate::{error::AppError, extractors::AuthIdentity, AccessConfig};
 
 #[derive(Deserialize, IntoParams)]
 pub struct PackageQuery {
@@ -191,14 +191,22 @@ pub async fn check_access(
         artifact: query.artifact.clone(),
     };
 
-    let status = admin_svc.get_package_status(&pkg).await.map_err(AppError::from)?;
+    let status = admin_svc
+        .get_package_status(&pkg)
+        .await
+        .map_err(AppError::from)?;
 
     let (can_access, reason) = match &status {
         PackageStatus::Available => (true, None),
         PackageStatus::Blocked { reason, .. } => (false, Some(reason.clone())),
     };
 
-    let proxy_url = build_proxy_url(&pkg.registry, &pkg.name, &pkg.version, pkg.artifact.as_deref());
+    let proxy_url = build_proxy_url(
+        &pkg.registry,
+        &pkg.name,
+        &pkg.version,
+        pkg.artifact.as_deref(),
+    );
 
     Ok(web::Json(AccessCheckResponse {
         package: PackageIdentifierDto {
@@ -213,26 +221,33 @@ pub async fn check_access(
     }))
 }
 
-fn build_proxy_url(registry: &str, name: &str, version: &str, artifact: Option<&str>) -> Option<String> {
+fn build_proxy_url(
+    registry: &str,
+    name: &str,
+    version: &str,
+    artifact: Option<&str>,
+) -> Option<String> {
     match registry {
         "github" => Some(match (version, artifact) {
-            ("releases", _)                  => format!("/proxy/github/{name}/releases"),
-            (v, Some(art)) if art.starts_with("tarball") => format!("/proxy/github/{name}/tarball/{v}"),
-            (v, Some("zipball"))             => format!("/proxy/github/{name}/zipball/{v}"),
+            ("releases", _) => format!("/proxy/github/{name}/releases"),
+            (v, Some(art)) if art.starts_with("tarball") => {
+                format!("/proxy/github/{name}/tarball/{v}")
+            }
+            (v, Some("zipball")) => format!("/proxy/github/{name}/zipball/{v}"),
             (v, Some(art)) if art.starts_with("raw/") => {
                 let path = art.strip_prefix("raw/").unwrap_or("");
                 format!("/proxy/github/{name}/raw/{v}/{path}")
             }
-            (_, Some(art))                   => format!("/proxy/github/{name}/releases/assets/{art}"),
-            (v, None)                        => format!("/proxy/github/{name}/releases/tags/{v}"),
+            (_, Some(art)) => format!("/proxy/github/{name}/releases/assets/{art}"),
+            (v, None) => format!("/proxy/github/{name}/releases/tags/{v}"),
         }),
         "npm" => Some(match artifact {
-            Some("tarball")    => format!("/proxy/npm/{name}/{version}/tarball"),
-            _                  => format!("/proxy/npm/{name}/{version}"),
+            Some("tarball") => format!("/proxy/npm/{name}/{version}/tarball"),
+            _ => format!("/proxy/npm/{name}/{version}"),
         }),
         "cargo" => Some(match artifact {
-            Some("download")   => format!("/proxy/cargo/{name}/{version}/download"),
-            _                  => format!("/proxy/cargo/{name}/{version}"),
+            Some("download") => format!("/proxy/cargo/{name}/{version}/download"),
+            _ => format!("/proxy/cargo/{name}/{version}"),
         }),
         _ => None,
     }

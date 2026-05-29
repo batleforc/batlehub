@@ -1,14 +1,10 @@
 use std::sync::Arc;
 
-use actix_web::{HttpResponse, Responder, delete, get, post, web};
+use actix_web::{delete, get, post, web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use batlehub_core::{
-    entities::Role,
-    ports::OwnerEntry,
-    services::LocalRegistryService,
-};
+use batlehub_core::{entities::Role, ports::OwnerEntry, services::LocalRegistryService};
 
 use crate::{error::AppError, extractors::AuthIdentity};
 
@@ -155,7 +151,9 @@ pub async fn add_package_owner(
     ),
     security(("bearer_token" = [])),
 )]
-#[delete("/api/v1/admin/registries/{registry}/packages/{name}/owners/{principal_type}/{principal_id}")]
+#[delete(
+    "/api/v1/admin/registries/{registry}/packages/{name}/owners/{principal_type}/{principal_id}"
+)]
 pub async fn remove_package_owner(
     path: web::Path<(String, String, String, String)>,
     identity: AuthIdentity,

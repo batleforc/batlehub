@@ -30,7 +30,10 @@ async fn make_registry(url: &str) -> TestRegistry {
     let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
     let pool = PgPool::connect(url).await.expect("connect to postgres");
-    batlehub_adapters::migrations::embedded_migrator().run(&pool).await.expect("run migrations");
+    batlehub_adapters::migrations::embedded_migrator()
+        .run(&pool)
+        .await
+        .expect("run migrations");
     TestRegistry {
         reg: PostgresLocalRegistry::new(pool),
         registry: format!("test-reg-{pid}-{id}"),
@@ -59,7 +62,14 @@ fn pkg(registry: &str, name: &str, version: &str) -> PublishedPackage {
 async fn publish_inserts_package() {
     let Some(url) = db_url() else { return };
     let t = make_registry(&url).await;
-    t.reg.publish(pkg(&t.registry, "my-crate", "1.0.0")).await.unwrap();
+    t.reg
+        .publish(pkg(&t.registry, "my-crate", "1.0.0"))
+        .await
+        .unwrap();
+    t.reg
+        .commit_publish(&t.registry, "my-crate", "1.0.0")
+        .await
+        .unwrap();
     let versions = t.reg.get_versions(&t.registry, "my-crate").await.unwrap();
     assert_eq!(versions.len(), 1);
     assert_eq!(versions[0].version, "1.0.0");
@@ -69,8 +79,19 @@ async fn publish_inserts_package() {
 async fn publish_duplicate_version_returns_conflict() {
     let Some(url) = db_url() else { return };
     let t = make_registry(&url).await;
-    t.reg.publish(pkg(&t.registry, "dup", "1.0.0")).await.unwrap();
-    let err = t.reg.publish(pkg(&t.registry, "dup", "1.0.0")).await.unwrap_err();
+    t.reg
+        .publish(pkg(&t.registry, "dup", "1.0.0"))
+        .await
+        .unwrap();
+    t.reg
+        .commit_publish(&t.registry, "dup", "1.0.0")
+        .await
+        .unwrap();
+    let err = t
+        .reg
+        .publish(pkg(&t.registry, "dup", "1.0.0"))
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, CoreError::Conflict(_)),
         "expected Conflict, got {err:?}"
@@ -81,9 +102,10 @@ async fn publish_duplicate_version_returns_conflict() {
 async fn publish_different_versions_are_independent() {
     let Some(url) = db_url() else { return };
     let t = make_registry(&url).await;
-    t.reg.publish(pkg(&t.registry, "multi", "1.0.0")).await.unwrap();
-    t.reg.publish(pkg(&t.registry, "multi", "1.1.0")).await.unwrap();
-    t.reg.publish(pkg(&t.registry, "multi", "2.0.0")).await.unwrap();
+    for v in ["1.0.0", "1.1.0", "2.0.0"] {
+        t.reg.publish(pkg(&t.registry, "multi", v)).await.unwrap();
+        t.reg.commit_publish(&t.registry, "multi", v).await.unwrap();
+    }
     let versions = t.reg.get_versions(&t.registry, "multi").await.unwrap();
     assert_eq!(versions.len(), 3);
 }
@@ -93,9 +115,27 @@ async fn publish_different_registries_do_not_interfere() {
     let Some(url) = db_url() else { return };
     let t = make_registry(&url).await;
     let other = format!("{}-other", t.registry);
-    t.reg.publish(pkg(&t.registry, "shared-name", "1.0.0")).await.unwrap();
-    t.reg.publish(pkg(&other, "shared-name", "1.0.0")).await.unwrap();
-    let v1 = t.reg.get_versions(&t.registry, "shared-name").await.unwrap();
+    t.reg
+        .publish(pkg(&t.registry, "shared-name", "1.0.0"))
+        .await
+        .unwrap();
+    t.reg
+        .commit_publish(&t.registry, "shared-name", "1.0.0")
+        .await
+        .unwrap();
+    t.reg
+        .publish(pkg(&other, "shared-name", "1.0.0"))
+        .await
+        .unwrap();
+    t.reg
+        .commit_publish(&other, "shared-name", "1.0.0")
+        .await
+        .unwrap();
+    let v1 = t
+        .reg
+        .get_versions(&t.registry, "shared-name")
+        .await
+        .unwrap();
     let v2 = t.reg.get_versions(&other, "shared-name").await.unwrap();
     assert_eq!(v1.len(), 1);
     assert_eq!(v2.len(), 1);
@@ -118,6 +158,10 @@ async fn get_versions_returns_in_published_at_order() {
     // Publish a few versions with small sleeps to guarantee ordering
     for v in ["0.1.0", "0.2.0", "1.0.0"] {
         t.reg.publish(pkg(&t.registry, "ordered", v)).await.unwrap();
+        t.reg
+            .commit_publish(&t.registry, "ordered", v)
+            .await
+            .unwrap();
     }
     let versions = t.reg.get_versions(&t.registry, "ordered").await.unwrap();
     let vers: Vec<&str> = versions.iter().map(|v| v.version.as_str()).collect();
@@ -131,6 +175,10 @@ async fn get_versions_preserves_index_metadata() {
     let mut p = pkg(&t.registry, "meta-pkg", "1.0.0");
     p.index_metadata = serde_json::json!({ "custom_key": "custom_value", "num": 42 });
     t.reg.publish(p).await.unwrap();
+    t.reg
+        .commit_publish(&t.registry, "meta-pkg", "1.0.0")
+        .await
+        .unwrap();
     let versions = t.reg.get_versions(&t.registry, "meta-pkg").await.unwrap();
     assert_eq!(versions[0].index_metadata["custom_key"], "custom_value");
     assert_eq!(versions[0].index_metadata["num"], 42);
@@ -142,7 +190,14 @@ async fn get_versions_preserves_index_metadata() {
 async fn yank_sets_yanked_flag_and_updates_metadata() {
     let Some(url) = db_url() else { return };
     let t = make_registry(&url).await;
-    t.reg.publish(pkg(&t.registry, "yank-me", "1.0.0")).await.unwrap();
+    t.reg
+        .publish(pkg(&t.registry, "yank-me", "1.0.0"))
+        .await
+        .unwrap();
+    t.reg
+        .commit_publish(&t.registry, "yank-me", "1.0.0")
+        .await
+        .unwrap();
     t.reg.yank(&t.registry, "yank-me", "1.0.0").await.unwrap();
     let versions = t.reg.get_versions(&t.registry, "yank-me").await.unwrap();
     assert!(versions[0].yanked, "yanked DB column must be TRUE");
@@ -157,9 +212,19 @@ async fn yank_sets_yanked_flag_and_updates_metadata() {
 async fn unyank_clears_yanked_flag_and_updates_metadata() {
     let Some(url) = db_url() else { return };
     let t = make_registry(&url).await;
-    t.reg.publish(pkg(&t.registry, "unyank-me", "1.0.0")).await.unwrap();
+    t.reg
+        .publish(pkg(&t.registry, "unyank-me", "1.0.0"))
+        .await
+        .unwrap();
+    t.reg
+        .commit_publish(&t.registry, "unyank-me", "1.0.0")
+        .await
+        .unwrap();
     t.reg.yank(&t.registry, "unyank-me", "1.0.0").await.unwrap();
-    t.reg.unyank(&t.registry, "unyank-me", "1.0.0").await.unwrap();
+    t.reg
+        .unyank(&t.registry, "unyank-me", "1.0.0")
+        .await
+        .unwrap();
     let versions = t.reg.get_versions(&t.registry, "unyank-me").await.unwrap();
     assert!(!versions[0].yanked, "yanked DB column must be FALSE");
     assert_eq!(
@@ -190,7 +255,14 @@ async fn exists_returns_false_for_unknown_package() {
 async fn exists_returns_true_after_publish() {
     let Some(url) = db_url() else { return };
     let t = make_registry(&url).await;
-    t.reg.publish(pkg(&t.registry, "exists-pkg", "1.0.0")).await.unwrap();
+    t.reg
+        .publish(pkg(&t.registry, "exists-pkg", "1.0.0"))
+        .await
+        .unwrap();
+    t.reg
+        .commit_publish(&t.registry, "exists-pkg", "1.0.0")
+        .await
+        .unwrap();
     assert!(t.reg.exists(&t.registry, "exists-pkg").await.unwrap());
 }
 
@@ -198,6 +270,17 @@ async fn exists_returns_true_after_publish() {
 async fn exists_is_false_for_different_registry() {
     let Some(url) = db_url() else { return };
     let t = make_registry(&url).await;
-    t.reg.publish(pkg(&t.registry, "shared", "1.0.0")).await.unwrap();
-    assert!(!t.reg.exists("completely-different-registry", "shared").await.unwrap());
+    t.reg
+        .publish(pkg(&t.registry, "shared", "1.0.0"))
+        .await
+        .unwrap();
+    t.reg
+        .commit_publish(&t.registry, "shared", "1.0.0")
+        .await
+        .unwrap();
+    assert!(!t
+        .reg
+        .exists("completely-different-registry", "shared")
+        .await
+        .unwrap());
 }

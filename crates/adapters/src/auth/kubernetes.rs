@@ -77,8 +77,8 @@ impl KubernetesAuthProvider {
         let api_server = cfg.api_server.clone().unwrap_or_else(|| {
             let host = std::env::var("KUBERNETES_SERVICE_HOST")
                 .unwrap_or_else(|_| "kubernetes.default.svc".to_owned());
-            let port = std::env::var("KUBERNETES_SERVICE_PORT")
-                .unwrap_or_else(|_| "443".to_owned());
+            let port =
+                std::env::var("KUBERNETES_SERVICE_PORT").unwrap_or_else(|_| "443".to_owned());
             format!("https://{host}:{port}")
         });
 
@@ -88,11 +88,13 @@ impl KubernetesAuthProvider {
             .unwrap_or_else(|| IN_CLUSTER_TOKEN.to_owned());
 
         // Verify the file is readable on startup so misconfiguration fails fast.
-        tokio::fs::read_to_string(&self_token_path).await.map_err(|e| {
-            anyhow::anyhow!(
-                "reading batlehub service account token from '{self_token_path}': {e}"
-            )
-        })?;
+        tokio::fs::read_to_string(&self_token_path)
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "reading batlehub service account token from '{self_token_path}': {e}"
+                )
+            })?;
 
         let audiences = if cfg.audiences.is_empty() {
             vec!["batlehub".to_owned()]
@@ -117,9 +119,7 @@ impl KubernetesAuthProvider {
         Ok(Self {
             name: cfg.name.clone(),
             http,
-            tokenreview_url: format!(
-                "{api_server}/apis/authentication.k8s.io/v1/tokenreviews"
-            ),
+            tokenreview_url: format!("{api_server}/apis/authentication.k8s.io/v1/tokenreviews"),
             self_token_path,
             audiences,
             role_mappings,
@@ -142,7 +142,11 @@ impl KubernetesAuthProvider {
         k8s_groups
             .iter()
             .map(|g| {
-                if self.role_mappings.contains_key(g) { g.clone() } else { format!("{}:{g}", self.name) }
+                if self.role_mappings.contains_key(g) {
+                    g.clone()
+                } else {
+                    format!("{}:{g}", self.name)
+                }
             })
             .collect()
     }
@@ -231,7 +235,14 @@ impl KubernetesAuthProvider {
         audiences: Vec<String>,
         role_mappings: HashMap<String, Role>,
     ) -> Self {
-        Self::for_testing_named("kubernetes", http, tokenreview_url, self_token_path, audiences, role_mappings)
+        Self::for_testing_named(
+            "kubernetes",
+            http,
+            tokenreview_url,
+            self_token_path,
+            audiences,
+            role_mappings,
+        )
     }
 
     fn for_testing_named(
@@ -280,7 +291,10 @@ mod tests {
 
     fn default_mappings() -> HashMap<String, Role> {
         [
-            ("system:serviceaccount:prod:ci-deployer".to_owned(), Role::Admin),
+            (
+                "system:serviceaccount:prod:ci-deployer".to_owned(),
+                Role::Admin,
+            ),
             ("system:serviceaccounts:dev".to_owned(), Role::User),
             ("system:serviceaccounts".to_owned(), Role::Anonymous),
         ]
@@ -290,7 +304,10 @@ mod tests {
     fn make_provider(server: &Server, token_path: &str) -> KubernetesAuthProvider {
         KubernetesAuthProvider::for_testing(
             reqwest::Client::new(),
-            format!("{}/apis/authentication.k8s.io/v1/tokenreviews", server.url()),
+            format!(
+                "{}/apis/authentication.k8s.io/v1/tokenreviews",
+                server.url()
+            ),
             token_path.to_owned(),
             vec!["batlehub".to_owned()],
             default_mappings(),
@@ -305,7 +322,10 @@ mod tests {
     }
 
     fn no_auth() -> RawAuthRequest {
-        RawAuthRequest { headers: Default::default(), query_params: Default::default() }
+        RawAuthRequest {
+            headers: Default::default(),
+            query_params: Default::default(),
+        }
     }
 
     // ── Header parsing ────────────────────────────────────────────────────────
@@ -335,24 +355,42 @@ mod tests {
     #[test]
     fn username_alone_maps_to_admin() {
         let p = KubernetesAuthProvider::for_testing(
-            reqwest::Client::new(), String::new(), String::new(), vec![], default_mappings(),
+            reqwest::Client::new(),
+            String::new(),
+            String::new(),
+            vec![],
+            default_mappings(),
         );
-        assert_eq!(p.resolve_role("system:serviceaccount:prod:ci-deployer", &[]), Role::Admin);
+        assert_eq!(
+            p.resolve_role("system:serviceaccount:prod:ci-deployer", &[]),
+            Role::Admin
+        );
     }
 
     #[test]
     fn group_maps_to_user_when_username_unmapped() {
         let p = KubernetesAuthProvider::for_testing(
-            reqwest::Client::new(), String::new(), String::new(), vec![], default_mappings(),
+            reqwest::Client::new(),
+            String::new(),
+            String::new(),
+            vec![],
+            default_mappings(),
         );
         let groups = vec!["system:serviceaccounts:dev".to_owned()];
-        assert_eq!(p.resolve_role("system:serviceaccount:staging:other", &groups), Role::User);
+        assert_eq!(
+            p.resolve_role("system:serviceaccount:staging:other", &groups),
+            Role::User
+        );
     }
 
     #[test]
     fn highest_role_wins_across_multiple_groups() {
         let p = KubernetesAuthProvider::for_testing(
-            reqwest::Client::new(), String::new(), String::new(), vec![], default_mappings(),
+            reqwest::Client::new(),
+            String::new(),
+            String::new(),
+            vec![],
+            default_mappings(),
         );
         let groups = vec![
             "system:serviceaccounts".to_owned(),     // → Anonymous
@@ -365,17 +403,28 @@ mod tests {
     #[test]
     fn username_beats_group_when_username_has_higher_role() {
         let p = KubernetesAuthProvider::for_testing(
-            reqwest::Client::new(), String::new(), String::new(), vec![], default_mappings(),
+            reqwest::Client::new(),
+            String::new(),
+            String::new(),
+            vec![],
+            default_mappings(),
         );
         // username → Admin, group → User: Admin should win
         let groups = vec!["system:serviceaccounts:dev".to_owned()];
-        assert_eq!(p.resolve_role("system:serviceaccount:prod:ci-deployer", &groups), Role::Admin);
+        assert_eq!(
+            p.resolve_role("system:serviceaccount:prod:ci-deployer", &groups),
+            Role::Admin
+        );
     }
 
     #[test]
     fn no_match_at_all_returns_anonymous() {
         let p = KubernetesAuthProvider::for_testing(
-            reqwest::Client::new(), String::new(), String::new(), vec![], default_mappings(),
+            reqwest::Client::new(),
+            String::new(),
+            String::new(),
+            vec![],
+            default_mappings(),
         );
         let groups = vec!["system:authenticated".to_owned()];
         assert_eq!(p.resolve_role("unknown-user", &groups), Role::Anonymous);
@@ -384,10 +433,17 @@ mod tests {
     #[test]
     fn empty_mappings_always_returns_anonymous() {
         let p = KubernetesAuthProvider::for_testing(
-            reqwest::Client::new(), String::new(), String::new(), vec![], HashMap::new(),
+            reqwest::Client::new(),
+            String::new(),
+            String::new(),
+            vec![],
+            HashMap::new(),
         );
         let groups = vec!["system:serviceaccounts:prod".to_owned()];
-        assert_eq!(p.resolve_role("system:serviceaccount:prod:ci-deployer", &groups), Role::Anonymous);
+        assert_eq!(
+            p.resolve_role("system:serviceaccount:prod:ci-deployer", &groups),
+            Role::Anonymous
+        );
     }
 
     // ── Full authenticate flow ────────────────────────────────────────────────
@@ -405,9 +461,16 @@ mod tests {
 
         let tf = write_temp_token("self-token").await;
         let p = make_provider(&server, &tf.0);
-        let id = p.authenticate(&bearer("k8s-sa-token")).await.unwrap().unwrap();
+        let id = p
+            .authenticate(&bearer("k8s-sa-token"))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(id.role, Role::Admin);
-        assert_eq!(id.user_id.as_deref(), Some("system:serviceaccount:prod:ci-deployer"));
+        assert_eq!(
+            id.user_id.as_deref(),
+            Some("system:serviceaccount:prod:ci-deployer")
+        );
         assert_eq!(id.auth_provider.as_deref(), Some("kubernetes"));
     }
 
@@ -441,7 +504,11 @@ mod tests {
 
         let tf = write_temp_token("self-token").await;
         let p = make_provider(&server, &tf.0);
-        assert!(p.authenticate(&bearer("invalid-token")).await.unwrap().is_none());
+        assert!(p
+            .authenticate(&bearer("invalid-token"))
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -508,7 +575,11 @@ mod tests {
     fn provider_name_is_configurable() {
         let p = KubernetesAuthProvider::for_testing_named(
             "k8s-prod",
-            reqwest::Client::new(), String::new(), String::new(), vec![], HashMap::new(),
+            reqwest::Client::new(),
+            String::new(),
+            String::new(),
+            vec![],
+            HashMap::new(),
         );
         assert_eq!(p.name(), "k8s-prod");
     }
@@ -518,7 +589,11 @@ mod tests {
     #[test]
     fn mapped_group_stored_without_prefix() {
         let p = KubernetesAuthProvider::for_testing(
-            reqwest::Client::new(), String::new(), String::new(), vec![], default_mappings(),
+            reqwest::Client::new(),
+            String::new(),
+            String::new(),
+            vec![],
+            default_mappings(),
         );
         // "system:serviceaccounts:dev" is in default_mappings → no prefix
         let groups = p.resolve_groups(&["system:serviceaccounts:dev".to_owned()]);
@@ -528,7 +603,11 @@ mod tests {
     #[test]
     fn unmapped_group_gets_provider_name_prefix() {
         let p = KubernetesAuthProvider::for_testing(
-            reqwest::Client::new(), String::new(), String::new(), vec![], default_mappings(),
+            reqwest::Client::new(),
+            String::new(),
+            String::new(),
+            vec![],
+            default_mappings(),
         );
         // "system:authenticated" is not in role_mappings → prefixed with provider name
         let groups = p.resolve_groups(&["system:authenticated".to_owned()]);
@@ -539,7 +618,11 @@ mod tests {
     fn named_provider_uses_its_name_as_prefix() {
         let p = KubernetesAuthProvider::for_testing_named(
             "k8s-prod",
-            reqwest::Client::new(), String::new(), String::new(), vec![], default_mappings(),
+            reqwest::Client::new(),
+            String::new(),
+            String::new(),
+            vec![],
+            default_mappings(),
         );
         let groups = p.resolve_groups(&["team-a".to_owned()]);
         assert_eq!(groups, vec!["k8s-prod:team-a".to_owned()]);
@@ -548,26 +631,37 @@ mod tests {
     #[test]
     fn mixed_groups_prefix_only_unmapped() {
         let p = KubernetesAuthProvider::for_testing(
-            reqwest::Client::new(), String::new(), String::new(), vec![], default_mappings(),
+            reqwest::Client::new(),
+            String::new(),
+            String::new(),
+            vec![],
+            default_mappings(),
         );
         let raw = vec![
-            "system:serviceaccounts:dev".to_owned(),  // mapped → no prefix
-            "system:serviceaccounts".to_owned(),       // mapped → no prefix
-            "system:authenticated".to_owned(),          // unmapped → kubernetes:
-            "team-a".to_owned(),                       // unmapped → kubernetes:
+            "system:serviceaccounts:dev".to_owned(), // mapped → no prefix
+            "system:serviceaccounts".to_owned(),     // mapped → no prefix
+            "system:authenticated".to_owned(),       // unmapped → kubernetes:
+            "team-a".to_owned(),                     // unmapped → kubernetes:
         ];
         let groups = p.resolve_groups(&raw);
         assert!(groups.contains(&"system:serviceaccounts:dev".to_owned()));
         assert!(groups.contains(&"system:serviceaccounts".to_owned()));
         assert!(groups.contains(&"kubernetes:system:authenticated".to_owned()));
         assert!(groups.contains(&"kubernetes:team-a".to_owned()));
-        assert!(!groups.contains(&"team-a".to_owned()), "unprefixed team-a should not exist");
+        assert!(
+            !groups.contains(&"team-a".to_owned()),
+            "unprefixed team-a should not exist"
+        );
     }
 
     #[test]
     fn empty_groups_yields_empty_result() {
         let p = KubernetesAuthProvider::for_testing(
-            reqwest::Client::new(), String::new(), String::new(), vec![], default_mappings(),
+            reqwest::Client::new(),
+            String::new(),
+            String::new(),
+            vec![],
+            default_mappings(),
         );
         assert!(p.resolve_groups(&[]).is_empty());
     }
@@ -590,14 +684,23 @@ mod tests {
         let p = make_provider(&server, &tf.0);
         let id = p.authenticate(&bearer("dev-token")).await.unwrap().unwrap();
 
-        assert!(id.groups.contains(&"system:serviceaccounts:dev".to_owned()),
-            "mapped group stored without prefix");
-        assert!(id.groups.contains(&"kubernetes:team-a".to_owned()),
-            "unmapped group stored with provider name prefix");
-        assert!(id.groups.contains(&"kubernetes:system:authenticated".to_owned()),
-            "standard k8s group stored with provider name prefix");
-        assert!(!id.groups.contains(&"team-a".to_owned()),
-            "unprefixed unmapped group must not exist");
+        assert!(
+            id.groups.contains(&"system:serviceaccounts:dev".to_owned()),
+            "mapped group stored without prefix"
+        );
+        assert!(
+            id.groups.contains(&"kubernetes:team-a".to_owned()),
+            "unmapped group stored with provider name prefix"
+        );
+        assert!(
+            id.groups
+                .contains(&"kubernetes:system:authenticated".to_owned()),
+            "standard k8s group stored with provider name prefix"
+        );
+        assert!(
+            !id.groups.contains(&"team-a".to_owned()),
+            "unprefixed unmapped group must not exist"
+        );
     }
 
     #[tokio::test]

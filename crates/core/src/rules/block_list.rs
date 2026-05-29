@@ -53,8 +53,8 @@ mod tests {
 
     use super::*;
     use crate::entities::{
-        AccessEvent, EventFilter, Identity, PackageFilter, PackageId, PackageMetadata, PackageStatus,
-        PackageSummary,
+        AccessEvent, EventFilter, Identity, PackageFilter, PackageId, PackageMetadata,
+        PackageStatus, PackageSummary,
     };
     use crate::error::CoreError;
     use crate::ports::PackageRepository;
@@ -66,11 +66,15 @@ mod tests {
 
     impl MemRepo {
         fn available() -> Arc<Self> {
-            Arc::new(Self { statuses: Mutex::new(HashMap::new()) })
+            Arc::new(Self {
+                statuses: Mutex::new(HashMap::new()),
+            })
         }
 
         fn blocked(reason: &str) -> Arc<Self> {
-            let r = Arc::new(Self { statuses: Mutex::new(HashMap::new()) });
+            let r = Arc::new(Self {
+                statuses: Mutex::new(HashMap::new()),
+            });
             r.statuses.lock().unwrap().insert(
                 "npm/evil/1.0.0".to_owned(),
                 PackageStatus::Blocked {
@@ -81,39 +85,70 @@ mod tests {
             );
             r
         }
-
     }
 
     #[async_trait]
     impl PackageRepository for MemRepo {
-        async fn record_access(&self, _e: AccessEvent) -> Result<(), CoreError> { Ok(()) }
+        async fn record_access(&self, _e: AccessEvent) -> Result<(), CoreError> {
+            Ok(())
+        }
         async fn get_status(&self, pkg: &PackageId) -> Result<PackageStatus, CoreError> {
-            Ok(self.statuses.lock().unwrap()
+            Ok(self
+                .statuses
+                .lock()
+                .unwrap()
                 .get(&pkg.cache_key())
                 .cloned()
                 .unwrap_or(PackageStatus::Available))
         }
-        async fn set_status(&self, pkg: &PackageId, status: PackageStatus) -> Result<(), CoreError> {
-            self.statuses.lock().unwrap().insert(pkg.cache_key(), status);
+        async fn set_status(
+            &self,
+            pkg: &PackageId,
+            status: PackageStatus,
+        ) -> Result<(), CoreError> {
+            self.statuses
+                .lock()
+                .unwrap()
+                .insert(pkg.cache_key(), status);
             Ok(())
         }
-        async fn list_packages(&self, _f: PackageFilter) -> Result<Vec<PackageSummary>, CoreError> { Ok(vec![]) }
-        async fn count_packages(&self, _f: PackageFilter) -> Result<u64, CoreError> { Ok(0) }
-        async fn list_events(&self, _f: EventFilter) -> Result<Vec<AccessEvent>, CoreError> { Ok(vec![]) }
+        async fn list_packages(&self, _f: PackageFilter) -> Result<Vec<PackageSummary>, CoreError> {
+            Ok(vec![])
+        }
+        async fn count_packages(&self, _f: PackageFilter) -> Result<u64, CoreError> {
+            Ok(0)
+        }
+        async fn list_events(&self, _f: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
+            Ok(vec![])
+        }
     }
 
     struct AlwaysErrorRepo;
 
     #[async_trait]
     impl PackageRepository for AlwaysErrorRepo {
-        async fn record_access(&self, _e: AccessEvent) -> Result<(), CoreError> { Ok(()) }
+        async fn record_access(&self, _e: AccessEvent) -> Result<(), CoreError> {
+            Ok(())
+        }
         async fn get_status(&self, _pkg: &PackageId) -> Result<PackageStatus, CoreError> {
             Err(CoreError::Database("connection refused".into()))
         }
-        async fn set_status(&self, _pkg: &PackageId, _status: PackageStatus) -> Result<(), CoreError> { Ok(()) }
-        async fn list_packages(&self, _f: PackageFilter) -> Result<Vec<PackageSummary>, CoreError> { Ok(vec![]) }
-        async fn count_packages(&self, _f: PackageFilter) -> Result<u64, CoreError> { Ok(0) }
-        async fn list_events(&self, _f: EventFilter) -> Result<Vec<AccessEvent>, CoreError> { Ok(vec![]) }
+        async fn set_status(
+            &self,
+            _pkg: &PackageId,
+            _status: PackageStatus,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn list_packages(&self, _f: PackageFilter) -> Result<Vec<PackageSummary>, CoreError> {
+            Ok(vec![])
+        }
+        async fn count_packages(&self, _f: PackageFilter) -> Result<u64, CoreError> {
+            Ok(0)
+        }
+        async fn list_events(&self, _f: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
+            Ok(vec![])
+        }
     }
 
     fn make_ctx<'a>(pkg: &'a PackageMetadata, identity: &'a Identity) -> RuleContext<'a> {

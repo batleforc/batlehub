@@ -1,13 +1,16 @@
 use std::sync::Arc;
 
-use actix_web::{Responder, get, web};
+use actix_web::{get, web, Responder};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use batlehub_core::{entities::Role, services::{ProxyMetrics, ProxyService}};
+use batlehub_core::{
+    entities::Role,
+    services::{ProxyMetrics, ProxyService},
+};
 
-use crate::{RegistryMap, error::AppError, extractors::AuthIdentity};
+use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
 fn hit_rate(hits: u64, misses: u64) -> Option<f64> {
     let total = hits + misses;

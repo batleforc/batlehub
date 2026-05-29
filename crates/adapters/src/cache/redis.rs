@@ -30,8 +30,7 @@ fn serialize(entry: &CacheEntry) -> Result<String, CoreError> {
 }
 
 fn deserialize(raw: &str) -> Result<CacheEntry, CoreError> {
-    serde_json::from_str(raw)
-        .map_err(|e| CoreError::Cache(format!("deserialize cache entry: {e}")))
+    serde_json::from_str(raw).map_err(|e| CoreError::Cache(format!("deserialize cache entry: {e}")))
 }
 
 /// `CacheStore` backed by Redis.
@@ -67,7 +66,12 @@ impl CacheStore for RedisCacheStore {
         raw.map(|s| deserialize(&s)).transpose()
     }
 
-    async fn set(&self, key: &str, mut entry: CacheEntry, ttl: Option<Duration>) -> Result<(), CoreError> {
+    async fn set(
+        &self,
+        key: &str,
+        mut entry: CacheEntry,
+        ttl: Option<Duration>,
+    ) -> Result<(), CoreError> {
         if let Some(ttl) = ttl {
             match chrono::Duration::from_std(ttl) {
                 Ok(d) => entry.expires_at = Some(Utc::now() + d),

@@ -2,7 +2,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Row};
 
-use batlehub_core::{error::CoreError, ports::{ArtifactMeta, ArtifactMetaRepository}};
+use batlehub_core::{
+    error::CoreError,
+    ports::{ArtifactMeta, ArtifactMetaRepository},
+};
 
 pub struct PgArtifactMetaRepository {
     pool: PgPool,
@@ -66,7 +69,9 @@ impl ArtifactMetaRepository for PgArtifactMetaRepository {
                 .bind(registry)
                 .fetch_all(&self.pool)
         };
-        let rows = query.await.map_err(|e| CoreError::Database(e.to_string()))?;
+        let rows = query
+            .await
+            .map_err(|e| CoreError::Database(e.to_string()))?;
         Ok(rows.into_iter().map(row_to_meta).collect())
     }
 
@@ -174,11 +179,7 @@ impl ArtifactMetaRepository for PgArtifactMetaRepository {
         Ok(total as u64)
     }
 
-    async fn list_lru(
-        &self,
-        registry: &str,
-        limit: i64,
-    ) -> Result<Vec<ArtifactMeta>, CoreError> {
+    async fn list_lru(&self, registry: &str, limit: i64) -> Result<Vec<ArtifactMeta>, CoreError> {
         let rows = if registry.is_empty() {
             sqlx::query(
                 "SELECT artifact_key, registry, package_name, version, size_bytes, cached_at, last_accessed_at FROM artifact_cache_meta ORDER BY last_accessed_at ASC LIMIT $1",

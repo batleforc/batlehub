@@ -39,7 +39,12 @@ impl StorageRouter {
         registry_assignments: HashMap<String, String>,
         pool: PgPool,
     ) -> Self {
-        Self { backends, default_name, registry_assignments, pool }
+        Self {
+            backends,
+            default_name,
+            registry_assignments,
+            pool,
+        }
     }
 
     fn backend_name_for_key(&self, key: &str) -> &str {
@@ -65,14 +70,13 @@ impl StorageRouter {
     /// or `None` if the key was never recorded.
     async fn recorded_backend_for_key(&self, key: &str) -> Option<Arc<dyn StorageBackend>> {
         use sqlx::Row;
-        let result = sqlx::query(
-            "SELECT backend_name FROM artifact_storage WHERE storage_key = $1",
-        )
-        .bind(key)
-        .fetch_optional(&self.pool)
-        .await
-        .ok()
-        .flatten();
+        let result =
+            sqlx::query("SELECT backend_name FROM artifact_storage WHERE storage_key = $1")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await
+                .ok()
+                .flatten();
 
         result
             .and_then(|r| r.try_get::<String, _>("backend_name").ok())
@@ -81,7 +85,10 @@ impl StorageRouter {
 
     /// Look up the physical `content_key` for a logical artifact key via the dedup tables.
     /// Returns `(content_key, backend_arc)` if a dedup entry exists.
-    async fn dedup_content_key(&self, logical_key: &str) -> Option<(String, Arc<dyn StorageBackend>)> {
+    async fn dedup_content_key(
+        &self,
+        logical_key: &str,
+    ) -> Option<(String, Arc<dyn StorageBackend>)> {
         use sqlx::Row;
         let row = sqlx::query(
             r#"
@@ -101,7 +108,10 @@ impl StorageRouter {
 
         let content_key: String = row.try_get("content_key").ok()?;
         let backend_name: String = row.try_get("backend_name").ok()?;
-        let backend = self.backends.get(&backend_name).cloned()
+        let backend = self
+            .backends
+            .get(&backend_name)
+            .cloned()
             .or_else(|| self.backends.get(&self.default_name).cloned())?;
 
         Some((content_key, backend))
@@ -122,7 +132,9 @@ impl StorageRouter {
         .bind(size_bytes.map(|s| s as i64))
         .execute(&self.pool)
         .await
-        .inspect_err(|e| tracing::warn!(error = %e, key, backend_name, "failed to record artifact backend"));
+        .inspect_err(
+            |e| tracing::warn!(error = %e, key, backend_name, "failed to record artifact backend"),
+        );
     }
 
     async fn lazy_update_size(&self, key: &str, size: u64) {
@@ -155,7 +167,10 @@ impl StorageRouter {
         .await
         .map_err(|e| CoreError::Storage(e.to_string()))?;
 
-        Ok(rows.into_iter().filter_map(|r| r.try_get::<String, _>("key").ok()).collect())
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| r.try_get::<String, _>("key").ok())
+            .collect())
     }
 }
 
@@ -171,7 +186,10 @@ impl StorageBackend for StorageRouter {
 
         // Atomically update the dedup tables inside a single transaction so that a
         // failed refs insert can never leave an orphaned ref-count increment.
-        let mut tx = self.pool.begin().await
+        let mut tx = self
+            .pool
+            .begin()
+            .await
             .map_err(|e| CoreError::Storage(format!("failed to begin transaction: {e}")))?;
 
         // Check whether this logical key already maps to a content hash.  A
@@ -249,7 +267,8 @@ impl StorageBackend for StorageRouter {
                 }
             }
 
-            tx.commit().await
+            tx.commit()
+                .await
                 .map_err(|e| CoreError::Storage(e.to_string()))?;
         }
 
@@ -292,7 +311,11 @@ impl StorageBackend for StorageRouter {
         // Legacy path.
         match self.recorded_backend_for_key(key).await {
             Some(b) => b.exists(key).await,
-            None => self.resolve_backend(self.backend_name_for_key(key)).exists(key).await,
+            None => {
+                self.resolve_backend(self.backend_name_for_key(key))
+                    .exists(key)
+                    .await
+            }
         }
     }
 
@@ -316,17 +339,23 @@ impl StorageBackend for StorageRouter {
 
         if let Some(row) = dedup_row {
             use sqlx::Row;
-            let content_hash: String = row.try_get("content_hash")
+            let content_hash: String = row
+                .try_get("content_hash")
                 .map_err(|e| CoreError::Storage(e.to_string()))?;
-            let content_key: String = row.try_get("content_key")
+            let content_key: String = row
+                .try_get("content_key")
                 .map_err(|e| CoreError::Storage(e.to_string()))?;
             // Use the backend that actually holds the physical blob, not the one
             // derived from the logical key's registry prefix (they may differ when
             // two registries share content via deduplication).
-            let blob_backend_name: String = row.try_get("backend_name")
+            let blob_backend_name: String = row
+                .try_get("backend_name")
                 .map_err(|e| CoreError::Storage(e.to_string()))?;
 
-            let mut tx = self.pool.begin().await
+            let mut tx = self
+                .pool
+                .begin()
+                .await
                 .map_err(|e| CoreError::Storage(e.to_string()))?;
 
             // Delete the logical→hash mapping.
@@ -353,7 +382,9 @@ impl StorageBackend for StorageRouter {
                     .map_err(|e| CoreError::Storage(e.to_string()))?;
             }
 
-            tx.commit().await.map_err(|e| CoreError::Storage(e.to_string()))?;
+            tx.commit()
+                .await
+                .map_err(|e| CoreError::Storage(e.to_string()))?;
 
             // Delete physical blob when no more references.
             if new_ref_count <= 0 {
@@ -375,7 +406,9 @@ impl StorageBackend for StorageRouter {
             .bind(key)
             .execute(&self.pool)
             .await
-            .inspect_err(|e| tracing::warn!(error = %e, key, "failed to delete artifact_storage record"));
+            .inspect_err(
+                |e| tracing::warn!(error = %e, key, "failed to delete artifact_storage record"),
+            );
 
         Ok(())
     }

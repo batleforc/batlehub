@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use crate::{entities::Identity, error::CoreError};
 
 /// An entry granting a user or group access to pre-release versions in a registry.
+#[derive(Debug, Clone)]
 pub struct BetaChannelEntry {
     pub principal_type: String, // "user" | "group"
     pub principal_id: String,
@@ -32,8 +33,5 @@ pub trait BetaChannelPort: Send + Sync {
     ) -> Result<(), CoreError>;
 
     /// List all beta-channel members for a registry.
-    async fn list_members(
-        &self,
-        registry: &str,
-    ) -> Result<Vec<BetaChannelEntry>, CoreError>;
+    async fn list_members(&self, registry: &str) -> Result<Vec<BetaChannelEntry>, CoreError>;
 }

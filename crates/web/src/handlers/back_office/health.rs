@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actix_web::{Responder, get, post, web};
+use actix_web::{get, post, web, Responder};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::{PgPool, Row};
@@ -11,7 +11,7 @@ use batlehub_core::{
     services::{AdminService, ProxyService},
 };
 
-use crate::{AccessConfig, RegistryMap, error::AppError, extractors::AuthIdentity};
+use crate::{error::AppError, extractors::AuthIdentity, AccessConfig, RegistryMap};
 
 fn require_admin(identity: &AuthIdentity) -> Result<(), AppError> {
     if identity.role != Role::Admin {
