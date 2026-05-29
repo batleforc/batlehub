@@ -1,9 +1,17 @@
-/* ── Config Generator — hide the right aside, expand content to full width ─── */
+/* ── Config Generator — full-width layout ────────────────────────────────── */
+/* aside: false in frontmatter hides the right TOC, but we also need to      */
+/* clear the max-width constraints that VitePress applies when has-sidebar    */
+/* is present. Rules are intentionally split: lightningcss drops selectors    */
+/* from combined :has() rules during the production build.                    */
 .VPDoc:has(._guide_config-generator) .aside {
-  display: none;
+  display: none !important;
 }
-.VPDoc:has(._guide_config-generator) .container,
-.VPDoc:has(._guide_config-generator) .content,
+.VPDoc:has(._guide_config-generator) .container {
+  max-width: 100% !important;
+}
+.VPDoc:has(._guide_config-generator) .content {
+  max-width: 100% !important;
+}
 .VPDoc:has(._guide_config-generator) .content-container {
   max-width: 100% !important;
 }
