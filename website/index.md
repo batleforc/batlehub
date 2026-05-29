@@ -50,6 +50,9 @@ features:
   - icon: 🗄️
     title: Storage Deduplication
     details: Identical artifact bytes are stored once, regardless of how many registries or package names reference them. Ref-counted and backwards-compatible.
+  - icon: 🔑
+    title: Hashed Static Tokens
+    details: Store Argon2id PHC hashes in config instead of raw token strings. Run `batlehub hash-token <value>` to generate a hash. Plain-text tokens keep working — both formats coexist.
 ---
 
 ## Supported registries

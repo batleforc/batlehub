@@ -316,10 +316,27 @@ cargo test -p batlehub-examples --test real_proxy
 
 ### Coverage
 
+The project enforces a minimum of **80% line coverage** measured by `cargo-llvm-cov`. Both tasks require PostgreSQL and MinIO (started automatically from the `Taskfile`):
+
 ```bash
-# Requires cargo-llvm-cov
-cargo llvm-cov --html
+# Generate an HTML report (opens at target/llvm-cov/html/index.html)
+task coverage
+
+# Enforce the 80% threshold — fails the build if coverage drops below it
+task coverage-check
 ```
+
+To run coverage manually without the Task runner:
+
+```bash
+# Install the tool once
+cargo install cargo-llvm-cov
+
+# Run (PostgreSQL must be reachable via DATABASE_URL)
+cargo llvm-cov --html --workspace --all-features
+```
+
+The workspace-level `[workspace.metadata.llvm-cov]` config excludes `server/src/main.rs` (startup wiring only) from the report. Every other module is expected to have at least some exercised lines.
 
 ---
 

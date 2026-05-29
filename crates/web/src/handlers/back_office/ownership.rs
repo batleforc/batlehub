@@ -4,17 +4,10 @@ use actix_web::{delete, get, post, web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use batlehub_core::{entities::Role, ports::OwnerEntry, services::LocalRegistryService};
+use batlehub_core::{ports::OwnerEntry, services::LocalRegistryService};
 
 use crate::{error::AppError, extractors::AuthIdentity};
-
-fn require_admin(identity: &AuthIdentity) -> Result<(), AppError> {
-    if identity.role != Role::Admin {
-        Err(AppError::forbidden("admin role required"))
-    } else {
-        Ok(())
-    }
-}
+use super::require_admin;
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct OwnerEntryDto {
@@ -50,7 +43,7 @@ fn default_role() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{require_admin, default_role, OwnerEntryDto};
     use batlehub_core::{entities::{Identity, Role}, ports::OwnerEntry};
     use crate::extractors::AuthIdentity;
 

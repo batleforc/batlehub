@@ -120,7 +120,8 @@ Applies to registries running in `local` or `hybrid` mode.
 - [x] Versioning policies: `enforce_semver`, `allow_prerelease`, `version_pattern` (regex) per registry; enforced at publish time with HTTP 422
 - [x] Beta / pre-release channel: allow specific users or groups to access unpublished versions before general release
 - [x] Bulk operations: `POST /api/v1/admin/registries/{registry}/bulk-yank|bulk-unyank|bulk-delete`
-- [ ] Content-addressable deduplication and integrity verification for stored artifacts
+- [x] Content-addressable deduplication for stored artifacts (ref-counted via `artifact_dedup_index` / `artifact_dedup_refs`)
+- [ ] Integrity verification: verify checksums on re-serve, not only at publish time
 
 ### CLI tool
 
@@ -151,6 +152,6 @@ Applies to registries running in `local` or `hybrid` mode.
 
 ## Testing
 
-- [ ] Unit tests for all registry adapters and policy evaluation logic
+- [~] Unit tests for all registry adapters and policy evaluation logic — significant coverage added (entities, services, auth, storage router, registry adapters, web middleware, handler guards); ≥80% line coverage enforced by `task coverage-check`
 - [ ] Integration tests against real upstream registries (gated, opt-in)
 - [ ] Broader fuzzing targets beyond the current four (RBAC, cache key, deny-latest, release age)

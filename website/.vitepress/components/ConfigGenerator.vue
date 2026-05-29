@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -184,7 +184,94 @@ const authProviders = ref<AuthProvider[]>([
   },
 ]);
 
-// Registries
+// ── Argon2id token hashing ───────────────────────────────────────────────────
+// hash-wasm is loaded lazily on mount (it bundles WebAssembly; not SSR-safe).
+// tokenHashes maps tok.id → computed PHC string.
+//   null   = currently computing
+//   ""     = input is empty, nothing to hash
+//   "$argon2id…" = ready
+
+type ArgFn = (params: {
+  password: string;
+  salt: Uint8Array;
+  parallelism: number;
+  iterations: number;
+  memorySize: number;
+  hashLength: number;
+  outputType: "encoded";
+}) => Promise<string>;
+
+let _argon2id: ArgFn | null = null;
+const tokenHashes = ref<Record<number, string | null>>({});
+let _hashTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function runHashComputation() {
+  // Mark every non-empty token as "computing"
+  const next: Record<number, string | null> = {};
+  for (const auth of authProviders.value) {
+    if (auth.type !== "token") continue;
+    for (const tok of auth.tokens) {
+      next[tok.id] = tok.value.trim() ? null : "";
+    }
+  }
+  tokenHashes.value = next;
+
+  // Compute one by one (sequential keeps memory pressure low)
+  for (const auth of authProviders.value) {
+    if (auth.type !== "token") continue;
+    for (const tok of auth.tokens) {
+      const raw = tok.value.trim();
+      if (!raw) continue;
+      try {
+        let result: string;
+        if (_argon2id) {
+          const salt = new Uint8Array(16);
+          crypto.getRandomValues(salt);
+          result = await _argon2id({
+            password: raw,
+            salt,
+            parallelism: 4,
+            iterations: 3,
+            memorySize: 65536,
+            hashLength: 32,
+            outputType: "encoded",
+          });
+        } else {
+          result = raw; // WASM not loaded — fallback to plain
+        }
+        tokenHashes.value = { ...tokenHashes.value, [tok.id]: result };
+      } catch {
+        tokenHashes.value = { ...tokenHashes.value, [tok.id]: raw };
+      }
+    }
+  }
+}
+
+function scheduleHashing() {
+  if (_hashTimer) clearTimeout(_hashTimer);
+  _hashTimer = setTimeout(runHashComputation, 350);
+}
+
+onMounted(async () => {
+  try {
+    const mod = await import("hash-wasm");
+    _argon2id = mod.argon2id as unknown as ArgFn;
+  } catch {
+    // hash-wasm failed to load — plain-text fallback
+  }
+  await runHashComputation();
+});
+
+// Re-hash whenever any token value changes
+watch(
+  () =>
+    authProviders.value.flatMap((a) =>
+      a.type === "token" ? a.tokens.map((t) => `${t.id}:${t.value}`) : [],
+    ),
+  scheduleHashing,
+);
+
+// ── Registries
 let registrySeq = 0;
 
 const defaultUpstream: Record<RegistryType, string> = {
@@ -338,7 +425,22 @@ const toml = computed(() => {
       for (const tok of valid) {
         lines.push("");
         lines.push("[[auth.tokens]]");
-        lines.push(`value = ${q(tok.value)}`);
+        const hash = tokenHashes.value[tok.id];
+        if (hash === null) {
+          // Still computing — emit a placeholder so the preview updates once ready
+          lines.push(`value = "# computing Argon2id hash…"`);
+        } else if (hash && hash.startsWith("$argon2")) {
+          lines.push(`value = ${q(hash)}`);
+        } else {
+          // hash-wasm unavailable — emit the raw value with an explanatory comment
+          lines.push(
+            `# Argon2id hashing unavailable in this browser.`,
+          );
+          lines.push(
+            `# Harden this token: batlehub hash-token ${tok.value}`,
+          );
+          lines.push(`value = ${q(tok.value)}`);
+        }
         lines.push(`role = ${q(tok.role)}`);
         if (tok.user_id) lines.push(`user_id = ${q(tok.user_id)}`);
       }
@@ -882,11 +984,38 @@ const composerAuthSnippet = `{
           <!-- Token auth -->
           <template v-if="auth.type === 'token'">
             <div v-for="tok in auth.tokens" :key="tok.id" class="cg-subitem">
-              <label
-                >Token value<input
+              <label>
+                Token value
+                <span class="cg-label-note"
+                  >(raw — an Argon2id hash is written to the config)</span
+                >
+                <input
                   v-model="tok.value"
                   placeholder="my-secret-token"
-              /></label>
+                  autocomplete="off"
+                />
+              </label>
+              <!-- Hash status badge -->
+              <div v-if="tok.value.trim()" class="cg-hash-status">
+                <template v-if="tokenHashes[tok.id] === null">
+                  <span class="cg-hash-computing">⏳ Computing Argon2id hash…</span>
+                </template>
+                <template
+                  v-else-if="tokenHashes[tok.id]?.startsWith('$argon2')"
+                >
+                  <span class="cg-hash-ready"
+                    >🔐 Argon2id hash ready &mdash; use the raw value above with
+                    <code>Authorization: Bearer &lt;raw token&gt;</code></span
+                  >
+                </template>
+                <template v-else>
+                  <span class="cg-hash-warn"
+                    >⚠ Browser hashing unavailable &mdash; after download run
+                    <code>batlehub hash-token {{ tok.value }}</code> and replace
+                    the value in the config</span
+                  >
+                </template>
+              </div>
               <div class="cg-two-col">
                 <label>
                   Role
@@ -1737,5 +1866,45 @@ textarea {
   .cg-three-col {
     grid-template-columns: 1fr;
   }
+}
+
+/* ── Argon2 hash status ───────────────────────────────────────────── */
+.cg-label-note {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--vp-c-text-2);
+  margin-left: 0.25rem;
+}
+
+.cg-hash-status {
+  margin-top: 0.3rem;
+  margin-bottom: 0.25rem;
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.cg-hash-computing {
+  color: var(--vp-c-text-2);
+}
+
+.cg-hash-ready {
+  color: var(--vp-c-green-2, #4ade80);
+}
+.dark .cg-hash-ready {
+  color: var(--vp-c-green-3, #86efac);
+}
+
+.cg-hash-warn {
+  color: var(--vp-c-yellow-2, #ca8a04);
+}
+.dark .cg-hash-warn {
+  color: var(--vp-c-yellow-3, #fde047);
+}
+
+.cg-hash-status code {
+  font-size: 0.75rem;
+  background: var(--vp-code-bg);
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
 }
 </style>

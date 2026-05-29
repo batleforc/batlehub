@@ -60,7 +60,7 @@ Multiple instances of the same registry type can run in parallel (e.g. a private
 - **Deny latest tag** — reject requests that use `"latest"` as a version, forcing consumers to pin exact versions. Configurable bypass roles (e.g. admins may still use `latest`).
 - **Fanout / failover** — list multiple upstreams per registry; 404 from one falls through to the next.
 - **Self-hosted registry support** — upstream auth (Bearer token, Basic, or custom header) and custom CA certificates per registry, for air-gapped or corporate environments.
-- **Auth providers** — static tokens, OIDC (Authentik, Keycloak, Dex, …), Kubernetes service account tokens.
+- **Auth providers** — static tokens (plain-text or Argon2id hashed), OIDC (Authentik, Keycloak, Dex, …), Kubernetes service account tokens.
 - **Storage backends** — filesystem or S3-compatible (AWS S3, MinIO, RustFS). Different registries can use different backends.
 - **Audit log** — every allow and deny decision is recorded in PostgreSQL.
 - **OpenTelemetry** — optional distributed tracing via OTLP/gRPC.
@@ -131,6 +131,9 @@ url  = "postgresql://batlehub:changeme@localhost:5432/batlehub"
 type = "token"
 
 [[auth.tokens]]
+# Plain-text token (fine for local dev).
+# For production, store an Argon2id PHC hash instead:
+#   batlehub hash-token my-secret-token
 value = "my-admin-token"
 role  = "admin"
 
@@ -796,12 +799,14 @@ Role inheritance: `admin` ⊃ `user` ⊃ `anonymous`. Group permissions from OID
 ## Development
 
 ```sh
-task build        # cargo build --workspace
-task test         # cargo test --workspace
-task lint         # cargo clippy --workspace
-task fmt          # cargo fmt --all
-task dump-spec    # regenerate ui/openapi.json
-task ui:generate  # regenerate TypeScript client from openapi.json
+task build          # cargo build --workspace
+task test           # cargo test --workspace
+task lint           # cargo clippy --workspace
+task fmt            # cargo fmt --all
+task dump-spec      # regenerate ui/openapi.json
+task ui:generate    # regenerate TypeScript client from openapi.json
+task coverage       # generate HTML coverage report (requires PostgreSQL + MinIO)
+task coverage-check # enforce ≥80% line coverage (fails the build if below threshold)
 ```
 
 ### Fuzzing
@@ -838,7 +843,17 @@ See [`docs/adding-a-registry.md`](docs/adding-a-registry.md) for a step-by-step 
 
 ## Deployment
 
-### Docker image
+### Pre-built image and binary
+
+Every tagged release publishes:
+
+- A **multi-arch container image** (`linux/amd64` + `linux/arm64`) to the GitHub Container Registry:
+  ```sh
+  docker pull ghcr.io/batleforc/batlehub:<version>
+  ```
+- A **statically linked server binary** attached to the GitHub Release page.
+
+### Docker image (build from source)
 
 ```sh
 docker build -t batlehub .

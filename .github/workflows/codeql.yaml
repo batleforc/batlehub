@@ -1,0 +1,71 @@
+name: CodeQL
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "**/*.rs"
+      - "**/*.ts"
+      - "**/*.vue"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "ui/package.json"
+      - "ui/package-lock.json"
+      - ".github/workflows/codeql.yaml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "**/*.rs"
+      - "**/*.ts"
+      - "**/*.vue"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "ui/package.json"
+      - "ui/package-lock.json"
+      - ".github/workflows/codeql.yaml"
+  schedule:
+    - cron: "50 23 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze-rust:
+    name: Analyze Rust
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: rust
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Rust workspace
+        run: cargo build --locked --workspace
+
+      - uses: github/codeql-action/analyze@v3
+
+  analyze-javascript:
+    name: Analyze JavaScript/TypeScript
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+
+      - uses: github/codeql-action/analyze@v3

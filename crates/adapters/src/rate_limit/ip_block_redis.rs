@@ -91,11 +91,11 @@ mod tests {
 
     #[test]
     fn violation_window_aligns_to_boundary() {
-        let now: u64 = 1000;
-        let ws: u64 = 60;
-        let window_start = (now / ws) * ws;
-        assert_eq!(window_start, 960);
-        assert!(window_start + ws > now);
+        // super = ip_block_redis module; super::super = rate_limit module (where violation_window lives)
+        let (start, reset) = super::super::violation_window(1000, 60);
+        assert_eq!(start, 960);
+        assert_eq!(reset, 1020);
+        assert!(reset > 1000);
     }
 }
 
@@ -106,9 +106,7 @@ impl IpBlockStore for RedisIpBlockStore {
             return Err(CoreError::Cache("window_secs must be > 0".into()));
         }
         let now = now_unix();
-        let ws = window_secs as u64;
-        let window_start = (now / ws) * ws;
-        let window_reset = window_start + ws;
+        let (window_start, window_reset) = super::violation_window(now, window_secs);
 
         let key = Self::violation_key(ip, window_start);
         let mut conn = self.conn.clone();

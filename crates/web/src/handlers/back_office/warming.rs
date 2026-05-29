@@ -5,17 +5,10 @@ use actix_web::{post, web, Responder};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use batlehub_core::{entities::Role, services::WarmingService};
+use batlehub_core::services::WarmingService;
 
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
-
-fn require_admin(identity: &AuthIdentity) -> Result<(), AppError> {
-    if identity.role != Role::Admin {
-        Err(AppError::forbidden("admin role required"))
-    } else {
-        Ok(())
-    }
-}
+use super::require_admin;
 
 /// Map of registry name → WarmingService, injected as app data.
 pub type WarmingServiceMap = HashMap<String, Arc<WarmingService>>;
@@ -89,6 +82,7 @@ pub async fn warm_registry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::require_admin;
     use batlehub_core::entities::{Identity, Role};
     use crate::extractors::AuthIdentity;
 

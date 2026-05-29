@@ -10,5 +10,8 @@
   },
   "devDependencies": {
     "vitepress": "^1.6.4"
+  },
+  "dependencies": {
+    "hash-wasm": "^4.12.0"
   }
 }

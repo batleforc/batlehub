@@ -4,21 +4,14 @@ use actix_web::{post, web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use batlehub_core::{entities::Role, services::LocalRegistryService};
+use batlehub_core::services::LocalRegistryService;
 
 use crate::{error::AppError, extractors::AuthIdentity};
-
-fn require_admin(identity: &AuthIdentity) -> Result<(), AppError> {
-    if identity.role != Role::Admin {
-        Err(AppError::forbidden("admin role required"))
-    } else {
-        Ok(())
-    }
-}
+use super::require_admin;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::require_admin;
     use batlehub_core::entities::{Identity, Role};
     use crate::extractors::AuthIdentity;
 

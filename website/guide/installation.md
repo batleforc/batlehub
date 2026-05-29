@@ -12,6 +12,42 @@ All installation methods require a **PostgreSQL 14+** database. The server creat
 
 ---
 
+## Pre-built releases
+
+Every tagged release publishes ready-to-use artifacts to GitHub:
+
+### Container image (recommended for production)
+
+A multi-arch image (`linux/amd64` + `linux/arm64`) is pushed to the GitHub Container Registry:
+
+```sh
+docker pull ghcr.io/batleforc/batlehub:<version>
+
+# Or always pull the latest tagged version (not :latest — pin to a specific version in production)
+docker pull ghcr.io/batleforc/batlehub:1.0.0
+```
+
+Run it:
+
+```sh
+docker run -p 8080:8080 \
+  -v /path/to/config.toml:/etc/batlehub/config.toml:ro \
+  -v /path/to/cache:/var/cache/batlehub \
+  ghcr.io/batleforc/batlehub:<version>
+```
+
+### Pre-built binary
+
+A statically linked `batlehub` binary for Linux is attached to each [GitHub Release](https://github.com/batleforc/batlehub/releases). Download it, make it executable, and run:
+
+```sh
+curl -L -o batlehub https://github.com/batleforc/batlehub/releases/download/<version>/batlehub
+chmod +x batlehub
+./batlehub --config config.toml
+```
+
+---
+
 ## Docker Compose (quickest path)
 
 The fastest way to get a running instance for local development or evaluation.

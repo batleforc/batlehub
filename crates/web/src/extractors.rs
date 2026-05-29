@@ -50,9 +50,10 @@ pub fn raw_auth_from_request(req: &HttpRequest) -> batlehub_core::ports::RawAuth
     let query_params = req
         .query_string()
         .split('&')
+        .filter(|pair| !pair.is_empty())
         .filter_map(|pair| {
             let mut parts = pair.splitn(2, '=');
-            let key = parts.next()?.to_owned();
+            let key = parts.next().filter(|k| !k.is_empty())?.to_owned();
             let val = parts.next().unwrap_or("").to_owned();
             Some((key, val))
         })
@@ -95,7 +96,14 @@ mod tests {
     fn no_query_string_yields_empty_params() {
         let req = TestRequest::get().uri("/").to_http_request();
         let raw = raw_auth_from_request(&req);
-        // An empty query string splits to one empty pair which is filtered out.
-        assert!(raw.query_params.get("").map(String::as_str) != Some("x"));
+        assert!(raw.query_params.is_empty(), "empty query string must produce no params");
+    }
+
+    #[test]
+    fn trailing_ampersand_does_not_insert_empty_key() {
+        let req = TestRequest::get().uri("/?token=abc&").to_http_request();
+        let raw = raw_auth_from_request(&req);
+        assert_eq!(raw.query_params.get("token").map(String::as_str), Some("abc"));
+        assert!(!raw.query_params.contains_key(""), "trailing & must not insert empty key");
     }
 }

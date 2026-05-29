@@ -6,20 +6,10 @@ use serde::Serialize;
 use sqlx::{PgPool, Row};
 use utoipa::ToSchema;
 
-use batlehub_core::{
-    entities::Role,
-    services::{AdminService, ProxyService},
-};
+use batlehub_core::services::{AdminService, ProxyService};
 
 use crate::{error::AppError, extractors::AuthIdentity, AccessConfig, RegistryMap};
-
-fn require_admin(identity: &AuthIdentity) -> Result<(), AppError> {
-    if identity.role != Role::Admin {
-        Err(AppError::forbidden("admin role required"))
-    } else {
-        Ok(())
-    }
-}
+use super::require_admin;
 
 #[derive(Serialize, ToSchema)]
 pub struct RegistryAccessInfo {

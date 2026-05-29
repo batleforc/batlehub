@@ -4,21 +4,14 @@ use actix_web::{delete, get, web, HttpResponse, Responder};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use batlehub_core::{entities::Role, ports::QuotaUsage, services::QuotaService};
+use batlehub_core::{ports::QuotaUsage, services::QuotaService};
 
 use crate::{error::AppError, extractors::AuthIdentity};
-
-fn require_admin(identity: &AuthIdentity) -> Result<(), AppError> {
-    if identity.role != Role::Admin {
-        Err(AppError::forbidden("admin role required"))
-    } else {
-        Ok(())
-    }
-}
+use super::require_admin;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{require_admin, QuotaUsageDto};
     use batlehub_core::{entities::{Identity, Role}, ports::QuotaUsage};
     use crate::extractors::AuthIdentity;
 

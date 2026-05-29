@@ -209,6 +209,21 @@ tasks:
     cmds:
       - npm run build
 
+  ui:lint:
+    desc: Run the frontend ESLint check locally
+    dir: ui
+    cmds:
+      - |
+        npm install --no-save \
+          eslint@9 \
+          @eslint/js@9 \
+          eslint-plugin-vue@9 \
+          vue-eslint-parser@10 \
+          @typescript-eslint/parser@8 \
+          @typescript-eslint/eslint-plugin@8 \
+          @microsoft/eslint-formatter-sarif@3
+      - npx eslint src --ext .ts,.vue --format @microsoft/eslint-formatter-sarif -o eslint-results.sarif
+
   dev:
     desc: Start Rust backend and Vite frontend in parallel (requires postgres)
     deps:

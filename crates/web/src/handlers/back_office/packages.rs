@@ -9,20 +9,13 @@ use uuid::Uuid;
 
 use batlehub_core::{
     entities::{
-        AccessAction, AccessResult, EventFilter, PackageFilter, PackageId, PackageStatus, Role,
+        AccessAction, AccessResult, EventFilter, PackageFilter, PackageId, PackageStatus,
     },
     services::{AdminService, BulkBlockItem, ProxyService},
 };
 
 use crate::{error::AppError, extractors::AuthIdentity};
-
-fn require_admin(identity: &AuthIdentity) -> Result<(), AppError> {
-    if identity.role != Role::Admin {
-        Err(AppError::forbidden("admin role required"))
-    } else {
-        Ok(())
-    }
-}
+use super::require_admin;
 
 // ── List all packages ─────────────────────────────────────────────────────────
 

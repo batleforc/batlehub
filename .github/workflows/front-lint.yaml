@@ -1,0 +1,70 @@
+name: Frontend Lint
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "ui/**/*.ts"
+      - "ui/**/*.vue"
+      - "ui/package.json"
+      - "ui/package-lock.json"
+      - "ui/eslint.config.js"
+      - ".github/workflows/front-lint.yaml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "ui/**/*.ts"
+      - "ui/**/*.vue"
+      - "ui/package.json"
+      - "ui/package-lock.json"
+      - "ui/eslint.config.js"
+      - ".github/workflows/front-lint.yaml"
+  schedule:
+    - cron: "50 23 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install lint dependencies
+        run: |
+          npm install --no-save \
+            eslint@9 \
+            @eslint/js@9 \
+            eslint-plugin-vue@9 \
+            vue-eslint-parser@10 \
+            @typescript-eslint/parser@8 \
+            @typescript-eslint/eslint-plugin@8 \
+            @microsoft/eslint-formatter-sarif@3
+
+      - name: Run ESLint
+        id: lint
+        continue-on-error: true
+        run: npx eslint src --ext .ts,.vue --format @microsoft/eslint-formatter-sarif -o eslint-results.sarif
+
+      - name: Upload SARIF results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ui/eslint-results.sarif
+          wait-for-processing: true
+
+      - name: Fail on lint errors
+        if: steps.lint.outcome == 'failure'
+        run: exit 1

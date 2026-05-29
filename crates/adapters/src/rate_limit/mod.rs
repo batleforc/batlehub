@@ -7,14 +7,48 @@ pub(crate) fn now_unix() -> u64 {
         .as_secs()
 }
 
+/// Compute the aligned window `(start, reset)` for a given timestamp.
+///
+/// `window_start = floor(now / window_secs) * window_secs`
+/// `window_reset = window_start + window_secs`
+pub(crate) fn violation_window(now: u64, window_secs: u32) -> (u64, u64) {
+    let ws = window_secs as u64;
+    let window_start = (now / ws) * ws;
+    (window_start, window_start + ws)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::now_unix;
+    use super::{now_unix, violation_window};
 
     #[test]
     fn now_unix_is_after_2024() {
-        // Must be after 2024-01-01T00:00:00Z (1704067200)
         assert!(now_unix() > 1_704_067_200);
+    }
+
+    #[test]
+    fn violation_window_aligns_to_boundary() {
+        let (start, reset) = violation_window(1000, 60);
+        assert_eq!(start, 960);
+        assert_eq!(reset, 1020);
+    }
+
+    #[test]
+    fn violation_window_exactly_on_boundary() {
+        let (start, reset) = violation_window(960, 60);
+        assert_eq!(start, 960);
+        assert_eq!(reset, 1020);
+    }
+
+    #[test]
+    fn violation_window_start_is_always_lte_now() {
+        for now in [0u64, 1, 59, 60, 61, 1000, 9999] {
+            for ws in [1u32, 30, 60, 300] {
+                let (start, reset) = violation_window(now, ws);
+                assert!(start <= now, "start={start} > now={now} for ws={ws}");
+                assert!(reset > now, "reset={reset} <= now={now} for ws={ws}");
+            }
+        }
     }
 }
 

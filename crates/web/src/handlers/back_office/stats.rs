@@ -5,24 +5,14 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use batlehub_core::{
-    entities::Role,
-    services::{ProxyMetrics, ProxyService},
-};
+use batlehub_core::services::{ProxyMetrics, ProxyService};
 
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
+use super::require_admin;
 
 fn hit_rate(hits: u64, misses: u64) -> Option<f64> {
     let total = hits + misses;
     (total > 0).then(|| hits as f64 / total as f64)
-}
-
-fn require_admin(identity: &AuthIdentity) -> Result<(), AppError> {
-    if identity.role != Role::Admin {
-        Err(AppError::forbidden("admin role required"))
-    } else {
-        Ok(())
-    }
 }
 
 #[derive(Serialize, ToSchema)]

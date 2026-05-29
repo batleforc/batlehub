@@ -211,7 +211,7 @@ Validates static bearer tokens defined in the config file. Useful for CI/CD pipe
 type = "token"
 
 [[auth.tokens]]
-value = "my-ci-token"     # the bearer token value
+value = "my-ci-token"     # the bearer token value (plaintext or Argon2id PHC hash)
 role = "user"             # "admin", "user", or "anonymous"
 user_id = "ci-bot"        # optional: display name in logs
 
@@ -223,11 +223,31 @@ user_id = "admin"
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `value` | string | yes | The Bearer token string |
+| `value` | string | yes | The Bearer token string — plaintext **or** an Argon2id PHC hash (see below) |
 | `role` | string | yes | `"admin"`, `"user"`, or `"anonymous"` |
 | `user_id` | string | no | Used in audit logs |
 
-> **Security note:** Token values are stored in plaintext in the config file. In production, inject them via environment variables or a secrets manager and reference them from there.
+##### Argon2id hashed token values (recommended for production)
+
+Instead of storing a raw token in the config file, store an **Argon2id PHC hash**. BatleHub ships a helper command that generates the hash from the raw token:
+
+```sh
+batlehub hash-token my-secret-token
+# → $argon2id$v=19$m=65536,t=3,p=4$...
+```
+
+Copy the printed hash into the `value` field:
+
+```toml
+[[auth.tokens]]
+value = "$argon2id$v=19$m=65536,t=3,p=4$..."
+role  = "admin"
+user_id = "admin"
+```
+
+BatleHub automatically detects PHC-format values (those starting with `$argon2`) and verifies incoming bearer tokens against the stored hash. Plaintext values continue to work without any change — the two formats can coexist in the same config file.
+
+> **Why this matters:** If the config file leaks (e.g. committed to VCS by mistake, visible in a Kubernetes ConfigMap), hashed tokens cannot be used directly by an attacker. The raw token only ever needs to exist in your secrets manager or the developer's clipboard.
 
 #### 3.3.2 OIDC auth (`type = "oidc"`)
 
@@ -2021,13 +2041,33 @@ Yanked versions are hidden from `p2/` metadata and return 404 on download.
 ```
 batlehub --config config.toml          # start the server (default: config.toml)
 batlehub dump-spec                     # print the OpenAPI JSON spec to stdout
+batlehub hash-token <token>            # generate an Argon2id PHC hash for a static token
 ```
+
+### `dump-spec`
 
 Redirect the spec to a file for use with code generators:
 
 ```sh
 batlehub dump-spec > openapi.json
 ```
+
+### `hash-token`
+
+Generates an Argon2id PHC hash that can be stored in `[[auth.tokens]].value` instead of a raw token string. The raw token is only required at generation time and does not need to be stored anywhere.
+
+```sh
+# Generate a hash
+batlehub hash-token my-secret-token
+# $argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>
+
+# Paste the output directly into the config:
+# [[auth.tokens]]
+# value = "$argon2id$v=19$m=65536,t=3,p=4$..."
+# role = "admin"
+```
+
+See [§3.3.1 Argon2id hashed token values](#argon2id-hashed-token-values-recommended-for-production) for full context.
 
 ---
 

@@ -133,7 +133,8 @@ Applies to registries running in `local` or `hybrid` mode. See the [User Guide](
 - ✅ **Beta/pre-release channel** — gate pre-release versions (semver `-pre` suffix) to specific users or groups; non-members see only stable versions. See [Access Control guide](/guide/access-control#beta-channel).
 - ✅ **Bulk operations** — bulk yank, unyank, and delete via admin API
 - Bulk publish, bulk deprecation
-- Content-addressable deduplication and integrity verification for stored artifacts
+- ✅ **Content-addressable deduplication** — identical artifact bytes stored once, ref-counted across logical keys; transparent and backwards-compatible
+- Integrity verification: verify checksums on re-serve, not only at publish time
 
 ### CLI tool — `batlehub-cli`
 
@@ -175,6 +176,6 @@ Software Bill of Materials support, driven by compliance requirements (EU Cyber 
 
 ## Testing {#testing}
 
-- Unit tests for all registry adapters and policy evaluation logic
+- ✅ **Unit tests — significant progress** — entities, services, auth providers, storage router, registry adapters (cargo, npm, github, …), web middleware, and handler guards are all covered. Line coverage enforced at ≥ 80% via `task coverage-check` (llvm-cov).
 - Integration tests against real upstream registries (gated, opt-in)
 - Broader fuzzing targets beyond the current four (`fuzz_rbac_evaluate`, `fuzz_package_id_cache_key`, `fuzz_deny_latest`, `fuzz_release_age`)
