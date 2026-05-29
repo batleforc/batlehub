@@ -1702,6 +1702,21 @@ textarea {
 }
 
 /* ── Responsive ──────────────────────────────────────────────────── */
+@media (min-width: 1600px) {
+  .cg-root {
+    max-width: 1900px;
+  }
+  .cg-form {
+    display: block;
+    columns: 2;
+    column-gap: 1rem;
+  }
+  .cg-section {
+    break-inside: avoid;
+    margin-bottom: 1rem;
+  }
+}
+
 @media (max-width: 1300px) {
   .cg-root {
     grid-template-columns: 1fr;
