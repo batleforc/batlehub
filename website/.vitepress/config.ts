@@ -6,7 +6,11 @@ export default defineConfig({
     "Your package hub. Proxy, cache, and host npm, Cargo, Go, Maven, Terraform, and RubyGems registries.",
   cleanUrls: true,
   base: process.env.BASE_URL || "/",
-
+  vite: {
+    server: {
+      allowedHosts: true,
+    },
+  },
   head: [
     ["link", { rel: "icon", type: "image/svg+xml", href: "/logo.svg" }],
     ["meta", { name: "theme-color", content: "#646cff" }],
