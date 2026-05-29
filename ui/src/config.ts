@@ -2,4 +2,6 @@
 export const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? "";
 
 /** URL of the documentation site. */
-export const DOCS_URL: string = import.meta.env.VITE_DOCS_URL ?? "https://batlehub.batleforc.fr";
+export const DOCS_URL: string =
+  import.meta.env.VITE_DOCS_URL ??
+  "https://batleforc.git.batleforc.fr/batlehub/";
