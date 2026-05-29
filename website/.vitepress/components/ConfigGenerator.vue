@@ -906,9 +906,6 @@ const composerAuthSnippet = `{
                 Remove token
               </button>
             </div>
-            <button class="cg-btn-add" @click="addToken(auth)">
-              + Add token
-            </button>
           </template>
 
           <!-- OIDC auth -->
@@ -976,13 +973,18 @@ const composerAuthSnippet = `{
             /></label>
           </template>
 
-          <button
-            class="cg-btn-remove"
-            style="margin-top: 0.5rem"
-            @click="removeAuthProvider(auth.id)"
-          >
-            Remove provider
-          </button>
+          <div class="cg-provider-actions">
+            <button
+              v-if="auth.type === 'token'"
+              class="cg-btn-add"
+              @click="addToken(auth)"
+            >
+              + Add token
+            </button>
+            <button class="cg-btn-remove" @click="removeAuthProvider(auth.id)">
+              Remove provider
+            </button>
+          </div>
         </div>
         <button class="cg-btn-add" @click="addAuthProvider">
           + Add auth provider
@@ -1086,13 +1088,18 @@ curl -X POST \
             /></label>
           </div>
 
-          <!-- Advanced toggle -->
-          <button
-            class="cg-btn-advanced"
-            @click="reg.showAdvanced = !reg.showAdvanced"
-          >
-            {{ reg.showAdvanced ? "▲ Hide advanced" : "▼ Advanced options" }}
-          </button>
+          <!-- Advanced toggle + remove row -->
+          <div class="cg-registry-actions">
+            <button
+              class="cg-btn-advanced"
+              @click="reg.showAdvanced = !reg.showAdvanced"
+            >
+              {{ reg.showAdvanced ? "▲ Hide advanced" : "▼ Advanced options" }}
+            </button>
+            <button class="cg-btn-remove" @click="removeRegistry(reg.id)">
+              Remove registry
+            </button>
+          </div>
 
           <div v-if="reg.showAdvanced" class="cg-advanced">
             <!-- Cache policy -->
@@ -1268,9 +1275,6 @@ curl -X POST \
             </template>
           </div>
 
-          <button class="cg-btn-remove" @click="removeRegistry(reg.id)">
-            Remove registry
-          </button>
         </div>
         <button class="cg-btn-add" @click="addRegistry">+ Add registry</button>
       </section>
@@ -1356,16 +1360,19 @@ curl -X POST \
 
 <style scoped>
 .cg-root {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 560px;
   gap: 2rem;
-  align-items: flex-start;
+  align-items: start;
   margin-top: 1.5rem;
   width: 100%;
+  max-width: 1400px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 /* ── Form column ────────────────────────────────────────────────────── */
 .cg-form {
-  flex: 1 1 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -1557,7 +1564,7 @@ textarea {
 
 .cg-btn-advanced {
   display: inline-block;
-  margin: 0.5rem 0 0.25rem;
+  margin: 0;
   padding: 0.2rem 0.6rem;
   font-size: 0.78rem;
   border: 1px solid var(--vp-c-divider);
@@ -1575,9 +1582,18 @@ textarea {
   background: var(--vp-c-brand-soft);
 }
 
+/* ── Action rows (add/remove on same line) ───────────────────────── */
+.cg-provider-actions,
+.cg-registry-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 0.75rem;
+}
+
 /* ── Preview column ──────────────────────────────────────────────── */
 .cg-preview {
-  flex: 0 0 560px;
+  min-width: 0;
   position: sticky;
   top: calc(var(--vp-nav-height) + 1rem);
   height: calc(100vh - var(--vp-nav-height) - 2rem);
@@ -1688,11 +1704,11 @@ textarea {
 /* ── Responsive ──────────────────────────────────────────────────── */
 @media (max-width: 1300px) {
   .cg-root {
-    flex-direction: column;
+    grid-template-columns: 1fr;
+    max-width: 100%;
   }
   .cg-preview {
     position: static;
-    flex: none;
     width: 100%;
     height: 520px;
   }
