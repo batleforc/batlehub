@@ -2,7 +2,7 @@ import { defineConfig } from "vitepress";
 
 export default defineConfig({
   title: "BatleHub",
-  description: "Smart proxy and cache for package registries",
+  description: "Your package hub. Proxy, cache, and host npm, Cargo, Go, Maven, Terraform, and RubyGems registries.",
   cleanUrls: true,
   base: process.env.BASE_URL || "/",
 
@@ -12,11 +12,11 @@ export default defineConfig({
     ["meta", { property: "og:type", content: "website" }],
     ["meta", { property: "og:site_name", content: "BatleHub" }],
     ["meta", { property: "og:title", content: "BatleHub" }],
-    ["meta", { property: "og:description", content: "Smart proxy and cache for package registries" }],
+    ["meta", { property: "og:description", content: "Your package hub. Proxy, cache, and host npm, Cargo, Go, Maven, Terraform, and RubyGems registries." }],
     ["meta", { property: "og:image", content: "/logo.svg" }],
     ["meta", { name: "twitter:card", content: "summary" }],
     ["meta", { name: "twitter:title", content: "BatleHub" }],
-    ["meta", { name: "twitter:description", content: "Smart proxy and cache for package registries" }],
+    ["meta", { name: "twitter:description", content: "Your package hub. Proxy, cache, and host npm, Cargo, Go, Maven, Terraform, and RubyGems registries." }],
     ["meta", { name: "twitter:image", content: "/logo.svg" }],
   ],
 
