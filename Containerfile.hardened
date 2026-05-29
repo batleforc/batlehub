@@ -36,7 +36,7 @@ FROM registry.access.redhat.com/hi/nodejs:latest-builder AS ui-builder
 
 WORKDIR /ui
 COPY ui/package.json ui/package-lock.json ./
-RUN npm ci
+RUN mkdir node_modules && npm ci
 
 COPY ui/ ./
 
