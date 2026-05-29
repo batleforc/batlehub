@@ -4,8 +4,14 @@ includes:
   cde: .task/cde.yaml
 
 tasks:
-  # ── Rust ─────────────────────────────────────────────────────────────────────
+  init:
+    desc: Init project
+    cmds:
+      - mise upgrade
+      - git remote set-url origin --push https://git.batleforc.fr/batleforc/batlehub
+      - git remote set-url origin --push https://github.com/batleforc/batlehub
 
+  # ── Rust ─────────────────────────────────────────────────────────────────────
   build:
     desc: Build the entire workspace
     cmds:

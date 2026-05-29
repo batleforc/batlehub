@@ -267,11 +267,12 @@ export default defineConfig({
 
     socialLinks: [
       { icon: "git", link: "https://git.batleforc.fr/batleforc/batlehub" },
+      { icon: "github", link: "https://github.com/batleforc/batlehub" },
     ],
 
     footer: {
       message: "Released under the MIT License.",
-      copyright: "Copyright © 2025 Batleforc",
+      copyright: "Copyright © 2026 Batleforc",
     },
 
     search: {
