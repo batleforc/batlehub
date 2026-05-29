@@ -1,5 +1,6 @@
 ---
 aside: false
+pageClass: page-config-gen
 ---
 
 # Config Generator

@@ -1,19 +1,15 @@
 /* ── Config Generator — full-width layout ────────────────────────────────── */
-/* aside: false in frontmatter hides the right TOC, but we also need to      */
-/* clear the max-width constraints that VitePress applies when has-sidebar    */
-/* is present. Rules are intentionally split: lightningcss drops selectors    */
-/* from combined :has() rules during the production build.                    */
-.VPDoc:has(._guide_config-generator) .aside {
-  display: none !important;
+/* pageClass: page-config-gen in the frontmatter adds this class to .Layout  */
+/* at build time, giving us a stable hook that avoids :has() pseudo-class     */
+/* which lightningcss can silently strip from combined selectors.             */
+.page-config-gen .VPDoc .container {
+  max-width: none !important;
 }
-.VPDoc:has(._guide_config-generator) .container {
-  max-width: 100% !important;
+.page-config-gen .VPDoc .content {
+  max-width: none !important;
 }
-.VPDoc:has(._guide_config-generator) .content {
-  max-width: 100% !important;
-}
-.VPDoc:has(._guide_config-generator) .content-container {
-  max-width: 100% !important;
+.page-config-gen .VPDoc .content-container {
+  max-width: none !important;
 }
 
 /* ── Inline [[toc]] — hide on desktop where the right-rail TOC already shows ── */
