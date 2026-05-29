@@ -94,11 +94,8 @@ impl RegistryClient for NpmRegistryClient {
         let packument = self.fetch_packument(&pkg.name).await?;
 
         // Resolve dist-tag (e.g. "latest") → concrete version string.
-        let resolved_version = packument
-            .dist_tags
-            .get(&pkg.version)
-            .cloned()
-            .unwrap_or_else(|| pkg.version.clone());
+        let resolved_version =
+            resolve_dist_tag(&packument.dist_tags, &pkg.version).to_owned();
 
         let version_meta = packument.versions.get(&resolved_version).ok_or_else(|| {
             CoreError::NotFound(format!(
@@ -113,13 +110,7 @@ impl RegistryClient for NpmRegistryClient {
             None
         };
 
-        let checksum = if !version_meta.dist.integrity.is_empty() {
-            Some(version_meta.dist.integrity.clone())
-        } else if !version_meta.dist.shasum.is_empty() {
-            Some(version_meta.dist.shasum.clone())
-        } else {
-            None
-        };
+        let checksum = pick_checksum(&version_meta.dist);
 
         let extra = serde_json::json!({
             "resolved_version": resolved_version,
@@ -158,11 +149,8 @@ impl RegistryClient for NpmRegistryClient {
     async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
         // Resolve the tarball URL for this version.
         let packument = self.fetch_packument(&pkg.name).await?;
-        let resolved_version = packument
-            .dist_tags
-            .get(&pkg.version)
-            .cloned()
-            .unwrap_or_else(|| pkg.version.clone());
+        let resolved_version =
+            resolve_dist_tag(&packument.dist_tags, &pkg.version).to_owned();
 
         let version_meta = packument.versions.get(&resolved_version).ok_or_else(|| {
             CoreError::NotFound(format!(
@@ -199,10 +187,34 @@ impl RegistryClient for NpmRegistryClient {
     }
 }
 
+fn encode_npm_name(name: &str) -> String {
+    name.replace('/', "%2F")
+}
+
+/// Resolve a dist-tag (e.g. `"latest"`) to a concrete version string.
+/// Returns the version unchanged when the tag is not in `dist_tags`.
+fn resolve_dist_tag<'a>(
+    dist_tags: &'a HashMap<String, String>,
+    version: &'a str,
+) -> &'a str {
+    dist_tags.get(version).map(String::as_str).unwrap_or(version)
+}
+
+/// Select the best checksum available: `integrity` (preferred) over `shasum`.
+fn pick_checksum(dist: &NpmDist) -> Option<String> {
+    if !dist.integrity.is_empty() {
+        Some(dist.integrity.clone())
+    } else if !dist.shasum.is_empty() {
+        Some(dist.shasum.clone())
+    } else {
+        None
+    }
+}
+
 impl NpmRegistryClient {
     async fn fetch_packument(&self, name: &str) -> Result<NpmPackument, CoreError> {
         // Scoped packages: @scope/pkg → must be percent-encoded as @scope%2Fpkg
-        let encoded = name.replace('/', "%2F");
+        let encoded = encode_npm_name(name);
         let url = format!("{}/{}", self.base_url, encoded);
 
         let resp = self
@@ -221,5 +233,59 @@ impl NpmRegistryClient {
             .json::<NpmPackument>()
             .await
             .map_err(|e| CoreError::Registry(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_scoped_package() {
+        assert_eq!(encode_npm_name("@scope/pkg"), "@scope%2Fpkg");
+        assert_eq!(encode_npm_name("lodash"), "lodash");
+    }
+
+    #[test]
+    fn resolve_dist_tag_known() {
+        let mut tags = HashMap::new();
+        tags.insert("latest".to_string(), "1.5.0".to_string());
+        assert_eq!(resolve_dist_tag(&tags, "latest"), "1.5.0");
+    }
+
+    #[test]
+    fn resolve_dist_tag_unknown_passes_through() {
+        let tags = HashMap::new();
+        assert_eq!(resolve_dist_tag(&tags, "2.0.0"), "2.0.0");
+    }
+
+    #[test]
+    fn pick_checksum_prefers_integrity() {
+        let dist = NpmDist {
+            tarball: "https://example.com/pkg.tgz".into(),
+            integrity: "sha512-abc".into(),
+            shasum: "oldsha".into(),
+        };
+        assert_eq!(pick_checksum(&dist).as_deref(), Some("sha512-abc"));
+    }
+
+    #[test]
+    fn pick_checksum_falls_back_to_shasum() {
+        let dist = NpmDist {
+            tarball: "https://example.com/pkg.tgz".into(),
+            integrity: String::new(),
+            shasum: "abc123".into(),
+        };
+        assert_eq!(pick_checksum(&dist).as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn pick_checksum_none_when_both_empty() {
+        let dist = NpmDist {
+            tarball: "https://example.com/pkg.tgz".into(),
+            integrity: String::new(),
+            shasum: String::new(),
+        };
+        assert!(pick_checksum(&dist).is_none());
     }
 }

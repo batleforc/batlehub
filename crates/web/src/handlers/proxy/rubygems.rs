@@ -27,6 +27,37 @@ fn require_rubygems(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use crate::RegistryMap;
+
+    fn map_with(registry: &str, type_: &str) -> RegistryMap {
+        let mut m = HashMap::new();
+        m.insert(registry.to_owned(), type_.to_owned());
+        RegistryMap(m)
+    }
+
+    #[test]
+    fn require_rubygems_ok_for_rubygems_registry() {
+        let map = map_with("gems1", "rubygems");
+        assert!(require_rubygems("gems1", &map).is_ok());
+    }
+
+    #[test]
+    fn require_rubygems_err_for_wrong_type() {
+        let map = map_with("cargo1", "cargo");
+        assert!(require_rubygems("cargo1", &map).is_err());
+    }
+
+    #[test]
+    fn require_rubygems_err_for_unknown_registry() {
+        let map = RegistryMap(HashMap::new());
+        assert!(require_rubygems("nonexistent", &map).is_err());
+    }
+}
+
 // ── Proxy & shared download routes ───────────────────────────────────────────
 
 /// Download a gem file.

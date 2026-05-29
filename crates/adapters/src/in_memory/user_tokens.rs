@@ -54,3 +54,36 @@ impl UserTokenRepository for NullUserTokenRepository {
         Ok(false)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    #[tokio::test]
+    async fn create_token_returns_err() {
+        let repo = NullUserTokenRepository::arc();
+        let result = repo
+            .create_token(Uuid::new_v4(), "alice", "my-token", "hash", Role::User, Utc::now())
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn find_by_hash_returns_none() {
+        let repo = NullUserTokenRepository::arc();
+        assert!(repo.find_by_hash("any-hash").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn list_for_user_returns_empty() {
+        let repo = NullUserTokenRepository::arc();
+        assert!(repo.list_for_user("alice").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn revoke_returns_false() {
+        let repo = NullUserTokenRepository::arc();
+        assert!(!repo.revoke(Uuid::new_v4(), "alice").await.unwrap());
+    }
+}

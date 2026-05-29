@@ -83,3 +83,36 @@ impl ArtifactMetaRepository for NoopArtifactMetaRepository {
         Ok(vec![])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    #[tokio::test]
+    async fn all_methods_return_defaults() {
+        let repo = NoopArtifactMetaRepository::arc();
+
+        assert!(repo
+            .record_artifact("k", "cargo", "tokio", "1.0", Some(100))
+            .await
+            .is_ok());
+        assert!(repo.touch_artifact("k").await.is_ok());
+        assert!(repo.list_artifacts("cargo").await.unwrap().is_empty());
+        assert!(repo.list_artifacts_by_package().await.unwrap().is_empty());
+        assert!(repo.delete_artifact_meta("k").await.is_ok());
+        assert!(!repo.is_artifact_expired("k", Utc::now()).await.unwrap());
+        assert!(repo
+            .list_expired_by_ttl("cargo", Utc::now())
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(repo
+            .list_idle("cargo", Utc::now())
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(repo.total_size_bytes("cargo").await.unwrap(), 0);
+        assert!(repo.list_lru("cargo", 10).await.unwrap().is_empty());
+    }
+}

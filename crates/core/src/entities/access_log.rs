@@ -116,3 +116,56 @@ impl EventFilter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entities::{PackageId, Role};
+
+    fn pkg() -> PackageId {
+        PackageId::new("cargo", "tokio", "1.0.0")
+    }
+
+    #[test]
+    fn is_denied_only_for_denied_variant() {
+        assert!(!AccessResult::Allowed.is_denied());
+        assert!(AccessResult::Denied { reason: "blocked".into() }.is_denied());
+        assert!(!AccessResult::ProxyError { reason: "timeout".into() }.is_denied());
+    }
+
+    #[test]
+    fn allowed_download_sets_correct_fields() {
+        let ev = AccessEvent::allowed_download(pkg(), Some("alice".into()), Role::User);
+        assert!(matches!(ev.result, AccessResult::Allowed));
+        assert!(matches!(ev.action, AccessAction::Download));
+        assert_eq!(ev.user_id.as_deref(), Some("alice"));
+        assert_eq!(ev.user_role, Role::User);
+    }
+
+    #[test]
+    fn denied_download_sets_reason() {
+        let ev =
+            AccessEvent::denied_download(pkg(), None, Role::Anonymous, "blocklisted".into());
+        assert!(
+            matches!(&ev.result, AccessResult::Denied { reason } if reason == "blocklisted")
+        );
+    }
+
+    #[test]
+    fn proxy_error_sets_reason() {
+        let ev =
+            AccessEvent::proxy_error(pkg(), None, Role::Anonymous, "upstream timeout".into());
+        assert!(
+            matches!(&ev.result, AccessResult::ProxyError { reason } if reason == "upstream timeout")
+        );
+    }
+
+    #[test]
+    fn event_filter_new_default_limit() {
+        let f = EventFilter::new();
+        assert_eq!(f.limit, 100);
+        assert_eq!(f.offset, 0);
+        assert!(!f.denied_only);
+        assert!(f.registry.is_none());
+    }
+}

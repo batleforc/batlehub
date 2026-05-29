@@ -48,15 +48,7 @@ impl StorageRouter {
     }
 
     fn backend_name_for_key(&self, key: &str) -> &str {
-        let registry = key
-            .strip_prefix("artifact:")
-            .and_then(|k| k.split('/').next())
-            .unwrap_or("");
-
-        self.registry_assignments
-            .get(registry)
-            .map(|s| s.as_str())
-            .unwrap_or(&self.default_name)
+        route_key_to_backend(key, &self.registry_assignments, &self.default_name)
     }
 
     fn resolve_backend(&self, name: &str) -> &Arc<dyn StorageBackend> {
@@ -449,5 +441,61 @@ impl StorageBackend for StorageRouter {
 
     async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, CoreError> {
         self.logical_keys_by_prefix(prefix).await
+    }
+}
+
+/// Extract the registry name from an artifact key and look up its assigned backend.
+/// Falls back to `default_name` when the registry has no explicit assignment or
+/// when the key does not carry an `"artifact:"` prefix.
+pub(crate) fn route_key_to_backend<'a>(
+    key: &str,
+    registry_assignments: &'a HashMap<String, String>,
+    default_name: &'a str,
+) -> &'a str {
+    let registry = key
+        .strip_prefix("artifact:")
+        .and_then(|k| k.split('/').next())
+        .unwrap_or("");
+
+    registry_assignments
+        .get(registry)
+        .map(|s| s.as_str())
+        .unwrap_or(default_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn routes_by_registry_assignment() {
+        let mut assignments = HashMap::new();
+        assignments.insert("cargo".to_string(), "s3".to_string());
+        assert_eq!(
+            route_key_to_backend("artifact:cargo/tokio/1.0.0", &assignments, "default"),
+            "s3"
+        );
+        assert_eq!(
+            route_key_to_backend("artifact:npm/lodash/4.0.0", &assignments, "default"),
+            "default"
+        );
+    }
+
+    #[test]
+    fn falls_back_for_key_without_artifact_prefix() {
+        let assignments = HashMap::new();
+        assert_eq!(
+            route_key_to_backend("some/other/key", &assignments, "default"),
+            "default"
+        );
+    }
+
+    #[test]
+    fn empty_assignments_always_returns_default() {
+        let assignments = HashMap::new();
+        assert_eq!(
+            route_key_to_backend("artifact:maven/org.apache/log4j/2.0", &assignments, "fs"),
+            "fs"
+        );
     }
 }

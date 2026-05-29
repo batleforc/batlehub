@@ -123,3 +123,53 @@ impl PackageFilter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_key_without_artifact() {
+        let id = PackageId::new("cargo", "tokio", "1.0.0");
+        assert_eq!(id.cache_key(), "cargo/tokio/1.0.0");
+    }
+
+    #[test]
+    fn cache_key_with_artifact() {
+        let id = PackageId::new("github", "rust-lang/rust", "v1.80.0").with_artifact("12345678");
+        assert_eq!(id.cache_key(), "github/rust-lang/rust/v1.80.0/12345678");
+    }
+
+    #[test]
+    fn display_equals_cache_key() {
+        let id = PackageId::new("npm", "lodash", "4.17.21");
+        assert_eq!(id.to_string(), id.cache_key());
+    }
+
+    #[test]
+    fn with_artifact_sets_artifact_field() {
+        let id = PackageId::new("cargo", "serde", "1.0.0").with_artifact("serde-1.0.0.crate");
+        assert_eq!(id.artifact.as_deref(), Some("serde-1.0.0.crate"));
+    }
+
+    #[test]
+    fn package_filter_new_default_limit() {
+        let f = PackageFilter::new();
+        assert_eq!(f.limit, 50);
+        assert_eq!(f.offset, 0);
+        assert!(f.registry.is_none());
+        assert!(!f.blocked_only);
+    }
+
+    #[test]
+    fn package_status_is_blocked() {
+        use chrono::Utc;
+        let blocked = PackageStatus::Blocked {
+            reason: "test".into(),
+            blocked_by: "admin".into(),
+            blocked_at: Utc::now(),
+        };
+        assert!(blocked.is_blocked());
+        assert!(!PackageStatus::Available.is_blocked());
+    }
+}

@@ -7,6 +7,17 @@ pub(crate) fn now_unix() -> u64 {
         .as_secs()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::now_unix;
+
+    #[test]
+    fn now_unix_is_after_2024() {
+        // Must be after 2024-01-01T00:00:00Z (1704067200)
+        assert!(now_unix() > 1_704_067_200);
+    }
+}
+
 pub mod in_memory;
 pub use in_memory::InMemoryRateLimitStore;
 

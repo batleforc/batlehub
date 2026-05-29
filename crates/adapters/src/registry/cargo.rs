@@ -199,3 +199,60 @@ impl CargoRegistryClient {
             .map_err(|e| CoreError::Registry(e.to_string()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn resp(max: &str, versions: &[(&str, bool)]) -> CratesIoResponse {
+        CratesIoResponse {
+            krate: CrateInfo {
+                max_version: max.to_string(),
+            },
+            versions: versions
+                .iter()
+                .map(|(num, yanked)| CrateVersion {
+                    num: num.to_string(),
+                    dl_path: format!("/api/v1/crates/test/{}/download", num),
+                    checksum: None,
+                    created_at: None,
+                    yanked: *yanked,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn resolve_exact_version() {
+        let r = resp("1.0.1", &[("1.0.1", false), ("1.0.0", false)]);
+        let pkg = PackageId::new("cargo", "serde", "1.0.0");
+        assert_eq!(CargoRegistryClient::resolve_version(&r, &pkg).unwrap().num, "1.0.0");
+    }
+
+    #[test]
+    fn resolve_latest_uses_max_version() {
+        let r = resp("1.5.0", &[("1.5.0", false), ("1.0.0", false)]);
+        let pkg = PackageId::new("cargo", "serde", "latest");
+        assert_eq!(CargoRegistryClient::resolve_version(&r, &pkg).unwrap().num, "1.5.0");
+    }
+
+    #[test]
+    fn resolve_yanked_version_returns_not_found() {
+        let r = resp("1.0.0", &[("1.0.0", true)]);
+        let pkg = PackageId::new("cargo", "serde", "1.0.0");
+        assert!(matches!(
+            CargoRegistryClient::resolve_version(&r, &pkg),
+            Err(CoreError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn resolve_missing_version_returns_not_found() {
+        let r = resp("2.0.0", &[("2.0.0", false)]);
+        let pkg = PackageId::new("cargo", "serde", "1.0.0");
+        assert!(matches!(
+            CargoRegistryClient::resolve_version(&r, &pkg),
+            Err(CoreError::NotFound(_))
+        ));
+    }
+}

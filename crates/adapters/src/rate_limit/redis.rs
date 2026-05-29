@@ -75,3 +75,32 @@ impl RateLimitStore for RedisRateLimitStore {
         Ok((count, window_reset))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn now_unix_is_reasonable() {
+        assert!(RedisRateLimitStore::now_unix() > 1_704_067_200);
+    }
+
+    #[test]
+    fn window_aligns_to_boundary() {
+        let now: u64 = 1000;
+        let ws: u64 = 60;
+        let window_start = (now / ws) * ws;
+        assert_eq!(window_start, 960);
+        assert_eq!(window_start + ws, 1020);
+    }
+
+    #[test]
+    fn window_start_is_always_lte_now() {
+        let now: u64 = 9999;
+        for ws in [1u64, 30, 60, 300, 3600] {
+            let window_start = (now / ws) * ws;
+            assert!(window_start <= now, "window_start {window_start} > now {now} for ws={ws}");
+            assert!(window_start + ws > now);
+        }
+    }
+}

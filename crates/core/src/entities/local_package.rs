@@ -37,6 +37,40 @@ impl std::str::FromStr for Visibility {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn from_str_all_variants() {
+        assert_eq!(Visibility::from_str("public").unwrap(), Visibility::Public);
+        assert_eq!(Visibility::from_str("internal").unwrap(), Visibility::Internal);
+        assert_eq!(Visibility::from_str("team").unwrap(), Visibility::Team);
+    }
+
+    #[test]
+    fn from_str_unknown_is_err() {
+        assert!(Visibility::from_str("private").is_err());
+        assert!(Visibility::from_str("").is_err());
+        assert!(Visibility::from_str("Public").is_err());
+    }
+
+    #[test]
+    fn display_roundtrip() {
+        for v in [Visibility::Public, Visibility::Internal, Visibility::Team] {
+            let s = v.to_string();
+            let back = Visibility::from_str(&s).unwrap();
+            assert_eq!(back, v);
+        }
+    }
+
+    #[test]
+    fn default_is_public() {
+        assert_eq!(Visibility::default(), Visibility::Public);
+    }
+}
+
 /// A package published directly to this BatleHub instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublishedPackage {

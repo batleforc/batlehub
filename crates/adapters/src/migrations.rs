@@ -18,6 +18,7 @@ macro_rules! mig {
     };
 }
 
+/// Build the embedded SQL migrator without connecting to a database.
 pub fn embedded_migrator() -> Migrator {
     Migrator {
         migrations: Cow::Owned(vec![
@@ -69,5 +70,18 @@ pub fn embedded_migrator() -> Migrator {
         ignore_missing: false,
         locking: true,
         no_tx: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_migrator_has_all_migrations() {
+        let m = embedded_migrator();
+        assert_eq!(m.migrations.len(), 16, "all 16 migrations must be embedded");
+        assert_eq!(m.migrations[0].version, 1);
+        assert_eq!(m.migrations[15].version, 16);
     }
 }

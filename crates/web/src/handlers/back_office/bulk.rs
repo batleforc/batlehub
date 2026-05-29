@@ -16,6 +16,32 @@ fn require_admin(identity: &AuthIdentity) -> Result<(), AppError> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use batlehub_core::entities::{Identity, Role};
+    use crate::extractors::AuthIdentity;
+
+    fn id(role: Role) -> AuthIdentity {
+        AuthIdentity(Identity { user_id: Some("u".into()), role, auth_provider: None, groups: vec![] })
+    }
+
+    #[test]
+    fn require_admin_passes_for_admin() {
+        assert!(require_admin(&id(Role::Admin)).is_ok());
+    }
+
+    #[test]
+    fn require_admin_fails_for_user() {
+        assert!(require_admin(&id(Role::User)).is_err());
+    }
+
+    #[test]
+    fn require_admin_fails_for_anonymous() {
+        assert!(require_admin(&id(Role::Anonymous)).is_err());
+    }
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct BulkPackageItem {
     pub name: String,

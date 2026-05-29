@@ -9,6 +9,14 @@ use batlehub_core::{entities::Role, services::WarmingService};
 
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
+fn require_admin(identity: &AuthIdentity) -> Result<(), AppError> {
+    if identity.role != Role::Admin {
+        Err(AppError::forbidden("admin role required"))
+    } else {
+        Ok(())
+    }
+}
+
 /// Map of registry name → WarmingService, injected as app data.
 pub type WarmingServiceMap = HashMap<String, Arc<WarmingService>>;
 
@@ -52,9 +60,7 @@ pub async fn warm_registry(
     registry_map: web::Data<RegistryMap>,
     warming_map: web::Data<WarmingServiceMap>,
 ) -> Result<impl Responder, AppError> {
-    if identity.role != Role::Admin {
-        return Err(AppError::forbidden("admin role required"));
-    }
+    require_admin(&identity)?;
 
     let registry = path.into_inner();
 
@@ -78,4 +84,26 @@ pub async fn warm_registry(
         skipped: report.skipped,
         errors: report.errors,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use batlehub_core::entities::{Identity, Role};
+    use crate::extractors::AuthIdentity;
+
+    fn id(role: Role) -> AuthIdentity {
+        AuthIdentity(Identity { user_id: Some("u".into()), role, auth_provider: None, groups: vec![] })
+    }
+
+    #[test]
+    fn require_admin_passes_for_admin() {
+        assert!(require_admin(&id(Role::Admin)).is_ok());
+    }
+
+    #[test]
+    fn require_admin_fails_for_non_admin() {
+        assert!(require_admin(&id(Role::User)).is_err());
+        assert!(require_admin(&id(Role::Anonymous)).is_err());
+    }
 }

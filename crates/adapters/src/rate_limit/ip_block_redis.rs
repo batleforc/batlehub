@@ -37,6 +37,68 @@ impl RedisIpBlockStore {
     }
 }
 
+/// Parse the stored block value `"{blocked_at}:{unblock_at}:{reason}"`.
+/// Returns `(blocked_at, unblock_at, reason)` or zeros/empty on malformed input.
+fn parse_block_value(s: &str) -> (u64, u64, &str) {
+    let mut parts = s.splitn(3, ':');
+    let blocked_at = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let unblock_at = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let reason = parts.next().unwrap_or("");
+    (blocked_at, unblock_at, reason)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn violation_key_format() {
+        assert_eq!(
+            RedisIpBlockStore::violation_key("1.2.3.4", 1_704_067_200),
+            "batlehub:ipviol:1.2.3.4:1704067200"
+        );
+    }
+
+    #[test]
+    fn block_key_format() {
+        assert_eq!(
+            RedisIpBlockStore::block_key("10.0.0.1"),
+            "batlehub:ipblock:10.0.0.1"
+        );
+    }
+
+    #[test]
+    fn parse_block_value_valid() {
+        let (blocked_at, unblock_at, reason) = parse_block_value("1000:2000:rate-limit");
+        assert_eq!(blocked_at, 1000);
+        assert_eq!(unblock_at, 2000);
+        assert_eq!(reason, "rate-limit");
+    }
+
+    #[test]
+    fn parse_block_value_reason_with_colon() {
+        let (_, _, reason) = parse_block_value("1000:2000:too many:requests");
+        assert_eq!(reason, "too many:requests");
+    }
+
+    #[test]
+    fn parse_block_value_malformed() {
+        let (blocked_at, unblock_at, reason) = parse_block_value("bad");
+        assert_eq!(blocked_at, 0);
+        assert_eq!(unblock_at, 0);
+        assert_eq!(reason, "");
+    }
+
+    #[test]
+    fn violation_window_aligns_to_boundary() {
+        let now: u64 = 1000;
+        let ws: u64 = 60;
+        let window_start = (now / ws) * ws;
+        assert_eq!(window_start, 960);
+        assert!(window_start + ws > now);
+    }
+}
+
 #[async_trait]
 impl IpBlockStore for RedisIpBlockStore {
     async fn record_violation(&self, ip: &str, window_secs: u32) -> Result<(u64, u64), CoreError> {
@@ -77,10 +139,7 @@ impl IpBlockStore for RedisIpBlockStore {
         let Some(s) = val else {
             return Ok(None);
         };
-        // Format: "{blocked_at}:{unblock_at}:{reason}"
-        let mut parts = s.splitn(3, ':');
-        let _blocked_at = parts.next();
-        let unblock_at: u64 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let (_, unblock_at, _) = parse_block_value(&s);
         let now = now_unix();
         if unblock_at > now {
             Ok(Some(unblock_at))
@@ -150,10 +209,7 @@ impl IpBlockStore for RedisIpBlockStore {
             .zip(values)
             .filter_map(|(key, val)| {
                 let s = val?;
-                let mut parts = s.splitn(3, ':');
-                let blocked_at: u64 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-                let unblock_at: u64 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-                let reason = parts.next().unwrap_or("").to_owned();
+                let (blocked_at, unblock_at, reason) = parse_block_value(&s);
                 if unblock_at <= now {
                     return None;
                 }
@@ -165,7 +221,7 @@ impl IpBlockStore for RedisIpBlockStore {
                     ip,
                     blocked_at,
                     unblock_at,
-                    reason,
+                    reason: reason.to_owned(),
                 })
             })
             .collect();

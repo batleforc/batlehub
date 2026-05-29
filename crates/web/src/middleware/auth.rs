@@ -95,3 +95,124 @@ where
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::{
+        test::{self, TestRequest},
+        web, App, HttpRequest, HttpResponse,
+    };
+    use async_trait::async_trait;
+    use batlehub_core::{
+        entities::{Identity, Role},
+        error::CoreError,
+        ports::{AuthProvider, RawAuthRequest},
+    };
+
+    struct AlwaysAuth(String);
+
+    #[async_trait]
+    impl AuthProvider for AlwaysAuth {
+        fn name(&self) -> &str {
+            "always"
+        }
+        async fn authenticate(
+            &self,
+            _: &RawAuthRequest,
+        ) -> Result<Option<Identity>, CoreError> {
+            Ok(Some(Identity {
+                user_id: Some(self.0.clone()),
+                role: Role::User,
+                auth_provider: Some("always".into()),
+                groups: vec![],
+            }))
+        }
+    }
+
+    struct NeverAuth;
+
+    #[async_trait]
+    impl AuthProvider for NeverAuth {
+        fn name(&self) -> &str {
+            "never"
+        }
+        async fn authenticate(
+            &self,
+            _: &RawAuthRequest,
+        ) -> Result<Option<Identity>, CoreError> {
+            Ok(None)
+        }
+    }
+
+    async fn who_am_i(req: HttpRequest) -> HttpResponse {
+        let user = req
+            .extensions()
+            .get::<Identity>()
+            .and_then(|i| i.user_id.clone())
+            .unwrap_or_else(|| "anonymous".into());
+        HttpResponse::Ok().body(user)
+    }
+
+    #[actix_web::test]
+    async fn no_providers_yields_anonymous() {
+        let app = test::init_service(
+            App::new()
+                .wrap(AuthMiddlewareFactory::new(vec![]))
+                .route("/", web::get().to(who_am_i)),
+        )
+        .await;
+        let req = TestRequest::get().uri("/").to_request();
+        let resp = test::call_service(&app, req).await;
+        let body = test::read_body(resp).await;
+        assert_eq!(body, "anonymous");
+    }
+
+    #[actix_web::test]
+    async fn first_matching_provider_wins() {
+        let providers: Vec<Arc<dyn AuthProvider>> = vec![
+            Arc::new(AlwaysAuth("alice".into())),
+            Arc::new(AlwaysAuth("bob".into())),
+        ];
+        let app = test::init_service(
+            App::new()
+                .wrap(AuthMiddlewareFactory::new(providers))
+                .route("/", web::get().to(who_am_i)),
+        )
+        .await;
+        let req = TestRequest::get().uri("/").to_request();
+        let body = test::read_body(test::call_service(&app, req).await).await;
+        assert_eq!(body, "alice");
+    }
+
+    #[actix_web::test]
+    async fn falls_back_to_second_provider() {
+        let providers: Vec<Arc<dyn AuthProvider>> = vec![
+            Arc::new(NeverAuth),
+            Arc::new(AlwaysAuth("carol".into())),
+        ];
+        let app = test::init_service(
+            App::new()
+                .wrap(AuthMiddlewareFactory::new(providers))
+                .route("/", web::get().to(who_am_i)),
+        )
+        .await;
+        let req = TestRequest::get().uri("/").to_request();
+        let body = test::read_body(test::call_service(&app, req).await).await;
+        assert_eq!(body, "carol");
+    }
+
+    #[actix_web::test]
+    async fn all_providers_fail_yields_anonymous() {
+        let providers: Vec<Arc<dyn AuthProvider>> = vec![Arc::new(NeverAuth)];
+        let app = test::init_service(
+            App::new()
+                .wrap(AuthMiddlewareFactory::new(providers))
+                .route("/", web::get().to(who_am_i)),
+        )
+        .await;
+        let req = TestRequest::get().uri("/").to_request();
+        let body = test::read_body(test::call_service(&app, req).await).await;
+        assert_eq!(body, "anonymous");
+    }
+}

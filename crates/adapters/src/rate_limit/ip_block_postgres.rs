@@ -24,6 +24,14 @@ impl PgIpBlockStore {
     }
 }
 
+/// Compute the aligned window start and reset timestamps for a violation window.
+fn violation_window(now_unix: i64, window_secs: u32) -> (i64, u64) {
+    let ws = window_secs as i64;
+    let window_start = (now_unix / ws) * ws;
+    let window_reset = (window_start + ws) as u64;
+    (window_start, window_reset)
+}
+
 #[async_trait]
 impl IpBlockStore for PgIpBlockStore {
     async fn record_violation(&self, ip: &str, window_secs: u32) -> Result<(u64, u64), CoreError> {
@@ -31,9 +39,7 @@ impl IpBlockStore for PgIpBlockStore {
             return Err(CoreError::Database("window_secs must be > 0".into()));
         }
         let now = now_unix();
-        let ws = window_secs as i64;
-        let window_start = ((now as i64) / ws) * ws;
-        let window_reset = (window_start + ws) as u64;
+        let (window_start, window_reset) = violation_window(now as i64, window_secs);
 
         // Prune expired windows for this IP.
         sqlx::query("DELETE FROM ip_violation_counters WHERE ip = $1 AND window_start < $2")
@@ -124,5 +130,34 @@ impl IpBlockStore for PgIpBlockStore {
                 reason: r.get("reason"),
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn violation_window_aligns_to_boundary() {
+        let (start, reset) = violation_window(1000, 60);
+        assert_eq!(start, 960);  // floor(1000/60)*60
+        assert_eq!(reset, 1020); // 960 + 60
+    }
+
+    #[test]
+    fn violation_window_exactly_on_boundary() {
+        let (start, reset) = violation_window(960, 60);
+        assert_eq!(start, 960);
+        assert_eq!(reset, 1020);
+    }
+
+    #[test]
+    fn violation_window_start_is_always_lte_now() {
+        for now in [0i64, 1, 59, 60, 61, 1000, 9999] {
+            for ws in [1u32, 30, 60, 300] {
+                let (start, _) = violation_window(now, ws);
+                assert!(start <= now, "start={start} > now={now} for ws={ws}");
+            }
+        }
     }
 }

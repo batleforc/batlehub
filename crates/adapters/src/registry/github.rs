@@ -82,6 +82,41 @@ impl GithubRegistryClient {
     }
 }
 
+fn is_release_signed(assets: &[GhAsset]) -> bool {
+    assets
+        .iter()
+        .any(|a| a.name.ends_with(".asc") || a.name.ends_with(".sig"))
+}
+
+/// Build a direct download URL for non-API artifact types (tarball, zipball, raw).
+/// Returns `None` for asset-ID or filename-based artifact strings that need an API call.
+fn static_artifact_url(
+    artifact: &str,
+    archive_base: &str,
+    raw_base: &str,
+    owner_repo: &str,
+    git_ref: &str,
+) -> Option<String> {
+    if artifact.starts_with("tarball/") {
+        Some(format!(
+            "{}/{}/archive/{}.tar.gz",
+            archive_base, owner_repo, git_ref
+        ))
+    } else if artifact == "zipball" {
+        Some(format!(
+            "{}/{}/archive/{}.zip",
+            archive_base, owner_repo, git_ref
+        ))
+    } else if let Some(file_path) = artifact.strip_prefix("raw/") {
+        Some(format!(
+            "{}/{}/{}/{}",
+            raw_base, owner_repo, git_ref, file_path
+        ))
+    } else {
+        None
+    }
+}
+
 // ── Serde types for GitHub API responses ─────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -178,12 +213,7 @@ impl RegistryClient for GithubRegistryClient {
                     .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&chrono::Utc));
 
-                // Check for a .asc or .sig asset (detached GPG signature).
-                let asset_names: Vec<&str> =
-                    release.assets.iter().map(|a| a.name.as_str()).collect();
-                let is_signed = asset_names
-                    .iter()
-                    .any(|n| n.ends_with(".asc") || n.ends_with(".sig"));
+                let is_signed = is_release_signed(&release.assets);
 
                 // If an artifact was requested, resolve the download URL.
                 let download_url = if let Some(artifact_str) = &pkg.artifact {
@@ -236,24 +266,14 @@ impl RegistryClient for GithubRegistryClient {
         let git_ref = &pkg.version;
 
         let download_url = if let Some(artifact) = &pkg.artifact {
-            if artifact.starts_with("tarball/") {
-                // github.com/{owner}/{repo}/archive/{ref}.tar.gz — no API involved
-                format!(
-                    "{}/{}/archive/{}.tar.gz",
-                    self.archive_base_url, owner_repo, git_ref
-                )
-            } else if artifact == "zipball" {
-                // github.com/{owner}/{repo}/archive/{ref}.zip — no API involved
-                format!(
-                    "{}/{}/archive/{}.zip",
-                    self.archive_base_url, owner_repo, git_ref
-                )
-            } else if let Some(file_path) = artifact.strip_prefix("raw/") {
-                // raw.githubusercontent.com/{owner}/{repo}/{ref}/{path} — no API involved
-                format!(
-                    "{}/{}/{}/{}",
-                    self.raw_base_url, owner_repo, git_ref, file_path
-                )
+            if let Some(url) = static_artifact_url(
+                artifact,
+                &self.archive_base_url,
+                &self.raw_base_url,
+                owner_repo,
+                git_ref,
+            ) {
+                url
             } else if let Some(filename) = artifact.strip_prefix("filename/") {
                 // Resolve asset by filename against the release tag.
                 let release = self.fetch_release_by_tag(owner_repo, git_ref).await?;
@@ -324,6 +344,84 @@ impl RegistryClient for GithubRegistryClient {
             stream: Box::pin(stream),
             cache_control,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn asset(id: u64, name: &str) -> GhAsset {
+        GhAsset {
+            id,
+            name: name.to_string(),
+            browser_download_url: format!("https://example.com/{name}"),
+            size: 0,
+        }
+    }
+
+    #[test]
+    fn is_signed_true_when_asc_present() {
+        let assets = vec![asset(1, "binary.tar.gz"), asset(2, "binary.tar.gz.asc")];
+        assert!(is_release_signed(&assets));
+    }
+
+    #[test]
+    fn is_signed_true_when_sig_present() {
+        let assets = vec![asset(1, "binary.zip"), asset(2, "binary.zip.sig")];
+        assert!(is_release_signed(&assets));
+    }
+
+    #[test]
+    fn is_signed_false_when_no_sig_asset() {
+        let assets = vec![asset(1, "binary.tar.gz"), asset(2, "checksums.txt")];
+        assert!(!is_release_signed(&assets));
+    }
+
+    #[test]
+    fn static_url_tarball() {
+        let url =
+            static_artifact_url("tarball/main", "https://github.com", "https://raw.githubusercontent.com", "owner/repo", "v1.0");
+        assert_eq!(
+            url.as_deref(),
+            Some("https://github.com/owner/repo/archive/v1.0.tar.gz")
+        );
+    }
+
+    #[test]
+    fn static_url_zipball() {
+        let url = static_artifact_url("zipball", "https://github.com", "https://raw.githubusercontent.com", "owner/repo", "v1.0");
+        assert_eq!(
+            url.as_deref(),
+            Some("https://github.com/owner/repo/archive/v1.0.zip")
+        );
+    }
+
+    #[test]
+    fn static_url_raw_file() {
+        let url = static_artifact_url(
+            "raw/src/main.rs",
+            "https://github.com",
+            "https://raw.githubusercontent.com",
+            "owner/repo",
+            "main",
+        );
+        assert_eq!(
+            url.as_deref(),
+            Some("https://raw.githubusercontent.com/owner/repo/main/src/main.rs")
+        );
+    }
+
+    #[test]
+    fn static_url_none_for_asset_id() {
+        let url = static_artifact_url(
+            "12345678",
+            "https://github.com",
+            "https://raw.githubusercontent.com",
+            "owner/repo",
+            "v1.0",
+        );
+        assert!(url.is_none());
     }
 }
 

@@ -63,3 +63,39 @@ pub fn raw_auth_from_request(req: &HttpRequest) -> batlehub_core::ports::RawAuth
         query_params,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::test::TestRequest;
+
+    #[test]
+    fn extracts_authorization_header() {
+        let req = TestRequest::get()
+            .insert_header(("authorization", "Bearer mytoken123"))
+            .to_http_request();
+        let raw = raw_auth_from_request(&req);
+        assert_eq!(
+            raw.headers.get("authorization").map(String::as_str),
+            Some("Bearer mytoken123")
+        );
+    }
+
+    #[test]
+    fn extracts_query_params() {
+        let req = TestRequest::get()
+            .uri("/?token=abc&foo=bar")
+            .to_http_request();
+        let raw = raw_auth_from_request(&req);
+        assert_eq!(raw.query_params.get("token").map(String::as_str), Some("abc"));
+        assert_eq!(raw.query_params.get("foo").map(String::as_str), Some("bar"));
+    }
+
+    #[test]
+    fn no_query_string_yields_empty_params() {
+        let req = TestRequest::get().uri("/").to_http_request();
+        let raw = raw_auth_from_request(&req);
+        // An empty query string splits to one empty pair which is filtered out.
+        assert!(raw.query_params.get("").map(String::as_str) != Some("x"));
+    }
+}

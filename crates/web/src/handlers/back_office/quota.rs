@@ -16,6 +16,42 @@ fn require_admin(identity: &AuthIdentity) -> Result<(), AppError> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use batlehub_core::{entities::{Identity, Role}, ports::QuotaUsage};
+    use crate::extractors::AuthIdentity;
+
+    fn id(role: Role) -> AuthIdentity {
+        AuthIdentity(Identity { user_id: Some("u".into()), role, auth_provider: None, groups: vec![] })
+    }
+
+    #[test]
+    fn require_admin_passes_for_admin() {
+        assert!(require_admin(&id(Role::Admin)).is_ok());
+    }
+
+    #[test]
+    fn require_admin_fails_for_non_admin() {
+        assert!(require_admin(&id(Role::User)).is_err());
+    }
+
+    #[test]
+    fn quota_usage_dto_conversion() {
+        let usage = QuotaUsage {
+            user_id: "alice".into(),
+            registry: "cargo".into(),
+            bytes_published: 1024,
+            packages_count: 3,
+        };
+        let dto = QuotaUsageDto::from(usage);
+        assert_eq!(dto.user_id, "alice");
+        assert_eq!(dto.registry, "cargo");
+        assert_eq!(dto.bytes_published, 1024);
+        assert_eq!(dto.packages_count, 3);
+    }
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct QuotaUsageDto {
     pub user_id: String,

@@ -195,3 +195,183 @@ fn is_warning(used: u64, limit: Option<u64>, threshold: f64) -> bool {
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+
+    use crate::{
+        entities::{Identity, Role},
+        ports::QuotaUsage,
+    };
+
+    struct MockQuotaRepo {
+        usage: Mutex<(u64, u32)>,
+    }
+
+    impl MockQuotaRepo {
+        fn new(bytes: u64, packages: u32) -> Arc<Self> {
+            Arc::new(Self {
+                usage: Mutex::new((bytes, packages)),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl QuotaRepository for MockQuotaRepo {
+        async fn get_usage(&self, user_id: &str, registry: &str) -> Result<QuotaUsage, CoreError> {
+            let (bytes, packages) = *self.usage.lock().unwrap();
+            Ok(QuotaUsage {
+                user_id: user_id.to_owned(),
+                registry: registry.to_owned(),
+                bytes_published: bytes,
+                packages_count: packages,
+            })
+        }
+
+        async fn record_publish(
+            &self,
+            _: &str,
+            _: &str,
+            bytes: u64,
+        ) -> Result<(), CoreError> {
+            let mut g = self.usage.lock().unwrap();
+            g.0 += bytes;
+            g.1 += 1;
+            Ok(())
+        }
+
+        async fn revoke_publish(
+            &self,
+            _: &str,
+            _: &str,
+            bytes: u64,
+        ) -> Result<(), CoreError> {
+            let mut g = self.usage.lock().unwrap();
+            g.0 = g.0.saturating_sub(bytes);
+            g.1 = g.1.saturating_sub(1);
+            Ok(())
+        }
+
+        async fn reset_usage(&self, _: &str, _: &str) -> Result<(), CoreError> {
+            *self.usage.lock().unwrap() = (0, 0);
+            Ok(())
+        }
+
+        async fn list_usage(&self, _: Option<&str>) -> Result<Vec<QuotaUsage>, CoreError> {
+            Ok(vec![])
+        }
+    }
+
+    fn user(id: &str) -> Identity {
+        Identity {
+            user_id: Some(id.to_owned()),
+            role: Role::User,
+            auth_provider: None,
+            groups: vec![],
+        }
+    }
+
+    fn block_config(max_bytes: u64, max_pkgs: u32) -> RegistryQuotaConfig {
+        RegistryQuotaConfig {
+            max_storage_bytes_per_user: Some(max_bytes),
+            max_packages_per_user: Some(max_pkgs),
+            warn_threshold: 0.8,
+            enforcement: QuotaEnforcement::Block,
+        }
+    }
+
+    fn svc_with(config: RegistryQuotaConfig, bytes: u64, pkgs: u32) -> QuotaService {
+        let mut configs = HashMap::new();
+        configs.insert("cargo".into(), config);
+        QuotaService::new(MockQuotaRepo::new(bytes, pkgs), configs)
+    }
+
+    #[test]
+    fn is_warning_at_threshold() {
+        assert!(is_warning(80, Some(100), 0.8));
+        assert!(!is_warning(79, Some(100), 0.8));
+        assert!(!is_warning(10, None, 0.8));
+        assert!(!is_warning(10, Some(0), 0.8));
+    }
+
+    #[test]
+    fn quota_check_headers_empty_without_limits() {
+        let check = QuotaCheck {
+            bytes_used: 100,
+            bytes_limit: None,
+            packages_used: 5,
+            packages_limit: None,
+            warning: false,
+        };
+        assert!(check.headers().is_empty());
+    }
+
+    #[test]
+    fn quota_check_headers_includes_all_fields() {
+        let check = QuotaCheck {
+            bytes_used: 900,
+            bytes_limit: Some(1000),
+            packages_used: 9,
+            packages_limit: Some(10),
+            warning: true,
+        };
+        let headers = check.headers();
+        let names: Vec<_> = headers.iter().map(|(k, _)| *k).collect();
+        assert!(names.contains(&"X-Quota-Storage-Used"));
+        assert!(names.contains(&"X-Quota-Storage-Limit"));
+        assert!(names.contains(&"X-Quota-Packages-Used"));
+        assert!(names.contains(&"X-Quota-Packages-Limit"));
+        assert!(names.contains(&"X-Quota-Warning"));
+    }
+
+    #[tokio::test]
+    async fn anonymous_rejected_when_limits_exist() {
+        let svc = svc_with(block_config(1_000_000, 10), 0, 0);
+        let result = svc
+            .check_and_record_publish(&Identity::anonymous(), "cargo", 100)
+            .await;
+        assert!(matches!(result, Err(CoreError::QuotaExceeded(_))));
+    }
+
+    #[tokio::test]
+    async fn byte_limit_blocks_when_enforcement_is_block() {
+        let svc = svc_with(block_config(1000, 100), 900, 1);
+        let result = svc
+            .check_and_record_publish(&user("alice"), "cargo", 200)
+            .await;
+        assert!(matches!(result, Err(CoreError::QuotaExceeded(_))));
+    }
+
+    #[tokio::test]
+    async fn no_quota_config_passes_through() {
+        let svc = QuotaService::new(MockQuotaRepo::new(0, 0), HashMap::new());
+        let check = svc
+            .check_and_record_publish(&user("alice"), "cargo", 100)
+            .await
+            .unwrap();
+        assert!(check.headers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn warn_mode_allows_over_limit() {
+        let svc = svc_with(
+            RegistryQuotaConfig {
+                max_storage_bytes_per_user: Some(1000),
+                max_packages_per_user: None,
+                warn_threshold: 0.8,
+                enforcement: QuotaEnforcement::Warn,
+            },
+            900,
+            1,
+        );
+        let check = svc
+            .check_and_record_publish(&user("alice"), "cargo", 200)
+            .await
+            .unwrap();
+        assert!(check.warning);
+    }
+}

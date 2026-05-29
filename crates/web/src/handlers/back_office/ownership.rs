@@ -48,6 +48,60 @@ fn default_role() -> String {
     "maintainer".to_owned()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use batlehub_core::{entities::{Identity, Role}, ports::OwnerEntry};
+    use crate::extractors::AuthIdentity;
+
+    fn id(role: Role) -> AuthIdentity {
+        AuthIdentity(Identity { user_id: Some("u".into()), role, auth_provider: None, groups: vec![] })
+    }
+
+    #[test]
+    fn require_admin_passes_for_admin() {
+        assert!(require_admin(&id(Role::Admin)).is_ok());
+    }
+
+    #[test]
+    fn require_admin_fails_for_non_admin() {
+        assert!(require_admin(&id(Role::User)).is_err());
+        assert!(require_admin(&id(Role::Anonymous)).is_err());
+    }
+
+    #[test]
+    fn default_role_is_maintainer() {
+        assert_eq!(default_role(), "maintainer");
+    }
+
+    #[test]
+    fn owner_entry_dto_conversion() {
+        let entry = OwnerEntry {
+            principal_type: "user".into(),
+            principal_id: "alice".into(),
+            role: "admin".into(),
+            granted_by: Some("bob".into()),
+        };
+        let dto = OwnerEntryDto::from(entry);
+        assert_eq!(dto.principal_type, "user");
+        assert_eq!(dto.principal_id, "alice");
+        assert_eq!(dto.role, "admin");
+        assert_eq!(dto.granted_by.as_deref(), Some("bob"));
+    }
+
+    #[test]
+    fn owner_entry_dto_none_granted_by() {
+        let entry = OwnerEntry {
+            principal_type: "group".into(),
+            principal_id: "devs".into(),
+            role: "maintainer".into(),
+            granted_by: None,
+        };
+        let dto = OwnerEntryDto::from(entry);
+        assert!(dto.granted_by.is_none());
+    }
+}
+
 /// List owners of a package.
 #[utoipa::path(
     get,
