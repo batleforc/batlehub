@@ -5,6 +5,7 @@ on:
     branches: ["main"]
     paths:
       - "helm/**"
+      - ".forgejo/workflows/helm.yaml"
   workflow_dispatch:
 
 permissions:
@@ -69,4 +70,4 @@ jobs:
       - name: Push chart to Harbor
         run: |
           helm push ${{ steps.package.outputs.chart_path }} \
-            oci://${{ steps.vault.outputs.REGISTRY }}/batleforc/batlehub/chart
+            oci://${{ steps.vault.outputs.REGISTRY }}/batleforc/chart
