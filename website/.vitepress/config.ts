@@ -2,7 +2,8 @@ import { defineConfig } from "vitepress";
 
 export default defineConfig({
   title: "BatleHub",
-  description: "Your package hub. Proxy, cache, and host npm, Cargo, Go, Maven, Terraform, and RubyGems registries.",
+  description:
+    "Your package hub. Proxy, cache, and host npm, Cargo, Go, Maven, Terraform, and RubyGems registries.",
   cleanUrls: true,
   base: process.env.BASE_URL || "/",
 
@@ -12,11 +13,25 @@ export default defineConfig({
     ["meta", { property: "og:type", content: "website" }],
     ["meta", { property: "og:site_name", content: "BatleHub" }],
     ["meta", { property: "og:title", content: "BatleHub" }],
-    ["meta", { property: "og:description", content: "Your package hub. Proxy, cache, and host npm, Cargo, Go, Maven, Terraform, and RubyGems registries." }],
+    [
+      "meta",
+      {
+        property: "og:description",
+        content:
+          "Your package hub. Proxy, cache, and host npm, Cargo, Go, Maven, Terraform, and RubyGems registries.",
+      },
+    ],
     ["meta", { property: "og:image", content: "/logo.svg" }],
     ["meta", { name: "twitter:card", content: "summary" }],
     ["meta", { name: "twitter:title", content: "BatleHub" }],
-    ["meta", { name: "twitter:description", content: "Your package hub. Proxy, cache, and host npm, Cargo, Go, Maven, Terraform, and RubyGems registries." }],
+    [
+      "meta",
+      {
+        name: "twitter:description",
+        content:
+          "Your package hub. Proxy, cache, and host npm, Cargo, Go, Maven, Terraform, and RubyGems registries.",
+      },
+    ],
     ["meta", { name: "twitter:image", content: "/logo.svg" }],
   ],
 
@@ -112,9 +127,15 @@ export default defineConfig({
               link: "/guide/administration#package-management",
             },
             { text: "Audit log", link: "/guide/administration#audit-log" },
-            { text: "Beta channel", link: "/guide/administration#beta-channel" },
+            {
+              text: "Beta channel",
+              link: "/guide/administration#beta-channel",
+            },
             { text: "IP blocking", link: "/guide/administration#ip-blocking" },
-            { text: "Team namespaces", link: "/guide/administration#team-namespaces" },
+            {
+              text: "Team namespaces",
+              link: "/guide/administration#team-namespaces",
+            },
             { text: "Rules", link: "/guide/administration#rules" },
           ],
         },
@@ -245,7 +266,7 @@ export default defineConfig({
     },
 
     socialLinks: [
-      { icon: "github", link: "https://git.batleforc.fr/batleforc/batlehub" },
+      { icon: "git", link: "https://git.batleforc.fr/batleforc/batlehub" },
     ],
 
     footer: {

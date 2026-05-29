@@ -6,15 +6,15 @@ hero:
     src: /logo.svg
     alt: BatleHub
   name: BatleHub
-  text: Smart proxy and cache for package registries
+  text: Your package hub. Proxy, cache, and host.
   tagline: Sit between your build tools and the internet. Cache artifacts, enforce access control, and publish private packages — all from one self-hosted server.
   actions:
     - theme: brand
       text: Get Started
       link: /guide/installation
     - theme: alt
-      text: View on GitHub
-      link: https://github.com/batleforc/batlehub
+      text: View on Forgejo
+      link: https://git.batle.dev/batlehub/batlehub
 
 features:
   - icon: ⚡
