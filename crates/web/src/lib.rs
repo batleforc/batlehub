@@ -306,7 +306,7 @@ use handlers::back_office::warming::WarmingServiceMap;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::OpenApi;
 use utoipa_actix_web::{service_config::ServiceConfig as UtoipaServiceConfig, AppExt};
-use utoipa_swagger_ui::SwaggerUi;
+use utoipa_scalar::{Scalar, Servable as _};
 
 use sqlx::PgPool;
 
@@ -570,9 +570,9 @@ pub fn openapi_spec() -> utoipa::openapi::OpenApi {
     openapi
 }
 
-/// Return a SwaggerUi service using the provided OpenAPI spec.
-pub fn swagger_ui(openapi: utoipa::openapi::OpenApi) -> SwaggerUi {
-    SwaggerUi::new("/swagger-ui/{_:.*}").url("/api/openapi.json", openapi)
+/// Return a Scalar API docs service using the provided OpenAPI spec.
+pub fn scalar(openapi: utoipa::openapi::OpenApi) -> Scalar<utoipa::openapi::OpenApi> {
+    Scalar::with_url("/scalar", openapi)
 }
 
 /// Configure all application routes on a `UtoipaApp`.

@@ -81,7 +81,6 @@ pub async fn warm_registry(
 
 #[cfg(test)]
 mod tests {
-    use super::require_admin;
     use super::*;
     use crate::extractors::AuthIdentity;
     use batlehub_core::entities::{Identity, Role};

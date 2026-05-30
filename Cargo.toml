@@ -33,7 +33,7 @@ actix-files = "0.6"
 actix-cors = "0.7"
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.13", features = ["json", "stream", "form"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -43,11 +43,11 @@ toml = "0.8"
 # OpenAPI
 utoipa = { version = "5", features = ["actix_extras", "chrono", "uuid"] }
 utoipa-actix-web = "0.1"
-utoipa-swagger-ui = { version = "9", features = ["actix-web"] }
+utoipa-scalar = { version = "0.3", features = ["actix-web"] }
 
 # Metrics
 metrics = "0.24"
-metrics-exporter-prometheus = "0.16"
+metrics-exporter-prometheus = "0.18"
 
 # Tracing / OTEL
 tracing = "0.1"
@@ -57,10 +57,10 @@ tracing-subscriber = { version = "0.3", features = [
     "json",
 ] }
 tracing-actix-web = { version = "0.7", default-features = false }
-tracing-opentelemetry = "0.32"
-opentelemetry = "0.31"
-opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
+tracing-opentelemetry = "0.33"
+opentelemetry = "0.32"
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic"] }
 
 # Database — default-features = false to avoid sqlx-macros → sqlx-macros-core →
 # sqlx-mysql → rsa (RUSTSEC-2023-0071, no upstream fix available).
@@ -87,7 +87,7 @@ regex = "1"
 glob = "0.3"
 semver = "1"
 base64 = "0.22"
-quick-xml = "0.36"
+quick-xml = "0.40"
 argon2 = { version = "0.5", features = ["std"] }
 
 # CLI

@@ -43,10 +43,10 @@ tokio.workspace = true
 reqwest.workspace = true
 sqlx.workspace = true
 tracing.workspace = true
-jsonwebtoken = { version = "9", optional = true }
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"], optional = true }
 glob = { workspace = true, optional = true }
 regex = { workspace = true, optional = true }
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"], optional = true }
+redis = { version = "1", features = ["tokio-comp", "connection-manager"], optional = true }
 aws-sdk-s3 = { workspace = true, optional = true, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
 aws-config = { workspace = true, optional = true, features = ["default-https-client", "rt-tokio", "credentials-process"] }
 base64 = "0.22"
@@ -55,12 +55,12 @@ argon2.workspace = true
 flate2 = { version = "1", optional = true }
 tar = { version = "0.4", optional = true }
 zip = { version = "2", optional = true }
-rand = "0.8"
+rand = "0.9"
 hex = "0.4"
 
 [dev-dependencies]
 mockito = "1"
-rcgen = "0.13"
+rcgen = "0.14"
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
 tokio-rustls = "0.26"
 toml = { workspace = true }

@@ -12,7 +12,7 @@ use batlehub_core::{
 
 pub fn generate_token() -> (String, String) {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     let raw = hex::encode(bytes);
     let hash = hash_token(&raw);
     (raw, hash)

@@ -659,7 +659,7 @@ async fn main() -> Result<()> {
                 enabled,
                 IpBlockMiddlewareFactory::new(Arc::clone(&ip_block_store), ip_block_cfg_for_mw),
             ))
-            .service(batlehub_web::swagger_ui(openapi))
+            .service(batlehub_web::scalar(openapi))
             .configure(move |cfg| {
                 if let Some(ref dir) = static_dir_inner {
                     cfg.service(

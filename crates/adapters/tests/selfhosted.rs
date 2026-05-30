@@ -176,7 +176,7 @@ async fn custom_ca_cert_enables_https_connection() {
     let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()])
         .expect("rcgen cert generation");
     let cert_der = certified.cert.der().clone();
-    let key_der = certified.key_pair.serialize_der();
+    let key_der = certified.signing_key.serialize_der();
     let cert_pem = certified.cert.pem();
 
     // 2. Start the HTTPS server with that certificate.
@@ -222,7 +222,7 @@ async fn untrusted_ca_cert_rejects_https_connection() {
     let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()])
         .expect("rcgen cert generation");
     let cert_der = certified.cert.der().clone();
-    let key_der = certified.key_pair.serialize_der();
+    let key_der = certified.signing_key.serialize_der();
 
     let addr = spawn_tls_server(cert_der, key_der).await;
 

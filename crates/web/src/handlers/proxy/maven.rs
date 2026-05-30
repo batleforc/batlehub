@@ -207,8 +207,10 @@ fn parse_pom(bytes: &[u8]) -> Result<PomMetadata, AppError> {
                 }
             }
             Ok(XE::Text(e)) if depth == 2 => {
-                let text = e
-                    .unescape()
+                let raw = e
+                    .decode()
+                    .map_err(|e| AppError::unprocessable(format!("pom parse: {e}")))?;
+                let text = quick_xml::escape::unescape(&raw)
                     .map_err(|e| AppError::unprocessable(format!("pom parse: {e}")))?
                     .into_owned();
                 match current_tag.as_str() {
