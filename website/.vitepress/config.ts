@@ -45,30 +45,22 @@ export default defineConfig({
     nav: [
       { text: "Home", link: "/" },
       {
-        text: "Installation",
-        link: "/guide/installation",
-        activeMatch: "/guide/installation",
+        text: "Getting Started",
+        activeMatch: "/guide/(installation|user|config-generator)",
+        items: [
+          { text: "Installation", link: "/guide/installation" },
+          { text: "User Guide", link: "/guide/user" },
+          { text: "Config Generator", link: "/guide/config-generator" },
+        ],
       },
       {
-        text: "Administration",
-        link: "/guide/administration",
-        activeMatch: "/guide/administration",
-      },
-      {
-        text: "Caching",
-        link: "/guide/caching",
-        activeMatch: "/guide/caching",
-      },
-      { text: "User Guide", link: "/guide/user", activeMatch: "/guide/user" },
-      {
-        text: "Config Generator",
-        link: "/guide/config-generator",
-        activeMatch: "/guide/config-generator",
-      },
-      {
-        text: "Access Control",
-        link: "/guide/access-control",
-        activeMatch: "/guide/access-control",
+        text: "Reference",
+        activeMatch: "/guide/(administration|caching|access-control)",
+        items: [
+          { text: "Administration", link: "/guide/administration" },
+          { text: "Caching", link: "/guide/caching" },
+          { text: "Access Control", link: "/guide/access-control" },
+        ],
       },
       {
         text: "Roadmap",
