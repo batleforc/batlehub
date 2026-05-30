@@ -108,7 +108,7 @@ issuer_url = "https://token.actions.githubusercontent.com"
 
 A token from `myorg/my-repo` on `main` resolves to group `github-actions/myorg-my-repo/main`, which you can grant registry permissions to with a wildcard: `"github-actions/*" = ["releases:write"]`.
 
-See [Configuration § Actions OIDC auth](/guide/../docs/configuration#334-actions-oidc-auth-type--actions-oidc) for the full reference.
+See [Configuration § Actions OIDC auth](https://git.batleforc.fr/batleforc/batlehub/src/branch/main/docs/configuration#334-actions-oidc-auth-type--actions-oidc) for the full reference.
 
 ---
 
