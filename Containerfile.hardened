@@ -54,7 +54,7 @@ FROM registry.access.redhat.com/hi/core-runtime:latest@sha256:c85f5e01b7f638cb30
 COPY --from=builder   /build/target/release/batlehub /usr/local/bin/batlehub
 COPY --from=ui-builder /ui/dist                         /app/ui/dist
 
-RUN mkdir -p /var/cache/batlehub
+RUN mkdir -p /app/cache && chown 1001:0 /app/cache && chmod g=u /app/cache
 
 EXPOSE 8080
 
