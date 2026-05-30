@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 
 use crate::entities::{
-    AccessEvent, EventFilter, PackageFilter, PackageId, PackageStatus, PackageSummary,
+    AccessEvent, EventFilter, ExploreEntry, ExploreFilter, PackageFilter, PackageId, PackageStatus,
+    PackageSummary, RegistryStat,
 };
 use crate::error::CoreError;
 
@@ -28,4 +29,28 @@ pub trait PackageRepository: Send + Sync {
 
     /// Query the access event log.
     async fn list_events(&self, filter: EventFilter) -> Result<Vec<AccessEvent>, CoreError>;
+
+    /// Explorer: collapsed list of packages (one entry per name) from both proxied and local sources.
+    async fn explore_packages(
+        &self,
+        filter: ExploreFilter,
+    ) -> Result<Vec<ExploreEntry>, CoreError> {
+        let _ = filter;
+        Ok(vec![])
+    }
+
+    /// Explorer: count of unique (registry, name) pairs matching the filter.
+    async fn count_explore_packages(&self, filter: ExploreFilter) -> Result<u64, CoreError> {
+        let _ = filter;
+        Ok(0)
+    }
+
+    /// Explorer: per-registry package counts and download totals.
+    async fn registry_explore_stats(
+        &self,
+        accessible_registries: &[String],
+    ) -> Result<Vec<RegistryStat>, CoreError> {
+        let _ = accessible_registries;
+        Ok(vec![])
+    }
 }

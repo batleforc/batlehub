@@ -8,10 +8,10 @@ use std::collections::HashMap;
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient},
+    ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
 };
 
-use super::http_client::{apply_upstream_options, UpstreamHttpOptions};
+use super::http_client::{apply_upstream_options, percent_encode, UpstreamHttpOptions};
 
 /// Composer / Packagist registry proxy client.
 ///
@@ -32,18 +32,38 @@ pub struct ComposerRegistryClient {
     http: reqwest::Client,
     base_url: String,
     basic_auth: Option<(String, String)>,
+    /// Resolved search base URL. `None` = disabled; `Some(url)` = use this.
+    search_base: Option<String>,
 }
 
 impl ComposerRegistryClient {
     pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
         let builder = reqwest::Client::builder().user_agent("Composer/2.0 batlehub/0.1");
         let http = apply_upstream_options(builder, opts)?;
-        // Normalise once so per-method callers don't need to trim.
         let base_url = base_url.into().trim_end_matches('/').to_owned();
+
+        // Resolve the search base URL:
+        //   - explicit empty string → disabled
+        //   - explicit non-empty URL → use as-is
+        //   - absent → derive from base_url: any *.packagist.org URL maps to packagist.org
+        let search_base = match opts.search_url.as_deref() {
+            Some("") => None,
+            Some(url) => Some(url.trim_end_matches('/').to_owned()),
+            None => {
+                if base_url.contains("packagist.org") {
+                    Some("https://packagist.org".to_owned())
+                } else {
+                    // Unknown private Composer repository — attempt the same host
+                    Some(base_url.clone())
+                }
+            }
+        };
+
         Ok(Self {
             http,
             base_url,
             basic_auth: opts.basic_auth.clone(),
+            search_base,
         })
     }
 
@@ -300,6 +320,58 @@ impl RegistryClient for ComposerRegistryClient {
             .map(|entries| entries.iter().map(|e| e.version.clone()).collect())
             .unwrap_or_default();
         Ok(versions)
+    }
+
+    async fn search_packages(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<UpstreamPackage>, CoreError> {
+        #[derive(Deserialize)]
+        struct SearchResponse {
+            results: Vec<SearchResult>,
+        }
+        #[derive(Deserialize)]
+        struct SearchResult {
+            name: String,
+            description: Option<String>,
+        }
+
+        let Some(ref search_base) = self.search_base else {
+            return Ok(vec![]);
+        };
+        let url = format!(
+            "{}/search.json?q={}&per_page={}",
+            search_base,
+            percent_encode(query),
+            limit.min(50),
+        );
+        let res = self
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        if !res.status().is_success() {
+            return Ok(vec![]);
+        }
+
+        let body: SearchResponse = res
+            .json()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        // Packagist search doesn't include the latest version; use "latest" as a
+        // placeholder — the proxy resolves the real version on first access.
+        Ok(body
+            .results
+            .into_iter()
+            .map(|r| UpstreamPackage {
+                name: r.name,
+                latest_version: "latest".to_string(),
+                description: r.description,
+            })
+            .collect())
     }
 }
 

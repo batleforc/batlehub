@@ -12,6 +12,13 @@ pub struct UpstreamHttpOptions {
     pub custom_header: Option<(String, String)>,
     /// Path to a PEM-encoded CA certificate to add as a trusted root.
     pub ca_cert_path: Option<String>,
+    /// Override URL for the upstream search API used by the Package Explorer.
+    ///
+    /// - `None` — use the registry type's built-in default (e.g. `search.maven.org`
+    ///   for Maven, `packagist.org` for Composer).
+    /// - `Some(url)` — use this URL as the search base.
+    /// - `Some("")` — disable upstream search for this registry entirely.
+    pub search_url: Option<String>,
 }
 
 /// Applies only the TLS options from `opts` to `builder`, returning the
@@ -69,6 +76,25 @@ pub fn apply_upstream_options(
         builder = builder.default_headers(auth_headers);
     }
     Ok(builder.build()?)
+}
+
+/// Percent-encode a query string value, encoding all characters except
+/// unreserved ones (letters, digits, `-`, `_`, `.`, `~`).
+pub fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => {
+                out.push('%');
+                out.push(char::from_digit((byte >> 4) as u32, 16).unwrap().to_ascii_uppercase());
+                out.push(char::from_digit((byte & 0xf) as u32, 16).unwrap().to_ascii_uppercase());
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]

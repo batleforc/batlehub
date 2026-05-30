@@ -1,6 +1,7 @@
 pub mod http_client;
 pub use http_client::{
-    apply_upstream_options, apply_upstream_tls, upstream_auth_headers, UpstreamHttpOptions,
+    apply_upstream_options, apply_upstream_tls, percent_encode, upstream_auth_headers,
+    UpstreamHttpOptions,
 };
 
 pub mod fanout;

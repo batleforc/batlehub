@@ -5,10 +5,11 @@ use serde::Deserialize;
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient},
+    ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
 };
 
 use super::http_client::{apply_upstream_options, UpstreamHttpOptions};
+// percent_encode not needed for PyPI (uses normalize_name for exact lookup)
 
 /// PyPI registry proxy client.
 ///
@@ -292,6 +293,49 @@ impl RegistryClient for PypiRegistryClient {
         let mut versions: Vec<String> = pkg_json.releases.into_keys().collect();
         versions.sort();
         Ok(versions)
+    }
+
+    // PyPI removed its public search XMLRPC endpoint. Fall back to exact name
+    // lookup: if the query exactly matches a published package, return it.
+    async fn search_packages(
+        &self,
+        query: &str,
+        _limit: usize,
+    ) -> Result<Vec<UpstreamPackage>, CoreError> {
+        #[derive(Deserialize)]
+        struct PypiInfo {
+            info: PypiInfoInner,
+        }
+        #[derive(Deserialize)]
+        struct PypiInfoInner {
+            name: String,
+            version: String,
+            summary: Option<String>,
+        }
+
+        let base = self.base_url.trim_end_matches('/');
+        // PyPI removed its public search API; do an exact name lookup instead.
+        let url = format!("{base}/pypi/{}/json", normalize_name(query));
+        let res = self
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        if !res.status().is_success() {
+            return Ok(vec![]);
+        }
+
+        let body: PypiInfo = res
+            .json()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        Ok(vec![UpstreamPackage {
+            name: body.info.name,
+            latest_version: body.info.version,
+            description: body.info.summary,
+        }])
     }
 }
 

@@ -17,6 +17,14 @@ pub struct FetchedArtifact {
     pub cache_control: Option<String>,
 }
 
+/// A lightweight package hit returned by upstream search.
+#[derive(Debug, Clone)]
+pub struct UpstreamPackage {
+    pub name: String,
+    pub latest_version: String,
+    pub description: Option<String>,
+}
+
 /// A client for a specific upstream package registry.
 ///
 /// Each registry type (GitHub, Cargo, npm, …) provides its own implementation.
@@ -43,6 +51,19 @@ pub trait RegistryClient: Send + Sync {
     /// support version enumeration (e.g. GitHub Releases, OpenVSX) can rely on it.
     async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
         let _ = package;
+        Ok(vec![])
+    }
+
+    /// Search the upstream registry for packages matching `query`.
+    ///
+    /// Returns up to `limit` results. The default implementation returns an empty
+    /// list; registries without a search API (e.g. GitHub, Go) can rely on it.
+    async fn search_packages(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<UpstreamPackage>, CoreError> {
+        let _ = (query, limit);
         Ok(vec![])
     }
 }

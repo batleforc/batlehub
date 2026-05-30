@@ -21,6 +21,7 @@ const isOidcUser = computed(
 
 const userLinks = [
   { to: "/packages", label: "Packages" },
+  { to: "/explore", label: "Explore" },
   { to: "/access-check", label: "Access Check" },
   { to: "/path-mapper", label: "URL Mapper" },
   { to: "/setup", label: "Setup" },

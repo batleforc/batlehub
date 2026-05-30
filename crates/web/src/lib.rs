@@ -20,6 +20,11 @@ pub struct AccessConfig {
     pub admin: HashSet<String>,
     /// Dynamic group → registry names. Populated from `[registries.rbac.groups]`.
     pub groups: HashMap<String, HashSet<String>>,
+    /// Registries where each role can browse/search in the package explorer.
+    /// Always a subset of the corresponding proxy-access set.
+    pub explore_anonymous: HashSet<String>,
+    pub explore_user: HashSet<String>,
+    pub explore_admin: HashSet<String>,
 }
 
 impl AccessConfig {
@@ -55,6 +60,22 @@ impl AccessConfig {
     pub fn has_registry_access(&self, identity: &Identity) -> bool {
         !self.accessible_registries_for(identity).is_empty()
     }
+
+    fn explore_registries(&self, role: &Role) -> &HashSet<String> {
+        match role {
+            Role::Admin => &self.explore_admin,
+            Role::User => &self.explore_user,
+            Role::Anonymous => &self.explore_anonymous,
+        }
+    }
+
+    /// Returns the set of registries the caller can browse/search in the package explorer.
+    /// Groups inherit their proxy access for explore (no separate group-level explore restriction).
+    pub fn explore_accessible_registries_for(&self, identity: &Identity) -> HashSet<String> {
+        let proxy = self.accessible_registries_for(identity);
+        let explore = self.explore_registries(&identity.role);
+        proxy.intersection(explore).cloned().collect()
+    }
 }
 
 #[cfg(test)]
@@ -63,6 +84,10 @@ mod access_config_tests {
     use batlehub_core::entities::Identity;
 
     fn make_config() -> AccessConfig {
+        let regs: HashSet<String> = ["public", "user-only", "admin-only", "group-a-reg", "group-b-reg"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         AccessConfig {
             anonymous: ["public"].iter().map(|s| s.to_string()).collect(),
             user: ["public", "user-only"]
@@ -88,6 +113,9 @@ mod access_config_tests {
             ]
             .into_iter()
             .collect(),
+            explore_anonymous: regs.clone(),
+            explore_user: regs.clone(),
+            explore_admin: regs,
         }
     }
 
@@ -153,6 +181,9 @@ mod access_config_tests {
             )]
             .into_iter()
             .collect(),
+            explore_anonymous: HashSet::new(),
+            explore_user: HashSet::new(),
+            explore_admin: HashSet::new(),
         };
         let id = identity(Role::Anonymous, vec!["team-a"]);
         assert!(anon_cfg.has_registry_access(&id));
@@ -179,6 +210,10 @@ mod access_config_tests {
     }
 
     fn make_wildcard_config() -> AccessConfig {
+        let all: HashSet<String> = ["all-reg", "shared-reg", "oidc2-reg"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         AccessConfig {
             anonymous: HashSet::new(),
             user: HashSet::new(),
@@ -197,6 +232,9 @@ mod access_config_tests {
             ]
             .into_iter()
             .collect(),
+            explore_anonymous: all.clone(),
+            explore_user: all.clone(),
+            explore_admin: all,
         }
     }
 
@@ -338,6 +376,7 @@ pub use middleware::RateLimitService;
         (name = "proxy/pypi",       description = "PyPI registry — simple index proxy with URL rewriting, wheel/sdist downloads, and twine-compatible publish"),
         (name = "proxy/conda",      description = "Conda channel proxy — repodata.json, package downloads, and private channel publishing"),
         (name = "front-office",     description = "User-facing package information"),
+        (name = "explore",          description = "Package explorer — browse and search across registries"),
         (name = "back-office",    description = "Admin management (requires Admin role)"),
     ),
     modifiers(&SecurityAddon),
@@ -390,6 +429,10 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             warming::warm_registry,
         },
         front_office::{
+            explore::{
+                explore_package_detail, explore_packages, explore_registry_stats,
+                explore_upstream_search,
+            },
             me::me,
             packages::{check_access, list_packages},
             registries::list_registries,
@@ -529,6 +572,11 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(get_packument);
     cfg.service(me);
     cfg.service(list_registries);
+    // Explore: detail path before list (more specific first); upstream before list
+    cfg.service(explore_package_detail);
+    cfg.service(explore_upstream_search);
+    cfg.service(explore_packages);
+    cfg.service(explore_registry_stats);
     cfg.service(list_packages);
     cfg.service(check_access);
     cfg.service(admin_list_packages);

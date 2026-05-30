@@ -4,10 +4,10 @@ use futures::TryStreamExt;
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient},
+    ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
 };
 
-use super::http_client::{apply_upstream_options, UpstreamHttpOptions};
+use super::http_client::{apply_upstream_options, percent_encode, UpstreamHttpOptions};
 
 /// Maven Central-compatible registry client.
 ///
@@ -29,6 +29,8 @@ pub struct MavenRegistryClient {
     http: reqwest::Client,
     base_url: String,
     basic_auth: Option<(String, String)>,
+    /// Resolved search URL base. `None` = disabled; `Some(url)` = use this.
+    search_base: Option<String>,
 }
 
 impl MavenRegistryClient {
@@ -37,10 +39,22 @@ impl MavenRegistryClient {
             .user_agent("batlehub/0.1")
             .redirect(reqwest::redirect::Policy::limited(10));
         let http = apply_upstream_options(builder, opts)?;
+
+        // Resolve the search base URL:
+        //   - explicit empty string → disabled
+        //   - explicit non-empty URL → use as-is
+        //   - absent → default to Maven Central's search service
+        let search_base = match opts.search_url.as_deref() {
+            Some("") => None,
+            Some(url) => Some(url.trim_end_matches('/').to_owned()),
+            None => Some("https://search.maven.org".to_owned()),
+        };
+
         Ok(Self {
             http,
             base_url: base_url.into(),
             basic_auth: opts.basic_auth.clone(),
+            search_base,
         })
     }
 
@@ -293,6 +307,63 @@ impl RegistryClient for MavenRegistryClient {
         // but some repositories serve them in arbitrary order; sort them.
         versions.sort();
         Ok(versions)
+    }
+
+    async fn search_packages(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<UpstreamPackage>, CoreError> {
+        #[derive(serde::Deserialize)]
+        struct SearchResponse {
+            response: SolrResponse,
+        }
+        #[derive(serde::Deserialize)]
+        struct SolrResponse {
+            docs: Vec<SolrDoc>,
+        }
+        #[derive(serde::Deserialize)]
+        struct SolrDoc {
+            // "g:a" combined identifier
+            id: String,
+            #[serde(rename = "latestVersion")]
+            latest_version: Option<String>,
+        }
+
+        let Some(ref search_base) = self.search_base else {
+            return Ok(vec![]);
+        };
+        let url = format!(
+            "{}/solrsearch/select?q={}&rows={}&wt=json",
+            search_base,
+            percent_encode(query),
+            limit.min(50),
+        );
+        let res = self
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        if !res.status().is_success() {
+            return Ok(vec![]);
+        }
+
+        let body: SearchResponse = res
+            .json()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        Ok(body
+            .response
+            .docs
+            .into_iter()
+            .map(|d| UpstreamPackage {
+                name: d.id,
+                latest_version: d.latest_version.unwrap_or_else(|| "unknown".to_string()),
+                description: None,
+            })
+            .collect())
     }
 }
 

@@ -565,6 +565,31 @@ async fn main() -> Result<()> {
             .map(|r| r.name.clone())
             .collect(),
         groups: group_access,
+        explore_anonymous: config
+            .registries
+            .iter()
+            .filter(|r| !r.rbac.anonymous.is_empty() && r.rbac.explore.anonymous)
+            .map(|r| r.name.clone())
+            .collect(),
+        explore_user: config
+            .registries
+            .iter()
+            .filter(|r| {
+                (!r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty()) && r.rbac.explore.user
+            })
+            .map(|r| r.name.clone())
+            .collect(),
+        explore_admin: config
+            .registries
+            .iter()
+            .filter(|r| {
+                (!r.rbac.anonymous.is_empty()
+                    || !r.rbac.user.is_empty()
+                    || !r.rbac.admin.is_empty())
+                    && r.rbac.explore.admin
+            })
+            .map(|r| r.name.clone())
+            .collect(),
     };
 
     let registry_map = RegistryMap(registry_type_map);
@@ -749,6 +774,7 @@ fn upstream_options(reg: &RegistryConfig) -> UpstreamHttpOptions {
         basic_auth,
         custom_header,
         ca_cert_path: reg.tls.as_ref().and_then(|t| t.ca_cert_path.clone()),
+        search_url: reg.search_url.clone(),
     }
 }
 

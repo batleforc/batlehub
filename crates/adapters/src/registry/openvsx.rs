@@ -7,10 +7,10 @@ use std::collections::HashMap;
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient},
+    ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
 };
 
-use super::http_client::{apply_upstream_options, UpstreamHttpOptions};
+use super::http_client::{apply_upstream_options, percent_encode, UpstreamHttpOptions};
 
 /// OpenVSX registry client (open-vsx.org or compatible).
 ///
@@ -183,6 +183,65 @@ impl RegistryClient for OpenVsxRegistryClient {
             stream: Box::pin(stream),
             cache_control,
         })
+    }
+
+    async fn search_packages(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<UpstreamPackage>, CoreError> {
+        #[derive(Deserialize)]
+        struct SearchResponse {
+            extensions: Vec<ExtHit>,
+        }
+        #[derive(Deserialize)]
+        struct ExtHit {
+            namespace: String,
+            name: String,
+            version: String,
+            description: Option<String>,
+        }
+
+        // Strip any /api suffix that some configs include in the base URL,
+        // so we don't produce .../api/api/-/search.
+        let base = self
+            .base_url
+            .trim_end_matches('/')
+            .trim_end_matches("/api")
+            .trim_end_matches('/');
+
+        let url = format!(
+            "{}/api/-/search?query={}&size={}",
+            base,
+            percent_encode(query),
+            limit.min(50),
+        );
+
+        let res = self
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        if !res.status().is_success() {
+            return Ok(vec![]);
+        }
+
+        let body: SearchResponse = res
+            .json()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        Ok(body
+            .extensions
+            .into_iter()
+            .map(|e| UpstreamPackage {
+                // OpenVSX package IDs use "publisher.name" (dot separator)
+                name: format!("{}.{}", e.namespace, e.name),
+                latest_version: e.version,
+                description: e.description,
+            })
+            .collect())
     }
 }
 

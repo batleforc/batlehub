@@ -571,6 +571,16 @@ pub struct RegistryConfig {
     /// When enabled, pre-release versions are only visible to registered beta-channel members.
     #[serde(default)]
     pub beta_channel: Option<BetaChannelConfig>,
+    /// Base URL of the upstream search API used by the Package Explorer.
+    ///
+    /// When absent, each registry type falls back to its built-in default:
+    /// - `maven`    → `https://search.maven.org`
+    /// - `composer` → `https://packagist.org` (for packagist.org-based repos)
+    ///
+    /// Set to `""` (empty string) to disable upstream search for this registry.
+    /// Has no effect on registry types that do not support upstream search.
+    #[serde(default)]
+    pub search_url: Option<String>,
 }
 
 // ── Versioning policy ─────────────────────────────────────────────────────────
@@ -925,6 +935,39 @@ pub struct RbacConfig {
     /// Maps group name → list of permitted resource types for this registry.
     #[serde(default)]
     pub groups: HashMap<String, Vec<String>>,
+    /// Controls which roles can search/browse this registry in the package explorer.
+    /// When absent, defaults to allowing explore for any role that has proxy access.
+    #[serde(default)]
+    pub explore: ExploreRbacConfig,
+}
+
+/// Per-registry explore/search permissions.
+///
+/// Example TOML:
+/// ```toml
+/// [registries.rbac.explore]
+/// anonymous = false   # anonymous users cannot search
+/// user = false        # regular users cannot search (proxy-only)
+/// admin = true        # admins can browse
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct ExploreRbacConfig {
+    #[serde(default = "default_true")]
+    pub anonymous: bool,
+    #[serde(default = "default_true")]
+    pub user: bool,
+    #[serde(default = "default_true")]
+    pub admin: bool,
+}
+
+impl Default for ExploreRbacConfig {
+    fn default() -> Self {
+        Self {
+            anonymous: true,
+            user: true,
+            admin: true,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

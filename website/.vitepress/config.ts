@@ -73,11 +73,12 @@ export default defineConfig({
       },
       {
         text: "Reference",
-        activeMatch: "/guide/(administration|caching|access-control|high-availability)",
+        activeMatch: "/guide/(administration|caching|access-control|high-availability|package-explorer)",
         items: [
           { text: "Administration", link: "/guide/administration" },
           { text: "Caching", link: "/guide/caching" },
           { text: "Access Control", link: "/guide/access-control" },
+          { text: "Package Explorer", link: "/guide/package-explorer" },
           { text: "High Availability", link: "/guide/high-availability" },
         ],
       },
@@ -253,6 +254,24 @@ export default defineConfig({
               text: "Registry support",
               link: "/guide/access-control#ns-registries",
             },
+          ],
+        },
+      ],
+      "/guide/package-explorer": [
+        {
+          text: "Package Explorer",
+          items: [
+            { text: "Overview", link: "/guide/package-explorer#overview" },
+            { text: "Data sources", link: "/guide/package-explorer#sources" },
+            { text: "Using the catalog", link: "/guide/package-explorer#catalog" },
+            { text: "Package detail", link: "/guide/package-explorer#detail" },
+            { text: "Firewall status", link: "/guide/package-explorer#firewall" },
+            { text: "Upstream search", link: "/guide/package-explorer#upstream-search" },
+            { text: "Search URL config", link: "/guide/package-explorer#search-url-config" },
+            { text: "Access control", link: "/guide/package-explorer#access-control" },
+            { text: "RBAC configuration", link: "/guide/package-explorer#rbac-config" },
+            { text: "REST API", link: "/guide/package-explorer#api" },
+            { text: "Performance notes", link: "/guide/package-explorer#performance" },
           ],
         },
       ],
