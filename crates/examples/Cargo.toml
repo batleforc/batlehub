@@ -30,7 +30,7 @@ metrics-exporter-prometheus.workspace = true
 # payload construction for local_registry tests
 flate2 = "1"
 tar    = "0.4"
-zip    = "2"
+zip    = "8"
 
 [lints]
 workspace = true

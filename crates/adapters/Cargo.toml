@@ -4,59 +4,48 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[features]
-default = ["auth-token", "auth-oidc", "auth-kubernetes", "auth-actions-oidc", "storage-fs", "registry-github", "registry-npm", "registry-cargo", "registry-openvsx", "registry-goproxy", "registry-vscode-marketplace", "registry-maven", "registry-terraform", "registry-rubygems", "registry-composer", "db-postgres", "local-registry"]
-auth-token = []
-auth-oidc = ["dep:jsonwebtoken"]
-auth-kubernetes = []
-auth-actions-oidc = ["dep:jsonwebtoken", "dep:glob", "dep:regex"]
-storage-fs = []
-storage-s3 = ["dep:aws-sdk-s3", "dep:aws-config"]
-cache-redis = ["dep:redis"]
-registry-github = []
-registry-cargo = []
-registry-npm = []
-registry-openvsx = []
-registry-goproxy = []
-registry-vscode-marketplace = []
-registry-maven = []
-registry-terraform = []
-registry-rubygems = ["dep:flate2", "dep:tar"]
-registry-pypi = []
-registry-composer = ["dep:zip"]
-db-postgres = []
-local-registry = ["db-postgres"]
-
 [dependencies]
-batlehub-core = { path = "../core" }
-batlehub-config = { path = "../config" }
-async-trait.workspace = true
 anyhow.workspace = true
-thiserror.workspace = true
-chrono.workspace = true
-uuid.workspace = true
+argon2.workspace = true
+async-trait.workspace = true
+aws-config = {
+  workspace = true,
+  features = ["default-https-client", "credentials-process", "rt-tokio"],
+  optional = true
+}
+aws-sdk-s3 = {
+  workspace = true,
+  features = ["default-https-client", "http-1x", "rt-tokio", "sigv4a"],
+  optional = true
+}
+base64 = "0.22"
+batlehub-config = { path = "../config" }
+batlehub-core = { path = "../core" }
 bytes.workspace = true
+chrono.workspace = true
+flate2 = { version = "1", optional = true }
 futures.workspace = true
+glob = { workspace = true, optional = true }
+hex = "0.4"
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"], optional = true }
+rand = "0.10"
+redis = {
+  version = "1",
+  features = ["connection-manager", "tokio-comp"],
+  optional = true
+}
+regex = { workspace = true, optional = true }
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
-reqwest.workspace = true
+sha2 = "0.11"
 sqlx.workspace = true
-tracing.workspace = true
-jsonwebtoken = { version = "10", features = ["aws_lc_rs"], optional = true }
-glob = { workspace = true, optional = true }
-regex = { workspace = true, optional = true }
-redis = { version = "1", features = ["tokio-comp", "connection-manager"], optional = true }
-aws-sdk-s3 = { workspace = true, optional = true, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
-aws-config = { workspace = true, optional = true, features = ["default-https-client", "rt-tokio", "credentials-process"] }
-base64 = "0.22"
-sha2 = "0.10"
-argon2.workspace = true
-flate2 = { version = "1", optional = true }
 tar = { version = "0.4", optional = true }
-zip = { version = "2", optional = true }
-rand = "0.9"
-hex = "0.4"
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+zip = { version = "8", optional = true }
 
 [dev-dependencies]
 mockito = "1"
@@ -64,6 +53,47 @@ rcgen = "0.14"
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
 tokio-rustls = "0.26"
 toml = { workspace = true }
+
+[features]
+default = [
+  "auth-actions-oidc",
+  "auth-kubernetes",
+  "auth-oidc",
+  "auth-token",
+  "db-postgres",
+  "local-registry",
+  "registry-cargo",
+  "registry-composer",
+  "registry-github",
+  "registry-goproxy",
+  "registry-maven",
+  "registry-npm",
+  "registry-openvsx",
+  "registry-rubygems",
+  "registry-terraform",
+  "registry-vscode-marketplace",
+  "storage-fs"
+]
+auth-actions-oidc = ["dep:glob", "dep:jsonwebtoken", "dep:regex"]
+auth-kubernetes = []
+auth-oidc = ["dep:jsonwebtoken"]
+auth-token = []
+cache-redis = ["dep:redis"]
+db-postgres = []
+local-registry = ["db-postgres"]
+registry-cargo = []
+registry-composer = ["dep:zip"]
+registry-github = []
+registry-goproxy = []
+registry-maven = []
+registry-npm = []
+registry-openvsx = []
+registry-pypi = []
+registry-rubygems = ["dep:flate2", "dep:tar"]
+registry-terraform = []
+registry-vscode-marketplace = []
+storage-fs = []
+storage-s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
 
 [lints]
 workspace = true

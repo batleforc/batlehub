@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rand::RngCore;
+use rand::Rng;
 use sha2::{Digest, Sha256};
 
 use batlehub_core::{
