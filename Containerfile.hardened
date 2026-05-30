@@ -34,10 +34,10 @@ RUN cargo build --release -p batlehub-server
 # ── Frontend build stage ───────────────────────────────────────────────────────
 FROM registry.access.redhat.com/hi/nodejs:latest-builder AS ui-builder
 
-USER ${CONTAINER_DEFAULT_USER}
+USER root
 WORKDIR /ui
 COPY ui/package.json ui/package-lock.json ./
-RUN mkdir node_modules && npm ci
+RUN npm ci
 
 COPY ui/ ./
 
