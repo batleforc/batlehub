@@ -86,7 +86,7 @@ BatleHub proxies twelve registry types. Every registry type can run as a pure ca
 | Multi-upstream fanout | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Release age gate | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ⚠ ² |
 | RBAC | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Cache warming (version enumeration) | — | ✓ | ✓ | ✓ | — | ✓ | — | — | — | — | ✓ | ✓ ¹ |
+| Cache warming (version enumeration) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — | ✓ | ✓ ¹ |
 
 > ¹ Conda has no dedicated per-package version listing API. BatleHub synthesises one by scanning `repodata.json` for `noarch`, `linux-64`, `osx-64`, `osx-arm64`, and `win-64`. Results are the union of versions found across all available platforms.
 >

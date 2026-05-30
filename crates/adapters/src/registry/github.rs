@@ -342,6 +342,77 @@ impl RegistryClient for GithubRegistryClient {
             cache_control,
         })
     }
+
+    /// List all release tag names for an `owner/repo` repository.
+    ///
+    /// Fetches up to 10 pages of 100 releases each (1 000 releases maximum).
+    /// Pagination is driven by the `Link: <url>; rel="next"` response header.
+    async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
+        let mut url = format!(
+            "{}/repos/{}/releases?per_page=100",
+            self.base_url, package
+        );
+        let mut versions = Vec::new();
+
+        for _ in 0..10 {
+            let resp = self
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+            if resp.status() == reqwest::StatusCode::NOT_FOUND {
+                return Ok(vec![]);
+            }
+            if !resp.status().is_success() {
+                return Err(CoreError::Registry(format!(
+                    "github: releases list returned {}",
+                    resp.status()
+                )));
+            }
+
+            // Extract the next-page URL from the Link header before consuming
+            // the response body.
+            let next_url = next_link(resp.headers());
+
+            let releases: Vec<GhRelease> = resp
+                .json()
+                .await
+                .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+            for r in releases {
+                versions.push(r.tag_name);
+            }
+
+            match next_url {
+                Some(next) => url = next,
+                None => break,
+            }
+        }
+
+        Ok(versions)
+    }
+}
+
+/// Parse the `Link` header and return the URL for `rel="next"`, if present.
+fn next_link(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    let link = headers.get(reqwest::header::LINK)?.to_str().ok()?;
+    for part in link.split(',') {
+        let mut url_part = None;
+        let mut is_next = false;
+        for segment in part.split(';') {
+            let s = segment.trim();
+            if s.starts_with('<') && s.ends_with('>') {
+                url_part = Some(s[1..s.len() - 1].to_owned());
+            } else if s == r#"rel="next""# {
+                is_next = true;
+            }
+        }
+        if is_next {
+            return url_part;
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -430,6 +501,103 @@ mod tests {
             "v1.0",
         );
         assert!(url.is_none());
+    }
+
+    #[test]
+    fn next_link_parses_rel_next() {
+        let mut map = reqwest::header::HeaderMap::new();
+        map.insert(
+            reqwest::header::LINK,
+            r#"<https://api.github.com/repos/owner/repo/releases?page=2&per_page=100>; rel="next", <https://api.github.com/repos/owner/repo/releases?page=5&per_page=100>; rel="last""#
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            next_link(&map).as_deref(),
+            Some("https://api.github.com/repos/owner/repo/releases?page=2&per_page=100")
+        );
+    }
+
+    #[test]
+    fn next_link_absent_when_no_next_rel() {
+        let mut map = reqwest::header::HeaderMap::new();
+        map.insert(
+            reqwest::header::LINK,
+            r#"<https://api.github.com/repos/owner/repo/releases?page=5&per_page=100>; rel="last""#
+                .parse()
+                .unwrap(),
+        );
+        assert!(next_link(&map).is_none());
+    }
+
+    #[tokio::test]
+    async fn list_versions_single_page() {
+        let mut server = mockito::Server::new_async().await;
+        let body = serde_json::to_string(&serde_json::json!([
+            { "id": 1, "tag_name": "v1.1.0", "published_at": "2024-01-02T00:00:00Z", "assets": [] },
+            { "id": 2, "tag_name": "v1.0.0", "published_at": "2024-01-01T00:00:00Z", "assets": [] },
+        ])).unwrap();
+        let _mock = server
+            .mock("GET", "/repos/owner/repo/releases?per_page=100")
+            .with_status(200)
+            .with_body(&body)
+            .create_async()
+            .await;
+
+        let opts = UpstreamHttpOptions::default();
+        let client = GithubRegistryClient::new(server.url(), &opts).unwrap();
+        let versions = client.list_versions("owner/repo").await.unwrap();
+        assert_eq!(versions, vec!["v1.1.0", "v1.0.0"]);
+    }
+
+    #[tokio::test]
+    async fn list_versions_follows_pagination() {
+        let mut server = mockito::Server::new_async().await;
+
+        let page1 = serde_json::to_string(&serde_json::json!([
+            { "id": 1, "tag_name": "v1.2.0", "published_at": null, "assets": [] }
+        ])).unwrap();
+        let page2 = serde_json::to_string(&serde_json::json!([
+            { "id": 2, "tag_name": "v1.1.0", "published_at": null, "assets": [] },
+            { "id": 3, "tag_name": "v1.0.0", "published_at": null, "assets": [] }
+        ])).unwrap();
+
+        let page2_url = format!("{}/repos/owner/repo/releases?page=2&per_page=100", server.url());
+        let link_header = format!(r#"<{page2_url}>; rel="next""#);
+
+        let _m1 = server
+            .mock("GET", "/repos/owner/repo/releases?per_page=100")
+            .with_status(200)
+            .with_header("link", &link_header)
+            .with_body(&page1)
+            .create_async()
+            .await;
+        let _m2 = server
+            .mock("GET", "/repos/owner/repo/releases?page=2&per_page=100")
+            .with_status(200)
+            .with_body(&page2)
+            .create_async()
+            .await;
+
+        let opts = UpstreamHttpOptions::default();
+        let client = GithubRegistryClient::new(server.url(), &opts).unwrap();
+        let versions = client.list_versions("owner/repo").await.unwrap();
+        assert_eq!(versions, vec!["v1.2.0", "v1.1.0", "v1.0.0"]);
+    }
+
+    #[tokio::test]
+    async fn list_versions_404_returns_empty() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/repos/unknown/repo/releases?per_page=100")
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let opts = UpstreamHttpOptions::default();
+        let client = GithubRegistryClient::new(server.url(), &opts).unwrap();
+        let versions = client.list_versions("unknown/repo").await.unwrap();
+        assert!(versions.is_empty());
     }
 }
 
