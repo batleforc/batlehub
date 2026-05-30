@@ -4,7 +4,7 @@ export default defineConfig({
   title: "BatleHub",
   description:
     "Your package hub. Proxy, cache, and host npm, Cargo, Go, Maven, Terraform, and RubyGems registries.",
-  cleanUrls: true,
+  cleanUrls: false,
   base: process.env.BASE_URL || "/",
   vite: {
     server: {
