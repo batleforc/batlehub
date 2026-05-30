@@ -332,7 +332,7 @@ Response:
 - `errors` — versions that failed to fetch or store
 
 ::: tip Registry support
-Version enumeration (used for bare-name warming) is implemented for **npm**, **Cargo**, **OpenVSX**, and **Go** modules. For GitHub and VS Code Marketplace, use pinned version strings (e.g. `"owner/repo@v1.2.3"`) to warm a specific version.
+Version enumeration (used for bare-name warming) is implemented for **npm**, **Cargo**, **OpenVSX**, **Go** modules, **PyPI**, and **Conda**. For Conda, BatleHub synthesises the version list by scanning `repodata.json` across `noarch`, `linux-64`, `osx-64`, `osx-arm64`, and `win-64`. For GitHub and VS Code Marketplace, use pinned version strings (e.g. `"owner/repo@v1.2.3"`) to warm a specific version.
 :::
 
 ### Content-addressable deduplication

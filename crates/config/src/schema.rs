@@ -47,8 +47,8 @@ impl AppConfig {
                 bail!("registry is missing a 'name' field");
             }
             match registry.registry_type.as_str() {
-                "github" | "cargo" | "npm" | "openvsx" | "goproxy" | "pypi" | "composer"
-                | "vscode-marketplace" | "maven" | "terraform" | "rubygems" => {}
+                "github" | "cargo" | "npm" | "openvsx" | "goproxy" | "pypi" | "conda"
+                | "composer" | "vscode-marketplace" | "maven" | "terraform" | "rubygems" => {}
                 other => bail!("unknown registry type: '{other}'"),
             }
             if matches!(registry.mode, RegistryMode::Local | RegistryMode::Hybrid)
@@ -63,10 +63,12 @@ impl AppConfig {
                         | "maven"
                         | "terraform"
                         | "composer"
+                        | "pypi"
+                        | "conda"
                 )
             {
                 bail!(
-                    "registry '{}': mode 'local'/'hybrid' is only supported for cargo, npm, openvsx, vscode-marketplace, goproxy, rubygems, maven, terraform, and composer registries",
+                    "registry '{}': mode 'local'/'hybrid' is only supported for cargo, npm, openvsx, vscode-marketplace, goproxy, rubygems, maven, terraform, composer, pypi, and conda registries",
                     registry.name
                 );
             }
@@ -941,6 +943,15 @@ pub struct ReleaseAgeGateConfig {
     /// Roles that may bypass the age gate (e.g. `["admin"]`).
     #[serde(default)]
     pub bypass_roles: Vec<String>,
+    /// When `true`, deny requests for packages whose upstream does not provide
+    /// a publish timestamp (instead of the default behaviour of skipping the
+    /// check and allowing the download).
+    ///
+    /// Useful for registries — such as conda — where the timestamp field is
+    /// optional: setting this to `true` forces every package to carry a
+    /// verifiable age before it can be downloaded.
+    #[serde(default)]
+    pub deny_missing_timestamp: bool,
 }
 
 fn default_min_age() -> u64 {

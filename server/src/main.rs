@@ -33,10 +33,10 @@ use batlehub_adapters::{
     },
     local_registry::PostgresLocalRegistry,
     registry::{
-        CargoRegistryClient, ComposerRegistryClient, FanoutRegistryClient, GithubRegistryClient,
-        GoProxyRegistryClient, MavenRegistryClient, NpmRegistryClient, OpenVsxRegistryClient,
-        RubyGemsRegistryClient, TerraformRegistryClient, UpstreamHttpOptions,
-        VsCodeMarketplaceRegistryClient,
+        CargoRegistryClient, ComposerRegistryClient, CondaRegistryClient, FanoutRegistryClient,
+        GithubRegistryClient, GoProxyRegistryClient, MavenRegistryClient, NpmRegistryClient,
+        OpenVsxRegistryClient, PypiRegistryClient, RubyGemsRegistryClient,
+        TerraformRegistryClient, UpstreamHttpOptions, VsCodeMarketplaceRegistryClient,
     },
     storage::{FilesystemStorageBackend, StorageRouter},
 };
@@ -361,6 +361,22 @@ async fn main() -> Result<()> {
         if reg.registry_type == "terraform" {
             let first_url = if reg.upstreams.is_empty() {
                 "https://registry.terraform.io".to_owned()
+            } else {
+                reg.upstreams[0].clone()
+            };
+            npm_upstream_map.insert(reg.name.clone(), first_url);
+        }
+        if reg.registry_type == "pypi" {
+            let first_url = if reg.upstreams.is_empty() {
+                "https://pypi.org".to_owned()
+            } else {
+                reg.upstreams[0].clone()
+            };
+            npm_upstream_map.insert(reg.name.clone(), first_url);
+        }
+        if reg.registry_type == "conda" {
+            let first_url = if reg.upstreams.is_empty() {
+                "https://conda.anaconda.org".to_owned()
             } else {
                 reg.upstreams[0].clone()
             };
@@ -787,6 +803,8 @@ fn build_registry_client(
             "terraform" => Arc::new(TerraformRegistryClient::new(url, opts)?),
             "rubygems" => Arc::new(RubyGemsRegistryClient::new(url, opts)?),
             "composer" => Arc::new(ComposerRegistryClient::new(url, opts)?),
+            "pypi" => Arc::new(PypiRegistryClient::new(url, opts)?),
+            "conda" => Arc::new(CondaRegistryClient::new(url, opts)?),
             other => {
                 anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in")
             }
@@ -809,6 +827,8 @@ fn build_registry_client(
         "terraform" => resolve_urls(&reg.upstreams, "https://registry.terraform.io"),
         "rubygems" => resolve_urls(&reg.upstreams, "https://rubygems.org"),
         "composer" => resolve_urls(&reg.upstreams, "https://repo.packagist.org"),
+        "pypi" => resolve_urls(&reg.upstreams, "https://pypi.org"),
+        "conda" => resolve_urls(&reg.upstreams, "https://conda.anaconda.org"),
         other => {
             anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in")
         }
@@ -852,10 +872,10 @@ fn build_policy(
         match rule_cfg {
             RuleConfig::ReleaseAgeGate(cfg) => {
                 let bypass: Vec<Role> = cfg.bypass_roles.iter().map(|r| parse_role(r)).collect();
-                rules.push(Box::new(ReleaseAgeGateRule::new(
-                    Duration::from_secs(cfg.min_age_secs),
-                    bypass,
-                )));
+                rules.push(Box::new(
+                    ReleaseAgeGateRule::new(Duration::from_secs(cfg.min_age_secs), bypass)
+                        .with_deny_missing_timestamp(cfg.deny_missing_timestamp),
+                ));
             }
             RuleConfig::RequireSignedRelease(cfg) => {
                 if cfg.enabled {

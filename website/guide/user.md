@@ -365,6 +365,161 @@ curl -s "https://batlehub.example.com/proxy/packagist/p2/symfony/console.json" \
 
 ---
 
+## PyPI (Python packages) {#pypi}
+
+### Point pip at BatleHub
+
+Add to `~/.pip/pip.conf` (Linux/macOS) or `%APPDATA%\pip\pip.ini` (Windows):
+
+```ini
+[global]
+index-url = https://batlehub.example.com/proxy/my-pypi/simple/
+```
+
+For **uv**, add to `pyproject.toml`:
+
+```toml
+[[tool.uv.index]]
+name = "batlehub"
+url = "https://batlehub.example.com/proxy/my-pypi/simple/"
+default = true
+```
+
+Both tools read credentials from `~/.netrc` automatically:
+
+```
+machine batlehub.example.com
+login <your-user-id>
+password <your-token>
+```
+
+Alternatively, embed credentials in the URL:
+
+```ini
+index-url = https://__token__:<your-token>@batlehub.example.com/proxy/my-pypi/simple/
+```
+
+### Install packages
+
+```sh
+pip install requests
+uv pip install requests
+poetry add requests   # after configuring the source in pyproject.toml
+```
+
+### Publish a private package (local/hybrid mode)
+
+The registry must be in `local` or `hybrid` mode — ask your administrator.
+
+Build and upload with `twine`:
+
+```sh
+# Build wheel and source distribution
+python -m build
+
+# Upload via twine
+twine upload \
+  --repository-url https://batlehub.example.com/proxy/my-private-pypi/legacy/ \
+  --username __token__ \
+  --password $BATLEHUB_TOKEN \
+  dist/*
+```
+
+Or configure `~/.pypirc` for convenience:
+
+```ini
+[distutils]
+index-servers = batlehub
+
+[batlehub]
+repository = https://batlehub.example.com/proxy/my-private-pypi/legacy/
+username = __token__
+password = <your-token>
+```
+
+Then: `twine upload --repository batlehub dist/*`
+
+### Browse published packages
+
+After publishing, the package appears in the Simple index immediately:
+
+```sh
+curl -s "https://batlehub.example.com/proxy/my-private-pypi/simple/my-package/" \
+  -H "Authorization: Bearer $BATLEHUB_TOKEN"
+```
+
+---
+
+## Conda {#conda}
+
+### Point conda at BatleHub
+
+Add to `~/.condarc` (or a `.condarc` in the project root):
+
+```yaml
+channels:
+  - https://batlehub.example.com/proxy/my-conda
+  - nodefaults
+```
+
+Conda reads credentials from `~/.netrc` automatically:
+
+```
+machine batlehub.example.com
+login <your-user-id>
+password <your-token>
+```
+
+### Install packages
+
+```sh
+conda install numpy
+conda env create -f environment.yml
+```
+
+An `environment.yml` with the BatleHub channel:
+
+```yaml
+name: myenv
+channels:
+  - https://batlehub.example.com/proxy/my-conda
+  - nodefaults
+dependencies:
+  - python=3.11
+  - numpy
+```
+
+### Publish a private conda package (local/hybrid mode)
+
+The registry must be in `local` or `hybrid` mode — ask your administrator.
+
+Build the package with `conda build`, then upload:
+
+```sh
+# Build
+conda build my-recipe/
+
+# Upload (.tar.bz2 or .conda format both accepted)
+curl -X POST \
+  -H "Authorization: Bearer $BATLEHUB_TOKEN" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @my-pkg-1.0.0-py311h0_0.tar.bz2 \
+  "https://batlehub.example.com/proxy/my-private-conda/linux-64/"
+```
+
+The package is extracted automatically — name, version, build, and dependencies are read from `info/index.json` inside the archive. The channel's `repodata.json` is updated immediately.
+
+### Verify
+
+```sh
+# Check repodata.json for your package
+curl -s "https://batlehub.example.com/proxy/my-conda/linux-64/repodata.json" \
+  -H "Authorization: Bearer $BATLEHUB_TOKEN" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(list(d['packages'].keys())[:10])"
+```
+
+---
+
 ## Team Namespace dashboard {#team-namespace}
 
 If your administrator has assigned namespace claims to your group, the **Team Namespace** page at `/my-namespace` gives you a single place to view your ownership, browse published packages, manage visibility, and upload new packages without needing CLI access.
@@ -413,6 +568,8 @@ The **Upload package** card lets you publish directly from the browser for regis
 | Composer | `.zip` | None — name and version are read from `composer.json` inside the archive |
 | OpenVSX / VS Code Marketplace | `.vsix` | Extension ID (`publisher.name`) and version |
 | Go modules | `.zip` | Module path (e.g. `github.com/org/repo`) and version (e.g. `v1.0.0`) |
+| PyPI | `.whl`, `.tar.gz`, `.zip` | None — name and version are parsed from the filename |
+| Conda | `.tar.bz2`, `.conda` | Platform (e.g. `linux-64`) — name, version, and build are read from `info/index.json` |
 
 Select the registry, fill in any extra fields, choose the file, and click **Upload**.
 

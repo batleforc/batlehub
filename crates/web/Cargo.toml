@@ -10,6 +10,7 @@ batlehub-config = { path = "../config" }
 batlehub-adapters = { path = "../adapters" }
 actix-web.workspace = true
 actix-files.workspace = true
+actix-multipart = "0.7"
 reqwest.workspace = true
 utoipa.workspace = true
 utoipa-actix-web.workspace = true

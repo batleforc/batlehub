@@ -14,6 +14,10 @@ use crate::rules::{Rule, RuleContext, RuleDecision};
 pub struct ReleaseAgeGateRule {
     pub min_age: Duration,
     pub bypass_roles: Vec<Role>,
+    /// When `true`, deny the request if the upstream did not provide a
+    /// publish timestamp.  When `false` (the default), a missing timestamp
+    /// causes the rule to be skipped and the download to proceed.
+    pub deny_missing_timestamp: bool,
 }
 
 impl ReleaseAgeGateRule {
@@ -21,7 +25,13 @@ impl ReleaseAgeGateRule {
         Self {
             min_age,
             bypass_roles,
+            deny_missing_timestamp: false,
         }
+    }
+
+    pub fn with_deny_missing_timestamp(mut self, deny: bool) -> Self {
+        self.deny_missing_timestamp = deny;
+        self
     }
 }
 
@@ -32,19 +42,26 @@ impl Rule for ReleaseAgeGateRule {
     }
 
     async fn evaluate(&self, ctx: &RuleContext<'_>) -> RuleDecision {
-        // If the upstream didn't provide a publication timestamp, skip this rule.
+        let bypassed = self.bypass_roles.contains(&ctx.identity.role);
+
         let Some(published_at) = ctx.package.published_at else {
-            return RuleDecision::Allow;
+            if !self.deny_missing_timestamp {
+                return RuleDecision::Allow;
+            }
+            return if bypassed {
+                RuleDecision::Allow
+            } else {
+                RuleDecision::Deny {
+                    reason: "release timestamp is missing and deny_missing_timestamp is enabled; \
+                             the upstream did not provide a publish date for this package"
+                        .to_owned(),
+                }
+            };
         };
 
         let age = (Utc::now() - published_at).to_std().unwrap_or_default();
 
-        if age >= self.min_age {
-            return RuleDecision::Allow;
-        }
-
-        // Check if the caller's role bypasses the gate.
-        if self.bypass_roles.contains(&ctx.identity.role) {
+        if age >= self.min_age || bypassed {
             return RuleDecision::Allow;
         }
 
@@ -135,5 +152,88 @@ mod tests {
             requested_version: None,
         };
         assert!(matches!(rule.evaluate(&ctx).await, RuleDecision::Allow));
+    }
+
+    fn make_meta_no_timestamp() -> PackageMetadata {
+        PackageMetadata {
+            id: PackageId::new("conda", "numpy", "1.26.0"),
+            published_at: None,
+            download_url: None,
+            checksum: None,
+            is_signed: None,
+            extra: serde_json::Value::Null,
+            cache_control: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_timestamp_allows_by_default() {
+        let rule = ReleaseAgeGateRule::new(Duration::from_secs(3600), vec![]);
+        let meta = make_meta_no_timestamp();
+        let identity = make_identity(Role::Anonymous);
+        let ctx = RuleContext {
+            identity: &identity,
+            package: &meta,
+            resource_type: "releases:read",
+            cache_entry: None,
+            requested_version: None,
+        };
+        assert!(matches!(rule.evaluate(&ctx).await, RuleDecision::Allow));
+    }
+
+    #[tokio::test]
+    async fn missing_timestamp_denies_when_configured() {
+        let rule = ReleaseAgeGateRule::new(Duration::from_secs(3600), vec![])
+            .with_deny_missing_timestamp(true);
+        let meta = make_meta_no_timestamp();
+        let identity = make_identity(Role::Anonymous);
+        let ctx = RuleContext {
+            identity: &identity,
+            package: &meta,
+            resource_type: "releases:read",
+            cache_entry: None,
+            requested_version: None,
+        };
+        assert!(matches!(
+            rule.evaluate(&ctx).await,
+            RuleDecision::Deny { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn bypass_role_overrides_missing_timestamp_deny() {
+        // A bypass role allows the download even when deny_missing_timestamp is set,
+        // consistent with how bypass_roles work for the age check itself.
+        let rule = ReleaseAgeGateRule::new(Duration::from_secs(3600), vec![Role::Admin])
+            .with_deny_missing_timestamp(true);
+        let meta = make_meta_no_timestamp();
+        let identity = make_identity(Role::Admin);
+        let ctx = RuleContext {
+            identity: &identity,
+            package: &meta,
+            resource_type: "releases:read",
+            cache_entry: None,
+            requested_version: None,
+        };
+        assert!(matches!(rule.evaluate(&ctx).await, RuleDecision::Allow));
+    }
+
+    #[tokio::test]
+    async fn non_bypass_role_denied_on_missing_timestamp() {
+        let rule = ReleaseAgeGateRule::new(Duration::from_secs(3600), vec![Role::Admin])
+            .with_deny_missing_timestamp(true);
+        let meta = make_meta_no_timestamp();
+        let identity = make_identity(Role::User);
+        let ctx = RuleContext {
+            identity: &identity,
+            package: &meta,
+            resource_type: "releases:read",
+            cache_entry: None,
+            requested_version: None,
+        };
+        assert!(matches!(
+            rule.evaluate(&ctx).await,
+            RuleDecision::Deny { .. }
+        ));
     }
 }

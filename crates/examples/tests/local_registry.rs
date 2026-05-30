@@ -721,3 +721,192 @@ fn local_terraform_module_publish_pull() {
         "terraform artifact: expected 200, got {artifact_status}"
     );
 }
+
+// ── PyPI: multipart publish + simple-index + file download ───────────────────
+
+/// Build a minimal wheel ZIP (enough structure for the server to accept it).
+fn minimal_wheel(name: &str, version: &str) -> Vec<u8> {
+    use std::io::Write as _;
+
+    let dist_name = format!("{}-{}.dist-info", name.replace('-', "_"), version);
+    let metadata = format!(
+        "Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n"
+    );
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut zw = zip::ZipWriter::new(&mut buf);
+        let opts = zip::write::SimpleFileOptions::default();
+        zw.start_file(format!("{dist_name}/METADATA"), opts).unwrap();
+        zw.write_all(metadata.as_bytes()).unwrap();
+        zw.finish().unwrap();
+    }
+    buf.into_inner()
+}
+
+/// POST a twine-style multipart form upload and return the HTTP status code.
+fn pypi_upload(url: &str, name: &str, version: &str, file: &std::path::Path) -> u16 {
+    std::process::Command::new("curl")
+        .args([
+            "-s",
+            "--max-time",
+            "15",
+            "-X",
+            "POST",
+            "-H",
+            &format!("Authorization: Bearer {AUTH_TOKEN}"),
+            "-F",
+            ":action=file_upload",
+            "-F",
+            &format!("name={name}"),
+            "-F",
+            &format!("version={version}"),
+            "-F",
+            &format!("content=@{}", file.display()),
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            url,
+        ])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0)
+}
+
+#[test]
+fn local_pypi_publish_pull() {
+    let proxy = LocalProxy::start(RegistryMap(
+        [("my-pypi".to_owned(), "pypi".to_owned())].into(),
+    ));
+    let tmp = TempDir::new().unwrap();
+
+    let wheel_bytes = minimal_wheel("myapp", "1.0.0");
+    let wheel_file = write_tmp(&tmp, "myapp-1.0.0-py3-none-any.whl", &wheel_bytes);
+
+    let status = pypi_upload(
+        &format!("{}/legacy/", proxy.proxy_url("my-pypi")),
+        "myapp",
+        "1.0.0",
+        &wheel_file,
+    );
+    assert_eq!(status, 200, "pypi publish: expected 200, got {status}");
+
+    // GET simple index page
+    let (simple_status, simple_body) = get(&format!(
+        "{}/simple/myapp/",
+        proxy.proxy_url("my-pypi")
+    ));
+    assert_eq!(
+        simple_status, 200,
+        "pypi simple: expected 200, got {simple_status}"
+    );
+    assert!(
+        simple_body.contains("myapp-1.0.0"),
+        "simple index missing 'myapp-1.0.0': {simple_body}"
+    );
+
+    // GET package file
+    let dl_status = get_status(&format!(
+        "{}/packages/myapp-1.0.0-py3-none-any.whl",
+        proxy.proxy_url("my-pypi")
+    ));
+    assert_eq!(
+        dl_status, 200,
+        "pypi download: expected 200, got {dl_status}"
+    );
+}
+
+// ── Conda: publish + repodata.json + file download ───────────────────────────
+
+/// Build a minimal `.tar.bz2` conda package containing `info/index.json`.
+fn minimal_conda_tar_bz2(name: &str, version: &str, build: &str) -> Vec<u8> {
+    use bzip2::write::BzEncoder;
+    use bzip2::Compression;
+    use std::io::Write as _;
+
+    let index_json = serde_json::json!({
+        "name": name,
+        "version": version,
+        "build": build,
+        "build_number": 0,
+        "depends": [],
+        "subdir": "linux-64"
+    });
+    let index_bytes = serde_json::to_vec(&index_json).unwrap();
+
+    let mut tar_bytes = Vec::new();
+    {
+        let mut tar_builder = tar::Builder::new(&mut tar_bytes);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(index_bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar_builder
+            .append_data(&mut header, "info/index.json", index_bytes.as_slice())
+            .unwrap();
+        tar_builder.finish().unwrap();
+    }
+
+    let mut encoder = BzEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(&tar_bytes).unwrap();
+    encoder.finish().unwrap()
+}
+
+#[test]
+fn local_conda_publish_pull() {
+    let proxy = LocalProxy::start(RegistryMap(
+        [("my-conda".to_owned(), "conda".to_owned())].into(),
+    ));
+    let tmp = TempDir::new().unwrap();
+
+    let pkg_bytes = minimal_conda_tar_bz2("numpy-stub", "1.26.0", "py311h0_0");
+    let pkg_file = write_tmp(&tmp, "numpy-stub-1.26.0-py311h0_0.tar.bz2", &pkg_bytes);
+
+    // POST publish
+    let post_status = upload_file(
+        "POST",
+        &format!("{}/linux-64/", proxy.proxy_url("my-conda")),
+        &pkg_file,
+        "application/octet-stream",
+    );
+    assert_eq!(
+        post_status, 200,
+        "conda publish: expected 200, got {post_status}"
+    );
+
+    // GET repodata.json and verify our package appears
+    let (repodata_status, repodata_body) = get(&format!(
+        "{}/linux-64/repodata.json",
+        proxy.proxy_url("my-conda")
+    ));
+    assert_eq!(
+        repodata_status, 200,
+        "conda repodata: expected 200, got {repodata_status}"
+    );
+    let repodata: serde_json::Value =
+        serde_json::from_str(&repodata_body).expect("repodata not JSON");
+    assert!(
+        repodata["packages"].is_object(),
+        "repodata missing 'packages': {repodata}"
+    );
+    let packages = repodata["packages"].as_object().unwrap();
+    assert!(
+        packages.keys().any(|k| k.starts_with("numpy-stub")),
+        "conda repodata missing numpy-stub entry: {packages:?}"
+    );
+
+    // GET package file
+    let dl_status = get_status(&format!(
+        "{}/linux-64/numpy-stub-1.26.0-py311h0_0.tar.bz2",
+        proxy.proxy_url("my-conda")
+    ));
+    assert_eq!(
+        dl_status, 200,
+        "conda download: expected 200, got {dl_status}"
+    );
+}

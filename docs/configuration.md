@@ -105,7 +105,7 @@ curl -H "Authorization: Bearer my-admin-token" http://localhost:8080/...
 
 1. The TOML file at the path given to `--config` is parsed (default: `config.toml` in the working directory).
 2. Environment variables matching `PROXY_CACHE__<SECTION>__<FIELD>` are applied on top of the file values.
-3. The config is validated: registry names must not be empty and registry types must be one of `github`, `npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, `pypi`, `composer`.
+3. The config is validated: registry names must not be empty and registry types must be one of `github`, `npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, `rubygems`, `composer`, `pypi`, `conda`.
 
 ### Auth evaluation order
 
@@ -566,8 +566,9 @@ admin = ["*"]
 
 [[registries.rules]]
 kind = "release_age_gate"
-min_age_secs = 3600         # default: 3600 (1 hour)
+min_age_secs = 3600              # default: 3600 (1 hour)
 bypass_roles = ["admin"]
+deny_missing_timestamp = false   # set true to block packages with no timestamp
 
 # [[registries.rules]]
 # kind = "require_signed_release"
@@ -578,9 +579,9 @@ bypass_roles = ["admin"]
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `type` | string | yes | `"github"`, `"npm"`, `"cargo"`, `"openvsx"`, `"vscode-marketplace"`, `"goproxy"`, `"maven"`, `"terraform"`, `"pypi"`, `"composer"` |
+| `type` | string | yes | `"github"`, `"npm"`, `"cargo"`, `"openvsx"`, `"vscode-marketplace"`, `"goproxy"`, `"maven"`, `"terraform"`, `"rubygems"`, `"composer"`, `"pypi"`, `"conda"` |
 | `name` | string | yes | Unique identifier; used in proxy URL paths |
-| `mode` | string | no | `"proxy"` (default), `"local"`, or `"hybrid"`. Supported for `cargo`, `npm`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, and `rubygems`. See [registry modes](#registry-modes). |
+| `mode` | string | no | `"proxy"` (default), `"local"`, or `"hybrid"`. Supported for `cargo`, `npm`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, `rubygems`, `composer`, `pypi`, and `conda`. See [registry modes](#registry-modes). |
 | `upstreams` | string[] | no | Upstream URLs tried in order on cache miss; 404 from one falls through to the next. Defaults to the registry's built-in URL. Required for `hybrid` mode. |
 | `index_url` | string | no | Cargo only: sparse crate index URL. Defaults to `https://index.crates.io`. Required for `hybrid` mode and self-hosted Gitea/Forgejo registries. |
 | `storage` | string | no | Name of the storage backend. Must match a `[[storage.backends]]` name. Omit to use the default backend. |
@@ -589,7 +590,7 @@ bypass_roles = ["admin"]
 
 #### Registry modes {#registry-modes}
 
-`cargo`, `npm`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, and `rubygems` registries support three operating modes, set via the `mode` field:
+`cargo`, `npm`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, `rubygems`, `composer`, `pypi`, and `conda` registries support three operating modes, set via the `mode` field:
 
 | Mode | Description |
 |------|-------------|
@@ -612,6 +613,12 @@ Publishing requires at least the `user` role. The `published_by` field is set fr
 **terraform** — `local`/`hybrid` modes accept module uploads (`POST /proxy/{registry}/v1/modules/{ns}/{name}/{provider}/{version}`), provider version manifests (`POST .../v1/providers/{ns}/{type}/versions`), and provider binary uploads (`PUT .../artifact/{os}/{arch}`). The `tf_module_download` endpoint returns a `204 + X-Terraform-Get` header pointing at the locally stored tarball. See [Worked Example 6.13](#613-private-terraform-registry-local--hybrid-mode).
 
 **rubygems** — `local`/`hybrid` modes accept `gem push` uploads (`POST /proxy/{registry}/api/v1/gems`). Serves gem files, version index, and REST info from local storage.
+
+**composer** — `local`/`hybrid` modes accept ZIP uploads (`POST /proxy/{registry}/api/upload`). `composer.json` (with `name` and `version` fields) is extracted automatically. Serves `packages.json`, `p2/` metadata, and `dist/` artifacts from local storage.
+
+**pypi** — `local`/`hybrid` modes accept twine-compatible multipart uploads (`POST /proxy/{registry}/legacy/`). The name and version are parsed from the uploaded filename and multipart fields. In `local` mode the Simple API index (`GET /proxy/{registry}/simple/{package}/`) is generated from the database. In `hybrid` mode upstream and local entries are served together.
+
+**conda** — `local`/`hybrid` modes accept raw conda package uploads (`POST /proxy/{registry}/{platform}/`). Metadata (`name`, `version`, `build`, `depends`) is extracted from `info/index.json` inside the `.tar.bz2` or `.conda` archive. In `local` mode `repodata.json` is generated from the database. In `hybrid` mode local entries are merged into the upstream `repodata.json`.
 
 #### Registry-type notes
 
@@ -744,6 +751,45 @@ provider_installation {
 | `/proxy/{registry}/api/upload` | POST | **Local/Hybrid:** publish a package (multipart or raw ZIP body) |
 | `/proxy/{registry}/api/packages/{vendor}/{package}/versions/{version}` | DELETE | **Local/Hybrid:** yank a version |
 
+---
+
+**`pypi`** — implements the [Python Simple Repository API (PEP 503 / PEP 691)](https://peps.python.org/pep-0503/) and [PyPI JSON API](https://docs.pypi.org/api/json/). Download URLs in Simple index pages are rewritten to route through the proxy cache. Default upstream: `https://pypi.org`. Set `mode = "local"` or `mode = "hybrid"` to enable private publishing via `twine upload` — see [registry modes](#registry-modes).
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/proxy/{registry}/simple/` | GET | Root index (all project names) |
+| `/proxy/{registry}/simple/{package}/` | GET | Per-package file listing (HTML or JSON via `Accept` header) |
+| `/proxy/{registry}/packages/{filename}` | GET | Download wheel or sdist (cached) |
+| `/proxy/{registry}/legacy/` | POST | **Local/Hybrid:** twine-compatible multipart publish |
+
+Configure pip:
+
+```ini
+# ~/.pip/pip.conf
+[global]
+index-url = http://batlehub.example.com/proxy/my-pypi/simple/
+```
+
+---
+
+**`conda`** — proxies a single conda channel (e.g. `conda-forge`) across all platforms. Caches `repodata.json` and package files per platform. In hybrid mode, locally published packages are merged into the upstream `repodata.json`. Default upstream: `https://conda.anaconda.org`. Set `mode = "local"` or `mode = "hybrid"` to enable private publishing — see [registry modes](#registry-modes).
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/proxy/{registry}/{platform}/repodata.json` | GET | Channel index for a platform (e.g. `linux-64`, `noarch`) |
+| `/proxy/{registry}/{platform}/current_repodata.json` | GET | Reduced index (proxy mode only) |
+| `/proxy/{registry}/{platform}/{filename}` | GET | Download `.conda` or `.tar.bz2` package |
+| `/proxy/{registry}/{platform}/` | POST | **Local/Hybrid:** publish a conda package |
+
+Configure conda:
+
+```yaml
+# ~/.condarc
+channels:
+  - http://batlehub.example.com/proxy/my-conda
+  - nodefaults
+```
+
 Configure Composer to use the proxy by adding a repository entry in `composer.json`:
 
 ```json
@@ -847,12 +893,15 @@ BatleHub stores physical artifact bytes at a content-addressed key (`blob/{sha25
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `kind` | string | — | Must be `"release_age_gate"` |
-| `min_age_secs` | u64 | `3600` | Releases younger than this are blocked. If the adapter returns no publish timestamp the gate is skipped (allow). |
-| `bypass_roles` | string[] | `[]` | Roles that skip the gate (e.g. `["admin"]`) |
+| `min_age_secs` | u64 | `3600` | Releases younger than this are blocked. |
+| `bypass_roles` | string[] | `[]` | Roles that skip the gate entirely, including the missing-timestamp check (e.g. `["admin"]`). |
+| `deny_missing_timestamp` | bool | `false` | When `true`, deny downloads for packages whose upstream provides no publish timestamp, instead of skipping the check and allowing the download. Useful for registries like conda where the timestamp field is optional — setting this to `true` ensures every package carries a verifiable age. |
 
 > **Timestamp support by registry type:** The gate is only enforced when the upstream provides a publish timestamp.
-> - **npm**, **Cargo**, **OpenVSX**, **VS Code Marketplace**, **Go** — timestamp always populated; gate is fully enforced.
-> - **GitHub** — timestamp populated only for specific-tag release requests (asset downloads). Raw files, source tarballs, and release listings return no timestamp and the gate is skipped for those requests.
+> - **npm**, **Cargo**, **OpenVSX**, **VS Code Marketplace**, **Go**, **PyPI** — timestamp always populated; gate is fully enforced.
+> - **GitHub** — timestamp populated only for specific-tag release requests (asset downloads). Raw files, source tarballs, and release listings return no timestamp; the gate is skipped for those requests.
+> - **Conda** — timestamp is the `timestamp` field (milliseconds since epoch) in `repodata.json`. Most packages carry it, but older or third-party packages may omit it. Use `deny_missing_timestamp = true` to reject packages without a verifiable build date.
+> - **Terraform providers** — timestamp populated by `registry.terraform.io` but not mandated by the official spec; other Terraform registries may omit it.
 
 **`[[registries.rules]]` — Require signed release:**
 

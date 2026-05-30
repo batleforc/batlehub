@@ -16,38 +16,42 @@ A self-hosted smart proxy and cache for package registries. It sits between your
 | **Terraform** | Provider and module proxy protocol (v1 API) | `registry.terraform.io` |
 | **RubyGems** | Gem downloads, version listing, REST info API | `rubygems.org` |
 | **Composer** | Packagist v2 protocol (`packages.json`, p2 metadata, dist downloads) | `repo.packagist.org` |
+| **PyPI** | Simple Repository API (PEP 503/691) + JSON API; URL rewriting for pip/uv/Poetry | `pypi.org` |
+| **Conda** | repodata.json channel proxy; `.conda` and `.tar.bz2` package downloads | `conda.anaconda.org` |
 
 Multiple instances of the same registry type can run in parallel (e.g. a private npm registry and the public one as fallback).
 
 ### Feature matrix
 
-| Feature | GitHub | npm | Cargo | OpenVSX | VS Code Mkt | Go | Maven | Terraform | RubyGems | Composer |
-|---------|:------:|:---:|:-----:|:-------:|:-----------:|:--:|:-----:|:---------:|:--------:|:--------:|
-| Version listing | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Latest version resolution | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | — |
-| Version metadata | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Source archive download | ✓ | ✓ | ✓ | — | — | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Binary / extension download | ✓ | — | — | ✓ | ✓ | — | ✓ | ✓ | — | — |
-| Raw file access | ✓ | — | — | — | — | — | — | — | — | — |
-| Sparse index proxy | — | — | ✓ | — | — | — | — | — | — | — |
-| Module definition file | — | — | — | — | — | ✓ | — | — | — | — |
-| Publish timestamp | ⚠ ² | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ⚠ ⁴ | ✓ | ✓ |
-| Signed release detection | — | — | — | ✓ | — | — | — | — | — | — |
-| Release age gate rule | ⚠ ² | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ⚠ ⁴ | ✓ | ✓ |
-| Deny latest tag rule | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Multi-upstream fanout | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| **Private publish** (`mode = local/hybrid`) | — | ✓ ³ | ✓ ³ | ✓ ³ | ✓ ³ | ✓ ³ | ✓ ³ | ✓ ³ | ✓ ³ | ✓ ³ |
+| Feature | GitHub | npm | Cargo | OpenVSX | VS Code Mkt | Go | Maven | Terraform | RubyGems | Composer | PyPI | Conda |
+|---------|:------:|:---:|:-----:|:-------:|:-----------:|:--:|:-----:|:---------:|:--------:|:--------:|:----:|:-----:|
+| Version listing | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ ⁵ |
+| Latest version resolution | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | — | ✓ | — |
+| Version metadata | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Source archive download | ✓ | ✓ | ✓ | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Binary / extension download | ✓ | — | — | ✓ | ✓ | — | ✓ | ✓ | — | — | ✓ | ✓ |
+| Raw file access | ✓ | — | — | — | — | — | — | — | — | — | — | — |
+| Sparse index proxy | — | — | ✓ | — | — | — | — | — | — | — | — | — |
+| Module definition file | — | — | — | — | — | ✓ | — | — | — | — | — | — |
+| Publish timestamp | ⚠ ² | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ⚠ ⁴ | ✓ | ✓ | ✓ | ⚠ ⁵ |
+| Signed release detection | — | — | — | ✓ | — | — | — | — | — | — | — | — |
+| Release age gate rule | ⚠ ² | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ⚠ ⁴ | ✓ | ✓ | ✓ | ⚠ ⁵ |
+| Deny latest tag rule | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Multi-upstream fanout | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **Private publish** (`mode = local/hybrid`) | — | ✓ ³ | ✓ ³ | ✓ ³ | ✓ ³ | ✓ ³ | ✓ ³ | ✓ ³ | ✓ ³ | ✓ ³ | ✓ ³ | ✓ ³ |
 
 > ² **GitHub**: publish timestamp (and therefore the age gate) is only populated for specific-tag release requests. Raw file, source tarball, and release-listing requests return no timestamp and the rule is skipped.
 >
 > ³ **Private publish**: set `mode = "local"` to use BatleHub as the authoritative registry (no upstream needed), or `mode = "hybrid"` to serve locally published packages first and fall through to an upstream for everything else. See [Private registries](#private-registries-local--hybrid-mode) below.
 >
 > ⁴ **Terraform publish timestamp**: the module version detail endpoint (`/v1/modules/{ns}/{name}/{prov}/{ver}`) is part of the official Terraform Module Registry Protocol and always provides `published_at`. The provider version detail endpoint (`/v1/providers/{ns}/{type}/{ver}`) is supported by `registry.terraform.io` but is not in the official spec — other Terraform registries may omit `published_at`. When absent, the release age gate is skipped rather than blocking access.
+>
+> ⁵ **Conda**: conda has no dedicated per-package version listing API. BatleHub synthesises one by scanning `repodata.json` for `noarch`, `linux-64`, `osx-64`, `osx-arm64`, and `win-64` — the union of versions found across all available platforms is returned. Platforms that return 404 or a network error are silently skipped. The publish timestamp is read from the `timestamp` field in `repodata.json` (milliseconds since epoch); most packages carry it, but some older or third-party packages omit it — when absent the release age gate is skipped rather than blocking access.
 
 ## Key features
 
 - **Artifact caching** — first download is fetched from upstream and stored; subsequent requests are served from local or S3 storage.
-- **Private / local registry** — `npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`, `rubygems`, `maven`, `terraform`, and `composer` registries can be set to `mode = "local"` (fully private, no upstream) or `mode = "hybrid"` (local-first with upstream fallback). Teams publish packages directly to BatleHub using standard tools (`npm publish`, `cargo publish`, `gem push`, `mvn deploy`, raw VSIX / Go zip / Terraform provider upload / Composer ZIP upload).
+- **Private / local registry** — `npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`, `rubygems`, `maven`, `terraform`, `composer`, `pypi`, and `conda` registries can be set to `mode = "local"` (fully private, no upstream) or `mode = "hybrid"` (local-first with upstream fallback). Teams publish packages directly to BatleHub using standard tools (`npm publish`, `cargo publish`, `gem push`, `mvn deploy`, `twine upload`, raw VSIX / Go zip / Terraform provider upload / Composer ZIP / conda package upload).
 - **Ownership & team management** — per-package owner table (user or group, admin or maintainer role). The first publisher becomes the package admin; subsequent publishes require an owner record. Manage via the admin API or let it be set automatically.
 - **Team namespaces & package visibility** — assign a package name prefix (e.g. `frontend/`) to an auth-provider group so only its members can publish there. Set per-package visibility to `public` (default), `internal` (any authenticated user), or `team` (group members only) to control who can download.
 - **Versioning policies** — enforce semver, block pre-release versions, or restrict accepted version strings with a regex. Violations return HTTP 422 at publish time.
@@ -518,6 +522,88 @@ curl -X DELETE \
   "https://batlehub.example.com/proxy/internal-composer/api/packages/my-vendor/my-package/versions/1.0.0"
 ```
 
+### PyPI (private Python package registry)
+
+```toml
+[[registries]]
+type = "pypi"
+name = "internal-pypi"
+mode = "local"   # or "hybrid" to fall through to pypi.org
+
+[registries.rbac]
+user  = ["releases:read", "source:read"]
+admin = ["*"]
+```
+
+Point pip and other tools at the proxy:
+
+```ini
+# ~/.pip/pip.conf
+[global]
+index-url = https://batlehub.example.com/proxy/internal-pypi/simple/
+```
+
+```toml
+# pyproject.toml — uv
+[[tool.uv.index]]
+name    = "batlehub"
+url     = "https://batlehub.example.com/proxy/internal-pypi/simple/"
+default = true
+```
+
+Publish with twine:
+
+```sh
+python -m build   # produces dist/*.whl and dist/*.tar.gz
+
+twine upload \
+  --repository-url https://batlehub.example.com/proxy/internal-pypi/legacy/ \
+  --username __token__ \
+  --password $BATLEHUB_TOKEN \
+  dist/*
+```
+
+The wheel filename is parsed automatically to extract name and version — no extra metadata flags needed. In `hybrid` mode, packages not found locally fall through to PyPI and are cached on the way back.
+
+### Conda (private conda channel)
+
+```toml
+[[registries]]
+type = "conda"
+name = "internal-conda"
+mode = "local"   # or "hybrid" to fall through to conda-forge / anaconda
+# upstreams defaults to ["https://conda.anaconda.org"]
+
+[registries.rbac]
+user  = ["releases:read", "source:read"]
+admin = ["*"]
+```
+
+Point conda at the proxy:
+
+```yaml
+# ~/.condarc
+channels:
+  - https://batlehub.example.com/proxy/internal-conda
+  - nodefaults
+```
+
+Publish a package (`.tar.bz2` or `.conda` format):
+
+```sh
+# Build with conda-build
+conda build my-recipe/
+
+# Upload — specify the target platform in the URL
+curl -X POST \
+  -H "Authorization: Bearer $BATLEHUB_TOKEN" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @my-pkg-1.0.0-py311h0_0.tar.bz2 \
+  "https://batlehub.example.com/proxy/internal-conda/linux-64/"
+```
+
+Metadata (`name`, `version`, `build`, `depends`) is extracted automatically from `info/index.json` inside the archive. The channel's `repodata.json` is updated immediately and is served merged with upstream in `hybrid` mode.
+
 ---
 
 ## Private registry — advanced features
@@ -732,6 +818,33 @@ provider_installation {
 }
 ```
 
+### PyPI
+
+```ini
+# ~/.pip/pip.conf
+[global]
+index-url = http://localhost:8080/proxy/pypi/simple/
+```
+
+Or with uv:
+
+```toml
+# pyproject.toml
+[[tool.uv.index]]
+name    = "batlehub"
+url     = "http://localhost:8080/proxy/pypi/simple/"
+default = true
+```
+
+### Conda
+
+```yaml
+# ~/.condarc
+channels:
+  - http://localhost:8080/proxy/conda
+  - nodefaults
+```
+
 ### GitHub (mise)
 
 ```toml
@@ -749,6 +862,7 @@ provider_installation {
 config.toml
   └─ [[registries]]  type = "npm" | "cargo" | "github" | "openvsx" | "vscode-marketplace"
                                | "goproxy" | "maven" | "terraform" | "rubygems" | "composer"
+                               | "pypi" | "conda"
          │
          ▼
 server/src/main.rs         — builds registry clients, policies, services
@@ -905,7 +1019,7 @@ Full list in [`docs/configuration.md § Environment Variable Overrides`](docs/co
 | [`docs/configuration.md`](docs/configuration.md) | Full TOML reference, permissions, worked examples |
 | [`docs/configuration.md § Registry modes`](docs/configuration.md#registry-modes) | Private registry modes (local / hybrid) |
 | [`docs/configuration.md § Self-Hosted`](docs/configuration.md#9-self-hosted--private-registries) | Upstream auth (Bearer / Basic / header) and custom CA certificates |
-| [`docs/publishing.md`](docs/publishing.md) | Step-by-step guide for publishing packages (npm, Cargo, VSIX, Go modules, gems, Maven artifacts, Terraform modules/providers) |
+| [`docs/publishing.md`](docs/publishing.md) | Step-by-step guide for publishing packages (npm, Cargo, VSIX, Go modules, gems, Maven artifacts, Terraform modules/providers, PyPI wheels, conda packages) |
 | [`docs/adding-a-registry.md`](docs/adding-a-registry.md) | Step-by-step guide for implementing a new registry adapter |
 | `/swagger-ui/` (runtime) | Interactive API docs |
 

@@ -14,7 +14,9 @@ type RegistryType =
   | "maven"
   | "terraform"
   | "rubygems"
-  | "composer";
+  | "composer"
+  | "pypi"
+  | "conda";
 type AuthRole = "admin" | "user" | "anonymous";
 type StorageBackendType = "filesystem" | "s3";
 type StorageMode = "single" | "multi";
@@ -334,6 +336,8 @@ const defaultUpstream: Record<RegistryType, string> = {
   terraform: "https://registry.terraform.io",
   rubygems: "https://rubygems.org",
   composer: "https://repo.packagist.org",
+  pypi: "https://pypi.org",
+  conda: "https://conda.anaconda.org",
 };
 
 function defaultRegistry(type: RegistryType = "npm"): Registry {
@@ -1448,6 +1452,8 @@ const composerAuthSnippet = `{
                 <option value="maven">Maven</option>
                 <option value="rubygems">RubyGems</option>
                 <option value="composer">Composer (PHP)</option>
+                <option value="pypi">PyPI (Python)</option>
+                <option value="conda">Conda</option>
                 <option value="openvsx">OpenVSX</option>
                 <option value="vscode-marketplace">VS Code Marketplace</option>
                 <option value="goproxy">Go Modules</option>
@@ -1500,6 +1506,54 @@ curl -X POST \
   --data-binary @vendor-pkg-1.0.0.zip \
   "/proxy/{{ reg.name }}/api/upload"</pre
             >
+          </div>
+
+          <!-- PyPI client config hint -->
+          <div v-if="reg.type === 'pypi'" class="cg-registry-hint">
+            <p class="cg-hint-title">PyPI client setup</p>
+            <p class="cg-hint-text">
+              Point pip at the proxy via <code>~/.pip/pip.conf</code>:
+            </p>
+            <pre class="cg-hint-code">[global]
+index-url = https://your-batlehub-host/proxy/{{ reg.name }}/simple/</pre>
+            <p class="cg-hint-text" style="margin-top: 0.5rem">
+              Or with uv in <code>pyproject.toml</code>:
+            </p>
+            <pre class="cg-hint-code">[[tool.uv.index]]
+name = "batlehub"
+url = "https://your-batlehub-host/proxy/{{ reg.name }}/simple/"
+default = true</pre>
+            <p class="cg-hint-text" style="margin-top: 0.5rem" v-if="isLocalOrHybrid(reg)">
+              Publish with twine (local/hybrid mode):
+            </p>
+            <pre class="cg-hint-code" v-if="isLocalOrHybrid(reg)">
+twine upload \
+  --repository-url https://your-batlehub-host/proxy/{{ reg.name }}/legacy/ \
+  --username __token__ --password &lt;your-token&gt; \
+  dist/*</pre>
+          </div>
+
+          <!-- Conda client config hint -->
+          <div v-if="reg.type === 'conda'" class="cg-registry-hint">
+            <p class="cg-hint-title">Conda client setup</p>
+            <p class="cg-hint-text">
+              Add the proxy as a channel in <code>~/.condarc</code>:
+            </p>
+            <pre class="cg-hint-code">channels:
+  - https://your-batlehub-host/proxy/{{ reg.name }}
+  - nodefaults</pre>
+            <p class="cg-hint-text" style="margin-top: 0.5rem">
+              Credentials are read from <code>~/.netrc</code> automatically.
+            </p>
+            <p class="cg-hint-text" style="margin-top: 0.5rem" v-if="isLocalOrHybrid(reg)">
+              Publish a package (local/hybrid mode):
+            </p>
+            <pre class="cg-hint-code" v-if="isLocalOrHybrid(reg)">
+curl -X POST \
+  -H "Authorization: Bearer &lt;token&gt;" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @pkg-1.0.0-py311h0_0.tar.bz2 \
+  "https://your-batlehub-host/proxy/{{ reg.name }}/linux-64/"</pre>
           </div>
 
           <label v-if="storageMode === 'multi'">
