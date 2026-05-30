@@ -12,7 +12,14 @@ export default defineConfig({
     },
   },
   head: [
-    ["link", { rel: "icon", type: "image/svg+xml", href: "/logo.svg" }],
+    [
+      "link",
+      {
+        rel: "icon",
+        type: "image/svg+xml",
+        href: (process.env.BASE_URL || "/") + "logo.svg",
+      },
+    ],
     ["meta", { name: "theme-color", content: "#646cff" }],
     ["meta", { property: "og:type", content: "website" }],
     ["meta", { property: "og:site_name", content: "BatleHub" }],
@@ -25,7 +32,13 @@ export default defineConfig({
           "Your package hub. Proxy, cache, and host npm, Cargo, Go, Maven, Terraform, and RubyGems registries.",
       },
     ],
-    ["meta", { property: "og:image", content: "/logo.svg" }],
+    [
+      "meta",
+      {
+        property: "og:image",
+        content: (process.env.BASE_URL || "/") + "logo.svg",
+      },
+    ],
     ["meta", { name: "twitter:card", content: "summary" }],
     ["meta", { name: "twitter:title", content: "BatleHub" }],
     [
@@ -36,11 +49,17 @@ export default defineConfig({
           "Your package hub. Proxy, cache, and host npm, Cargo, Go, Maven, Terraform, and RubyGems registries.",
       },
     ],
-    ["meta", { name: "twitter:image", content: "/logo.svg" }],
+    [
+      "meta",
+      {
+        name: "twitter:image",
+        content: (process.env.BASE_URL || "/") + "logo.svg",
+      },
+    ],
   ],
 
   themeConfig: {
-    logo: "/logo.svg",
+    logo: (process.env.BASE_URL || "/") + "logo.svg",
 
     nav: [
       { text: "Home", link: "/" },
