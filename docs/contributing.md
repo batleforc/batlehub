@@ -81,7 +81,7 @@ dependency is hidden behind a trait defined in `crates/core/src/ports/`.
 | `QuotaRepository` | Publish quota tracking | `crates/adapters/src/db/quota.rs` |
 | `ArtifactMetaRepository` | Cache TTL / access-time tracking | `crates/adapters/src/db/artifact_meta.rs` |
 | `CacheStore` | Metadata cache (memory / Postgres / Redis) | `crates/adapters/src/cache/` |
-| `AuthProvider` | Token / OIDC / Kubernetes validation | `crates/adapters/src/auth/` |
+| `AuthProvider` | Token / OIDC / Kubernetes / Actions-OIDC validation | `crates/adapters/src/auth/` |
 
 **Rule**: `crates/core` must never import from `crates/adapters` or `crates/web`.
 Tests inside `core` use in-memory mocks, not the Postgres implementations.
@@ -204,7 +204,39 @@ cargo test -p batlehub-adapters # I/O adapter implementations
 
 Every module keeps its unit tests at the bottom of the same source file under `#[cfg(test)]`. These tests use in-process mocks and stubs only — no database, no HTTP server, no network.
 
-**What they validate:** Pure business logic — publish rules, quota checks, RBAC decisions, cache-key formatting, wire-format parsing. They run in milliseconds and must always pass on any developer machine.
+**What they validate:** Pure business logic — publish rules, quota checks, RBAC decisions, cache-key formatting, wire-format parsing, JWT claim evaluation. They run in milliseconds and must always pass on any developer machine.
+
+#### Auth provider unit tests
+
+Auth providers expose a `for_testing` constructor that injects a pre-loaded JWKS so tests never hit the network. Each module's `#[cfg(test)]` block covers:
+
+- Token parsing and claim extraction
+- Role elevation and group assignment via rule evaluation
+- Condition matching (glob and regex patterns, auto-detection)
+- Group template rendering
+- Error paths: expired tokens, unknown signing keys, malformed headers
+
+The `actions-oidc` provider additionally exposes `for_testing_stale`, which backdates the JWKS cache by more than `JWKS_MIN_REFRESH` so the cache-refresh path can be exercised without sleeping.
+
+---
+
+### Layer 0.5 — adapter integration tests (mockito HTTP, no external services)
+
+```bash
+cargo test -p batlehub-adapters --test actions_oidc
+cargo test -p batlehub-adapters --test selfhosted
+```
+
+`crates/adapters/tests/` contains integration tests for adapters that need an HTTP server but no database or object storage. Tests use **mockito** (`mockito::Server::new_async()`) to spin up in-process HTTP servers.
+
+**What they validate:** The full bootstrap and request cycle for network-facing adapters — OIDC discovery fetch, JWKS retrieval, provider construction failure paths, and end-to-end JWT authentication. Each test file covers one adapter family:
+
+| File | What it covers |
+|------|---------------|
+| `actions_oidc.rs` | GitHub/Forgejo Actions OIDC: discovery → JWKS → JWT auth round-trip, error paths (5xx, malformed JSON), TOML config round-trip |
+| `selfhosted.rs` | Self-hosted registry HTTP options: bearer forwarding, basic auth, TLS |
+
+No external services are needed. These tests run offline and are included in `task coverage` automatically.
 
 ---
 
@@ -332,16 +364,45 @@ To run coverage manually without the Task runner:
 # Install the tool once
 cargo install cargo-llvm-cov
 
-# Run (PostgreSQL must be reachable via DATABASE_URL)
-cargo llvm-cov --html --workspace --all-features
+# Base workspace coverage (unit tests)
+cargo llvm-cov --no-report --workspace
+
+# Add each integration test that needs separate invocation
+cargo llvm-cov --no-report -p batlehub-adapters --test actions_oidc
+cargo llvm-cov --no-report -p batlehub-adapters --test pg_cache     # needs DATABASE_URL
+cargo llvm-cov --no-report -p batlehub-adapters --test local_registry  # needs DATABASE_URL
+cargo llvm-cov --no-report -p batlehub-adapters --test storage_router  # needs DATABASE_URL
+cargo llvm-cov --no-report -p batlehub-adapters --features storage-s3 --test s3_storage  # needs S3
+
+# Generate the report
+cargo llvm-cov report --html --output-dir coverage/html
 ```
 
 The workspace-level `[workspace.metadata.llvm-cov]` config excludes `server/src/main.rs` (startup wiring only) from the report. Every other module is expected to have at least some exercised lines.
+
+**Adding a new integration test to coverage**: integration tests that need no external service (mockito-only, like `actions_oidc`) must be listed explicitly in both the `coverage` and `coverage-check` tasks in `Taskfile.yml` — `cargo llvm-cov --workspace` does not pick up `crates/adapters/tests/*.rs` files automatically.
+
+---
+
+### Security audits
+
+Run dependency vulnerability scans before shipping or merging security-sensitive changes:
+
+```bash
+# Rust — checks crates against the RustSec advisory database
+task audit
+
+# Frontend — checks npm packages against the npm advisory database
+task ui:audit
+```
+
+`task audit` suppresses advisories that have no actionable fix via `.cargo/audit.toml`. Add a new entry there (with a justification comment) when an advisory is known and accepted rather than silencing the whole tool. `task ui:audit` exits non-zero when high-severity vulnerabilities are found; use `npm audit --audit-level=high` manually if you need to ignore lower-severity findings during development.
 
 ---
 
 ## 8. Code conventions
 
+- **No wildcard imports** — write every imported name explicitly (`use foo::{Bar, Baz}`, not `use foo::*`). Wildcard imports hide where names come from, make unused-import warnings silent, and cause surprise breakage when an upstream crate adds a new symbol that clashes with a local one. The only accepted exception is `#[cfg(test)] use super::*` inside a same-file test module.
 - **No `sqlx::query!()` macros** — use the runtime API (see §5).
 - **No comments that describe what the code does** — only add one when the
   *why* is non-obvious (a hidden constraint, a workaround, a subtle invariant).
@@ -406,6 +467,7 @@ older than the given duration. Wire this up to a startup sweep or a
 periodic maintenance task; a threshold of one hour is a safe default.
 
 To recover manually: call `cleanup_pending` or run:
+
 ```sql
 DELETE FROM local_packages WHERE status = 'pending';
 ```

@@ -12,7 +12,7 @@ pub use cache_control::{parse_cache_control, CacheControlDirectives};
 pub use eviction::{CoherenceReport, EvictionConfig, EvictionReport, EvictionService};
 pub use local_registry::{
     artifact_storage_key, maven_artifact_storage_key, tf_provider_binary_storage_key,
-    LocalRegistryService, PublishRequest,
+    LocalRegistryService, PublishRequest, TerraformPlatform,
 };
 pub use metrics::ProxyMetrics;
 pub use proxy::{ProxyRequest, ProxyResponse, ProxyService, RegistryPolicy};

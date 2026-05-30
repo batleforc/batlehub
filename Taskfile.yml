@@ -108,6 +108,7 @@ tasks:
       - cargo llvm-cov --no-report -p batlehub-adapters --test local_registry
       - cargo llvm-cov --no-report -p batlehub-adapters --test storage_router
       - cargo llvm-cov --no-report -p batlehub-adapters --features storage-s3 --test s3_storage
+      - cargo llvm-cov --no-report -p batlehub-adapters --test actions_oidc
       - cargo llvm-cov report --html --output-dir coverage/html --ignore-filename-regex "{{.COVERAGE_EXCLUDE}}"
 
   coverage-check:
@@ -139,6 +140,7 @@ tasks:
       - cargo llvm-cov --no-report -p batlehub-adapters --test local_registry
       - cargo llvm-cov --no-report -p batlehub-adapters --test storage_router
       - cargo llvm-cov --no-report -p batlehub-adapters --features storage-s3 --test s3_storage
+      - cargo llvm-cov --no-report -p batlehub-adapters --test actions_oidc
       - cargo llvm-cov report --fail-under-lines 80 --ignore-filename-regex "{{.COVERAGE_EXCLUDE}}"
 
   fuzz:
@@ -154,11 +156,18 @@ tasks:
     desc: Run clippy lints across the workspace
     cmds:
       - cargo clippy --workspace -- -D warnings
+      - cargo fmt --all --check
 
   audit:
-    desc: Check dependencies for security vulnerabilities (non-actionable advisories suppressed via .cargo/audit.toml)
+    desc: Check Rust dependencies for security vulnerabilities (non-actionable advisories suppressed via .cargo/audit.toml)
     cmds:
       - cargo audit
+
+  ui:audit:
+    desc: Check frontend npm dependencies for security vulnerabilities
+    dir: ui
+    cmds:
+      - npm audit
 
   fmt:
     desc: Format all Rust source files
@@ -223,6 +232,21 @@ tasks:
           @typescript-eslint/eslint-plugin@8 \
           @microsoft/eslint-formatter-sarif@3
       - npx eslint src --ext .ts,.vue --format @microsoft/eslint-formatter-sarif -o eslint-results.sarif
+
+  ui:fix:
+    desc: Auto-fix all ESLint issues in the frontend source
+    dir: ui
+    cmds:
+      - |
+        npm install --no-save \
+          eslint@9 \
+          @eslint/js@9 \
+          eslint-plugin-vue@9 \
+          vue-eslint-parser@10 \
+          @typescript-eslint/parser@8 \
+          @typescript-eslint/eslint-plugin@8 \
+          @microsoft/eslint-formatter-sarif@3
+      - npx eslint src --ext .ts,.vue --fix
 
   dev:
     desc: Start Rust backend and Vite frontend in parallel (requires postgres)

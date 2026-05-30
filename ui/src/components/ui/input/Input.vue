@@ -15,7 +15,7 @@ const emit = defineEmits<{
 }>();
 
 const delegatedProps = computed(() => {
-  const { class: _, modelValue, ...rest } = props;
+  const { class: _class, modelValue: _modelValue, ...rest } = props;
   return rest;
 });
 </script>
@@ -31,5 +31,5 @@ const delegatedProps = computed(() => {
       )
     "
     @input="emit('update:modelValue', ($event.target as HTMLInputElement).value)"
-  />
+  >
 </template>

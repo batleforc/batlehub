@@ -144,7 +144,9 @@ const principalTypeOptions = [
   <div class="space-y-6">
     <div class="flex items-center justify-between">
       <div>
-        <h1 class="text-2xl font-semibold">Beta Channel</h1>
+        <h1 class="text-2xl font-semibold">
+          Beta Channel
+        </h1>
         <p class="text-sm text-muted-foreground mt-0.5">
           Manage who can access pre-release versions in each registry.
         </p>
@@ -174,7 +176,10 @@ const principalTypeOptions = [
         <div class="flex items-center justify-between">
           <CardTitle class="text-base">
             Members
-            <span v-if="selectedRegistry" class="font-mono text-muted-foreground text-sm ml-1">({{ selectedRegistry }})</span>
+            <span
+              v-if="selectedRegistry"
+              class="font-mono text-muted-foreground text-sm ml-1"
+            >({{ selectedRegistry }})</span>
           </CardTitle>
           <Button
             variant="outline"
@@ -187,27 +192,48 @@ const principalTypeOptions = [
         </div>
       </CardHeader>
       <CardContent class="p-0">
-        <p v-if="membersError" class="p-4 text-sm text-destructive">{{ membersError }}</p>
+        <p
+          v-if="membersError"
+          class="p-4 text-sm text-destructive"
+        >
+          {{ membersError }}
+        </p>
         <Table v-else>
           <TableHeader>
             <TableRow>
               <TableHead>Type</TableHead>
               <TableHead>Principal ID</TableHead>
               <TableHead>Granted by</TableHead>
-              <TableHead class="text-right">Actions</TableHead>
+              <TableHead class="text-right">
+                Actions
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            <TableRow v-for="m in members" :key="m.principal_type + ':' + m.principal_id">
+            <TableRow
+              v-for="m in members"
+              :key="m.principal_type + ':' + m.principal_id"
+            >
               <TableCell>
-                <Badge :variant="m.principal_type === 'user' ? 'default' : 'secondary'" class="text-xs capitalize">
+                <Badge
+                  :variant="m.principal_type === 'user' ? 'default' : 'secondary'"
+                  class="text-xs capitalize"
+                >
                   {{ m.principal_type }}
                 </Badge>
               </TableCell>
-              <TableCell class="font-mono text-sm">{{ m.principal_id }}</TableCell>
-              <TableCell class="text-sm text-muted-foreground">{{ m.granted_by ?? "—" }}</TableCell>
+              <TableCell class="font-mono text-sm">
+                {{ m.principal_id }}
+              </TableCell>
+              <TableCell class="text-sm text-muted-foreground">
+                {{ m.granted_by ?? "—" }}
+              </TableCell>
               <TableCell class="text-right">
-                <Button variant="outline" size="sm" @click="removeTarget = m">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  @click="removeTarget = m"
+                >
                   Remove
                 </Button>
               </TableCell>
@@ -231,7 +257,9 @@ const principalTypeOptions = [
   >
     <div class="space-y-4">
       <div>
-        <h2 class="text-lg font-semibold">Add beta channel member</h2>
+        <h2 class="text-lg font-semibold">
+          Add beta channel member
+        </h2>
         <p class="text-sm text-muted-foreground mt-1">
           Add a user or group to the beta channel for
           <span class="font-mono">{{ selectedRegistry }}</span>.
@@ -255,10 +283,18 @@ const principalTypeOptions = [
         </div>
         <div class="space-y-1.5">
           <Label>Granted by</Label>
-          <Input v-model="addForm.granted_by" placeholder="Optional — your user ID" />
+          <Input
+            v-model="addForm.granted_by"
+            placeholder="Optional — your user ID"
+          />
         </div>
       </div>
-      <p v-if="addError" class="text-sm text-destructive">{{ addError }}</p>
+      <p
+        v-if="addError"
+        class="text-sm text-destructive"
+      >
+        {{ addError }}
+      </p>
       <div class="flex justify-end gap-2">
         <Button
           variant="outline"
@@ -286,14 +322,21 @@ const principalTypeOptions = [
   >
     <div class="space-y-4">
       <div>
-        <h2 class="text-lg font-semibold">Remove member?</h2>
+        <h2 class="text-lg font-semibold">
+          Remove member?
+        </h2>
         <p class="text-sm text-muted-foreground mt-1">
           <span class="font-mono">{{ removeTarget?.principal_id }}</span>
           will lose access to pre-release versions in
           <span class="font-mono">{{ selectedRegistry }}</span>.
         </p>
       </div>
-      <p v-if="removeError" class="text-sm text-destructive">{{ removeError }}</p>
+      <p
+        v-if="removeError"
+        class="text-sm text-destructive"
+      >
+        {{ removeError }}
+      </p>
       <div class="flex justify-end gap-2">
         <Button
           variant="outline"

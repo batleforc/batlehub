@@ -442,7 +442,9 @@ const composerPublishSnippet = computed(() => {
 <template>
   <div class="max-w-7xl space-y-8">
     <div>
-      <h1 class="text-2xl font-semibold">Setup Guide</h1>
+      <h1 class="text-2xl font-semibold">
+        Setup Guide
+      </h1>
       <p class="text-sm text-muted-foreground mt-1">
         Configure your tools to route package downloads through this proxy.
         Snippets are pre-filled with this server's address.
@@ -462,65 +464,155 @@ const composerPublishSnippet = computed(() => {
         <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-9">
           <div class="space-y-1">
             <Label for="sg-github">GitHub registry</Label>
-            <Input id="sg-github" v-model="githubRegistryName" list="sg-github-list" placeholder="github" class="font-mono text-sm" />
+            <Input
+              id="sg-github"
+              v-model="githubRegistryName"
+              list="sg-github-list"
+              placeholder="github"
+              class="font-mono text-sm"
+            />
             <datalist id="sg-github-list">
-              <option v-for="r in githubRegistries" :key="r.name" :value="r.name" />
+              <option
+                v-for="r in githubRegistries"
+                :key="r.name"
+                :value="r.name"
+              />
             </datalist>
           </div>
           <div class="space-y-1">
             <Label for="sg-npm">npm registry</Label>
-            <Input id="sg-npm" v-model="npmRegistryName" list="sg-npm-list" placeholder="npm" class="font-mono text-sm" />
+            <Input
+              id="sg-npm"
+              v-model="npmRegistryName"
+              list="sg-npm-list"
+              placeholder="npm"
+              class="font-mono text-sm"
+            />
             <datalist id="sg-npm-list">
-              <option v-for="r in npmRegistries" :key="r.name" :value="r.name" />
+              <option
+                v-for="r in npmRegistries"
+                :key="r.name"
+                :value="r.name"
+              />
             </datalist>
           </div>
           <div class="space-y-1">
             <Label for="sg-cargo">Cargo registry</Label>
-            <Input id="sg-cargo" v-model="cargoRegistryName" list="sg-cargo-list" placeholder="cargo" class="font-mono text-sm" />
+            <Input
+              id="sg-cargo"
+              v-model="cargoRegistryName"
+              list="sg-cargo-list"
+              placeholder="cargo"
+              class="font-mono text-sm"
+            />
             <datalist id="sg-cargo-list">
-              <option v-for="r in cargoRegistries" :key="r.name" :value="r.name" />
+              <option
+                v-for="r in cargoRegistries"
+                :key="r.name"
+                :value="r.name"
+              />
             </datalist>
           </div>
           <div class="space-y-1">
             <Label for="sg-openvsx">OpenVSX registry</Label>
-            <Input id="sg-openvsx" v-model="openvsxRegistryName" list="sg-openvsx-list" placeholder="openvsx" class="font-mono text-sm" />
+            <Input
+              id="sg-openvsx"
+              v-model="openvsxRegistryName"
+              list="sg-openvsx-list"
+              placeholder="openvsx"
+              class="font-mono text-sm"
+            />
             <datalist id="sg-openvsx-list">
-              <option v-for="r in openvsxRegistries" :key="r.name" :value="r.name" />
+              <option
+                v-for="r in openvsxRegistries"
+                :key="r.name"
+                :value="r.name"
+              />
             </datalist>
           </div>
           <div class="space-y-1">
             <Label for="sg-go">Go registry</Label>
-            <Input id="sg-go" v-model="goRegistryName" list="sg-go-list" placeholder="go" class="font-mono text-sm" />
+            <Input
+              id="sg-go"
+              v-model="goRegistryName"
+              list="sg-go-list"
+              placeholder="go"
+              class="font-mono text-sm"
+            />
             <datalist id="sg-go-list">
-              <option v-for="r in goRegistries" :key="r.name" :value="r.name" />
+              <option
+                v-for="r in goRegistries"
+                :key="r.name"
+                :value="r.name"
+              />
             </datalist>
           </div>
           <div class="space-y-1">
             <Label for="sg-maven">Maven registry</Label>
-            <Input id="sg-maven" v-model="mavenRegistryName" list="sg-maven-list" placeholder="maven" class="font-mono text-sm" />
+            <Input
+              id="sg-maven"
+              v-model="mavenRegistryName"
+              list="sg-maven-list"
+              placeholder="maven"
+              class="font-mono text-sm"
+            />
             <datalist id="sg-maven-list">
-              <option v-for="r in mavenRegistries" :key="r.name" :value="r.name" />
+              <option
+                v-for="r in mavenRegistries"
+                :key="r.name"
+                :value="r.name"
+              />
             </datalist>
           </div>
           <div class="space-y-1">
             <Label for="sg-terraform">Terraform registry</Label>
-            <Input id="sg-terraform" v-model="terraformRegistryName" list="sg-terraform-list" placeholder="terraform" class="font-mono text-sm" />
+            <Input
+              id="sg-terraform"
+              v-model="terraformRegistryName"
+              list="sg-terraform-list"
+              placeholder="terraform"
+              class="font-mono text-sm"
+            />
             <datalist id="sg-terraform-list">
-              <option v-for="r in terraformRegistries" :key="r.name" :value="r.name" />
+              <option
+                v-for="r in terraformRegistries"
+                :key="r.name"
+                :value="r.name"
+              />
             </datalist>
           </div>
           <div class="space-y-1">
             <Label for="sg-rubygems">RubyGems registry</Label>
-            <Input id="sg-rubygems" v-model="rubygemsRegistryName" list="sg-rubygems-list" placeholder="rubygems" class="font-mono text-sm" />
+            <Input
+              id="sg-rubygems"
+              v-model="rubygemsRegistryName"
+              list="sg-rubygems-list"
+              placeholder="rubygems"
+              class="font-mono text-sm"
+            />
             <datalist id="sg-rubygems-list">
-              <option v-for="r in rubygemsRegistries" :key="r.name" :value="r.name" />
+              <option
+                v-for="r in rubygemsRegistries"
+                :key="r.name"
+                :value="r.name"
+              />
             </datalist>
           </div>
           <div class="space-y-1">
             <Label for="sg-composer">Composer registry</Label>
-            <Input id="sg-composer" v-model="composerRegistryName" list="sg-composer-list" placeholder="composer" class="font-mono text-sm" />
+            <Input
+              id="sg-composer"
+              v-model="composerRegistryName"
+              list="sg-composer-list"
+              placeholder="composer"
+              class="font-mono text-sm"
+            />
             <datalist id="sg-composer-list">
-              <option v-for="r in composerRegistries" :key="r.name" :value="r.name" />
+              <option
+                v-for="r in composerRegistries"
+                :key="r.name"
+                :value="r.name"
+              />
             </datalist>
           </div>
         </div>
@@ -530,16 +622,39 @@ const composerPublishSnippet = computed(() => {
     <!-- ── Tool config tabs ── -->
     <Tabs default-value="mise">
       <TabsList :class="isAuthenticated ? 'grid grid-cols-10' : 'grid grid-cols-9'">
-        <TabsTrigger value="mise">mise</TabsTrigger>
-        <TabsTrigger value="npm">npm</TabsTrigger>
-        <TabsTrigger value="cargo">Cargo</TabsTrigger>
-        <TabsTrigger value="openvsx">OpenVSX</TabsTrigger>
-        <TabsTrigger value="go">Go</TabsTrigger>
-        <TabsTrigger value="maven">Maven</TabsTrigger>
-        <TabsTrigger value="terraform">Terraform</TabsTrigger>
-        <TabsTrigger value="rubygems">RubyGems</TabsTrigger>
-        <TabsTrigger value="composer">Composer</TabsTrigger>
-        <TabsTrigger v-if="isAuthenticated" value="netrc">.netrc</TabsTrigger>
+        <TabsTrigger value="mise">
+          mise
+        </TabsTrigger>
+        <TabsTrigger value="npm">
+          npm
+        </TabsTrigger>
+        <TabsTrigger value="cargo">
+          Cargo
+        </TabsTrigger>
+        <TabsTrigger value="openvsx">
+          OpenVSX
+        </TabsTrigger>
+        <TabsTrigger value="go">
+          Go
+        </TabsTrigger>
+        <TabsTrigger value="maven">
+          Maven
+        </TabsTrigger>
+        <TabsTrigger value="terraform">
+          Terraform
+        </TabsTrigger>
+        <TabsTrigger value="rubygems">
+          RubyGems
+        </TabsTrigger>
+        <TabsTrigger value="composer">
+          Composer
+        </TabsTrigger>
+        <TabsTrigger
+          v-if="isAuthenticated"
+          value="netrc"
+        >
+          .netrc
+        </TabsTrigger>
       </TabsList>
 
       <!-- mise -->
@@ -553,12 +668,25 @@ const composerPublishSnippet = computed(() => {
                 <code class="text-xs font-mono bg-muted px-1 rounded">~/.config/mise/config.toml</code>
                 or a project-local <code class="text-xs font-mono bg-muted px-1 rounded">mise.toml</code>.
               </CardDescription>
-              <Badge variant="outline" class="shrink-0 font-mono text-xs ml-4">mise.toml</Badge>
+              <Badge
+                variant="outline"
+                class="shrink-0 font-mono text-xs ml-4"
+              >
+                mise.toml
+              </Badge>
             </div>
           </CardHeader>
           <CardContent>
-            <CodeBlock :code="miseSnippet" lang="toml">
-              <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('mise', miseSnippet)">
+            <CodeBlock
+              :code="miseSnippet"
+              lang="toml"
+            >
+              <Button
+                size="sm"
+                variant="ghost"
+                class="absolute top-2 right-2 h-7 px-2 text-xs"
+                @click="copy('mise', miseSnippet)"
+              >
                 {{ copied === 'mise' ? 'Copied!' : 'Copy' }}
               </Button>
             </CodeBlock>
@@ -576,30 +704,65 @@ const composerPublishSnippet = computed(() => {
                 <code class="text-xs font-mono bg-muted px-1 rounded">~/.npmrc</code>
                 for global use.
               </CardDescription>
-              <Badge variant="outline" class="shrink-0 font-mono text-xs ml-4">.npmrc</Badge>
+              <Badge
+                variant="outline"
+                class="shrink-0 font-mono text-xs ml-4"
+              >
+                .npmrc
+              </Badge>
             </div>
           </CardHeader>
           <CardContent class="space-y-4">
             <div>
-              <p class="text-xs text-muted-foreground mb-1.5">npm / npm workspaces</p>
-              <CodeBlock :code="npmrcSnippet" lang="ini">
-                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('npmrc', npmrcSnippet)">
+              <p class="text-xs text-muted-foreground mb-1.5">
+                npm / npm workspaces
+              </p>
+              <CodeBlock
+                :code="npmrcSnippet"
+                lang="ini"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('npmrc', npmrcSnippet)"
+                >
                   {{ copied === 'npmrc' ? 'Copied!' : 'Copy' }}
                 </Button>
               </CodeBlock>
             </div>
             <div>
-              <p class="text-xs text-muted-foreground mb-1.5">Yarn Berry — <code class="font-mono">.yarnrc.yml</code></p>
-              <CodeBlock :code="yarnSnippet" lang="yaml">
-                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('yarn', yarnSnippet)">
+              <p class="text-xs text-muted-foreground mb-1.5">
+                Yarn Berry — <code class="font-mono">.yarnrc.yml</code>
+              </p>
+              <CodeBlock
+                :code="yarnSnippet"
+                lang="yaml"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('yarn', yarnSnippet)"
+                >
                   {{ copied === 'yarn' ? 'Copied!' : 'Copy' }}
                 </Button>
               </CodeBlock>
             </div>
             <div>
-              <p class="text-xs text-muted-foreground mb-1.5">pnpm — <code class="font-mono">.npmrc</code></p>
-              <CodeBlock :code="pnpmSnippet" lang="ini">
-                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('pnpm', pnpmSnippet)">
+              <p class="text-xs text-muted-foreground mb-1.5">
+                pnpm — <code class="font-mono">.npmrc</code>
+              </p>
+              <CodeBlock
+                :code="pnpmSnippet"
+                lang="ini"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('pnpm', pnpmSnippet)"
+                >
                   {{ copied === 'pnpm' ? 'Copied!' : 'Copy' }}
                 </Button>
               </CodeBlock>
@@ -625,12 +788,25 @@ const composerPublishSnippet = computed(() => {
                 or the global
                 <code class="text-xs font-mono bg-muted px-1 rounded">~/.cargo/config.toml</code>.
               </CardDescription>
-              <Badge variant="outline" class="shrink-0 font-mono text-xs ml-4">.cargo/config.toml</Badge>
+              <Badge
+                variant="outline"
+                class="shrink-0 font-mono text-xs ml-4"
+              >
+                .cargo/config.toml
+              </Badge>
             </div>
           </CardHeader>
           <CardContent class="space-y-3">
-            <CodeBlock :code="cargoSnippet" lang="toml">
-              <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('cargo', cargoSnippet)">
+            <CodeBlock
+              :code="cargoSnippet"
+              lang="toml"
+            >
+              <Button
+                size="sm"
+                variant="ghost"
+                class="absolute top-2 right-2 h-7 px-2 text-xs"
+                @click="copy('cargo', cargoSnippet)"
+              >
                 {{ copied === 'cargo' ? 'Copied!' : 'Copy' }}
               </Button>
             </CodeBlock>
@@ -657,17 +833,37 @@ const composerPublishSnippet = computed(() => {
             <div class="flex items-center justify-between">
               <CardDescription>
                 Proxy VS Code extension downloads from
-                <a href="https://open-vsx.org" target="_blank" rel="noopener" class="underline underline-offset-2 hover:text-foreground transition-colors">open-vsx.org</a>.
+                <a
+                  href="https://open-vsx.org"
+                  target="_blank"
+                  rel="noopener"
+                  class="underline underline-offset-2 hover:text-foreground transition-colors"
+                >open-vsx.org</a>.
                 Extension IDs follow the <code class="text-xs font-mono bg-muted px-1 rounded">publisher.name</code> convention.
               </CardDescription>
-              <Badge variant="outline" class="shrink-0 font-mono text-xs ml-4">OpenVSX</Badge>
+              <Badge
+                variant="outline"
+                class="shrink-0 font-mono text-xs ml-4"
+              >
+                OpenVSX
+              </Badge>
             </div>
           </CardHeader>
           <CardContent class="space-y-4">
             <div>
-              <p class="text-xs text-muted-foreground mb-1.5">Direct VSIX download URL</p>
-              <CodeBlock :code="openvsxDirectSnippet" lang="text">
-                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('openvsx-direct', openvsxDirectSnippet)">
+              <p class="text-xs text-muted-foreground mb-1.5">
+                Direct VSIX download URL
+              </p>
+              <CodeBlock
+                :code="openvsxDirectSnippet"
+                lang="text"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('openvsx-direct', openvsxDirectSnippet)"
+                >
                   {{ copied === 'openvsx-direct' ? 'Copied!' : 'Copy' }}
                 </Button>
               </CodeBlock>
@@ -677,17 +873,37 @@ const composerPublishSnippet = computed(() => {
               </p>
             </div>
             <div>
-              <p class="text-xs text-muted-foreground mb-1.5">mise — URL replacement to intercept VSIX downloads</p>
-              <CodeBlock :code="openvsxMiseSnippet" lang="toml">
-                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('openvsx-mise', openvsxMiseSnippet)">
+              <p class="text-xs text-muted-foreground mb-1.5">
+                mise — URL replacement to intercept VSIX downloads
+              </p>
+              <CodeBlock
+                :code="openvsxMiseSnippet"
+                lang="toml"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('openvsx-mise', openvsxMiseSnippet)"
+                >
                   {{ copied === 'openvsx-mise' ? 'Copied!' : 'Copy' }}
                 </Button>
               </CodeBlock>
             </div>
             <div>
-              <p class="text-xs text-muted-foreground mb-1.5">VSCodium / Code - OSS — extension gallery (<code class="font-mono">product.json</code>)</p>
-              <CodeBlock :code="openvsxVscodiumSnippet" lang="jsonc">
-                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('openvsx-vscodium', openvsxVscodiumSnippet)">
+              <p class="text-xs text-muted-foreground mb-1.5">
+                VSCodium / Code - OSS — extension gallery (<code class="font-mono">product.json</code>)
+              </p>
+              <CodeBlock
+                :code="openvsxVscodiumSnippet"
+                lang="jsonc"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('openvsx-vscodium', openvsxVscodiumSnippet)"
+                >
                   {{ copied === 'openvsx-vscodium' ? 'Copied!' : 'Copy' }}
                 </Button>
               </CodeBlock>
@@ -695,7 +911,10 @@ const composerPublishSnippet = computed(() => {
                 Requires the proxy to implement the VS Code gallery protocol
                 (<code class="font-mono bg-muted px-1 rounded">/vscode/gallery</code> endpoints). Only VSIX proxying is supported today.
               </p>
-              <p v-if="isAuthenticated" class="text-xs text-muted-foreground mt-1.5">
+              <p
+                v-if="isAuthenticated"
+                class="text-xs text-muted-foreground mt-1.5"
+              >
                 VSCodium does not support HTTP Basic Auth in <code class="font-mono bg-muted px-1 rounded">product.json</code>.
                 Add your credentials to <code class="font-mono bg-muted px-1 rounded">~/.netrc</code> — see the <strong>.netrc</strong> tab.
               </p>
@@ -715,14 +934,29 @@ const composerPublishSnippet = computed(() => {
                 Append <code class="text-xs font-mono bg-muted px-1 rounded">,direct</code> so the
                 go tool falls back to the original source when the proxy returns 404.
               </CardDescription>
-              <Badge variant="outline" class="shrink-0 font-mono text-xs ml-4">Go</Badge>
+              <Badge
+                variant="outline"
+                class="shrink-0 font-mono text-xs ml-4"
+              >
+                Go
+              </Badge>
             </div>
           </CardHeader>
           <CardContent class="space-y-4">
             <div>
-              <p class="text-xs text-muted-foreground mb-1.5">Environment variables</p>
-              <CodeBlock :code="goSnippet" lang="bash">
-                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('go', goSnippet)">
+              <p class="text-xs text-muted-foreground mb-1.5">
+                Environment variables
+              </p>
+              <CodeBlock
+                :code="goSnippet"
+                lang="bash"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('go', goSnippet)"
+                >
                   {{ copied === 'go' ? 'Copied!' : 'Copy' }}
                 </Button>
               </CodeBlock>
@@ -755,7 +989,12 @@ const composerPublishSnippet = computed(() => {
                 when the registry is configured in <code class="text-xs font-mono bg-muted px-1 rounded">Local</code>
                 or <code class="text-xs font-mono bg-muted px-1 rounded">Hybrid</code> mode.
               </CardDescription>
-              <Badge variant="outline" class="shrink-0 font-mono text-xs ml-4">Maven</Badge>
+              <Badge
+                variant="outline"
+                class="shrink-0 font-mono text-xs ml-4"
+              >
+                Maven
+              </Badge>
             </div>
           </CardHeader>
           <CardContent class="space-y-4">
@@ -763,8 +1002,16 @@ const composerPublishSnippet = computed(() => {
               <p class="text-xs text-muted-foreground mb-1.5">
                 <code class="font-mono">~/.m2/settings.xml</code> — proxy all Maven dependencies
               </p>
-              <CodeBlock :code="mavenSettingsSnippet" lang="xml">
-                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('maven-settings', mavenSettingsSnippet)">
+              <CodeBlock
+                :code="mavenSettingsSnippet"
+                lang="xml"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('maven-settings', mavenSettingsSnippet)"
+                >
                   {{ copied === 'maven-settings' ? 'Copied!' : 'Copy' }}
                 </Button>
               </CodeBlock>
@@ -773,8 +1020,16 @@ const composerPublishSnippet = computed(() => {
               <p class="text-xs text-muted-foreground mb-1.5">
                 <code class="font-mono">pom.xml</code> — publish private artifacts (Local / Hybrid mode)
               </p>
-              <CodeBlock :code="mavenPublishSnippet" lang="xml">
-                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('maven-publish', mavenPublishSnippet)">
+              <CodeBlock
+                :code="mavenPublishSnippet"
+                lang="xml"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('maven-publish', mavenPublishSnippet)"
+                >
                   {{ copied === 'maven-publish' ? 'Copied!' : 'Copy' }}
                 </Button>
               </CodeBlock>
@@ -804,7 +1059,12 @@ const composerPublishSnippet = computed(() => {
                 <code class="text-xs font-mono bg-muted px-1 rounded">Local</code>
                 or <code class="text-xs font-mono bg-muted px-1 rounded">Hybrid</code> mode.
               </CardDescription>
-              <Badge variant="outline" class="shrink-0 font-mono text-xs ml-4">Terraform</Badge>
+              <Badge
+                variant="outline"
+                class="shrink-0 font-mono text-xs ml-4"
+              >
+                Terraform
+              </Badge>
             </div>
           </CardHeader>
           <CardContent class="space-y-4">
@@ -812,8 +1072,16 @@ const composerPublishSnippet = computed(() => {
               <p class="text-xs text-muted-foreground mb-1.5">
                 <code class="font-mono">~/.terraformrc</code> — provider network mirror
               </p>
-              <CodeBlock :code="terraformrcSnippet" lang="hcl">
-                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('terraformrc', terraformrcSnippet)">
+              <CodeBlock
+                :code="terraformrcSnippet"
+                lang="hcl"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('terraformrc', terraformrcSnippet)"
+                >
                   {{ copied === 'terraformrc' ? 'Copied!' : 'Copy' }}
                 </Button>
               </CodeBlock>
@@ -825,9 +1093,19 @@ const composerPublishSnippet = computed(() => {
               </p>
             </div>
             <div>
-              <p class="text-xs text-muted-foreground mb-1.5">Upload a private module (Local / Hybrid mode)</p>
-              <CodeBlock :code="terraformModuleSnippet" lang="bash">
-                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('terraform-module', terraformModuleSnippet)">
+              <p class="text-xs text-muted-foreground mb-1.5">
+                Upload a private module (Local / Hybrid mode)
+              </p>
+              <CodeBlock
+                :code="terraformModuleSnippet"
+                lang="bash"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('terraform-module', terraformModuleSnippet)"
+                >
                   {{ copied === 'terraform-module' ? 'Copied!' : 'Copy' }}
                 </Button>
               </CodeBlock>
@@ -855,14 +1133,29 @@ const composerPublishSnippet = computed(() => {
                 <code class="text-xs font-mono bg-muted px-1 rounded">Local</code>
                 or <code class="text-xs font-mono bg-muted px-1 rounded">Hybrid</code> mode.
               </CardDescription>
-              <Badge variant="outline" class="shrink-0 font-mono text-xs ml-4">RubyGems</Badge>
+              <Badge
+                variant="outline"
+                class="shrink-0 font-mono text-xs ml-4"
+              >
+                RubyGems
+              </Badge>
             </div>
           </CardHeader>
           <CardContent class="space-y-4">
             <div>
-              <p class="text-xs text-muted-foreground mb-1.5">Bundler mirror / gem CLI source</p>
-              <CodeBlock :code="gemsrcSnippet" lang="bash">
-                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('gemsrc', gemsrcSnippet)">
+              <p class="text-xs text-muted-foreground mb-1.5">
+                Bundler mirror / gem CLI source
+              </p>
+              <CodeBlock
+                :code="gemsrcSnippet"
+                lang="bash"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('gemsrc', gemsrcSnippet)"
+                >
                   {{ copied === 'gemsrc' ? 'Copied!' : 'Copy' }}
                 </Button>
               </CodeBlock>
@@ -873,9 +1166,19 @@ const composerPublishSnippet = computed(() => {
               </p>
             </div>
             <div>
-              <p class="text-xs text-muted-foreground mb-1.5">Publish a private gem (Local / Hybrid mode)</p>
-              <CodeBlock :code="gemPublishSnippet" lang="bash">
-                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('gem-publish', gemPublishSnippet)">
+              <p class="text-xs text-muted-foreground mb-1.5">
+                Publish a private gem (Local / Hybrid mode)
+              </p>
+              <CodeBlock
+                :code="gemPublishSnippet"
+                lang="bash"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('gem-publish', gemPublishSnippet)"
+                >
                   {{ copied === 'gem-publish' ? 'Copied!' : 'Copy' }}
                 </Button>
               </CodeBlock>
@@ -897,14 +1200,24 @@ const composerPublishSnippet = computed(() => {
             <div class="flex items-center justify-between">
               <CardDescription>
                 Proxy PHP Composer package downloads from
-                <a href="https://packagist.org" target="_blank" rel="noopener" class="underline underline-offset-2 hover:text-foreground transition-colors">Packagist</a>
+                <a
+                  href="https://packagist.org"
+                  target="_blank"
+                  rel="noopener"
+                  class="underline underline-offset-2 hover:text-foreground transition-colors"
+                >Packagist</a>
                 or publish private packages via ZIP upload when the registry is configured in
                 <code class="text-xs font-mono bg-muted px-1 rounded">Local</code>
                 or <code class="text-xs font-mono bg-muted px-1 rounded">Hybrid</code> mode.
                 Authentication uses <code class="text-xs font-mono bg-muted px-1 rounded">auth.json</code>
                 (HTTP Basic) rather than a token header — this is a Composer convention.
               </CardDescription>
-              <Badge variant="outline" class="shrink-0 font-mono text-xs ml-4">Composer</Badge>
+              <Badge
+                variant="outline"
+                class="shrink-0 font-mono text-xs ml-4"
+              >
+                Composer
+              </Badge>
             </div>
           </CardHeader>
           <CardContent class="space-y-4">
@@ -912,8 +1225,16 @@ const composerPublishSnippet = computed(() => {
               <p class="text-xs text-muted-foreground mb-1.5">
                 <code class="font-mono">composer.json</code> — add the proxy as a repository
               </p>
-              <CodeBlock :code="composerJsonSnippet" lang="jsonc">
-                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('composer-json', composerJsonSnippet)">
+              <CodeBlock
+                :code="composerJsonSnippet"
+                lang="jsonc"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('composer-json', composerJsonSnippet)"
+                >
                   {{ copied === 'composer-json' ? 'Copied!' : 'Copy' }}
                 </Button>
               </CodeBlock>
@@ -922,8 +1243,16 @@ const composerPublishSnippet = computed(() => {
               <p class="text-xs text-muted-foreground mb-1.5">
                 <code class="font-mono">auth.json</code> — credentials (never commit this file)
               </p>
-              <CodeBlock :code="composerAuthSnippet" lang="jsonc">
-                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('composer-auth', composerAuthSnippet)">
+              <CodeBlock
+                :code="composerAuthSnippet"
+                lang="jsonc"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('composer-auth', composerAuthSnippet)"
+                >
                   {{ copied === 'composer-auth' ? 'Copied!' : 'Copy' }}
                 </Button>
               </CodeBlock>
@@ -936,9 +1265,19 @@ const composerPublishSnippet = computed(() => {
               </p>
             </div>
             <div>
-              <p class="text-xs text-muted-foreground mb-1.5">Publish a private package (Local / Hybrid mode)</p>
-              <CodeBlock :code="composerPublishSnippet" lang="bash">
-                <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('composer-publish', composerPublishSnippet)">
+              <p class="text-xs text-muted-foreground mb-1.5">
+                Publish a private package (Local / Hybrid mode)
+              </p>
+              <CodeBlock
+                :code="composerPublishSnippet"
+                lang="bash"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('composer-publish', composerPublishSnippet)"
+                >
                   {{ copied === 'composer-publish' ? 'Copied!' : 'Copy' }}
                 </Button>
               </CodeBlock>
@@ -955,7 +1294,10 @@ const composerPublishSnippet = computed(() => {
       </TabsContent>
 
       <!-- .netrc (authenticated only) -->
-      <TabsContent v-if="isAuthenticated" value="netrc">
+      <TabsContent
+        v-if="isAuthenticated"
+        value="netrc"
+      >
         <Card>
           <CardHeader>
             <div class="flex items-center justify-between">
@@ -965,19 +1307,40 @@ const composerPublishSnippet = computed(() => {
                 and restrict permissions with
                 <code class="text-xs font-mono bg-muted px-1 rounded">chmod 600 ~/.netrc</code>.
               </CardDescription>
-              <Badge variant="outline" class="shrink-0 font-mono text-xs ml-4">~/.netrc</Badge>
+              <Badge
+                variant="outline"
+                class="shrink-0 font-mono text-xs ml-4"
+              >
+                ~/.netrc
+              </Badge>
             </div>
           </CardHeader>
           <CardContent class="space-y-3">
-            <CodeBlock :code="netrcSnippet" lang="text">
-              <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs" @click="copy('netrc', netrcSnippet)">
+            <CodeBlock
+              :code="netrcSnippet"
+              lang="text"
+            >
+              <Button
+                size="sm"
+                variant="ghost"
+                class="absolute top-2 right-2 h-7 px-2 text-xs"
+                @click="copy('netrc', netrcSnippet)"
+              >
                 {{ copied === 'netrc' ? 'Copied!' : 'Copy' }}
               </Button>
             </CodeBlock>
-            <p v-if="isOidc" class="text-xs text-muted-foreground">
+            <p
+              v-if="isOidc"
+              class="text-xs text-muted-foreground"
+            >
               Your current token is a short-lived OIDC session token.
               For long-lived automation, create a
-              <RouterLink to="/tokens" class="underline underline-offset-2 hover:text-foreground transition-colors">personal API token</RouterLink>
+              <RouterLink
+                to="/tokens"
+                class="underline underline-offset-2 hover:text-foreground transition-colors"
+              >
+                personal API token
+              </RouterLink>
               and use that as the password.
             </p>
           </CardContent>

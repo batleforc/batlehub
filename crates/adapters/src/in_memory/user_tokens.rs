@@ -64,7 +64,14 @@ mod tests {
     async fn create_token_returns_err() {
         let repo = NullUserTokenRepository::arc();
         let result = repo
-            .create_token(Uuid::new_v4(), "alice", "my-token", "hash", Role::User, Utc::now())
+            .create_token(
+                Uuid::new_v4(),
+                "alice",
+                "my-token",
+                "hash",
+                Role::User,
+                Utc::now(),
+            )
             .await;
         assert!(result.is_err());
     }

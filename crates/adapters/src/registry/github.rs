@@ -107,13 +107,10 @@ fn static_artifact_url(
             "{}/{}/archive/{}.zip",
             archive_base, owner_repo, git_ref
         ))
-    } else if let Some(file_path) = artifact.strip_prefix("raw/") {
-        Some(format!(
-            "{}/{}/{}/{}",
-            raw_base, owner_repo, git_ref, file_path
-        ))
     } else {
-        None
+        artifact
+            .strip_prefix("raw/")
+            .map(|file_path| format!("{}/{}/{}/{}", raw_base, owner_repo, git_ref, file_path))
     }
 }
 
@@ -380,8 +377,13 @@ mod tests {
 
     #[test]
     fn static_url_tarball() {
-        let url =
-            static_artifact_url("tarball/main", "https://github.com", "https://raw.githubusercontent.com", "owner/repo", "v1.0");
+        let url = static_artifact_url(
+            "tarball/main",
+            "https://github.com",
+            "https://raw.githubusercontent.com",
+            "owner/repo",
+            "v1.0",
+        );
         assert_eq!(
             url.as_deref(),
             Some("https://github.com/owner/repo/archive/v1.0.tar.gz")
@@ -390,7 +392,13 @@ mod tests {
 
     #[test]
     fn static_url_zipball() {
-        let url = static_artifact_url("zipball", "https://github.com", "https://raw.githubusercontent.com", "owner/repo", "v1.0");
+        let url = static_artifact_url(
+            "zipball",
+            "https://github.com",
+            "https://raw.githubusercontent.com",
+            "owner/repo",
+            "v1.0",
+        );
         assert_eq!(
             url.as_deref(),
             Some("https://github.com/owner/repo/archive/v1.0.zip")

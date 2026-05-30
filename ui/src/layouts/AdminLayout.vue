@@ -48,7 +48,10 @@ function isActive(to: string) {
               : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
           ]"
         >
-          <component :is="link.icon" class="h-4 w-4 shrink-0" />
+          <component
+            :is="link.icon"
+            class="h-4 w-4 shrink-0"
+          />
           {{ link.label }}
         </RouterLink>
       </nav>
@@ -71,7 +74,10 @@ function isActive(to: string) {
               : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
           ]"
         >
-          <component :is="link.icon" class="h-3.5 w-3.5 shrink-0" />
+          <component
+            :is="link.icon"
+            class="h-3.5 w-3.5 shrink-0"
+          />
           {{ link.label }}
         </RouterLink>
       </div>

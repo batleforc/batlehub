@@ -7,8 +7,8 @@ use utoipa::ToSchema;
 
 use batlehub_core::services::{ProxyMetrics, ProxyService};
 
-use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 use super::require_admin;
+use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
 fn hit_rate(hits: u64, misses: u64) -> Option<f64> {
     let total = hits + misses;

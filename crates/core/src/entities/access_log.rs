@@ -129,8 +129,14 @@ mod tests {
     #[test]
     fn is_denied_only_for_denied_variant() {
         assert!(!AccessResult::Allowed.is_denied());
-        assert!(AccessResult::Denied { reason: "blocked".into() }.is_denied());
-        assert!(!AccessResult::ProxyError { reason: "timeout".into() }.is_denied());
+        assert!(AccessResult::Denied {
+            reason: "blocked".into()
+        }
+        .is_denied());
+        assert!(!AccessResult::ProxyError {
+            reason: "timeout".into()
+        }
+        .is_denied());
     }
 
     #[test]
@@ -144,17 +150,13 @@ mod tests {
 
     #[test]
     fn denied_download_sets_reason() {
-        let ev =
-            AccessEvent::denied_download(pkg(), None, Role::Anonymous, "blocklisted".into());
-        assert!(
-            matches!(&ev.result, AccessResult::Denied { reason } if reason == "blocklisted")
-        );
+        let ev = AccessEvent::denied_download(pkg(), None, Role::Anonymous, "blocklisted".into());
+        assert!(matches!(&ev.result, AccessResult::Denied { reason } if reason == "blocklisted"));
     }
 
     #[test]
     fn proxy_error_sets_reason() {
-        let ev =
-            AccessEvent::proxy_error(pkg(), None, Role::Anonymous, "upstream timeout".into());
+        let ev = AccessEvent::proxy_error(pkg(), None, Role::Anonymous, "upstream timeout".into());
         assert!(
             matches!(&ev.result, AccessResult::ProxyError { reason } if reason == "upstream timeout")
         );

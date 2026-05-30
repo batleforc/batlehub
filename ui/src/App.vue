@@ -118,7 +118,10 @@ function isActive(to: string) {
         </nav>
 
         <!-- Admin entry point (desktop) -->
-        <div v-if="isAdmin" class="hidden md:flex items-center gap-1">
+        <div
+          v-if="isAdmin"
+          class="hidden md:flex items-center gap-1"
+        >
           <div class="mx-2 h-4 w-px bg-border" />
           <RouterLink
             to="/admin/packages"
@@ -158,12 +161,27 @@ function isActive(to: string) {
               <span class="text-sm text-muted-foreground hidden lg:inline">
                 {{ identity?.user_id }}
               </span>
-              <Badge v-if="isAdmin" variant="secondary" class="text-xs">admin</Badge>
-              <Badge v-else-if="identity?.role !== 'anonymous'" variant="outline" class="text-xs">
+              <Badge
+                v-if="isAdmin"
+                variant="secondary"
+                class="text-xs"
+              >
+                admin
+              </Badge>
+              <Badge
+                v-else-if="identity?.role !== 'anonymous'"
+                variant="outline"
+                class="text-xs"
+              >
                 {{ identity?.role }}
               </Badge>
             </div>
-            <Button variant="ghost" size="sm" @click="handleLogout" class="text-sm">
+            <Button
+              variant="ghost"
+              size="sm"
+              class="text-sm"
+              @click="handleLogout"
+            >
               Sign out
             </Button>
           </template>
@@ -182,14 +200,23 @@ function isActive(to: string) {
             class="md:hidden"
             @click="mobileOpen = !mobileOpen"
           >
-            <X v-if="mobileOpen" class="h-4 w-4" />
-            <Menu v-else class="h-4 w-4" />
+            <X
+              v-if="mobileOpen"
+              class="h-4 w-4"
+            />
+            <Menu
+              v-else
+              class="h-4 w-4"
+            />
           </Button>
         </div>
       </div>
 
       <!-- Mobile nav -->
-      <div v-if="mobileOpen" class="md:hidden border-t bg-card px-4 py-3 space-y-1">
+      <div
+        v-if="mobileOpen"
+        class="md:hidden border-t bg-card px-4 py-3 space-y-1"
+      >
         <RouterLink
           v-for="link in userLinks"
           :key="link.to"
@@ -268,7 +295,10 @@ function isActive(to: string) {
           <BookOpen class="h-4 w-4" />
           Documentation
         </a>
-        <div v-if="isAuthenticated" class="pt-2 border-t">
+        <div
+          v-if="isAuthenticated"
+          class="pt-2 border-t"
+        >
           <button
             class="block w-full text-left px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             @click="handleLogout"

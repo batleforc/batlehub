@@ -147,21 +147,18 @@ impl RegistryClient for ComposerRegistryClient {
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
         // For p2 artifacts return synthetic metadata pointing to the upstream URL;
         // the actual bytes are fetched lazily by fetch_artifact.
-        match pkg.artifact.as_deref() {
-            Some(art @ ("p2" | "p2~dev")) => {
-                let dev_suffix = if art == "p2~dev" { "~dev" } else { "" };
-                let url = format!("{}/p2/{}{dev_suffix}.json", self.base_url, pkg.name);
-                return Ok(PackageMetadata {
-                    id: pkg.clone(),
-                    published_at: None,
-                    download_url: Some(url),
-                    checksum: None,
-                    is_signed: None,
-                    extra: serde_json::Value::Null,
-                    cache_control: None,
-                });
-            }
-            _ => {}
+        if let Some(art @ ("p2" | "p2~dev")) = pkg.artifact.as_deref() {
+            let dev_suffix = if art == "p2~dev" { "~dev" } else { "" };
+            let url = format!("{}/p2/{}{dev_suffix}.json", self.base_url, pkg.name);
+            return Ok(PackageMetadata {
+                id: pkg.clone(),
+                published_at: None,
+                download_url: Some(url),
+                checksum: None,
+                is_signed: None,
+                extra: serde_json::Value::Null,
+                cache_control: None,
+            });
         }
 
         let p2 = self.fetch_p2_response(&pkg.name).await?;
@@ -220,18 +217,14 @@ impl RegistryClient for ComposerRegistryClient {
 
     async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
         // For p2 and p2~dev artifacts, stream the raw JSON bytes.
-        match pkg.artifact.as_deref() {
-            Some(art @ ("p2" | "p2~dev")) => {
-                let suffix = if art == "p2~dev" { "~dev" } else { "" };
-                let (bytes, cache_control) = self.fetch_p2_bytes(&pkg.name, suffix).await?;
-                let once =
-                    futures::stream::once(async move { Ok::<bytes::Bytes, CoreError>(bytes) });
-                return Ok(FetchedArtifact {
-                    stream: Box::pin(once),
-                    cache_control,
-                });
-            }
-            _ => {}
+        if let Some(art @ ("p2" | "p2~dev")) = pkg.artifact.as_deref() {
+            let suffix = if art == "p2~dev" { "~dev" } else { "" };
+            let (bytes, cache_control) = self.fetch_p2_bytes(&pkg.name, suffix).await?;
+            let once = futures::stream::once(async move { Ok::<bytes::Bytes, CoreError>(bytes) });
+            return Ok(FetchedArtifact {
+                stream: Box::pin(once),
+                cache_control,
+            });
         }
 
         // For "dist" artifact, resolve and stream from the dist URL.

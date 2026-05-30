@@ -259,26 +259,24 @@ async fn main() -> Result<()> {
                     k8s_cfg.audiences.join(", ")
                 );
             }
-            AuthConfig::ActionsOidc(cfg) => {
-                match ActionsOidcAuthProvider::new(cfg).await {
-                    Ok(provider) => {
-                        auth_providers.push(Arc::new(provider));
-                        tracing::info!(
-                            name = %cfg.name,
-                            issuer = %cfg.issuer_url,
-                            rules = cfg.rules.len(),
-                            "Actions OIDC auth provider ready"
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            issuer = %cfg.issuer_url,
-                            error = %e,
-                            "Actions OIDC provider unreachable at startup — continuing without it"
-                        );
-                    }
+            AuthConfig::ActionsOidc(cfg) => match ActionsOidcAuthProvider::new(cfg).await {
+                Ok(provider) => {
+                    auth_providers.push(Arc::new(provider));
+                    tracing::info!(
+                        name = %cfg.name,
+                        issuer = %cfg.issuer_url,
+                        rules = cfg.rules.len(),
+                        "Actions OIDC auth provider ready"
+                    );
                 }
-            }
+                Err(e) => {
+                    tracing::warn!(
+                        issuer = %cfg.issuer_url,
+                        error = %e,
+                        "Actions OIDC provider unreachable at startup — continuing without it"
+                    );
+                }
+            },
         }
     }
 

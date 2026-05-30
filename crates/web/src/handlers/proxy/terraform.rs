@@ -9,6 +9,7 @@ use batlehub_core::{
     ports::StorageMeta,
     services::{
         tf_provider_binary_storage_key, LocalRegistryService, ProxyService, PublishRequest,
+        TerraformPlatform,
     },
 };
 
@@ -134,7 +135,15 @@ pub async fn tf_provider_download(
         let base_url = base_url_from_req(&req);
         match local_svc
             .get_tf_provider_download_response(
-                &registry, &name, &version, &os, &arch, &base_url, &registry, &identity,
+                &registry,
+                &name,
+                &version,
+                TerraformPlatform {
+                    os: &os,
+                    arch: &arch,
+                },
+                &base_url,
+                &identity,
             )
             .await
         {

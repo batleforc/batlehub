@@ -132,7 +132,9 @@ function reset() {
 <template>
   <div class="space-y-6 max-w-4xl">
     <div>
-      <h1 class="text-xl font-semibold">Bulk Import</h1>
+      <h1 class="text-xl font-semibold">
+        Bulk Import
+      </h1>
       <p class="text-sm text-muted-foreground mt-1">
         Block or unblock multiple packages at once by pasting or uploading a CSV file.
       </p>
@@ -141,7 +143,9 @@ function reset() {
     <!-- Format reference -->
     <Card>
       <CardHeader class="pb-2">
-        <CardTitle class="text-sm font-medium text-muted-foreground">CSV format</CardTitle>
+        <CardTitle class="text-sm font-medium text-muted-foreground">
+          CSV format
+        </CardTitle>
       </CardHeader>
       <CardContent>
         <pre class="text-xs font-mono bg-muted rounded p-3 overflow-x-auto">registry,name,version,artifact,reason
@@ -158,7 +162,9 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
     <!-- Action + input -->
     <Card>
       <CardHeader class="pb-3">
-        <CardTitle class="text-base">Configure import</CardTitle>
+        <CardTitle class="text-base">
+          Configure import
+        </CardTitle>
       </CardHeader>
       <CardContent class="space-y-4">
         <!-- Action selector -->
@@ -180,9 +186,16 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
         </div>
 
         <!-- Default reason (block only) -->
-        <div v-if="action === 'block'" class="space-y-1 max-w-md">
+        <div
+          v-if="action === 'block'"
+          class="space-y-1 max-w-md"
+        >
           <Label for="default-reason">Default reason <span class="text-muted-foreground">(used when the CSV row has no reason)</span></Label>
-          <Input id="default-reason" v-model="defaultReason" placeholder="CVE-2025-XXXX or policy violation" />
+          <Input
+            id="default-reason"
+            v-model="defaultReason"
+            placeholder="CVE-2025-XXXX or policy violation"
+          />
         </div>
 
         <!-- CSV textarea -->
@@ -204,16 +217,37 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
           >
             <Upload class="h-3.5 w-3.5" />
             Upload .csv file
-            <input type="file" accept=".csv,text/csv" class="sr-only" @change="handleFileUpload" />
+            <input
+              type="file"
+              accept=".csv,text/csv"
+              class="sr-only"
+              @change="handleFileUpload"
+            >
           </label>
           <span class="text-xs text-muted-foreground">or paste above</span>
         </div>
 
-        <p v-if="parseError" class="text-xs text-destructive">{{ parseError }}</p>
+        <p
+          v-if="parseError"
+          class="text-xs text-destructive"
+        >
+          {{ parseError }}
+        </p>
 
         <div class="flex gap-2">
-          <Button variant="outline" @click="parseCSV">Preview rows</Button>
-          <Button variant="ghost" size="sm" @click="reset">Reset</Button>
+          <Button
+            variant="outline"
+            @click="parseCSV"
+          >
+            Preview rows
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            @click="reset"
+          >
+            Reset
+          </Button>
         </div>
       </CardContent>
     </Card>
@@ -244,7 +278,9 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
               <TableHead>Name</TableHead>
               <TableHead>Version</TableHead>
               <TableHead>Artifact</TableHead>
-              <TableHead v-if="action === 'block'">Reason</TableHead>
+              <TableHead v-if="action === 'block'">
+                Reason
+              </TableHead>
               <TableHead>Status</TableHead>
             </TableRow>
           </TableHeader>
@@ -254,16 +290,39 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
               :key="i"
               :class="row.error ? 'bg-destructive/5' : ''"
             >
-              <TableCell class="font-mono text-xs">{{ row.registry || "—" }}</TableCell>
-              <TableCell class="font-mono text-xs">{{ row.name || "—" }}</TableCell>
-              <TableCell class="font-mono text-xs">{{ row.version || "—" }}</TableCell>
-              <TableCell class="font-mono text-xs text-muted-foreground">{{ row.artifact || "—" }}</TableCell>
-              <TableCell v-if="action === 'block'" class="text-xs">
+              <TableCell class="font-mono text-xs">
+                {{ row.registry || "—" }}
+              </TableCell>
+              <TableCell class="font-mono text-xs">
+                {{ row.name || "—" }}
+              </TableCell>
+              <TableCell class="font-mono text-xs">
+                {{ row.version || "—" }}
+              </TableCell>
+              <TableCell class="font-mono text-xs text-muted-foreground">
+                {{ row.artifact || "—" }}
+              </TableCell>
+              <TableCell
+                v-if="action === 'block'"
+                class="text-xs"
+              >
                 {{ row.reason || defaultReason || "—" }}
               </TableCell>
               <TableCell>
-                <Badge v-if="row.error" variant="destructive" class="text-xs">{{ row.error }}</Badge>
-                <Badge v-else variant="secondary" class="text-xs">OK</Badge>
+                <Badge
+                  v-if="row.error"
+                  variant="destructive"
+                  class="text-xs"
+                >
+                  {{ row.error }}
+                </Badge>
+                <Badge
+                  v-else
+                  variant="secondary"
+                  class="text-xs"
+                >
+                  OK
+                </Badge>
               </TableCell>
             </TableRow>
           </TableBody>
@@ -279,7 +338,10 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
           Done — {{ result.succeeded_count }} succeeded, {{ result.failed_count }} failed
         </CardTitle>
       </CardHeader>
-      <CardContent v-if="result.failures.length > 0" class="p-0">
+      <CardContent
+        v-if="result.failures.length > 0"
+        class="p-0"
+      >
         <Table>
           <TableHeader>
             <TableRow>
@@ -290,10 +352,20 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
             </TableRow>
           </TableHeader>
           <TableBody>
-            <TableRow v-for="(f, i) in result.failures" :key="i" class="bg-destructive/5">
-              <TableCell class="font-mono text-xs">{{ f.registry }}</TableCell>
-              <TableCell class="font-mono text-xs">{{ f.name }}</TableCell>
-              <TableCell class="font-mono text-xs">{{ f.version }}</TableCell>
+            <TableRow
+              v-for="(f, i) in result.failures"
+              :key="i"
+              class="bg-destructive/5"
+            >
+              <TableCell class="font-mono text-xs">
+                {{ f.registry }}
+              </TableCell>
+              <TableCell class="font-mono text-xs">
+                {{ f.name }}
+              </TableCell>
+              <TableCell class="font-mono text-xs">
+                {{ f.version }}
+              </TableCell>
               <TableCell class="text-xs text-destructive flex items-center gap-1">
                 <XCircle class="h-3 w-3 shrink-0" />{{ f.error }}
               </TableCell>
@@ -303,6 +375,11 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
       </CardContent>
     </Card>
 
-    <p v-if="submitError" class="text-sm text-destructive">{{ submitError }}</p>
+    <p
+      v-if="submitError"
+      class="text-sm text-destructive"
+    >
+      {{ submitError }}
+    </p>
   </div>
 </template>

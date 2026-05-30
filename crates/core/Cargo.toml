@@ -20,3 +20,6 @@ metrics.workspace = true
 utoipa.workspace = true
 regex.workspace = true
 semver.workspace = true
+
+[lints]
+workspace = true

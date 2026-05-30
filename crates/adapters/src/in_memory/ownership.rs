@@ -10,6 +10,8 @@ use batlehub_core::{
     ports::{OwnerEntry, OwnershipPort},
 };
 
+type OwnerMap = HashMap<(String, String), Vec<OwnerEntry>>;
+
 /// In-memory [`OwnershipPort`].
 ///
 /// Stores owner entries per `(registry, package)` pair. Insertion order is
@@ -17,7 +19,7 @@ use batlehub_core::{
 /// PostgreSQL implementation's `ORDER BY granted_at ASC`).
 #[derive(Debug, Default)]
 pub struct InMemoryOwnershipStore {
-    data: Arc<RwLock<HashMap<(String, String), Vec<OwnerEntry>>>>,
+    data: Arc<RwLock<OwnerMap>>,
 }
 
 impl InMemoryOwnershipStore {

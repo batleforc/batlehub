@@ -52,11 +52,20 @@ function statusLabel(pkg: PackageSummaryDto) {
       <div class="flex flex-row items-center justify-between space-y-0">
         <CardTitle class="text-lg">
           Packages
-          <span v-if="data" class="font-normal text-muted-foreground text-base ml-1">
+          <span
+            v-if="data"
+            class="font-normal text-muted-foreground text-base ml-1"
+          >
             ({{ data.total }})
           </span>
         </CardTitle>
-        <Button variant="outline" size="sm" @click="reload">Refresh</Button>
+        <Button
+          variant="outline"
+          size="sm"
+          @click="reload"
+        >
+          Refresh
+        </Button>
       </div>
       <Input
         v-model="search"
@@ -65,8 +74,18 @@ function statusLabel(pkg: PackageSummaryDto) {
       />
     </CardHeader>
     <CardContent class="p-0">
-      <p v-if="loading" class="p-6 text-sm text-muted-foreground">Loading…</p>
-      <p v-else-if="error" class="p-6 text-sm text-destructive">{{ error }}</p>
+      <p
+        v-if="loading"
+        class="p-6 text-sm text-muted-foreground"
+      >
+        Loading…
+      </p>
+      <p
+        v-else-if="error"
+        class="p-6 text-sm text-destructive"
+      >
+        {{ error }}
+      </p>
 
       <Table v-else-if="filteredItems.length">
         <TableHeader>
@@ -76,7 +95,9 @@ function statusLabel(pkg: PackageSummaryDto) {
             <TableHead>Version</TableHead>
             <TableHead>Artifact</TableHead>
             <TableHead>Status</TableHead>
-            <TableHead class="text-right">Downloads</TableHead>
+            <TableHead class="text-right">
+              Downloads
+            </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -86,24 +107,42 @@ function statusLabel(pkg: PackageSummaryDto) {
             class="cursor-pointer hover:bg-muted/50"
             @click="router.push({ path: '/packages/detail', query: { registry: pkg.registry, name: pkg.name, version: pkg.version, ...(pkg.artifact ? { artifact: pkg.artifact } : {}) } })"
           >
-            <TableCell class="font-mono text-xs">{{ pkg.registry }}</TableCell>
-            <TableCell class="font-medium">{{ pkg.name }}</TableCell>
-            <TableCell class="font-mono text-xs">{{ pkg.version }}</TableCell>
-            <TableCell class="text-muted-foreground font-mono text-xs">{{ pkg.artifact ?? "—" }}</TableCell>
-            <TableCell>
-              <Badge :variant="statusVariant(pkg)">{{ statusLabel(pkg) }}</Badge>
+            <TableCell class="font-mono text-xs">
+              {{ pkg.registry }}
             </TableCell>
-            <TableCell class="text-right tabular-nums">{{ pkg.access_count }}</TableCell>
+            <TableCell class="font-medium">
+              {{ pkg.name }}
+            </TableCell>
+            <TableCell class="font-mono text-xs">
+              {{ pkg.version }}
+            </TableCell>
+            <TableCell class="text-muted-foreground font-mono text-xs">
+              {{ pkg.artifact ?? "—" }}
+            </TableCell>
+            <TableCell>
+              <Badge :variant="statusVariant(pkg)">
+                {{ statusLabel(pkg) }}
+              </Badge>
+            </TableCell>
+            <TableCell class="text-right tabular-nums">
+              {{ pkg.access_count }}
+            </TableCell>
           </TableRow>
         </TableBody>
       </Table>
 
-      <div v-else-if="!loading" class="py-12 text-center space-y-2">
+      <div
+        v-else-if="!loading"
+        class="py-12 text-center space-y-2"
+      >
         <Package class="h-8 w-8 mx-auto text-muted-foreground/50" />
         <p class="text-sm text-muted-foreground">
           {{ search ? "No packages match your filter." : "No packages cached yet." }}
         </p>
-        <p v-if="!search" class="text-xs text-muted-foreground">
+        <p
+          v-if="!search"
+          class="text-xs text-muted-foreground"
+        >
           Packages appear here once they are downloaded through the proxy.
         </p>
       </div>

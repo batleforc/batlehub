@@ -336,7 +336,9 @@ function formatDate(iso: string) {
   <div class="space-y-6 max-w-4xl">
     <!-- Header -->
     <div>
-      <h1 class="text-2xl font-semibold">Team Namespace</h1>
+      <h1 class="text-2xl font-semibold">
+        Team Namespace
+      </h1>
       <p class="text-sm text-muted-foreground mt-0.5">
         View and manage the packages and namespaces owned by your groups.
       </p>
@@ -355,11 +357,18 @@ function formatDate(iso: string) {
       <!-- Groups -->
       <Card>
         <CardHeader>
-          <CardTitle class="text-base">Your groups</CardTitle>
+          <CardTitle class="text-base">
+            Your groups
+          </CardTitle>
         </CardHeader>
         <CardContent>
           <div class="flex flex-wrap gap-2">
-            <Badge v-for="g in groups" :key="g" variant="secondary" class="font-mono text-xs">
+            <Badge
+              v-for="g in groups"
+              :key="g"
+              variant="secondary"
+              class="font-mono text-xs"
+            >
               {{ g.replaceAll(' ', '') }}
             </Badge>
           </div>
@@ -369,15 +378,30 @@ function formatDate(iso: string) {
       <!-- My Namespaces -->
       <Card>
         <CardHeader>
-          <CardTitle class="text-base">My namespaces</CardTitle>
+          <CardTitle class="text-base">
+            My namespaces
+          </CardTitle>
           <CardDescription>
             Namespace prefixes your groups own. Click a row to browse its packages.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <p v-if="namespacesLoading" class="text-sm text-muted-foreground">Loading…</p>
-          <p v-else-if="namespacesError" class="text-sm text-destructive">{{ namespacesError }}</p>
-          <p v-else-if="!myNamespaces?.length" class="text-sm text-muted-foreground">
+          <p
+            v-if="namespacesLoading"
+            class="text-sm text-muted-foreground"
+          >
+            Loading…
+          </p>
+          <p
+            v-else-if="namespacesError"
+            class="text-sm text-destructive"
+          >
+            {{ namespacesError }}
+          </p>
+          <p
+            v-else-if="!myNamespaces?.length"
+            class="text-sm text-muted-foreground"
+          >
             No namespace claims found for your groups.
           </p>
           <Table v-else>
@@ -398,9 +422,15 @@ function formatDate(iso: string) {
                   : 'hover:bg-muted/40'"
                 @click="selectNamespace(ns)"
               >
-                <TableCell class="font-mono text-xs">{{ ns.registry }}</TableCell>
-                <TableCell class="font-mono text-xs">{{ ns.prefix }}</TableCell>
-                <TableCell class="font-mono text-xs">{{ ns.group_id.replaceAll(' ', '') }}</TableCell>
+                <TableCell class="font-mono text-xs">
+                  {{ ns.registry }}
+                </TableCell>
+                <TableCell class="font-mono text-xs">
+                  {{ ns.prefix }}
+                </TableCell>
+                <TableCell class="font-mono text-xs">
+                  {{ ns.group_id.replaceAll(' ', '') }}
+                </TableCell>
               </TableRow>
             </TableBody>
           </Table>
@@ -424,9 +454,22 @@ function formatDate(iso: string) {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <p v-if="pkgsLoading" class="text-sm text-muted-foreground">Loading…</p>
-          <p v-else-if="pkgsError" class="text-sm text-destructive">{{ pkgsError }}</p>
-          <p v-else-if="selectedNs && !pkgsData?.length" class="text-sm text-muted-foreground">
+          <p
+            v-if="pkgsLoading"
+            class="text-sm text-muted-foreground"
+          >
+            Loading…
+          </p>
+          <p
+            v-else-if="pkgsError"
+            class="text-sm text-destructive"
+          >
+            {{ pkgsError }}
+          </p>
+          <p
+            v-else-if="selectedNs && !pkgsData?.length"
+            class="text-sm text-muted-foreground"
+          >
             No published packages found under this namespace.
           </p>
           <template v-else-if="pkgsData?.length">
@@ -438,7 +481,7 @@ function formatDate(iso: string) {
                   <TableHead>Visibility</TableHead>
                   <TableHead>Published by</TableHead>
                   <TableHead>Date</TableHead>
-                  <TableHead></TableHead>
+                  <TableHead />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -447,10 +490,15 @@ function formatDate(iso: string) {
                   :key="`${pkg.name}@${pkg.version}`"
                   :class="pkg.yanked ? 'opacity-50' : ''"
                 >
-                  <TableCell class="font-mono text-xs">{{ pkg.name }}</TableCell>
+                  <TableCell class="font-mono text-xs">
+                    {{ pkg.name }}
+                  </TableCell>
                   <TableCell class="font-mono text-xs">
                     {{ pkg.version }}
-                    <span v-if="pkg.yanked" class="ml-1 text-destructive">(yanked)</span>
+                    <span
+                      v-if="pkg.yanked"
+                      class="ml-1 text-destructive"
+                    >(yanked)</span>
                   </TableCell>
                   <TableCell>
                     <template v-if="editingVisibility[pkgKey(pkg)] !== undefined">
@@ -478,7 +526,10 @@ function formatDate(iso: string) {
                           Cancel
                         </Button>
                       </div>
-                      <p v-if="visibilityError[pkgKey(pkg)]" class="text-xs text-destructive mt-0.5">
+                      <p
+                        v-if="visibilityError[pkgKey(pkg)]"
+                        class="text-xs text-destructive mt-0.5"
+                      >
                         {{ visibilityError[pkgKey(pkg)] }}
                       </p>
                     </template>
@@ -492,8 +543,12 @@ function formatDate(iso: string) {
                       {{ pkg.visibility }}
                     </Badge>
                   </TableCell>
-                  <TableCell class="text-xs">{{ pkg.published_by }}</TableCell>
-                  <TableCell class="text-xs">{{ formatDate(pkg.published_at) }}</TableCell>
+                  <TableCell class="text-xs">
+                    {{ pkg.published_by }}
+                  </TableCell>
+                  <TableCell class="text-xs">
+                    {{ formatDate(pkg.published_at) }}
+                  </TableCell>
                   <TableCell>
                     <Button
                       v-if="editingVisibility[pkgKey(pkg)] === undefined"
@@ -510,7 +565,12 @@ function formatDate(iso: string) {
             </Table>
             <!-- Pagination -->
             <div class="flex items-center justify-between mt-3">
-              <Button variant="outline" size="sm" :disabled="pkgPage === 0" @click="prevPage">
+              <Button
+                variant="outline"
+                size="sm"
+                :disabled="pkgPage === 0"
+                @click="prevPage"
+              >
                 Previous
               </Button>
               <span class="text-xs text-muted-foreground">Page {{ pkgPage + 1 }}</span>
@@ -530,13 +590,18 @@ function formatDate(iso: string) {
       <!-- Upload -->
       <Card>
         <CardHeader>
-          <CardTitle class="text-base">Upload package</CardTitle>
+          <CardTitle class="text-base">
+            Upload package
+          </CardTitle>
           <CardDescription>
             Publish a new package to one of your registries.
           </CardDescription>
         </CardHeader>
         <CardContent class="space-y-4">
-          <div v-if="!uploadableRegistries.length" class="text-sm text-muted-foreground">
+          <div
+            v-if="!uploadableRegistries.length"
+            class="text-sm text-muted-foreground"
+          >
             No registries in Local or Hybrid mode are configured.
           </div>
           <template v-else>
@@ -550,24 +615,46 @@ function formatDate(iso: string) {
               />
             </div>
 
-            <Tabs :default-value="isBinaryUpload ? 'upload' : 'cli'" class="w-full">
+            <Tabs
+              :default-value="isBinaryUpload ? 'upload' : 'cli'"
+              class="w-full"
+            >
               <TabsList>
-                <TabsTrigger v-if="isBinaryUpload" value="upload">File upload</TabsTrigger>
-                <TabsTrigger value="cli">CLI instructions</TabsTrigger>
+                <TabsTrigger
+                  v-if="isBinaryUpload"
+                  value="upload"
+                >
+                  File upload
+                </TabsTrigger>
+                <TabsTrigger value="cli">
+                  CLI instructions
+                </TabsTrigger>
               </TabsList>
 
               <!-- Direct file upload -->
-              <TabsContent v-if="isBinaryUpload" value="upload" class="space-y-4 pt-4">
+              <TabsContent
+                v-if="isBinaryUpload"
+                value="upload"
+                class="space-y-4 pt-4"
+              >
                 <!-- Extra fields for openvsx / goproxy -->
                 <template v-if="uploadRegistryType === 'openvsx' || uploadRegistryType === 'vscode-marketplace'">
                   <div class="grid grid-cols-2 gap-3">
                     <div class="space-y-1.5">
                       <Label>Extension ID <span class="text-muted-foreground text-xs">(publisher.name)</span></Label>
-                      <Input v-model="uploadExtId" placeholder="ms-python.python" class="font-mono text-sm" />
+                      <Input
+                        v-model="uploadExtId"
+                        placeholder="ms-python.python"
+                        class="font-mono text-sm"
+                      />
                     </div>
                     <div class="space-y-1.5">
                       <Label>Version</Label>
-                      <Input v-model="uploadVersion" placeholder="1.0.0" class="font-mono text-sm" />
+                      <Input
+                        v-model="uploadVersion"
+                        placeholder="1.0.0"
+                        class="font-mono text-sm"
+                      />
                     </div>
                   </div>
                 </template>
@@ -575,11 +662,19 @@ function formatDate(iso: string) {
                   <div class="grid grid-cols-2 gap-3">
                     <div class="space-y-1.5">
                       <Label>Module path</Label>
-                      <Input v-model="uploadModule" placeholder="github.com/org/repo" class="font-mono text-sm" />
+                      <Input
+                        v-model="uploadModule"
+                        placeholder="github.com/org/repo"
+                        class="font-mono text-sm"
+                      />
                     </div>
                     <div class="space-y-1.5">
                       <Label>Version</Label>
-                      <Input v-model="uploadVersion" placeholder="v1.0.0" class="font-mono text-sm" />
+                      <Input
+                        v-model="uploadVersion"
+                        placeholder="v1.0.0"
+                        class="font-mono text-sm"
+                      />
                     </div>
                   </div>
                 </template>
@@ -595,7 +690,7 @@ function formatDate(iso: string) {
                     :accept="acceptForType(uploadRegistryType)"
                     class="block text-sm text-muted-foreground file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-medium file:bg-secondary file:text-secondary-foreground hover:file:bg-secondary/80 cursor-pointer"
                     @change="onFileChange"
-                  />
+                  >
                 </div>
 
                 <div class="flex items-center gap-3">
@@ -605,14 +700,26 @@ function formatDate(iso: string) {
                   >
                     {{ uploadLoading ? "Uploading…" : "Upload" }}
                   </Button>
-                  <span v-if="uploadSuccess" class="text-sm text-green-600">Published successfully.</span>
-                  <span v-if="uploadError" class="text-sm text-destructive">{{ uploadError }}</span>
+                  <span
+                    v-if="uploadSuccess"
+                    class="text-sm text-green-600"
+                  >Published successfully.</span>
+                  <span
+                    v-if="uploadError"
+                    class="text-sm text-destructive"
+                  >{{ uploadError }}</span>
                 </div>
               </TabsContent>
 
               <!-- CLI instructions -->
-              <TabsContent value="cli" class="pt-4">
-                <CodeBlock :code="currentCliSnippet" lang="bash" />
+              <TabsContent
+                value="cli"
+                class="pt-4"
+              >
+                <CodeBlock
+                  :code="currentCliSnippet"
+                  lang="bash"
+                />
               </TabsContent>
             </Tabs>
           </template>

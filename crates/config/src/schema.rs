@@ -252,16 +252,14 @@ pub struct ActionsGroupRule {
     /// `{name}` = provider name; `{ref_name}` = branch/tag stripped of `refs/heads/`/`refs/tags/`;
     /// any other `{key}` maps to that JWT claim value. All substituted values have `/` → `-`.
     pub group_template: Option<String>,
-    #[serde(default = "default_actions_role")]
-    pub role: String,
+    /// Role granted when this rule matches. When absent the rule contributes groups
+    /// without affecting role elevation — useful for pure group-assignment rules.
+    #[serde(default)]
+    pub role: Option<String>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
     #[serde(default, rename = "match")]
     pub match_mode: RuleMatch,
-}
-
-fn default_actions_role() -> String {
-    "user".to_owned()
 }
 
 #[derive(Debug, Deserialize)]

@@ -338,29 +338,59 @@ async function bulkUnblockVersions() {
   <div class="space-y-4">
     <!-- Back -->
     <div class="flex items-center gap-3">
-      <Button variant="ghost" size="sm" @click="router.back()">← Back</Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        @click="router.back()"
+      >
+        ← Back
+      </Button>
       <span class="text-muted-foreground text-sm">/</span>
       <span class="font-mono text-sm">{{ registry }}/{{ name }}</span>
     </div>
 
-    <p v-if="loading" class="text-sm text-muted-foreground">Loading…</p>
-    <p v-else-if="error" class="text-sm text-destructive">{{ error }}</p>
+    <p
+      v-if="loading"
+      class="text-sm text-muted-foreground"
+    >
+      Loading…
+    </p>
+    <p
+      v-else-if="error"
+      class="text-sm text-destructive"
+    >
+      {{ error }}
+    </p>
 
     <template v-else-if="data">
       <!-- Header card -->
       <Card>
         <CardHeader>
-          <CardTitle class="text-xl font-mono">{{ data.name }}</CardTitle>
+          <CardTitle class="text-xl font-mono">
+            {{ data.name }}
+          </CardTitle>
         </CardHeader>
         <CardContent class="space-y-1 text-sm">
-          <div><span class="text-muted-foreground w-28 inline-block">Registry</span><Badge variant="outline">{{ data.registry }}</Badge></div>
+          <div>
+            <span class="text-muted-foreground w-28 inline-block">Registry</span><Badge variant="outline">
+              {{ data.registry }}
+            </Badge>
+          </div>
           <div>
             <span class="text-muted-foreground w-28 inline-block">Upstream</span>
-            <a v-if="upstreamUrl" :href="upstreamUrl" target="_blank" rel="noopener noreferrer"
-               class="text-primary underline-offset-2 hover:underline font-mono text-xs">
+            <a
+              v-if="upstreamUrl"
+              :href="upstreamUrl"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-primary underline-offset-2 hover:underline font-mono text-xs"
+            >
               {{ upstreamUrl }}
             </a>
-            <span v-else class="text-muted-foreground">—</span>
+            <span
+              v-else
+              class="text-muted-foreground"
+            >—</span>
           </div>
           <div><span class="text-muted-foreground w-28 inline-block">Versions</span>{{ data.versions.length }}</div>
         </CardContent>
@@ -372,27 +402,53 @@ async function bulkUnblockVersions() {
         class="sticky top-16 z-30 flex items-center gap-3 rounded-lg border bg-card px-4 py-2.5 shadow-sm"
       >
         <span class="text-sm font-medium">{{ selectedVersionIds.size }} version(s) selected</span>
-        <Button size="sm" variant="destructive" :disabled="bulkLoading" @click="bulkBlockVersions">
+        <Button
+          size="sm"
+          variant="destructive"
+          :disabled="bulkLoading"
+          @click="bulkBlockVersions"
+        >
           Block selected
         </Button>
-        <Button size="sm" variant="outline" :disabled="bulkLoading" @click="bulkUnblockVersions">
+        <Button
+          size="sm"
+          variant="outline"
+          :disabled="bulkLoading"
+          @click="bulkUnblockVersions"
+        >
           Unblock selected
         </Button>
-        <Button size="sm" variant="ghost" @click="selectedVersionIds = new Set()">Clear</Button>
-        <span v-if="bulkResultMsg" class="text-xs text-muted-foreground ml-auto">{{ bulkResultMsg }}</span>
+        <Button
+          size="sm"
+          variant="ghost"
+          @click="selectedVersionIds = new Set()"
+        >
+          Clear
+        </Button>
+        <span
+          v-if="bulkResultMsg"
+          class="text-xs text-muted-foreground ml-auto"
+        >{{ bulkResultMsg }}</span>
       </div>
 
       <!-- Versions table -->
       <Card>
         <CardHeader>
-          <CardTitle class="text-base">Versions &amp; artifacts</CardTitle>
+          <CardTitle class="text-base">
+            Versions &amp; artifacts
+          </CardTitle>
         </CardHeader>
         <CardContent class="p-0">
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead class="w-8">
-                  <input type="checkbox" :checked="allVersionsSelected" @change="toggleAllVersions" class="cursor-pointer" />
+                  <input
+                    type="checkbox"
+                    :checked="allVersionsSelected"
+                    class="cursor-pointer"
+                    @change="toggleAllVersions"
+                  >
                 </TableHead>
                 <TableHead>Version</TableHead>
                 <TableHead>Artifact</TableHead>
@@ -402,7 +458,9 @@ async function bulkUnblockVersions() {
                 <TableHead>Storage</TableHead>
                 <TableHead>Last accessed</TableHead>
                 <TableHead>Last pulled by</TableHead>
-                <TableHead class="text-right">Actions</TableHead>
+                <TableHead class="text-right">
+                  Actions
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -415,46 +473,96 @@ async function bulkUnblockVersions() {
                   <input
                     type="checkbox"
                     :checked="selectedVersionIds.has(v.id)"
-                    @change="toggleVersion(v)"
                     class="cursor-pointer"
-                  />
+                    @change="toggleVersion(v)"
+                  >
                 </TableCell>
                 <TableCell class="font-mono text-xs">
                   {{ v.version }}
-                  <Badge v-if="isPreRelease(v.version)" variant="outline" class="ml-1 text-xs align-middle">pre-release</Badge>
+                  <Badge
+                    v-if="isPreRelease(v.version)"
+                    variant="outline"
+                    class="ml-1 text-xs align-middle"
+                  >
+                    pre-release
+                  </Badge>
                 </TableCell>
-                <TableCell class="font-mono text-xs text-muted-foreground">{{ v.artifact ?? "—" }}</TableCell>
+                <TableCell class="font-mono text-xs text-muted-foreground">
+                  {{ v.artifact ?? "—" }}
+                </TableCell>
                 <TableCell>
                   <div class="space-y-0.5">
                     <Badge :variant="v.status.status === 'blocked' ? 'destructive' : 'secondary'">
                       {{ v.status.status === "blocked" ? "Blocked" : "Available" }}
                     </Badge>
-                    <p v-if="v.status.status === 'blocked'" class="text-xs text-muted-foreground max-w-[180px] truncate" :title="(v.status as BlockedStatus).reason">
+                    <p
+                      v-if="v.status.status === 'blocked'"
+                      class="text-xs text-muted-foreground max-w-[180px] truncate"
+                      :title="(v.status as BlockedStatus).reason"
+                    >
                       {{ (v.status as BlockedStatus).reason }}
                     </p>
                   </div>
                 </TableCell>
                 <TableCell>
-                  <Badge :variant="v.cached ? 'default' : 'outline'" class="text-xs">
+                  <Badge
+                    :variant="v.cached ? 'default' : 'outline'"
+                    class="text-xs"
+                  >
                     {{ v.cached ? "Cached" : "Not cached" }}
                   </Badge>
-                  <p v-if="v.cached_at" class="text-xs text-muted-foreground mt-0.5">{{ fmtDate(v.cached_at) }}</p>
-                  <p class="text-xs text-muted-foreground font-mono mt-0.5">{{ v.storage_key }}</p>
+                  <p
+                    v-if="v.cached_at"
+                    class="text-xs text-muted-foreground mt-0.5"
+                  >
+                    {{ fmtDate(v.cached_at) }}
+                  </p>
+                  <p class="text-xs text-muted-foreground font-mono mt-0.5">
+                    {{ v.storage_key }}
+                  </p>
                 </TableCell>
-                <TableCell class="text-right tabular-nums">{{ v.access_count }}</TableCell>
+                <TableCell class="text-right tabular-nums">
+                  {{ v.access_count }}
+                </TableCell>
                 <TableCell>
-                  <Badge v-if="v.storage_backend" variant="outline" class="text-xs font-mono">{{ v.storage_backend }}</Badge>
-                  <span v-else class="text-muted-foreground text-sm">—</span>
+                  <Badge
+                    v-if="v.storage_backend"
+                    variant="outline"
+                    class="text-xs font-mono"
+                  >
+                    {{ v.storage_backend }}
+                  </Badge>
+                  <span
+                    v-else
+                    class="text-muted-foreground text-sm"
+                  >—</span>
                 </TableCell>
-                <TableCell class="text-xs">{{ fmtDate(v.last_accessed) }}</TableCell>
+                <TableCell class="text-xs">
+                  {{ fmtDate(v.last_accessed) }}
+                </TableCell>
                 <TableCell class="text-sm">
-                  <span v-if="v.last_accessed_by" class="font-medium">{{ v.last_accessed_by }}</span>
-                  <span v-else-if="v.access_count > 0" class="text-muted-foreground italic">anonymous</span>
-                  <span v-else class="text-muted-foreground">—</span>
+                  <span
+                    v-if="v.last_accessed_by"
+                    class="font-medium"
+                  >{{ v.last_accessed_by }}</span>
+                  <span
+                    v-else-if="v.access_count > 0"
+                    class="text-muted-foreground italic"
+                  >anonymous</span>
+                  <span
+                    v-else
+                    class="text-muted-foreground"
+                  >—</span>
                 </TableCell>
                 <TableCell class="text-right">
                   <div class="flex justify-end gap-2">
-                    <Button variant="ghost" size="sm" @click="viewArtifact(v)">View</Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      @click="viewArtifact(v)"
+                    >
+                      View
+                    </Button>
                     <Button
                       v-if="v.cached"
                       variant="outline"
@@ -484,7 +592,12 @@ async function bulkUnblockVersions() {
               </TableRow>
             </TableBody>
           </Table>
-          <p v-if="data.versions.length === 0" class="p-6 text-sm text-muted-foreground text-center">No versions tracked yet.</p>
+          <p
+            v-if="data.versions.length === 0"
+            class="p-6 text-sm text-muted-foreground text-center"
+          >
+            No versions tracked yet.
+          </p>
         </CardContent>
       </Card>
 
@@ -500,7 +613,11 @@ async function bulkUnblockVersions() {
               <span class="text-muted-foreground text-xs font-normal">
                 {{ betaExpanded ? "▲ hide" : "▼ show" }}
               </span>
-              <Badge v-if="betaMembers && betaMembers.length > 0" variant="secondary" class="text-xs ml-1">
+              <Badge
+                v-if="betaMembers && betaMembers.length > 0"
+                variant="secondary"
+                class="text-xs ml-1"
+              >
                 {{ betaMembers.length }} member{{ betaMembers.length > 1 ? "s" : "" }}
               </Badge>
             </button>
@@ -515,7 +632,10 @@ async function bulkUnblockVersions() {
             </Button>
           </div>
         </CardHeader>
-        <CardContent v-if="betaExpanded" class="p-0">
+        <CardContent
+          v-if="betaExpanded"
+          class="p-0"
+        >
           <p class="px-6 py-2 text-xs text-muted-foreground border-b">
             Pre-release versions (marked <span class="font-mono">pre-release</span> above) are only accessible to the users and groups listed here.
           </p>
@@ -533,12 +653,19 @@ async function bulkUnblockVersions() {
                 :key="m.principal_type + ':' + m.principal_id"
               >
                 <TableCell>
-                  <Badge :variant="m.principal_type === 'user' ? 'default' : 'secondary'" class="text-xs capitalize">
+                  <Badge
+                    :variant="m.principal_type === 'user' ? 'default' : 'secondary'"
+                    class="text-xs capitalize"
+                  >
                     {{ m.principal_type }}
                   </Badge>
                 </TableCell>
-                <TableCell class="font-mono text-sm">{{ m.principal_id }}</TableCell>
-                <TableCell class="text-sm text-muted-foreground">{{ m.granted_by ?? "—" }}</TableCell>
+                <TableCell class="font-mono text-sm">
+                  {{ m.principal_id }}
+                </TableCell>
+                <TableCell class="text-sm text-muted-foreground">
+                  {{ m.granted_by ?? "—" }}
+                </TableCell>
               </TableRow>
             </TableBody>
           </Table>
@@ -554,7 +681,9 @@ async function bulkUnblockVersions() {
       <!-- Package visibility -->
       <Card>
         <CardHeader>
-          <CardTitle class="text-base">Package visibility</CardTitle>
+          <CardTitle class="text-base">
+            Package visibility
+          </CardTitle>
           <CardDescription>Controls who can download this package (all versions share the same setting).</CardDescription>
         </CardHeader>
         <CardContent>
@@ -579,14 +708,21 @@ async function bulkUnblockVersions() {
               {{ visibilityLoading ? "Saving…" : "Save" }}
             </Button>
           </div>
-          <p v-if="visibilityError" class="mt-2 text-sm text-destructive">{{ visibilityError }}</p>
+          <p
+            v-if="visibilityError"
+            class="mt-2 text-sm text-destructive"
+          >
+            {{ visibilityError }}
+          </p>
         </CardContent>
       </Card>
 
       <!-- Recent events -->
       <Card>
         <CardHeader>
-          <CardTitle class="text-base">Recent access events</CardTitle>
+          <CardTitle class="text-base">
+            Recent access events
+          </CardTitle>
         </CardHeader>
         <CardContent class="p-0">
           <Table>
@@ -603,28 +739,60 @@ async function bulkUnblockVersions() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              <TableRow v-for="ev in data.recent_events" :key="ev.id">
-                <TableCell class="text-xs tabular-nums whitespace-nowrap">{{ fmtDate(ev.timestamp) }}</TableCell>
+              <TableRow
+                v-for="ev in data.recent_events"
+                :key="ev.id"
+              >
+                <TableCell class="text-xs tabular-nums whitespace-nowrap">
+                  {{ fmtDate(ev.timestamp) }}
+                </TableCell>
                 <TableCell class="text-sm">
                   <span v-if="ev.user_id">{{ ev.user_id }}</span>
-                  <span v-else class="text-muted-foreground italic">anonymous</span>
+                  <span
+                    v-else
+                    class="text-muted-foreground italic"
+                  >anonymous</span>
                 </TableCell>
-                <TableCell><Badge variant="outline" class="text-xs capitalize">{{ ev.user_role }}</Badge></TableCell>
-                <TableCell class="font-mono text-xs">{{ ev.version }}</TableCell>
-                <TableCell class="font-mono text-xs text-muted-foreground">{{ ev.artifact ?? "—" }}</TableCell>
-                <TableCell class="text-xs">{{ fmtAction(ev.action) }}</TableCell>
                 <TableCell>
-                  <Badge :variant="ev.outcome === 'denied' ? 'destructive' : 'secondary'" class="text-xs">
+                  <Badge
+                    variant="outline"
+                    class="text-xs capitalize"
+                  >
+                    {{ ev.user_role }}
+                  </Badge>
+                </TableCell>
+                <TableCell class="font-mono text-xs">
+                  {{ ev.version }}
+                </TableCell>
+                <TableCell class="font-mono text-xs text-muted-foreground">
+                  {{ ev.artifact ?? "—" }}
+                </TableCell>
+                <TableCell class="text-xs">
+                  {{ fmtAction(ev.action) }}
+                </TableCell>
+                <TableCell>
+                  <Badge
+                    :variant="ev.outcome === 'denied' ? 'destructive' : 'secondary'"
+                    class="text-xs"
+                  >
                     {{ ev.outcome }}
                   </Badge>
                 </TableCell>
-                <TableCell class="text-xs text-muted-foreground max-w-[200px] truncate" :title="ev.deny_reason ?? ''">
+                <TableCell
+                  class="text-xs text-muted-foreground max-w-[200px] truncate"
+                  :title="ev.deny_reason ?? ''"
+                >
                   {{ ev.deny_reason ?? "—" }}
                 </TableCell>
               </TableRow>
             </TableBody>
           </Table>
-          <p v-if="data.recent_events.length === 0" class="p-6 text-sm text-muted-foreground text-center">No events recorded yet.</p>
+          <p
+            v-if="data.recent_events.length === 0"
+            class="p-6 text-sm text-muted-foreground text-center"
+          >
+            No events recorded yet.
+          </p>
         </CardContent>
       </Card>
     </template>

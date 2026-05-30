@@ -42,7 +42,7 @@ const props = withDefaults(
 );
 
 const delegatedProps = computed(() => {
-  const { class: _, variant, size, ...rest } = props;
+  const { class: _class, variant: _variant, size: _size, ...rest } = props;
   return rest;
 });
 </script>

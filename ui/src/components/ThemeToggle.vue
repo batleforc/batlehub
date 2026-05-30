@@ -8,8 +8,19 @@ const toggle = useToggle(isDark);
 </script>
 
 <template>
-  <Button variant="ghost" size="icon" @click="toggle()" :title="isDark ? 'Switch to light mode' : 'Switch to dark mode'">
-    <Sun v-if="isDark" class="h-4 w-4" />
-    <Moon v-else class="h-4 w-4" />
+  <Button
+    variant="ghost"
+    size="icon"
+    :title="isDark ? 'Switch to light mode' : 'Switch to dark mode'"
+    @click="toggle()"
+  >
+    <Sun
+      v-if="isDark"
+      class="h-4 w-4"
+    />
+    <Moon
+      v-else
+      class="h-4 w-4"
+    />
   </Button>
 </template>

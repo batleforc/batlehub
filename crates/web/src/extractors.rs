@@ -88,7 +88,10 @@ mod tests {
             .uri("/?token=abc&foo=bar")
             .to_http_request();
         let raw = raw_auth_from_request(&req);
-        assert_eq!(raw.query_params.get("token").map(String::as_str), Some("abc"));
+        assert_eq!(
+            raw.query_params.get("token").map(String::as_str),
+            Some("abc")
+        );
         assert_eq!(raw.query_params.get("foo").map(String::as_str), Some("bar"));
     }
 
@@ -96,14 +99,23 @@ mod tests {
     fn no_query_string_yields_empty_params() {
         let req = TestRequest::get().uri("/").to_http_request();
         let raw = raw_auth_from_request(&req);
-        assert!(raw.query_params.is_empty(), "empty query string must produce no params");
+        assert!(
+            raw.query_params.is_empty(),
+            "empty query string must produce no params"
+        );
     }
 
     #[test]
     fn trailing_ampersand_does_not_insert_empty_key() {
         let req = TestRequest::get().uri("/?token=abc&").to_http_request();
         let raw = raw_auth_from_request(&req);
-        assert_eq!(raw.query_params.get("token").map(String::as_str), Some("abc"));
-        assert!(!raw.query_params.contains_key(""), "trailing & must not insert empty key");
+        assert_eq!(
+            raw.query_params.get("token").map(String::as_str),
+            Some("abc")
+        );
+        assert!(
+            !raw.query_params.contains_key(""),
+            "trailing & must not insert empty key"
+        );
     }
 }

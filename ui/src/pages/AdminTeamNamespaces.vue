@@ -151,7 +151,9 @@ async function confirmRelease() {
     <!-- Header -->
     <div class="flex items-center justify-between">
       <div>
-        <h1 class="text-2xl font-semibold">Team Namespaces</h1>
+        <h1 class="text-2xl font-semibold">
+          Team Namespaces
+        </h1>
         <p class="text-sm text-muted-foreground mt-0.5">
           Assign package name prefixes to auth-provider groups to control who may publish within them.
         </p>
@@ -181,7 +183,10 @@ async function confirmRelease() {
         <div class="flex items-center justify-between">
           <CardTitle class="text-base">
             Namespace claims
-            <span v-if="selectedRegistry" class="font-mono text-muted-foreground text-sm ml-1">({{ selectedRegistry }})</span>
+            <span
+              v-if="selectedRegistry"
+              class="font-mono text-muted-foreground text-sm ml-1"
+            >({{ selectedRegistry }})</span>
           </CardTitle>
           <Button
             variant="outline"
@@ -194,25 +199,48 @@ async function confirmRelease() {
         </div>
       </CardHeader>
       <CardContent class="p-0">
-        <p v-if="namespacesError" class="p-4 text-sm text-destructive">{{ namespacesError }}</p>
+        <p
+          v-if="namespacesError"
+          class="p-4 text-sm text-destructive"
+        >
+          {{ namespacesError }}
+        </p>
         <Table v-else>
           <TableHeader>
             <TableRow>
               <TableHead>Prefix</TableHead>
               <TableHead>Group</TableHead>
               <TableHead>Claimed by</TableHead>
-              <TableHead class="text-right">Actions</TableHead>
+              <TableHead class="text-right">
+                Actions
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            <TableRow v-for="ns in namespaces" :key="ns.registry + ':' + ns.prefix">
-              <TableCell class="font-mono text-sm">{{ ns.prefix }}</TableCell>
-              <TableCell>
-                <Badge variant="secondary" class="text-xs font-mono">{{ ns.group_id }}</Badge>
+            <TableRow
+              v-for="ns in namespaces"
+              :key="ns.registry + ':' + ns.prefix"
+            >
+              <TableCell class="font-mono text-sm">
+                {{ ns.prefix }}
               </TableCell>
-              <TableCell class="text-sm text-muted-foreground">{{ ns.claimed_by ?? "—" }}</TableCell>
+              <TableCell>
+                <Badge
+                  variant="secondary"
+                  class="text-xs font-mono"
+                >
+                  {{ ns.group_id }}
+                </Badge>
+              </TableCell>
+              <TableCell class="text-sm text-muted-foreground">
+                {{ ns.claimed_by ?? "—" }}
+              </TableCell>
               <TableCell class="text-right">
-                <Button variant="outline" size="sm" @click="releaseTarget = ns">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  @click="releaseTarget = ns"
+                >
                   Release
                 </Button>
               </TableCell>
@@ -236,7 +264,9 @@ async function confirmRelease() {
   >
     <div class="space-y-4">
       <div>
-        <h2 class="text-lg font-semibold">Claim namespace</h2>
+        <h2 class="text-lg font-semibold">
+          Claim namespace
+        </h2>
         <p class="text-sm text-muted-foreground mt-1">
           Restrict publishing under a prefix in
           <span class="font-mono">{{ selectedRegistry }}</span> to a specific group.
@@ -267,10 +297,18 @@ async function confirmRelease() {
         </div>
         <div class="space-y-1.5">
           <Label>Claimed by</Label>
-          <Input v-model="claimForm.claimed_by" placeholder="Optional — your user ID" />
+          <Input
+            v-model="claimForm.claimed_by"
+            placeholder="Optional — your user ID"
+          />
         </div>
       </div>
-      <p v-if="claimError" class="text-sm text-destructive">{{ claimError }}</p>
+      <p
+        v-if="claimError"
+        class="text-sm text-destructive"
+      >
+        {{ claimError }}
+      </p>
       <div class="flex justify-end gap-2">
         <Button
           variant="outline"
@@ -298,14 +336,21 @@ async function confirmRelease() {
   >
     <div class="space-y-4">
       <div>
-        <h2 class="text-lg font-semibold">Release namespace claim?</h2>
+        <h2 class="text-lg font-semibold">
+          Release namespace claim?
+        </h2>
         <p class="text-sm text-muted-foreground mt-1">
           The prefix <span class="font-mono">{{ releaseTarget?.prefix }}</span> will no longer be
           restricted to group <span class="font-mono">{{ releaseTarget?.group_id }}</span>.
           Any authenticated user will be able to publish packages under this prefix.
         </p>
       </div>
-      <p v-if="releaseError" class="text-sm text-destructive">{{ releaseError }}</p>
+      <p
+        v-if="releaseError"
+        class="text-sm text-destructive"
+      >
+        {{ releaseError }}
+      </p>
       <div class="flex justify-end gap-2">
         <Button
           variant="outline"

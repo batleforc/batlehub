@@ -155,22 +155,47 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
     <!-- Page header -->
     <div class="flex items-center justify-between">
       <div>
-        <h1 class="text-2xl font-semibold">Registry Health</h1>
+        <h1 class="text-2xl font-semibold">
+          Registry Health
+        </h1>
         <p class="text-sm text-muted-foreground mt-0.5">
           Live snapshot of each registry — packages, cache, pull rates, and recent errors.
         </p>
       </div>
-      <Button variant="outline" size="sm" :disabled="loading" @click="reload">
+      <Button
+        variant="outline"
+        size="sm"
+        :disabled="loading"
+        @click="reload"
+      >
         {{ loading ? "Refreshing…" : "Refresh" }}
       </Button>
     </div>
 
-    <p v-if="loading && !data" class="text-sm text-muted-foreground">Loading…</p>
-    <p v-else-if="error" class="text-sm text-destructive">{{ error }}</p>
-    <p v-else-if="data && data.length === 0" class="text-sm text-muted-foreground">No registries configured.</p>
+    <p
+      v-if="loading && !data"
+      class="text-sm text-muted-foreground"
+    >
+      Loading…
+    </p>
+    <p
+      v-else-if="error"
+      class="text-sm text-destructive"
+    >
+      {{ error }}
+    </p>
+    <p
+      v-else-if="data && data.length === 0"
+      class="text-sm text-muted-foreground"
+    >
+      No registries configured.
+    </p>
 
     <!-- Aggregate stats (since last restart) -->
-    <Card v-if="statsData" class="border-muted/60">
+    <Card
+      v-if="statsData"
+      class="border-muted/60"
+    >
       <CardHeader class="pb-2">
         <div class="flex items-center justify-between">
           <CardTitle class="text-sm font-medium text-muted-foreground uppercase tracking-wide">
@@ -182,37 +207,55 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
       <CardContent>
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
-            <p class="text-xs text-muted-foreground">Cache hit rate</p>
+            <p class="text-xs text-muted-foreground">
+              Cache hit rate
+            </p>
             <p
               class="text-2xl font-semibold tabular-nums"
               :class="statsData.aggregate.hit_rate !== null && statsData.aggregate.hit_rate >= 0.7
                 ? 'text-green-600 dark:text-green-400'
                 : statsData.aggregate.hit_rate !== null && statsData.aggregate.hit_rate >= 0.4
-                ? 'text-yellow-600 dark:text-yellow-400'
-                : 'text-muted-foreground'"
+                  ? 'text-yellow-600 dark:text-yellow-400'
+                  : 'text-muted-foreground'"
             >
               {{ statsData.aggregate.hit_rate !== null ? `${(statsData.aggregate.hit_rate * 100).toFixed(1)}%` : '—' }}
             </p>
-            <p class="text-xs text-muted-foreground">artifact requests</p>
+            <p class="text-xs text-muted-foreground">
+              artifact requests
+            </p>
           </div>
           <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
-            <p class="text-xs text-muted-foreground">Cache hits</p>
+            <p class="text-xs text-muted-foreground">
+              Cache hits
+            </p>
             <p class="text-2xl font-semibold tabular-nums text-green-600 dark:text-green-400">
               {{ statsData.aggregate.artifact_hits.toLocaleString() }}
             </p>
-            <p class="text-xs text-muted-foreground">served from cache</p>
+            <p class="text-xs text-muted-foreground">
+              served from cache
+            </p>
           </div>
           <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
-            <p class="text-xs text-muted-foreground">Cache misses</p>
+            <p class="text-xs text-muted-foreground">
+              Cache misses
+            </p>
             <p class="text-2xl font-semibold tabular-nums">
               {{ statsData.aggregate.artifact_misses.toLocaleString() }}
             </p>
-            <p class="text-xs text-muted-foreground">fetched from upstream</p>
+            <p class="text-xs text-muted-foreground">
+              fetched from upstream
+            </p>
           </div>
           <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
-            <p class="text-xs text-muted-foreground">Total cached</p>
-            <p class="text-2xl font-semibold">{{ fmtBytes(statsData.aggregate.cached_bytes) }}</p>
-            <p class="text-xs text-muted-foreground">in storage</p>
+            <p class="text-xs text-muted-foreground">
+              Total cached
+            </p>
+            <p class="text-2xl font-semibold">
+              {{ fmtBytes(statsData.aggregate.cached_bytes) }}
+            </p>
+            <p class="text-xs text-muted-foreground">
+              in storage
+            </p>
           </div>
         </div>
       </CardContent>
@@ -223,10 +266,16 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
       v-if="data && data.length > 0"
       class="grid gap-4 sm:grid-cols-1 lg:grid-cols-2 xl:grid-cols-2"
     >
-      <Card v-for="reg in data" :key="reg.registry" class="flex flex-col">
+      <Card
+        v-for="reg in data"
+        :key="reg.registry"
+        class="flex flex-col"
+      >
         <CardHeader class="pb-2">
           <div class="flex items-center justify-between gap-2">
-            <CardTitle class="text-base font-mono">{{ reg.registry }}</CardTitle>
+            <CardTitle class="text-base font-mono">
+              {{ reg.registry }}
+            </CardTitle>
             <div class="flex items-center gap-2 shrink-0">
               <Badge
                 :variant="(REGISTRY_TYPE_VARIANTS[reg.registry_type] as any) ?? 'outline'"
@@ -251,28 +300,51 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
           <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
             <!-- Packages -->
             <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
-              <p class="text-xs text-muted-foreground">Packages</p>
-              <p class="text-xl font-semibold tabular-nums">{{ reg.package_count.toLocaleString() }}</p>
-              <p class="text-xs text-muted-foreground">tracked</p>
+              <p class="text-xs text-muted-foreground">
+                Packages
+              </p>
+              <p class="text-xl font-semibold tabular-nums">
+                {{ reg.package_count.toLocaleString() }}
+              </p>
+              <p class="text-xs text-muted-foreground">
+                tracked
+              </p>
             </div>
 
             <!-- Cache size -->
             <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
-              <p class="text-xs text-muted-foreground">Cache size</p>
-              <p class="text-xl font-semibold">{{ fmtBytes(reg.total_size_bytes) }}</p>
-              <p class="text-xs text-muted-foreground">{{ reg.cached_artifact_count }} artifacts</p>
+              <p class="text-xs text-muted-foreground">
+                Cache size
+              </p>
+              <p class="text-xl font-semibold">
+                {{ fmtBytes(reg.total_size_bytes) }}
+              </p>
+              <p class="text-xs text-muted-foreground">
+                {{ reg.cached_artifact_count }} artifacts
+              </p>
             </div>
 
             <!-- Last pull -->
             <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
-              <p class="text-xs text-muted-foreground">Last pull</p>
-              <p class="text-base font-semibold">{{ fmtRelative(reg.last_pull_at) }}</p>
-              <p v-if="reg.last_pull_at" class="text-xs text-muted-foreground">{{ fmtDate(reg.last_pull_at) }}</p>
+              <p class="text-xs text-muted-foreground">
+                Last pull
+              </p>
+              <p class="text-base font-semibold">
+                {{ fmtRelative(reg.last_pull_at) }}
+              </p>
+              <p
+                v-if="reg.last_pull_at"
+                class="text-xs text-muted-foreground"
+              >
+                {{ fmtDate(reg.last_pull_at) }}
+              </p>
             </div>
 
             <!-- Pulls / hour -->
             <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
-              <p class="text-xs text-muted-foreground">Pulls / hour</p>
+              <p class="text-xs text-muted-foreground">
+                Pulls / hour
+              </p>
               <p
                 class="text-xl font-semibold tabular-nums"
                 :class="reg.pulls_last_hour > 0 ? 'text-green-600 dark:text-green-400' : 'text-muted-foreground'"
@@ -283,8 +355,12 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
 
             <!-- Pulls / day -->
             <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
-              <p class="text-xs text-muted-foreground">Pulls / day</p>
-              <p class="text-xl font-semibold tabular-nums">{{ reg.pulls_last_day.toLocaleString() }}</p>
+              <p class="text-xs text-muted-foreground">
+                Pulls / day
+              </p>
+              <p class="text-xl font-semibold tabular-nums">
+                {{ reg.pulls_last_day.toLocaleString() }}
+              </p>
             </div>
           </div>
 
@@ -294,12 +370,18 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
               class="flex items-center gap-2 w-full text-left text-sm font-medium py-1"
               @click="toggleErrors(reg.registry)"
             >
-              <span v-if="reg.recent_errors.length === 0" class="flex items-center gap-1.5 text-green-600 dark:text-green-400">
-                <span class="inline-block h-2 w-2 rounded-full bg-green-500"></span>
+              <span
+                v-if="reg.recent_errors.length === 0"
+                class="flex items-center gap-1.5 text-green-600 dark:text-green-400"
+              >
+                <span class="inline-block h-2 w-2 rounded-full bg-green-500" />
                 No errors in the last 24 h
               </span>
-              <span v-else class="flex items-center gap-1.5 text-orange-600 dark:text-orange-400">
-                <span class="inline-block h-2 w-2 rounded-full bg-orange-500"></span>
+              <span
+                v-else
+                class="flex items-center gap-1.5 text-orange-600 dark:text-orange-400"
+              >
+                <span class="inline-block h-2 w-2 rounded-full bg-orange-500" />
                 {{ reg.recent_errors.length }} error{{ reg.recent_errors.length > 1 ? 's' : '' }} in 24 h
                 <span class="text-muted-foreground text-xs ml-auto">
                   {{ expandedErrors.has(reg.registry) ? '▲ hide' : '▼ show' }}
@@ -307,23 +389,44 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
               </span>
             </button>
 
-            <div v-if="expandedErrors.has(reg.registry) && reg.recent_errors.length > 0" class="mt-2 rounded-md border overflow-x-auto">
+            <div
+              v-if="expandedErrors.has(reg.registry) && reg.recent_errors.length > 0"
+              class="mt-2 rounded-md border overflow-x-auto"
+            >
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead class="text-xs">When</TableHead>
-                    <TableHead class="text-xs">User</TableHead>
-                    <TableHead class="text-xs">Package</TableHead>
-                    <TableHead class="text-xs">Type</TableHead>
-                    <TableHead class="text-xs">Reason</TableHead>
+                    <TableHead class="text-xs">
+                      When
+                    </TableHead>
+                    <TableHead class="text-xs">
+                      User
+                    </TableHead>
+                    <TableHead class="text-xs">
+                      Package
+                    </TableHead>
+                    <TableHead class="text-xs">
+                      Type
+                    </TableHead>
+                    <TableHead class="text-xs">
+                      Reason
+                    </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  <TableRow v-for="err in reg.recent_errors" :key="err.timestamp + err.package_name">
-                    <TableCell class="text-xs whitespace-nowrap">{{ fmtRelative(err.timestamp) }}</TableCell>
+                  <TableRow
+                    v-for="err in reg.recent_errors"
+                    :key="err.timestamp + err.package_name"
+                  >
+                    <TableCell class="text-xs whitespace-nowrap">
+                      {{ fmtRelative(err.timestamp) }}
+                    </TableCell>
                     <TableCell class="text-xs">
                       <span v-if="err.user_id">{{ err.user_id }}</span>
-                      <span v-else class="text-muted-foreground italic">anonymous</span>
+                      <span
+                        v-else
+                        class="text-muted-foreground italic"
+                      >anonymous</span>
                     </TableCell>
                     <TableCell class="font-mono text-xs">
                       {{ err.package_name }}<span class="text-muted-foreground">@{{ err.version }}</span>
@@ -336,7 +439,10 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
                         {{ err.error_type === 'error' ? 'Upstream error' : 'Denied' }}
                       </Badge>
                     </TableCell>
-                    <TableCell class="text-xs text-muted-foreground max-w-[200px] truncate" :title="err.reason">
+                    <TableCell
+                      class="text-xs text-muted-foreground max-w-[200px] truncate"
+                      :title="err.reason"
+                    >
                       {{ err.reason }}
                     </TableCell>
                   </TableRow>
@@ -347,7 +453,9 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
 
           <!-- Who has access -->
           <div class="space-y-1.5">
-            <p class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Who has access</p>
+            <p class="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              Who has access
+            </p>
             <div class="flex flex-wrap gap-1.5">
               <Badge
                 v-for="role in reg.access.roles"
@@ -386,16 +494,26 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
   </div>
 
   <!-- Clear cache confirmation dialog -->
-  <Dialog :open="clearTarget !== null" @update:open="(v) => { if (!v) { clearTarget = null; clearError = null; } }">
+  <Dialog
+    :open="clearTarget !== null"
+    @update:open="(v) => { if (!v) { clearTarget = null; clearError = null; } }"
+  >
     <div class="space-y-4">
       <div>
-        <h2 class="text-lg font-semibold">Clear cache for <span class="font-mono">{{ clearTarget }}</span>?</h2>
+        <h2 class="text-lg font-semibold">
+          Clear cache for <span class="font-mono">{{ clearTarget }}</span>?
+        </h2>
         <p class="text-sm text-muted-foreground mt-1">
           All cached artifacts for this registry will be permanently removed.
           Packages will be re-fetched from upstream on the next request.
         </p>
       </div>
-      <p v-if="clearError" class="text-sm text-destructive">{{ clearError }}</p>
+      <p
+        v-if="clearError"
+        class="text-sm text-destructive"
+      >
+        {{ clearError }}
+      </p>
       <div class="flex justify-end gap-2">
         <Button
           variant="outline"

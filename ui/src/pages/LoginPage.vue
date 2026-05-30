@@ -102,7 +102,9 @@ function providerLabel(name: string): string {
   <div class="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
     <Card class="w-full max-w-sm">
       <CardHeader class="space-y-1">
-        <CardTitle class="text-2xl">Sign in</CardTitle>
+        <CardTitle class="text-2xl">
+          Sign in
+        </CardTitle>
         <CardDescription>
           Authenticate to access protected resources.
         </CardDescription>
@@ -141,7 +143,10 @@ function providerLabel(name: string): string {
         </template>
 
         <!-- Static-token form -->
-        <form @submit.prevent="submit" class="space-y-4">
+        <form
+          class="space-y-4"
+          @submit.prevent="submit"
+        >
           <div class="space-y-2">
             <Label for="token">Bearer token</Label>
             <Input
@@ -153,9 +158,18 @@ function providerLabel(name: string): string {
             />
           </div>
 
-          <p v-if="error" class="text-sm text-destructive">{{ error }}</p>
+          <p
+            v-if="error"
+            class="text-sm text-destructive"
+          >
+            {{ error }}
+          </p>
 
-          <Button type="submit" class="w-full" :disabled="loading">
+          <Button
+            type="submit"
+            class="w-full"
+            :disabled="loading"
+          >
             {{ loading ? "Signing in…" : "Sign in with token" }}
           </Button>
         </form>

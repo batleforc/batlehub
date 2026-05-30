@@ -14,7 +14,10 @@ defineEmits<{
 </script>
 
 <template>
-  <DialogRoot :open="open" @update:open="$emit('update:open', $event)">
+  <DialogRoot
+    :open="open"
+    @update:open="$emit('update:open', $event)"
+  >
     <slot name="trigger" />
     <DialogPortal>
       <DialogOverlay

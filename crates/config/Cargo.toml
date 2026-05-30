@@ -10,3 +10,6 @@ serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
+
+[lints]
+workspace = true

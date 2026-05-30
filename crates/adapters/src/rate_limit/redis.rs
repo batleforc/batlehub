@@ -99,7 +99,10 @@ mod tests {
         let now: u64 = 9999;
         for ws in [1u64, 30, 60, 300, 3600] {
             let window_start = (now / ws) * ws;
-            assert!(window_start <= now, "window_start {window_start} > now {now} for ws={ws}");
+            assert!(
+                window_start <= now,
+                "window_start {window_start} > now {now} for ws={ws}"
+            );
             assert!(window_start + ws > now);
         }
     }

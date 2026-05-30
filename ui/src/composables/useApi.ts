@@ -26,7 +26,7 @@ export function useApi<T>(
   const data = ref<T | null>(null) as Ref<T | null>;
   const error = ref<string | null>(null);
   const loading = ref(false);
-  let tick = ref(0);
+  const tick = ref(0);
 
   async function run() {
     loading.value = true;
@@ -50,7 +50,7 @@ export function useApi<T>(
   watchEffect(() => {
     // Track deps and tick so watchers fire on reload() too.
     deps.forEach((d) => d.value);
-    tick.value;
+    void tick.value;
     run();
   });
 

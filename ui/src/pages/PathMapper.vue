@@ -239,7 +239,9 @@ function fullUrl(path: string) {
 <template>
   <div class="max-w-2xl space-y-6">
     <div>
-      <h1 class="text-2xl font-semibold">URL Mapper</h1>
+      <h1 class="text-2xl font-semibold">
+        URL Mapper
+      </h1>
       <p class="text-sm text-muted-foreground mt-1">
         Paste an upstream URL or fill in the fields to get the equivalent proxy path.
       </p>
@@ -248,7 +250,10 @@ function fullUrl(path: string) {
     <!-- Universal paste input -->
     <Card>
       <CardContent class="pt-5">
-        <Label for="paste-url" class="text-xs uppercase tracking-wide text-muted-foreground">
+        <Label
+          for="paste-url"
+          class="text-xs uppercase tracking-wide text-muted-foreground"
+        >
           Paste an upstream URL to auto-fill
         </Label>
         <Input
@@ -276,108 +281,221 @@ function fullUrl(path: string) {
     </div>
 
     <!-- GitHub fields -->
-    <div v-if="registry === 'github'" class="space-y-4">
+    <div
+      v-if="registry === 'github'"
+      class="space-y-4"
+    >
       <div class="space-y-1">
         <Label for="gh-registry">Registry name</Label>
-        <Input id="gh-registry" v-model="githubRegistryName" list="pm-github-list" placeholder="github" class="font-mono" />
+        <Input
+          id="gh-registry"
+          v-model="githubRegistryName"
+          list="pm-github-list"
+          placeholder="github"
+          class="font-mono"
+        />
         <datalist id="pm-github-list">
-          <option v-for="r in githubRegistries" :key="r.name" :value="r.name" />
+          <option
+            v-for="r in githubRegistries"
+            :key="r.name"
+            :value="r.name"
+          />
         </datalist>
       </div>
       <div class="grid grid-cols-2 gap-3">
         <div class="space-y-1">
           <Label for="gh-owner">Owner</Label>
-          <Input id="gh-owner" v-model="ghOwner" placeholder="batleforc" />
+          <Input
+            id="gh-owner"
+            v-model="ghOwner"
+            placeholder="batleforc"
+          />
         </div>
         <div class="space-y-1">
           <Label for="gh-repo">Repository</Label>
-          <Input id="gh-repo" v-model="ghRepo" placeholder="ProxyAuthK8S" />
+          <Input
+            id="gh-repo"
+            v-model="ghRepo"
+            placeholder="ProxyAuthK8S"
+          />
         </div>
       </div>
       <div class="grid grid-cols-2 gap-3">
         <div class="space-y-1">
           <Label for="gh-ref">Tag / branch / SHA</Label>
-          <Input id="gh-ref" v-model="ghRef" placeholder="v0.1.9" />
+          <Input
+            id="gh-ref"
+            v-model="ghRef"
+            placeholder="v0.1.9"
+          />
         </div>
         <div class="space-y-1">
           <Label for="gh-asset">Asset ID <span class="text-muted-foreground">(optional)</span></Label>
-          <Input id="gh-asset" v-model="ghAssetId" placeholder="123456789" />
+          <Input
+            id="gh-asset"
+            v-model="ghAssetId"
+            placeholder="123456789"
+          />
         </div>
       </div>
       <div class="space-y-1">
         <Label for="gh-filename">Asset filename <span class="text-muted-foreground">(optional)</span></Label>
-        <Input id="gh-filename" v-model="ghFilename" placeholder="tool-linux-amd64.tar.gz" class="font-mono" />
+        <Input
+          id="gh-filename"
+          v-model="ghFilename"
+          placeholder="tool-linux-amd64.tar.gz"
+          class="font-mono"
+        />
       </div>
       <div class="space-y-1">
         <Label for="gh-file">Raw file path <span class="text-muted-foreground">(optional)</span></Label>
-        <Input id="gh-file" v-model="ghFilePath" placeholder="README.md or path/to/file.yaml" class="font-mono" />
+        <Input
+          id="gh-file"
+          v-model="ghFilePath"
+          placeholder="README.md or path/to/file.yaml"
+          class="font-mono"
+        />
       </div>
     </div>
 
     <!-- npm fields -->
-    <div v-else-if="registry === 'npm'" class="space-y-4">
+    <div
+      v-else-if="registry === 'npm'"
+      class="space-y-4"
+    >
       <div class="space-y-1">
         <Label for="npm-registry">Registry name</Label>
-        <Input id="npm-registry" v-model="npmRegistryName" list="pm-npm-list" placeholder="npm" class="font-mono" />
+        <Input
+          id="npm-registry"
+          v-model="npmRegistryName"
+          list="pm-npm-list"
+          placeholder="npm"
+          class="font-mono"
+        />
         <datalist id="pm-npm-list">
-          <option v-for="r in npmRegistries" :key="r.name" :value="r.name" />
+          <option
+            v-for="r in npmRegistries"
+            :key="r.name"
+            :value="r.name"
+          />
         </datalist>
       </div>
       <div class="grid grid-cols-2 gap-3">
         <div class="space-y-1">
           <Label for="npm-pkg">Package</Label>
-          <Input id="npm-pkg" v-model="npmPackage" placeholder="lodash" class="font-mono" />
+          <Input
+            id="npm-pkg"
+            v-model="npmPackage"
+            placeholder="lodash"
+            class="font-mono"
+          />
         </div>
         <div class="space-y-1">
           <Label for="npm-ver">Version <span class="text-muted-foreground">(optional)</span></Label>
-          <Input id="npm-ver" v-model="npmVersion" placeholder="4.17.21" class="font-mono" />
+          <Input
+            id="npm-ver"
+            v-model="npmVersion"
+            placeholder="4.17.21"
+            class="font-mono"
+          />
         </div>
       </div>
     </div>
 
     <!-- Cargo fields -->
-    <div v-else-if="registry === 'cargo'" class="space-y-4">
+    <div
+      v-else-if="registry === 'cargo'"
+      class="space-y-4"
+    >
       <div class="space-y-1">
         <Label for="cargo-registry">Registry name</Label>
-        <Input id="cargo-registry" v-model="cargoRegistryName" list="pm-cargo-list" placeholder="cargo" class="font-mono" />
+        <Input
+          id="cargo-registry"
+          v-model="cargoRegistryName"
+          list="pm-cargo-list"
+          placeholder="cargo"
+          class="font-mono"
+        />
         <datalist id="pm-cargo-list">
-          <option v-for="r in cargoRegistries" :key="r.name" :value="r.name" />
+          <option
+            v-for="r in cargoRegistries"
+            :key="r.name"
+            :value="r.name"
+          />
         </datalist>
       </div>
       <div class="grid grid-cols-2 gap-3">
         <div class="space-y-1">
           <Label for="cargo-name">Crate</Label>
-          <Input id="cargo-name" v-model="cargoName" placeholder="serde" class="font-mono" />
+          <Input
+            id="cargo-name"
+            v-model="cargoName"
+            placeholder="serde"
+            class="font-mono"
+          />
         </div>
         <div class="space-y-1">
           <Label for="cargo-ver">Version <span class="text-muted-foreground">(optional)</span></Label>
-          <Input id="cargo-ver" v-model="cargoVersion" placeholder="1.0.197" class="font-mono" />
+          <Input
+            id="cargo-ver"
+            v-model="cargoVersion"
+            placeholder="1.0.197"
+            class="font-mono"
+          />
         </div>
       </div>
     </div>
 
     <!-- Composer fields -->
-    <div v-else class="space-y-4">
+    <div
+      v-else
+      class="space-y-4"
+    >
       <div class="space-y-1">
         <Label for="composer-registry">Registry name</Label>
-        <Input id="composer-registry" v-model="composerRegistryName" list="pm-composer-list" placeholder="composer" class="font-mono" />
+        <Input
+          id="composer-registry"
+          v-model="composerRegistryName"
+          list="pm-composer-list"
+          placeholder="composer"
+          class="font-mono"
+        />
         <datalist id="pm-composer-list">
-          <option v-for="r in composerRegistries" :key="r.name" :value="r.name" />
+          <option
+            v-for="r in composerRegistries"
+            :key="r.name"
+            :value="r.name"
+          />
         </datalist>
       </div>
       <div class="grid grid-cols-2 gap-3">
         <div class="space-y-1">
           <Label for="composer-vendor">Vendor</Label>
-          <Input id="composer-vendor" v-model="composerVendor" placeholder="symfony" class="font-mono" />
+          <Input
+            id="composer-vendor"
+            v-model="composerVendor"
+            placeholder="symfony"
+            class="font-mono"
+          />
         </div>
         <div class="space-y-1">
           <Label for="composer-pkg">Package</Label>
-          <Input id="composer-pkg" v-model="composerPackage" placeholder="console" class="font-mono" />
+          <Input
+            id="composer-pkg"
+            v-model="composerPackage"
+            placeholder="console"
+            class="font-mono"
+          />
         </div>
       </div>
       <div class="space-y-1">
         <Label for="composer-ver">Version <span class="text-muted-foreground">(optional — for dist download and yank)</span></Label>
-        <Input id="composer-ver" v-model="composerVersion" placeholder="7.1.0" class="font-mono" />
+        <Input
+          id="composer-ver"
+          v-model="composerVersion"
+          placeholder="7.1.0"
+          class="font-mono"
+        />
       </div>
       <p class="text-xs text-muted-foreground">
         Package names follow the <code class="font-mono bg-muted px-1 rounded">vendor/package</code> convention.
@@ -387,8 +505,13 @@ function fullUrl(path: string) {
     </div>
 
     <!-- Results -->
-    <div v-if="activePaths.length" class="space-y-2">
-      <h2 class="text-sm font-medium text-muted-foreground uppercase tracking-wide">Proxy paths</h2>
+    <div
+      v-if="activePaths.length"
+      class="space-y-2"
+    >
+      <h2 class="text-sm font-medium text-muted-foreground uppercase tracking-wide">
+        Proxy paths
+      </h2>
       <div class="rounded-lg border divide-y">
         <div
           v-for="entry in activePaths"
@@ -397,7 +520,10 @@ function fullUrl(path: string) {
           :class="entry.available ? '' : 'opacity-40'"
         >
           <span class="w-40 shrink-0 text-xs text-muted-foreground">{{ entry.label }}</span>
-          <code class="flex-1 text-xs font-mono truncate" :title="fullUrl(entry.url)">
+          <code
+            class="flex-1 text-xs font-mono truncate"
+            :title="fullUrl(entry.url)"
+          >
             {{ fullUrl(entry.url) }}
           </code>
           <Button
@@ -409,12 +535,21 @@ function fullUrl(path: string) {
           >
             {{ copied === entry.url ? "Copied!" : "Copy" }}
           </Button>
-          <Badge v-else variant="outline" class="shrink-0 text-xs">needs more fields</Badge>
+          <Badge
+            v-else
+            variant="outline"
+            class="shrink-0 text-xs"
+          >
+            needs more fields
+          </Badge>
         </div>
       </div>
     </div>
 
-    <p v-else class="text-sm text-muted-foreground text-center py-4">
+    <p
+      v-else
+      class="text-sm text-muted-foreground text-center py-4"
+    >
       Fill in the fields above to see the proxy paths.
     </p>
   </div>

@@ -6,17 +6,25 @@ use utoipa::ToSchema;
 
 use batlehub_core::{ports::QuotaUsage, services::QuotaService};
 
-use crate::{error::AppError, extractors::AuthIdentity};
 use super::require_admin;
+use crate::{error::AppError, extractors::AuthIdentity};
 
 #[cfg(test)]
 mod tests {
     use super::{require_admin, QuotaUsageDto};
-    use batlehub_core::{entities::{Identity, Role}, ports::QuotaUsage};
     use crate::extractors::AuthIdentity;
+    use batlehub_core::{
+        entities::{Identity, Role},
+        ports::QuotaUsage,
+    };
 
     fn id(role: Role) -> AuthIdentity {
-        AuthIdentity(Identity { user_id: Some("u".into()), role, auth_provider: None, groups: vec![] })
+        AuthIdentity(Identity {
+            user_id: Some("u".into()),
+            role,
+            auth_provider: None,
+            groups: vec![],
+        })
     }
 
     #[test]

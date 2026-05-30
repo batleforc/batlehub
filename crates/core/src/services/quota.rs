@@ -232,24 +232,14 @@ mod tests {
             })
         }
 
-        async fn record_publish(
-            &self,
-            _: &str,
-            _: &str,
-            bytes: u64,
-        ) -> Result<(), CoreError> {
+        async fn record_publish(&self, _: &str, _: &str, bytes: u64) -> Result<(), CoreError> {
             let mut g = self.usage.lock().unwrap();
             g.0 += bytes;
             g.1 += 1;
             Ok(())
         }
 
-        async fn revoke_publish(
-            &self,
-            _: &str,
-            _: &str,
-            bytes: u64,
-        ) -> Result<(), CoreError> {
+        async fn revoke_publish(&self, _: &str, _: &str, bytes: u64) -> Result<(), CoreError> {
             let mut g = self.usage.lock().unwrap();
             g.0 = g.0.saturating_sub(bytes);
             g.1 = g.1.saturating_sub(1);

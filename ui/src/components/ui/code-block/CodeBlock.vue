@@ -18,8 +18,15 @@ watch([() => props.code, () => props.lang, ready], update, { immediate: true });
 <template>
   <div class="relative">
     <!-- eslint-disable-next-line vue/no-v-html -->
-    <div v-if="html" class="shiki-wrapper" v-html="html" />
-    <pre v-else class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto leading-relaxed">{{ code }}</pre>
+    <div
+      v-if="html"
+      class="shiki-wrapper"
+      v-html="html"
+    />
+    <pre
+      v-else
+      class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto leading-relaxed"
+    >{{ code }}</pre>
     <slot />
   </div>
 </template>

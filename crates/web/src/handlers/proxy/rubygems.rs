@@ -30,8 +30,8 @@ fn require_rubygems(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use crate::RegistryMap;
+    use std::collections::HashMap;
 
     fn map_with(registry: &str, type_: &str) -> RegistryMap {
         let mut m = HashMap::new();

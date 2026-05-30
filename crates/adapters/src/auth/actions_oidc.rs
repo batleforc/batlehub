@@ -7,7 +7,9 @@ use jsonwebtoken::{decode, decode_header, DecodingKey, Validation};
 use serde::Deserialize;
 use tokio::sync::RwLock;
 
-use batlehub_config::schema::{ActionsGroupRule, ActionsOidcAuthConfig, ConditionMatchType, RuleMatch};
+use batlehub_config::schema::{
+    ActionsGroupRule, ActionsOidcAuthConfig, ConditionMatchType, RuleMatch,
+};
 use batlehub_core::{
     entities::{Identity, Role},
     error::CoreError,
@@ -28,8 +30,14 @@ struct JwksCache {
 }
 
 enum CompiledCondition {
-    Glob { claim: String, pattern: glob::Pattern },
-    Regex { claim: String, re: regex::Regex },
+    Glob {
+        claim: String,
+        pattern: glob::Pattern,
+    },
+    Regex {
+        claim: String,
+        re: regex::Regex,
+    },
 }
 
 impl CompiledCondition {
@@ -42,11 +50,17 @@ impl CompiledCondition {
         if is_regex {
             let re = regex::Regex::new(&c.pattern)
                 .map_err(|e| anyhow::anyhow!("invalid regex pattern {:?}: {e}", c.pattern))?;
-            Ok(Self::Regex { claim: c.claim.clone(), re })
+            Ok(Self::Regex {
+                claim: c.claim.clone(),
+                re,
+            })
         } else {
             let pattern = glob::Pattern::new(&c.pattern)
                 .map_err(|e| anyhow::anyhow!("invalid glob pattern {:?}: {e}", c.pattern))?;
-            Ok(Self::Glob { claim: c.claim.clone(), pattern })
+            Ok(Self::Glob {
+                claim: c.claim.clone(),
+                pattern,
+            })
         }
     }
 
@@ -82,7 +96,8 @@ fn claim_str<'a>(claims: &'a serde_json::Map<String, serde_json::Value>, key: &s
 struct CompiledRule {
     static_group: Option<String>,
     group_template: Option<String>,
-    role: Role,
+    /// `None` means the rule contributes groups only, without affecting role elevation.
+    role: Option<Role>,
     conditions: Vec<CompiledCondition>,
     match_mode: RuleMatch,
 }
@@ -92,7 +107,7 @@ impl CompiledRule {
         if rule.group.is_none() && rule.group_template.is_none() {
             anyhow::bail!("each rule must have at least one of 'group' or 'group_template'");
         }
-        let role = parse_role(&rule.role);
+        let role = rule.role.as_deref().map(parse_role);
         let conditions = rule
             .conditions
             .iter()
@@ -354,8 +369,10 @@ impl AuthProvider for ActionsOidcAuthProvider {
 
         for rule in &self.rules {
             if rule.evaluate(&claims) {
-                if rule.role > matched_role {
-                    matched_role = rule.role.clone();
+                if let Some(ref role) = rule.role {
+                    if *role > matched_role {
+                        matched_role = role.clone();
+                    }
                 }
                 groups.extend(rule.collect_groups(&self.name, &claims));
             }
@@ -372,7 +389,12 @@ impl AuthProvider for ActionsOidcAuthProvider {
 
 #[cfg(test)]
 impl ActionsOidcAuthProvider {
-    fn for_testing(name: impl Into<String>, user_id_claim: impl Into<String>, rules: Vec<CompiledRule>, jwks: JwkSet) -> Self {
+    fn for_testing(
+        name: impl Into<String>,
+        user_id_claim: impl Into<String>,
+        rules: Vec<CompiledRule>,
+        jwks: JwkSet,
+    ) -> Self {
         Self {
             name: name.into(),
             issuer: String::new(),
@@ -383,6 +405,31 @@ impl ActionsOidcAuthProvider {
             cache: Arc::new(RwLock::new(JwksCache {
                 keys: jwks,
                 fetched_at: Instant::now(),
+            })),
+        }
+    }
+
+    /// Like `for_testing` but with a backdated `fetched_at` so the JWKS refresh
+    /// path is exercisable without sleeping through `JWKS_MIN_REFRESH`.
+    fn for_testing_stale(
+        name: impl Into<String>,
+        user_id_claim: impl Into<String>,
+        rules: Vec<CompiledRule>,
+        initial_jwks: JwkSet,
+        jwks_uri: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            issuer: String::new(),
+            user_id_claim: user_id_claim.into(),
+            rules,
+            http: reqwest::Client::new(),
+            jwks_uri: jwks_uri.into(),
+            cache: Arc::new(RwLock::new(JwksCache {
+                keys: initial_jwks,
+                fetched_at: Instant::now()
+                    .checked_sub(JWKS_MIN_REFRESH + Duration::from_secs(1))
+                    .unwrap_or_else(Instant::now),
             })),
         }
     }
@@ -475,7 +522,8 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
             "repository": "batleforc/batlehub",
             "ref": "refs/heads/main"
         }));
-        let out = render_group_template("{name}/{repository}/{ref_name}", "forgejo-action", &claims);
+        let out =
+            render_group_template("{name}/{repository}/{ref_name}", "forgejo-action", &claims);
         assert_eq!(out, "forgejo-action/batleforc-batlehub/main");
     }
 
@@ -572,7 +620,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
     fn make_rule(
         static_group: Option<&str>,
         template: Option<&str>,
-        role: Role,
+        role: Option<Role>,
         conditions: Vec<CompiledCondition>,
         match_mode: RuleMatch,
     ) -> CompiledRule {
@@ -591,13 +639,21 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
             claim: "repository_owner".to_owned(),
             pattern: "myorg".to_owned(),
             match_type: ConditionMatchType::Glob,
-        }).unwrap();
+        })
+        .unwrap();
         let cond2 = CompiledCondition::compile(&batlehub_config::schema::Condition {
             claim: "ref".to_owned(),
             pattern: "refs/heads/main".to_owned(),
             match_type: ConditionMatchType::Glob,
-        }).unwrap();
-        let rule = make_rule(Some("g"), None, Role::User, vec![cond1, cond2], RuleMatch::All);
+        })
+        .unwrap();
+        let rule = make_rule(
+            Some("g"),
+            None,
+            Some(Role::User),
+            vec![cond1, cond2],
+            RuleMatch::All,
+        );
 
         let both = claims_map(json!({ "repository_owner": "myorg", "ref": "refs/heads/main" }));
         assert!(rule.evaluate(&both));
@@ -612,13 +668,21 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
             claim: "ref_type".to_owned(),
             pattern: "branch".to_owned(),
             match_type: ConditionMatchType::Glob,
-        }).unwrap();
+        })
+        .unwrap();
         let cond2 = CompiledCondition::compile(&batlehub_config::schema::Condition {
             claim: "ref_type".to_owned(),
             pattern: "tag".to_owned(),
             match_type: ConditionMatchType::Glob,
-        }).unwrap();
-        let rule = make_rule(Some("g"), None, Role::User, vec![cond1, cond2], RuleMatch::Any);
+        })
+        .unwrap();
+        let rule = make_rule(
+            Some("g"),
+            None,
+            Some(Role::User),
+            vec![cond1, cond2],
+            RuleMatch::Any,
+        );
 
         let branch = claims_map(json!({ "ref_type": "branch" }));
         assert!(rule.evaluate(&branch));
@@ -630,20 +694,32 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
 
     #[test]
     fn empty_conditions_always_match() {
-        let rule = make_rule(Some("g"), None, Role::User, vec![], RuleMatch::All);
+        let rule = make_rule(Some("g"), None, Some(Role::User), vec![], RuleMatch::All);
         assert!(rule.evaluate(&claims_map(json!({}))));
     }
 
     #[test]
     fn collect_groups_static_only() {
-        let rule = make_rule(Some("my-group"), None, Role::User, vec![], RuleMatch::All);
+        let rule = make_rule(
+            Some("my-group"),
+            None,
+            Some(Role::User),
+            vec![],
+            RuleMatch::All,
+        );
         let groups = rule.collect_groups("prov", &claims_map(json!({})));
         assert_eq!(groups, vec!["my-group"]);
     }
 
     #[test]
     fn collect_groups_template_only() {
-        let rule = make_rule(None, Some("{name}/{ref_name}"), Role::User, vec![], RuleMatch::All);
+        let rule = make_rule(
+            None,
+            Some("{name}/{ref_name}"),
+            Some(Role::User),
+            vec![],
+            RuleMatch::All,
+        );
         let claims = claims_map(json!({ "ref": "refs/heads/main" }));
         let groups = rule.collect_groups("prov", &claims);
         assert_eq!(groups, vec!["prov/main"]);
@@ -651,7 +727,13 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
 
     #[test]
     fn collect_groups_both() {
-        let rule = make_rule(Some("static"), Some("{name}/{ref_name}"), Role::User, vec![], RuleMatch::All);
+        let rule = make_rule(
+            Some("static"),
+            Some("{name}/{ref_name}"),
+            Some(Role::User),
+            vec![],
+            RuleMatch::All,
+        );
         let claims = claims_map(json!({ "ref": "refs/heads/feat" }));
         let groups = rule.collect_groups("ci", &claims);
         assert_eq!(groups, vec!["static", "ci/feat"]);
@@ -678,7 +760,10 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
     #[tokio::test]
     async fn malformed_token_returns_auth_error() {
         let p = no_rules_provider();
-        let err = p.authenticate(&bearer("not.a.valid.jwt")).await.unwrap_err();
+        let err = p
+            .authenticate(&bearer("not.a.valid.jwt"))
+            .await
+            .unwrap_err();
         assert!(matches!(err, CoreError::Auth(_)));
     }
 
@@ -702,8 +787,15 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
             claim: "repository_owner".to_owned(),
             pattern: "myorg".to_owned(),
             match_type: ConditionMatchType::Glob,
-        }).unwrap();
-        let rule = make_rule(Some("ci-group"), None, Role::User, vec![cond], RuleMatch::All);
+        })
+        .unwrap();
+        let rule = make_rule(
+            Some("ci-group"),
+            None,
+            Some(Role::User),
+            vec![cond],
+            RuleMatch::All,
+        );
         let p = ActionsOidcAuthProvider::for_testing("actions", "sub", vec![rule], test_jwks());
 
         let token = signed_token(
@@ -721,15 +813,30 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
             claim: "repository_owner".to_owned(),
             pattern: "myorg".to_owned(),
             match_type: ConditionMatchType::Glob,
-        }).unwrap();
+        })
+        .unwrap();
         let cond2 = CompiledCondition::compile(&batlehub_config::schema::Condition {
             claim: "repository_owner".to_owned(),
             pattern: "myorg".to_owned(),
             match_type: ConditionMatchType::Glob,
-        }).unwrap();
-        let rule1 = make_rule(Some("group-a"), None, Role::User, vec![cond1], RuleMatch::All);
-        let rule2 = make_rule(Some("group-b"), None, Role::Admin, vec![cond2], RuleMatch::All);
-        let p = ActionsOidcAuthProvider::for_testing("actions", "sub", vec![rule1, rule2], test_jwks());
+        })
+        .unwrap();
+        let rule1 = make_rule(
+            Some("group-a"),
+            None,
+            Some(Role::User),
+            vec![cond1],
+            RuleMatch::All,
+        );
+        let rule2 = make_rule(
+            Some("group-b"),
+            None,
+            Some(Role::Admin),
+            vec![cond2],
+            RuleMatch::All,
+        );
+        let p =
+            ActionsOidcAuthProvider::for_testing("actions", "sub", vec![rule1, rule2], test_jwks());
 
         let token = signed_token(
             Some("test-kid"),
@@ -743,8 +850,15 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
 
     #[tokio::test]
     async fn template_rule_renders_dynamic_group() {
-        let rule = make_rule(None, Some("{name}/{repository}/{ref_name}"), Role::User, vec![], RuleMatch::All);
-        let p = ActionsOidcAuthProvider::for_testing("forgejo-action", "sub", vec![rule], test_jwks());
+        let rule = make_rule(
+            None,
+            Some("{name}/{repository}/{ref_name}"),
+            Some(Role::User),
+            vec![],
+            RuleMatch::All,
+        );
+        let p =
+            ActionsOidcAuthProvider::for_testing("forgejo-action", "sub", vec![rule], test_jwks());
 
         let token = signed_token(
             Some("test-kid"),
@@ -765,8 +879,15 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
             claim: "repository_owner".to_owned(),
             pattern: "other-org".to_owned(),
             match_type: ConditionMatchType::Glob,
-        }).unwrap();
-        let rule = make_rule(Some("group"), None, Role::Admin, vec![cond], RuleMatch::All);
+        })
+        .unwrap();
+        let rule = make_rule(
+            Some("group"),
+            None,
+            Some(Role::Admin),
+            vec![cond],
+            RuleMatch::All,
+        );
         let p = ActionsOidcAuthProvider::for_testing("actions", "sub", vec![rule], test_jwks());
 
         let token = signed_token(
@@ -781,10 +902,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
     #[tokio::test]
     async fn expired_jwt_returns_none() {
         let p = no_rules_provider();
-        let token = signed_token(
-            Some("test-kid"),
-            json!({ "sub": "bot", "exp": past_exp() }),
-        );
+        let token = signed_token(Some("test-kid"), json!({ "sub": "bot", "exp": past_exp() }));
         assert!(p.authenticate(&bearer(&token)).await.unwrap().is_none());
     }
 
@@ -795,7 +913,10 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
             Some("bad-kid"),
             json!({ "sub": "bot", "exp": future_exp() }),
         );
-        assert!(matches!(p.authenticate(&bearer(&token)).await.unwrap_err(), CoreError::Auth(_)));
+        assert!(matches!(
+            p.authenticate(&bearer(&token)).await.unwrap_err(),
+            CoreError::Auth(_)
+        ));
     }
 
     // ── Network bootstrap (mockito) ───────────────────────────────────────────
@@ -840,5 +961,173 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
             .await
             .expect("provider construction failed");
         assert_eq!(provider.name(), "test");
+    }
+
+    // ── Header variant tests ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn bearer_lowercase_prefix_accepted() {
+        let p = no_rules_provider();
+        let token = signed_token(
+            Some("test-kid"),
+            json!({ "sub": "bot", "exp": future_exp() }),
+        );
+        let req = RawAuthRequest {
+            headers: [("authorization".to_owned(), format!("bearer {token}"))].into(),
+            query_params: Default::default(),
+        };
+        let id = p.authenticate(&req).await.unwrap().unwrap();
+        assert_eq!(id.user_id.as_deref(), Some("bot"));
+    }
+
+    #[tokio::test]
+    async fn authorization_capitalized_header_accepted() {
+        let p = no_rules_provider();
+        let token = signed_token(
+            Some("test-kid"),
+            json!({ "sub": "bot", "exp": future_exp() }),
+        );
+        let req = RawAuthRequest {
+            headers: [("Authorization".to_owned(), format!("Bearer {token}"))].into(),
+            query_params: Default::default(),
+        };
+        let id = p.authenticate(&req).await.unwrap().unwrap();
+        assert_eq!(id.user_id.as_deref(), Some("bot"));
+    }
+
+    // ── JWKS key lookup ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn no_kid_in_token_uses_first_jwk() {
+        let p = no_rules_provider();
+        // Token signed with the same key but no kid in the header
+        let token = signed_token(None, json!({ "sub": "bot", "exp": future_exp() }));
+        let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
+        assert_eq!(id.user_id.as_deref(), Some("bot"));
+    }
+
+    // ── detect_is_regex remaining triggers ───────────────────────────────────
+
+    #[test]
+    fn detect_is_regex_remaining_triggers() {
+        assert!(detect_is_regex("foo$"));
+        assert!(detect_is_regex("foo(?:bar)"));
+        assert!(detect_is_regex("\\d+"));
+        assert!(detect_is_regex("\\w+"));
+        assert!(detect_is_regex("[abc]"));
+        assert!(detect_is_regex("a(b)c"));
+        assert!(detect_is_regex("a+b"));
+        assert!(!detect_is_regex("plain-glob-*"));
+    }
+
+    // ── Template edge cases ───────────────────────────────────────────────────
+
+    #[test]
+    fn template_unclosed_brace_preserved() {
+        let claims = claims_map(json!({}));
+        let out = render_group_template("{unclosed", "ci", &claims);
+        assert_eq!(out, "{unclosed");
+    }
+
+    #[test]
+    fn template_claim_with_slash_replaced() {
+        let claims = claims_map(json!({ "repository": "org/sub-project" }));
+        let out = render_group_template("{repository}", "ci", &claims);
+        assert_eq!(out, "org-sub-project");
+    }
+
+    // ── Rule edge cases ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn rule_with_no_role_contributes_group_only() {
+        let rule = make_rule(Some("group-only"), None, None, vec![], RuleMatch::All);
+        let p = ActionsOidcAuthProvider::for_testing("actions", "sub", vec![rule], test_jwks());
+
+        let token = signed_token(
+            Some("test-kid"),
+            json!({ "sub": "bot", "exp": future_exp() }),
+        );
+        let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
+        assert_eq!(id.role, Role::Anonymous);
+        assert_eq!(id.groups, vec!["group-only"]);
+    }
+
+    #[test]
+    fn compiled_rule_compile_error_neither_group_nor_template() {
+        let rule_cfg = batlehub_config::schema::ActionsGroupRule {
+            group: None,
+            group_template: None,
+            role: None,
+            conditions: vec![],
+            match_mode: batlehub_config::schema::RuleMatch::All,
+        };
+        assert!(CompiledRule::compile(&rule_cfg).is_err());
+    }
+
+    // ── parse_role ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_role_all_variants() {
+        assert_eq!(parse_role("admin"), Role::Admin);
+        assert_eq!(parse_role("user"), Role::User);
+        assert_eq!(parse_role("garbage"), Role::Anonymous);
+        assert_eq!(parse_role(""), Role::Anonymous);
+    }
+
+    // ── user_id claim edge cases ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn user_id_missing_claim_gives_none() {
+        let p = no_rules_provider(); // user_id_claim = "sub"
+        let token = signed_token(
+            Some("test-kid"),
+            json!({ "exp": future_exp() }), // no "sub"
+        );
+        let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
+        assert!(id.user_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn user_id_non_string_claim_gives_none() {
+        let p = no_rules_provider(); // user_id_claim = "sub"
+        let token = signed_token(
+            Some("test-kid"),
+            json!({ "sub": 42, "exp": future_exp() }), // "sub" is a number
+        );
+        let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
+        assert!(id.user_id.is_none());
+    }
+
+    // ── JWKS stale cache refresh ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn jwks_stale_cache_triggers_refresh() {
+        let mut server = mockito::Server::new_async().await;
+
+        let jwks_mock = server
+            .mock("GET", "/jwks")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(TEST_JWKS_JSON)
+            .create_async()
+            .await;
+
+        // Start with an empty JWKS (no keys) and a stale cache so the refresh path fires.
+        let empty_jwks: JwkSet = serde_json::from_str(r#"{"keys":[]}"#).unwrap();
+        let p = ActionsOidcAuthProvider::for_testing_stale(
+            "actions",
+            "sub",
+            vec![],
+            empty_jwks,
+            format!("{}/jwks", server.url()),
+        );
+
+        let token = signed_token(
+            Some("test-kid"),
+            json!({ "sub": "bot", "exp": future_exp() }),
+        );
+        let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
+        assert_eq!(id.user_id.as_deref(), Some("bot"));
+        jwks_mock.assert_async().await;
     }
 }

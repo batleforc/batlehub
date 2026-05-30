@@ -97,10 +97,10 @@ impl QuotaRepository for InMemoryQuotaRepository {
         let map = self.data.read().await;
         let mut result: Vec<QuotaUsage> = map
             .values()
-            .filter(|u| registry.map_or(true, |r| u.registry == r))
+            .filter(|u| registry.is_none_or(|r| u.registry == r))
             .cloned()
             .collect();
-        result.sort_by(|a, b| b.bytes_published.cmp(&a.bytes_published));
+        result.sort_by_key(|b| std::cmp::Reverse(b.bytes_published));
         Ok(result)
     }
 }

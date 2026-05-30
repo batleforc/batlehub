@@ -117,8 +117,7 @@ fn build_metadata_xml(
 
     let release = non_yanked
         .iter()
-        .filter(|v| !v.version.contains("SNAPSHOT"))
-        .last()
+        .rfind(|v| !v.version.contains("SNAPSHOT"))
         .map(|v| v.version.as_str())
         .unwrap_or("");
 
@@ -225,9 +224,7 @@ fn parse_pom(bytes: &[u8]) -> Result<PomMetadata, AppError> {
                 if depth == 2 {
                     current_tag.clear();
                 }
-                if depth > 0 {
-                    depth -= 1;
-                }
+                depth = depth.saturating_sub(1);
             }
             Ok(XE::Eof) => break,
             Err(e) => return Err(AppError::unprocessable(format!("pom parse error: {e}"))),
@@ -444,7 +441,7 @@ pub async fn maven_put(
     match kind {
         MavenPathKind::Metadata { .. } => {
             // Silently accept and ignore client-uploaded metadata.xml — generated dynamically.
-            return Ok(HttpResponse::Ok().finish());
+            Ok(HttpResponse::Ok().finish())
         }
         MavenPathKind::Artifact {
             name,
@@ -515,7 +512,7 @@ pub async fn maven_put(
                 resp.insert_header(("X-Quota-Used-Bytes", quota_check.bytes_used.to_string()));
                 resp.insert_header(("X-Quota-Limit-Bytes", limit.to_string()));
             }
-            return Ok(resp.finish());
+            Ok(resp.finish())
         }
     }
 }

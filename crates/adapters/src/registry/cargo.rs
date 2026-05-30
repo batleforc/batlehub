@@ -226,14 +226,20 @@ mod tests {
     fn resolve_exact_version() {
         let r = resp("1.0.1", &[("1.0.1", false), ("1.0.0", false)]);
         let pkg = PackageId::new("cargo", "serde", "1.0.0");
-        assert_eq!(CargoRegistryClient::resolve_version(&r, &pkg).unwrap().num, "1.0.0");
+        assert_eq!(
+            CargoRegistryClient::resolve_version(&r, &pkg).unwrap().num,
+            "1.0.0"
+        );
     }
 
     #[test]
     fn resolve_latest_uses_max_version() {
         let r = resp("1.5.0", &[("1.5.0", false), ("1.0.0", false)]);
         let pkg = PackageId::new("cargo", "serde", "latest");
-        assert_eq!(CargoRegistryClient::resolve_version(&r, &pkg).unwrap().num, "1.5.0");
+        assert_eq!(
+            CargoRegistryClient::resolve_version(&r, &pkg).unwrap().num,
+            "1.5.0"
+        );
     }
 
     #[test]

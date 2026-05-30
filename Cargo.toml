@@ -14,6 +14,9 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+[workspace.lints.clippy]
+wildcard_imports = "deny"
+
 [workspace.metadata.llvm-cov]
 # Exclude server startup wiring from coverage — it's integration-tested separately.
 exclude = ["server/src/main.rs"]

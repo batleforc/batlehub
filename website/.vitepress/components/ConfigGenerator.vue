@@ -18,9 +18,11 @@ type RegistryType =
 type AuthRole = "admin" | "user" | "anonymous";
 type StorageBackendType = "filesystem" | "s3";
 type StorageMode = "single" | "multi";
-type AuthType = "token" | "oidc" | "kubernetes";
+type AuthType = "token" | "oidc" | "kubernetes" | "actions-oidc";
 type UpstreamAuthType = "" | "bearer" | "basic" | "header";
 type Enforcement = "block" | "warn";
+type MatchMode = "all" | "any";
+type ConditionMatchType = "auto" | "glob" | "regex";
 
 interface StorageBackend {
   id: number;
@@ -41,12 +43,29 @@ interface Token {
   user_id: string;
 }
 
+interface Condition {
+  id: number;
+  claim: string;
+  pattern: string;
+  match_type: ConditionMatchType;
+}
+
+interface ActionsRule {
+  id: number;
+  group: string;
+  group_template: string;
+  role: string; // "" = omitted (group-only rule)
+  match_mode: MatchMode;
+  conditions: Condition[];
+}
+
 interface AuthProvider {
   id: number;
   type: AuthType;
   // token
   tokens: Token[];
   // oidc
+  oidc_name: string;
   oidc_issuer: string;
   oidc_client_id: string;
   oidc_client_secret: string;
@@ -54,9 +73,18 @@ interface AuthProvider {
   oidc_frontend_url: string;
   oidc_user_id_claim: string;
   oidc_role_claim: string;
+  oidc_scopes: string;
   // kubernetes
+  k8s_name: string;
   k8s_api_server: string;
+  k8s_ca_cert_path: string;
+  k8s_token_path: string;
   k8s_audiences: string;
+  // actions-oidc
+  actions_name: string;
+  actions_issuer: string;
+  actions_user_id_claim: string;
+  actions_rules: ActionsRule[];
 }
 
 interface Registry {
@@ -69,7 +97,6 @@ interface Registry {
   rbac_anonymous: string;
   rbac_user: string;
   rbac_admin: string;
-  // advanced panel toggle
   showAdvanced: boolean;
   // upstream auth
   upstream_auth_type: UpstreamAuthType;
@@ -78,6 +105,10 @@ interface Registry {
   upstream_auth_password: string;
   upstream_auth_header_name: string;
   upstream_auth_header_value: string;
+  // tls
+  tls_ca_cert_path: string;
+  // firewall
+  firewall_only: boolean;
   // cache policy
   cache_metadata_ttl: number;
   cache_artifact_ttl: string;
@@ -96,6 +127,15 @@ interface Registry {
   quota_enforcement: Enforcement;
   // beta channel (local/hybrid)
   beta_channel_enabled: boolean;
+  // versioning (local/hybrid)
+  versioning_enabled: boolean;
+  versioning_enforce_semver: boolean;
+  versioning_allow_prerelease: boolean;
+  versioning_pattern: string;
+  // signing (local/hybrid)
+  signing_enabled: boolean;
+  signing_required: boolean;
+  signing_allowed_types: string;
   // rules
   rule_age_gate_enabled: boolean;
   rule_age_gate_min_age: number;
@@ -104,22 +144,20 @@ interface Registry {
 
 // ── State ───────────────────────────────────────────────────────────────────
 
-const server = ref({ host: "0.0.0.0", port: 8080, static_dir: "" });
+const server = ref({ host: "0.0.0.0", port: 8080, static_dir: "", cors_allowed_origins: "" });
 const database = ref({ url: "", max_connections: 10 });
 
-// Metadata cache backend
 const metaCache = ref({ type: "memory", url: "" });
 
-// Upload limits
 const limits = ref({ max_artifact_size_bytes: "" });
 
-// IP blocking
 const ipBlocking = ref({
   enabled: false,
   violation_threshold: 10,
   violation_window_secs: 300,
   ban_duration_secs: 3600,
   trigger_on_status: "429, 401",
+  trusted_proxies: "",
 });
 
 // Storage
@@ -167,11 +205,15 @@ const otel = ref({
 // Auth providers
 let authSeq = 0;
 let tokenSeq = 0;
-const authProviders = ref<AuthProvider[]>([
-  {
+let ruleSeq = 0;
+let condSeq = 0;
+
+function blankAuthProvider(): AuthProvider {
+  return {
     id: authSeq++,
     type: "token",
-    tokens: [{ id: tokenSeq++, value: "", role: "admin", user_id: "admin" }],
+    tokens: [],
+    oidc_name: "",
     oidc_issuer: "",
     oidc_client_id: "",
     oidc_client_secret: "",
@@ -179,17 +221,27 @@ const authProviders = ref<AuthProvider[]>([
     oidc_frontend_url: "",
     oidc_user_id_claim: "sub",
     oidc_role_claim: "role",
+    oidc_scopes: "",
+    k8s_name: "",
     k8s_api_server: "",
+    k8s_ca_cert_path: "",
+    k8s_token_path: "",
     k8s_audiences: "batlehub",
+    actions_name: "",
+    actions_issuer: "",
+    actions_user_id_claim: "sub",
+    actions_rules: [],
+  };
+}
+
+const authProviders = ref<AuthProvider[]>([
+  {
+    ...blankAuthProvider(),
+    tokens: [{ id: tokenSeq++, value: "", role: "admin", user_id: "admin" }],
   },
 ]);
 
 // ── Argon2id token hashing ───────────────────────────────────────────────────
-// hash-wasm is loaded lazily on mount (it bundles WebAssembly; not SSR-safe).
-// tokenHashes maps tok.id → computed PHC string.
-//   null   = currently computing
-//   ""     = input is empty, nothing to hash
-//   "$argon2id…" = ready
 
 type ArgFn = (params: {
   password: string;
@@ -206,7 +258,6 @@ const tokenHashes = ref<Record<number, string | null>>({});
 let _hashTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function runHashComputation() {
-  // Mark every non-empty token as "computing"
   const next: Record<number, string | null> = {};
   for (const auth of authProviders.value) {
     if (auth.type !== "token") continue;
@@ -216,7 +267,6 @@ async function runHashComputation() {
   }
   tokenHashes.value = next;
 
-  // Compute one by one (sequential keeps memory pressure low)
   for (const auth of authProviders.value) {
     if (auth.type !== "token") continue;
     for (const tok of auth.tokens) {
@@ -237,7 +287,7 @@ async function runHashComputation() {
             outputType: "encoded",
           });
         } else {
-          result = raw; // WASM not loaded — fallback to plain
+          result = raw;
         }
         tokenHashes.value = { ...tokenHashes.value, [tok.id]: result };
       } catch {
@@ -262,7 +312,6 @@ onMounted(async () => {
   await runHashComputation();
 });
 
-// Re-hash whenever any token value changes
 watch(
   () =>
     authProviders.value.flatMap((a) =>
@@ -305,6 +354,8 @@ function defaultRegistry(type: RegistryType = "npm"): Registry {
     upstream_auth_password: "",
     upstream_auth_header_name: "",
     upstream_auth_header_value: "",
+    tls_ca_cert_path: "",
+    firewall_only: false,
     cache_metadata_ttl: 300,
     cache_artifact_ttl: "",
     cache_idle_days: "",
@@ -319,6 +370,13 @@ function defaultRegistry(type: RegistryType = "npm"): Registry {
     quota_max_packages: "",
     quota_enforcement: "block",
     beta_channel_enabled: false,
+    versioning_enabled: false,
+    versioning_enforce_semver: false,
+    versioning_allow_prerelease: true,
+    versioning_pattern: "",
+    signing_enabled: false,
+    signing_required: false,
+    signing_allowed_types: "",
     rule_age_gate_enabled: false,
     rule_age_gate_min_age: 3600,
     rule_deny_latest_enabled: false,
@@ -385,6 +443,9 @@ const toml = computed(() => {
   lines.push(`port = ${server.value.port}`);
   if (server.value.static_dir)
     lines.push(`static_dir = ${q(server.value.static_dir)}`);
+  if (server.value.cors_allowed_origins) {
+    lines.push(`cors_allowed_origins = ${listToToml(server.value.cors_allowed_origins)}`);
+  }
 
   // [database]
   lines.push("");
@@ -420,6 +481,7 @@ const toml = computed(() => {
     lines.push("");
     lines.push("[[auth]]");
     lines.push(`type = ${q(auth.type)}`);
+
     if (auth.type === "token") {
       const valid = auth.tokens.filter((t) => t.value.trim());
       for (const tok of valid) {
@@ -427,24 +489,19 @@ const toml = computed(() => {
         lines.push("[[auth.tokens]]");
         const hash = tokenHashes.value[tok.id];
         if (hash === null) {
-          // Still computing — emit a placeholder so the preview updates once ready
           lines.push(`value = "# computing Argon2id hash…"`);
         } else if (hash && hash.startsWith("$argon2")) {
           lines.push(`value = ${q(hash)}`);
         } else {
-          // hash-wasm unavailable — emit the raw value with an explanatory comment
-          lines.push(
-            `# Argon2id hashing unavailable in this browser.`,
-          );
-          lines.push(
-            `# Harden this token: batlehub hash-token ${tok.value}`,
-          );
+          lines.push(`# Argon2id hashing unavailable in this browser.`);
+          lines.push(`# Harden this token: batlehub hash-token ${tok.value}`);
           lines.push(`value = ${q(tok.value)}`);
         }
         lines.push(`role = ${q(tok.role)}`);
         if (tok.user_id) lines.push(`user_id = ${q(tok.user_id)}`);
       }
     } else if (auth.type === "oidc") {
+      if (auth.oidc_name) lines.push(`name = ${q(auth.oidc_name)}`);
       if (auth.oidc_issuer) lines.push(`issuer_url = ${q(auth.oidc_issuer)}`);
       if (auth.oidc_client_id)
         lines.push(`client_id = ${q(auth.oidc_client_id)}`);
@@ -458,15 +515,44 @@ const toml = computed(() => {
         lines.push(`user_id_claim = ${q(auth.oidc_user_id_claim)}`);
       if (auth.oidc_role_claim && auth.oidc_role_claim !== "role")
         lines.push(`role_claim = ${q(auth.oidc_role_claim)}`);
+      if (auth.oidc_scopes) {
+        const scopes = auth.oidc_scopes.split(",").map((s) => s.trim()).filter(Boolean);
+        if (scopes.length) lines.push(`scopes = [${scopes.map(q).join(", ")}]`);
+      }
     } else if (auth.type === "kubernetes") {
+      if (auth.k8s_name) lines.push(`name = ${q(auth.k8s_name)}`);
       if (auth.k8s_api_server)
         lines.push(`api_server = ${q(auth.k8s_api_server)}`);
+      if (auth.k8s_ca_cert_path)
+        lines.push(`ca_cert_path = ${q(auth.k8s_ca_cert_path)}`);
+      if (auth.k8s_token_path)
+        lines.push(`token_path = ${q(auth.k8s_token_path)}`);
       if (auth.k8s_audiences) {
         const auds = auth.k8s_audiences
           .split(",")
           .map((a) => a.trim())
           .filter(Boolean);
         lines.push(`audiences = [${auds.map(q).join(", ")}]`);
+      }
+    } else if (auth.type === "actions-oidc") {
+      if (auth.actions_name) lines.push(`name = ${q(auth.actions_name)}`);
+      if (auth.actions_issuer) lines.push(`issuer_url = ${q(auth.actions_issuer)}`);
+      if (auth.actions_user_id_claim && auth.actions_user_id_claim !== "sub")
+        lines.push(`user_id_claim = ${q(auth.actions_user_id_claim)}`);
+      for (const rule of auth.actions_rules) {
+        lines.push("");
+        lines.push("[[auth.rules]]");
+        if (rule.group) lines.push(`group = ${q(rule.group)}`);
+        if (rule.group_template) lines.push(`group_template = ${q(rule.group_template)}`);
+        if (rule.role) lines.push(`role = ${q(rule.role)}`);
+        if (rule.match_mode !== "all") lines.push(`match = ${q(rule.match_mode)}`);
+        for (const cond of rule.conditions) {
+          lines.push("");
+          lines.push("[[auth.rules.conditions]]");
+          lines.push(`claim = ${q(cond.claim)}`);
+          lines.push(`pattern = ${q(cond.pattern)}`);
+          if (cond.match_type !== "auto") lines.push(`match_type = ${q(cond.match_type)}`);
+        }
       }
     }
   }
@@ -496,6 +582,7 @@ const toml = computed(() => {
     lines.push(`type = ${q(reg.type)}`);
     lines.push(`name = ${q(reg.name)}`);
     if (reg.mode !== "proxy") lines.push(`mode = ${q(reg.mode)}`);
+    if (reg.firewall_only) lines.push(`firewall_only = true`);
     if (reg.mode !== "local") {
       const ups = reg.upstreams
         .split("\n")
@@ -514,7 +601,7 @@ const toml = computed(() => {
     lines.push(`user = ${permsToToml(reg.rbac_user)}`);
     lines.push(`admin = ${permsToToml(reg.rbac_admin)}`);
 
-    // [registries.cache] — only emit non-default values
+    // [registries.cache]
     const nonDefaultCache =
       reg.cache_metadata_ttl !== 300 ||
       reg.cache_artifact_ttl ||
@@ -567,6 +654,32 @@ const toml = computed(() => {
       lines.push(`enabled = true`);
     }
 
+    // [registries.versioning]
+    if (
+      reg.versioning_enabled &&
+      (reg.mode === "local" || reg.mode === "hybrid")
+    ) {
+      lines.push("");
+      lines.push("[registries.versioning]");
+      if (reg.versioning_enforce_semver) lines.push(`enforce_semver = true`);
+      if (!reg.versioning_allow_prerelease) lines.push(`allow_prerelease = false`);
+      if (reg.versioning_pattern) lines.push(`version_pattern = ${q(reg.versioning_pattern)}`);
+    }
+
+    // [registries.signing]
+    if (
+      reg.signing_enabled &&
+      (reg.mode === "local" || reg.mode === "hybrid")
+    ) {
+      lines.push("");
+      lines.push("[registries.signing]");
+      if (reg.signing_required) lines.push(`required = true`);
+      if (reg.signing_allowed_types) {
+        const types = reg.signing_allowed_types.split(",").map((t) => t.trim()).filter(Boolean);
+        if (types.length) lines.push(`allowed_types = [${types.map(q).join(", ")}]`);
+      }
+    }
+
     // [[registries.rules]]
     if (reg.rule_age_gate_enabled) {
       lines.push("");
@@ -599,6 +712,13 @@ const toml = computed(() => {
           lines.push(`value = ${q(reg.upstream_auth_header_value)}`);
       }
     }
+
+    // [registries.tls]
+    if (reg.tls_ca_cert_path) {
+      lines.push("");
+      lines.push("[registries.tls]");
+      lines.push(`ca_cert_path = ${q(reg.tls_ca_cert_path)}`);
+    }
   }
 
   // [ip_blocking]
@@ -614,6 +734,9 @@ const toml = computed(() => {
     lines.push(
       `trigger_on_status = ${listToToml(ipBlocking.value.trigger_on_status)}`,
     );
+    if (ipBlocking.value.trusted_proxies) {
+      lines.push(`trusted_proxies = ${listToToml(ipBlocking.value.trusted_proxies)}`);
+    }
   }
 
   // [otel]
@@ -649,20 +772,7 @@ function downloadToml() {
 
 // Auth providers
 function addAuthProvider() {
-  authProviders.value.push({
-    id: authSeq++,
-    type: "token",
-    tokens: [],
-    oidc_issuer: "",
-    oidc_client_id: "",
-    oidc_client_secret: "",
-    oidc_redirect_uri: "",
-    oidc_frontend_url: "",
-    oidc_user_id_claim: "sub",
-    oidc_role_claim: "role",
-    k8s_api_server: "",
-    k8s_audiences: "batlehub",
-  });
+  authProviders.value.push(blankAuthProvider());
 }
 function removeAuthProvider(id: number) {
   authProviders.value = authProviders.value.filter((a) => a.id !== id);
@@ -672,6 +782,25 @@ function addToken(auth: AuthProvider) {
 }
 function removeToken(auth: AuthProvider, id: number) {
   auth.tokens = auth.tokens.filter((t) => t.id !== id);
+}
+function addActionsRule(auth: AuthProvider) {
+  auth.actions_rules.push({
+    id: ruleSeq++,
+    group: "",
+    group_template: "",
+    role: "",
+    match_mode: "all",
+    conditions: [],
+  });
+}
+function removeActionsRule(auth: AuthProvider, id: number) {
+  auth.actions_rules = auth.actions_rules.filter((r) => r.id !== id);
+}
+function addCondition(rule: ActionsRule) {
+  rule.conditions.push({ id: condSeq++, claim: "", pattern: "", match_type: "auto" });
+}
+function removeCondition(rule: ActionsRule, id: number) {
+  rule.conditions = rule.conditions.filter((c) => c.id !== id);
 }
 
 function addRegistry() {
@@ -758,6 +887,15 @@ const composerAuthSnippet = `{
             v-model="server.static_dir"
             placeholder="./ui/dist"
         /></label>
+        <label
+          >CORS allowed origins (optional, comma-separated)<input
+            v-model="server.cors_allowed_origins"
+            placeholder="https://batlehub.example.com"
+          /><span class="cg-field-hint"
+            >Leave blank to allow all origins (fine for development). Restrict in
+            production.</span
+          ></label
+        >
       </section>
 
       <!-- Database -->
@@ -978,6 +1116,7 @@ const composerAuthSnippet = `{
               <option value="token">Static tokens</option>
               <option value="oidc">OIDC / OAuth2</option>
               <option value="kubernetes">Kubernetes service accounts</option>
+              <option value="actions-oidc">GitHub Actions OIDC</option>
             </select>
           </label>
 
@@ -995,7 +1134,6 @@ const composerAuthSnippet = `{
                   autocomplete="off"
                 />
               </label>
-              <!-- Hash status badge -->
               <div v-if="tok.value.trim()" class="cg-hash-status">
                 <template v-if="tokenHashes[tok.id] === null">
                   <span class="cg-hash-computing">⏳ Computing Argon2id hash…</span>
@@ -1040,6 +1178,15 @@ const composerAuthSnippet = `{
           <!-- OIDC auth -->
           <template v-else-if="auth.type === 'oidc'">
             <label
+              >Provider name (optional)<input
+                v-model="auth.oidc_name"
+                placeholder="oidc"
+              /><span class="cg-field-hint"
+                >Used as the group prefix (e.g. <code>oidc:team-a</code>). Only
+                needed when running multiple OIDC providers.</span
+              ></label
+            >
+            <label
               >Issuer URL<input
                 v-model="auth.oidc_issuer"
                 placeholder="https://accounts.example.com"
@@ -1083,10 +1230,28 @@ const composerAuthSnippet = `{
                   placeholder="role"
               /></label>
             </div>
+            <label
+              >Scopes (optional, comma-separated)<input
+                v-model="auth.oidc_scopes"
+                placeholder="openid, profile, email"
+              /><span class="cg-field-hint"
+                >Defaults to <code>openid, profile, email</code> when
+                blank.</span
+              ></label
+            >
           </template>
 
           <!-- Kubernetes auth -->
           <template v-else-if="auth.type === 'kubernetes'">
+            <label
+              >Provider name (optional)<input
+                v-model="auth.k8s_name"
+                placeholder="kubernetes"
+              /><span class="cg-field-hint"
+                >Used as the group prefix (e.g.
+                <code>kubernetes:ops</code>).</span
+              ></label
+            >
             <label
               >API server URL (optional)<input
                 v-model="auth.k8s_api_server"
@@ -1096,10 +1261,158 @@ const composerAuthSnippet = `{
               ></label
             >
             <label
+              >CA cert path (optional)<input
+                v-model="auth.k8s_ca_cert_path"
+                placeholder="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+              /><span class="cg-field-hint"
+                >Defaults to the standard in-cluster CA mount.</span
+              ></label
+            >
+            <label
+              >Service account token path (optional)<input
+                v-model="auth.k8s_token_path"
+                placeholder="/var/run/secrets/kubernetes.io/serviceaccount/token"
+              /><span class="cg-field-hint"
+                >Defaults to the standard in-cluster token mount.</span
+              ></label
+            >
+            <label
               >Audiences (comma-separated)<input
                 v-model="auth.k8s_audiences"
                 placeholder="batlehub"
             /></label>
+          </template>
+
+          <!-- GitHub Actions OIDC auth -->
+          <template v-else-if="auth.type === 'actions-oidc'">
+            <label
+              >Provider name (optional)<input
+                v-model="auth.actions_name"
+                placeholder="actions-oidc"
+              /><span class="cg-field-hint"
+                >Used as the group prefix in RBAC group rules.</span
+              ></label
+            >
+            <label
+              >Issuer URL<input
+                v-model="auth.actions_issuer"
+                placeholder="https://token.actions.githubusercontent.com"
+              /><span class="cg-field-hint"
+                >For GitHub.com use
+                <code>https://token.actions.githubusercontent.com</code>.</span
+              ></label
+            >
+            <label
+              >User ID claim (optional)<input
+                v-model="auth.actions_user_id_claim"
+                placeholder="sub"
+              /><span class="cg-field-hint"
+                >JWT claim used as the user identifier. Defaults to
+                <code>sub</code>.</span
+              ></label
+            >
+
+            <!-- Rules -->
+            <p class="cg-subsection-label" style="margin-top: 0.75rem">
+              Rules
+            </p>
+            <span class="cg-field-hint" style="margin-bottom: 0.5rem; display: block"
+              >Each rule assigns a role when a workflow token matches the given
+              conditions.</span
+            >
+            <div
+              v-for="rule in auth.actions_rules"
+              :key="rule.id"
+              class="cg-subitem"
+            >
+              <div class="cg-two-col">
+                <label
+                  >Group name (optional)<input
+                    v-model="rule.group"
+                    placeholder="ci-bots"
+                  /><span class="cg-field-hint"
+                    >Static group name assigned to matching tokens.</span
+                  ></label
+                >
+                <label>
+                  Role (optional)
+                  <select v-model="rule.role">
+                    <option value="">— none (group only) —</option>
+                    <option value="admin">admin</option>
+                    <option value="user">user</option>
+                    <option value="anonymous">anonymous</option>
+                  </select>
+                  <span class="cg-field-hint">When blank the rule assigns groups without affecting role elevation.</span>
+                </label>
+              </div>
+              <label
+                >Group template (optional)<input
+                  v-model="rule.group_template"
+                  placeholder="{name}/{repository}/{ref_name}"
+                /><span class="cg-field-hint"
+                  >Template rendered from JWT claims.
+                  <code>{repository}</code>, <code>{ref_name}</code> and any
+                  other claim key are supported. Slashes are replaced with
+                  dashes.</span
+                ></label
+              >
+              <label>
+                Condition match mode
+                <select v-model="rule.match_mode">
+                  <option value="all">all (every condition must pass)</option>
+                  <option value="any">any (at least one must pass)</option>
+                </select>
+              </label>
+
+              <!-- Conditions -->
+              <p class="cg-subsection-label">Conditions</p>
+              <div
+                v-for="cond in rule.conditions"
+                :key="cond.id"
+                class="cg-condition-item"
+              >
+                <div class="cg-two-col">
+                  <label
+                    >JWT claim<input
+                      v-model="cond.claim"
+                      placeholder="repository"
+                  /></label>
+                  <label
+                    >Pattern<input
+                      v-model="cond.pattern"
+                      placeholder="myorg/*"
+                  /></label>
+                </div>
+                <label>
+                  Match type
+                  <select v-model="cond.match_type">
+                    <option value="auto">auto (glob if * present, else exact)</option>
+                    <option value="glob">glob</option>
+                    <option value="regex">regex</option>
+                  </select>
+                </label>
+                <button
+                  class="cg-btn-remove"
+                  @click="removeCondition(rule, cond.id)"
+                >
+                  Remove condition
+                </button>
+              </div>
+              <button class="cg-btn-add" @click="addCondition(rule)">
+                + Add condition
+              </button>
+              <div style="margin-top: 0.5rem">
+                <button
+                  class="cg-btn-remove"
+                  @click="removeActionsRule(auth, rule.id)"
+                >
+                  Remove rule
+                </button>
+              </div>
+            </div>
+            <button class="cg-btn-add" @click="addActionsRule(auth)">
+              + Add rule
+            </button>
           </template>
 
           <div class="cg-provider-actions">
@@ -1110,6 +1423,7 @@ const composerAuthSnippet = `{
             >
               + Add token
             </button>
+            <span v-else />
             <button class="cg-btn-remove" @click="removeAuthProvider(auth.id)">
               Remove provider
             </button>
@@ -1231,6 +1545,17 @@ curl -X POST \
           </div>
 
           <div v-if="reg.showAdvanced" class="cg-advanced">
+            <!-- Firewall mode -->
+            <p class="cg-subsection-label">Firewall</p>
+            <label class="cg-check cg-mb">
+              <input type="checkbox" v-model="reg.firewall_only" />
+              Firewall-only mode (enforce rules without caching)
+            </label>
+            <span v-if="reg.firewall_only" class="cg-field-hint" style="display: block; margin-bottom: 0.5rem"
+              >Rules are evaluated but nothing is written to storage. Requests
+              stream directly from upstream.</span
+            >
+
             <!-- Cache policy -->
             <p class="cg-subsection-label">Cache policy</p>
             <div class="cg-two-col">
@@ -1337,6 +1662,58 @@ curl -X POST \
               </label>
             </template>
 
+            <!-- Versioning (local/hybrid only) -->
+            <template v-if="isLocalOrHybrid(reg)">
+              <p class="cg-subsection-label">Versioning policy</p>
+              <label class="cg-check cg-mb">
+                <input type="checkbox" v-model="reg.versioning_enabled" />
+                Enforce versioning rules at publish time
+              </label>
+              <template v-if="reg.versioning_enabled">
+                <label class="cg-check">
+                  <input type="checkbox" v-model="reg.versioning_enforce_semver" />
+                  Require valid semver (reject non-semver versions)
+                </label>
+                <label class="cg-check cg-mb">
+                  <input type="checkbox" v-model="reg.versioning_allow_prerelease" />
+                  Allow pre-release versions (e.g. <code>1.0.0-beta.1</code>)
+                </label>
+                <label
+                  >Version regex (optional)<input
+                    v-model="reg.versioning_pattern"
+                    placeholder="^\d+\.\d+\.\d+$"
+                  /><span class="cg-field-hint"
+                    >Reject publishes where the version string doesn't match this
+                    pattern.</span
+                  ></label
+                >
+              </template>
+            </template>
+
+            <!-- Signing (local/hybrid only) -->
+            <template v-if="isLocalOrHybrid(reg)">
+              <p class="cg-subsection-label">Artifact signing</p>
+              <label class="cg-check cg-mb">
+                <input type="checkbox" v-model="reg.signing_enabled" />
+                Accept artifact signatures at publish time
+              </label>
+              <template v-if="reg.signing_enabled">
+                <label class="cg-check cg-mb">
+                  <input type="checkbox" v-model="reg.signing_required" />
+                  Require signature (reject publishes without
+                  <code>X-Artifact-Signature</code>)
+                </label>
+                <label
+                  >Allowed signature types (comma-separated, optional)<input
+                    v-model="reg.signing_allowed_types"
+                    placeholder="pgp, ed25519"
+                  /><span class="cg-field-hint"
+                    >Leave blank to accept any type.</span
+                  ></label
+                >
+              </template>
+            </template>
+
             <!-- Rules -->
             <p class="cg-subsection-label">Rules</p>
             <label class="cg-check">
@@ -1402,6 +1779,18 @@ curl -X POST \
                 /></label>
               </div>
             </template>
+
+            <!-- TLS -->
+            <p class="cg-subsection-label">Upstream TLS</p>
+            <label
+              >Custom CA certificate path (optional)<input
+                v-model="reg.tls_ca_cert_path"
+                placeholder="/etc/ssl/corp-ca.pem"
+              /><span class="cg-field-hint"
+                >PEM-encoded CA to trust for this registry's upstream. Only
+                needed for self-signed certificates.</span
+              ></label
+            >
           </div>
 
         </div>
@@ -1445,6 +1834,16 @@ curl -X POST \
               placeholder="429, 401"
             /><span class="cg-field-hint"
               >Comma-separated HTTP status codes that count as violations.</span
+            ></label
+          >
+          <label
+            >Trusted proxy IPs (optional, comma-separated)<input
+              v-model="ipBlocking.trusted_proxies"
+              placeholder="10.0.0.1, 10.0.0.2"
+            /><span class="cg-field-hint"
+              >IPs of reverse proxies trusted to forward
+              <code>X-Forwarded-For</code>. Leave blank to always use the TCP
+              peer address.</span
             ></label
           >
         </template>
@@ -1614,6 +2013,14 @@ textarea {
   padding: 0.6rem;
   margin-bottom: 0.5rem;
   background: var(--vp-c-bg);
+}
+
+.cg-condition-item {
+  border: 1px dashed var(--vp-c-divider);
+  border-radius: 4px;
+  padding: 0.5rem;
+  margin-bottom: 0.4rem;
+  background: var(--vp-c-bg-soft);
 }
 
 /* ── Advanced panel ──────────────────────────────────────────────── */

@@ -103,6 +103,13 @@ pub struct SigningConfig {
     pub allowed_types: Vec<String>,
 }
 
+/// OS/architecture pair identifying a specific Terraform provider binary.
+#[derive(Debug, Clone, Copy)]
+pub struct TerraformPlatform<'a> {
+    pub os: &'a str,
+    pub arch: &'a str,
+}
+
 impl LocalRegistryService {
     /// Validate and persist a published artifact.
     ///
@@ -529,7 +536,7 @@ impl LocalRegistryService {
     /// - `Public`   → always allowed (even anonymous).
     /// - `Internal` → requires at least `Role::User`.
     /// - `Team`     → requires membership in the group that owns the namespace.
-    ///               Falls back to `Internal` semantics when no claim exists.
+    ///   Falls back to `Internal` semantics when no claim exists.
     ///
     /// Admins bypass all checks. When no `team_namespace` port is configured,
     /// access is always permitted.
@@ -981,12 +988,11 @@ impl LocalRegistryService {
         registry: &str,
         name: &str,
         version: &str,
-        os: &str,
-        arch: &str,
+        platform: TerraformPlatform<'_>,
         base_url: &str,
-        registry_name: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
+        let TerraformPlatform { os, arch } = platform;
         self.check_visibility(registry, name, identity).await?;
         self.check_prerelease_access(registry, version, identity)
             .await?;
@@ -1032,7 +1038,7 @@ impl LocalRegistryService {
 
         let base = base_url.trim_end_matches('/');
         let download_url = format!(
-            "{base}/proxy/{registry_name}/v1/providers/{ns}/{ptype}/{version}/artifact/{os}/{arch}"
+            "{base}/proxy/{registry}/v1/providers/{ns}/{ptype}/{version}/artifact/{os}/{arch}"
         );
 
         let mut resp = platform.clone();

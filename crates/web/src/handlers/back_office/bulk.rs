@@ -6,17 +6,22 @@ use utoipa::ToSchema;
 
 use batlehub_core::services::LocalRegistryService;
 
-use crate::{error::AppError, extractors::AuthIdentity};
 use super::require_admin;
+use crate::{error::AppError, extractors::AuthIdentity};
 
 #[cfg(test)]
 mod tests {
     use super::require_admin;
-    use batlehub_core::entities::{Identity, Role};
     use crate::extractors::AuthIdentity;
+    use batlehub_core::entities::{Identity, Role};
 
     fn id(role: Role) -> AuthIdentity {
-        AuthIdentity(Identity { user_id: Some("u".into()), role, auth_provider: None, groups: vec![] })
+        AuthIdentity(Identity {
+            user_id: Some("u".into()),
+            role,
+            auth_provider: None,
+            groups: vec![],
+        })
     }
 
     #[test]

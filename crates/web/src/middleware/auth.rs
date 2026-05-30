@@ -117,10 +117,7 @@ mod tests {
         fn name(&self) -> &str {
             "always"
         }
-        async fn authenticate(
-            &self,
-            _: &RawAuthRequest,
-        ) -> Result<Option<Identity>, CoreError> {
+        async fn authenticate(&self, _: &RawAuthRequest) -> Result<Option<Identity>, CoreError> {
             Ok(Some(Identity {
                 user_id: Some(self.0.clone()),
                 role: Role::User,
@@ -137,10 +134,7 @@ mod tests {
         fn name(&self) -> &str {
             "never"
         }
-        async fn authenticate(
-            &self,
-            _: &RawAuthRequest,
-        ) -> Result<Option<Identity>, CoreError> {
+        async fn authenticate(&self, _: &RawAuthRequest) -> Result<Option<Identity>, CoreError> {
             Ok(None)
         }
     }
@@ -187,10 +181,8 @@ mod tests {
 
     #[actix_web::test]
     async fn falls_back_to_second_provider() {
-        let providers: Vec<Arc<dyn AuthProvider>> = vec![
-            Arc::new(NeverAuth),
-            Arc::new(AlwaysAuth("carol".into())),
-        ];
+        let providers: Vec<Arc<dyn AuthProvider>> =
+            vec![Arc::new(NeverAuth), Arc::new(AlwaysAuth("carol".into()))];
         let app = test::init_service(
             App::new()
                 .wrap(AuthMiddlewareFactory::new(providers))

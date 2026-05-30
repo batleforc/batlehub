@@ -31,3 +31,6 @@ metrics-exporter-prometheus.workspace = true
 flate2 = "1"
 tar    = "0.4"
 zip    = "2"
+
+[lints]
+workspace = true

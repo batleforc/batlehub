@@ -63,3 +63,7 @@ mockito = "1"
 rcgen = "0.13"
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
 tokio-rustls = "0.26"
+toml = { workspace = true }
+
+[lints]
+workspace = true

@@ -6,8 +6,8 @@ use utoipa::ToSchema;
 
 use batlehub_core::{ports::OwnerEntry, services::LocalRegistryService};
 
-use crate::{error::AppError, extractors::AuthIdentity};
 use super::require_admin;
+use crate::{error::AppError, extractors::AuthIdentity};
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct OwnerEntryDto {
@@ -43,12 +43,20 @@ fn default_role() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{require_admin, default_role, OwnerEntryDto};
-    use batlehub_core::{entities::{Identity, Role}, ports::OwnerEntry};
+    use super::{default_role, require_admin, OwnerEntryDto};
     use crate::extractors::AuthIdentity;
+    use batlehub_core::{
+        entities::{Identity, Role},
+        ports::OwnerEntry,
+    };
 
     fn id(role: Role) -> AuthIdentity {
-        AuthIdentity(Identity { user_id: Some("u".into()), role, auth_provider: None, groups: vec![] })
+        AuthIdentity(Identity {
+            user_id: Some("u".into()),
+            role,
+            auth_provider: None,
+            groups: vec![],
+        })
     }
 
     #[test]

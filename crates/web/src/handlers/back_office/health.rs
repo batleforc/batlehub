@@ -8,8 +8,8 @@ use utoipa::ToSchema;
 
 use batlehub_core::services::{AdminService, ProxyService};
 
-use crate::{error::AppError, extractors::AuthIdentity, AccessConfig, RegistryMap};
 use super::require_admin;
+use crate::{error::AppError, extractors::AuthIdentity, AccessConfig, RegistryMap};
 
 #[derive(Serialize, ToSchema)]
 pub struct RegistryAccessInfo {

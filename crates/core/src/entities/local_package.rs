@@ -45,7 +45,10 @@ mod tests {
     #[test]
     fn from_str_all_variants() {
         assert_eq!(Visibility::from_str("public").unwrap(), Visibility::Public);
-        assert_eq!(Visibility::from_str("internal").unwrap(), Visibility::Internal);
+        assert_eq!(
+            Visibility::from_str("internal").unwrap(),
+            Visibility::Internal
+        );
         assert_eq!(Visibility::from_str("team").unwrap(), Visibility::Team);
     }
 

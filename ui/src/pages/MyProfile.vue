@@ -45,23 +45,37 @@ function roleVariant(role: string) {
       </CardHeader>
       <CardContent>
         <dl class="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-sm">
-          <dt class="text-muted-foreground font-medium">User ID</dt>
-          <dd class="font-mono">{{ identity?.user_id ?? "—" }}</dd>
+          <dt class="text-muted-foreground font-medium">
+            User ID
+          </dt>
+          <dd class="font-mono">
+            {{ identity?.user_id ?? "—" }}
+          </dd>
 
-          <dt class="text-muted-foreground font-medium">Role</dt>
+          <dt class="text-muted-foreground font-medium">
+            Role
+          </dt>
           <dd>
             <Badge :variant="roleVariant(identity?.role ?? 'anonymous')">
               {{ identity?.role ?? "anonymous" }}
             </Badge>
           </dd>
 
-          <dt class="text-muted-foreground font-medium">Auth provider</dt>
+          <dt class="text-muted-foreground font-medium">
+            Auth provider
+          </dt>
           <dd>
-            <span v-if="displayProvider" class="flex items-center gap-1.5">
+            <span
+              v-if="displayProvider"
+              class="flex items-center gap-1.5"
+            >
               <KeyRound class="h-3.5 w-3.5 text-muted-foreground" />
               <span class="font-mono">{{ displayProvider }}</span>
             </span>
-            <span v-else class="text-muted-foreground">Token / anonymous</span>
+            <span
+              v-else
+              class="text-muted-foreground"
+            >Token / anonymous</span>
           </dd>
         </dl>
       </CardContent>
@@ -104,7 +118,10 @@ function roleVariant(role: string) {
         </div>
 
         <!-- Group list -->
-        <ul v-else class="space-y-2">
+        <ul
+          v-else
+          class="space-y-2"
+        >
           <li
             v-for="g in parsedGroups"
             :key="g.raw"
@@ -112,7 +129,10 @@ function roleVariant(role: string) {
           >
             <!-- Provider prefix as a muted badge -->
             <template v-if="g.provider">
-              <Badge variant="outline" class="text-xs text-muted-foreground">
+              <Badge
+                variant="outline"
+                class="text-xs text-muted-foreground"
+              >
                 {{ g.provider }}
               </Badge>
               <span class="text-muted-foreground select-none">:</span>

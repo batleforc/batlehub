@@ -174,42 +174,89 @@ async function doUnblock() {
   <div class="space-y-4">
     <!-- Breadcrumb -->
     <div class="flex items-center gap-3">
-      <Button variant="ghost" size="sm" @click="router.back()">← Back</Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        @click="router.back()"
+      >
+        ← Back
+      </Button>
       <span class="text-muted-foreground text-sm">/</span>
       <span class="font-mono text-sm">
         {{ registry }}/{{ name }}/{{ version }}<template v-if="artifact">/{{ artifact }}</template>
       </span>
     </div>
 
-    <p v-if="loading" class="text-sm text-muted-foreground">Loading…</p>
-    <p v-else-if="error" class="text-sm text-destructive">{{ error }}</p>
-    <p v-else-if="notFound" class="text-sm text-muted-foreground">Artifact not found.</p>
+    <p
+      v-if="loading"
+      class="text-sm text-muted-foreground"
+    >
+      Loading…
+    </p>
+    <p
+      v-else-if="error"
+      class="text-sm text-destructive"
+    >
+      {{ error }}
+    </p>
+    <p
+      v-else-if="notFound"
+      class="text-sm text-muted-foreground"
+    >
+      Artifact not found.
+    </p>
 
     <template v-else-if="statusInfo !== null">
       <!-- Header card -->
       <Card>
         <CardHeader>
-          <CardTitle class="text-xl font-mono">{{ name }}</CardTitle>
+          <CardTitle class="text-xl font-mono">
+            {{ name }}
+          </CardTitle>
         </CardHeader>
         <CardContent class="space-y-2 text-sm">
           <div class="flex flex-wrap gap-2 items-center">
-            <Badge variant="outline">{{ registry }}</Badge>
-            <Badge variant="secondary" class="font-mono">{{ version }}</Badge>
-            <Badge v-if="artifact" variant="outline" class="font-mono text-xs">{{ artifact }}</Badge>
+            <Badge variant="outline">
+              {{ registry }}
+            </Badge>
+            <Badge
+              variant="secondary"
+              class="font-mono"
+            >
+              {{ version }}
+            </Badge>
+            <Badge
+              v-if="artifact"
+              variant="outline"
+              class="font-mono text-xs"
+            >
+              {{ artifact }}
+            </Badge>
             <Badge :variant="statusInfo.status === 'blocked' ? 'destructive' : 'secondary'">
               {{ statusInfo.status === 'blocked' ? 'Blocked' : 'Available' }}
             </Badge>
           </div>
-          <p v-if="statusInfo.status === 'blocked'" class="text-xs text-destructive">
+          <p
+            v-if="statusInfo.status === 'blocked'"
+            class="text-xs text-destructive"
+          >
             {{ (statusInfo as BlockedStatus).reason }}
           </p>
           <div>
             <span class="text-muted-foreground w-28 inline-block">Upstream</span>
-            <a v-if="upstreamUrl" :href="upstreamUrl" target="_blank" rel="noopener noreferrer"
-               class="text-primary underline-offset-2 hover:underline font-mono text-xs">
+            <a
+              v-if="upstreamUrl"
+              :href="upstreamUrl"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-primary underline-offset-2 hover:underline font-mono text-xs"
+            >
               {{ upstreamUrl }}
             </a>
-            <span v-else class="text-muted-foreground">—</span>
+            <span
+              v-else
+              class="text-muted-foreground"
+            >—</span>
           </div>
           <div>
             <span class="text-muted-foreground w-28 inline-block">Downloads</span>
@@ -221,7 +268,9 @@ async function doUnblock() {
       <!-- Admin: Cache & storage -->
       <Card v-if="isAdmin && versionDetail">
         <CardHeader>
-          <CardTitle class="text-base">Cache &amp; storage</CardTitle>
+          <CardTitle class="text-base">
+            Cache &amp; storage
+          </CardTitle>
         </CardHeader>
         <CardContent class="space-y-2 text-sm">
           <div>
@@ -240,8 +289,17 @@ async function doUnblock() {
           </div>
           <div>
             <span class="text-muted-foreground w-32 inline-block">Backend</span>
-            <Badge v-if="versionDetail.storage_backend" variant="outline" class="font-mono text-xs">{{ versionDetail.storage_backend }}</Badge>
-            <span v-else class="text-muted-foreground">—</span>
+            <Badge
+              v-if="versionDetail.storage_backend"
+              variant="outline"
+              class="font-mono text-xs"
+            >
+              {{ versionDetail.storage_backend }}
+            </Badge>
+            <span
+              v-else
+              class="text-muted-foreground"
+            >—</span>
           </div>
           <div>
             <span class="text-muted-foreground w-32 inline-block">Last accessed</span>
@@ -249,19 +307,39 @@ async function doUnblock() {
           </div>
           <div>
             <span class="text-muted-foreground w-32 inline-block">Last pulled by</span>
-            <span v-if="versionDetail.last_accessed_by" class="font-medium">{{ versionDetail.last_accessed_by }}</span>
-            <span v-else-if="versionDetail.access_count > 0" class="text-muted-foreground italic">anonymous</span>
-            <span v-else class="text-muted-foreground">—</span>
+            <span
+              v-if="versionDetail.last_accessed_by"
+              class="font-medium"
+            >{{ versionDetail.last_accessed_by }}</span>
+            <span
+              v-else-if="versionDetail.access_count > 0"
+              class="text-muted-foreground italic"
+            >anonymous</span>
+            <span
+              v-else
+              class="text-muted-foreground"
+            >—</span>
           </div>
         </CardContent>
       </Card>
 
       <!-- Admin: Block / Unblock -->
-      <div v-if="isAdmin && versionDetail" class="flex gap-2">
-        <Button v-if="versionDetail.status.status === 'blocked'" variant="outline" @click="doUnblock">
+      <div
+        v-if="isAdmin && versionDetail"
+        class="flex gap-2"
+      >
+        <Button
+          v-if="versionDetail.status.status === 'blocked'"
+          variant="outline"
+          @click="doUnblock"
+        >
           Unblock
         </Button>
-        <Button v-else variant="destructive" @click="doBlock">
+        <Button
+          v-else
+          variant="destructive"
+          @click="doBlock"
+        >
           Block
         </Button>
       </div>
@@ -269,7 +347,9 @@ async function doUnblock() {
       <!-- Admin: Recent events -->
       <Card v-if="isAdmin && versionDetail">
         <CardHeader>
-          <CardTitle class="text-base">Recent access events</CardTitle>
+          <CardTitle class="text-base">
+            Recent access events
+          </CardTitle>
         </CardHeader>
         <CardContent class="p-0">
           <Table>
@@ -284,28 +364,52 @@ async function doUnblock() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              <TableRow v-for="ev in filteredEvents" :key="ev.id">
-                <TableCell class="text-xs tabular-nums whitespace-nowrap">{{ fmtDate(ev.timestamp) }}</TableCell>
+              <TableRow
+                v-for="ev in filteredEvents"
+                :key="ev.id"
+              >
+                <TableCell class="text-xs tabular-nums whitespace-nowrap">
+                  {{ fmtDate(ev.timestamp) }}
+                </TableCell>
                 <TableCell class="text-sm">
                   <span v-if="ev.user_id">{{ ev.user_id }}</span>
-                  <span v-else class="text-muted-foreground italic">anonymous</span>
+                  <span
+                    v-else
+                    class="text-muted-foreground italic"
+                  >anonymous</span>
                 </TableCell>
                 <TableCell>
-                  <Badge variant="outline" class="text-xs capitalize">{{ ev.user_role }}</Badge>
+                  <Badge
+                    variant="outline"
+                    class="text-xs capitalize"
+                  >
+                    {{ ev.user_role }}
+                  </Badge>
                 </TableCell>
-                <TableCell class="text-xs">{{ fmtAction(ev.action) }}</TableCell>
+                <TableCell class="text-xs">
+                  {{ fmtAction(ev.action) }}
+                </TableCell>
                 <TableCell>
-                  <Badge :variant="ev.outcome === 'denied' ? 'destructive' : 'secondary'" class="text-xs">
+                  <Badge
+                    :variant="ev.outcome === 'denied' ? 'destructive' : 'secondary'"
+                    class="text-xs"
+                  >
                     {{ ev.outcome }}
                   </Badge>
                 </TableCell>
-                <TableCell class="text-xs text-muted-foreground max-w-[200px] truncate" :title="ev.deny_reason ?? ''">
+                <TableCell
+                  class="text-xs text-muted-foreground max-w-[200px] truncate"
+                  :title="ev.deny_reason ?? ''"
+                >
                   {{ ev.deny_reason ?? "—" }}
                 </TableCell>
               </TableRow>
             </TableBody>
           </Table>
-          <p v-if="filteredEvents.length === 0" class="p-6 text-sm text-muted-foreground text-center">
+          <p
+            v-if="filteredEvents.length === 0"
+            class="p-6 text-sm text-muted-foreground text-center"
+          >
             No events recorded for this artifact.
           </p>
         </CardContent>

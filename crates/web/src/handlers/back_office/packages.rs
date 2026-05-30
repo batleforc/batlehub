@@ -8,14 +8,12 @@ use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use batlehub_core::{
-    entities::{
-        AccessAction, AccessResult, EventFilter, PackageFilter, PackageId, PackageStatus,
-    },
+    entities::{AccessAction, AccessResult, EventFilter, PackageFilter, PackageId, PackageStatus},
     services::{AdminService, BulkBlockItem, ProxyService},
 };
 
-use crate::{error::AppError, extractors::AuthIdentity};
 use super::require_admin;
+use crate::{error::AppError, extractors::AuthIdentity};
 
 // ── List all packages ─────────────────────────────────────────────────────────
 

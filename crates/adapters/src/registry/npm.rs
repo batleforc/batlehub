@@ -94,8 +94,7 @@ impl RegistryClient for NpmRegistryClient {
         let packument = self.fetch_packument(&pkg.name).await?;
 
         // Resolve dist-tag (e.g. "latest") → concrete version string.
-        let resolved_version =
-            resolve_dist_tag(&packument.dist_tags, &pkg.version).to_owned();
+        let resolved_version = resolve_dist_tag(&packument.dist_tags, &pkg.version).to_owned();
 
         let version_meta = packument.versions.get(&resolved_version).ok_or_else(|| {
             CoreError::NotFound(format!(
@@ -149,8 +148,7 @@ impl RegistryClient for NpmRegistryClient {
     async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
         // Resolve the tarball URL for this version.
         let packument = self.fetch_packument(&pkg.name).await?;
-        let resolved_version =
-            resolve_dist_tag(&packument.dist_tags, &pkg.version).to_owned();
+        let resolved_version = resolve_dist_tag(&packument.dist_tags, &pkg.version).to_owned();
 
         let version_meta = packument.versions.get(&resolved_version).ok_or_else(|| {
             CoreError::NotFound(format!(
@@ -193,11 +191,11 @@ fn encode_npm_name(name: &str) -> String {
 
 /// Resolve a dist-tag (e.g. `"latest"`) to a concrete version string.
 /// Returns the version unchanged when the tag is not in `dist_tags`.
-fn resolve_dist_tag<'a>(
-    dist_tags: &'a HashMap<String, String>,
-    version: &'a str,
-) -> &'a str {
-    dist_tags.get(version).map(String::as_str).unwrap_or(version)
+fn resolve_dist_tag<'a>(dist_tags: &'a HashMap<String, String>, version: &'a str) -> &'a str {
+    dist_tags
+        .get(version)
+        .map(String::as_str)
+        .unwrap_or(version)
 }
 
 /// Select the best checksum available: `integrity` (preferred) over `shasum`.

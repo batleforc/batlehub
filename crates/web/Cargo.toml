@@ -39,3 +39,6 @@ batlehub-adapters = { path = "../adapters" }
 actix-http = "3"
 flate2 = "1"
 tar = "0.4"
+
+[lints]
+workspace = true

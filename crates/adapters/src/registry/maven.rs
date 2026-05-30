@@ -19,12 +19,12 @@ use super::http_client::{apply_upstream_options, UpstreamHttpOptions};
 /// Supported `PackageId` conventions:
 /// - `name`    = `"{groupId}:{artifactId}"` (e.g. `"com.google.guava:guava"`)
 /// - `version` = version string (e.g. `"32.0.1-jre"`) **or** `"maven-metadata.xml"` to
-///               fetch the artifact-level metadata document
+///   fetch the artifact-level metadata document
 /// - `artifact`:
-///   - `None`          → `.pom` file for that version (or the metadata XML when
-///                        `version == "maven-metadata.xml"`)
+///   - `None` → `.pom` file for that version (or the metadata XML when
+///     `version == "maven-metadata.xml"`)
 ///   - `Some(filename)` → the exact filename to fetch from the version directory
-///                        (e.g. `"guava-32.0.1-jre.jar"`, `"guava-32.0.1-jre.jar.sha1"`)
+///     (e.g. `"guava-32.0.1-jre.jar"`, `"guava-32.0.1-jre.jar.sha1"`)
 pub struct MavenRegistryClient {
     http: reqwest::Client,
     base_url: String,
