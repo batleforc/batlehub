@@ -59,7 +59,7 @@ export default defineConfig({
   ],
 
   themeConfig: {
-    logo: (process.env.BASE_URL || "/") + "logo.svg",
+    logo: "/logo.svg",
 
     nav: [
       { text: "Home", link: "/" },
