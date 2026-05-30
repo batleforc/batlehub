@@ -73,11 +73,12 @@ export default defineConfig({
       },
       {
         text: "Reference",
-        activeMatch: "/guide/(administration|caching|access-control)",
+        activeMatch: "/guide/(administration|caching|access-control|high-availability)",
         items: [
           { text: "Administration", link: "/guide/administration" },
           { text: "Caching", link: "/guide/caching" },
           { text: "Access Control", link: "/guide/access-control" },
+          { text: "High Availability", link: "/guide/high-availability" },
         ],
       },
       {
@@ -248,6 +249,49 @@ export default defineConfig({
             {
               text: "Registry support",
               link: "/guide/access-control#ns-registries",
+            },
+          ],
+        },
+      ],
+      "/guide/high-availability": [
+        {
+          text: "High Availability",
+          items: [
+            {
+              text: "Architecture overview",
+              link: "/guide/high-availability#overview",
+            },
+            {
+              text: "Prerequisites",
+              link: "/guide/high-availability#prerequisites",
+            },
+            {
+              text: "Configuration changes",
+              link: "/guide/high-availability#config",
+            },
+            {
+              text: "Docker Compose",
+              link: "/guide/high-availability#compose",
+            },
+            {
+              text: "Kubernetes / Helm",
+              link: "/guide/high-availability#kubernetes",
+            },
+            {
+              text: "Rolling updates",
+              link: "/guide/high-availability#rolling-updates",
+            },
+            {
+              text: "Health probes",
+              link: "/guide/high-availability#health",
+            },
+            {
+              text: "Observability",
+              link: "/guide/high-availability#observability",
+            },
+            {
+              text: "Known limitations",
+              link: "/guide/high-availability#limitations",
             },
           ],
         },

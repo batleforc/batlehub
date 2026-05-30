@@ -1,0 +1,158 @@
+{
+  "title": "BatleHub Performance",
+  "uid": "batlehub-perf",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request Rate (req/s)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(batlehub_requests_total[30s])) by (registry, outcome)",
+          "legendFormat": "{{registry}} / {{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "lineWidth": 2 }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Latency P50 / P95 / P99 (seconds)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(batlehub_request_duration_seconds_bucket[30s])) by (le, registry))",
+          "legendFormat": "p50 {{registry}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(batlehub_request_duration_seconds_bucket[30s])) by (le, registry))",
+          "legendFormat": "p95 {{registry}}"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(batlehub_request_duration_seconds_bucket[30s])) by (le, registry))",
+          "legendFormat": "p99 {{registry}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineWidth": 2 }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Cache Hit Rate",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(batlehub_artifact_cache_hits_total[30s])) by (registry) / (sum(rate(batlehub_artifact_cache_hits_total[30s])) by (registry) + sum(rate(batlehub_artifact_cache_misses_total[30s])) by (registry))",
+          "legendFormat": "artifact hit rate {{registry}}"
+        },
+        {
+          "expr": "sum(rate(batlehub_metadata_cache_hits_total[30s])) by (registry) / (sum(rate(batlehub_metadata_cache_hits_total[30s])) by (registry) + sum(rate(batlehub_metadata_cache_misses_total[30s])) by (registry))",
+          "legendFormat": "metadata hit rate {{registry}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": { "lineWidth": 2 }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Upstream Errors (req/s)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(batlehub_upstream_errors_total[30s])) by (registry)",
+          "legendFormat": "{{registry}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": { "fixedColor": "red", "mode": "fixed" },
+          "custom": { "lineWidth": 2 }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Artifact Cache Hits vs Misses (req/s)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(batlehub_artifact_cache_hits_total[30s]))",
+          "legendFormat": "hits"
+        },
+        {
+          "expr": "sum(rate(batlehub_artifact_cache_misses_total[30s]))",
+          "legendFormat": "misses"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "lineWidth": 2 }
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Metadata Cache Hits vs Misses (req/s)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(batlehub_metadata_cache_hits_total[30s]))",
+          "legendFormat": "hits"
+        },
+        {
+          "expr": "sum(rate(batlehub_metadata_cache_misses_total[30s]))",
+          "legendFormat": "misses"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "lineWidth": 2 }
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Latency Heatmap",
+      "type": "heatmap",
+      "gridPos": { "x": 0, "y": 24, "w": 24, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(increase(batlehub_request_duration_seconds_bucket[$__interval])) by (le)",
+          "legendFormat": "{{le}}",
+          "format": "heatmap"
+        }
+      ],
+      "options": {
+        "calculate": false,
+        "yAxis": { "unit": "s" }
+      }
+    }
+  ]
+}

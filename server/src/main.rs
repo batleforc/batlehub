@@ -109,8 +109,8 @@ impl RootSpanBuilder for BatleHubSpanBuilder {
     about = "BatleHub — smart artifact hub for package registries"
 )]
 struct Cli {
-    #[arg(short, long, default_value = "config.toml")]
-    config: String,
+    #[arg(short, long)]
+    config: Option<String>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -152,8 +152,11 @@ async fn main() -> Result<()> {
         None => {}
     }
 
+    let config_path = cli.config
+        .or_else(|| std::env::var("BATLEHUB_CONFIG").ok())
+        .unwrap_or_else(|| "config.toml".to_string());
     let config =
-        load(&cli.config).with_context(|| format!("loading config from '{}'", cli.config))?;
+        load(&config_path).with_context(|| format!("loading config from '{config_path}'"))?;
 
     // ── Prometheus metrics recorder ───────────────────────────────────────────
     let prometheus_handle = PrometheusBuilder::new()
@@ -163,7 +166,7 @@ async fn main() -> Result<()> {
     // ── Tracing ───────────────────────────────────────────────────────────────
     let _tracer_provider = init_tracing(config.otel.as_ref());
 
-    tracing::info!(config = %cli.config, "batlehub starting");
+    tracing::info!(config = %config_path, "batlehub starting");
 
     // ── Database ──────────────────────────────────────────────────────────────
     let repo = Arc::new(

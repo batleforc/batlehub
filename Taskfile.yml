@@ -368,3 +368,128 @@ tasks:
     dir: website
     cmds:
       - npm run docs:preview
+
+  # ── Performance testing ───────────────────────────────────────────────────────
+
+  perf:infra:up:
+    desc: Start Prometheus + Grafana monitoring stack (http://localhost:3000, admin/admin)
+    cmds:
+      - podman compose -f perf/docker-compose.monitoring.yml up -d
+
+  perf:infra:down:
+    desc: Stop Prometheus + Grafana monitoring stack
+    cmds:
+      - podman compose -f perf/docker-compose.monitoring.yml down
+
+  perf:upstream:
+    desc: "Start mock upstream registry on :9999 (simulate npm/cargo upstreams)"
+    dir: perf/mock-upstream
+    cmds:
+      - cargo run --release -- --port 9999 --delay-ms {{.DELAY_MS | default "0"}} --artifact-size-kb {{.ARTIFACT_KB | default "512"}}
+
+  perf:server:
+    desc: Run BatleHub with the perf config (requires compose:db and perf:upstream)
+    env:
+      BATLEHUB_CONFIG: perf/config.perf.toml
+    cmds:
+      - cargo run -p batlehub-server --release
+
+  perf:seed:
+    desc: Warm the artifact cache with seed data (requires perf:server and perf:upstream)
+    cmds:
+      - bash perf/scripts/seed.sh {{.BASE_URL | default "http://localhost:8080"}}
+
+  perf:run:rest:
+    desc: "k6 scenario 01 — at-rest baseline (60 s, 1 VU) + RAM/CPU summary"
+    cmds:
+      - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/01_at_rest.js
+
+  perf:run:read:
+    desc: "k6 scenario 02 — warm-cache read load (ramp to 200 VU ≈ 2k req/s) + RAM/CPU summary"
+    cmds:
+      - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/02_warm_read.js
+
+  perf:run:miss:
+    desc: "k6 scenario 03 — cache-miss / proxy-through load (20 VU, 120 s) + RAM/CPU summary"
+    cmds:
+      - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/03_cache_miss.js
+
+  perf:run:upload:
+    desc: "k6 scenario 04 — artifact upload/publish load (10 VU, 60 s) + RAM/CPU summary"
+    cmds:
+      - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/04_upload.js {{.CLI_ARGS}}
+
+  perf:run:mixed:
+    desc: "k6 scenario 05 — realistic mixed workload (80% read / 15% miss / 5% upload, 10 min) + RAM/CPU summary"
+    cmds:
+      - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/05_mixed.js
+
+  perf:run:all:
+    desc: Run the full perf suite in sequence (scenarios 01-05); threshold violations are reported but do not stop the suite
+    cmds:
+      - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/01_at_rest.js
+      - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/02_warm_read.js
+      - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/03_cache_miss.js
+      - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/04_upload.js
+      - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/05_mixed.js
+
+  # ── Performance testing — S3 + Redis backends ─────────────────────────────────
+  # Same k6 scenarios as the filesystem/memory suite; only the server config
+  # differs.  Run both suites back-to-back to compare backends head-to-head.
+
+  perf:s3:infra:up:
+    desc: Start MinIO (S3, :9200) + Redis (:6380) and create the perf-artifacts bucket
+    cmds:
+      - podman compose -f perf/docker-compose.perf-s3.yml up -d perf-minio
+      - until curl -sf http://localhost:9200/minio/health/live; do sleep 1; done
+      - mc alias set perf-minio http://localhost:9200 minioadmin minioadmin
+      - mc mb --ignore-existing perf-minio/perf-artifacts
+      - podman compose -f perf/docker-compose.perf-s3.yml up -d perf-redis
+
+  perf:s3:infra:down:
+    desc: Stop MinIO and Redis perf containers
+    cmds:
+      - podman compose -f perf/docker-compose.perf-s3.yml down
+
+  perf:s3:server:
+    desc: Run BatleHub with the S3 + Redis perf config (requires compose:db and perf:s3:infra:up)
+    env:
+      BATLEHUB_CONFIG: perf/config.perf-s3.toml
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+    cmds:
+      - cargo run -p batlehub-server --release --features storage-s3
+
+  perf:s3:run:rest:
+    desc: "k6 scenario 01 — at-rest baseline against S3+Redis server + RAM/CPU summary"
+    cmds:
+      - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/01_at_rest.js
+
+  perf:s3:run:read:
+    desc: "k6 scenario 02 — warm-cache read load against S3+Redis server + RAM/CPU summary"
+    cmds:
+      - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/02_warm_read.js
+
+  perf:s3:run:miss:
+    desc: "k6 scenario 03 — cache-miss / proxy-through against S3+Redis server + RAM/CPU summary"
+    cmds:
+      - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/03_cache_miss.js
+
+  perf:s3:run:upload:
+    desc: "k6 scenario 04 — artifact upload/publish against S3+Redis server + RAM/CPU summary"
+    cmds:
+      - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/04_upload.js {{.CLI_ARGS}}
+
+  perf:s3:run:mixed:
+    desc: "k6 scenario 05 — realistic mixed workload against S3+Redis server + RAM/CPU summary"
+    cmds:
+      - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/05_mixed.js
+
+  perf:s3:run:all:
+    desc: Run the full S3+Redis perf suite in sequence; threshold violations are reported but do not stop the suite
+    cmds:
+      - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/01_at_rest.js
+      - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/02_warm_read.js
+      - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/03_cache_miss.js
+      - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/04_upload.js
+      - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/05_mixed.js

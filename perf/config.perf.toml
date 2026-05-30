@@ -1,0 +1,65 @@
+# BatleHub performance-test configuration.
+# Start the server with:
+#   BATLEHUB_CONFIG=perf/config.perf.toml cargo run -p batlehub-server --release
+# or via: task perf:server
+
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[database]
+type = "postgresql"
+url = "postgresql://batlehub:changeme@localhost:5432/batlehub"
+# Bump the pool so DB is not the first bottleneck to observe.
+max_connections = 50
+
+[storage]
+type = "filesystem"
+path = "./tmp/perf-storage-cache"
+
+# ── Token auth (no OIDC needed for perf tests) ────────────────────────────────
+
+[[auth]]
+type = "token"
+
+[[auth.tokens]]
+value = "perf-admin-token"
+role = "admin"
+user_id = "perf-admin"
+
+[[auth.tokens]]
+value = "perf-user-token"
+role = "user"
+user_id = "perf-user"
+
+# ── Proxy npm registry (upstream = mock server) ───────────────────────────────
+# Used by scenarios 02 (warm read) and 03 (cache miss).
+# Ensure mock-upstream is running on :9999 first: task perf:upstream
+
+[[registries]]
+type = "npm"
+name = "perf-npm"
+upstreams = ["http://localhost:9999/npm"]
+
+[registries.rbac]
+anonymous = []
+user = ["releases:read", "source:read"]
+admin = ["*"]
+
+# ── Local npm registry (no upstream) ─────────────────────────────────────────
+# Used by scenario 04 (upload) and 05 (mixed).
+
+[[registries]]
+type = "npm"
+name = "perf-local-npm"
+mode = "local"
+
+[registries.rbac]
+anonymous = []
+user = ["releases:read", "source:read", "packages:publish"]
+admin = ["*"]
+
+[registries.quota]
+max_storage_bytes_per_user = 10_737_418_240   # 10 GiB — effectively no cap for tests
+max_packages_per_user = 100_000
+enforcement = "warn"
