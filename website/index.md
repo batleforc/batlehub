@@ -3,7 +3,7 @@ layout: home
 
 hero:
   image:
-    src: /batlehub/logo.svg
+    src: /logo.svg
     alt: BatleHub
   name: BatleHub
   text: Your package hub. Proxy, cache, and host.
