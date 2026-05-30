@@ -65,11 +65,10 @@ export default defineConfig({
       { text: "Home", link: "/" },
       {
         text: "Getting Started",
-        activeMatch: "/guide/(installation|user|config-generator)",
+        activeMatch: "/guide/(installation|user)",
         items: [
           { text: "Installation", link: "/guide/installation" },
           { text: "User Guide", link: "/guide/user" },
-          { text: "Config Generator", link: "/guide/config-generator" },
         ],
       },
       {
@@ -82,14 +81,14 @@ export default defineConfig({
         ],
       },
       {
+        text: "Config Generator",
+        activeMatch: "/guide/config-generator",
+        link: "/guide/config-generator",
+      },
+      {
         text: "Roadmap",
         link: "/guide/roadmap",
         activeMatch: "/guide/roadmap",
-      },
-      {
-        text: "GitHub",
-        link: "https://git.batleforc.fr/batleforc/batlehub",
-        target: "_blank",
       },
     ],
 
