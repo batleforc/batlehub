@@ -216,6 +216,67 @@ pub enum AuthConfig {
     Token(TokenAuthConfig),
     Oidc(OidcAuthConfig),
     Kubernetes(KubernetesAuthConfig),
+    #[serde(rename = "actions-oidc")]
+    ActionsOidc(ActionsOidcAuthConfig),
+}
+
+#[derive(Debug, Deserialize, Default, Clone, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ConditionMatchType {
+    #[default]
+    Auto,
+    Glob,
+    Regex,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct Condition {
+    pub claim: String,
+    pub pattern: String,
+    #[serde(default)]
+    pub match_type: ConditionMatchType,
+}
+
+#[derive(Debug, Deserialize, Default, Clone, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RuleMatch {
+    #[default]
+    All,
+    Any,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ActionsGroupRule {
+    pub group: Option<String>,
+    /// Template rendered from JWT claims, e.g. `"{name}/{repository}/{ref_name}"`.
+    /// `{name}` = provider name; `{ref_name}` = branch/tag stripped of `refs/heads/`/`refs/tags/`;
+    /// any other `{key}` maps to that JWT claim value. All substituted values have `/` → `-`.
+    pub group_template: Option<String>,
+    #[serde(default = "default_actions_role")]
+    pub role: String,
+    #[serde(default)]
+    pub conditions: Vec<Condition>,
+    #[serde(default, rename = "match")]
+    pub match_mode: RuleMatch,
+}
+
+fn default_actions_role() -> String {
+    "user".to_owned()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ActionsOidcAuthConfig {
+    #[serde(default = "default_actions_oidc_name")]
+    pub name: String,
+    pub issuer_url: String,
+    #[serde(default = "default_sub")]
+    pub user_id_claim: String,
+    #[serde(default)]
+    pub rules: Vec<ActionsGroupRule>,
+}
+
+fn default_actions_oidc_name() -> String {
+    "actions-oidc".to_owned()
 }
 
 #[derive(Debug, Deserialize)]

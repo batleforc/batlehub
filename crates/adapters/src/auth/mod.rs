@@ -13,5 +13,10 @@ pub mod kubernetes;
 #[cfg(feature = "auth-kubernetes")]
 pub use kubernetes::KubernetesAuthProvider;
 
+#[cfg(feature = "auth-actions-oidc")]
+pub mod actions_oidc;
+#[cfg(feature = "auth-actions-oidc")]
+pub use actions_oidc::ActionsOidcAuthProvider;
+
 pub mod user_token;
 pub use user_token::{generate_token, hash_token, UserTokenAuthProvider};

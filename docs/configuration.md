@@ -13,6 +13,10 @@ batlehub is configured with a single TOML file. This document covers every optio
    - [database](#32-database)
    - [cache](#32a-cache)
    - [auth](#33-auth)
+     - [Token auth](#331-token-auth-type--token)
+     - [OIDC auth](#332-oidc-auth-type--oidc)
+     - [Kubernetes auth](#333-kubernetes-auth-type--kubernetes)
+     - [Actions OIDC auth](#334-actions-oidc-auth-type--actions-oidc)
    - [storage](#34-storage)
    - [registries](#35-registries)
      - [rate_limit](#rate_limit)
@@ -319,6 +323,146 @@ type = "kubernetes"
 | `role_mappings` | map | `{}` | Maps Kubernetes usernames or group names to proxy roles |
 
 **Role mapping keys:** Kubernetes sets `username: "system:serviceaccount:<namespace>:<name>"` and `groups: ["system:serviceaccounts", "system:serviceaccounts:<namespace>", ...]`. When a token matches multiple keys, the highest role wins.
+
+#### 3.3.4 Actions OIDC auth (`type = "actions-oidc"`)
+
+Validates short-lived OIDC JWTs issued by GitHub Actions or Forgejo Actions to workflow jobs (requires `id-token: write` in the workflow permissions). Rather than mapping a single claim value to a role, it evaluates a list of **rules** — each rule matches on any combination of JWT claims and grants a group name and a role when it matches.
+
+```toml
+[[auth]]
+type = "actions-oidc"
+name = "forgejo-action"                    # default: "actions-oidc"
+issuer_url = "https://forgejo.example.com" # GitHub: "https://token.actions.githubusercontent.com"
+# user_id_claim = "sub"                    # default
+
+  # Static group: deployers on the main branch
+  [[auth.rules]]
+  group = "ci-deployers"
+  role  = "admin"
+  match = "all"              # all conditions must pass (default)
+  [[auth.rules.conditions]]
+  claim   = "repository_owner"
+  pattern = "batleforc"
+  [[auth.rules.conditions]]
+  claim   = "ref"
+  pattern = "refs/heads/main"
+
+  # Dynamic group: every token gets an automatic per-repo/per-branch group
+  # e.g. "forgejo-action/batleforc-batlehub/main"
+  [[auth.rules]]
+  group_template = "{name}/{repository}/{ref_name}"
+  role           = "user"
+  match          = "all"
+  [[auth.rules.conditions]]
+  claim   = "repository_owner"
+  pattern = "batleforc"       # glob: exact match
+
+  # Regex example: tag-based releases
+  [[auth.rules]]
+  group = "tag-releasers"
+  role  = "user"
+  match = "all"
+  [[auth.rules.conditions]]
+  claim      = "ref"
+  pattern    = "^refs/tags/v[0-9]+"
+  match_type = "regex"        # explicit; auto-detected from "^" anyway
+```
+
+**Provider fields:**
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `name` | string | `"actions-oidc"` | Provider name. Appears in log output and in `Identity.auth_provider`. Must be unique across all `[[auth]]` entries. |
+| `issuer_url` | string | — | OIDC issuer base URL. GitHub: `"https://token.actions.githubusercontent.com"`. Forgejo: your instance URL. |
+| `user_id_claim` | string | `"sub"` | JWT claim used as `user_id` in the resolved identity. |
+| `rules` | array | `[]` | Ordered list of group rules evaluated against each JWT. All matching rules contribute — they are not exclusive. |
+
+**Rule fields (`[[auth.rules]]`):**
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `group` | string | — | Static group name granted when the rule matches. At least one of `group` or `group_template` is required. |
+| `group_template` | string | — | Template for a dynamically-named group. See template variables below. |
+| `role` | string | `"user"` | Role granted by this rule (`"admin"`, `"user"`, `"anonymous"`). The final role is the highest across all matching rules. |
+| `match` | `"all"` \| `"any"` | `"all"` | Whether all conditions must pass (AND) or at least one (OR). |
+| `conditions` | array | `[]` | Conditions evaluated against JWT claims. An empty list always matches. |
+
+**Condition fields (`[[auth.rules.conditions]]`):**
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `claim` | string | — | JWT claim key to test (e.g. `"repository"`, `"ref"`, `"environment"`, `"actor"`). |
+| `pattern` | string | — | Pattern to match the claim value against. |
+| `match_type` | `"auto"` \| `"glob"` \| `"regex"` | `"auto"` | Pattern type. `auto` treats the pattern as regex when it starts with `^`, ends with `$`, or contains `[`, `(`, `+`. Otherwise it is treated as a glob. |
+
+**Pattern types:**
+
+- **Glob** — shell-style wildcards: `myorg/*` matches `myorg/foo` but not `other/foo`. `*` matches any sequence of characters.
+- **Regex** — full `regex` crate syntax: `^refs/tags/v[0-9]+` matches any tag starting with `v` followed by digits. Compilation errors abort provider startup.
+
+**Group template variables:**
+
+Templates are `{placeholder}` strings rendered per-request. Substituted values have `/` replaced with `-` (so group names stay path-safe); literal `/` in the template itself is preserved.
+
+| Variable | Value |
+|----------|-------|
+| `{name}` | Provider's `name` field |
+| `{ref_name}` | `ref` claim with `refs/heads/` or `refs/tags/` prefix stripped |
+| `{<any claim key>}` | Value of that JWT claim, with `/` → `-` |
+
+Example: with `name = "forgejo-action"`, `repository = "batleforc/batlehub"`, `ref = "refs/heads/main"`:
+
+```
+"{name}/{repository}/{ref_name}"  →  "forgejo-action/batleforc-batlehub/main"
+```
+
+**GitHub Actions OIDC token claims (representative subset):**
+
+| Claim | Example value | Description |
+|-------|---------------|-------------|
+| `sub` | `repo:org/repo:ref:refs/heads/main` | Subject (unique token identifier) |
+| `repository` | `org/my-repo` | Repository in `owner/name` form |
+| `repository_owner` | `org` | Repository owner (user or org) |
+| `ref` | `refs/heads/main` | Full Git ref |
+| `ref_type` | `branch` or `tag` | Type of ref |
+| `workflow` | `CI` | Workflow name |
+| `environment` | `production` | Deployment environment (if set) |
+| `actor` | `alice` | GitHub username who triggered the run |
+| `event_name` | `push` | Triggering event |
+| `sha` | `abc123…` | Commit SHA |
+
+Forgejo issues tokens with the same claim structure; only the issuer URL differs.
+
+**Granting access via RBAC:**
+
+Dynamic groups enable wildcard grants. To allow all CI tokens from `batleforc`'s repos to read releases:
+
+```toml
+[registries.rbac.groups]
+"forgejo-action/*" = ["releases:read"]
+
+# Grant specific per-repo CI full publish access
+"forgejo-action/batleforc-batlehub/*" = ["releases:read", "releases:write"]
+```
+
+**GitHub Actions workflow snippet:**
+
+```yaml
+jobs:
+  publish:
+    permissions:
+      id-token: write   # required to request an OIDC token
+      contents: read
+    steps:
+      - name: Push artifact
+        env:
+          BATLEHUB_TOKEN: ${{ secrets.BATLEHUB_TOKEN }}
+        run: |
+          # BatleHub validates the OIDC token; no long-lived secret needed
+          # when using actions-oidc — pass the ACTIONS_ID_TOKEN_REQUEST_URL
+          # and ACTIONS_ID_TOKEN_REQUEST_TOKEN env vars to your publish tool
+          cargo publish --registry batlehub
+```
 
 ---
 

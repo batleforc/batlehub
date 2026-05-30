@@ -60,7 +60,7 @@ Multiple instances of the same registry type can run in parallel (e.g. a private
 - **Deny latest tag** — reject requests that use `"latest"` as a version, forcing consumers to pin exact versions. Configurable bypass roles (e.g. admins may still use `latest`).
 - **Fanout / failover** — list multiple upstreams per registry; 404 from one falls through to the next.
 - **Self-hosted registry support** — upstream auth (Bearer token, Basic, or custom header) and custom CA certificates per registry, for air-gapped or corporate environments.
-- **Auth providers** — static tokens (plain-text or Argon2id hashed), OIDC (Authentik, Keycloak, Dex, …), Kubernetes service account tokens.
+- **Auth providers** — static tokens (plain-text or Argon2id hashed), OIDC (Authentik, Keycloak, Dex, …), Kubernetes service account tokens, and GitHub/Forgejo **Actions OIDC** tokens with rule-based group mapping (map any JWT claim — repo, branch, environment — to named groups and roles).
 - **Storage backends** — filesystem or S3-compatible (AWS S3, MinIO, RustFS). Different registries can use different backends.
 - **Audit log** — every allow and deny decision is recorded in PostgreSQL.
 - **OpenTelemetry** — optional distributed tracing via OTLP/gRPC.

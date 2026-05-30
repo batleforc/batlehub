@@ -24,8 +24,8 @@ use batlehub_adapters::rate_limit::{
 use batlehub_adapters::rate_limit::{RedisIpBlockStore, RedisRateLimitStore};
 use batlehub_adapters::{
     auth::{
-        hash_static_token, KubernetesAuthProvider, OidcAuthProvider, OidcSsoFlow,
-        StaticTokenAuthProvider, UserTokenAuthProvider,
+        hash_static_token, ActionsOidcAuthProvider, KubernetesAuthProvider, OidcAuthProvider,
+        OidcSsoFlow, StaticTokenAuthProvider, UserTokenAuthProvider,
     },
     db::{
         PgArtifactMetaRepository, PgBetaChannelStore, PgOwnershipStore, PgPackageRepository,
@@ -258,6 +258,26 @@ async fn main() -> Result<()> {
                     "configured Kubernetes auth provider for service account '{}'",
                     k8s_cfg.audiences.join(", ")
                 );
+            }
+            AuthConfig::ActionsOidc(cfg) => {
+                match ActionsOidcAuthProvider::new(cfg).await {
+                    Ok(provider) => {
+                        auth_providers.push(Arc::new(provider));
+                        tracing::info!(
+                            name = %cfg.name,
+                            issuer = %cfg.issuer_url,
+                            rules = cfg.rules.len(),
+                            "Actions OIDC auth provider ready"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            issuer = %cfg.issuer_url,
+                            error = %e,
+                            "Actions OIDC provider unreachable at startup — continuing without it"
+                        );
+                    }
+                }
             }
         }
     }

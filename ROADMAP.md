@@ -60,6 +60,15 @@ Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules, 
 
 ---
 
+## Authentication providers
+
+- [x] **Static tokens** — plain-text and Argon2id-hashed Bearer tokens in `config.toml`; `batlehub hash-token` CLI
+- [x] **OIDC** — JWT validation via OIDC discovery + JWKS; browser SSO (Authorization Code flow); role and group mapping from claims; namespaced group prefixes for multi-provider setups
+- [x] **Kubernetes service accounts** — TokenReview API validation; role and group mapping; in-cluster defaults
+- [x] **GitHub / Forgejo Actions OIDC** (`type = "actions-oidc"`) — validate short-lived JWTs issued to workflow jobs; map claims (`repository`, `ref`, `environment`, `actor`, …) to groups and roles via configurable rules; supports static group names and dynamic group templates (e.g. `"{name}/{repository}/{ref_name}"` → `"forgejo-action/batleforc-batlehub/main"`); glob and regex pattern matching; AND / OR condition logic per rule
+
+---
+
 ## Rate limiting & DoS protection
 
 - [x] Per-user and per-registry rate limits on API requests and artifact downloads, with configurable thresholds and time windows (in-memory token bucket; state resets on restart)

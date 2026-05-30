@@ -29,6 +29,36 @@ The raw token value is shown **once** — save it to a password manager or envir
 export BATLEHUB_TOKEN=bh_xxxxxxxxxxxxxxxxxxxx
 ```
 
+### Authenticating from GitHub / Forgejo Actions {#ci-actions-oidc}
+
+If your administrator has configured an `actions-oidc` auth provider, GitHub and Forgejo workflow jobs can authenticate **without any long-lived secret**. The workflow requests a short-lived OIDC token from the runner and passes it directly as a Bearer token.
+
+Enable OIDC token minting in your workflow:
+
+```yaml
+jobs:
+  publish:
+    permissions:
+      id-token: write   # required — lets the runner mint an OIDC token
+      contents: read
+```
+
+Then exchange the token at the start of any step that calls BatleHub:
+
+```sh
+# In a GitHub Actions "run:" step:
+BATLEHUB_TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+  "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=batlehub" | jq -r '.value')
+
+# Use it exactly like any other Bearer token
+curl -H "Authorization: Bearer $BATLEHUB_TOKEN" \
+  https://batlehub.example.com/api/v1/...
+```
+
+The token is valid for the duration of the job. It carries claims like `repository`, `ref`, `environment`, and `actor`, which the `actions-oidc` provider uses to assign you to one or more groups — for example `"github-actions/myorg-my-repo/main"` — so you automatically receive the right RBAC permissions without any manual user management.
+
+Ask your administrator which groups are mapped and what permissions they carry.
+
 ---
 
 ## Setup Guide UI

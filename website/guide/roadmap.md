@@ -74,6 +74,44 @@ BatleHub aims to be a trust boundary, not just a cache. Planned integrity featur
 
 ---
 
+## Authentication providers {#auth-providers}
+
+| Provider | Status | Notes |
+|----------|--------|-------|
+| **Static tokens** | ✅ Shipped | Plain-text and Argon2id-hashed; `batlehub hash-token` CLI |
+| **OIDC** | ✅ Shipped | JWT validation, browser SSO (Authorization Code), role + group claim mapping |
+| **Kubernetes service accounts** | ✅ Shipped | TokenReview API; in-cluster defaults; role + group mapping |
+| **GitHub / Forgejo Actions OIDC** | ✅ Shipped | Validate short-lived workflow JWTs; rule-based group mapping from any claim; dynamic group name templates; glob + regex conditions |
+
+::: info Saml / Github PAT / Gitlab PAT
+Saml and specific GitHub/GitLab PAT providers are not planned, but may be possible to implement via the generic OIDC provider with some custom configuration. Open an issue if you have a concrete use case or want to contribute an adapter.
+:::
+
+### Actions OIDC highlights
+
+The `actions-oidc` provider lets CI jobs authenticate without long-lived secrets. Workflow JWTs carry rich context claims (`repository`, `ref`, `environment`, `actor`, …) that can be matched by glob or regex rules to grant specific groups and roles:
+
+```toml
+[[auth]]
+type = "actions-oidc"
+name = "github-actions"
+issuer_url = "https://token.actions.githubusercontent.com"
+
+  [[auth.rules]]
+  group_template = "{name}/{repository}/{ref_name}"
+  role = "user"
+  match = "all"
+  [[auth.rules.conditions]]
+  claim = "repository_owner"
+  pattern = "myorg"
+```
+
+A token from `myorg/my-repo` on `main` resolves to group `github-actions/myorg-my-repo/main`, which you can grant registry permissions to with a wildcard: `"github-actions/*" = ["releases:write"]`.
+
+See [Configuration § Actions OIDC auth](/guide/../docs/configuration#334-actions-oidc-auth-type--actions-oidc) for the full reference.
+
+---
+
 ## Rate limiting & DoS protection {#rate-limiting}
 
 - ✅ **Per-user and per-group rate limits** — fixed-window counters with configurable thresholds and time windows, backed by InMemory / PostgreSQL / Redis

@@ -25,7 +25,10 @@ features:
     details: Publish private npm packages, Cargo crates, Go modules, and VS Code extensions directly to BatleHub. Use local or hybrid mode per registry.
   - icon: 🛡️
     title: Role-Based Access Control
-    details: Per-registry permissions for anonymous, user, and admin roles. Group-based access from OIDC claims or Kubernetes service accounts.
+    details: Per-registry permissions for anonymous, user, and admin roles. Group-based access from OIDC claims, Kubernetes service accounts, or GitHub/Forgejo Actions OIDC tokens.
+  - icon: 🤖
+    title: Actions OIDC Auth
+    details: Validate GitHub and Forgejo workflow JWTs without long-lived secrets. Map any claim — repo, branch, environment — to groups and roles via glob/regex rules. Dynamic group names like "{name}/{repository}/{ref_name}" enable wildcard RBAC grants across all CI jobs.
   - icon: ⏱️
     title: Release Age Gate
     details: Block packages published less than N seconds ago. Creates a delay window against supply-chain attacks without blocking known-good versions.

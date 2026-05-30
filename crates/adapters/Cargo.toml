@@ -5,10 +5,11 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = ["auth-token", "auth-oidc", "auth-kubernetes", "storage-fs", "registry-github", "registry-npm", "registry-cargo", "registry-openvsx", "registry-goproxy", "registry-vscode-marketplace", "registry-maven", "registry-terraform", "registry-rubygems", "registry-composer", "db-postgres", "local-registry"]
+default = ["auth-token", "auth-oidc", "auth-kubernetes", "auth-actions-oidc", "storage-fs", "registry-github", "registry-npm", "registry-cargo", "registry-openvsx", "registry-goproxy", "registry-vscode-marketplace", "registry-maven", "registry-terraform", "registry-rubygems", "registry-composer", "db-postgres", "local-registry"]
 auth-token = []
 auth-oidc = ["dep:jsonwebtoken"]
 auth-kubernetes = []
+auth-actions-oidc = ["dep:jsonwebtoken", "dep:glob", "dep:regex"]
 storage-fs = []
 storage-s3 = ["dep:aws-sdk-s3", "dep:aws-config"]
 cache-redis = ["dep:redis"]
@@ -43,6 +44,8 @@ reqwest.workspace = true
 sqlx.workspace = true
 tracing.workspace = true
 jsonwebtoken = { version = "9", optional = true }
+glob = { workspace = true, optional = true }
+regex = { workspace = true, optional = true }
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"], optional = true }
 aws-sdk-s3 = { workspace = true, optional = true, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
 aws-config = { workspace = true, optional = true, features = ["default-https-client", "rt-tokio", "credentials-process"] }
