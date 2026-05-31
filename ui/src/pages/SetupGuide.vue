@@ -38,6 +38,8 @@ const mavenRegistryName     = ref("maven");
 const terraformRegistryName = ref("terraform");
 const rubygemsRegistryName  = ref("rubygems");
 const composerRegistryName  = ref("composer");
+const pypiRegistryName      = ref("pypi");
+const condaRegistryName     = ref("conda");
 
 const { data: registries } = useApi<Array<{ name: string; type: string }>>(
   () => listRegistries() as Promise<{ data?: unknown; error?: unknown }>,
@@ -55,6 +57,8 @@ watch(registries, (regs) => {
   const tf  = regs.find(r => r.type === "terraform");
   const rg  = regs.find(r => r.type === "rubygems");
   const cmp = regs.find(r => r.type === "composer");
+  const py  = regs.find(r => r.type === "pypi");
+  const cn  = regs.find(r => r.type === "conda");
   if (gh)  githubRegistryName.value = gh.name;
   if (np)  npmRegistryName.value = np.name;
   if (cg)  cargoRegistryName.value = cg.name;
@@ -64,6 +68,8 @@ watch(registries, (regs) => {
   if (tf)  terraformRegistryName.value = tf.name;
   if (rg)  rubygemsRegistryName.value = rg.name;
   if (cmp) composerRegistryName.value = cmp.name;
+  if (py)  pypiRegistryName.value = py.name;
+  if (cn)  condaRegistryName.value = cn.name;
 });
 
 const githubRegistries    = computed(() => registries.value?.filter(r => r.type === "github")    ?? []);
@@ -75,6 +81,8 @@ const mavenRegistries     = computed(() => registries.value?.filter(r => r.type 
 const terraformRegistries = computed(() => registries.value?.filter(r => r.type === "terraform")  ?? []);
 const rubygemsRegistries  = computed(() => registries.value?.filter(r => r.type === "rubygems")   ?? []);
 const composerRegistries  = computed(() => registries.value?.filter(r => r.type === "composer")   ?? []);
+const pypiRegistries      = computed(() => registries.value?.filter(r => r.type === "pypi")       ?? []);
+const condaRegistries     = computed(() => registries.value?.filter(r => r.type === "conda")      ?? []);
 
 async function copy(key: string, text: string) {
   await navigator.clipboard.writeText(text);
@@ -437,6 +445,128 @@ const composerPublishSnippet = computed(() => {
     `  "${b}/proxy/${reg}/api/packages/vendor/pkg/versions/1.0.0"`,
   ].join("\n");
 });
+
+// ── PyPI snippets ─────────────────────────────────────────────────────────────
+
+const pipConfSnippet = computed(() => {
+  const b   = base.value;
+  const reg = pypiRegistryName.value || "pypi";
+  const lines = [
+    `# ~/.pip/pip.conf  (Linux/macOS)`,
+    `# %APPDATA%\\pip\\pip.ini  (Windows)`,
+    `[global]`,
+    `index-url = ${b}/proxy/${reg}/simple/`,
+  ];
+  if (isAuthenticated.value) {
+    lines.push(
+      ``,
+      `# Credentials: use ~/.netrc (recommended) or embed in the URL:`,
+      `# index-url = https://${netrcLogin.value}:${token.value}@${netrcHost.value}/proxy/${reg}/simple/`,
+    );
+  }
+  return lines.join("\n");
+});
+
+const uvIndexSnippet = computed(() => {
+  const b   = base.value;
+  const reg = pypiRegistryName.value || "pypi";
+  const lines = [
+    `# pyproject.toml — add inside [tool.uv]`,
+    `[[tool.uv.index]]`,
+    `name = "batlehub"`,
+    `url = "${b}/proxy/${reg}/simple/"`,
+    `default = true`,
+  ];
+  if (isAuthenticated.value) {
+    lines.push(
+      ``,
+      `# Credentials: uv reads ~/.netrc automatically`,
+      `# machine ${netrcHost.value}`,
+      `# login ${netrcLogin.value}`,
+      `# password ${token.value}`,
+    );
+  }
+  return lines.join("\n");
+});
+
+const twinePublishSnippet = computed(() => {
+  const b   = base.value;
+  const reg = pypiRegistryName.value || "pypi";
+  const tok = isAuthenticated.value ? token.value : "<your-token>";
+  return [
+    `# Publish a wheel or sdist (Local / Hybrid mode only)`,
+    `# Build first: python -m build`,
+    ``,
+    `twine upload \\`,
+    `  --repository-url ${b}/proxy/${reg}/legacy/ \\`,
+    `  --username __token__ \\`,
+    `  --password ${tok} \\`,
+    `  dist/*`,
+    ``,
+    `# Or via ~/.pypirc:`,
+    `# [batlehub]`,
+    `# repository = ${b}/proxy/${reg}/legacy/`,
+    `# username = __token__`,
+    `# password = ${tok}`,
+  ].join("\n");
+});
+
+// ── Conda snippets ────────────────────────────────────────────────────────────
+
+const condarcSnippet = computed(() => {
+  const b   = base.value;
+  const reg = condaRegistryName.value || "conda";
+  const lines = [
+    `# ~/.condarc  (or .condarc in the project root)`,
+    `channels:`,
+    `  - ${b}/proxy/${reg}`,
+    `  - nodefaults`,
+  ];
+  if (isAuthenticated.value) {
+    lines.push(
+      ``,
+      `# Credentials: conda reads ~/.netrc automatically`,
+      `# machine ${netrcHost.value}`,
+      `# login ${netrcLogin.value}`,
+      `# password ${token.value}`,
+    );
+  }
+  return lines.join("\n");
+});
+
+const condaEnvSnippet = computed(() => {
+  const b   = base.value;
+  const reg = condaRegistryName.value || "conda";
+  return [
+    `# environment.yml`,
+    `channels:`,
+    `  - ${b}/proxy/${reg}`,
+    `  - nodefaults`,
+    `dependencies:`,
+    `  - python=3.11`,
+    `  - numpy`,
+  ].join("\n");
+});
+
+const condaPublishSnippet = computed(() => {
+  const b   = base.value;
+  const reg = condaRegistryName.value || "conda";
+  const tok = isAuthenticated.value ? token.value : "<your-token>";
+  return [
+    `# Publish a conda package (Local / Hybrid mode only)`,
+    `# Build first: conda build my-recipe/`,
+    ``,
+    `curl -X POST \\`,
+    `  -H "Authorization: Bearer ${tok}" \\`,
+    `  -H "Content-Type: application/octet-stream" \\`,
+    `  --data-binary @my-pkg-1.0.0-py311h0_0.tar.bz2 \\`,
+    `  "${b}/proxy/${reg}/linux-64/"`,
+    ``,
+    `# Verify: repodata.json will list your package`,
+    `curl -s "${b}/proxy/${reg}/linux-64/repodata.json" | \\`,
+    `  python3 -c "import sys,json; d=json.load(sys.stdin); print(list(d['packages'].keys())[:5])"`,
+  ].join("\n");
+});
 </script>
 
 <template>
@@ -461,7 +591,7 @@ const composerPublishSnippet = computed(() => {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-9">
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
           <div class="space-y-1">
             <Label for="sg-github">GitHub registry</Label>
             <Input
@@ -615,13 +745,47 @@ const composerPublishSnippet = computed(() => {
               />
             </datalist>
           </div>
+          <div class="space-y-1">
+            <Label for="sg-pypi">PyPI registry</Label>
+            <Input
+              id="sg-pypi"
+              v-model="pypiRegistryName"
+              list="sg-pypi-list"
+              placeholder="pypi"
+              class="font-mono text-sm"
+            />
+            <datalist id="sg-pypi-list">
+              <option
+                v-for="r in pypiRegistries"
+                :key="r.name"
+                :value="r.name"
+              />
+            </datalist>
+          </div>
+          <div class="space-y-1">
+            <Label for="sg-conda">Conda registry</Label>
+            <Input
+              id="sg-conda"
+              v-model="condaRegistryName"
+              list="sg-conda-list"
+              placeholder="conda"
+              class="font-mono text-sm"
+            />
+            <datalist id="sg-conda-list">
+              <option
+                v-for="r in condaRegistries"
+                :key="r.name"
+                :value="r.name"
+              />
+            </datalist>
+          </div>
         </div>
       </CardContent>
     </Card>
 
     <!-- ── Tool config tabs ── -->
     <Tabs default-value="mise">
-      <TabsList :class="isAuthenticated ? 'grid grid-cols-10' : 'grid grid-cols-9'">
+      <TabsList :class="isAuthenticated ? 'grid grid-cols-12' : 'grid grid-cols-11'">
         <TabsTrigger value="mise">
           mise
         </TabsTrigger>
@@ -648,6 +812,12 @@ const composerPublishSnippet = computed(() => {
         </TabsTrigger>
         <TabsTrigger value="composer">
           Composer
+        </TabsTrigger>
+        <TabsTrigger value="pypi">
+          PyPI
+        </TabsTrigger>
+        <TabsTrigger value="conda">
+          Conda
         </TabsTrigger>
         <TabsTrigger
           v-if="isAuthenticated"
@@ -1287,6 +1457,202 @@ const composerPublishSnippet = computed(() => {
                 The <code class="font-mono bg-muted px-1 rounded">name</code> field must use the
                 <code class="font-mono bg-muted px-1 rounded">vendor/package</code> format and the
                 <code class="font-mono bg-muted px-1 rounded">version</code> field determines the published version.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      </TabsContent>
+
+      <!-- PyPI -->
+      <TabsContent value="pypi">
+        <Card>
+          <CardHeader>
+            <div class="flex items-center justify-between">
+              <CardDescription>
+                Proxy
+                <a
+                  href="https://pypi.org"
+                  target="_blank"
+                  rel="noopener"
+                  class="underline underline-offset-2 hover:text-foreground transition-colors"
+                >PyPI</a>
+                through BatleHub for pip, uv, Poetry, and other Python package managers.
+                Wheels and source distributions are cached after the first download.
+                Publish private packages with
+                <code class="text-xs font-mono bg-muted px-1 rounded">twine upload</code>
+                when the registry is configured in
+                <code class="text-xs font-mono bg-muted px-1 rounded">Local</code>
+                or <code class="text-xs font-mono bg-muted px-1 rounded">Hybrid</code> mode.
+              </CardDescription>
+              <Badge
+                variant="outline"
+                class="shrink-0 font-mono text-xs ml-4"
+              >
+                PyPI
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent class="space-y-4">
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">
+                <code class="font-mono">~/.pip/pip.conf</code> — global pip configuration
+              </p>
+              <CodeBlock
+                :code="pipConfSnippet"
+                lang="ini"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('pip-conf', pipConfSnippet)"
+                >
+                  {{ copied === 'pip-conf' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </CodeBlock>
+              <p class="text-xs text-muted-foreground mt-1.5">
+                Alternatively, pass
+                <code class="font-mono bg-muted px-1 rounded">--index-url</code>
+                on the command line or set the
+                <code class="font-mono bg-muted px-1 rounded">PIP_INDEX_URL</code>
+                environment variable.
+              </p>
+            </div>
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">
+                <code class="font-mono">pyproject.toml</code> — uv index configuration
+              </p>
+              <CodeBlock
+                :code="uvIndexSnippet"
+                lang="toml"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('uv-index', uvIndexSnippet)"
+                >
+                  {{ copied === 'uv-index' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </CodeBlock>
+            </div>
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">
+                Publish a private package (Local / Hybrid mode)
+              </p>
+              <CodeBlock
+                :code="twinePublishSnippet"
+                lang="bash"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('twine-publish', twinePublishSnippet)"
+                >
+                  {{ copied === 'twine-publish' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </CodeBlock>
+              <p class="text-xs text-muted-foreground mt-1.5">
+                The registry must be configured with
+                <code class="font-mono bg-muted px-1 rounded">mode = "local"</code> or
+                <code class="font-mono bg-muted px-1 rounded">mode = "hybrid"</code>.
+                The filename, name, and version are derived from the wheel or sdist metadata automatically.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      </TabsContent>
+
+      <!-- Conda -->
+      <TabsContent value="conda">
+        <Card>
+          <CardHeader>
+            <div class="flex items-center justify-between">
+              <CardDescription>
+                Proxy conda channels (conda-forge, defaults, or custom) through BatleHub.
+                <code class="text-xs font-mono bg-muted px-1 rounded">repodata.json</code>
+                and package files are cached after the first request. Publish private conda
+                packages in
+                <code class="text-xs font-mono bg-muted px-1 rounded">Local</code>
+                or <code class="text-xs font-mono bg-muted px-1 rounded">Hybrid</code>
+                mode — packages appear in the channel's
+                <code class="text-xs font-mono bg-muted px-1 rounded">repodata.json</code>
+                automatically.
+              </CardDescription>
+              <Badge
+                variant="outline"
+                class="shrink-0 font-mono text-xs ml-4"
+              >
+                Conda
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent class="space-y-4">
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">
+                <code class="font-mono">~/.condarc</code> — point conda at the proxy
+              </p>
+              <CodeBlock
+                :code="condarcSnippet"
+                lang="yaml"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('condarc', condarcSnippet)"
+                >
+                  {{ copied === 'condarc' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </CodeBlock>
+              <p class="text-xs text-muted-foreground mt-1.5">
+                Credentials are read automatically from
+                <code class="font-mono bg-muted px-1 rounded">~/.netrc</code>.
+                Set <code class="font-mono bg-muted px-1 rounded">ssl_verify: false</code>
+                only for development with self-signed certificates.
+              </p>
+            </div>
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">
+                <code class="font-mono">environment.yml</code> — reproducible environment
+              </p>
+              <CodeBlock
+                :code="condaEnvSnippet"
+                lang="yaml"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('conda-env', condaEnvSnippet)"
+                >
+                  {{ copied === 'conda-env' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </CodeBlock>
+            </div>
+            <div>
+              <p class="text-xs text-muted-foreground mb-1.5">
+                Publish a private conda package (Local / Hybrid mode)
+              </p>
+              <CodeBlock
+                :code="condaPublishSnippet"
+                lang="bash"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="absolute top-2 right-2 h-7 px-2 text-xs"
+                  @click="copy('conda-publish', condaPublishSnippet)"
+                >
+                  {{ copied === 'conda-publish' ? 'Copied!' : 'Copy' }}
+                </Button>
+              </CodeBlock>
+              <p class="text-xs text-muted-foreground mt-1.5">
+                Both <code class="font-mono bg-muted px-1 rounded">.tar.bz2</code> and
+                <code class="font-mono bg-muted px-1 rounded">.conda</code> package formats are supported.
+                The name, version, and build string are extracted from
+                <code class="font-mono bg-muted px-1 rounded">info/index.json</code> inside the archive.
               </p>
             </div>
           </CardContent>

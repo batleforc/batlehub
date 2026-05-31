@@ -10,7 +10,7 @@ To propose a feature or discuss an item, open an issue on the [project repositor
 
 ## New registry types {#new-registries}
 
-BatleHub currently supports npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules, Maven / Gradle, RubyGems, Terraform, and Composer. The following adapters are planned:
+BatleHub currently supports npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules, Maven / Gradle, RubyGems, Terraform, Composer, PyPI, and Conda. The following adapters are planned or in progress:
 
 | Registry | Status | Notes |
 |----------|--------|-------|
@@ -24,7 +24,8 @@ BatleHub currently supports npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go
 | **RubyGems** | ✅ Shipped | Gem downloads and version listing; publish/yank/unyank |
 | **Terraform registry** | ✅ Shipped | Provider and module proxy; private module + provider publishing |
 | **Composer** | ✅ Shipped | Packagist v2 protocol; packages.json + p2 metadata + dist downloads; private ZIP publishing in local/hybrid mode |
-| **PyPI** | Planned | Python simple API + wheel / sdist downloads |
+| **PyPI** | ✅ Shipped | Simple API proxy with URL rewriting (pip, uv, Poetry); wheel and sdist downloads; twine-compatible private publishing in local/hybrid mode |
+| **Conda** | ✅ Shipped | repodata.json proxy (all platforms); `.conda` and `.tar.bz2` downloads; private channel publishing; hybrid repodata merge |
 | **NuGet** | Planned | .NET package protocol |
 | **Deb / RPM** | Planned | Debian APT and Red Hat YUM repository proxying |
 | **GitLab** | Planned | Releases and packages — similar to GitHub, different auth / pagination |
@@ -159,6 +160,8 @@ Applies to registries running in `local` or `hybrid` mode. See the [User Guide](
 - ✅ **Maven** — private artifact publishing via `mvn deploy`; POM-triggered three-phase publish; JAR/checksum pre-upload; dynamically generated `maven-metadata.xml`; `local` and `hybrid` modes
 - ✅ **Terraform** — private module publishing (tar.gz upload, `X-Terraform-Get` redirect); private provider publishing (version manifest + per-platform binary); `local` and `hybrid` modes
 - ✅ **Composer** — private PHP package publishing via ZIP upload; `composer.json` extracted automatically; `local` and `hybrid` modes
+- ✅ **PyPI** — private Python distribution publishing via twine-compatible multipart upload (`POST /legacy/`); wheel and sdist formats; `local` and `hybrid` modes
+- ✅ **Conda** — private conda package publishing (`.tar.bz2` and `.conda` formats); metadata extracted from `info/index.json`; `repodata.json` generated and merged automatically; `local` and `hybrid` modes
 - **npm** — versioning policies (enforce semantic versioning, restrict accepted patterns)
 - **Cargo** — versioning policies; full yank protocol compatibility
 - **VS Code extensions** — deprecation and unlisting; VSIX upload form in the UI

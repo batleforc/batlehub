@@ -28,6 +28,7 @@ uuid.workspace    = true
 metrics-exporter-prometheus.workspace = true
 
 # payload construction for local_registry tests
+bzip2  = "0.4"
 flate2 = "1"
 tar    = "0.4"
 zip    = "8"

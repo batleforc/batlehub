@@ -66,6 +66,11 @@ pub fn embedded_migrator() -> Migrator {
                 "package visibility",
                 "../migrations/016_package_visibility.sql"
             ),
+            mig!(
+                17,
+                "access events indexes",
+                "../migrations/017_access_events_idx.sql"
+            ),
         ]),
         ignore_missing: false,
         locking: true,
@@ -80,8 +85,8 @@ mod tests {
     #[test]
     fn embedded_migrator_has_all_migrations() {
         let m = embedded_migrator();
-        assert_eq!(m.migrations.len(), 16, "all 16 migrations must be embedded");
+        assert_eq!(m.migrations.len(), 17, "all 17 migrations must be embedded");
         assert_eq!(m.migrations[0].version, 1);
-        assert_eq!(m.migrations[15].version, 16);
+        assert_eq!(m.migrations[16].version, 17);
     }
 }

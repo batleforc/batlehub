@@ -1,0 +1,11 @@
+# Copy to ~/.condarc or the project root to redirect conda through BatleHub.
+#
+# Proxy mode: routes conda package downloads through the caching proxy.
+channels:
+  - http://localhost:8080/proxy/my-conda
+
+# Authenticate with a BatleHub token via netrc or by embedding in the URL:
+#   http://user:change-me-user-token@localhost:8080/proxy/my-conda
+channel_alias: http://localhost:8080/proxy
+
+ssl_verify: false

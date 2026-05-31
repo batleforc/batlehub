@@ -1140,6 +1140,137 @@ impl LocalRegistryService {
     ) -> Result<Vec<String>, CoreError> {
         self.backend.list_package_names(registry).await
     }
+
+    /// Return the (name, version) key for a locally published conda package
+    /// whose `index_metadata.filename` matches `filename`, or `None` if not found.
+    pub async fn find_conda_by_filename(
+        &self,
+        registry: &str,
+        filename: &str,
+    ) -> Result<Option<(String, String)>, CoreError> {
+        let names = self.backend.list_package_names(registry).await?;
+        for name in &names {
+            let versions = self.backend.get_versions(registry, name).await?;
+            for pkg in versions {
+                let stored_filename = pkg
+                    .index_metadata
+                    .get("filename")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if stored_filename == filename {
+                    return Ok(Some((pkg.name, pkg.version)));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Build a PyPI Simple API HTML page listing all versions of `package_name`
+    /// published in this local registry, formatted so `pip` can parse it.
+    pub async fn get_pypi_simple_page(
+        &self,
+        registry: &str,
+        package_name: &str,
+        base_url: &str,
+        identity: &Identity,
+    ) -> Result<String, CoreError> {
+        self.check_visibility(registry, package_name, identity).await?;
+        let versions = self.backend.get_versions(registry, package_name).await?;
+        let versions = self
+            .filter_for_identity(registry, versions, identity)
+            .await?;
+        if versions.is_empty() {
+            return Err(CoreError::NotFound(format!(
+                "pypi package '{package_name}' not found in local registry '{registry}'"
+            )));
+        }
+        let base = base_url.trim_end_matches('/');
+        let mut links = String::new();
+        for pkg in &versions {
+            let filename = pkg
+                .index_metadata
+                .get("filename")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("{}-{}.tar.gz", pkg.name, pkg.version));
+            let sha256 = pkg
+                .index_metadata
+                .get("sha256")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&pkg.checksum);
+            let url = format!("{base}/proxy/{registry}/packages/{filename}#sha256={sha256}");
+            links.push_str(&format!("    <a href=\"{url}\">{filename}</a>\n"));
+        }
+        Ok(format!(
+            "<!DOCTYPE html>\n<html>\n  <head><title>Links for {package_name}</title></head>\n  <body>\n    <h1>Links for {package_name}</h1>\n{links}  </body>\n</html>\n"
+        ))
+    }
+
+    /// Build a conda `repodata.json`-compatible map for all locally published
+    /// conda packages in `registry` whose `index_metadata.subdir` matches
+    /// `platform` (e.g. `"linux-64"`, `"noarch"`).
+    ///
+    /// Returns a JSON object with `"packages"` and `"packages.conda"` keys
+    /// ready to be serialised and served to conda clients.
+    pub async fn get_conda_repodata(
+        &self,
+        registry: &str,
+        platform: &str,
+    ) -> Result<serde_json::Value, CoreError> {
+        let names = self.backend.list_package_names(registry).await?;
+
+        let mut packages = serde_json::Map::new();
+        let mut packages_conda = serde_json::Map::new();
+
+        for name in &names {
+            let versions = self.backend.get_versions(registry, name).await?;
+            for pkg in versions.into_iter().filter(|p| !p.yanked) {
+                let meta = &pkg.index_metadata;
+                // Filter by platform: accept packages whose subdir matches or where
+                // subdir is absent (treat as matching any platform query).
+                let subdir = meta.get("subdir").and_then(|v| v.as_str()).unwrap_or("");
+                if !subdir.is_empty() && subdir != platform {
+                    continue;
+                }
+                let filename = match meta.get("filename").and_then(|v| v.as_str()) {
+                    Some(f) => f.to_owned(),
+                    None => {
+                        // Reconstruct filename from name/version/build
+                        let build = meta
+                            .get("build")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("0");
+                        format!("{}-{}-{}.tar.bz2", pkg.name, pkg.version, build)
+                    }
+                };
+                // Build the repodata entry from index_metadata plus checksum.
+                let mut entry = if meta.is_object() {
+                    meta.clone()
+                } else {
+                    serde_json::json!({
+                        "name": pkg.name,
+                        "version": pkg.version,
+                    })
+                };
+                // Ensure sha256 is set from the stored checksum if not in metadata.
+                if let Some(obj) = entry.as_object_mut() {
+                    obj.entry("sha256")
+                        .or_insert_with(|| serde_json::json!(pkg.checksum));
+                }
+
+                if filename.ends_with(".conda") {
+                    packages_conda.insert(filename, entry);
+                } else {
+                    packages.insert(filename, entry);
+                }
+            }
+        }
+
+        Ok(serde_json::json!({
+            "packages": packages,
+            "packages.conda": packages_conda,
+        }))
+    }
 }
 
 /// Stable storage key for a locally published artifact.

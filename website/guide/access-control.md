@@ -140,9 +140,16 @@ Gating applies in **local and hybrid mode** only — proxy-only registries proxy
 | Maven | ✓ | ✓ |
 | Terraform modules | ✓ | ✓ |
 | Terraform providers | ✓ | ✓ |
+| PyPI | ✓ | ✓ |
+| Conda | ✓ | ✓ |
 
 ::: warning Maven and non-semver versions
 Maven versions that are not valid semver (e.g. `1.0-SNAPSHOT`) are never treated as pre-releases and are always visible. SNAPSHOT gating would require a separate feature.
+:::
+
+::: tip PyPI and Conda pre-release detection
+For **PyPI**, PEP 440 pre-release versions (`.aN`, `.bN`, `.rcN` suffixes) are detected via their version string — no semver required.
+For **Conda**, pre-release detection uses the same version-string heuristic (any version containing `alpha`, `beta`, `rc`, `dev`, or a semver pre-release component).
 :::
 
 ---
@@ -430,6 +437,8 @@ Team namespaces and visibility apply to all registry types in `local` or `hybrid
 | Terraform providers | `namespace/type` |
 | Composer | `vendor/` |
 | OpenVSX / VSIX | `publisher.name` |
+| PyPI | `my-org-` (package name prefix) |
+| Conda | `my-org-` (package name prefix) |
 
 Prefixes are matched by a **longest-prefix rule**: if both `frontend` and `frontend/ui` are claimed, `frontend/ui/button` is governed by the `frontend/ui` claim.
 
@@ -439,7 +448,7 @@ Once claims are in place, users can manage their own packages without needing ad
 
 - See all namespace prefixes their groups own, across every registry.
 - Browse published package versions and change visibility inline.
-- Upload new packages via a browser form (supported for RubyGems, Composer, OpenVSX, and Go modules) or copy CLI instructions for other registry types.
+- Upload new packages via a browser form (supported for RubyGems, Composer, OpenVSX, Go modules, PyPI, and Conda) or copy CLI instructions for other registry types.
 
 ::: tip Group name normalisation
 Spaces in group names are stripped before matching — `"oidc:my team"` and `"oidc:myteam"` are treated as the same group. Set `group_id` without spaces when creating claims to avoid ambiguity.

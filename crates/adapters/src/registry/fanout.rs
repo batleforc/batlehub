@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient},
+    ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
 };
 
 /// Tries a list of upstream clients in priority order.
@@ -72,6 +72,21 @@ impl RegistryClient for FanoutRegistryClient {
             }
         }
         Err(last)
+    }
+
+    async fn search_packages(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<UpstreamPackage>, CoreError> {
+        // Use the first client that returns results; if none do, return empty.
+        for client in &self.clients {
+            let results = client.search_packages(query, limit).await?;
+            if !results.is_empty() {
+                return Ok(results);
+            }
+        }
+        Ok(vec![])
     }
 }
 

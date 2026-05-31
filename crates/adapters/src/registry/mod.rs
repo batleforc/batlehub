@@ -1,6 +1,7 @@
 pub mod http_client;
 pub use http_client::{
-    apply_upstream_options, apply_upstream_tls, upstream_auth_headers, UpstreamHttpOptions,
+    apply_upstream_options, apply_upstream_tls, percent_encode, upstream_auth_headers,
+    UpstreamHttpOptions,
 };
 
 pub mod fanout;
@@ -55,3 +56,13 @@ pub use rubygems::RubyGemsRegistryClient;
 pub mod composer;
 #[cfg(feature = "registry-composer")]
 pub use composer::ComposerRegistryClient;
+
+#[cfg(feature = "registry-pypi")]
+pub mod pypi;
+#[cfg(feature = "registry-pypi")]
+pub use pypi::PypiRegistryClient;
+
+#[cfg(feature = "registry-conda")]
+pub mod conda;
+#[cfg(feature = "registry-conda")]
+pub use conda::CondaRegistryClient;

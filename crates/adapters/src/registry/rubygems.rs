@@ -5,10 +5,10 @@ use serde::Deserialize;
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient},
+    ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
 };
 
-use super::http_client::{apply_upstream_options, UpstreamHttpOptions};
+use super::http_client::{apply_upstream_options, percent_encode, UpstreamHttpOptions};
 
 /// RubyGems registry proxy client.
 ///
@@ -244,6 +244,49 @@ impl RegistryClient for RubyGemsRegistryClient {
         let mut result: Vec<String> = versions.into_iter().map(|v| v.number).collect();
         result.reverse();
         Ok(result)
+    }
+
+    async fn search_packages(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<UpstreamPackage>, CoreError> {
+        #[derive(Deserialize)]
+        struct GemInfo {
+            name: String,
+            version: String,
+            info: Option<String>,
+        }
+
+        let url = format!(
+            "{}/api/v1/search.json?query={}&page=1",
+            self.base_url,
+            percent_encode(query),
+        );
+        let res = self
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        if !res.status().is_success() {
+            return Ok(vec![]);
+        }
+
+        let gems: Vec<GemInfo> = res
+            .json()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        Ok(gems
+            .into_iter()
+            .take(limit)
+            .map(|g| UpstreamPackage {
+                name: g.name,
+                latest_version: g.version,
+                description: g.info,
+            })
+            .collect())
     }
 }
 

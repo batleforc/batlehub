@@ -1,10 +1,12 @@
 pub mod cargo;
 pub mod common;
 pub mod composer;
+pub mod conda;
 pub mod github;
 pub mod goproxy;
 pub mod maven;
 pub mod npm;
 pub mod openvsx;
+pub mod pypi;
 pub mod rubygems;
 pub mod terraform;

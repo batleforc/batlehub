@@ -1,0 +1,7 @@
+name: myenv
+channels:
+  - http://localhost:8080/proxy/my-conda
+  - nodefaults
+dependencies:
+  - python=3.11
+  - numpy

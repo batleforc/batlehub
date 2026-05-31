@@ -33,10 +33,10 @@ use batlehub_adapters::{
     },
     local_registry::PostgresLocalRegistry,
     registry::{
-        CargoRegistryClient, ComposerRegistryClient, FanoutRegistryClient, GithubRegistryClient,
-        GoProxyRegistryClient, MavenRegistryClient, NpmRegistryClient, OpenVsxRegistryClient,
-        RubyGemsRegistryClient, TerraformRegistryClient, UpstreamHttpOptions,
-        VsCodeMarketplaceRegistryClient,
+        CargoRegistryClient, ComposerRegistryClient, CondaRegistryClient, FanoutRegistryClient,
+        GithubRegistryClient, GoProxyRegistryClient, MavenRegistryClient, NpmRegistryClient,
+        OpenVsxRegistryClient, PypiRegistryClient, RubyGemsRegistryClient,
+        TerraformRegistryClient, UpstreamHttpOptions, VsCodeMarketplaceRegistryClient,
     },
     storage::{FilesystemStorageBackend, StorageRouter},
 };
@@ -366,6 +366,22 @@ async fn main() -> Result<()> {
             };
             npm_upstream_map.insert(reg.name.clone(), first_url);
         }
+        if reg.registry_type == "pypi" {
+            let first_url = if reg.upstreams.is_empty() {
+                "https://pypi.org".to_owned()
+            } else {
+                reg.upstreams[0].clone()
+            };
+            npm_upstream_map.insert(reg.name.clone(), first_url);
+        }
+        if reg.registry_type == "conda" {
+            let first_url = if reg.upstreams.is_empty() {
+                "https://conda.anaconda.org".to_owned()
+            } else {
+                reg.upstreams[0].clone()
+            };
+            npm_upstream_map.insert(reg.name.clone(), first_url);
+        }
 
         // Proxy and Hybrid modes need an upstream sparse index; Local mode does not.
         if reg.registry_type == "cargo" && !matches!(reg.mode, RegistryMode::Local) {
@@ -549,6 +565,31 @@ async fn main() -> Result<()> {
             .map(|r| r.name.clone())
             .collect(),
         groups: group_access,
+        explore_anonymous: config
+            .registries
+            .iter()
+            .filter(|r| !r.rbac.anonymous.is_empty() && r.rbac.explore.anonymous)
+            .map(|r| r.name.clone())
+            .collect(),
+        explore_user: config
+            .registries
+            .iter()
+            .filter(|r| {
+                (!r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty()) && r.rbac.explore.user
+            })
+            .map(|r| r.name.clone())
+            .collect(),
+        explore_admin: config
+            .registries
+            .iter()
+            .filter(|r| {
+                (!r.rbac.anonymous.is_empty()
+                    || !r.rbac.user.is_empty()
+                    || !r.rbac.admin.is_empty())
+                    && r.rbac.explore.admin
+            })
+            .map(|r| r.name.clone())
+            .collect(),
     };
 
     let registry_map = RegistryMap(registry_type_map);
@@ -733,6 +774,7 @@ fn upstream_options(reg: &RegistryConfig) -> UpstreamHttpOptions {
         basic_auth,
         custom_header,
         ca_cert_path: reg.tls.as_ref().and_then(|t| t.ca_cert_path.clone()),
+        search_url: reg.search_url.clone(),
     }
 }
 
@@ -787,6 +829,8 @@ fn build_registry_client(
             "terraform" => Arc::new(TerraformRegistryClient::new(url, opts)?),
             "rubygems" => Arc::new(RubyGemsRegistryClient::new(url, opts)?),
             "composer" => Arc::new(ComposerRegistryClient::new(url, opts)?),
+            "pypi" => Arc::new(PypiRegistryClient::new(url, opts)?),
+            "conda" => Arc::new(CondaRegistryClient::new(url, opts)?),
             other => {
                 anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in")
             }
@@ -809,6 +853,8 @@ fn build_registry_client(
         "terraform" => resolve_urls(&reg.upstreams, "https://registry.terraform.io"),
         "rubygems" => resolve_urls(&reg.upstreams, "https://rubygems.org"),
         "composer" => resolve_urls(&reg.upstreams, "https://repo.packagist.org"),
+        "pypi" => resolve_urls(&reg.upstreams, "https://pypi.org"),
+        "conda" => resolve_urls(&reg.upstreams, "https://conda.anaconda.org"),
         other => {
             anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in")
         }
@@ -852,10 +898,10 @@ fn build_policy(
         match rule_cfg {
             RuleConfig::ReleaseAgeGate(cfg) => {
                 let bypass: Vec<Role> = cfg.bypass_roles.iter().map(|r| parse_role(r)).collect();
-                rules.push(Box::new(ReleaseAgeGateRule::new(
-                    Duration::from_secs(cfg.min_age_secs),
-                    bypass,
-                )));
+                rules.push(Box::new(
+                    ReleaseAgeGateRule::new(Duration::from_secs(cfg.min_age_secs), bypass)
+                        .with_deny_missing_timestamp(cfg.deny_missing_timestamp),
+                ));
             }
             RuleConfig::RequireSignedRelease(cfg) => {
                 if cfg.enabled {

@@ -1,14 +1,15 @@
 use async_trait::async_trait;
 use futures::TryStreamExt;
 use serde::Deserialize;
+use tracing as log;
 
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient},
+    ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
 };
 
-use super::http_client::{apply_upstream_options, UpstreamHttpOptions};
+use super::http_client::{apply_upstream_options, percent_encode, UpstreamHttpOptions};
 
 /// Terraform provider and module registry proxy client.
 ///
@@ -33,6 +34,8 @@ pub struct TerraformRegistryClient {
     http: reqwest::Client,
     base_url: String,
     basic_auth: Option<(String, String)>,
+    /// Resolved search base URL. `None` = disabled; `Some(url)` = use this.
+    search_base: Option<String>,
 }
 
 impl TerraformRegistryClient {
@@ -41,10 +44,26 @@ impl TerraformRegistryClient {
             .user_agent("batlehub/0.1")
             .redirect(reqwest::redirect::Policy::limited(10));
         let http = apply_upstream_options(builder, opts)?;
+        let base_url = base_url.into();
+
+        // Terraform search API endpoints use /v1/modules/search and /v1/providers/{ns}.
+        // Strip any trailing /v1 component from the base URL so we don't double it up
+        // (some configs set upstreams = ["https://registry.terraform.io/v1"]).
+        let search_root = base_url
+            .trim_end_matches('/')
+            .trim_end_matches("/v1")
+            .trim_end_matches('/');
+        let search_base = match opts.search_url.as_deref() {
+            Some("") => None,
+            Some(url) => Some(url.trim_end_matches('/').to_owned()),
+            None => Some(search_root.to_owned()),
+        };
+
         Ok(Self {
             http,
-            base_url: base_url.into(),
+            base_url,
             basic_auth: opts.basic_auth.clone(),
+            search_base,
         })
     }
 
@@ -302,6 +321,157 @@ impl RegistryClient for TerraformRegistryClient {
                 "terraform: package '{package}' must start with 'providers/' or 'modules/'"
             )))
         }
+    }
+
+    async fn search_packages(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<UpstreamPackage>, CoreError> {
+        let Some(ref base) = self.search_base else {
+            return Ok(vec![]);
+        };
+
+        #[derive(Deserialize)]
+        struct ModuleSearch {
+            modules: Vec<ModuleHit>,
+        }
+        #[derive(Deserialize)]
+        struct ModuleHit {
+            namespace: String,
+            name: String,
+            provider: String,
+            version: String,
+            description: Option<String>,
+        }
+        // Returned by GET /v1/providers/{namespace} and GET /v1/providers/{ns}/{name}/versions
+        #[derive(Deserialize)]
+        struct ProviderList {
+            #[serde(default)]
+            providers: Vec<ProviderHit>,
+        }
+        #[derive(Deserialize)]
+        struct ProviderHit {
+            namespace: String,
+            name: String,
+            version: Option<String>,
+            #[serde(default)]
+            description: Option<String>,
+        }
+
+        let per = limit.min(25);
+
+        // 1. Full-text module search (registry protocol v1 — always works).
+        let module_url = format!(
+            "{}/v1/modules/search?q={}&limit={}",
+            base,
+            percent_encode(query),
+            per,
+        );
+
+        // 2. Provider lookup strategy — the Terraform Registry Protocol has no
+        //    full-text provider search.  We use two heuristics:
+        //
+        //    a) Treat the whole query as a namespace:
+        //       GET /v1/providers/{query}  →  lists all providers in that namespace.
+        //       Works when users type the org/namespace name (e.g. "netbirdio").
+        //
+        //    b) If the query contains "/" treat it as "namespace/type":
+        //       GET /v1/providers/{namespace}/{type}/versions  →  exact lookup.
+        //       Works when users type "hashicorp/aws" or "netbirdio/netbird".
+        let namespace_url = format!("{}/v1/providers/{}", base, percent_encode(query));
+        let exact_url = query.split_once('/').map(|(ns, ty)| {
+            format!(
+                "{}/v1/providers/{}/{}/versions",
+                base,
+                percent_encode(ns),
+                percent_encode(ty),
+            )
+        });
+
+        let mut results: Vec<UpstreamPackage> = Vec::new();
+
+        // Module search
+        match self.get(&module_url).send().await {
+            Err(e) => log::warn!(url = %module_url, error = %e, "tf module search: send failed"),
+            Ok(res) => {
+                let status = res.status();
+                if !status.is_success() {
+                    log::warn!(url = %module_url, %status, "tf module search: bad status");
+                } else {
+                    match res.json::<ModuleSearch>().await {
+                        Err(e) => log::warn!(error = %e, "tf module search: json parse failed"),
+                        Ok(body) => {
+                            log::debug!(count = body.modules.len(), "tf module search: ok");
+                            for m in body.modules.into_iter().take(per) {
+                                results.push(UpstreamPackage {
+                                    name: format!("modules/{}/{}/{}", m.namespace, m.name, m.provider),
+                                    latest_version: m.version,
+                                    description: m.description,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Provider namespace listing
+        match self.get(&namespace_url).send().await {
+            Err(e) => log::warn!(url = %namespace_url, error = %e, "tf provider ns: send failed"),
+            Ok(res) => {
+                let status = res.status();
+                if !status.is_success() {
+                    log::warn!(url = %namespace_url, %status, "tf provider ns: bad status");
+                } else {
+                    match res.json::<ProviderList>().await {
+                        Err(e) => log::warn!(error = %e, "tf provider ns: json parse failed"),
+                        Ok(body) => {
+                            log::debug!(count = body.providers.len(), "tf provider ns: ok");
+                            for p in body.providers.into_iter().take(per) {
+                                results.push(UpstreamPackage {
+                                    name: format!("providers/{}/{}", p.namespace, p.name),
+                                    latest_version: p.version.unwrap_or_else(|| "latest".to_string()),
+                                    description: p.description,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Exact namespace/type provider lookup
+        if let Some(url) = exact_url {
+            match self.get(&url).send().await {
+                Err(e) => log::warn!(%url, error = %e, "tf provider exact: send failed"),
+                Ok(res) => {
+                    let status = res.status();
+                    if !status.is_success() {
+                        log::warn!(%url, %status, "tf provider exact: bad status");
+                    } else {
+                        match res.json::<ProviderList>().await {
+                            Err(e) => log::warn!(error = %e, "tf provider exact: json parse failed"),
+                            Ok(body) => {
+                                for p in body.providers.into_iter().take(per) {
+                                    results.push(UpstreamPackage {
+                                        name: format!("providers/{}/{}", p.namespace, p.name),
+                                        latest_version: p.version.unwrap_or_else(|| "latest".to_string()),
+                                        description: p.description,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Deduplicate by name
+        let mut seen = std::collections::HashSet::new();
+        results.retain(|r| seen.insert(r.name.clone()));
+
+        Ok(results)
     }
 }
 

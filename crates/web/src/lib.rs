@@ -20,6 +20,11 @@ pub struct AccessConfig {
     pub admin: HashSet<String>,
     /// Dynamic group → registry names. Populated from `[registries.rbac.groups]`.
     pub groups: HashMap<String, HashSet<String>>,
+    /// Registries where each role can browse/search in the package explorer.
+    /// Always a subset of the corresponding proxy-access set.
+    pub explore_anonymous: HashSet<String>,
+    pub explore_user: HashSet<String>,
+    pub explore_admin: HashSet<String>,
 }
 
 impl AccessConfig {
@@ -55,6 +60,22 @@ impl AccessConfig {
     pub fn has_registry_access(&self, identity: &Identity) -> bool {
         !self.accessible_registries_for(identity).is_empty()
     }
+
+    fn explore_registries(&self, role: &Role) -> &HashSet<String> {
+        match role {
+            Role::Admin => &self.explore_admin,
+            Role::User => &self.explore_user,
+            Role::Anonymous => &self.explore_anonymous,
+        }
+    }
+
+    /// Returns the set of registries the caller can browse/search in the package explorer.
+    /// Groups inherit their proxy access for explore (no separate group-level explore restriction).
+    pub fn explore_accessible_registries_for(&self, identity: &Identity) -> HashSet<String> {
+        let proxy = self.accessible_registries_for(identity);
+        let explore = self.explore_registries(&identity.role);
+        proxy.intersection(explore).cloned().collect()
+    }
 }
 
 #[cfg(test)]
@@ -63,6 +84,10 @@ mod access_config_tests {
     use batlehub_core::entities::Identity;
 
     fn make_config() -> AccessConfig {
+        let regs: HashSet<String> = ["public", "user-only", "admin-only", "group-a-reg", "group-b-reg"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         AccessConfig {
             anonymous: ["public"].iter().map(|s| s.to_string()).collect(),
             user: ["public", "user-only"]
@@ -88,6 +113,9 @@ mod access_config_tests {
             ]
             .into_iter()
             .collect(),
+            explore_anonymous: regs.clone(),
+            explore_user: regs.clone(),
+            explore_admin: regs,
         }
     }
 
@@ -153,6 +181,9 @@ mod access_config_tests {
             )]
             .into_iter()
             .collect(),
+            explore_anonymous: HashSet::new(),
+            explore_user: HashSet::new(),
+            explore_admin: HashSet::new(),
         };
         let id = identity(Role::Anonymous, vec!["team-a"]);
         assert!(anon_cfg.has_registry_access(&id));
@@ -179,6 +210,10 @@ mod access_config_tests {
     }
 
     fn make_wildcard_config() -> AccessConfig {
+        let all: HashSet<String> = ["all-reg", "shared-reg", "oidc2-reg"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         AccessConfig {
             anonymous: HashSet::new(),
             user: HashSet::new(),
@@ -197,6 +232,9 @@ mod access_config_tests {
             ]
             .into_iter()
             .collect(),
+            explore_anonymous: all.clone(),
+            explore_user: all.clone(),
+            explore_admin: all,
         }
     }
 
@@ -335,7 +373,10 @@ pub use middleware::RateLimitService;
         (name = "proxy/goproxy",    description = "Go module proxy — version info, go.mod, and zip downloads"),
         (name = "proxy/terraform",  description = "Terraform registry — provider and module proxy, private module/provider publishing"),
         (name = "proxy/rubygems",   description = "RubyGems registry — gem downloads, version listing, and private gem publishing"),
+        (name = "proxy/pypi",       description = "PyPI registry — simple index proxy with URL rewriting, wheel/sdist downloads, and twine-compatible publish"),
+        (name = "proxy/conda",      description = "Conda channel proxy — repodata.json, package downloads, and private channel publishing"),
         (name = "front-office",     description = "User-facing package information"),
+        (name = "explore",          description = "Package explorer — browse and search across registries"),
         (name = "back-office",    description = "Admin management (requires Admin role)"),
     ),
     modifiers(&SecurityAddon),
@@ -388,6 +429,10 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             warming::warm_registry,
         },
         front_office::{
+            explore::{
+                explore_package_detail, explore_packages, explore_registry_stats,
+                explore_upstream_search,
+            },
             me::me,
             packages::{check_access, list_packages},
             registries::list_registries,
@@ -404,6 +449,9 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             // openvsx vsix (literal "vsix") > npm audit (literal "/-/npm/v1/audit/quick") >
             // npm tarball (literal "tarball") > shared version metadata > shared packument
             // composer: upload/yank (literal "api") > p2 (literal "p2") > dist > packages.json
+            conda::{
+                conda_current_repodata, conda_file_download, conda_publish, conda_repodata,
+            },
             composer::{
                 composer_dist, composer_p2_metadata, composer_packages_json, composer_upload,
                 composer_yank,
@@ -419,6 +467,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                 npm_publish,
             },
             openvsx::{download_vsix, vsix_publish},
+            pypi::{pypi_file_download, pypi_publish, pypi_simple_package, pypi_simple_root},
             rubygems::{
                 gem_download, gem_gemspec, gem_info, gem_publish, gem_specs_full, gem_specs_latest,
                 gem_specs_prerelease, gem_unyank, gem_versions, gem_yank,
@@ -499,6 +548,16 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(composer_p2_metadata); // GET …/p2/{path:.*}
     cfg.service(composer_dist); // GET …/dist/{vendor}/{package}/{version}
     cfg.service(composer_packages_json); // GET …/packages.json
+                                         // PyPI: publish (POST /legacy/) before simple package (GET /simple/{pkg}/) before root (GET /simple/) before file download
+    cfg.service(pypi_publish); // POST …/legacy/
+    cfg.service(pypi_simple_package); // GET …/simple/{package}/
+    cfg.service(pypi_simple_root); // GET …/simple/
+    cfg.service(pypi_file_download); // GET …/packages/{filename}
+                                     // Conda: literal repodata routes before wildcard file download; publish (POST) before GET
+    cfg.service(conda_publish); // POST …/{platform}/
+    cfg.service(conda_repodata); // GET …/{platform}/repodata.json
+    cfg.service(conda_current_repodata); // GET …/{platform}/current_repodata.json
+    cfg.service(conda_file_download); // GET …/{platform}/{filename}
                                          // OpenVSX/VSCode VSIX publish (PUT) and download (GET) — same path, different method
     cfg.service(vsix_publish);
     cfg.service(download_vsix);
@@ -513,6 +572,11 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(get_packument);
     cfg.service(me);
     cfg.service(list_registries);
+    // Explore: detail path before list (more specific first); upstream before list
+    cfg.service(explore_package_detail);
+    cfg.service(explore_upstream_search);
+    cfg.service(explore_packages);
+    cfg.service(explore_registry_stats);
     cfg.service(list_packages);
     cfg.service(check_access);
     cfg.service(admin_list_packages);

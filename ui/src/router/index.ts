@@ -3,6 +3,8 @@ import { createRouter, createWebHistory } from "vue-router";
 import { useAuth, storeTokens } from "@/composables/useAuth";
 import PackageList from "@/pages/PackageList.vue";
 import PackageDetail from "@/pages/PackageDetail.vue";
+import PackageExplorer from "@/pages/PackageExplorer.vue";
+import ExplorePackageDetail from "@/pages/ExplorePackageDetail.vue";
 import AccessCheck from "@/pages/AccessCheck.vue";
 import AdminPackages from "@/pages/AdminPackages.vue";
 import AdminPackageDetail from "@/pages/AdminPackageDetail.vue";
@@ -26,6 +28,8 @@ export const router = createRouter({
     { path: "/login", component: LoginPage },
     { path: "/packages", component: PackageList },
     { path: "/packages/detail", component: PackageDetail },
+    { path: "/explore", component: PackageExplorer },
+    { path: "/explore/packages/:registry/:name", component: ExplorePackageDetail },
     { path: "/access-check", component: AccessCheck },
     { path: "/path-mapper", component: PathMapper },
     { path: "/setup", component: SetupGuide },

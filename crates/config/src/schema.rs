@@ -47,8 +47,8 @@ impl AppConfig {
                 bail!("registry is missing a 'name' field");
             }
             match registry.registry_type.as_str() {
-                "github" | "cargo" | "npm" | "openvsx" | "goproxy" | "pypi" | "composer"
-                | "vscode-marketplace" | "maven" | "terraform" | "rubygems" => {}
+                "github" | "cargo" | "npm" | "openvsx" | "goproxy" | "pypi" | "conda"
+                | "composer" | "vscode-marketplace" | "maven" | "terraform" | "rubygems" => {}
                 other => bail!("unknown registry type: '{other}'"),
             }
             if matches!(registry.mode, RegistryMode::Local | RegistryMode::Hybrid)
@@ -63,10 +63,12 @@ impl AppConfig {
                         | "maven"
                         | "terraform"
                         | "composer"
+                        | "pypi"
+                        | "conda"
                 )
             {
                 bail!(
-                    "registry '{}': mode 'local'/'hybrid' is only supported for cargo, npm, openvsx, vscode-marketplace, goproxy, rubygems, maven, terraform, and composer registries",
+                    "registry '{}': mode 'local'/'hybrid' is only supported for cargo, npm, openvsx, vscode-marketplace, goproxy, rubygems, maven, terraform, composer, pypi, and conda registries",
                     registry.name
                 );
             }
@@ -569,6 +571,16 @@ pub struct RegistryConfig {
     /// When enabled, pre-release versions are only visible to registered beta-channel members.
     #[serde(default)]
     pub beta_channel: Option<BetaChannelConfig>,
+    /// Base URL of the upstream search API used by the Package Explorer.
+    ///
+    /// When absent, each registry type falls back to its built-in default:
+    /// - `maven`    → `https://search.maven.org`
+    /// - `composer` → `https://packagist.org` (for packagist.org-based repos)
+    ///
+    /// Set to `""` (empty string) to disable upstream search for this registry.
+    /// Has no effect on registry types that do not support upstream search.
+    #[serde(default)]
+    pub search_url: Option<String>,
 }
 
 // ── Versioning policy ─────────────────────────────────────────────────────────
@@ -923,6 +935,39 @@ pub struct RbacConfig {
     /// Maps group name → list of permitted resource types for this registry.
     #[serde(default)]
     pub groups: HashMap<String, Vec<String>>,
+    /// Controls which roles can search/browse this registry in the package explorer.
+    /// When absent, defaults to allowing explore for any role that has proxy access.
+    #[serde(default)]
+    pub explore: ExploreRbacConfig,
+}
+
+/// Per-registry explore/search permissions.
+///
+/// Example TOML:
+/// ```toml
+/// [registries.rbac.explore]
+/// anonymous = false   # anonymous users cannot search
+/// user = false        # regular users cannot search (proxy-only)
+/// admin = true        # admins can browse
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct ExploreRbacConfig {
+    #[serde(default = "default_true")]
+    pub anonymous: bool,
+    #[serde(default = "default_true")]
+    pub user: bool,
+    #[serde(default = "default_true")]
+    pub admin: bool,
+}
+
+impl Default for ExploreRbacConfig {
+    fn default() -> Self {
+        Self {
+            anonymous: true,
+            user: true,
+            admin: true,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -941,6 +986,15 @@ pub struct ReleaseAgeGateConfig {
     /// Roles that may bypass the age gate (e.g. `["admin"]`).
     #[serde(default)]
     pub bypass_roles: Vec<String>,
+    /// When `true`, deny requests for packages whose upstream does not provide
+    /// a publish timestamp (instead of the default behaviour of skipping the
+    /// check and allowing the download).
+    ///
+    /// Useful for registries — such as conda — where the timestamp field is
+    /// optional: setting this to `true` forces every package to carry a
+    /// verifiable age before it can be downloaded.
+    #[serde(default)]
+    pub deny_missing_timestamp: bool,
 }
 
 fn default_min_age() -> u64 {

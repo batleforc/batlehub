@@ -7,10 +7,10 @@ use std::collections::HashMap;
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient},
+    ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
 };
 
-use super::http_client::{apply_upstream_options, UpstreamHttpOptions};
+use super::http_client::{apply_upstream_options, percent_encode, UpstreamHttpOptions};
 
 /// npm registry client (registry.npmjs.org or compatible).
 ///
@@ -182,6 +182,58 @@ impl RegistryClient for NpmRegistryClient {
             stream: Box::pin(stream),
             cache_control,
         })
+    }
+
+    async fn search_packages(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<UpstreamPackage>, CoreError> {
+        #[derive(Deserialize)]
+        struct SearchResponse {
+            objects: Vec<SearchObject>,
+        }
+        #[derive(Deserialize)]
+        struct SearchObject {
+            package: SearchPackage,
+        }
+        #[derive(Deserialize)]
+        struct SearchPackage {
+            name: String,
+            version: String,
+            description: Option<String>,
+        }
+
+        let url = format!(
+            "{}/-/v1/search?text={}&size={}",
+            self.base_url,
+            percent_encode(query),
+            limit.min(50),
+        );
+        let res = self
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        if !res.status().is_success() {
+            return Ok(vec![]);
+        }
+
+        let body: SearchResponse = res
+            .json()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        Ok(body
+            .objects
+            .into_iter()
+            .map(|o| UpstreamPackage {
+                name: o.package.name,
+                latest_version: o.package.version,
+                description: o.package.description,
+            })
+            .collect())
     }
 }
 

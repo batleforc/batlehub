@@ -23,7 +23,9 @@ batlehub-config = { path = "../config" }
 batlehub-core = { path = "../core" }
 bytes.workspace = true
 chrono.workspace = true
+bzip2 = { version = "0.4", optional = true }
 flate2 = { version = "1", optional = true }
+zstd = { version = "0.13", optional = true }
 futures.workspace = true
 glob = { workspace = true, optional = true }
 hex = "0.4"
@@ -64,11 +66,13 @@ default = [
   "local-registry",
   "registry-cargo",
   "registry-composer",
+  "registry-conda",
   "registry-github",
   "registry-goproxy",
   "registry-maven",
   "registry-npm",
   "registry-openvsx",
+  "registry-pypi",
   "registry-rubygems",
   "registry-terraform",
   "registry-vscode-marketplace",
@@ -88,6 +92,7 @@ registry-goproxy = []
 registry-maven = []
 registry-npm = []
 registry-openvsx = []
+registry-conda = ["dep:bzip2", "dep:zip", "dep:zstd", "dep:tar"]
 registry-pypi = []
 registry-rubygems = ["dep:flate2", "dep:tar"]
 registry-terraform = []

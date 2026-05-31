@@ -3,8 +3,8 @@ use std::sync::Arc;
 use chrono::Utc;
 
 use crate::entities::{
-    AccessEvent, AccessResult, EventFilter, Identity, PackageFilter, PackageId, PackageStatus,
-    PackageSummary,
+    AccessEvent, AccessResult, EventFilter, ExploreEntry, ExploreFilter, Identity, PackageFilter,
+    PackageId, PackageStatus, PackageSummary, RegistryStat,
 };
 use crate::error::CoreError;
 use crate::ports::PackageRepository;
@@ -147,6 +147,24 @@ impl AdminService {
 
     pub async fn get_package_status(&self, pkg: &PackageId) -> Result<PackageStatus, CoreError> {
         self.repo.get_status(pkg).await
+    }
+
+    pub async fn explore_packages(
+        &self,
+        filter: ExploreFilter,
+    ) -> Result<Vec<ExploreEntry>, CoreError> {
+        self.repo.explore_packages(filter).await
+    }
+
+    pub async fn count_explore_packages(&self, filter: ExploreFilter) -> Result<u64, CoreError> {
+        self.repo.count_explore_packages(filter).await
+    }
+
+    pub async fn registry_explore_stats(
+        &self,
+        accessible_registries: &[String],
+    ) -> Result<Vec<RegistryStat>, CoreError> {
+        self.repo.registry_explore_stats(accessible_registries).await
     }
 }
 

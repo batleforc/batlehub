@@ -41,9 +41,10 @@ use batlehub_adapters::{
     },
     local_registry::InMemoryLocalRegistry,
     registry::{
-        CargoRegistryClient, ComposerRegistryClient, GithubRegistryClient, GoProxyRegistryClient,
-        MavenRegistryClient, NpmRegistryClient, OpenVsxRegistryClient, RubyGemsRegistryClient,
-        TerraformRegistryClient, UpstreamHttpOptions, VsCodeMarketplaceRegistryClient,
+        CargoRegistryClient, ComposerRegistryClient, CondaRegistryClient, GithubRegistryClient,
+        GoProxyRegistryClient, MavenRegistryClient, NpmRegistryClient, OpenVsxRegistryClient,
+        PypiRegistryClient, RubyGemsRegistryClient, TerraformRegistryClient, UpstreamHttpOptions,
+        VsCodeMarketplaceRegistryClient,
     },
 };
 use batlehub_config::schema::RegistryMode;
@@ -760,13 +761,28 @@ fn real_proxy_go_api() {
 
 #[test]
 fn real_proxy_pypi_api() {
-    // batlehub does not yet implement a PyPI proxy handler (no handler in collect_routes,
-    // no PyPI RegistryClient in batlehub-adapters). This test falls back to installing
-    // directly from pypi.org so the API server can still be verified.
     if !tool_available("python3") {
         eprintln!("SKIP real_proxy_pypi_api: python3 not available");
         return;
     }
+
+    let opts = UpstreamHttpOptions::default();
+    let client = match PypiRegistryClient::new("https://pypi.org", &opts) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("SKIP real_proxy_pypi_api: {e}");
+            return;
+        }
+    };
+
+    let proxy = RealProxy::start_with_registries(
+        [(
+            "my-pypi".to_owned(),
+            Arc::new(client) as Arc<dyn RegistryClient>,
+        )]
+        .into(),
+        RegistryMap([("my-pypi".to_owned(), "pypi".to_owned())].into()),
+    );
 
     let tmp = TempDir::new().unwrap();
     let dir = copy_example("pypi", tmp.path());
@@ -784,15 +800,25 @@ fn real_proxy_pypi_api() {
         return;
     }
 
+    let index_url = format!("http://127.0.0.1:{}/proxy/my-pypi/simple/", proxy.port);
     let ok = Command::new(venv.join("bin/pip"))
-        .args(["install", "--quiet", "fastapi", "uvicorn[standard]"])
+        .args([
+            "install",
+            "--quiet",
+            "--index-url",
+            &index_url,
+            "--trusted-host",
+            "127.0.0.1",
+            "fastapi",
+            "uvicorn[standard]",
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
     if !ok {
-        eprintln!("SKIP real_proxy_pypi_api: pip install failed (network unavailable)");
+        eprintln!("SKIP real_proxy_pypi_api: pip install through proxy failed (network unavailable)");
         return;
     }
 
@@ -821,6 +847,50 @@ fn real_proxy_pypi_api() {
     assert!(
         body.contains("hello"),
         "pypi response missing 'hello'; got: {body}"
+    );
+}
+
+// ── conda ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn real_proxy_conda_repodata() {
+    if !tool_available("conda") {
+        eprintln!("SKIP real_proxy_conda_repodata: conda not available");
+        return;
+    }
+
+    let opts = UpstreamHttpOptions::default();
+    let client = match CondaRegistryClient::new("https://conda.anaconda.org/conda-forge", &opts) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("SKIP real_proxy_conda_repodata: {e}");
+            return;
+        }
+    };
+
+    let proxy = RealProxy::start_with_registries(
+        [(
+            "my-conda".to_owned(),
+            Arc::new(client) as Arc<dyn RegistryClient>,
+        )]
+        .into(),
+        RegistryMap([("my-conda".to_owned(), "conda".to_owned())].into()),
+    );
+
+    // Verify repodata.json is accessible through the proxy
+    let repodata_url = format!(
+        "http://127.0.0.1:{}/proxy/my-conda/noarch/repodata.json",
+        proxy.port
+    );
+    let status = curl_status(&repodata_url);
+    if status != Some(200) {
+        eprintln!("SKIP real_proxy_conda_repodata: upstream unreachable (status={status:?})");
+        return;
+    }
+    assert_eq!(
+        status,
+        Some(200),
+        "conda repodata.json through proxy: expected 200"
     );
 }
 

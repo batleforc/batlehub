@@ -217,6 +217,60 @@ impl RegistryClient for VsCodeMarketplaceRegistryClient {
             cache_control,
         })
     }
+
+    /// List all available versions for a VS Code extension (`publisher.name`).
+    ///
+    /// Uses the Gallery `extensionquery` endpoint without
+    /// `FLAG_INCLUDE_LATEST_ONLY` so the full version history is returned in
+    /// a single response.
+    async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
+        let (publisher, ext_name) = Self::parse_id(package)?;
+
+        let body = ExtensionQueryRequest {
+            filters: vec![ExtensionQueryFilter {
+                criteria: vec![ExtensionQueryCriteria {
+                    filter_type: FILTER_EXTENSION_NAME,
+                    value: format!("{publisher}.{ext_name}"),
+                }],
+            }],
+            flags: FLAG_INCLUDE_VERSIONS,
+        };
+
+        let url = format!("{}/_apis/public/gallery/extensionquery", self.base_url);
+        let resp = self
+            .http
+            .post(&url)
+            .header("Accept", GALLERY_API_ACCEPT)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(vec![]);
+        }
+        if !resp.status().is_success() {
+            return Err(CoreError::Registry(format!(
+                "vscode-marketplace: extensionquery returned {}",
+                resp.status()
+            )));
+        }
+
+        let query_resp: ExtensionQueryResponse = resp
+            .json()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        let versions = query_resp
+            .results
+            .into_iter()
+            .next()
+            .and_then(|r| r.extensions.into_iter().next())
+            .map(|ext| ext.versions.into_iter().map(|v| v.version).collect())
+            .unwrap_or_default();
+
+        Ok(versions)
+    }
 }
 
 impl VsCodeMarketplaceRegistryClient {
@@ -581,5 +635,40 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(CoreError::Registry(_))));
+    }
+
+    #[tokio::test]
+    async fn list_versions_returns_all_versions() {
+        let mut server = Server::new_async().await;
+        let body = r#"{"results":[{"extensions":[{"displayName":"Python","shortDescription":"desc","publisher":{"publisherName":"ms-python"},"versions":[{"version":"2024.3.0","lastUpdated":"2024-03-01T00:00:00Z","files":[]},{"version":"2024.2.1","lastUpdated":"2024-02-15T00:00:00Z","files":[]},{"version":"2024.1.0","lastUpdated":"2024-01-10T00:00:00Z","files":[]}]}]}]}"#;
+
+        let _mock = server
+            .mock("POST", "/_apis/public/gallery/extensionquery")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client =
+            VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let versions = client.list_versions("ms-python.python").await.unwrap();
+        assert_eq!(versions, vec!["2024.3.0", "2024.2.1", "2024.1.0"]);
+    }
+
+    #[tokio::test]
+    async fn list_versions_empty_for_missing_extension() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/_apis/public/gallery/extensionquery")
+            .with_status(200)
+            .with_body(EMPTY_RESULTS)
+            .create_async()
+            .await;
+
+        let client =
+            VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let versions = client.list_versions("unknown.extension").await.unwrap();
+        assert!(versions.is_empty());
     }
 }

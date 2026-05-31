@@ -23,7 +23,7 @@ pub use ownership::{OwnerEntry, OwnershipPort};
 pub use package_repo::*;
 pub use quota::{QuotaRepository, QuotaUsage};
 pub use rate_limit_store::RateLimitStore;
-pub use registry::*;
+pub use registry::{ArtifactStream, FetchedArtifact, RegistryClient, UpstreamPackage};
 pub use storage::*;
 pub use team_namespace::TeamNamespacePort;
 pub use user_token_repo::*;
