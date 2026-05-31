@@ -68,3 +68,40 @@ pub type HotConfigLock = Arc<RwLock<HotConfig>>;
 pub fn new_hot_lock(cfg: HotConfig) -> HotConfigLock {
     Arc::new(RwLock::new(cfg))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::{new_hot_lock, HotConfig};
+
+    fn empty_config() -> HotConfig {
+        HotConfig {
+            registries: HashMap::new(),
+            policies: HashMap::new(),
+            versioning: HashMap::new(),
+            signing: HashMap::new(),
+            beta_channel: HashMap::new(),
+            max_artifact_size_bytes: None,
+        }
+    }
+
+    #[test]
+    fn new_hot_lock_is_readable() {
+        let lock = new_hot_lock(empty_config());
+        let guard = lock.blocking_read();
+        assert!(guard.registries.is_empty());
+        assert_eq!(guard.max_artifact_size_bytes, None);
+    }
+
+    #[test]
+    fn new_hot_lock_is_writable() {
+        let lock = new_hot_lock(empty_config());
+        {
+            let mut guard = lock.blocking_write();
+            guard.max_artifact_size_bytes = Some(100);
+        }
+        let guard = lock.blocking_read();
+        assert_eq!(guard.max_artifact_size_bytes, Some(100));
+    }
+}

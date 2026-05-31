@@ -9285,9 +9285,130 @@ async fn ip_blocks_list_returns_empty_initially() {
 
 // ── Quota ─────────────────────────────────────────────────────────────────────
 
-// Note: quota endpoints (/api/v1/admin/quota/**) require QuotaService to be
-// registered in app data; the make_app helper does not wire it in.
-// Auth enforcement is verified in-module unit tests (quota.rs handler file).
+use batlehub_adapters::in_memory::InMemoryQuotaRepository;
+use batlehub_core::ports::QuotaRepository;
+use batlehub_core::services::QuotaService;
+
+/// Minimal app wired with only the four quota endpoints and auth middleware.
+async fn make_quota_app(
+    quota_svc: Arc<QuotaService>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    use batlehub_web::handlers::back_office::quota::{
+        get_quota_for_user, list_quota, list_quota_for_registry, reset_quota_for_user,
+    };
+    let app = actix_web::App::new()
+        .app_data(actix_web::web::Data::new(quota_svc))
+        .service(list_quota)
+        .service(list_quota_for_registry)
+        .service(get_quota_for_user)
+        .service(reset_quota_for_user);
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+}
+
+fn empty_quota_svc() -> Arc<QuotaService> {
+    Arc::new(QuotaService::new(
+        InMemoryQuotaRepository::new(),
+        HashMap::new(),
+    ))
+}
+
+#[actix_web::test]
+async fn admin_quota_list_returns_403_for_anonymous() {
+    let app = make_quota_app(empty_quota_svc()).await;
+    let req = TestRequest::get().uri("/api/v1/admin/quota").to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn admin_quota_list_returns_403_for_non_admin_user() {
+    let app = make_quota_app(empty_quota_svc()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/quota")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn admin_quota_list_returns_empty_initially() {
+    let app = make_quota_app(empty_quota_svc()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/quota")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body, serde_json::json!([]));
+}
+
+#[actix_web::test]
+async fn admin_quota_list_for_registry_returns_empty_initially() {
+    let app = make_quota_app(empty_quota_svc()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/quota/cargo")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body, serde_json::json!([]));
+}
+
+#[actix_web::test]
+async fn admin_quota_get_for_user_returns_200_with_zero_usage() {
+    let app = make_quota_app(empty_quota_svc()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/quota/cargo/alice")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["user_id"], "alice");
+    assert_eq!(body["registry"], "cargo");
+    assert_eq!(body["bytes_published"], 0);
+    assert_eq!(body["packages_count"], 0);
+}
+
+#[actix_web::test]
+async fn admin_quota_reset_returns_200() {
+    let repo = InMemoryQuotaRepository::new();
+    repo.record_publish("alice", "cargo", 1024).await.unwrap();
+    let svc = Arc::new(QuotaService::new(repo.clone(), HashMap::new()));
+    let app = make_quota_app(svc).await;
+    let req = TestRequest::delete()
+        .uri("/api/v1/admin/quota/cargo/alice")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let after = repo.get_usage("alice", "cargo").await.unwrap();
+    assert_eq!(after.bytes_published, 0);
+}
+
+#[actix_web::test]
+async fn admin_quota_list_requires_admin() {
+    let app = make_quota_app(empty_quota_svc()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/quota/cargo")
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn admin_quota_reset_requires_admin() {
+    let app = make_quota_app(empty_quota_svc()).await;
+    let req = TestRequest::delete()
+        .uri("/api/v1/admin/quota/cargo/alice")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
 
 // ── Package ownership ─────────────────────────────────────────────────────────
 
@@ -9405,4 +9526,433 @@ async fn audit_log_returns_200_for_admin_with_empty_events() {
     let body: Value = read_body_json(resp).await;
     // Might be empty list or paginated response
     assert!(body.is_array() || body.is_object());
+}
+
+// ── Package explorer (explore.rs) ─────────────────────────────────────────────
+
+/// Like `make_app` but with explore permissions open for all roles across all registries.
+async fn make_explore_app(
+    repo: Arc<InMemoryRepo>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+
+    let reg_names = ["github", "npm", "cargo", "openvsx", "go", "vscode"];
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = reg_names
+        .iter()
+        .map(|n| (n.to_string(), FixedRegistry::new(*n) as Arc<dyn RegistryClient>))
+        .collect();
+    let policies: HashMap<String, Arc<RegistryPolicy>> = reg_names
+        .iter()
+        .map(|n| (n.to_string(), Arc::new(rbac_policy(repo_dyn.clone()))))
+        .collect();
+
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        hot: new_hot_lock(HotConfig {
+            registries,
+            policies,
+            versioning: HashMap::new(),
+            signing: HashMap::new(),
+            beta_channel: HashMap::new(),
+            max_artifact_size_bytes: None,
+        }),
+        storage: storage.clone(),
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+
+    let regs: std::collections::HashSet<String> =
+        reg_names.iter().map(|s| s.to_string()).collect();
+    let access_config = new_access_lock(batlehub_web::AccessConfig {
+        anonymous: regs.clone(),
+        user: regs.clone(),
+        admin: regs.clone(),
+        groups: HashMap::new(),
+        explore_anonymous: regs.clone(),
+        explore_user: regs.clone(),
+        explore_admin: regs.clone(),
+    });
+    let registry_map = batlehub_web::RegistryMap::from(
+        [
+            ("github", "github"),
+            ("npm", "npm"),
+            ("cargo", "cargo"),
+            ("openvsx", "openvsx"),
+            ("go", "goproxy"),
+            ("vscode", "vscode-marketplace"),
+        ]
+        .iter()
+        .map(|(n, t)| (n.to_string(), t.to_string()))
+        .collect::<HashMap<String, String>>(),
+    );
+    let cargo_indexes: HashMap<String, batlehub_web::CargoIndexProxy> = HashMap::new();
+    let (app, _) = actix_web::App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
+        .split_for_parts();
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+}
+
+#[actix_web::test]
+async fn explore_packages_returns_empty_list_initially() {
+    let app = make_explore_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/packages")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["items"], serde_json::json!([]));
+    assert_eq!(body["total"], 0);
+}
+
+#[actix_web::test]
+async fn explore_packages_anonymous_returns_empty_with_explore_access() {
+    let app = make_explore_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get().uri("/api/v1/explore/packages").to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn explore_packages_with_specific_accessible_registry() {
+    let app = make_explore_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/packages?registry=npm")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["items"], serde_json::json!([]));
+}
+
+#[actix_web::test]
+async fn explore_packages_inaccessible_registry_returns_empty() {
+    // With make_app (empty explore sets), any registry filter returns empty
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/packages?registry=npm")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["items"], serde_json::json!([]));
+    assert_eq!(body["total"], 0);
+}
+
+#[actix_web::test]
+async fn explore_packages_sort_by_name() {
+    let app = make_explore_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/packages?sort=name")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn explore_packages_sort_by_recent() {
+    let app = make_explore_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/packages?sort=recent")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn explore_registry_stats_returns_empty_initially() {
+    let app = make_explore_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/registries")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert!(body.is_array());
+}
+
+#[actix_web::test]
+async fn explore_package_detail_returns_empty_versions_for_unknown_package() {
+    let app = make_explore_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/packages/npm/lodash")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["registry"], "npm");
+    assert_eq!(body["name"], "lodash");
+    assert_eq!(body["versions"], serde_json::json!([]));
+    assert!(body["gate"]["registry_accessible"].as_bool().unwrap_or(false));
+}
+
+#[actix_web::test]
+async fn explore_package_detail_inaccessible_registry() {
+    let app = make_explore_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/packages/unknown-reg/some-pkg")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert!(!body["gate"]["registry_accessible"].as_bool().unwrap_or(true));
+}
+
+#[actix_web::test]
+async fn explore_upstream_search_returns_empty_with_no_results() {
+    let app = make_explore_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/upstream?name=lodash")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["items"], serde_json::json!([]));
+}
+
+#[actix_web::test]
+async fn explore_upstream_search_filtered_by_registry() {
+    let app = make_explore_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/upstream?name=lodash&registry=npm")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+// ── RubyGems proxy-mode coverage ─────────────────────────────────────────────
+
+async fn make_rubygems_proxy_app() -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+    let local_svc = make_local_svc(storage.clone());
+
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
+        "gems".to_owned(),
+        FixedRegistry::new("rubygems") as Arc<dyn RegistryClient>,
+    )]
+    .into();
+    let policies: HashMap<String, Arc<RegistryPolicy>> =
+        [("gems".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
+
+    let proxy_svc = Arc::new(ProxyService {
+        hot: new_hot_lock(HotConfig {
+            registries,
+            policies,
+            versioning: HashMap::new(),
+            signing: HashMap::new(),
+            beta_channel: HashMap::new(),
+            max_artifact_size_bytes: None,
+        }),
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+
+    let access_config = new_access_lock(batlehub_web::AccessConfig {
+        anonymous: ["gems"].iter().map(|s| s.to_string()).collect(),
+        user: ["gems"].iter().map(|s| s.to_string()).collect(),
+        admin: ["gems"].iter().map(|s| s.to_string()).collect(),
+        groups: HashMap::new(),
+        explore_anonymous: std::collections::HashSet::new(),
+        explore_user: std::collections::HashSet::new(),
+        explore_admin: std::collections::HashSet::new(),
+    });
+    let registry_map = batlehub_web::RegistryMap::from(HashMap::from([(
+        "gems".to_string(),
+        "rubygems".to_string(),
+    )]));
+    let cargo_indexes: HashMap<String, batlehub_web::CargoIndexProxy> = HashMap::new();
+    let (app, _) = actix_web::App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+        ))
+        .split_for_parts();
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+}
+
+#[actix_web::test]
+async fn gem_download_proxy_mode_returns_200() {
+    let app = make_rubygems_proxy_app().await;
+    let req = TestRequest::get()
+        .uri("/proxy/gems/gems/rails-7.1.0.gem")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn gem_download_invalid_filename_returns_400() {
+    let app = make_rubygems_proxy_app().await;
+    let req = TestRequest::get()
+        .uri("/proxy/gems/gems/not-a-gem-file")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    // Missing .gem suffix → bad request
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
+async fn gem_download_wrong_registry_type_returns_404() {
+    // "npm" in make_app is npm type, not rubygems → 404
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/npm/gems/lodash-1.0.0.gem")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn gem_info_proxy_mode_returns_200() {
+    let app = make_rubygems_proxy_app().await;
+    let req = TestRequest::get()
+        .uri("/proxy/gems/api/v1/gems/rails.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn gem_versions_proxy_mode_returns_200() {
+    let app = make_rubygems_proxy_app().await;
+    let req = TestRequest::get()
+        .uri("/proxy/gems/api/v1/versions/rails.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn gem_specs_full_proxy_mode_returns_200() {
+    let app = make_rubygems_proxy_app().await;
+    let req = TestRequest::get()
+        .uri("/proxy/gems/specs.4.8.gz")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn gem_specs_latest_proxy_mode_returns_200() {
+    let app = make_rubygems_proxy_app().await;
+    let req = TestRequest::get()
+        .uri("/proxy/gems/latest_specs.4.8.gz")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn gem_specs_prerelease_proxy_mode_returns_200() {
+    let app = make_rubygems_proxy_app().await;
+    let req = TestRequest::get()
+        .uri("/proxy/gems/prerelease_specs.4.8.gz")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn gem_gemspec_proxy_mode_returns_200() {
+    let app = make_rubygems_proxy_app().await;
+    let req = TestRequest::get()
+        .uri("/proxy/gems/quick/Marshal.4.8/rails-7.1.0.gemspec.rz")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn gem_publish_in_proxy_mode_returns_404() {
+    // publish is local/hybrid only — proxy mode → 404
+    let app = make_rubygems_proxy_app().await;
+    let req = TestRequest::post()
+        .uri("/proxy/gems/api/v1/gems")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_payload(vec![0u8; 10])
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 404);
+}
+
+#[actix_web::test]
+async fn gem_yank_in_proxy_mode_returns_404() {
+    let app = make_rubygems_proxy_app().await;
+    let req = TestRequest::delete()
+        .uri("/proxy/gems/api/v1/gems/yank?gem_name=rails&version=7.0.0")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 404);
+}
+
+#[actix_web::test]
+async fn gem_unyank_in_proxy_mode_returns_404() {
+    let app = make_rubygems_proxy_app().await;
+    let req = TestRequest::put()
+        .uri("/proxy/gems/api/v1/gems/unyank?gem_name=rails&version=7.0.0")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 404);
 }

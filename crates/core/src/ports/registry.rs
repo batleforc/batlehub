@@ -67,3 +67,45 @@ pub trait RegistryClient: Send + Sync {
         Ok(vec![])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+
+    struct MinimalClient;
+
+    #[async_trait]
+    impl RegistryClient for MinimalClient {
+        fn registry_type(&self) -> &str { "minimal" }
+        async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
+            Ok(PackageMetadata {
+                id: pkg.clone(),
+                published_at: None,
+                download_url: None,
+                checksum: None,
+                is_signed: None,
+                extra: serde_json::Value::Null,
+                cache_control: None,
+            })
+        }
+        async fn fetch_artifact(&self, _: &PackageId) -> Result<FetchedArtifact, CoreError> {
+            Err(CoreError::NotFound("no artifact".into()))
+        }
+        // Does NOT override list_versions or search_packages → uses defaults
+    }
+
+    #[tokio::test]
+    async fn default_list_versions_returns_empty() {
+        let client = MinimalClient;
+        let versions = client.list_versions("some-pkg").await.unwrap();
+        assert!(versions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn default_search_packages_returns_empty() {
+        let client = MinimalClient;
+        let results = client.search_packages("query", 10).await.unwrap();
+        assert!(results.is_empty());
+    }
+}

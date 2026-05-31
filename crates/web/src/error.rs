@@ -189,4 +189,61 @@ mod tests {
         let e = AppError::from(CoreError::Conflict("dup".into()));
         assert_eq!(e.status, StatusCode::CONFLICT);
     }
+
+    #[test]
+    fn not_found_status_is_404() {
+        let e = AppError::not_found("missing resource");
+        assert_eq!(e.status, StatusCode::NOT_FOUND);
+        assert_eq!(e.message, "missing resource");
+    }
+
+    #[test]
+    fn forbidden_status_is_403() {
+        let e = AppError::forbidden("access denied");
+        assert_eq!(e.status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn bad_request_status_is_400() {
+        let e = AppError::bad_request("invalid input");
+        assert_eq!(e.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn conflict_status_is_409() {
+        let e = AppError::conflict("already exists");
+        assert_eq!(e.status, StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn unprocessable_status_is_422() {
+        let e = AppError::unprocessable("invalid version");
+        assert_eq!(e.status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn service_unavailable_status_is_503() {
+        let e = AppError::service_unavailable("backend down");
+        assert_eq!(e.status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn error_response_uses_status_code() {
+        use actix_web::ResponseError;
+        let e = AppError::forbidden("you shall not pass");
+        let resp = e.error_response();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn from_core_quota_exceeded_maps_to_429() {
+        let e = AppError::from(CoreError::QuotaExceeded("over limit".into()));
+        assert_eq!(e.status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[test]
+    fn from_core_invalid_version_maps_to_422() {
+        let e = AppError::from(CoreError::InvalidVersion("bad semver".into()));
+        assert_eq!(e.status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
 }

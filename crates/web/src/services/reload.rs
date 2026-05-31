@@ -531,6 +531,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn apply_success_swaps_hot_config() {
+        let svc = make_svc(true);
+        let new_hot = batlehub_core::services::HotConfig {
+            registries: HashMap::new(),
+            policies: HashMap::new(),
+            versioning: HashMap::new(),
+            signing: HashMap::new(),
+            beta_channel: HashMap::new(),
+            max_artifact_size_bytes: Some(42),
+        };
+        let new_access = crate::AccessConfig {
+            anonymous: Default::default(),
+            user: Default::default(),
+            admin: Default::default(),
+            groups: Default::default(),
+            explore_anonymous: Default::default(),
+            explore_user: Default::default(),
+            explore_admin: Default::default(),
+        };
+        let pending = PendingReload {
+            id: Uuid::new_v4(),
+            created_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::seconds(600),
+            source: ReloadSource::AdminRequest,
+            diff: ReloadDiff {
+                added_registries: vec!["new-reg".to_string()],
+                ..Default::default()
+            },
+            new_hot,
+            new_access,
+            new_registry_map: crate::RegistryMap::new(HashMap::new()),
+            new_registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
+            new_upstream_map: crate::UpstreamMap::new(HashMap::new()),
+        };
+        *svc.pending.lock().unwrap() = Some(pending);
+
+        let diff = svc.apply("test-user").await.unwrap();
+
+        assert_eq!(diff.added_registries, vec!["new-reg"]);
+        assert!(svc.pending_snapshot().is_none());
+        let hot = svc.hot.read().await;
+        assert_eq!(hot.max_artifact_size_bytes, Some(42));
+    }
+
+    #[tokio::test]
+    async fn reload_immediate_applies_config() {
+        let tmp_path = format!("/tmp/batlehub_reload_test_{}.toml", Uuid::new_v4());
+        std::fs::write(
+            &tmp_path,
+            "[server]\nhost = \"127.0.0.1\"\nport = 8080\n\n[database]\ntype = \"postgresql\"\nurl = \"postgresql://user:pass@localhost/db\"\n\n[storage]\ntype = \"filesystem\"\npath = \"./tmp\"\n",
+        )
+        .unwrap();
+
+        let hot = batlehub_core::services::new_hot_lock(batlehub_core::services::HotConfig {
+            registries: HashMap::new(),
+            policies: HashMap::new(),
+            versioning: HashMap::new(),
+            signing: HashMap::new(),
+            beta_channel: HashMap::new(),
+            max_artifact_size_bytes: None,
+        });
+        let access = crate::new_access_lock(crate::AccessConfig {
+            anonymous: Default::default(),
+            user: Default::default(),
+            admin: Default::default(),
+            groups: Default::default(),
+            explore_anonymous: Default::default(),
+            explore_user: Default::default(),
+            explore_admin: Default::default(),
+        });
+        let builder: HotConfigBuilder = Arc::new(|_| {
+            Ok((
+                batlehub_core::services::HotConfig {
+                    registries: HashMap::new(),
+                    policies: HashMap::new(),
+                    versioning: HashMap::new(),
+                    signing: HashMap::new(),
+                    beta_channel: HashMap::new(),
+                    max_artifact_size_bytes: Some(999),
+                },
+                crate::AccessConfig {
+                    anonymous: Default::default(),
+                    user: Default::default(),
+                    admin: Default::default(),
+                    groups: Default::default(),
+                    explore_anonymous: Default::default(),
+                    explore_user: Default::default(),
+                    explore_admin: Default::default(),
+                },
+                crate::RegistryMap::new(HashMap::new()),
+                crate::RegistryModeMap::new(HashMap::new()),
+                crate::UpstreamMap::new(HashMap::new()),
+            ))
+        });
+        let svc = Arc::new(ConfigReloadService::new(
+            hot,
+            access,
+            crate::RegistryMap::new(HashMap::new()),
+            crate::RegistryModeMap::new(HashMap::new()),
+            crate::UpstreamMap::new(HashMap::new()),
+            tmp_path.clone(),
+            None,
+            true,
+            builder,
+            None,
+        ));
+
+        let diff = svc.reload_immediate("test").await.unwrap();
+        assert!(diff.added_registries.is_empty());
+        assert!(svc.pending_snapshot().is_none());
+        let hot = svc.hot.read().await;
+        assert_eq!(hot.max_artifact_size_bytes, Some(999));
+
+        let _ = std::fs::remove_file(tmp_path);
+    }
+
+    #[tokio::test]
+    async fn list_changes_returns_error_without_database() {
+        let svc = make_svc(true);
+        let err = svc.list_changes(0, 10).await.unwrap_err();
+        assert!(err.to_string().contains("database not configured"));
+    }
+
+    #[tokio::test]
     async fn apply_expired_pending_returns_error() {
         let svc = make_svc(true);
         let hot = batlehub_core::services::HotConfig {
