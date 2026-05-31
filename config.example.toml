@@ -53,7 +53,7 @@ user_id = "user-1"
 type = "oidc"
 issuer_url = "http://localhost:9000/application/o/proxy-auth/"
 client_id = "proxy-auth"
-client_secret = "proxy-auth-secret"                              # from Authentik app settings
+client_secret = "${OIDC_CLIENT_SECRET}"                           # set OIDC_CLIENT_SECRET env var
 redirect_uri = "http://localhost:8080/api/v1/auth/oidc/callback"
 scopes = ["openid", "profile", "email", "groups"]
 # Where to redirect after the OIDC callback. Defaults to "" (same origin as the
@@ -79,7 +79,7 @@ name = "oidc2"
 type = "oidc"
 issuer_url = "http://localhost:9000/application/o/proxy-auth/"
 client_id = "proxy-auth"
-client_secret = "proxy-auth-secret"                               # from Authentik app settings
+client_secret = "${OIDC2_CLIENT_SECRET}"                          # set OIDC2_CLIENT_SECRET env var
 redirect_uri = "http://localhost:8080/api/v1/auth/oidc2/callback"
 scopes = ["openid", "profile", "email", "groups"]
 # Where to redirect after the OIDC callback. Defaults to "" (same origin as the
@@ -493,6 +493,11 @@ upstreams = ["https://repo1.maven.org/maven2/"]
 # These are evaluated independently; you can use auth without custom TLS and
 # vice-versa.
 #
+# Sensitive values (tokens, passwords, header values) can be pulled from env
+# variables using ${VAR_NAME} syntax.  BatleHub replaces these placeholders
+# before parsing the TOML.  If a referenced variable is not set, startup fails
+# with a clear error message.  Use $${VAR_NAME} to write a literal "${VAR_NAME}".
+#
 # --- Bearer token (Gitea, Forgejo, npm token, GitHub PAT, …) ---
 # [[registries]]
 # type = "npm"
@@ -501,7 +506,7 @@ upstreams = ["https://repo1.maven.org/maven2/"]
 #
 # [registries.upstream_auth]
 # type = "bearer"
-# token = "npat-xxxx"
+# token = "${INTERNAL_NPM_TOKEN}"   # export INTERNAL_NPM_TOKEN=npat-xxxx
 #
 # --- Basic auth (Nexus, Artifactory, …) ---
 # [[registries]]
@@ -512,7 +517,7 @@ upstreams = ["https://repo1.maven.org/maven2/"]
 # [registries.upstream_auth]
 # type = "basic"
 # username = "deploy"
-# password = "s3cr3t"
+# password = "${INTERNAL_CARGO_PASSWORD}"   # export INTERNAL_CARGO_PASSWORD=s3cr3t
 #
 # --- Custom header (X-API-Key or any header-based auth scheme) ---
 # [[registries]]
@@ -523,7 +528,7 @@ upstreams = ["https://repo1.maven.org/maven2/"]
 # [registries.upstream_auth]
 # type = "header"
 # name = "X-API-Key"
-# value = "my-api-key"
+# value = "${INTERNAL_NPM_API_KEY}"   # export INTERNAL_NPM_API_KEY=my-api-key
 #
 # --- Custom CA certificate for self-signed TLS ---
 # (combine with any of the auth variants above, or use standalone)

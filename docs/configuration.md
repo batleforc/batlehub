@@ -970,7 +970,7 @@ value = "my-api-key"
 | `name` | string | header | HTTP header name (e.g. `"X-API-Key"`) |
 | `value` | string | header | HTTP header value |
 
-> **Security:** Credentials are stored in plaintext in the config file. In production, inject sensitive values through environment variable substitution or a secrets manager.
+> **Security:** Never commit credentials to version control. Use `${VAR_NAME}` placeholders in the config file to pull secrets from environment variables at startup — see [§5 Environment Variable Overrides](#5-environment-variable-overrides) for details.
 
 #### `[registries.tls]` {#upstream_tls}
 
@@ -1184,7 +1184,107 @@ Example:
 
 ## 5. Environment Variable Overrides
 
-Environment variables override config file values at startup. They follow the `PROXY_CACHE__<SECTION>__<FIELD>` convention (double-underscore separator).
+BatleHub supports two complementary mechanisms for injecting environment variable values into the config file.
+
+### 5.1 Inline substitution — `${VAR_NAME}` {#env-inline}
+
+Write `${VAR_NAME}` anywhere inside a TOML **string value**. BatleHub replaces every placeholder with the corresponding environment variable's value before the TOML is parsed. This is the recommended way to inject secrets such as OIDC client secrets, upstream auth tokens, or passwords.
+
+**Rules:**
+
+| Syntax | Meaning |
+|---|---|
+| `${VAR_NAME}` | Replaced with `$VAR_NAME` at startup. Error if the variable is not set. |
+| `$${VAR_NAME}` | Produces the literal string `${VAR_NAME}` — no lookup performed. |
+| Any other `$` | Left unchanged. |
+
+> If a referenced variable is not set, BatleHub exits immediately with a clear error message naming the missing variable. There is no silent fallback or empty-string default — this is intentional to prevent misconfigured deployments from starting.
+
+**OIDC client secret:**
+
+```toml
+[[auth]]
+type = "oidc"
+issuer_url = "https://sso.example.com/application/o/batlehub/"
+client_id   = "batlehub"
+client_secret = "${OIDC_CLIENT_SECRET}"   # export OIDC_CLIENT_SECRET=<value>
+redirect_uri  = "https://hub.example.com/api/v1/auth/oidc/callback"
+```
+
+**Upstream registry — Bearer token:**
+
+```toml
+[[registries]]
+type = "npm"
+name = "internal-npm"
+upstreams = ["https://gitea.corp.example.com/api/packages/myorg/npm"]
+
+[registries.upstream_auth]
+type  = "bearer"
+token = "${INTERNAL_NPM_TOKEN}"   # export INTERNAL_NPM_TOKEN=npat-xxxx
+```
+
+**Upstream registry — Basic auth:**
+
+```toml
+[[registries]]
+type     = "cargo"
+name     = "internal-cargo"
+upstreams = ["https://nexus.corp.example.com/repository/cargo-proxy/"]
+
+[registries.upstream_auth]
+type     = "basic"
+username = "deploy"
+password = "${INTERNAL_CARGO_PASSWORD}"   # export INTERNAL_CARGO_PASSWORD=s3cr3t
+```
+
+**Upstream registry — Custom header:**
+
+```toml
+[[registries]]
+type     = "npm"
+name     = "api-keyed-npm"
+upstreams = ["https://nexus.corp.example.com/repository/npm-proxy/"]
+
+[registries.upstream_auth]
+type  = "header"
+name  = "X-API-Key"
+value = "${INTERNAL_NPM_API_KEY}"   # export INTERNAL_NPM_API_KEY=my-api-key
+```
+
+**Kubernetes / Docker Compose:** mount a Secret as an env var and reference it from the config file.
+
+```yaml
+# docker-compose.yml
+services:
+  batlehub:
+    env_file: .env.secrets   # OIDC_CLIENT_SECRET=...
+    volumes:
+      - ./config.toml:/etc/batlehub/config.toml:ro
+```
+
+```yaml
+# Kubernetes Deployment
+env:
+  - name: OIDC_CLIENT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: batlehub-secrets
+        key: oidc-client-secret
+```
+
+**Escaping:** if a config value legitimately needs the string `${...}` (e.g. a URL template), write `$${...}`:
+
+```toml
+# This stores the literal string "${MY_VAR}" — no variable lookup:
+some_template = "$${MY_VAR}/suffix"
+```
+
+---
+
+### 5.2 Named overrides — `PROXY_CACHE__*` {#env-named}
+
+A fixed set of top-level fields can also be overridden via named environment variables. These are useful for container deployments where the config file is baked into the image and you need to tweak infrastructure addresses (host, port, DB URL) without rebuilding.
 
 | Variable | Config field | Notes |
 |---|---|---|
@@ -1201,6 +1301,8 @@ Environment variables override config file values at startup. They follow the `P
 | `PROXY_CACHE__OTEL__SERVICE_NAME` | `otel.service_name` | |
 
 > Storage env-var overrides only work with the **single-backend** `[storage]` form. Multi-backend configs (`[[storage.backends]]`) must be changed in the file.
+
+> **Choosing between the two mechanisms:** use `${VAR_NAME}` placeholders for **secrets** (auth tokens, passwords, client secrets) — they work for any field and keep credentials out of the TOML file. Use the `PROXY_CACHE__*` variables for **infrastructure addresses** (database URL, storage path, host/port) where the value is not secret but varies between environments.
 
 ---
 

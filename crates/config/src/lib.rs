@@ -2,20 +2,78 @@ pub mod schema;
 
 pub use schema::AppConfig;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::path::Path;
 
 pub fn load(path: impl AsRef<Path>) -> Result<AppConfig> {
     let raw = std::fs::read_to_string(path.as_ref())
         .with_context(|| format!("reading config file: {}", path.as_ref().display()))?;
-    let mut config: AppConfig = toml::from_str(&raw).with_context(|| "parsing config TOML")?;
+    let expanded = expand_env_vars(&raw)?;
+    let mut config: AppConfig =
+        toml::from_str(&expanded).with_context(|| "parsing config TOML")?;
     config.apply_env_overrides();
     config.validate()?;
     Ok(config)
 }
 
+/// Expand `${VAR_NAME}` placeholders in a raw config string with their
+/// environment variable values.
+///
+/// Rules:
+/// - `${VAR_NAME}` is replaced with `std::env::var("VAR_NAME")`.
+///   Returns an error if the variable is not set.
+/// - `$${VAR_NAME}` is an escape sequence that produces the literal string
+///   `${VAR_NAME}` without any variable lookup.
+/// - Any other `$` character is left unchanged.
+fn expand_env_vars(raw: &str) -> Result<String> {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch != '$' {
+            out.push(ch);
+            continue;
+        }
+        match chars.peek() {
+            Some('$') => {
+                // $${ ... } → literal ${ ... }
+                chars.next();
+                if chars.peek() == Some(&'{') {
+                    out.push('$');
+                } else {
+                    out.push('$');
+                    out.push('$');
+                }
+            }
+            Some('{') => {
+                chars.next(); // consume '{'
+                let mut var_name = String::new();
+                loop {
+                    match chars.next() {
+                        Some('}') => break,
+                        Some(c) => var_name.push(c),
+                        None => bail!("unclosed '${{...}}' placeholder in config file"),
+                    }
+                }
+                if var_name.is_empty() {
+                    bail!("empty variable name in '${{}}' placeholder in config file");
+                }
+                let value = std::env::var(&var_name).with_context(|| {
+                    format!(
+                        "config references env var '${{{var_name}}}' but it is not set"
+                    )
+                })?;
+                out.push_str(&value);
+            }
+            _ => out.push('$'),
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::{expand_env_vars, load};
     use crate::schema::{AppConfig, AuthConfig, StorageBackendConfig, StoragesConfig};
 
     fn parse(toml: &str) -> AppConfig {
@@ -470,6 +528,232 @@ mod tests {
         cfg.apply_env_overrides();
         std::env::remove_var("PROXY_CACHE__DATABASE__MAX_CONNECTIONS");
         assert_eq!(cfg.database.max_connections, 25);
+    }
+
+    // ── env var interpolation ──────────────────────────────────────────────────
+
+    #[test]
+    fn env_interpolation_basic() {
+        std::env::set_var("_TEST_EXPAND_BASIC", "hello");
+        let result = expand_env_vars("value = \"${_TEST_EXPAND_BASIC}\"").unwrap();
+        std::env::remove_var("_TEST_EXPAND_BASIC");
+        assert_eq!(result, "value = \"hello\"");
+    }
+
+    #[test]
+    fn env_interpolation_missing_var_errors() {
+        std::env::remove_var("_TEST_EXPAND_MISSING");
+        let err = expand_env_vars("x = \"${_TEST_EXPAND_MISSING}\"").unwrap_err();
+        assert!(err.to_string().contains("_TEST_EXPAND_MISSING"));
+    }
+
+    #[test]
+    fn env_interpolation_escape_produces_literal() {
+        let result = expand_env_vars("x = \"$${LITERAL}\"").unwrap();
+        assert_eq!(result, "x = \"${LITERAL}\"");
+    }
+
+    #[test]
+    fn env_interpolation_bare_dollar_unchanged() {
+        let result = expand_env_vars("x = \"price is $5\"").unwrap();
+        assert_eq!(result, "x = \"price is $5\"");
+    }
+
+    #[test]
+    fn env_interpolation_oidc_client_secret() {
+        std::env::set_var("_TEST_OIDC_SECRET", "super-secret");
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [[auth]]
+        type = "oidc"
+        issuer_url = "https://idp.example.com"
+        client_id = "my-client"
+        client_secret = "${_TEST_OIDC_SECRET}"
+        "#
+        );
+        let expanded = expand_env_vars(&toml).unwrap();
+        std::env::remove_var("_TEST_OIDC_SECRET");
+        let cfg: AppConfig = toml::from_str(&expanded).unwrap();
+        if let AuthConfig::Oidc(oidc) = &cfg.auth[0] {
+            assert_eq!(oidc.client_secret.as_deref(), Some("super-secret"));
+        } else {
+            panic!("expected OIDC auth");
+        }
+    }
+
+    #[test]
+    fn env_interpolation_upstream_bearer_token() {
+        std::env::set_var("_TEST_BEARER_TOKEN", "tok-abcdef");
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [[registries]]
+        type = "npm"
+        name = "private-npm"
+        [registries.upstream_auth]
+        type = "bearer"
+        token = "${_TEST_BEARER_TOKEN}"
+        "#
+        );
+        let expanded = expand_env_vars(&toml).unwrap();
+        std::env::remove_var("_TEST_BEARER_TOKEN");
+        let cfg: AppConfig = toml::from_str(&expanded).unwrap();
+        assert!(matches!(
+            cfg.registries[0].upstream_auth,
+            Some(crate::schema::UpstreamAuthConfig::Bearer(ref b)) if b.token == "tok-abcdef"
+        ));
+    }
+
+    #[test]
+    fn env_interpolation_upstream_basic_password() {
+        std::env::set_var("_TEST_BASIC_PASS", "s3cr3t");
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [[registries]]
+        type = "cargo"
+        name = "private-cargo"
+        [registries.upstream_auth]
+        type = "basic"
+        username = "deploy"
+        password = "${_TEST_BASIC_PASS}"
+        "#
+        );
+        let expanded = expand_env_vars(&toml).unwrap();
+        std::env::remove_var("_TEST_BASIC_PASS");
+        let cfg: AppConfig = toml::from_str(&expanded).unwrap();
+        assert!(matches!(
+            cfg.registries[0].upstream_auth,
+            Some(crate::schema::UpstreamAuthConfig::Basic(ref b)) if b.password == "s3cr3t"
+        ));
+    }
+
+    #[test]
+    fn env_interpolation_multiple_vars_in_one_file() {
+        std::env::set_var("_TEST_MULTI_A", "val-a");
+        std::env::set_var("_TEST_MULTI_B", "val-b");
+        let result =
+            expand_env_vars("a = \"${_TEST_MULTI_A}\"\nb = \"${_TEST_MULTI_B}\"").unwrap();
+        std::env::remove_var("_TEST_MULTI_A");
+        std::env::remove_var("_TEST_MULTI_B");
+        assert_eq!(result, "a = \"val-a\"\nb = \"val-b\"");
+    }
+
+    #[test]
+    fn env_interpolation_two_vars_in_same_value() {
+        std::env::set_var("_TEST_CONCAT_USER", "admin");
+        std::env::set_var("_TEST_CONCAT_PASS", "s3cr3t");
+        let result =
+            expand_env_vars("url = \"${_TEST_CONCAT_USER}:${_TEST_CONCAT_PASS}@host\"").unwrap();
+        std::env::remove_var("_TEST_CONCAT_USER");
+        std::env::remove_var("_TEST_CONCAT_PASS");
+        assert_eq!(result, "url = \"admin:s3cr3t@host\"");
+    }
+
+    #[test]
+    fn env_interpolation_value_with_special_chars() {
+        // Real-world passwords contain @, /, =, :, !, +
+        std::env::set_var("_TEST_SPECIAL_CHARS", "P@ss/w=rd:1!+x");
+        let result = expand_env_vars("password = \"${_TEST_SPECIAL_CHARS}\"").unwrap();
+        std::env::remove_var("_TEST_SPECIAL_CHARS");
+        assert_eq!(result, "password = \"P@ss/w=rd:1!+x\"");
+    }
+
+    #[test]
+    fn env_interpolation_double_dollar_not_brace_is_literal() {
+        // $$ not followed by { → passes through as $$
+        let result = expand_env_vars("x = \"$$VAR\"").unwrap();
+        assert_eq!(result, "x = \"$$VAR\"");
+    }
+
+    #[test]
+    fn env_interpolation_empty_input_is_ok() {
+        let result = expand_env_vars("").unwrap();
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn env_interpolation_no_placeholders_is_unchanged() {
+        let input = "[server]\nhost = \"0.0.0.0\"\nport = 8080\n";
+        let result = expand_env_vars(input).unwrap();
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn env_interpolation_substituted_value_is_not_re_expanded() {
+        // The substituted value itself may contain ${...} — it must NOT be re-expanded.
+        std::env::set_var("_TEST_NO_REEXPAND", "${_TEST_EXPAND_BASIC}");
+        let result = expand_env_vars("x = \"${_TEST_NO_REEXPAND}\"").unwrap();
+        std::env::remove_var("_TEST_NO_REEXPAND");
+        assert_eq!(result, "x = \"${_TEST_EXPAND_BASIC}\"");
+    }
+
+    #[test]
+    fn env_interpolation_upstream_header_value() {
+        std::env::set_var("_TEST_API_KEY", "my-api-key-xyz");
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [[registries]]
+        type = "npm"
+        name = "api-keyed-npm"
+        [registries.upstream_auth]
+        type = "header"
+        name = "X-API-Key"
+        value = "${_TEST_API_KEY}"
+        "#
+        );
+        let expanded = expand_env_vars(&toml).unwrap();
+        std::env::remove_var("_TEST_API_KEY");
+        let cfg: AppConfig = toml::from_str(&expanded).unwrap();
+        assert!(matches!(
+            cfg.registries[0].upstream_auth,
+            Some(crate::schema::UpstreamAuthConfig::Header(ref h)) if h.value == "my-api-key-xyz"
+        ));
+    }
+
+    #[test]
+    fn env_interpolation_database_url_via_load() {
+        let path = std::env::temp_dir().join("_batlehub_test_load_expand.toml");
+        std::fs::write(
+            &path,
+            r#"
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[database]
+type = "postgresql"
+url  = "${_TEST_LOAD_DB_URL}"
+
+[storage]
+type = "filesystem"
+path = "./tmp"
+"#,
+        )
+        .unwrap();
+        std::env::set_var("_TEST_LOAD_DB_URL", "postgresql://env-user:env-pass@db/mydb");
+        let cfg = load(&path).expect("load failed");
+        std::env::remove_var("_TEST_LOAD_DB_URL");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(cfg.database.url, "postgresql://env-user:env-pass@db/mydb");
+    }
+
+    #[test]
+    fn env_interpolation_unclosed_placeholder_errors() {
+        let err = expand_env_vars("x = \"${UNCLOSED\"").unwrap_err();
+        assert!(err.to_string().contains("unclosed"));
+    }
+
+    #[test]
+    fn env_interpolation_empty_var_name_errors() {
+        let err = expand_env_vars("x = \"${}\"").unwrap_err();
+        assert!(err.to_string().contains("empty variable name"));
     }
 
     #[test]

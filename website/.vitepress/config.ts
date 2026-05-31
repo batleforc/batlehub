@@ -115,6 +115,10 @@ export default defineConfig({
             },
             { text: "Helm chart", link: "/guide/installation#helm-chart" },
             {
+              text: "Helm: secret injection",
+              link: "/guide/installation#helm-env-vars",
+            },
+            {
               text: "First-time setup",
               link: "/guide/installation#first-time-setup",
             },
@@ -128,6 +132,14 @@ export default defineConfig({
             {
               text: "Configuration",
               link: "/guide/administration#configuration",
+            },
+            {
+              text: "Secret injection (${VAR})",
+              link: "/guide/administration#env-inline",
+            },
+            {
+              text: "Named env overrides",
+              link: "/guide/administration#env-named",
             },
             { text: "Storage", link: "/guide/administration#storage" },
             {

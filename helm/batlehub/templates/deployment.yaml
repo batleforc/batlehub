@@ -1,3 +1,8 @@
+{{- if and .Values.externalManifest.enabled
+    (not (or (eq .Values.externalManifest.kind "Secret")
+             (eq .Values.externalManifest.kind "ConfigMap"))) }}
+{{- fail (printf "externalManifest.kind must be 'Secret' or 'ConfigMap', got: %s" .Values.externalManifest.kind) }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -12,8 +17,9 @@ spec:
   template:
     metadata:
       annotations:
-        # Force a rollout when the config Secret changes.
-        checksum/secret: {{ include "batlehub.config" . | sha256sum }}
+        {{- if not .Values.externalManifest.enabled }}
+        checksum/config: {{ include "batlehub.config" . | sha256sum }}
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -29,12 +35,28 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       volumes:
         - name: config
+          {{- if .Values.externalManifest.enabled }}
+          {{- if eq .Values.externalManifest.kind "ConfigMap" }}
+          configMap:
+            name: {{ .Values.externalManifest.name }}
+            items:
+              - key: {{ .Values.externalManifest.key }}
+                path: config.toml
+          {{- else }}
           secret:
-            secretName: {{ include "batlehub.secretName" . }}
+            secretName: {{ .Values.externalManifest.name }}
+            items:
+              - key: {{ .Values.externalManifest.key }}
+                path: config.toml
+          {{- end }}
+          {{- else }}
+          secret:
+            secretName: {{ include "batlehub.fullname" . }}-config
             items:
               - key: config.toml
                 path: config.toml
-        {{- if and .Values.persistence.enabled (eq .Values.storage.type "filesystem") }}
+          {{- end }}
+        {{- if and .Values.persistence.enabled (eq .Values.config.storage.type "filesystem") }}
         - name: cache
           persistentVolumeClaim:
             claimName: {{ .Values.persistence.existingClaim | default (printf "%s-cache" (include "batlehub.fullname" .)) }}
@@ -48,9 +70,17 @@ spec:
           args:
             - --config
             - /etc/batlehub/config.toml
+          {{- with .Values.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: http
-              containerPort: {{ .Values.server.port }}
+              containerPort: {{ .Values.config.server.port }}
               protocol: TCP
           livenessProbe:
             httpGet:
@@ -70,9 +100,9 @@ spec:
             - name: config
               mountPath: /etc/batlehub
               readOnly: true
-            {{- if and .Values.persistence.enabled (eq .Values.storage.type "filesystem") }}
+            {{- if and .Values.persistence.enabled (eq .Values.config.storage.type "filesystem") }}
             - name: cache
-              mountPath: {{ .Values.storage.path }}
+              mountPath: {{ .Values.config.storage.path }}
             {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

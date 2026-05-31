@@ -157,7 +157,6 @@ Applies to registries running in `local` or `hybrid` mode.
 
 - [x] **Package explorer** (`/explore`) — collapsible catalog with registry sidebar; search and sort across all cached and upstream packages; per-package detail page showing version history with gate/firewall status per version; `[registries.rbac.explore]` config block for independent search permissions
 - [ ] Package detail pages with full metadata, version history, and download links (full deep-linking beyond the explorer summary)
-- [ ] Search across all registries, including packages not yet cached (based on upstream registry metadata)
 - [ ] User listing and block management in the admin panel (OIDC and Kubernetes-sourced identities, not just static tokens)
 - [ ] Config editor with validation, diff preview, and apply button (integrates with hot reload)
   - [ ] Read-only warning when the config file is mounted from a Kubernetes ConfigMap, with instructions for applying changes externally

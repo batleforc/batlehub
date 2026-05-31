@@ -84,7 +84,14 @@ impl AppConfig {
 
     /// Apply environment variable overrides on top of the file-based config.
     ///
-    /// Convention: `PROXY_CACHE__<SECTION>__<FIELD>` (double-underscore separator).
+    /// **Preferred approach for secrets:** use `${VAR_NAME}` placeholders directly
+    /// inside the TOML file — they are expanded before parsing, so they work for
+    /// any field, including `client_secret`, upstream auth `token`/`password`/`value`,
+    /// and any other string field.  See the docs for details.
+    ///
+    /// This method handles a fixed set of named overrides for non-secret top-level
+    /// fields as a convenience.  Convention: `PROXY_CACHE__<SECTION>__<FIELD>`
+    /// (double-underscore separator).
     ///
     /// Supported variables:
     /// | Variable                              | Field                        |

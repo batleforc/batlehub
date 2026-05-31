@@ -14,18 +14,103 @@ BatleHub reads a single TOML file, defaulting to `config.toml` in the working di
 
 ### Loading order
 
-1. TOML file is parsed.
-2. Environment variables `PROXY_CACHE__<SECTION>__<FIELD>` are applied on top.
-3. Registry names and types are validated.
+1. TOML file is read from disk.
+2. `${VAR_NAME}` placeholders inside string values are replaced with their environment variable values.
+3. The resulting TOML is parsed.
+4. Named `PROXY_CACHE__*` environment variable overrides are applied on top.
+5. Registry names and types are validated.
 
-### Key environment variable overrides
+### Secret injection with `${VAR_NAME}` {#env-inline}
+
+Write `${VAR_NAME}` inside any TOML string value. BatleHub replaces the placeholder with the named environment variable before parsing. This works for **every field** — auth secrets, upstream tokens, passwords, and more.
+
+::: danger Missing variable = startup failure
+If a referenced variable is not set, BatleHub exits immediately with a clear error message naming the missing variable. There is no silent fallback or empty-string default.
+:::
+
+**OIDC client secret:**
+
+```toml
+[[auth]]
+type          = "oidc"
+issuer_url    = "https://sso.example.com/application/o/batlehub/"
+client_id     = "batlehub"
+client_secret = "${OIDC_CLIENT_SECRET}"   # export OIDC_CLIENT_SECRET=...
+redirect_uri  = "https://hub.example.com/api/v1/auth/oidc/callback"
+```
+
+**Upstream registry credentials:**
+
+```toml
+# Bearer token (GitHub PAT, Gitea token, npm auth token)
+[registries.upstream_auth]
+type  = "bearer"
+token = "${REGISTRY_TOKEN}"
+
+# Basic auth (Nexus, Artifactory)
+[registries.upstream_auth]
+type     = "basic"
+username = "deploy"
+password = "${REGISTRY_PASSWORD}"
+
+# Custom header (X-API-Key, etc.)
+[registries.upstream_auth]
+type  = "header"
+name  = "X-API-Key"
+value = "${REGISTRY_API_KEY}"
+```
+
+**Kubernetes / Docker Compose injection:**
+
+```yaml
+# docker-compose.yml
+services:
+  batlehub:
+    env_file: .env.secrets   # OIDC_CLIENT_SECRET=...
+    volumes:
+      - ./config.toml:/etc/batlehub/config.toml:ro
+```
+
+```yaml
+# Kubernetes Deployment
+env:
+  - name: OIDC_CLIENT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: batlehub-secrets
+        key: oidc-client-secret
+```
+
+To write a literal `${...}` string (no variable lookup), escape the first `$`:
+
+```toml
+# Stores the literal string "${MY_VAR}" — no substitution performed:
+some_field = "$${MY_VAR}"
+```
+
+### Named environment variable overrides {#env-named}
+
+A fixed set of top-level fields can also be overridden with named env vars. Useful for tweaking infrastructure addresses (host, port, DB URL) in containerised deployments without modifying the config file.
 
 | Variable | Config field |
 |----------|-------------|
 | `PROXY_CACHE__SERVER__PORT` | `server.port` |
+| `PROXY_CACHE__SERVER__HOST` | `server.host` |
+| `PROXY_CACHE__SERVER__STATIC_DIR` | `server.static_dir` |
 | `PROXY_CACHE__DATABASE__URL` | `database.url` |
-| `PROXY_CACHE__STORAGE__PATH` | `storage.path` |
+| `PROXY_CACHE__DATABASE__MAX_CONNECTIONS` | `database.max_connections` |
+| `PROXY_CACHE__STORAGE__PATH` | `storage.path` (single filesystem backend) |
+| `PROXY_CACHE__STORAGE__BUCKET` | `storage.bucket` (single S3 backend) |
+| `PROXY_CACHE__STORAGE__REGION` | `storage.region` (single S3 backend) |
+| `PROXY_CACHE__STORAGE__ENDPOINT_URL` | `storage.endpoint_url` (single S3 backend) |
 | `PROXY_CACHE__OTEL__ENDPOINT` | `otel.endpoint` |
+| `PROXY_CACHE__OTEL__SERVICE_NAME` | `otel.service_name` |
+
+::: tip When to use which
+Use **`${VAR_NAME}` placeholders** for secrets (auth tokens, passwords, client secrets) — they work for any field and keep credentials out of the TOML file entirely.
+
+Use **`PROXY_CACHE__*` variables** for infrastructure addresses (database URL, storage path, host/port) where the value is not secret but varies between environments.
+:::
 
 ### Minimal production config
 
@@ -105,12 +190,12 @@ user_id = "ci"
 
 ```toml
 [[auth]]
-type         = "oidc"
-issuer_url   = "https://sso.example.com/application/o/batlehub/"
-client_id    = "batlehub"
-client_secret = "client-secret"
-redirect_uri = "https://batlehub.example.com/api/v1/auth/oidc/callback"
-scopes       = ["openid", "profile", "email", "groups"]
+type          = "oidc"
+issuer_url    = "https://sso.example.com/application/o/batlehub/"
+client_id     = "batlehub"
+client_secret = "${OIDC_CLIENT_SECRET}"   # inject from env — never commit secrets
+redirect_uri  = "https://batlehub.example.com/api/v1/auth/oidc/callback"
+scopes        = ["openid", "profile", "email", "groups"]
 
 user_id_claim = "preferred_username"
 role_claim    = "groups"
