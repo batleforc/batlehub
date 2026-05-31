@@ -8,9 +8,9 @@ For discussion or to propose a feature, open an issue on the [project repository
 
 ## New registry types
 
-Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules, Maven, RubyGems, Terraform, Composer.
+Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules, Maven, RubyGems, Terraform, Composer, PyPI, Conda.
 
-- [ ] **PyPI** — Python package index (simple API + wheel / sdist downloads)
+- [x] **PyPI** — Python package index; Simple API proxy with URL rewriting; wheel / sdist downloads; private publishing via `twine` in `local`/`hybrid` mode
 - [x] **Maven / Gradle** — Maven Central-compatible metadata XML + JAR / POM downloads; private publishing via `mvn deploy` in `local`/`hybrid` mode
 - [x] **RubyGems** — gem downloads and version listing (proxy + local/hybrid with publish/yank/unyank)
 - [ ] **NuGet** — .NET package protocol
@@ -19,7 +19,7 @@ Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules, 
 - [ ] **GitLab releases and packages** — similar to GitHub but with different auth and pagination
 - [ ] **Forgejo releases and packages** — Gitea fork with minor API differences
 - [x] **Composer** — PHP Composer registry (Packagist v2 protocol — `packages.json`, p2 metadata, dist downloads); private package publishing via ZIP upload in `local`/`hybrid` mode
-- [ ] **Anaconda / Conda** — Python data science package registry with complex dependency resolution
+- [x] **Anaconda / Conda** — Python data science package registry; `repodata.json` proxy and channel merging; `.tar.bz2` and `.conda` package parsing; private channel publishing in `local`/`hybrid` mode
 
 > **Not planned:** Docker / OCI artifacts. [Harbor](https://goharbor.io) solves this better than we could, unless concrete demand arises.
 
@@ -121,6 +121,8 @@ Applies to registries running in `local` or `hybrid` mode.
 - **VS Code extensions** — deprecation and unlisting; upload via the UI (form for VSIX + metadata), in addition to the existing `PUT` API
 - [x] **Maven** — private artifact publishing via `mvn deploy`; POM-triggered three-phase publish; JAR/checksum pre-upload; dynamically generated `maven-metadata.xml` from DB; `local` and `hybrid` modes
 - [x] **Terraform** — private module publishing (tar.gz upload, `X-Terraform-Get` redirect); private provider publishing (version manifest + per-platform binary upload); `local` and `hybrid` modes
+- [x] **PyPI** — private wheel / sdist publishing via `twine`; Simple API served from DB; `local` and `hybrid` modes
+- [x] **Conda** — private channel with `repodata.json` generation from DB; `.tar.bz2` and `.conda` package upload; `local` and `hybrid` modes
 
 ### For all private registry types
 
@@ -151,7 +153,8 @@ Applies to registries running in `local` or `hybrid` mode.
 
 ## UI improvements
 
-- [ ] Package detail pages with full metadata, version history, and download links
+- [x] **Package explorer** (`/explore`) — collapsible catalog with registry sidebar; search and sort across all cached and upstream packages; per-package detail page showing version history with gate/firewall status per version; `[registries.rbac.explore]` config block for independent search permissions
+- [ ] Package detail pages with full metadata, version history, and download links (full deep-linking beyond the explorer summary)
 - [ ] Search across all registries, including packages not yet cached (based on upstream registry metadata)
 - [ ] User listing and block management in the admin panel (OIDC and Kubernetes-sourced identities, not just static tokens)
 - [ ] Config editor with validation, diff preview, and apply button (integrates with hot reload)
