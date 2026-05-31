@@ -10,7 +10,7 @@ use batlehub_core::{
     services::{AdminService, LocalRegistryService, ProxyService},
 };
 
-use crate::{error::AppError, extractors::AuthIdentity, AccessConfig};
+use crate::{error::AppError, extractors::AuthIdentity};
 
 // ── List packages (collapsed) ─────────────────────────────────────────────────
 
@@ -71,9 +71,9 @@ pub async fn explore_packages(
     query: web::Query<ExploreQuery>,
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
-    access: web::Data<AccessConfig>,
+    access: web::Data<crate::AccessConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    let accessible = access.explore_accessible_registries_for(&identity);
+    let accessible = access.read().await.explore_accessible_registries_for(&identity);
 
     if let Some(ref reg) = query.registry {
         if !accessible.contains(reg) {
@@ -169,9 +169,10 @@ pub struct RegistryStatDto {
 pub async fn explore_registry_stats(
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
-    access: web::Data<AccessConfig>,
+    access: web::Data<crate::AccessConfigLock>,
 ) -> Result<impl Responder, AppError> {
     let accessible: Vec<String> = access
+        .read().await
         .explore_accessible_registries_for(&identity)
         .into_iter()
         .collect();
@@ -258,24 +259,25 @@ pub async fn explore_package_detail(
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
-    access: web::Data<AccessConfig>,
+    access: web::Data<crate::AccessConfigLock>,
 ) -> Result<impl Responder, AppError> {
     let registry = &path.registry;
     let name = &path.name;
 
     // Gate: registry-level proxy access
     let registry_accessible = access
+        .read().await
         .accessible_registries_for(&identity)
         .contains(registry);
 
     // Gate: beta channel membership
-    let beta_member = if let Some(beta_port) = local_svc.beta_channel.get(registry) {
-        beta_port
-            .is_member(registry, &identity)
-            .await
-            .unwrap_or(false)
-    } else {
-        false
+    let beta_member = {
+        let beta_port = local_svc.hot.read().await.beta_channel.get(registry).cloned();
+        if let Some(bp) = beta_port {
+            bp.is_member(registry, &identity).await.unwrap_or(false)
+        } else {
+            false
+        }
     };
 
     // Proxied versions from package_statuses
@@ -426,9 +428,9 @@ pub async fn explore_upstream_search(
     identity: AuthIdentity,
     proxy_svc: web::Data<Arc<ProxyService>>,
     admin_svc: web::Data<Arc<AdminService>>,
-    access: web::Data<AccessConfig>,
+    access: web::Data<crate::AccessConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    let accessible = access.explore_accessible_registries_for(&identity);
+    let accessible = access.read().await.explore_accessible_registries_for(&identity);
 
     tracing::info!(
         name = %query.name,
@@ -436,19 +438,21 @@ pub async fn explore_upstream_search(
         "upstream search: resolving clients"
     );
 
-    // Collect registry clients to search
-    let clients_to_search: Vec<(String, _)> = proxy_svc
-        .registries
-        .iter()
-        .filter(|(name, _)| {
-            if let Some(ref reg) = query.registry {
-                name.as_str() == reg && accessible.contains(name.as_str())
-            } else {
-                accessible.contains(name.as_str())
-            }
-        })
-        .map(|(name, client)| (name.clone(), Arc::clone(client)))
-        .collect();
+    // Collect registry clients to search (snapshot from hot config)
+    let clients_to_search: Vec<(String, Arc<dyn batlehub_core::ports::RegistryClient>)> = {
+        let hot = proxy_svc.hot.read().await;
+        hot.registries
+            .iter()
+            .filter(|(name, _)| {
+                if let Some(ref reg) = query.registry {
+                    name.as_str() == reg && accessible.contains(name.as_str())
+                } else {
+                    accessible.contains(name.as_str())
+                }
+            })
+            .map(|(name, client)| (name.clone(), Arc::clone(client)))
+            .collect()
+    };
 
     tracing::info!(
         clients = ?clients_to_search.iter().map(|(n, _)| n).collect::<Vec<_>>(),

@@ -16,7 +16,7 @@ use crate::{
 };
 
 fn require_conda(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
-    match map.type_of(registry) {
+    match map.type_of(registry).as_deref() {
         Some("conda") => Ok(()),
         Some(_) => Err(AppError::not_found(format!(
             "registry '{registry}' is not a Conda registry"
@@ -198,7 +198,9 @@ pub async fn conda_current_repodata(
     ),
     security(("bearer_token" = [])),
 )]
-#[get("/proxy/{registry}/{platform}/{filename}")]
+// Regex constrains filename to .tar.bz2 and .conda extensions, preventing
+// this route from shadowing the npm/cargo GET /proxy/{registry}/{name}/{version} handler.
+#[get("/proxy/{registry}/{platform}/{filename:.+\\.(?:tar\\.bz2|conda)}")]
 pub async fn conda_file_download(
     path: web::Path<(String, String, String)>,
     identity: AuthIdentity,
@@ -396,7 +398,7 @@ mod tests {
     fn map_with(registry: &str, type_: &str) -> RegistryMap {
         let mut m = HashMap::new();
         m.insert(registry.to_owned(), type_.to_owned());
-        RegistryMap(m)
+        RegistryMap::from(m)
     }
 
     #[test]

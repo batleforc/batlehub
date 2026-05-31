@@ -71,6 +71,12 @@ pub fn embedded_migrator() -> Migrator {
                 "access events indexes",
                 "../migrations/017_access_events_idx.sql"
             ),
+            mig!(
+                18,
+                "config changes",
+                "../migrations/018_config_changes.sql"
+            ),
+            mig!(19, "system kv", "../migrations/019_system_kv.sql"),
         ]),
         ignore_missing: false,
         locking: true,
@@ -85,8 +91,8 @@ mod tests {
     #[test]
     fn embedded_migrator_has_all_migrations() {
         let m = embedded_migrator();
-        assert_eq!(m.migrations.len(), 17, "all 17 migrations must be embedded");
+        assert_eq!(m.migrations.len(), 19, "all 19 migrations must be embedded");
         assert_eq!(m.migrations[0].version, 1);
-        assert_eq!(m.migrations[16].version, 17);
+        assert_eq!(m.migrations[18].version, 19);
     }
 }

@@ -3,6 +3,7 @@ import { RouterView, RouterLink, useRoute } from "vue-router";
 import {
   ShieldCheck,
   Package,
+  RefreshCw,
   Upload,
   ScrollText,
   HeartPulse,
@@ -21,6 +22,7 @@ const adminLinks = [
   { to: "/admin/ip-blocks",    label: "IP Blocks",    icon: Shield },
   { to: "/admin/beta-channel",    label: "Beta Channel",    icon: FlaskConical },
   { to: "/admin/team-namespaces", label: "Team Namespaces", icon: FolderKey },
+  { to: "/admin/config-reload",   label: "Config Reload",   icon: RefreshCw },
 ];
 
 function isActive(to: string) {

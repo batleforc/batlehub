@@ -44,10 +44,13 @@ use batlehub_core::{
     entities::Role,
     ports::{AuthProvider, CacheStore, RegistryClient},
     rules::{BlockListRule, RbacRule},
-    services::{AdminService, LocalRegistryService, ProxyMetrics, ProxyService, RegistryPolicy},
+    services::{
+        new_hot_lock, AdminService, HotConfig, LocalRegistryService, ProxyMetrics, ProxyService,
+        RegistryPolicy,
+    },
 };
 use batlehub_web::{
-    configure_app, AccessConfig, AuthMiddlewareFactory, RegistryMap, RegistryModeMap, UpstreamMap,
+    configure_app, new_access_lock, AccessConfig, AuthMiddlewareFactory, RegistryMap, RegistryModeMap, UpstreamMap,
 };
 
 // ── Local proxy server ────────────────────────────────────────────────────────
@@ -72,9 +75,9 @@ impl LocalProxy {
         let storage = InMemoryStorageBackend::new();
         let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
 
-        let registry_names: Vec<String> = registry_map.0.keys().cloned().collect();
+        let registry_names: Vec<String> = registry_map.keys();
 
-        let policies: HashMap<String, RegistryPolicy> = registry_names
+        let policies: HashMap<String, Arc<RegistryPolicy>> = registry_names
             .iter()
             .map(|name| {
                 let perms = HashMap::from([
@@ -84,7 +87,7 @@ impl LocalProxy {
                 ]);
                 (
                     name.clone(),
-                    RegistryPolicy {
+                    Arc::new(RegistryPolicy {
                         metadata_ttl: None,
                         firewall_only: false,
                         serve_stale_metadata: false,
@@ -93,45 +96,57 @@ impl LocalProxy {
                             Box::new(RbacRule::new(perms)),
                             Box::new(BlockListRule::new(repo.clone())),
                         ],
-                    },
+                    }),
                 )
             })
             .collect();
 
         let local_svc = Arc::new(LocalRegistryService {
-            backend: Arc::new(InMemoryLocalRegistry::new()),
-            storage: storage.clone(),
-            max_artifact_bytes: None,
-            quota: None,
-            ownership: None,
+        backend: Arc::new(InMemoryLocalRegistry::new()),
+        storage: storage.clone(),
+        hot: new_hot_lock(HotConfig {
+            registries: HashMap::new(),
+            policies: HashMap::new(),
             versioning: HashMap::new(),
             signing: HashMap::new(),
             beta_channel: HashMap::new(),
-            team_namespace: None,
-        });
+            max_artifact_size_bytes: None,
+        }),
+        quota: None,
+        ownership: None,
+        team_namespace: None,
+    });
 
         // No upstream registries — local mode only.
         let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
 
         let proxy_svc = Arc::new(ProxyService {
-            registries,
-            storage,
-            cache,
-            repo: repo.clone(),
-            artifact_meta: NoopArtifactMetaRepository::arc(),
-            policies,
+        hot: new_hot_lock(HotConfig {
+            registries: registries,
+            policies: policies,
+            versioning: HashMap::new(),
+            signing: HashMap::new(),
+            beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
-            metrics: Arc::new(ProxyMetrics::new(&[])),
-        });
+        }),
+        storage: storage,
+        cache: cache,
+        repo: repo.clone(),
+        artifact_meta: NoopArtifactMetaRepository::arc(),
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+    });
         let admin_svc = Arc::new(AdminService::new(repo));
         let token_repo = NullUserTokenRepository::arc();
 
-        let access_config = AccessConfig {
+        let access_config = new_access_lock(AccessConfig {
             anonymous: registry_names.iter().cloned().collect(),
             user: registry_names.iter().cloned().collect(),
             admin: registry_names.iter().cloned().collect(),
             groups: HashMap::new(),
-        };
+            explore_anonymous: std::collections::HashSet::new(),
+            explore_user: std::collections::HashSet::new(),
+            explore_admin: std::collections::HashSet::new(),
+        });
 
         let auth_providers: Vec<Arc<dyn AuthProvider>> =
             vec![Arc::new(StaticTokenAuthProvider::new([(
@@ -141,11 +156,11 @@ impl LocalProxy {
             )]))];
 
         // All registries run in Local mode.
-        let mode_map = RegistryModeMap(
+        let mode_map = RegistryModeMap::from(
             registry_names
                 .iter()
                 .map(|n| (n.clone(), RegistryMode::Local))
-                .collect(),
+                .collect::<std::collections::HashMap<_, _>>(),
         );
 
         let configure = configure_app(
@@ -406,9 +421,7 @@ fn composer_zip(vendor: &str, pkg: &str, version: &str) -> Vec<u8> {
 
 #[test]
 fn local_npm_publish_pull() {
-    let proxy = LocalProxy::start(RegistryMap(
-        [("my-npm".to_owned(), "npm".to_owned())].into(),
-    ));
+    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-npm".to_owned(), "npm".to_owned())])));
     let tmp = TempDir::new().unwrap();
 
     let body = npm_publish_body("test-pkg", "1.0.0", b"fake tarball bytes");
@@ -444,9 +457,7 @@ fn local_npm_publish_pull() {
 
 #[test]
 fn local_cargo_publish_pull() {
-    let proxy = LocalProxy::start(RegistryMap(
-        [("my-cargo".to_owned(), "cargo".to_owned())].into(),
-    ));
+    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-cargo".to_owned(), "cargo".to_owned())])));
     let tmp = TempDir::new().unwrap();
 
     let body = cargo_publish_body("test-crate", "1.0.0", b"fake .crate bytes");
@@ -474,9 +485,7 @@ fn local_cargo_publish_pull() {
 
 #[test]
 fn local_go_publish_pull() {
-    let proxy = LocalProxy::start(RegistryMap(
-        [("my-go".to_owned(), "goproxy".to_owned())].into(),
-    ));
+    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-go".to_owned(), "goproxy".to_owned())])));
     let tmp = TempDir::new().unwrap();
 
     const MODULE: &str = "example.com/testmod";
@@ -527,9 +536,7 @@ fn local_go_publish_pull() {
 
 #[test]
 fn local_rubygems_publish_pull() {
-    let proxy = LocalProxy::start(RegistryMap(
-        [("my-gems".to_owned(), "rubygems".to_owned())].into(),
-    ));
+    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-gems".to_owned(), "rubygems".to_owned())])));
     let tmp = TempDir::new().unwrap();
 
     let gem_bytes = minimal_gem("test-gem", "1.0.0");
@@ -557,9 +564,7 @@ fn local_rubygems_publish_pull() {
 
 #[test]
 fn local_composer_publish_pull() {
-    let proxy = LocalProxy::start(RegistryMap(
-        [("my-composer".to_owned(), "composer".to_owned())].into(),
-    ));
+    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-composer".to_owned(), "composer".to_owned())])));
     let tmp = TempDir::new().unwrap();
 
     let zip_bytes = composer_zip("myvendor", "mypkg", "1.0.0");
@@ -603,9 +608,7 @@ fn local_composer_publish_pull() {
 
 #[test]
 fn local_maven_publish_pull() {
-    let proxy = LocalProxy::start(RegistryMap(
-        [("my-maven".to_owned(), "maven".to_owned())].into(),
-    ));
+    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-maven".to_owned(), "maven".to_owned())])));
     let tmp = TempDir::new().unwrap();
 
     let jar_bytes = b"fake jar bytes for test artifact";
@@ -635,9 +638,7 @@ fn local_maven_publish_pull() {
 
 #[test]
 fn local_openvsx_publish_pull() {
-    let proxy = LocalProxy::start(RegistryMap(
-        [("my-openvsx".to_owned(), "openvsx".to_owned())].into(),
-    ));
+    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-openvsx".to_owned(), "openvsx".to_owned())])));
     let tmp = TempDir::new().unwrap();
 
     let vsix_bytes = b"fake vsix extension bytes";
@@ -672,9 +673,7 @@ fn local_openvsx_publish_pull() {
 
 #[test]
 fn local_terraform_module_publish_pull() {
-    let proxy = LocalProxy::start(RegistryMap(
-        [("my-terraform".to_owned(), "terraform".to_owned())].into(),
-    ));
+    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-terraform".to_owned(), "terraform".to_owned())])));
     let tmp = TempDir::new().unwrap();
 
     let module_bytes = b"fake terraform module tarball";
@@ -780,9 +779,7 @@ fn pypi_upload(url: &str, name: &str, version: &str, file: &std::path::Path) -> 
 
 #[test]
 fn local_pypi_publish_pull() {
-    let proxy = LocalProxy::start(RegistryMap(
-        [("my-pypi".to_owned(), "pypi".to_owned())].into(),
-    ));
+    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-pypi".to_owned(), "pypi".to_owned())])));
     let tmp = TempDir::new().unwrap();
 
     let wheel_bytes = minimal_wheel("myapp", "1.0.0");
@@ -859,9 +856,7 @@ fn minimal_conda_tar_bz2(name: &str, version: &str, build: &str) -> Vec<u8> {
 
 #[test]
 fn local_conda_publish_pull() {
-    let proxy = LocalProxy::start(RegistryMap(
-        [("my-conda".to_owned(), "conda".to_owned())].into(),
-    ));
+    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-conda".to_owned(), "conda".to_owned())])));
     let tmp = TempDir::new().unwrap();
 
     let pkg_bytes = minimal_conda_tar_bz2("numpy-stub", "1.26.0", "py311h0_0");

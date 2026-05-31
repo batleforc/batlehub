@@ -52,10 +52,13 @@ use batlehub_core::{
     entities::Role,
     ports::{AuthProvider, CacheStore, RegistryClient},
     rules::{BlockListRule, RbacRule},
-    services::{AdminService, LocalRegistryService, ProxyMetrics, ProxyService, RegistryPolicy},
+    services::{
+        new_hot_lock, AdminService, HotConfig, LocalRegistryService, ProxyMetrics, ProxyService,
+        RegistryPolicy,
+    },
 };
 use batlehub_web::{
-    configure_app, AccessConfig, AuthMiddlewareFactory, RegistryMap, RegistryModeMap, UpstreamMap,
+    configure_app, new_access_lock, AccessConfig, AuthMiddlewareFactory, RegistryMap, RegistryModeMap, UpstreamMap,
 };
 
 // ── workspace helpers ─────────────────────────────────────────────────────────
@@ -291,9 +294,9 @@ impl RealProxy {
         let storage = InMemoryStorageBackend::new();
         let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
 
-        let registry_names: Vec<String> = registry_map.0.keys().cloned().collect();
+        let registry_names: Vec<String> = registry_map.keys();
 
-        let policies: HashMap<String, RegistryPolicy> = registry_names
+        let policies: HashMap<String, Arc<RegistryPolicy>> = registry_names
             .iter()
             .map(|name| {
                 let perms = HashMap::from([
@@ -301,7 +304,7 @@ impl RealProxy {
                     (Role::User, vec!["*".to_owned()]),
                     (Role::Admin, vec!["*".to_owned()]),
                 ]);
-                let policy = RegistryPolicy {
+                let policy = Arc::new(RegistryPolicy {
                     metadata_ttl: Some(Duration::from_secs(300)),
                     firewall_only: false,
                     serve_stale_metadata: false,
@@ -310,42 +313,54 @@ impl RealProxy {
                         Box::new(RbacRule::new(perms)),
                         Box::new(BlockListRule::new(repo.clone())),
                     ],
-                };
+                });
                 (name.clone(), policy)
             })
             .collect();
 
         let local_svc = Arc::new(LocalRegistryService {
-            backend: Arc::new(InMemoryLocalRegistry::new()),
-            storage: storage.clone(),
-            max_artifact_bytes: None,
-            quota: None,
-            ownership: None,
+        backend: Arc::new(InMemoryLocalRegistry::new()),
+        storage: storage.clone(),
+        hot: new_hot_lock(HotConfig {
+            registries: HashMap::new(),
+            policies: HashMap::new(),
             versioning: HashMap::new(),
             signing: HashMap::new(),
             beta_channel: HashMap::new(),
-            team_namespace: None,
-        });
+            max_artifact_size_bytes: None,
+        }),
+        quota: None,
+        ownership: None,
+        team_namespace: None,
+    });
 
         let proxy_svc = Arc::new(ProxyService {
-            registries,
-            storage,
-            cache,
-            repo: repo.clone(),
-            artifact_meta: NoopArtifactMetaRepository::arc(),
-            policies,
+        hot: new_hot_lock(HotConfig {
+            registries: registries,
+            policies: policies,
+            versioning: HashMap::new(),
+            signing: HashMap::new(),
+            beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
-            metrics: Arc::new(ProxyMetrics::new(&[])),
-        });
+        }),
+        storage: storage,
+        cache: cache,
+        repo: repo.clone(),
+        artifact_meta: NoopArtifactMetaRepository::arc(),
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+    });
         let admin_svc = Arc::new(AdminService::new(repo));
         let token_repo = NullUserTokenRepository::arc();
 
-        let access_config = AccessConfig {
+        let access_config = new_access_lock(AccessConfig {
             anonymous: registry_names.iter().cloned().collect(),
             user: registry_names.iter().cloned().collect(),
             admin: registry_names.iter().cloned().collect(),
             groups: HashMap::new(),
-        };
+            explore_anonymous: std::collections::HashSet::new(),
+            explore_user: std::collections::HashSet::new(),
+            explore_admin: std::collections::HashSet::new(),
+        });
 
         let auth_providers: Vec<Arc<dyn AuthProvider>> =
             vec![Arc::new(StaticTokenAuthProvider::new([(
@@ -413,9 +428,9 @@ impl RealProxy {
         let storage = InMemoryStorageBackend::new();
         let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
 
-        let registry_names: Vec<String> = registry_map.0.keys().cloned().collect();
+        let registry_names: Vec<String> = registry_map.keys();
 
-        let policies: HashMap<String, RegistryPolicy> = registry_names
+        let policies: HashMap<String, Arc<RegistryPolicy>> = registry_names
             .iter()
             .map(|name| {
                 let perms = HashMap::from([
@@ -423,7 +438,7 @@ impl RealProxy {
                     (Role::User, vec!["*".to_owned()]),
                     (Role::Admin, vec!["*".to_owned()]),
                 ]);
-                let policy = RegistryPolicy {
+                let policy = Arc::new(RegistryPolicy {
                     metadata_ttl: Some(Duration::from_secs(300)),
                     firewall_only: false,
                     serve_stale_metadata: false,
@@ -432,42 +447,54 @@ impl RealProxy {
                         Box::new(RbacRule::new(perms)),
                         Box::new(BlockListRule::new(repo.clone())),
                     ],
-                };
+                });
                 (name.clone(), policy)
             })
             .collect();
 
         let local_svc = Arc::new(LocalRegistryService {
-            backend: Arc::new(InMemoryLocalRegistry::new()),
-            storage: storage.clone(),
-            max_artifact_bytes: None,
-            quota: None,
-            ownership: None,
+        backend: Arc::new(InMemoryLocalRegistry::new()),
+        storage: storage.clone(),
+        hot: new_hot_lock(HotConfig {
+            registries: HashMap::new(),
+            policies: HashMap::new(),
             versioning: HashMap::new(),
             signing: HashMap::new(),
             beta_channel: HashMap::new(),
-            team_namespace: None,
-        });
+            max_artifact_size_bytes: None,
+        }),
+        quota: None,
+        ownership: None,
+        team_namespace: None,
+    });
 
         let proxy_svc = Arc::new(ProxyService {
+        hot: new_hot_lock(HotConfig {
             registries: HashMap::new(),
-            storage,
-            cache,
-            repo: repo.clone(),
-            artifact_meta: NoopArtifactMetaRepository::arc(),
-            policies,
+            policies: policies,
+            versioning: HashMap::new(),
+            signing: HashMap::new(),
+            beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
-            metrics: Arc::new(ProxyMetrics::new(&[])),
-        });
+        }),
+        storage: storage,
+        cache: cache,
+        repo: repo.clone(),
+        artifact_meta: NoopArtifactMetaRepository::arc(),
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+    });
         let admin_svc = Arc::new(AdminService::new(repo));
         let token_repo = NullUserTokenRepository::arc();
 
-        let access_config = AccessConfig {
+        let access_config = new_access_lock(AccessConfig {
             anonymous: registry_names.iter().cloned().collect(),
             user: registry_names.iter().cloned().collect(),
             admin: registry_names.iter().cloned().collect(),
             groups: HashMap::new(),
-        };
+            explore_anonymous: std::collections::HashSet::new(),
+            explore_user: std::collections::HashSet::new(),
+            explore_admin: std::collections::HashSet::new(),
+        });
 
         let auth_providers: Vec<Arc<dyn AuthProvider>> =
             vec![Arc::new(StaticTokenAuthProvider::new([(
@@ -476,11 +503,11 @@ impl RealProxy {
                 Role::Admin,
             )]))];
 
-        let mode_map = RegistryModeMap(
+        let mode_map = RegistryModeMap::from(
             registry_names
                 .iter()
                 .map(|n| (n.clone(), RegistryMode::Local))
-                .collect(),
+                .collect::<std::collections::HashMap<_, _>>(),
         );
 
         let configure = configure_app(
@@ -567,7 +594,7 @@ fn real_proxy_npm_api() {
             Arc::new(npm) as Arc<dyn RegistryClient>,
         )]
         .into(),
-        RegistryMap([("my-npm".to_owned(), "npm".to_owned())].into()),
+        RegistryMap::from(std::collections::HashMap::from([("my-npm".to_owned(), "npm".to_owned())])),
     );
 
     let tmp = TempDir::new().unwrap();
@@ -645,7 +672,7 @@ fn real_proxy_cargo_fetch() {
             Arc::new(client) as Arc<dyn RegistryClient>,
         )]
         .into(),
-        RegistryMap([("my-cargo".to_owned(), "cargo".to_owned())].into()),
+        RegistryMap::from(std::collections::HashMap::from([("my-cargo".to_owned(), "cargo".to_owned())])),
     );
 
     let tmp = TempDir::new().unwrap();
@@ -714,7 +741,7 @@ fn real_proxy_go_api() {
             Arc::new(client) as Arc<dyn RegistryClient>,
         )]
         .into(),
-        RegistryMap([("my-go".to_owned(), "goproxy".to_owned())].into()),
+        RegistryMap::from(std::collections::HashMap::from([("my-go".to_owned(), "goproxy".to_owned())])),
     );
 
     let tmp = TempDir::new().unwrap();
@@ -781,7 +808,7 @@ fn real_proxy_pypi_api() {
             Arc::new(client) as Arc<dyn RegistryClient>,
         )]
         .into(),
-        RegistryMap([("my-pypi".to_owned(), "pypi".to_owned())].into()),
+        RegistryMap::from(std::collections::HashMap::from([("my-pypi".to_owned(), "pypi".to_owned())])),
     );
 
     let tmp = TempDir::new().unwrap();
@@ -874,7 +901,7 @@ fn real_proxy_conda_repodata() {
             Arc::new(client) as Arc<dyn RegistryClient>,
         )]
         .into(),
-        RegistryMap([("my-conda".to_owned(), "conda".to_owned())].into()),
+        RegistryMap::from(std::collections::HashMap::from([("my-conda".to_owned(), "conda".to_owned())])),
     );
 
     // Verify repodata.json is accessible through the proxy
@@ -918,7 +945,7 @@ fn real_proxy_rubygems_api() {
             Arc::new(client) as Arc<dyn RegistryClient>,
         )]
         .into(),
-        RegistryMap([("my-gems".to_owned(), "rubygems".to_owned())].into()),
+        RegistryMap::from(std::collections::HashMap::from([("my-gems".to_owned(), "rubygems".to_owned())])),
     );
 
     let tmp = TempDir::new().unwrap();
@@ -1006,7 +1033,7 @@ fn real_proxy_composer_console() {
             Arc::new(client) as Arc<dyn RegistryClient>,
         )]
         .into(),
-        RegistryMap([("my-composer".to_owned(), "composer".to_owned())].into()),
+        RegistryMap::from(std::collections::HashMap::from([("my-composer".to_owned(), "composer".to_owned())])),
     );
 
     let tmp = TempDir::new().unwrap();
@@ -1078,7 +1105,7 @@ fn real_proxy_maven_spring_api() {
             Arc::new(client) as Arc<dyn RegistryClient>,
         )]
         .into(),
-        RegistryMap([("my-maven".to_owned(), "maven".to_owned())].into()),
+        RegistryMap::from(std::collections::HashMap::from([("my-maven".to_owned(), "maven".to_owned())])),
     );
 
     let tmp = TempDir::new().unwrap();
@@ -1152,7 +1179,7 @@ fn real_proxy_maven_quarkus_api() {
             Arc::new(client) as Arc<dyn RegistryClient>,
         )]
         .into(),
-        RegistryMap([("my-maven".to_owned(), "maven".to_owned())].into()),
+        RegistryMap::from(std::collections::HashMap::from([("my-maven".to_owned(), "maven".to_owned())])),
     );
 
     let tmp = TempDir::new().unwrap();
@@ -1227,7 +1254,7 @@ fn real_proxy_terraform_init() {
             Arc::new(client) as Arc<dyn RegistryClient>,
         )]
         .into(),
-        RegistryMap([("my-terraform".to_owned(), "terraform".to_owned())].into()),
+        RegistryMap::from(std::collections::HashMap::from([("my-terraform".to_owned(), "terraform".to_owned())])),
     );
 
     let tmp = TempDir::new().unwrap();
@@ -1275,7 +1302,7 @@ fn real_proxy_github_releases() {
             Arc::new(client) as Arc<dyn RegistryClient>,
         )]
         .into(),
-        RegistryMap([("my-github".to_owned(), "github".to_owned())].into()),
+        RegistryMap::from(std::collections::HashMap::from([("my-github".to_owned(), "github".to_owned())])),
     );
 
     // List releases for a small, stable repository — verifies the proxy forwards
@@ -1315,7 +1342,7 @@ fn real_proxy_openvsx_download() {
             Arc::new(client) as Arc<dyn RegistryClient>,
         )]
         .into(),
-        RegistryMap([("my-openvsx".to_owned(), "openvsx".to_owned())].into()),
+        RegistryMap::from(std::collections::HashMap::from([("my-openvsx".to_owned(), "openvsx".to_owned())])),
     );
 
     // Download the `tamasfe.even-better-toml` VSIX — one of the smallest extensions
@@ -1356,13 +1383,10 @@ fn real_proxy_vscode_marketplace_download() {
             Arc::new(client) as Arc<dyn RegistryClient>,
         )]
         .into(),
-        RegistryMap(
-            [(
-                "my-vscode-marketplace".to_owned(),
-                "vscode-marketplace".to_owned(),
-            )]
-            .into(),
-        ),
+        RegistryMap::from(std::collections::HashMap::from([(
+            "my-vscode-marketplace".to_owned(),
+            "vscode-marketplace".to_owned(),
+        )])),
     );
 
     // Fetch `charliermarsh.ruff` — a lightweight Python linter extension.
@@ -1391,9 +1415,7 @@ fn real_proxy_npm_publish() {
         return;
     }
 
-    let proxy = RealProxy::start_local(RegistryMap(
-        [("my-npm".to_owned(), "npm".to_owned())].into(),
-    ));
+    let proxy = RealProxy::start_local(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-npm".to_owned(), "npm".to_owned())])));
 
     let tmp = TempDir::new().unwrap();
     let pkg_dir = tmp.path().join("test-publish-pkg");
@@ -1449,9 +1471,7 @@ fn real_proxy_cargo_publish() {
         return;
     }
 
-    let proxy = RealProxy::start_local(RegistryMap(
-        [("my-cargo".to_owned(), "cargo".to_owned())].into(),
-    ));
+    let proxy = RealProxy::start_local(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-cargo".to_owned(), "cargo".to_owned())])));
 
     let tmp = TempDir::new().unwrap();
     let pkg_dir = tmp.path().join("test-publish-crate");
@@ -1523,9 +1543,7 @@ fn real_proxy_rubygems_publish() {
         return;
     }
 
-    let proxy = RealProxy::start_local(RegistryMap(
-        [("my-gems".to_owned(), "rubygems".to_owned())].into(),
-    ));
+    let proxy = RealProxy::start_local(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-gems".to_owned(), "rubygems".to_owned())])));
 
     let tmp = TempDir::new().unwrap();
     let gem_dir = tmp.path().join("my-gem");
@@ -1597,9 +1615,7 @@ fn real_proxy_maven_publish() {
         return;
     }
 
-    let proxy = RealProxy::start_local(RegistryMap(
-        [("my-maven".to_owned(), "maven".to_owned())].into(),
-    ));
+    let proxy = RealProxy::start_local(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-maven".to_owned(), "maven".to_owned())])));
 
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path().to_path_buf();

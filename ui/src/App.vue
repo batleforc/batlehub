@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { RouterView, RouterLink, useRoute, useRouter } from "vue-router";
-import { Menu, X, Package, ShieldCheck, BookOpen, FolderKey } from "@lucide/vue";
+import { AlertTriangle, Info, Menu, X, XCircle, Package, ShieldCheck, BookOpen, FolderKey } from "@lucide/vue";
 import { useAuth } from "@/composables/useAuth";
+import { useBanner } from "@/composables/useBanner";
 import { DOCS_URL } from "@/config";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import ThemeToggle from "@/components/ThemeToggle.vue";
 
 const { identity, isAdmin, isAuthenticated, logout } = useAuth();
+const { banner } = useBanner();
 const route = useRoute();
 const router = useRouter();
 const mobileOpen = ref(false);
@@ -46,8 +48,8 @@ function isActive(to: string) {
 
 <template>
   <div class="min-h-screen bg-background">
-    <!-- Header -->
-    <header class="sticky top-0 z-40 border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/60">
+    <!-- Header + sticky banner -->
+    <header class="sticky top-0 z-40 bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/60">
       <div class="container mx-auto flex h-14 items-center gap-4 px-4">
         <!-- Logo -->
         <RouterLink
@@ -307,6 +309,21 @@ function isActive(to: string) {
             Sign out
           </button>
         </div>
+      </div>
+      <!-- Global admin banner — rendered inside the sticky header so it scrolls with it -->
+      <div
+        v-if="banner"
+        :class="[
+          'border-t px-4 py-1.5 flex items-center gap-2 text-sm font-medium',
+          banner.level === 'error'   ? 'bg-destructive/10 border-destructive text-destructive' :
+          banner.level === 'warning' ? 'bg-yellow-50 border-yellow-300 text-yellow-800 dark:bg-yellow-950 dark:border-yellow-700 dark:text-yellow-200' :
+                                       'bg-blue-50 border-blue-300 text-blue-800 dark:bg-blue-950 dark:border-blue-700 dark:text-blue-200'
+        ]"
+      >
+        <XCircle v-if="banner.level === 'error'" class="h-3.5 w-3.5 shrink-0" />
+        <AlertTriangle v-else-if="banner.level === 'warning'" class="h-3.5 w-3.5 shrink-0" />
+        <Info v-else class="h-3.5 w-3.5 shrink-0" />
+        <span>{{ banner.message }}</span>
       </div>
     </header>
 

@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use sqlx::{PgPool, Row};
+use crate::db::DbResultExt;
 
 use batlehub_core::{
     entities::Identity,
@@ -36,7 +37,7 @@ impl OwnershipPort for PgOwnershipStore {
         .bind(user_id)
         .execute(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
         Ok(())
     }
 
@@ -55,7 +56,7 @@ impl OwnershipPort for PgOwnershipStore {
         .bind(package)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
 
         if count == 0 {
             return Ok(true);
@@ -73,7 +74,7 @@ impl OwnershipPort for PgOwnershipStore {
             .bind(uid)
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| CoreError::Database(e.to_string()))?;
+            .db_err()?;
             if exists {
                 return Ok(true);
             }
@@ -92,7 +93,7 @@ impl OwnershipPort for PgOwnershipStore {
             .bind(&groups)
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| CoreError::Database(e.to_string()))?;
+            .db_err()?;
             if exists {
                 return Ok(true);
             }
@@ -152,7 +153,7 @@ impl OwnershipPort for PgOwnershipStore {
         .bind(principal_id)
         .execute(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
         Ok(())
     }
 
@@ -171,7 +172,7 @@ impl OwnershipPort for PgOwnershipStore {
         .bind(package)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
 
         Ok(rows
             .into_iter()

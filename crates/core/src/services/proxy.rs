@@ -1,6 +1,5 @@
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use bytes::Bytes;
 use chrono::Utc;
@@ -10,26 +9,14 @@ use crate::entities::{AccessEvent, Identity, PackageId};
 use crate::error::CoreError;
 use crate::ports::{
     ArtifactMetaRepository, ArtifactStream, CacheEntry, CacheStore, PackageRepository,
-    RegistryClient, StorageBackend, StorageMeta,
+    StorageBackend, StorageMeta,
 };
-use crate::rules::{evaluate_rules, Rule, RuleContext, RuleDecision};
+use crate::rules::{evaluate_rules, RuleContext, RuleDecision};
 use crate::services::cache_control::parse_cache_control;
+use crate::services::hot_config::HotConfigLock;
 use crate::services::metrics::ProxyMetrics;
 
-/// Per-registry behaviour configuration wired in at startup.
-pub struct RegistryPolicy {
-    pub metadata_ttl: Option<Duration>,
-    /// Rules evaluated in order for every request to this registry.
-    pub rules: Vec<Box<dyn Rule>>,
-    /// When `true`, skip artifact storage entirely and stream directly from upstream.
-    pub firewall_only: bool,
-    /// When `true`, serve stale (expired) cached metadata if upstream returns a transient
-    /// `Registry` error. Allows cached artifacts to keep being served during outages.
-    pub serve_stale_metadata: bool,
-    /// When set, artifacts are re-fetched from upstream after this duration even if
-    /// present in storage. Implements TTL-based artifact expiry at request time.
-    pub artifact_ttl: Option<Duration>,
-}
+// `RegistryPolicy` is defined in hot_config and re-exported from services.
 
 /// Input to `ProxyService::handle`.
 pub struct ProxyRequest {
@@ -49,16 +36,12 @@ pub enum ProxyResponse {
 
 /// Caching proxy service: resolves metadata, evaluates rules, streams artifacts.
 pub struct ProxyService {
-    pub registries: HashMap<String, Arc<dyn RegistryClient>>,
+    /// Hot-swappable state (registries, policies, size limit). Replaced atomically on reload.
+    pub hot: HotConfigLock,
     pub storage: Arc<dyn StorageBackend>,
     pub cache: Arc<dyn CacheStore>,
     pub repo: Arc<dyn PackageRepository>,
     pub artifact_meta: Arc<dyn ArtifactMetaRepository>,
-    pub policies: HashMap<String, RegistryPolicy>,
-    /// Maximum artifact size allowed when buffering from upstream before writing
-    /// to storage. Requests that exceed this limit return a 413 error rather than
-    /// exhausting server memory. Defaults to 500 MiB when `None`.
-    pub max_artifact_size_bytes: Option<u64>,
     /// In-memory counters for the stats dashboard (reset on restart).
     pub metrics: Arc<ProxyMetrics>,
 }
@@ -75,17 +58,24 @@ impl ProxyService {
         let registry_label = registry_name.to_owned();
         let start = Instant::now();
 
-        let client = self
-            .registries
-            .get(registry_name)
-            .ok_or_else(|| CoreError::UnknownRegistry(registry_name.to_owned()))?;
+        // ── Snapshot hot-swappable state ────────────────────────────────────────
+        // Acquire the read lock briefly to clone the Arc<RegistryClient> and
+        // Arc<RegistryPolicy>. The lock is released before any async I/O begins.
+        let (client, policy, limit) = {
+            let hot = self.hot.read().await;
+            let client = hot
+                .registries
+                .get(registry_name)
+                .ok_or_else(|| CoreError::UnknownRegistry(registry_name.to_owned()))?
+                .clone();
+            let policy = hot.policies.get(registry_name).cloned();
+            let limit = hot.max_artifact_size_bytes.unwrap_or(500 * 1024 * 1024);
+            (client, policy, limit)
+        };
 
         // ── 1. Resolve metadata (cache-first) ─────────────────────────────────
         let cache_key = format!("meta:{}", req.package_id.cache_key());
-        let ttl = self
-            .policies
-            .get(registry_name)
-            .and_then(|p| p.metadata_ttl);
+        let ttl = policy.as_ref().and_then(|p| p.metadata_ttl);
 
         let metadata = if let Some(entry) = self.cache.get(&cache_key).await? {
             tracing::debug!(key = %cache_key, "metadata cache hit");
@@ -97,9 +87,8 @@ impl ProxyService {
             let meta = match client.resolve_metadata(&req.package_id).await {
                 Ok(m) => m,
                 Err(e) => {
-                    let serve_stale = self
-                        .policies
-                        .get(registry_name)
+                    let serve_stale = policy
+                        .as_ref()
                         .map(|p| p.serve_stale_metadata)
                         .unwrap_or(false);
 
@@ -170,11 +159,11 @@ impl ProxyService {
         };
 
         // ── 2. Evaluate rules ──────────────────────────────────────────────────
-        let rules = self
-            .policies
-            .get(registry_name)
+        let empty: Vec<Box<dyn crate::rules::Rule>> = vec![];
+        let rules = policy
+            .as_ref()
             .map(|p| p.rules.as_slice())
-            .unwrap_or(&[]);
+            .unwrap_or(empty.as_slice());
 
         let ctx = RuleContext {
             identity: &req.identity,
@@ -202,11 +191,7 @@ impl ProxyService {
         }
 
         // ── 3. Firewall-only: stream directly from upstream, skip all caching ──
-        let firewall_only = self
-            .policies
-            .get(registry_name)
-            .map(|p| p.firewall_only)
-            .unwrap_or(false);
+        let firewall_only = policy.as_ref().map(|p| p.firewall_only).unwrap_or(false);
 
         if firewall_only {
             tracing::debug!(registry = %registry_name, "firewall-only mode, streaming from upstream");
@@ -245,10 +230,7 @@ impl ProxyService {
         // ── 4. Check artifact cache ────────────────────────────────────────────
         let artifact_key = format!("artifact:{}", req.package_id.cache_key());
 
-        let artifact_ttl = self
-            .policies
-            .get(registry_name)
-            .and_then(|p| p.artifact_ttl);
+        let artifact_ttl = policy.as_ref().and_then(|p| p.artifact_ttl);
         let cached_artifact_is_fresh = if self.storage.exists(&artifact_key).await? {
             // When an artifact TTL is set, do a point-lookup for this specific key.
             if let Some(ttl) = artifact_ttl {
@@ -337,7 +319,7 @@ impl ProxyService {
             .map(|h| parse_cache_control(h).no_store)
             .unwrap_or(false);
 
-        let limit = self.max_artifact_size_bytes.unwrap_or(500 * 1024 * 1024);
+        // `limit` was extracted from hot config at the start of the function.
         let mut buf: Vec<u8> = Vec::new();
         while let Some(chunk) = upstream.stream.next().await {
             let chunk = chunk?;
@@ -410,6 +392,8 @@ mod tests {
     use chrono::Utc;
     use futures::stream;
 
+    use std::time::Duration;
+
     use super::*;
     use crate::entities::{
         AccessEvent, AccessResult, EventFilter, Identity, PackageFilter, PackageId,
@@ -420,7 +404,44 @@ mod tests {
         ArtifactMeta, ArtifactMetaRepository, CacheStore, FetchedArtifact, PackageRepository,
         RegistryClient, StorageBackend, StorageMeta, StoredArtifact,
     };
+    use crate::services::hot_config::{new_hot_lock, HotConfig, RegistryPolicy};
     use crate::services::metrics::ProxyMetrics;
+
+    fn make_hot(
+        registry_name: &str,
+        client: Arc<dyn RegistryClient>,
+        policy: RegistryPolicy,
+        max_bytes: Option<u64>,
+    ) -> crate::services::hot_config::HotConfigLock {
+        let mut registries = HashMap::new();
+        registries.insert(registry_name.to_owned(), client);
+        let mut policies = HashMap::new();
+        policies.insert(registry_name.to_owned(), Arc::new(policy));
+        new_hot_lock(HotConfig {
+            registries,
+            policies,
+            versioning: HashMap::new(),
+            signing: HashMap::new(),
+            beta_channel: HashMap::new(),
+            max_artifact_size_bytes: max_bytes,
+        })
+    }
+
+    fn empty_hot(
+        registry_name: &str,
+        client: Arc<dyn RegistryClient>,
+    ) -> crate::services::hot_config::HotConfigLock {
+        let mut registries = HashMap::new();
+        registries.insert(registry_name.to_owned(), client);
+        new_hot_lock(HotConfig {
+            registries,
+            policies: HashMap::new(),
+            versioning: HashMap::new(),
+            signing: HashMap::new(),
+            beta_channel: HashMap::new(),
+            max_artifact_size_bytes: None,
+        })
+    }
 
     // ── Minimal in-memory mocks ───────────────────────────────────────────────
 
@@ -833,27 +854,19 @@ mod tests {
         repo: Arc<dyn PackageRepository>,
         rules: Vec<Box<dyn crate::rules::Rule>>,
     ) -> ProxyService {
-        let mut registries = HashMap::new();
-        registries.insert(registry_name.to_owned(), client);
-        let mut policies = HashMap::new();
-        policies.insert(
-            registry_name.to_owned(),
-            RegistryPolicy {
-                metadata_ttl: None,
-                firewall_only: false,
-                serve_stale_metadata: false,
-                artifact_ttl: None,
-                rules,
-            },
-        );
+        let policy = RegistryPolicy {
+            metadata_ttl: None,
+            firewall_only: false,
+            serve_stale_metadata: false,
+            artifact_ttl: None,
+            rules,
+        };
         ProxyService {
-            registries,
+            hot: make_hot(registry_name, client, policy, None),
             storage: MemStorage::new(),
             cache: TestCacheStore::new(),
             repo,
             artifact_meta: NoopArtifactMeta::arc(),
-            policies,
-            max_artifact_size_bytes: None,
             metrics: Arc::new(ProxyMetrics::new(&[])),
         }
     }
@@ -872,33 +885,22 @@ mod tests {
         let repo = SpyRepo::new();
         let cache = TestCacheStore::new();
         let svc = ProxyService {
-            registries: {
-                let mut m = HashMap::new();
-                m.insert(
-                    "npm".to_owned(),
-                    Arc::new(FixedRegistry) as Arc<dyn RegistryClient>,
-                );
-                m
-            },
+            hot: make_hot(
+                "npm",
+                Arc::new(FixedRegistry),
+                RegistryPolicy {
+                    metadata_ttl: Some(Duration::from_secs(300)),
+                    firewall_only: false,
+                    serve_stale_metadata: false,
+                    artifact_ttl: None,
+                    rules: vec![],
+                },
+                None,
+            ),
             storage: MemStorage::new(),
             cache: cache.clone(),
             repo: repo.clone(),
             artifact_meta: NoopArtifactMeta::arc(),
-            policies: {
-                let mut m = HashMap::new();
-                m.insert(
-                    "npm".to_owned(),
-                    RegistryPolicy {
-                        metadata_ttl: Some(Duration::from_secs(300)),
-                        firewall_only: false,
-                        serve_stale_metadata: false,
-                        artifact_ttl: None,
-                        rules: vec![],
-                    },
-                );
-                m
-            },
-            max_artifact_size_bytes: None,
             metrics: Arc::new(ProxyMetrics::new(&[])),
         };
 
@@ -958,33 +960,22 @@ mod tests {
 
         let repo = SpyRepo::new();
         let svc = ProxyService {
-            registries: {
-                let mut m = HashMap::new();
-                m.insert(
-                    "npm".to_owned(),
-                    Arc::new(FixedRegistry) as Arc<dyn RegistryClient>,
-                );
-                m
-            },
+            hot: make_hot(
+                "npm",
+                Arc::new(FixedRegistry),
+                RegistryPolicy {
+                    metadata_ttl: None,
+                    firewall_only: false,
+                    serve_stale_metadata: false,
+                    artifact_ttl: None,
+                    rules: vec![],
+                },
+                None,
+            ),
             storage: storage.clone(),
             cache: TestCacheStore::new(),
             repo: repo.clone(),
             artifact_meta: NoopArtifactMeta::arc(),
-            policies: {
-                let mut m = HashMap::new();
-                m.insert(
-                    "npm".to_owned(),
-                    RegistryPolicy {
-                        metadata_ttl: None,
-                        firewall_only: false,
-                        serve_stale_metadata: false,
-                        artifact_ttl: None,
-                        rules: vec![],
-                    },
-                );
-                m
-            },
-            max_artifact_size_bytes: None,
             metrics: Arc::new(ProxyMetrics::new(&[])),
         };
 
@@ -1020,33 +1011,22 @@ mod tests {
     async fn payload_too_large_returns_error() {
         let repo = SpyRepo::new();
         let svc = ProxyService {
-            registries: {
-                let mut m = HashMap::new();
-                m.insert(
-                    "npm".to_owned(),
-                    Arc::new(FixedRegistry) as Arc<dyn RegistryClient>,
-                );
-                m
-            },
+            hot: make_hot(
+                "npm",
+                Arc::new(FixedRegistry),
+                RegistryPolicy {
+                    metadata_ttl: None,
+                    firewall_only: false,
+                    serve_stale_metadata: false,
+                    artifact_ttl: None,
+                    rules: vec![],
+                },
+                Some(5), // FixedRegistry sends >5 bytes
+            ),
             storage: MemStorage::new(),
             cache: TestCacheStore::new(),
             repo: repo.clone(),
             artifact_meta: NoopArtifactMeta::arc(),
-            policies: {
-                let mut m = HashMap::new();
-                m.insert(
-                    "npm".to_owned(),
-                    RegistryPolicy {
-                        metadata_ttl: None,
-                        firewall_only: false,
-                        serve_stale_metadata: false,
-                        artifact_ttl: None,
-                        rules: vec![],
-                    },
-                );
-                m
-            },
-            max_artifact_size_bytes: Some(5), // FixedRegistry sends >5 bytes
             metrics: Arc::new(ProxyMetrics::new(&[])),
         };
 
@@ -1057,21 +1037,13 @@ mod tests {
     #[tokio::test]
     async fn unused_registry_id_in_policies_does_not_panic() {
         let repo = SpyRepo::new();
+        // no policy for "npm" — should use empty rule set
         let svc = ProxyService {
-            registries: {
-                let mut m = HashMap::new();
-                m.insert(
-                    "npm".to_owned(),
-                    Arc::new(FixedRegistry) as Arc<dyn RegistryClient>,
-                );
-                m
-            },
+            hot: empty_hot("npm", Arc::new(FixedRegistry)),
             storage: MemStorage::new(),
             cache: TestCacheStore::new(),
             repo: repo.clone(),
             artifact_meta: NoopArtifactMeta::arc(),
-            policies: HashMap::new(), // no policy for "npm" — should use empty rule set
-            max_artifact_size_bytes: None,
             metrics: Arc::new(ProxyMetrics::new(&[])),
         };
 
@@ -1084,33 +1056,22 @@ mod tests {
         let storage = MemStorage::new();
         let repo = SpyRepo::new();
         let svc = ProxyService {
-            registries: {
-                let mut m = HashMap::new();
-                m.insert(
-                    "npm".to_owned(),
-                    Arc::new(FixedRegistry) as Arc<dyn RegistryClient>,
-                );
-                m
-            },
+            hot: make_hot(
+                "npm",
+                Arc::new(FixedRegistry),
+                RegistryPolicy {
+                    metadata_ttl: None,
+                    firewall_only: true,
+                    serve_stale_metadata: false,
+                    artifact_ttl: None,
+                    rules: vec![],
+                },
+                None,
+            ),
             storage: storage.clone(),
             cache: TestCacheStore::new(),
             repo: repo.clone(),
             artifact_meta: NoopArtifactMeta::arc(),
-            policies: {
-                let mut m = HashMap::new();
-                m.insert(
-                    "npm".to_owned(),
-                    RegistryPolicy {
-                        metadata_ttl: None,
-                        firewall_only: true,
-                        serve_stale_metadata: false,
-                        artifact_ttl: None,
-                        rules: vec![],
-                    },
-                );
-                m
-            },
-            max_artifact_size_bytes: None,
             metrics: Arc::new(ProxyMetrics::new(&[])),
         };
 
@@ -1151,27 +1112,23 @@ mod tests {
         cache: Arc<dyn CacheStore>,
         serve_stale: bool,
     ) -> ProxyService {
-        let mut registries = HashMap::new();
-        registries.insert("npm".to_owned(), client);
-        let mut policies = HashMap::new();
-        policies.insert(
-            "npm".to_owned(),
-            RegistryPolicy {
-                metadata_ttl: Some(Duration::from_secs(300)),
-                firewall_only: false,
-                serve_stale_metadata: serve_stale,
-                artifact_ttl: None,
-                rules: vec![],
-            },
-        );
         ProxyService {
-            registries,
+            hot: make_hot(
+                "npm",
+                client,
+                RegistryPolicy {
+                    metadata_ttl: Some(Duration::from_secs(300)),
+                    firewall_only: false,
+                    serve_stale_metadata: serve_stale,
+                    artifact_ttl: None,
+                    rules: vec![],
+                },
+                None,
+            ),
             storage: MemStorage::new(),
             cache,
             repo,
             artifact_meta: NoopArtifactMeta::arc(),
-            policies,
-            max_artifact_size_bytes: None,
             metrics: Arc::new(ProxyMetrics::new(&[])),
         }
     }
@@ -1353,30 +1310,23 @@ mod tests {
     async fn metadata_no_store_skips_cache() {
         let repo = SpyRepo::new();
         let cache = TestCacheStore::new();
-        let mut registries = HashMap::new();
-        registries.insert(
-            "npm".to_owned(),
-            Arc::new(NoStoreMetaRegistry) as Arc<dyn RegistryClient>,
-        );
-        let mut policies = HashMap::new();
-        policies.insert(
-            "npm".to_owned(),
-            RegistryPolicy {
-                metadata_ttl: Some(Duration::from_secs(300)),
-                firewall_only: false,
-                serve_stale_metadata: false,
-                artifact_ttl: None,
-                rules: vec![],
-            },
-        );
         let svc = ProxyService {
-            registries,
+            hot: make_hot(
+                "npm",
+                Arc::new(NoStoreMetaRegistry),
+                RegistryPolicy {
+                    metadata_ttl: Some(Duration::from_secs(300)),
+                    firewall_only: false,
+                    serve_stale_metadata: false,
+                    artifact_ttl: None,
+                    rules: vec![],
+                },
+                None,
+            ),
             storage: MemStorage::new(),
             cache: cache.clone(),
             repo,
             artifact_meta: NoopArtifactMeta::arc(),
-            policies,
-            max_artifact_size_bytes: None,
             metrics: Arc::new(ProxyMetrics::new(&[])),
         };
 
@@ -1396,19 +1346,12 @@ mod tests {
     async fn artifact_no_store_skips_storage() {
         let repo = SpyRepo::new();
         let storage = MemStorage::new();
-        let mut registries = HashMap::new();
-        registries.insert(
-            "npm".to_owned(),
-            Arc::new(NoStoreArtifactRegistry) as Arc<dyn RegistryClient>,
-        );
         let svc = ProxyService {
-            registries,
+            hot: empty_hot("npm", Arc::new(NoStoreArtifactRegistry)),
             storage: storage.clone(),
             cache: TestCacheStore::new(),
             repo,
             artifact_meta: NoopArtifactMeta::arc(),
-            policies: HashMap::new(),
-            max_artifact_size_bytes: None,
             metrics: Arc::new(ProxyMetrics::new(&[])),
         };
 
@@ -1453,30 +1396,23 @@ mod tests {
         let spy_meta = SpyArtifactMeta::with_expired(vec![expired_meta]);
 
         let repo = SpyRepo::new();
-        let mut registries = HashMap::new();
-        registries.insert(
-            "npm".to_owned(),
-            Arc::new(FixedRegistry) as Arc<dyn RegistryClient>,
-        );
-        let mut policies = HashMap::new();
-        policies.insert(
-            "npm".to_owned(),
-            RegistryPolicy {
-                metadata_ttl: None,
-                firewall_only: false,
-                serve_stale_metadata: false,
-                artifact_ttl: Some(Duration::from_secs(3600)), // 1h TTL
-                rules: vec![],
-            },
-        );
         let svc = ProxyService {
-            registries,
+            hot: make_hot(
+                "npm",
+                Arc::new(FixedRegistry),
+                RegistryPolicy {
+                    metadata_ttl: None,
+                    firewall_only: false,
+                    serve_stale_metadata: false,
+                    artifact_ttl: Some(Duration::from_secs(3600)), // 1h TTL
+                    rules: vec![],
+                },
+                None,
+            ),
             storage: storage.clone(),
             cache: TestCacheStore::new(),
             repo,
             artifact_meta: spy_meta.clone(),
-            policies,
-            max_artifact_size_bytes: None,
             metrics: Arc::new(ProxyMetrics::new(&[])),
         };
 
@@ -1513,30 +1449,23 @@ mod tests {
             .record_artifact(&artifact_key, "npm", "test-pkg", "1.0.0", None)
             .await
             .unwrap();
-        let mut registries = HashMap::new();
-        registries.insert(
-            "npm".to_owned(),
-            Arc::new(FixedRegistry) as Arc<dyn RegistryClient>,
-        );
-        let mut policies = HashMap::new();
-        policies.insert(
-            "npm".to_owned(),
-            RegistryPolicy {
-                metadata_ttl: None,
-                firewall_only: false,
-                serve_stale_metadata: false,
-                artifact_ttl: Some(Duration::from_secs(3600)),
-                rules: vec![],
-            },
-        );
         let svc = ProxyService {
-            registries,
+            hot: make_hot(
+                "npm",
+                Arc::new(FixedRegistry),
+                RegistryPolicy {
+                    metadata_ttl: None,
+                    firewall_only: false,
+                    serve_stale_metadata: false,
+                    artifact_ttl: Some(Duration::from_secs(3600)),
+                    rules: vec![],
+                },
+                None,
+            ),
             storage: storage.clone(),
             cache: TestCacheStore::new(),
             repo: SpyRepo::new(),
             artifact_meta: spy_meta.clone(),
-            policies,
-            max_artifact_size_bytes: None,
             metrics: Arc::new(ProxyMetrics::new(&[])),
         };
 
@@ -1554,19 +1483,12 @@ mod tests {
     async fn artifact_cache_miss_records_meta() {
         let spy_meta = SpyArtifactMeta::new();
         let repo = SpyRepo::new();
-        let mut registries = HashMap::new();
-        registries.insert(
-            "npm".to_owned(),
-            Arc::new(FixedRegistry) as Arc<dyn RegistryClient>,
-        );
         let svc = ProxyService {
-            registries,
+            hot: empty_hot("npm", Arc::new(FixedRegistry)),
             storage: MemStorage::new(),
             cache: TestCacheStore::new(),
             repo,
             artifact_meta: spy_meta.clone(),
-            policies: HashMap::new(),
-            max_artifact_size_bytes: None,
             metrics: Arc::new(ProxyMetrics::new(&[])),
         };
 
@@ -1586,33 +1508,22 @@ mod tests {
         let proxy_metrics = Arc::new(ProxyMetrics::new(&["npm".to_owned()]));
         let storage = MemStorage::new();
         let svc = ProxyService {
-            registries: {
-                let mut m = HashMap::new();
-                m.insert(
-                    "npm".to_owned(),
-                    Arc::new(FixedRegistry) as Arc<dyn RegistryClient>,
-                );
-                m
-            },
+            hot: make_hot(
+                "npm",
+                Arc::new(FixedRegistry),
+                RegistryPolicy {
+                    metadata_ttl: Some(Duration::from_secs(300)),
+                    firewall_only: false,
+                    serve_stale_metadata: false,
+                    artifact_ttl: None,
+                    rules: vec![],
+                },
+                None,
+            ),
             storage: storage.clone(),
             cache: TestCacheStore::new(),
             repo: SpyRepo::new(),
             artifact_meta: NoopArtifactMeta::arc(),
-            policies: {
-                let mut m = HashMap::new();
-                m.insert(
-                    "npm".to_owned(),
-                    RegistryPolicy {
-                        metadata_ttl: Some(Duration::from_secs(300)),
-                        firewall_only: false,
-                        serve_stale_metadata: false,
-                        artifact_ttl: None,
-                        rules: vec![],
-                    },
-                );
-                m
-            },
-            max_artifact_size_bytes: None,
             metrics: proxy_metrics.clone(),
         };
 

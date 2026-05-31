@@ -43,7 +43,11 @@ batlehub is configured with a single TOML file. This document covers every optio
    - [6.15 Private Composer Registry (local / hybrid mode)](#615-private-composer-registry-local--hybrid-mode)
 7. [CLI Reference](#7-cli-reference)
 8. [User-Generated API Tokens](#8-user-generated-api-tokens)
-9. [Self-Hosted / Private Registries](#9-self-hosted--private-registries)
+9. [Hot Reload & Dynamic Config](#9-hot-reload--dynamic-config)
+   - [9.1 File Watcher](#91-file-watcher)
+   - [9.2 API Endpoints](#92-api-endpoints)
+   - [9.3 Global Admin Banner](#93-global-admin-banner)
+10. [Self-Hosted / Private Registries](#10-self-hosted--private-registries)
 
 ---
 
@@ -2291,7 +2295,87 @@ Key properties:
 
 ---
 
-## 9. Self-Hosted / Private Registries
+## 9. Hot Reload & Dynamic Config
+
+BatleHub can reload its configuration at runtime without restarting the process. The following components are hot-swappable:
+
+- Registry list (add, remove, or update a registry)
+- Per-registry RBAC (`anonymous`, `user`, `admin`, group-based access)
+- Per-registry policy rules (age gate, deny latest)
+- Per-registry versioning, signing, and beta-channel configuration
+- Artifact size limit
+
+The following components **require a process restart**:
+- Server host / port
+- Database URL or connection pool size
+- Auth providers (`[[auth]]`)
+- Storage backends
+
+### 9.1 File Watcher
+
+When the config file changes on disk, BatleHub automatically validates the new config (schema check + connectivity probes) and stores a **pending reload**. The admin then confirms or discards it via the UI or API. Pending reloads expire after 10 minutes.
+
+The file watcher is enabled by default. Disable it with:
+
+```sh
+BATLEHUB_DISABLE_HOT_RELOAD=1 batlehub --config config.toml
+```
+
+Use this when `config.toml` is mounted as a read-only Kubernetes ConfigMap.
+
+### 9.2 API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/admin/config/reload` | Immediate reload: validate + apply atomically |
+| `GET` | `/api/v1/admin/config/pending` | Get pending reload diff (404 if none) |
+| `POST` | `/api/v1/admin/config/pending/apply` | Apply the pending reload |
+| `DELETE` | `/api/v1/admin/config/pending` | Discard the pending reload |
+| `GET` | `/api/v1/admin/config/changes` | Paginated audit history (`?page=0&per_page=50`) |
+
+```sh
+# CI/CD: apply a new config atomically
+curl -s -X POST \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://localhost:8080/api/v1/admin/config/reload
+
+# Two-step flow: let the file watcher load a pending, then apply from CI
+curl -s -X POST \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://localhost:8080/api/v1/admin/config/pending/apply
+```
+
+All reloads (applied or rejected) are written to the `config_changes` table with the diff, trigger source, and operator identity.
+
+### 9.3 Global Admin Banner
+
+Administrators can broadcast a message to all website visitors:
+
+```sh
+# Set a warning banner
+curl -s -X PUT \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Maintenance window in 30 min","level":"warning"}' \
+  http://localhost:8080/api/v1/admin/banner
+
+# Clear it
+curl -s -X DELETE \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://localhost:8080/api/v1/admin/banner
+```
+
+The frontend polls `GET /api/v1/banner` (no auth required) every 30 seconds. The banner backend uses the same infrastructure as the metadata cache:
+
+| `[cache] type` | Banner storage |
+|----------------|---------------|
+| `"memory"` | In-process — not shared across replicas |
+| `"redis"` | Redis — shared across all HA replicas |
+| `"postgres"` | `system_kv` table — shared across all HA replicas |
+
+---
+
+## 10. Self-Hosted / Private Registries
 
 Any registry can proxy a self-hosted or private upstream by combining `upstream_auth` and `tls` fields. Both are optional and independent of each other.
 

@@ -1,4 +1,5 @@
 use std::str::FromStr;
+use crate::db::DbResultExt;
 
 use async_trait::async_trait;
 use sqlx::{PgPool, Row};
@@ -41,7 +42,7 @@ impl TeamNamespacePort for PgTeamNamespaceStore {
         .bind(package)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
 
         Ok(row.map(|r| TeamNamespace {
             registry: registry.to_owned(),
@@ -60,7 +61,7 @@ impl TeamNamespacePort for PgTeamNamespaceStore {
         .bind(registry)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
 
         Ok(rows
             .into_iter()
@@ -104,7 +105,7 @@ impl TeamNamespacePort for PgTeamNamespaceStore {
             .bind(prefix)
             .execute(&self.pool)
             .await
-            .map_err(|e| CoreError::Database(e.to_string()))?;
+            .db_err()?;
         Ok(())
     }
 
@@ -123,7 +124,7 @@ impl TeamNamespacePort for PgTeamNamespaceStore {
         .bind(vis.to_string())
         .execute(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
 
         if result.rows_affected() == 0 {
             return Err(CoreError::NotFound(format!(
@@ -144,7 +145,7 @@ impl TeamNamespacePort for PgTeamNamespaceStore {
         .bind(package)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
 
         match row {
             None => Ok(Visibility::Public),
@@ -171,7 +172,7 @@ impl TeamNamespacePort for PgTeamNamespaceStore {
         .bind(groups)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
 
         Ok(rows
             .into_iter()
@@ -208,7 +209,7 @@ impl TeamNamespacePort for PgTeamNamespaceStore {
         .bind(offset as i64)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
 
         rows.into_iter()
             .map(|r| {

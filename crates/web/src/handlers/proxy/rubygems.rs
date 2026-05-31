@@ -16,7 +16,7 @@ use super::common::{
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 fn require_rubygems(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
-    match map.type_of(registry) {
+    match map.type_of(registry).as_deref() {
         Some("rubygems") => Ok(()),
         Some(_) => Err(AppError::not_found(format!(
             "registry '{registry}' is not a RubyGems registry"
@@ -36,7 +36,7 @@ mod tests {
     fn map_with(registry: &str, type_: &str) -> RegistryMap {
         let mut m = HashMap::new();
         m.insert(registry.to_owned(), type_.to_owned());
-        RegistryMap(m)
+        RegistryMap::from(m)
     }
 
     #[test]
@@ -53,7 +53,7 @@ mod tests {
 
     #[test]
     fn require_rubygems_err_for_unknown_registry() {
-        let map = RegistryMap(HashMap::new());
+        let map = RegistryMap::new(HashMap::new());
         assert!(require_rubygems("nonexistent", &map).is_err());
     }
 }

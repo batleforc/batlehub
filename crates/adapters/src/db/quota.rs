@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use sqlx::{PgPool, Row};
+use crate::db::DbResultExt;
 
 use batlehub_core::{
     error::CoreError,
@@ -28,7 +29,7 @@ impl QuotaRepository for PgQuotaRepository {
         .bind(registry)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
 
         Ok(match row {
             Some(r) => {
@@ -69,7 +70,7 @@ impl QuotaRepository for PgQuotaRepository {
         .bind(bytes as i64)
         .execute(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
         Ok(())
     }
 
@@ -91,7 +92,7 @@ impl QuotaRepository for PgQuotaRepository {
         .bind(bytes as i64)
         .execute(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
         Ok(())
     }
 
@@ -107,7 +108,7 @@ impl QuotaRepository for PgQuotaRepository {
         .bind(registry)
         .execute(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
         Ok(())
     }
 
@@ -122,7 +123,7 @@ impl QuotaRepository for PgQuotaRepository {
             .bind(reg)
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| CoreError::Database(e.to_string()))?
+            .db_err()?
             .into_iter()
             .map(|r| {
                 let bytes: i64 = r.try_get("bytes_published").unwrap_or(0);
@@ -143,7 +144,7 @@ impl QuotaRepository for PgQuotaRepository {
             )
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| CoreError::Database(e.to_string()))?
+            .db_err()?
             .into_iter()
             .map(|r| {
                 let bytes: i64 = r.try_get("bytes_published").unwrap_or(0);

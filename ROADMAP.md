@@ -91,11 +91,13 @@ Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules, 
 
 ## Hot reloading & dynamic config
 
-- [ ] Watch the config file for changes and prompt an admin for confirmation before applying
-- [ ] Validate the new config before applying it (schema check + connectivity probes) to avoid breaking a running server
-- [ ] Partial reloads: update RBAC rules or add/remove a registry without restarting the process
-- [ ] API endpoint for triggering a config reload (`POST /api/admin/config/reload`) for automation when file-watching is unavailable
-- [ ] Audit trail for all config changes (who triggered, what changed, when)
+- [x] Watch the config file for changes and prompt an admin for confirmation before applying — file watcher (using `notify` crate) loads a pending reload; admin confirms via `POST /api/v1/admin/config/pending/apply` or discards it
+- [x] Validate the new config before applying it (schema check + connectivity probes) to avoid breaking a running server — schema validation runs immediately; connectivity probes (`HEAD` to each upstream with a 5s timeout) run before the pending reload is stored
+- [x] Partial reloads: update RBAC rules or add/remove a registry without restarting the process — registries, policies, versioning, signing, and beta-channel maps are all behind `Arc<RwLock<HotConfig>>`; in-flight requests finish with the old data before the swap
+- [x] API endpoint for triggering a config reload (`POST /api/v1/admin/config/reload`) for automation when file-watching is unavailable — also `GET /api/v1/admin/config/pending`, `POST /api/v1/admin/config/pending/apply`, `DELETE /api/v1/admin/config/pending`
+- [x] Audit trail for all config changes (who triggered, what changed, when) — stored in `config_changes` table; retrievable via `GET /api/v1/admin/config/changes`
+- [x] **Global admin banner** — broadcast a message (info / warning / error) to all website visitors; automatically set during a reload and cleared on completion; backed by in-memory, Redis, or PostgreSQL depending on the cache backend; `PUT/DELETE /api/v1/admin/banner` + `/admin/config-reload` UI page
+- [x] `BATLEHUB_DISABLE_HOT_RELOAD=1` — disable the file watcher and all reload endpoints (e.g. when config is a read-only Kubernetes ConfigMap)
 - [ ] Dynamic blocking rules fetched from an external trusted source (e.g. a signed Git repository); verify signatures before applying
 - [ ] Dynamic allowlists of trusted publishers or approved versions, fetched from an external source and merged into RBAC / block rules automatically
 

@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Row};
+use crate::db::DbResultExt;
 
 use crate::migrations::embedded_migrator;
 use uuid::Uuid;
@@ -23,7 +24,7 @@ impl PgPackageRepository {
     pub async fn new(database_url: &str) -> Result<Self, CoreError> {
         let pool = PgPool::connect(database_url)
             .await
-            .map_err(|e| CoreError::Database(e.to_string()))?;
+            .db_err()?;
         Ok(Self { pool })
     }
 
@@ -109,7 +110,7 @@ impl PackageRepository for PgPackageRepository {
         .bind(event.timestamp)
         .execute(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
 
         // Ensure the package appears in list_packages by creating an 'available' status
         // row on first access. DO NOTHING preserves any existing blocked status.
@@ -131,7 +132,7 @@ impl PackageRepository for PgPackageRepository {
             .bind(&event.package_id.artifact)
             .execute(&self.pool)
             .await
-            .map_err(|e| CoreError::Database(e.to_string()))?;
+            .db_err()?;
         }
 
         Ok(())
@@ -152,7 +153,7 @@ impl PackageRepository for PgPackageRepository {
         .bind(&pkg.artifact)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
 
         match row {
             None => Ok(PackageStatus::Available),
@@ -221,7 +222,7 @@ impl PackageRepository for PgPackageRepository {
         .bind(blocked_at)
         .execute(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
 
         Ok(())
     }
@@ -280,7 +281,7 @@ impl PackageRepository for PgPackageRepository {
         })
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
 
         let summaries = rows
             .into_iter()
@@ -343,7 +344,7 @@ impl PackageRepository for PgPackageRepository {
         })
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
 
         let count: i64 = row.try_get("total").unwrap_or(0);
         Ok(count as u64)
@@ -376,7 +377,7 @@ impl PackageRepository for PgPackageRepository {
         .bind(&filter.package_name)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
 
         let events = rows
             .into_iter()
@@ -504,7 +505,7 @@ impl PackageRepository for PgPackageRepository {
             .bind(filter.offset as i64)
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| CoreError::Database(e.to_string()))?;
+            .db_err()?;
 
         let entries = rows
             .into_iter()
@@ -568,7 +569,7 @@ impl PackageRepository for PgPackageRepository {
         .bind(registries)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
 
         let count: i64 = row.try_get("total").unwrap_or(0);
         Ok(count as u64)
@@ -616,7 +617,7 @@ impl PackageRepository for PgPackageRepository {
         .bind(registries)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
 
         let stats = rows
             .into_iter()

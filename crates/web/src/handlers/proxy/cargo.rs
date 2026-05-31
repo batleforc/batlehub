@@ -29,7 +29,7 @@ pub struct CargoIndexProxy {
 }
 
 fn require_cargo(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
-    match map.type_of(registry) {
+    match map.type_of(registry).as_deref() {
         Some("cargo") => Ok(()),
         Some(_) => Err(AppError::not_found(format!(
             "registry '{registry}' is not a cargo registry"

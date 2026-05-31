@@ -20,7 +20,7 @@ use super::common::{
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
 
 fn require_terraform(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
-    match map.type_of(registry) {
+    match map.type_of(registry).as_deref() {
         Some("terraform") => Ok(()),
         Some(_) => Err(AppError::not_found(format!(
             "registry '{registry}' is not a Terraform registry"

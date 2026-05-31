@@ -2,12 +2,21 @@ pub mod error;
 pub mod extractors;
 pub mod handlers;
 pub mod middleware;
+pub mod services;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use batlehub_config::schema::RegistryMode;
 use batlehub_core::entities::{Identity, Role};
+
+/// Shared, hot-reloadable access config — updated atomically on config reload.
+pub type AccessConfigLock = Arc<tokio::sync::RwLock<AccessConfig>>;
+
+/// Convenience constructor for `AccessConfigLock`.
+pub fn new_access_lock(cfg: AccessConfig) -> AccessConfigLock {
+    Arc::new(tokio::sync::RwLock::new(cfg))
+}
 
 /// Maps each role (and each dynamic group) to the set of registry names it can access.
 ///
@@ -298,44 +307,108 @@ mod access_config_tests {
 }
 
 /// Maps registry name → registry type (e.g. `"github1"` → `"github"`).
+///
+/// The inner `HashMap` is behind `Arc<RwLock<>>` so the hot-reload path can swap
+/// registry metadata without restarting actix workers. `Clone` shares the same lock.
 #[derive(Clone)]
-pub struct RegistryMap(pub HashMap<String, String>);
-
-/// Maps registry name → configured `RegistryMode` (proxy / local / hybrid).
-#[derive(Clone, Default)]
-pub struct RegistryModeMap(pub HashMap<String, RegistryMode>);
-
-impl RegistryModeMap {
-    pub fn get(&self, name: &str) -> RegistryMode {
-        self.0.get(name).cloned().unwrap_or_default()
-    }
-}
-
-/// Maps npm registry name → first upstream base URL (for audit pass-through).
-#[derive(Clone, Default)]
-pub struct UpstreamMap(pub HashMap<String, String>);
-
-impl UpstreamMap {
-    pub fn upstream_for(&self, name: &str) -> Option<&str> {
-        self.0.get(name).map(String::as_str)
-    }
-}
+pub struct RegistryMap(pub Arc<std::sync::RwLock<HashMap<String, String>>>);
 
 impl RegistryMap {
-    pub fn type_of(&self, name: &str) -> Option<&str> {
-        self.0.get(name).map(String::as_str)
+    pub fn new(map: HashMap<String, String>) -> Self {
+        Self(Arc::new(std::sync::RwLock::new(map)))
+    }
+
+    pub fn type_of(&self, name: &str) -> Option<String> {
+        self.0.read().unwrap().get(name).cloned()
     }
 
     pub fn is_type(&self, name: &str, expected: &str) -> bool {
-        self.type_of(name) == Some(expected)
+        self.type_of(name).as_deref() == Some(expected)
     }
 
-    /// Registry names with the given type, in insertion order.
-    pub fn names_of_type<'a>(&'a self, registry_type: &'a str) -> impl Iterator<Item = &'a str> {
+    pub fn contains(&self, name: &str) -> bool {
+        self.0.read().unwrap().contains_key(name)
+    }
+
+    pub fn keys(&self) -> Vec<String> {
+        self.0.read().unwrap().keys().cloned().collect()
+    }
+
+    /// Registry names with the given type.
+    pub fn names_of_type(&self, registry_type: &str) -> Vec<String> {
         self.0
+            .read()
+            .unwrap()
             .iter()
-            .filter(move |(_, t)| t.as_str() == registry_type)
-            .map(|(n, _)| n.as_str())
+            .filter(|(_, t)| t.as_str() == registry_type)
+            .map(|(n, _)| n.clone())
+            .collect()
+    }
+}
+
+impl From<HashMap<String, String>> for RegistryMap {
+    fn from(map: HashMap<String, String>) -> Self {
+        Self::new(map)
+    }
+}
+
+/// Maps registry name → configured `RegistryMode` (proxy / local / hybrid).
+///
+/// Inner `HashMap` is behind `Arc<RwLock<>>` for the same hot-reload reason as [`RegistryMap`].
+#[derive(Clone)]
+pub struct RegistryModeMap(pub Arc<std::sync::RwLock<HashMap<String, RegistryMode>>>);
+
+impl RegistryModeMap {
+    pub fn new(map: HashMap<String, RegistryMode>) -> Self {
+        Self(Arc::new(std::sync::RwLock::new(map)))
+    }
+
+    pub fn get(&self, name: &str) -> RegistryMode {
+        self.0.read().unwrap().get(name).cloned().unwrap_or_default()
+    }
+
+    pub fn insert(&self, name: String, mode: RegistryMode) {
+        self.0.write().unwrap().insert(name, mode);
+    }
+}
+
+impl Default for RegistryModeMap {
+    fn default() -> Self {
+        Self::new(HashMap::new())
+    }
+}
+
+impl From<HashMap<String, RegistryMode>> for RegistryModeMap {
+    fn from(map: HashMap<String, RegistryMode>) -> Self {
+        Self::new(map)
+    }
+}
+
+/// Maps npm/terraform/pypi/conda registry name → first upstream base URL (for audit pass-through).
+///
+/// Inner `HashMap` is behind `Arc<RwLock<>>` for the same hot-reload reason as [`RegistryMap`].
+#[derive(Clone)]
+pub struct UpstreamMap(pub Arc<std::sync::RwLock<HashMap<String, String>>>);
+
+impl UpstreamMap {
+    pub fn new(map: HashMap<String, String>) -> Self {
+        Self(Arc::new(std::sync::RwLock::new(map)))
+    }
+
+    pub fn upstream_for(&self, name: &str) -> Option<String> {
+        self.0.read().unwrap().get(name).cloned()
+    }
+}
+
+impl Default for UpstreamMap {
+    fn default() -> Self {
+        Self::new(HashMap::new())
+    }
+}
+
+impl From<HashMap<String, String>> for UpstreamMap {
+    fn from(map: HashMap<String, String>) -> Self {
+        Self::new(map)
     }
 }
 
@@ -410,6 +483,10 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             audit::audit_log,
             beta_channel::{add_beta_member, list_beta_members, remove_beta_member},
             bulk::{bulk_delete, bulk_unyank, bulk_yank as bulk_yank_handler},
+            config::{
+                apply_pending_reload, clear_banner, discard_pending_reload, get_pending_reload,
+                list_config_changes, reload_config, set_banner,
+            },
             health::{clear_registry_cache, registry_health},
             ip_blocks::{block_ip, list_blocked_ips, unblock_ip},
             ownership::{add_package_owner, list_package_owners, remove_package_owner},
@@ -429,6 +506,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             warming::warm_registry,
         },
         front_office::{
+            banner::get_banner,
             explore::{
                 explore_package_detail, explore_packages, explore_registry_stats,
                 explore_upstream_search,
@@ -622,6 +700,16 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(list_blocked_ips);
     cfg.service(block_ip);
     cfg.service(unblock_ip);
+    // Config reload admin (pending/apply before pending/delete — more specific first)
+    cfg.service(reload_config);
+    cfg.service(apply_pending_reload);
+    cfg.service(get_pending_reload);
+    cfg.service(discard_pending_reload);
+    cfg.service(list_config_changes);
+    // Banner admin + public
+    cfg.service(set_banner);
+    cfg.service(clear_banner);
+    cfg.service(get_banner);
 }
 
 /// Return the raw OpenAPI JSON spec (auto-collected from route registrations).
@@ -651,7 +739,7 @@ pub fn configure_app(
     admin_svc: Arc<AdminService>,
     token_repo: Arc<dyn UserTokenRepository>,
     pool: Option<PgPool>,
-    access_config: AccessConfig,
+    access_config: Arc<tokio::sync::RwLock<AccessConfig>>,
     registry_map: RegistryMap,
     upstream_map: UpstreamMap,
     oidc_sso_flows: Vec<OidcSsoFlow>,
@@ -667,7 +755,7 @@ pub fn configure_app(
         cfg.app_data(web::Data::new(proxy_svc.clone()));
         cfg.app_data(web::Data::new(admin_svc.clone()));
         cfg.app_data(web::Data::new(token_repo.clone()));
-        cfg.app_data(web::Data::new(access_config.clone()));
+        cfg.app_data(web::Data::new(Arc::clone(&access_config)));
         cfg.app_data(web::Data::new(registry_map.clone()));
         cfg.app_data(web::Data::new(upstream_map.clone()));
         cfg.app_data(web::Data::new(audit_client.clone()));

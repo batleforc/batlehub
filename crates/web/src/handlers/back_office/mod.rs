@@ -1,6 +1,7 @@
 pub mod audit;
 pub mod beta_channel;
 pub mod bulk;
+pub mod config;
 pub mod health;
 pub mod ip_blocks;
 pub mod ownership;

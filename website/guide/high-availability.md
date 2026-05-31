@@ -37,10 +37,11 @@ All state is shared externally. No sticky sessions are needed — any replica ca
 | Metadata cache | `InMemoryCacheStore` (per-process) | PostgreSQL or Redis (`[cache]`) |
 | Rate limiting | `InMemoryRateLimitStore` (per-process) | Same `[cache]` backend — automatic |
 | IP blocking | `InMemoryIpBlockStore` (per-process) | Same `[cache]` backend — automatic |
+| **Global banner** | `InMemoryBannerStore` (per-process) | Same `[cache]` backend — automatic |
 | Artifact storage | Filesystem (`/var/cache/batlehub`) | S3-compatible object store |
 | Canonical data | PostgreSQL | PostgreSQL — already shared |
 
-The `[cache]` section controls all three in-memory stores with a single setting. Switching it also fixes rate limiting and IP blocking without any additional config.
+The `[cache]` section controls all four in-memory stores with a single setting. Switching it also fixes rate limiting, IP blocking, and the global admin banner without any additional config.
 
 ---
 

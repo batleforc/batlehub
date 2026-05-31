@@ -70,6 +70,8 @@ Multiple instances of the same registry type can run in parallel (e.g. a private
 - **OpenTelemetry** — optional distributed tracing via OTLP/gRPC.
 - **Web UI** — a Vue 3 SPA for browsing packages via the Package Explorer, managing firewall blocks, and generating client config snippets.
 - **Package Explorer** — browse and search all cached and locally-published packages across every registry from a single `/explore` page. Filter by registry, sort by downloads, name, or last access. The per-package detail view shows every version alongside its firewall status (Clear / Blocked / Yanked) and beta-channel gate state. An upstream search surfaces packages not yet cached. Fine-grained RBAC lets you grant explore access independently of proxy/download access (e.g. read-only CI tokens cannot browse, but developer accounts can).
+- **Hot reload** — update registries, RBAC, and policies without restarting. A file watcher loads a pending reload when `config.toml` changes; the admin confirms it via the UI or `POST /api/v1/admin/config/pending/apply`. The immediate-reload endpoint (`POST /api/v1/admin/config/reload`) covers automation pipelines. Disable with `BATLEHUB_DISABLE_HOT_RELOAD=1` (e.g. read-only Kubernetes ConfigMaps). All reloads are recorded in an audit trail.
+- **Global admin banner** — broadcast an info / warning / error message to all website visitors from the `/admin/config-reload` UI page or `PUT /api/v1/admin/banner`. The banner is automatically set during a config reload and cleared on completion. Backed by in-memory, Redis, or PostgreSQL depending on your cache backend — all replicas see the same message in HA deployments.
 - **OpenAPI** — full Swagger UI at `/swagger-ui/` and spec dump via `batlehub dump-spec`.
 
 ---

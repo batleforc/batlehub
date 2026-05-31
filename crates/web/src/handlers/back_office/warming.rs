@@ -57,7 +57,7 @@ pub async fn warm_registry(
 
     let registry = path.into_inner();
 
-    if !registry_map.0.contains_key(&registry) {
+    if !registry_map.contains(&registry) {
         return Err(AppError::not_found("registry not found"));
     }
 

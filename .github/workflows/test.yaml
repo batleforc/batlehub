@@ -1,0 +1,159 @@
+name: Test
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/**"
+      - "server/**"
+      - "fuzz/**"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - ".github/workflows/test.yaml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "crates/**"
+      - "server/**"
+      - "fuzz/**"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - ".github/workflows/test.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  unit:
+    name: Unit & doc tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
+
+      - name: Run workspace tests
+        run: cargo test --workspace
+
+  integration-postgres:
+    name: Integration tests (Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: testpass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:testpass@localhost:5432/postgres
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
+
+      - name: Run pg_cache integration tests
+        run: cargo test -p batlehub-adapters --test pg_cache -- --nocapture
+
+      - name: Run local_registry integration tests
+        run: cargo test -p batlehub-adapters --test local_registry -- --nocapture
+
+      - name: Run pg_rate_limit integration tests
+        run: cargo test -p batlehub-adapters --test pg_rate_limit -- --nocapture
+
+  integration-s3:
+    name: Integration tests (S3 / MinIO)
+    runs-on: ubuntu-latest
+    services:
+      minio:
+        image: minio/minio
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "curl -sf http://localhost:9000/minio/health/live"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      S3_TEST_ENDPOINT: http://localhost:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
+
+      - name: Run s3_storage integration tests
+        run: cargo test -p batlehub-adapters --features storage-s3 --test s3_storage -- --nocapture
+
+  integration-redis:
+    name: Integration tests (Redis)
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      REDIS_URL: redis://localhost:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
+
+      - name: Run redis_cache integration tests
+        run: cargo test -p batlehub-adapters --features cache-redis --test redis_cache -- --nocapture
+
+      - name: Run redis_rate_limit integration tests
+        run: cargo test -p batlehub-adapters --features cache-redis --test redis_rate_limit -- --nocapture

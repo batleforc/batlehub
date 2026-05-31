@@ -61,6 +61,7 @@ export const router = createRouter({
         { path: "ip-blocks",       component: () => import("@/pages/AdminIpBlocks.vue") },
         { path: "beta-channel",    component: () => import("@/pages/AdminBetaChannel.vue") },
         { path: "team-namespaces", component: () => import("@/pages/AdminTeamNamespaces.vue") },
+        { path: "config-reload",   component: () => import("@/pages/AdminConfigReload.vue") },
       ],
     },
   ],

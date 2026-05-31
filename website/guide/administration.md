@@ -1,6 +1,6 @@
 # Administration
 
-This page covers everything an administrator needs to operate BatleHub: configuration, storage, auth providers, registry management, health monitoring, and cache cleanup.
+This page covers everything an administrator needs to operate BatleHub: configuration, storage, auth providers, registry management, health monitoring, cache cleanup, hot reloading, and the global banner.
 
 For the complete TOML reference see [`docs/configuration.md`](https://github.com/batleforc/batlehub/blob/main/docs/configuration.md).
 
@@ -581,3 +581,111 @@ Force clients to pin exact versions:
 kind         = "deny_latest"
 bypass_roles = ["admin"]
 ```
+
+---
+
+## Hot reload {#hot-reload}
+
+BatleHub can reload its configuration at runtime — add or remove registries, update RBAC rules, or change policy settings — without restarting the process. In-flight requests finish with the old configuration before the new one takes effect.
+
+### How it works
+
+1. When `config.toml` changes on disk, the built-in file watcher validates the new config, runs connectivity probes against upstream URLs, and stores a **pending reload** in memory.
+2. An administrator reviews the pending diff in the **Config Reload** admin page (`/admin/config-reload`) and clicks **Apply** — or discards it.
+3. Alternatively, the `POST /api/v1/admin/config/reload` endpoint applies a reload immediately (load + validate + apply atomically), which is useful in CI/CD pipelines.
+
+```sh
+# Immediate reload (no confirmation step)
+curl -s -X POST \
+  -H "Authorization: Bearer <admin-token>" \
+  http://localhost:8080/api/v1/admin/config/reload
+
+# Check for a pending reload loaded by the file watcher
+curl -s -H "Authorization: Bearer <admin-token>" \
+  http://localhost:8080/api/v1/admin/config/pending
+
+# Apply the pending reload
+curl -s -X POST \
+  -H "Authorization: Bearer <admin-token>" \
+  http://localhost:8080/api/v1/admin/config/pending/apply
+
+# Discard without applying
+curl -s -X DELETE \
+  -H "Authorization: Bearer <admin-token>" \
+  http://localhost:8080/api/v1/admin/config/pending
+```
+
+Pending reloads expire after **10 minutes** if not applied or discarded.
+
+### What can be hot-reloaded
+
+| Component | Hot-reloadable |
+|-----------|---------------|
+| Registry list (add / remove / update) | ✅ |
+| Per-registry RBAC (`anonymous`, `user`, `admin`, groups) | ✅ |
+| Per-registry rules (age gate, deny latest) | ✅ |
+| Per-registry versioning / signing / beta-channel | ✅ |
+| Artifact size limit | ✅ |
+| Server host / port | ❌ requires restart |
+| Database URL | ❌ requires restart |
+| Auth providers | ❌ requires restart |
+| Storage backends | ❌ requires restart |
+
+### Audit trail
+
+Every reload (applied or rejected) is written to the `config_changes` table and visible in the admin page change history:
+
+```sh
+curl -s -H "Authorization: Bearer <admin-token>" \
+  "http://localhost:8080/api/v1/admin/config/changes?per_page=20"
+```
+
+### Disabling hot reload
+
+Set `BATLEHUB_DISABLE_HOT_RELOAD=1` in the server environment to disable the file watcher and all reload endpoints with a `503 Service Unavailable`. This is recommended when `config.toml` is mounted as a read-only Kubernetes ConfigMap, where the file will not change at runtime.
+
+```yaml
+# Kubernetes Deployment env
+- name: BATLEHUB_DISABLE_HOT_RELOAD
+  value: "1"
+```
+
+---
+
+## Global banner {#global-banner}
+
+Administrators can broadcast a short message to all website visitors — authenticated or not. Common uses: maintenance windows, reload-in-progress notices, and policy announcements.
+
+The banner is automatically set to "Configuration reload in progress…" when a hot reload starts and cleared when it completes.
+
+### Set the banner
+
+From the **Config Reload** admin page, fill in the message and select a level (info / warning / error), then click **Set Banner**.
+
+```sh
+# Set via API
+curl -s -X PUT \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Scheduled maintenance in 30 min","level":"warning"}' \
+  http://localhost:8080/api/v1/admin/banner
+
+# Clear
+curl -s -X DELETE \
+  -H "Authorization: Bearer <admin-token>" \
+  http://localhost:8080/api/v1/admin/banner
+```
+
+The frontend polls `GET /api/v1/banner` every 30 seconds (no authentication required) and displays the banner as a dismissible bar at the top of every page.
+
+### High-availability banner propagation
+
+The banner backend is selected from the same pool as the metadata cache:
+
+| `[cache] type` | Banner storage |
+|----------------|---------------|
+| `"memory"` (default) | In-process — not shared across replicas |
+| `"redis"` | Redis key `batlehub:system:banner` — shared across all replicas |
+| `"postgres"` | `system_kv` table — shared across all replicas |
+
+In an HA deployment, use `"redis"` or `"postgres"` so that all replicas show the same banner regardless of which instance the client reaches.

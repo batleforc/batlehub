@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use sqlx::{PgPool, Row};
+use crate::db::DbResultExt;
 
 use batlehub_core::{
     entities::Identity,
@@ -30,7 +31,7 @@ impl BetaChannelPort for PgBetaChannelStore {
             .bind(uid)
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| CoreError::Database(e.to_string()))?;
+            .db_err()?;
             if exists {
                 return Ok(true);
             }
@@ -47,7 +48,7 @@ impl BetaChannelPort for PgBetaChannelStore {
             .bind(&groups)
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| CoreError::Database(e.to_string()))?;
+            .db_err()?;
             if exists {
                 return Ok(true);
             }
@@ -97,7 +98,7 @@ impl BetaChannelPort for PgBetaChannelStore {
         .bind(principal_id)
         .execute(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
         Ok(())
     }
 
@@ -111,7 +112,7 @@ impl BetaChannelPort for PgBetaChannelStore {
         .bind(registry)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
 
         Ok(rows
             .into_iter()

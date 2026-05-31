@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Row};
+use crate::db::DbResultExt;
 
 use batlehub_core::{
     error::CoreError,
@@ -45,7 +46,7 @@ impl ArtifactMetaRepository for PgArtifactMetaRepository {
         .bind(size.map(|s| s as i64))
         .execute(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
         Ok(())
     }
 
@@ -56,7 +57,7 @@ impl ArtifactMetaRepository for PgArtifactMetaRepository {
         .bind(key)
         .execute(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
         Ok(())
     }
 
@@ -71,7 +72,7 @@ impl ArtifactMetaRepository for PgArtifactMetaRepository {
         };
         let rows = query
             .await
-            .map_err(|e| CoreError::Database(e.to_string()))?;
+            .db_err()?;
         Ok(rows.into_iter().map(row_to_meta).collect())
     }
 
@@ -81,7 +82,7 @@ impl ArtifactMetaRepository for PgArtifactMetaRepository {
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
         Ok(rows.into_iter().map(row_to_meta).collect())
     }
 
@@ -90,7 +91,7 @@ impl ArtifactMetaRepository for PgArtifactMetaRepository {
             .bind(key)
             .execute(&self.pool)
             .await
-            .map_err(|e| CoreError::Database(e.to_string()))?;
+            .db_err()?;
         Ok(())
     }
 
@@ -109,7 +110,7 @@ impl ArtifactMetaRepository for PgArtifactMetaRepository {
         .bind(older_than)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
         Ok(!fresh)
     }
 
@@ -134,7 +135,7 @@ impl ArtifactMetaRepository for PgArtifactMetaRepository {
             .fetch_all(&self.pool)
             .await
         }
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
         Ok(rows.into_iter().map(row_to_meta).collect())
     }
 
@@ -159,7 +160,7 @@ impl ArtifactMetaRepository for PgArtifactMetaRepository {
             .fetch_all(&self.pool)
             .await
         }
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
         Ok(rows.into_iter().map(row_to_meta).collect())
     }
 
@@ -174,7 +175,7 @@ impl ArtifactMetaRepository for PgArtifactMetaRepository {
                 .fetch_one(&self.pool)
                 .await
         }
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
         let total: i64 = row.try_get("total").unwrap_or(0);
         Ok(total as u64)
     }
@@ -196,7 +197,7 @@ impl ArtifactMetaRepository for PgArtifactMetaRepository {
             .fetch_all(&self.pool)
             .await
         }
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
         Ok(rows.into_iter().map(row_to_meta).collect())
     }
 }
