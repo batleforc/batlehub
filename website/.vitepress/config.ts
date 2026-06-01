@@ -73,12 +73,13 @@ export default defineConfig({
       },
       {
         text: "Reference",
-        activeMatch: "/guide/(administration|caching|access-control|high-availability|package-explorer)",
+        activeMatch: "/guide/(administration|caching|access-control|high-availability|package-explorer|sbom)",
         items: [
           { text: "Administration", link: "/guide/administration" },
           { text: "Caching", link: "/guide/caching" },
           { text: "Access Control", link: "/guide/access-control" },
           { text: "Package Explorer", link: "/guide/package-explorer" },
+          { text: "SBOM", link: "/guide/sbom" },
           { text: "High Availability", link: "/guide/high-availability" },
         ],
       },
@@ -284,6 +285,22 @@ export default defineConfig({
             { text: "RBAC configuration", link: "/guide/package-explorer#rbac-config" },
             { text: "REST API", link: "/guide/package-explorer#api" },
             { text: "Performance notes", link: "/guide/package-explorer#performance" },
+          ],
+        },
+      ],
+      "/guide/sbom": [
+        {
+          text: "SBOM",
+          items: [
+            { text: "Overview", link: "/guide/sbom#overview" },
+            { text: "Supported formats", link: "/guide/sbom#formats" },
+            { text: "How SBOMs are generated", link: "/guide/sbom#generation" },
+            { text: "Configuration", link: "/guide/sbom#configuration" },
+            { text: "Per-artifact API", link: "/guide/sbom#per-artifact-api" },
+            { text: "Org-level export", link: "/guide/sbom#org-export" },
+            { text: "Admin UI", link: "/guide/sbom#admin-ui" },
+            { text: "PURL mapping", link: "/guide/sbom#purl" },
+            { text: "Worked examples", link: "/guide/sbom#examples" },
           ],
         },
       ],

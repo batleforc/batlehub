@@ -48,6 +48,7 @@ batlehub is configured with a single TOML file. This document covers every optio
    - [9.2 API Endpoints](#92-api-endpoints)
    - [9.3 Global Admin Banner](#93-global-admin-banner)
 10. [Self-Hosted / Private Registries](#10-self-hosted--private-registries)
+11. [SBOM Generation](#11-sbom-generation)
 
 ---
 
@@ -2591,3 +2592,123 @@ Credential values (`token`, `password`, `value`) are stored in the TOML config f
 - Many deployment tools (Helm, Kustomize, systemd `EnvironmentFile`) support substituting environment variable references into config files before the process starts.
 
 See [Worked Example 6.5](#65-self-hosted-private-registries) for a full multi-registry config.
+
+---
+
+## 11. SBOM Generation
+
+BatleHub can automatically generate Software Bills of Materials (SBOMs) for every artifact it caches or hosts. SBOMs are produced in **SPDX 2.3** and **CycloneDX 1.4** formats and stored in the database alongside the artifact record.
+
+Enable SBOM generation per registry with the `[registries.sbom]` block:
+
+```toml
+[[registries]]
+type = "cargo"
+name = "crates-io"
+
+[registries.sbom]
+enabled        = true
+formats        = ["spdx", "cyclonedx"]   # default: both
+fetch_upstream = true                    # try upstream APIs before extracting
+required       = false                   # deny publish if no manifest found
+```
+
+### Options
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable SBOM generation for this registry |
+| `formats` | list | `["spdx", "cyclonedx"]` | Which formats to store. Either or both of `"spdx"`, `"cyclonedx"` |
+| `fetch_upstream` | bool | `true` | Attempt to fetch a pre-built SBOM from the upstream before falling back to archive extraction or minimal generation |
+| `required` | bool | `false` | Deny publish requests for local/hybrid registries when no dependency manifest can be extracted from the archive |
+
+### SBOM source priority
+
+For each artifact, BatleHub tries the following sources in order and uses the first one that succeeds:
+
+1. **Upstream API** (when `fetch_upstream = true`) — GitHub dependency graph API for GitHub assets, npm `bom.json` for npm packages
+2. **Archive extraction** — parse dependency manifests inside the downloaded archive: `Cargo.toml` (Cargo), `package.json` (npm), `pom.xml` (Maven), `go.mod` (Go), `requirements.txt` / `pyproject.toml` (PyPI)
+3. **Minimal generation** — produce a document from package metadata (name, version, ecosystem PURL) with no dependency list
+
+### API endpoints
+
+| Endpoint | Auth | Description |
+|----------|------|-------------|
+| `GET /api/v1/sbom/{registry}/{name}/{version}?format=spdx\|cyclonedx` | Authenticated user | Retrieve the stored SBOM for one artifact version |
+| `GET /api/v1/sbom/export?registry=…&from=…&to=…&format=spdx\|cyclonedx` | Admin | Export a merged SBOM covering all artifacts in a time range |
+
+The export endpoint returns the document with `Content-Disposition: attachment` so browsers download it directly. The admin UI page at `/admin/sbom` provides a form for setting filters and downloading the export.
+
+### Package URL (PURL) mapping
+
+Each package in the generated SBOM is identified by a [PURL](https://github.com/package-url/purl-spec):
+
+| Registry type | PURL scheme |
+|---------------|-------------|
+| `cargo` | `pkg:cargo/{name}@{version}` |
+| `npm` | `pkg:npm/{name}@{version}` |
+| `maven` | `pkg:maven/{group}/{artifact}@{version}` |
+| `pypi` | `pkg:pypi/{name}@{version}` |
+| `rubygems` | `pkg:gem/{name}@{version}` |
+| `goproxy` | `pkg:golang/{name}@{version}` |
+| `terraform` | `pkg:terraform/{name}@{version}` |
+| `composer` | `pkg:composer/{name}@{version}` |
+| `conda` | `pkg:conda/{name}@{version}` |
+| everything else | `pkg:generic/{name}@{version}` |
+
+### Worked example — Cargo proxy with SBOM
+
+```toml
+[[registries]]
+type = "cargo"
+name = "crates-io"
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+
+[registries.sbom]
+enabled        = true
+fetch_upstream = true   # try crates.io upstream SBOM first
+```
+
+Retrieve the SBOM for a specific crate:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://batlehub.example.com/api/v1/sbom/crates-io/serde/1.0.0?format=spdx" \
+  | jq .
+
+# Or CycloneDX:
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://batlehub.example.com/api/v1/sbom/crates-io/serde/1.0.0?format=cyclonedx"
+```
+
+Export all SBOMs from the past 30 days as a single merged SPDX document:
+
+```sh
+FROM=$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ)
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "https://batlehub.example.com/api/v1/sbom/export?from=${FROM}&format=spdx" \
+  -o org-sbom.spdx.json
+```
+
+### Worked example — Private npm registry with required SBOM
+
+```toml
+[[registries]]
+type = "npm"
+name = "internal-npm"
+mode = "local"
+
+[registries.rbac]
+user  = ["releases:read", "source:read"]
+admin = ["*"]
+
+[registries.sbom]
+enabled  = true
+required = true   # deny publish if package.json not found in the tarball
+```
+
+If a package tarball does not contain a `package.json`, `npm publish` will receive HTTP 422 and the error message `"no dependency manifest found"`.
+
+For full SBOM API reference and tooling integration see [`docs/sbom.md`](sbom.md).

@@ -144,11 +144,12 @@ Applies to registries running in `local` or `hybrid` mode.
 
 ## SBOM support
 
-- [ ] Proxy existing SBOMs from upstreams that provide them (GitHub dependency graph API, npm `bom.json`)
-- [ ] Generate a minimal per-artifact SBOM (SPDX or CycloneDX) at cache time, from the registry metadata and checksum already available
-- [ ] Org-level SBOM export from the audit log: all artifacts served in a time range as a single document (`GET /api/sbom/export?from=…&format=spdx`)
-- [ ] Generate SBOMs at upload time for private registries, extracting dependency manifests from the package (e.g. `go.mod`, `Cargo.toml`, `package.json`)
-- [ ] Policy option: deny publishing a private package if no SBOM is provided or if the SBOM fails validation
+- [x] Proxy existing SBOMs from upstreams that provide them (GitHub dependency graph API, npm `bom.json`) — enabled by `fetch_upstream = true` in `[registries.sbom]`
+- [x] Generate a minimal per-artifact SBOM (SPDX 2.3 or CycloneDX 1.4) at proxy time, from registry metadata and the downloaded archive
+- [x] Org-level SBOM export: all artifacts served in a time range as a single merged document (`GET /api/v1/sbom/export?from=…&to=…&format=spdx|cyclonedx`) — admin UI at `/admin/sbom`
+- [x] Generate SBOMs at upload time for private registries, extracting dependency manifests from the archive (`go.mod`, `Cargo.toml`, `package.json`, `pom.xml`, `requirements.txt`)
+- [x] Policy option: deny publishing a private package if no manifest is found in the archive (`required = true` in `[registries.sbom]`)
+- [x] Per-artifact SBOM accessible from the Package Explorer version detail view (SPDX and CycloneDX download buttons per version)
 - [ ] Periodically re-check cached SBOMs against vulnerability databases (see [Artifact integrity](#artifact-integrity--security)) and update block / warn metadata automatically
 
 ---

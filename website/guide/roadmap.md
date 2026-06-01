@@ -219,12 +219,13 @@ Software Bill of Materials support, driven by compliance requirements (EU Cyber 
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Upstream passthrough | Planned | Proxy SBOMs provided by upstreams (GitHub dependency graph API, npm `bom.json`) |
-| Per-artifact generation | Planned | Generate a minimal SPDX / CycloneDX document at cache time from metadata and checksum |
-| Org-level export | Planned | `GET /api/sbom/export?from=…&format=spdx` — all artifacts served in a time range |
-| Upload-time generation | Planned | For private registries: extract `go.mod`, `Cargo.toml`, `package.json` at publish time |
-| Publish policy | Planned | Optionally deny packages with no SBOM or a failing SBOM |
-| Continuous re-evaluation | Planned | Periodically re-check cached SBOMs against OSV and update block / warn metadata |
+| **Upstream passthrough** | ✅ Shipped | Proxy pre-built SBOMs from upstreams that provide them (GitHub dependency graph API, npm `bom.json`); enable with `fetch_upstream = true` in `[registries.sbom]` |
+| **Per-artifact generation** | ✅ Shipped | SPDX 2.3 and CycloneDX 1.4 generated at proxy time; source priority: upstream-fetched → archive-extracted → minimal from metadata |
+| **Org-level export** | ✅ Shipped | `GET /api/v1/sbom/export?from=…&to=…&format=spdx\|cyclonedx` — merged document covering all artifacts in a time window; admin UI at `/admin/sbom` |
+| **Upload-time generation** | ✅ Shipped | For private registries: dependency manifests extracted from the archive at publish time (`go.mod`, `Cargo.toml`, `package.json`, `pom.xml`, `requirements.txt`) |
+| **Publish policy** | ✅ Shipped | `required = true` in `[registries.sbom]` denies publish when no manifest can be extracted |
+| **Explorer integration** | ✅ Shipped | Per-version SPDX and CycloneDX download buttons in the Package Explorer detail view |
+| Continuous re-evaluation | Planned | Periodically re-check cached SBOMs against the OSV database and update block / warn metadata automatically |
 
 ---
 
