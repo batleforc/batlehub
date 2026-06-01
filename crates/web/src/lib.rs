@@ -424,7 +424,7 @@ use sqlx::PgPool;
 use batlehub_adapters::auth::OidcSsoFlow;
 use batlehub_core::{
     ports::UserTokenRepository,
-    services::{AdminService, ProxyMetrics, ProxyService},
+    services::{AdminService, ProxyMetrics, ProxyService, SbomService},
 };
 use metrics_exporter_prometheus::PrometheusHandle;
 
@@ -497,6 +497,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             quota::{
                 get_quota_for_user, list_quota, list_quota_for_registry, reset_quota_for_user,
             },
+            sbom::{export_org_sbom, get_artifact_sbom},
             stats::admin_stats,
             team_namespaces::{
                 claim_namespace, list_namespaces, my_namespace_packages, my_namespaces,
@@ -710,6 +711,9 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(set_banner);
     cfg.service(clear_banner);
     cfg.service(get_banner);
+    // SBOM: export (literal "export") before per-artifact (parameterised path)
+    cfg.service(export_org_sbom);
+    cfg.service(get_artifact_sbom);
 }
 
 /// Return the raw OpenAPI JSON spec (auto-collected from route registrations).
@@ -746,6 +750,7 @@ pub fn configure_app(
     warming_map: WarmingServiceMap,
     proxy_metrics: Arc<ProxyMetrics>,
     prometheus_handle: Option<PrometheusHandle>,
+    sbom_svc: Option<Arc<SbomService>>,
 ) -> impl Fn(&mut UtoipaServiceConfig) + Clone + 'static {
     let audit_client = reqwest::Client::builder()
         .user_agent("batlehub/0.1")
@@ -767,6 +772,9 @@ pub fn configure_app(
         }
         if let Some(ref p) = pool {
             cfg.app_data(web::Data::new(p.clone()));
+        }
+        if let Some(ref s) = sbom_svc {
+            cfg.app_data(web::Data::new(s.clone()));
         }
         collect_routes(cfg);
     }

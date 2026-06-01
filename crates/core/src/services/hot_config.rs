@@ -41,6 +41,17 @@ pub struct SigningConfig {
     pub allowed_types: Vec<String>,
 }
 
+/// SBOM configuration stored in the service (mirrors config-layer `SbomConfig`).
+#[derive(Debug, Default, Clone)]
+pub struct SbomConfig {
+    pub enabled: bool,
+    pub formats: Vec<String>,
+    pub required: bool,
+    pub fetch_upstream: bool,
+    /// The registry adapter type (e.g. "cargo", "npm") — used for archive extraction.
+    pub registry_type: String,
+}
+
 /// All registry state that can be hot-reloaded without restarting the process.
 ///
 /// Stored behind `Arc<RwLock<>>` inside `ProxyService` and `LocalRegistryService`.
@@ -55,6 +66,8 @@ pub struct HotConfig {
     pub versioning: HashMap<String, VersioningPolicy>,
     /// Per-registry artifact signing configs (Clone, cheap).
     pub signing: HashMap<String, SigningConfig>,
+    /// Per-registry SBOM generation configs (Clone, cheap).
+    pub sbom: HashMap<String, SbomConfig>,
     /// Per-registry beta-channel gate ports.
     pub beta_channel: HashMap<String, Arc<dyn BetaChannelPort>>,
     /// Maximum artifact size when buffering from upstream; None = 500 MiB default.
@@ -81,6 +94,7 @@ mod tests {
             policies: HashMap::new(),
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }

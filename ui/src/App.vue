@@ -1,7 +1,15 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { RouterView, RouterLink, useRoute, useRouter } from "vue-router";
-import { AlertTriangle, Info, Menu, X, XCircle, Package, ShieldCheck, BookOpen, FolderKey } from "@lucide/vue";
+import { AlertTriangle, Info, Menu, X, XCircle, Package, ShieldCheck, BookOpen, FolderKey, User, KeyRound, LogOut, ChevronDown } from "@lucide/vue";
+import {
+  DropdownMenuRoot,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuLabel,
+} from "radix-vue";
 import { useAuth } from "@/composables/useAuth";
 import { useBanner } from "@/composables/useBanner";
 import { DOCS_URL } from "@/config";
@@ -76,48 +84,6 @@ function isActive(to: string) {
             {{ link.label }}
           </RouterLink>
 
-          <!-- Tokens link for OIDC users -->
-          <RouterLink
-            v-if="isOidcUser"
-            to="/tokens"
-            :class="[
-              'px-3 py-1.5 rounded-md transition-colors hover:bg-accent hover:text-accent-foreground',
-              isActive('/tokens')
-                ? 'bg-accent text-accent-foreground font-medium'
-                : 'text-muted-foreground',
-            ]"
-          >
-            My Tokens
-          </RouterLink>
-
-          <!-- My Profile link for authenticated users -->
-          <RouterLink
-            v-if="isAuthenticated"
-            to="/profile"
-            :class="[
-              'px-3 py-1.5 rounded-md transition-colors hover:bg-accent hover:text-accent-foreground',
-              isActive('/profile')
-                ? 'bg-accent text-accent-foreground font-medium'
-                : 'text-muted-foreground',
-            ]"
-          >
-            My Profile
-          </RouterLink>
-
-          <!-- My Namespace link for team members -->
-          <RouterLink
-            v-if="isAuthenticated"
-            to="/my-namespace"
-            :class="[
-              'flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors hover:bg-accent hover:text-accent-foreground',
-              isActive('/my-namespace')
-                ? 'bg-accent text-accent-foreground font-medium'
-                : 'text-muted-foreground',
-            ]"
-          >
-            <FolderKey class="h-3.5 w-3.5" />
-            My Namespace
-          </RouterLink>
         </nav>
 
         <!-- Admin entry point (desktop) -->
@@ -154,39 +120,69 @@ function isActive(to: string) {
           <ThemeToggle />
 
           <template v-if="isAuthenticated">
-            <!-- Avatar + user info -->
-            <div class="hidden sm:flex items-center gap-2">
-              <div
-                class="h-7 w-7 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-semibold"
+            <DropdownMenuRoot>
+              <DropdownMenuTrigger
+                class="hidden sm:flex items-center gap-1.5 rounded-md px-1.5 py-1 text-sm hover:bg-accent transition-colors outline-none"
               >
-                {{ userInitials }}
-              </div>
-              <span class="text-sm text-muted-foreground hidden lg:inline">
-                {{ identity?.user_id }}
-              </span>
-              <Badge
-                v-if="isAdmin"
-                variant="secondary"
-                class="text-xs"
+                <div
+                  class="h-7 w-7 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-semibold shrink-0"
+                >
+                  {{ userInitials }}
+                </div>
+                <span class="text-muted-foreground hidden lg:inline max-w-[10rem] truncate">
+                  {{ identity?.user_id }}
+                </span>
+                <Badge v-if="isAdmin" variant="secondary" class="text-xs">admin</Badge>
+                <Badge v-else-if="identity?.role !== 'anonymous'" variant="outline" class="text-xs">
+                  {{ identity?.role }}
+                </Badge>
+                <ChevronDown class="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                class="z-50 min-w-[11rem] rounded-md border bg-popover p-1 shadow-md"
               >
-                admin
-              </Badge>
-              <Badge
-                v-else-if="identity?.role !== 'anonymous'"
-                variant="outline"
-                class="text-xs"
-              >
-                {{ identity?.role }}
-              </Badge>
-            </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              class="text-sm"
-              @click="handleLogout"
-            >
-              Sign out
-            </Button>
+                <DropdownMenuLabel class="px-2 py-1.5 text-xs text-muted-foreground font-normal truncate">
+                  {{ identity?.user_id }}
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator class="my-1 h-px bg-border" />
+                <DropdownMenuItem as-child>
+                  <RouterLink
+                    to="/profile"
+                    class="flex items-center gap-2 px-2 py-1.5 text-sm rounded cursor-pointer hover:bg-accent outline-none"
+                  >
+                    <User class="h-3.5 w-3.5" />
+                    My Profile
+                  </RouterLink>
+                </DropdownMenuItem>
+                <DropdownMenuItem v-if="isOidcUser" as-child>
+                  <RouterLink
+                    to="/tokens"
+                    class="flex items-center gap-2 px-2 py-1.5 text-sm rounded cursor-pointer hover:bg-accent outline-none"
+                  >
+                    <KeyRound class="h-3.5 w-3.5" />
+                    My Tokens
+                  </RouterLink>
+                </DropdownMenuItem>
+                <DropdownMenuItem as-child>
+                  <RouterLink
+                    to="/my-namespace"
+                    class="flex items-center gap-2 px-2 py-1.5 text-sm rounded cursor-pointer hover:bg-accent outline-none"
+                  >
+                    <FolderKey class="h-3.5 w-3.5" />
+                    My Namespace
+                  </RouterLink>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator class="my-1 h-px bg-border" />
+                <DropdownMenuItem
+                  class="flex items-center gap-2 px-2 py-1.5 text-sm rounded cursor-pointer hover:bg-accent text-destructive hover:text-destructive outline-none"
+                  @select="handleLogout"
+                >
+                  <LogOut class="h-3.5 w-3.5" />
+                  Sign out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenuRoot>
           </template>
           <RouterLink
             v-else

@@ -588,6 +588,9 @@ pub struct RegistryConfig {
     /// Has no effect on registry types that do not support upstream search.
     #[serde(default)]
     pub search_url: Option<String>,
+    /// Optional SBOM generation configuration. When absent, SBOM is disabled.
+    #[serde(default)]
+    pub sbom: Option<SbomConfig>,
 }
 
 // ── Versioning policy ─────────────────────────────────────────────────────────
@@ -623,6 +626,38 @@ pub struct SigningConfig {
     /// When empty, any type (or no type) is accepted.
     #[serde(default)]
     pub allowed_types: Vec<String>,
+}
+
+// ── SBOM generation ───────────────────────────────────────────────────────────
+
+fn default_sbom_formats() -> Vec<String> {
+    vec!["spdx".to_owned(), "cyclonedx".to_owned()]
+}
+
+/// Per-registry SBOM generation configuration.
+///
+/// ```toml
+/// [registries.sbom]
+/// enabled        = true
+/// formats        = ["spdx", "cyclonedx"]
+/// required       = false   # deny publish when no manifest found
+/// fetch_upstream = true    # try GitHub/npm upstream SBOM APIs first
+/// ```
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SbomConfig {
+    /// Enable SBOM generation for this registry.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Formats to generate. Defaults to both when enabled.
+    #[serde(default = "default_sbom_formats")]
+    pub formats: Vec<String>,
+    /// When `true`, deny publish if no dependency manifest can be found in the archive.
+    #[serde(default)]
+    pub required: bool,
+    /// When `true`, attempt to fetch a pre-built SBOM from the upstream before
+    /// falling back to extraction / minimal generation.
+    #[serde(default = "default_true")]
+    pub fetch_upstream: bool,
 }
 
 // ── Quota management ──────────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ import {
   Shield,
   FlaskConical,
   FolderKey,
+  FileJson,
 } from "@lucide/vue";
 
 const route = useRoute();
@@ -19,6 +20,7 @@ const adminLinks = [
   { to: "/admin/bulk",         label: "Bulk Import",  icon: Upload },
   { to: "/admin/audit-log",    label: "Audit Log",    icon: ScrollText },
   { to: "/admin/health",       label: "Health",       icon: HeartPulse },
+  { to: "/admin/sbom",          label: "SBOM Export",  icon: FileJson },
   { to: "/admin/ip-blocks",    label: "IP Blocks",    icon: Shield },
   { to: "/admin/beta-channel",    label: "Beta Channel",    icon: FlaskConical },
   { to: "/admin/team-namespaces", label: "Team Namespaces", icon: FolderKey },

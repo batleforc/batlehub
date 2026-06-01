@@ -17,6 +17,9 @@ impl<T> DbResultExt<T> for Result<T, sqlx::Error> {
 pub mod artifact_meta;
 
 #[cfg(feature = "db-postgres")]
+pub mod sbom;
+
+#[cfg(feature = "db-postgres")]
 pub mod banner_pg;
 
 #[cfg(feature = "db-postgres")]
@@ -54,6 +57,9 @@ pub use postgres::PgPackageRepository;
 
 #[cfg(feature = "db-postgres")]
 pub use quota::PgQuotaRepository;
+
+#[cfg(feature = "db-postgres")]
+pub use sbom::PgSbomRepository;
 
 #[cfg(feature = "db-postgres")]
 pub use team_namespace::PgTeamNamespaceStore;

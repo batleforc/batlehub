@@ -139,12 +139,14 @@ fn make_local_svc(storage: Arc<dyn StorageBackend>) -> Arc<LocalRegistryService>
             policies: HashMap::new(),
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
         quota: None,
         ownership: None,
         team_namespace: None,
+        sbom: None,
     })
 }
 
@@ -227,6 +229,7 @@ async fn make_app(
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -235,6 +238,7 @@ async fn make_app(
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
 
@@ -286,6 +290,7 @@ async fn make_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app
@@ -355,6 +360,7 @@ async fn make_app_ext(
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -363,6 +369,7 @@ async fn make_app_ext(
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: proxy_metrics.clone(),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
 
@@ -414,6 +421,7 @@ async fn make_app_ext(
             std::collections::HashMap::new(),
             proxy_metrics,
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app
@@ -508,6 +516,7 @@ async fn make_app_with_ip_store(
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -516,6 +525,7 @@ async fn make_app_with_ip_store(
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -546,6 +556,7 @@ async fn make_app_with_ip_store(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app
@@ -577,6 +588,7 @@ async fn make_app_with_beta_store(
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -585,6 +597,7 @@ async fn make_app_with_beta_store(
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -615,6 +628,7 @@ async fn make_app_with_beta_store(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app
@@ -694,6 +708,7 @@ async fn make_rate_limited_app(
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -702,6 +717,7 @@ async fn make_rate_limited_app(
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -736,6 +752,7 @@ async fn make_rate_limited_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app
@@ -1762,6 +1779,7 @@ async fn make_group_app(
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -1770,6 +1788,7 @@ async fn make_group_app(
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -1821,6 +1840,7 @@ async fn make_group_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app
@@ -2226,6 +2246,7 @@ async fn make_app_with_tokens(
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -2234,6 +2255,7 @@ async fn make_app_with_tokens(
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let tok_repo: Arc<dyn UserTokenRepository> = token_repo;
@@ -2269,6 +2291,7 @@ async fn make_app_with_tokens(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app
@@ -2610,6 +2633,7 @@ async fn make_app_with_cargo_index(
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -2618,6 +2642,7 @@ async fn make_app_with_cargo_index(
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -2662,6 +2687,7 @@ async fn make_app_with_cargo_index(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app
@@ -3294,6 +3320,7 @@ async fn make_unavailable_npm_app(
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -3302,6 +3329,7 @@ async fn make_unavailable_npm_app(
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -3336,6 +3364,7 @@ async fn make_unavailable_npm_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app
@@ -3729,6 +3758,7 @@ async fn audit_quick_forwards_to_upstream_and_returns_response() {
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -3737,6 +3767,7 @@ async fn audit_quick_forwards_to_upstream_and_returns_response() {
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -3774,6 +3805,7 @@ async fn audit_quick_forwards_to_upstream_and_returns_response() {
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app
@@ -3944,6 +3976,7 @@ async fn cargo_registry_index_fetches_from_upstream_and_returns_content() {
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -3952,6 +3985,7 @@ async fn cargo_registry_index_fetches_from_upstream_and_returns_content() {
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -3993,6 +4027,7 @@ async fn cargo_registry_index_fetches_from_upstream_and_returns_content() {
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app
@@ -4084,6 +4119,7 @@ async fn make_local_registry_app(
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -4092,6 +4128,7 @@ async fn make_local_registry_app(
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -4141,6 +4178,7 @@ async fn make_local_registry_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app
@@ -4491,6 +4529,7 @@ async fn make_local_npm_app(
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -4499,6 +4538,7 @@ async fn make_local_npm_app(
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -4537,6 +4577,7 @@ async fn make_local_npm_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app
@@ -4750,6 +4791,7 @@ async fn make_local_vsx_app(
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -4758,6 +4800,7 @@ async fn make_local_vsx_app(
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -4796,6 +4839,7 @@ async fn make_local_vsx_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app
@@ -4956,6 +5000,7 @@ async fn make_local_go_app(
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -4964,6 +5009,7 @@ async fn make_local_go_app(
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -5002,6 +5048,7 @@ async fn make_local_go_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app
@@ -5233,6 +5280,7 @@ async fn healthz_returns_ok_without_db() {
             policies: HashMap::new(),
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -5241,6 +5289,7 @@ async fn healthz_returns_ok_without_db() {
         repo: InMemoryRepo::new(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
 
     let app = init_service(
@@ -5268,6 +5317,7 @@ async fn healthz_is_unauthenticated() {
             policies: HashMap::new(),
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -5276,6 +5326,7 @@ async fn healthz_is_unauthenticated() {
         repo: InMemoryRepo::new(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
 
     let app = init_service(
@@ -5435,6 +5486,7 @@ async fn make_local_maven_app(
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -5443,6 +5495,7 @@ async fn make_local_maven_app(
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -5480,6 +5533,7 @@ async fn make_local_maven_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app
@@ -5650,6 +5704,7 @@ async fn make_local_terraform_app(
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -5658,6 +5713,7 @@ async fn make_local_terraform_app(
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -5695,6 +5751,7 @@ async fn make_local_terraform_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app
@@ -6203,6 +6260,7 @@ async fn make_local_composer_app(
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -6211,6 +6269,7 @@ async fn make_local_composer_app(
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -6248,6 +6307,7 @@ async fn make_local_composer_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app
@@ -7127,6 +7187,7 @@ async fn make_app_with_ns_store(
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -7135,6 +7196,7 @@ async fn make_app_with_ns_store(
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -7165,6 +7227,7 @@ async fn make_app_with_ns_store(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
 
@@ -7211,12 +7274,14 @@ async fn make_ns_cargo_app(
             policies: HashMap::new(),
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: std::collections::HashMap::new(),
             max_artifact_size_bytes: None,
         }),
         quota: None,
         ownership: None,
         team_namespace: Some(Arc::clone(&ns_store)),
+        sbom: None,
     });
 
     let proxy_svc = Arc::new(ProxyService {
@@ -7225,6 +7290,7 @@ async fn make_ns_cargo_app(
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -7233,6 +7299,7 @@ async fn make_ns_cargo_app(
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -7271,6 +7338,7 @@ async fn make_ns_cargo_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
 
@@ -7339,12 +7407,14 @@ async fn make_ns_cargo_app_with_backend(
             policies: HashMap::new(),
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: std::collections::HashMap::new(),
             max_artifact_size_bytes: None,
         }),
         quota: None,
         ownership: None,
         team_namespace: Some(Arc::clone(&ns_store)),
+        sbom: None,
     });
 
     let proxy_svc = Arc::new(ProxyService {
@@ -7353,6 +7423,7 @@ async fn make_ns_cargo_app_with_backend(
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -7361,6 +7432,7 @@ async fn make_ns_cargo_app_with_backend(
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -7399,6 +7471,7 @@ async fn make_ns_cargo_app_with_backend(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
 
@@ -8260,12 +8333,14 @@ async fn make_ns_upload_app(
             policies: HashMap::new(),
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: std::collections::HashMap::new(),
             max_artifact_size_bytes: None,
         }),
         quota: None,
         ownership: None,
         team_namespace: Some(Arc::clone(&ns_store)),
+        sbom: None,
     });
 
     let proxy_svc = Arc::new(ProxyService {
@@ -8274,6 +8349,7 @@ async fn make_ns_upload_app(
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -8282,6 +8358,7 @@ async fn make_ns_upload_app(
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -8317,6 +8394,7 @@ async fn make_ns_upload_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
 
@@ -8885,6 +8963,7 @@ async fn make_banner_app() -> impl actix_web::dev::Service<
             policies: HashMap::new(),
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -8893,6 +8972,7 @@ async fn make_banner_app() -> impl actix_web::dev::Service<
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -8938,6 +9018,7 @@ async fn make_banner_app() -> impl actix_web::dev::Service<
             HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app
@@ -9046,6 +9127,7 @@ async fn reload_config_returns_503_when_disabled() {
             policies: HashMap::new(),
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -9054,6 +9136,7 @@ async fn reload_config_returns_503_when_disabled() {
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -9096,6 +9179,7 @@ async fn reload_config_returns_503_when_disabled() {
             HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app
@@ -9559,6 +9643,7 @@ async fn make_explore_app(
             policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -9567,6 +9652,7 @@ async fn make_explore_app(
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -9610,6 +9696,7 @@ async fn make_explore_app(
             HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app
@@ -9781,6 +9868,7 @@ async fn make_rubygems_proxy_app() -> impl actix_web::dev::Service<
             policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -9789,6 +9877,7 @@ async fn make_rubygems_proxy_app() -> impl actix_web::dev::Service<
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -9821,6 +9910,7 @@ async fn make_rubygems_proxy_app() -> impl actix_web::dev::Service<
             HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         ))
         .split_for_parts();
     let app = app

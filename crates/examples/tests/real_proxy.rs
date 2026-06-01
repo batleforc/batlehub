@@ -326,12 +326,14 @@ impl RealProxy {
             policies: HashMap::new(),
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
         quota: None,
         ownership: None,
         team_namespace: None,
+        sbom: None,
     });
 
         let proxy_svc = Arc::new(ProxyService {
@@ -340,6 +342,7 @@ impl RealProxy {
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -348,6 +351,7 @@ impl RealProxy {
         repo: repo.clone(),
         artifact_meta: NoopArtifactMetaRepository::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
         let admin_svc = Arc::new(AdminService::new(repo));
         let token_repo = NullUserTokenRepository::arc();
@@ -383,6 +387,7 @@ impl RealProxy {
             HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         );
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -460,12 +465,14 @@ impl RealProxy {
             policies: HashMap::new(),
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
         quota: None,
         ownership: None,
         team_namespace: None,
+        sbom: None,
     });
 
         let proxy_svc = Arc::new(ProxyService {
@@ -474,6 +481,7 @@ impl RealProxy {
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -482,6 +490,7 @@ impl RealProxy {
         repo: repo.clone(),
         artifact_meta: NoopArtifactMetaRepository::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
         let admin_svc = Arc::new(AdminService::new(repo));
         let token_repo = NullUserTokenRepository::arc();
@@ -522,6 +531,7 @@ impl RealProxy {
             HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         );
 
         let rt = tokio::runtime::Runtime::new().unwrap();

@@ -10,11 +10,13 @@ pub mod beta_channel;
 pub mod ownership;
 pub mod package_repo;
 pub mod quota;
+pub mod sbom;
 pub mod storage;
 pub mod team_namespace;
 pub mod user_tokens;
 
 pub use artifact_meta::NoopArtifactMetaRepository;
+pub use sbom::NoopSbomRepository;
 pub use beta_channel::InMemoryBetaChannelStore;
 pub use ownership::InMemoryOwnershipStore;
 pub use package_repo::InMemoryPackageRepository;

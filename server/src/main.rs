@@ -29,9 +29,10 @@ use batlehub_adapters::{
     },
     db::{
         PgArtifactMetaRepository, PgBetaChannelStore, PgOwnershipStore, PgPackageRepository,
-        PgQuotaRepository, PgTeamNamespaceStore,
+        PgQuotaRepository, PgSbomRepository, PgTeamNamespaceStore,
     },
     local_registry::PostgresLocalRegistry,
+    sbom::HttpSbomFetcher,
     registry::{
         CargoRegistryClient, ComposerRegistryClient, CondaRegistryClient, FanoutRegistryClient,
         GithubRegistryClient, GoProxyRegistryClient, MavenRegistryClient, NpmRegistryClient,
@@ -52,13 +53,13 @@ use batlehub_core::{
     entities::Role,
     ports::{
         AuthProvider, BetaChannelPort, CacheStore, IpBlockStore, RateLimitStore,
-        UserTokenRepository,
+        SbomRepository, UserTokenRepository,
     },
     rules::{BlockListRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule},
     services::{
-        new_hot_lock, AdminService, LocalRegistryService, ProxyMetrics, ProxyService,
-        QuotaEnforcement, QuotaService, RegistryPolicy, RegistryQuotaConfig,
-        SigningConfig as CoreSigningConfig, VersioningPolicy,
+        new_hot_lock, AdminService, HotSbomConfig, LocalRegistryService, ProxyMetrics,
+        ProxyService, QuotaEnforcement, QuotaService, RegistryPolicy, RegistryQuotaConfig,
+        SbomService, SigningConfig as CoreSigningConfig, VersioningPolicy,
     },
 };
 use batlehub_adapters::cache::InMemoryBannerStore;
@@ -420,6 +421,23 @@ async fn main() -> Result<()> {
 
     let hot = new_hot_lock(init_hot);
 
+    // ── SBOM service ─────────────────────────────────────────────────────────
+    let sbom_repo: Arc<dyn SbomRepository> = Arc::new(PgSbomRepository::new(repo.pool()));
+    #[cfg(feature = "sbom")]
+    let sbom_extractor: Option<Arc<dyn batlehub_core::ports::SbomExtractor>> =
+        Some(Arc::new(batlehub_adapters::sbom::ArchiveSbomExtractor));
+    #[cfg(not(feature = "sbom"))]
+    let sbom_extractor: Option<Arc<dyn batlehub_core::ports::SbomExtractor>> = None;
+    let sbom_http = reqwest::Client::builder()
+        .user_agent("batlehub/sbom")
+        .build()
+        .context("building SBOM HTTP client")?;
+    let sbom_svc = Arc::new(SbomService::new(
+        sbom_repo,
+        sbom_extractor,
+        Some(Arc::new(HttpSbomFetcher::new(sbom_http))),
+    ));
+
     let proxy_svc = Arc::new(ProxyService {
         hot: Arc::clone(&hot),
         storage: storage.clone(),
@@ -427,6 +445,7 @@ async fn main() -> Result<()> {
         repo: repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>,
         artifact_meta,
         metrics: Arc::clone(&proxy_metrics),
+        sbom: Some(Arc::clone(&sbom_svc)),
     });
 
     // ── IP blocking store ─────────────────────────────────────────────────────
@@ -466,6 +485,7 @@ async fn main() -> Result<()> {
         quota: Some(Arc::clone(&quota_svc)),
         ownership: Some(ownership_store),
         team_namespace: Some(Arc::clone(&team_namespace_store)),
+        sbom: Some(Arc::clone(&sbom_svc)),
     });
 
     // ── Warming services ──────────────────────────────────────────────────────
@@ -591,6 +611,7 @@ async fn main() -> Result<()> {
             warming_map.clone(),
             Arc::clone(&proxy_metrics),
             Some(prometheus_handle.clone()),
+            Some(sbom_svc.clone()),
         );
         let static_dir_inner = static_dir.clone();
         let cargo_indexes_inner = cargo_indexes.clone();
@@ -930,6 +951,27 @@ fn build_signing_map(registries: &[RegistryConfig]) -> HashMap<String, CoreSigni
         .collect()
 }
 
+/// Build per-registry `SbomConfig` map from registries that have `[sbom]` configured.
+fn build_sbom_map(registries: &[RegistryConfig]) -> HashMap<String, HotSbomConfig> {
+    registries
+        .iter()
+        .filter_map(|reg| {
+            reg.sbom.as_ref().map(|s| {
+                (
+                    reg.name.clone(),
+                    HotSbomConfig {
+                        enabled: s.enabled,
+                        formats: s.formats.clone(),
+                        required: s.required,
+                        fetch_upstream: s.fetch_upstream,
+                        registry_type: reg.registry_type.clone(),
+                    },
+                )
+            })
+        })
+        .collect()
+}
+
 /// Build per-registry `BetaChannelPort` map from registries that have `beta_channel.enabled = true`.
 ///
 /// Each enabled registry gets a clone of the same shared store Arc; no new connections are opened.
@@ -998,6 +1040,7 @@ fn build_hot_bundle(
         policies: reg_policies,
         versioning: build_versioning_map(&cfg.registries),
         signing: build_signing_map(&cfg.registries),
+        sbom: build_sbom_map(&cfg.registries),
         beta_channel: build_beta_channel_map(Arc::clone(beta_channel_store), &cfg.registries),
         max_artifact_size_bytes: cfg.limits.max_artifact_size_bytes,
     };

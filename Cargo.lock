@@ -961,6 +961,7 @@ dependencies = [
  "hex",
  "jsonwebtoken",
  "mockito",
+ "quick-xml",
  "rand 0.10.1",
  "rcgen",
  "redis",

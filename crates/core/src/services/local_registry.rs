@@ -4,7 +4,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 
 use crate::{
-    entities::{Identity, PublishedPackage, Role, Visibility},
+    entities::{Identity, PublishedPackage, Role, SbomFormat, Visibility},
     error::CoreError,
     ports::{
         LocalRegistryBackend, OwnershipPort, StorageBackend, StorageMeta, TeamNamespacePort,
@@ -12,6 +12,7 @@ use crate::{
     services::{
         hot_config::{HotConfigLock, VersioningPolicy},
         quota::{QuotaCheck, QuotaService},
+        sbom::SbomService,
     },
 };
 
@@ -78,6 +79,8 @@ pub struct LocalRegistryService {
     pub ownership: Option<Arc<dyn OwnershipPort>>,
     /// Optional team namespace enforcement. When `None`, namespace gating is disabled.
     pub team_namespace: Option<Arc<dyn TeamNamespacePort>>,
+    /// Optional SBOM service; when `None`, SBOM generation is disabled globally.
+    pub sbom: Option<Arc<SbomService>>,
 }
 
 /// OS/architecture pair identifying a specific Terraform provider binary.
@@ -273,6 +276,49 @@ impl LocalRegistryService {
                     .await
                 {
                     tracing::warn!("initialize_owner failed (non-fatal): {err}");
+                }
+            }
+        }
+
+        // Step 5: generate SBOM. When `required` is true and generation fails,
+        // roll back the publish and return the error.
+        if let Some(ref sbom_svc) = self.sbom {
+            let sbom_cfg = {
+                let hot = self.hot.read().await;
+                hot.sbom.get(&req.registry).cloned()
+            };
+            if let Some(cfg) = sbom_cfg.filter(|c| c.enabled) {
+                let formats: Vec<SbomFormat> = cfg
+                    .formats
+                    .iter()
+                    .filter_map(|s| SbomFormat::from_str(s))
+                    .collect();
+                let result = sbom_svc
+                    .record_for_published(
+                        &req.registry,
+                        &req.name,
+                        &req.version,
+                        &storage_key,
+                        &req.artifact,
+                        &cfg.registry_type,
+                        &formats,
+                        cfg.required,
+                    )
+                    .await;
+                match result {
+                    Err(e) if cfg.required => {
+                        self.remove_pending(&req.registry, &req.name, &req.version)
+                            .await;
+                        if let Err(err) = self.storage.delete(&storage_key).await {
+                            tracing::error!("storage cleanup after sbom failure: {err}");
+                        }
+                        self.revoke_quota(&req.publisher, &req.registry, bytes).await;
+                        return Err(e);
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "sbom generation failed (non-fatal)");
+                    }
+                    Ok(()) => {}
                 }
             }
         }
@@ -1395,12 +1441,14 @@ mod tests {
                 policies: HashMap::new(),
                 versioning: HashMap::new(),
                 signing: HashMap::new(),
+                sbom: HashMap::new(),
                 beta_channel: HashMap::new(),
                 max_artifact_size_bytes: max_bytes,
             }),
             quota: None,
             ownership: None,
             team_namespace: None,
+            sbom: None,
         }
     }
 
@@ -1625,12 +1673,14 @@ mod tests {
                 policies: HashMap::new(),
                 versioning: HashMap::new(),
                 signing: HashMap::new(),
+                sbom: HashMap::new(),
                 beta_channel: bc,
                 max_artifact_size_bytes: None,
             }),
             quota: None,
             ownership: None,
             team_namespace: None,
+            sbom: None,
         }
     }
 
@@ -1964,12 +2014,14 @@ mod tests {
                 policies: HashMap::new(),
                 versioning: HashMap::new(),
                 signing: HashMap::new(),
+                sbom: HashMap::new(),
                 beta_channel: HashMap::new(),
                 max_artifact_size_bytes: None,
             }),
             quota: None,
             ownership: None,
             team_namespace: Some(ns),
+            sbom: None,
         }
     }
 

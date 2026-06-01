@@ -293,6 +293,7 @@ mod tests {
             policies: HashMap::new(),
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         });
@@ -340,6 +341,7 @@ mod tests {
             policies: HashMap::new(),
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         });

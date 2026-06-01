@@ -109,12 +109,14 @@ impl LocalProxy {
             policies: HashMap::new(),
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
         quota: None,
         ownership: None,
         team_namespace: None,
+        sbom: None,
     });
 
         // No upstream registries — local mode only.
@@ -126,6 +128,7 @@ impl LocalProxy {
             policies: policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -134,6 +137,7 @@ impl LocalProxy {
         repo: repo.clone(),
         artifact_meta: NoopArtifactMetaRepository::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
     });
         let admin_svc = Arc::new(AdminService::new(repo));
         let token_repo = NullUserTokenRepository::arc();
@@ -175,6 +179,7 @@ impl LocalProxy {
             HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
+            None, // sbom_svc
         );
 
         let rt = tokio::runtime::Runtime::new().unwrap();

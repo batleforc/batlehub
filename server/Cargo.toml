@@ -9,9 +9,10 @@ name = "batlehub"
 path = "src/main.rs"
 
 [features]
-default = ["cache-redis"]
+default = ["cache-redis", "sbom"]
 storage-s3 = ["batlehub-adapters/storage-s3"]
 cache-redis = ["batlehub-adapters/cache-redis"]
+sbom = ["batlehub-adapters/sbom"]
 
 [dependencies]
 batlehub-core = { path = "../crates/core" }

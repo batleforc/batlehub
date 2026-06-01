@@ -5,7 +5,7 @@ use bytes::Bytes;
 use chrono::Utc;
 use futures::StreamExt;
 
-use crate::entities::{AccessEvent, Identity, PackageId};
+use crate::entities::{AccessEvent, Identity, PackageId, SbomFormat};
 use crate::error::CoreError;
 use crate::ports::{
     ArtifactMetaRepository, ArtifactStream, CacheEntry, CacheStore, PackageRepository,
@@ -15,6 +15,7 @@ use crate::rules::{evaluate_rules, RuleContext, RuleDecision};
 use crate::services::cache_control::parse_cache_control;
 use crate::services::hot_config::HotConfigLock;
 use crate::services::metrics::ProxyMetrics;
+use crate::services::sbom::SbomService;
 
 // `RegistryPolicy` is defined in hot_config and re-exported from services.
 
@@ -44,6 +45,8 @@ pub struct ProxyService {
     pub artifact_meta: Arc<dyn ArtifactMetaRepository>,
     /// In-memory counters for the stats dashboard (reset on restart).
     pub metrics: Arc<ProxyMetrics>,
+    /// Optional SBOM service; when `None`, SBOM generation is disabled globally.
+    pub sbom: Option<Arc<SbomService>>,
 }
 
 fn warn_if_audit_failed(r: Result<(), CoreError>, ctx: &str) {
@@ -359,6 +362,45 @@ impl ProxyService {
             {
                 tracing::warn!(key = %artifact_key, error = %e, "record_artifact failed");
             }
+
+            // Trigger SBOM generation asynchronously (non-fatal).
+            if let Some(ref sbom_svc) = self.sbom {
+                let sbom_cfg = {
+                    let hot = self.hot.read().await;
+                    hot.sbom.get(registry_name).cloned()
+                };
+                if let Some(cfg) = sbom_cfg.filter(|c| c.enabled) {
+                    let sbom = Arc::clone(sbom_svc);
+                    let meta_clone = metadata.clone();
+                    let key_clone = artifact_key.clone();
+                    let data_clone = data.clone();
+                    let registry_type = client.registry_type().to_owned();
+                    let formats: Vec<SbomFormat> = cfg
+                        .formats
+                        .iter()
+                        .filter_map(|s| SbomFormat::from_str(s))
+                        .collect();
+                    tokio::spawn(async move {
+                        if let Err(e) = sbom
+                            .record_for_proxied(
+                                &meta_clone,
+                                &key_clone,
+                                &data_clone,
+                                &formats,
+                                cfg.fetch_upstream,
+                                &registry_type,
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                key = %key_clone,
+                                error = %e,
+                                "sbom generation failed (non-fatal)"
+                            );
+                        }
+                    });
+                }
+            }
         } else {
             tracing::debug!(key = %artifact_key, "upstream Cache-Control: no-store; skipping artifact cache");
         }
@@ -422,6 +464,7 @@ mod tests {
             policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: max_bytes,
         })
@@ -438,6 +481,7 @@ mod tests {
             policies: HashMap::new(),
             versioning: HashMap::new(),
             signing: HashMap::new(),
+            sbom: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         })
@@ -868,6 +912,7 @@ mod tests {
             repo,
             artifact_meta: NoopArtifactMeta::arc(),
             metrics: Arc::new(ProxyMetrics::new(&[])),
+            sbom: None,
         }
     }
 
@@ -902,6 +947,7 @@ mod tests {
             repo: repo.clone(),
             artifact_meta: NoopArtifactMeta::arc(),
             metrics: Arc::new(ProxyMetrics::new(&[])),
+            sbom: None,
         };
 
         let cache_key = format!("meta:{}", req("npm").package_id.cache_key());
@@ -977,6 +1023,7 @@ mod tests {
             repo: repo.clone(),
             artifact_meta: NoopArtifactMeta::arc(),
             metrics: Arc::new(ProxyMetrics::new(&[])),
+            sbom: None,
         };
 
         let resp = svc.handle(req("npm")).await.unwrap();
@@ -1028,6 +1075,7 @@ mod tests {
             repo: repo.clone(),
             artifact_meta: NoopArtifactMeta::arc(),
             metrics: Arc::new(ProxyMetrics::new(&[])),
+            sbom: None,
         };
 
         let result = svc.handle(req("npm")).await;
@@ -1045,6 +1093,7 @@ mod tests {
             repo: repo.clone(),
             artifact_meta: NoopArtifactMeta::arc(),
             metrics: Arc::new(ProxyMetrics::new(&[])),
+            sbom: None,
         };
 
         let resp = svc.handle(req("npm")).await.unwrap();
@@ -1073,6 +1122,7 @@ mod tests {
             repo: repo.clone(),
             artifact_meta: NoopArtifactMeta::arc(),
             metrics: Arc::new(ProxyMetrics::new(&[])),
+            sbom: None,
         };
 
         let pkg = PackageId::new("npm", "test-pkg", "1.0.0");
@@ -1130,6 +1180,7 @@ mod tests {
             repo,
             artifact_meta: NoopArtifactMeta::arc(),
             metrics: Arc::new(ProxyMetrics::new(&[])),
+            sbom: None,
         }
     }
 
@@ -1328,6 +1379,7 @@ mod tests {
             repo,
             artifact_meta: NoopArtifactMeta::arc(),
             metrics: Arc::new(ProxyMetrics::new(&[])),
+            sbom: None,
         };
 
         let cache_key = format!("meta:{}", req("npm").package_id.cache_key());
@@ -1353,6 +1405,7 @@ mod tests {
             repo,
             artifact_meta: NoopArtifactMeta::arc(),
             metrics: Arc::new(ProxyMetrics::new(&[])),
+            sbom: None,
         };
 
         let pkg = PackageId::new("npm", "test-pkg", "1.0.0");
@@ -1414,6 +1467,7 @@ mod tests {
             repo,
             artifact_meta: spy_meta.clone(),
             metrics: Arc::new(ProxyMetrics::new(&[])),
+            sbom: None,
         };
 
         let resp = svc.handle(req("npm")).await.unwrap();
@@ -1467,6 +1521,7 @@ mod tests {
             repo: SpyRepo::new(),
             artifact_meta: spy_meta.clone(),
             metrics: Arc::new(ProxyMetrics::new(&[])),
+            sbom: None,
         };
 
         let resp = svc.handle(req("npm")).await.unwrap();
@@ -1490,6 +1545,7 @@ mod tests {
             repo,
             artifact_meta: spy_meta.clone(),
             metrics: Arc::new(ProxyMetrics::new(&[])),
+            sbom: None,
         };
 
         let pkg = PackageId::new("npm", "test-pkg", "1.0.0");
@@ -1525,6 +1581,7 @@ mod tests {
             repo: SpyRepo::new(),
             artifact_meta: NoopArtifactMeta::arc(),
             metrics: proxy_metrics.clone(),
+            sbom: None,
         };
 
         let npm = proxy_metrics.all().get("npm").unwrap();
