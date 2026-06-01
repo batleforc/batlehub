@@ -334,6 +334,7 @@ impl RealProxy {
         ownership: None,
         team_namespace: None,
         sbom: None,
+        explore_cache: None,
     });
 
         let proxy_svc = Arc::new(ProxyService {
@@ -473,6 +474,7 @@ impl RealProxy {
         ownership: None,
         team_namespace: None,
         sbom: None,
+        explore_cache: None,
     });
 
         let proxy_svc = Arc::new(ProxyService {

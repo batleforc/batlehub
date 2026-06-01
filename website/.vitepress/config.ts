@@ -73,7 +73,7 @@ export default defineConfig({
       },
       {
         text: "Reference",
-        activeMatch: "/guide/(administration|caching|access-control|high-availability|package-explorer|sbom)",
+        activeMatch: "/guide/(administration|caching|access-control|high-availability|package-explorer|sbom|explore-cache)",
         items: [
           { text: "Administration", link: "/guide/administration" },
           { text: "Caching", link: "/guide/caching" },
@@ -284,6 +284,17 @@ export default defineConfig({
             { text: "Access control", link: "/guide/package-explorer#access-control" },
             { text: "RBAC configuration", link: "/guide/package-explorer#rbac-config" },
             { text: "REST API", link: "/guide/package-explorer#api" },
+            {
+              text: "Explorer cache",
+              link: "/guide/package-explorer#cache",
+              items: [
+                { text: "How it works", link: "/guide/package-explorer#cache-how" },
+                { text: "Stale-while-unavailable", link: "/guide/package-explorer#cache-stale" },
+                { text: "Auto-invalidation", link: "/guide/package-explorer#cache-auto-invalidate" },
+                { text: "Manual flush (UI + API)", link: "/guide/package-explorer#cache-admin" },
+                { text: "Multi-instance", link: "/guide/package-explorer#cache-ha" },
+              ],
+            },
             { text: "Performance notes", link: "/guide/package-explorer#performance" },
           ],
         },

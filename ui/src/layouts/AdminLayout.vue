@@ -11,6 +11,7 @@ import {
   FlaskConical,
   FolderKey,
   FileJson,
+  DatabaseZap,
 } from "@lucide/vue";
 
 const route = useRoute();
@@ -25,6 +26,7 @@ const adminLinks = [
   { to: "/admin/beta-channel",    label: "Beta Channel",    icon: FlaskConical },
   { to: "/admin/team-namespaces", label: "Team Namespaces", icon: FolderKey },
   { to: "/admin/config-reload",   label: "Config Reload",   icon: RefreshCw },
+  { to: "/admin/explore-cache",  label: "Explore Cache",   icon: DatabaseZap },
 ];
 
 function isActive(to: string) {

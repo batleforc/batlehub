@@ -252,11 +252,14 @@ GET /api/v1/explore/packages
   ],
   "total": 150,
   "page": 0,
-  "per_page": 20
+  "per_page": 20,
+  "upstream_unavailable": false
 }
 ```
 
 `source` is one of `"proxied"`, `"local"`, or `"both"`.
+
+`upstream_unavailable` is `true` only when the database was unreachable **and** no cached data was available for this query. Results will be empty. See [Explorer cache](#cache) for details.
 
 ### Registry statistics {#api-stats}
 
@@ -269,10 +272,13 @@ Returns per-registry package counts and total download events for registries tha
 **Response:**
 
 ```json
-[
-  { "registry": "cargo",  "package_count": 120, "total_downloads": 45000 },
-  { "registry": "npm",    "package_count":  30, "total_downloads":  8200 }
-]
+{
+  "registries": [
+    { "registry": "cargo", "package_count": 120, "total_downloads": 45000 },
+    { "registry": "npm",   "package_count":  30, "total_downloads":  8200 }
+  ],
+  "upstream_unavailable": false
+}
 ```
 
 ### Package detail {#api-detail}
@@ -317,7 +323,8 @@ Returns all known versions of a package, the caller's gate status, and per-versi
       "published_at": null,
       "is_prerelease": false
     }
-  ]
+  ],
+  "upstream_unavailable": false
 }
 ```
 
@@ -357,6 +364,108 @@ Queries upstream registry search APIs for packages matching `name`. Only registr
 
 ---
 
+## Explorer cache {#cache}
+
+Explorer catalog results are served from an **in-memory cache** to avoid scanning all package tables on every page load. This is important for large registries with tens of thousands of packages.
+
+### How it works {#cache-how}
+
+| Property | Value |
+| --- | --- |
+| TTL | 10 minutes |
+| Scope | Per query (registry filter + name search + sort + page) |
+| Invalidation | TTL expiry, admin flush, or successful publish |
+| Stale-on-failure | Yes — expired entries are kept and served if the database is unreachable |
+| Persistence | In-memory only; cleared on server restart |
+| Multi-instance | Each instance has its own cache; use the admin API to flush all instances after bulk data changes |
+
+### Stale-while-unavailable {#cache-stale}
+
+If the database becomes unreachable during a request, BatleHub checks whether a stale (expired) cache entry exists for that exact query:
+
+- **Stale entry exists** → The stale results are returned silently. The response includes `"upstream_unavailable": false` because data is available.
+- **No cache entry** → An empty result is returned with `"upstream_unavailable": true`. The UI surfaces a warning badge to indicate that results may be incomplete.
+
+This means the Explorer remains usable during database outages as long as the queries being issued have been cached at least once before the outage.
+
+> The upstream search endpoint (`GET /api/v1/explore/upstream`) is **not cached** — it fans out to live upstream registries and always returns real-time results.
+
+### Automatic invalidation {#cache-auto-invalidate}
+
+The cache is invalidated automatically when:
+
+1. **A package is published** to a local or hybrid registry via `cargo publish`, `npm publish`, etc. Only the entries for that specific registry are cleared.
+2. **TTL expires** after 10 minutes.
+
+There is no automatic invalidation when a package is first proxied (i.e. downloaded for the first time through BatleHub). Those entries appear in the Explorer at the next TTL refresh, typically within 10 minutes.
+
+### Manual invalidation {#cache-admin}
+
+Admins can flush the cache from the admin panel or via the API.
+
+#### Admin UI
+
+Navigate to **Admin → Explore Cache** (`/admin/explore-cache`). Two actions are available:
+
+- **Invalidate by Registry** — select a registry from the dropdown and click **Invalidate Registry**. Only cache entries that include that registry are cleared.
+- **Invalidate All** — flushes the entire cache. All registries are affected.
+
+After invalidation the next request for any flushed query will re-query the database, repopulating the cache transparently.
+
+#### Admin API
+
+```http
+POST /api/v1/admin/explore/invalidate
+Authorization: Bearer <admin-token>
+Content-Type: application/json
+```
+
+**Request body:**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `registry` | string (optional) | Registry to flush. Omit to flush everything. |
+
+**Flush one registry:**
+
+```sh
+curl -X POST https://batlehub.example.com/api/v1/admin/explore/invalidate \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"registry": "npm"}'
+# {"ok": true}
+```
+
+**Flush all registries:**
+
+```sh
+curl -X POST https://batlehub.example.com/api/v1/admin/explore/invalidate \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+# {"ok": true}
+```
+
+**Responses:**
+
+| Status | Description |
+| --- | --- |
+| 200 | `{"ok": true}` — cache flushed |
+| 403 | Admin role required |
+
+### Multi-instance deployments {#cache-ha}
+
+The explorer cache is **per-process**. In a multi-replica deployment (Kubernetes, Docker Swarm), each replica has its own independent cache. This means:
+
+- A flush via the API only affects the replica that handled the request.
+- Cache TTLs on other replicas tick independently.
+
+After a bulk data operation (database migration, mass publish, registry restructuring) you should call the flush endpoint for **every replica**, or wait up to 10 minutes for TTL expiry to propagate naturally.
+
+See [High Availability](./high-availability) for replica-aware rollout strategies.
+
+---
+
 ## Performance notes {#performance}
 
 The catalog queries run two CTEs that union `package_statuses` and `local_packages`, then join access-event counts. The following indexes (added in migration 017) keep these fast:
@@ -369,3 +478,5 @@ The catalog queries run two CTEs that union `package_statuses` and `local_packag
 | `idx_package_statuses_registry_name` on `(registry, package_name)` | Explorer GROUP BY aggregation |
 
 These indexes are created automatically when BatleHub starts and runs migrations. No manual action is required.
+
+For large registries (> 50 000 packages), the 10-minute in-memory cache reduces the load of repeated Explorer requests to near-zero. If you need a shorter TTL to reflect publishes faster, use the admin flush endpoint as part of your CI/CD pipeline (see [Automatic invalidation](#cache-auto-invalidate)).

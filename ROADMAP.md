@@ -139,6 +139,12 @@ Applies to registries running in `local` or `hybrid` mode.
 ### CLI tool
 
 - [ ] `batlehub-cli` — a standalone CLI for common private registry tasks (`publish`, `deprecate`, `yank`, `list`), suitable for use in CI pipelines
+  - [ ] Publish command that wraps the upload API, with support for multiple registry types and automatic metadata extraction from the artifact (e.g. `go.mod` for Go modules, `pom.xml` for Maven)
+  - [ ] Version management commands for deprecating, yanking, or deleting specific versions
+  - [ ] Package management commands for listing versions, viewing metadata, or managing owners
+  - [ ] Authentication support for all providers (static tokens, OIDC, Kubernetes service accounts)
+  - [ ] List of available registries and their types, with per-registry configuration details (e.g. whether publishing is enabled, versioning policies)
+  - [ ] List packages and versions in a registry, with filtering and sorting options
 
 ---
 
@@ -157,6 +163,7 @@ Applies to registries running in `local` or `hybrid` mode.
 ## UI improvements
 
 - [x] **Package explorer** (`/explore`) — collapsible catalog with registry sidebar; search and sort across all cached and upstream packages; per-package detail page showing version history with gate/firewall status per version; `[registries.rbac.explore]` config block for independent search permissions
+- [ ] Package explorer caching and pagination for large registries (e.g. npm) to avoid fetching the entire index on every request; cache invalidation on new versions published or cache expiry
 - [ ] Package detail pages with full metadata, version history, and download links (full deep-linking beyond the explorer summary)
 - [ ] User listing and block management in the admin panel (OIDC and Kubernetes-sourced identities, not just static tokens)
 - [ ] Config editor with validation, diff preview, and apply button (integrates with hot reload)

@@ -486,6 +486,7 @@ async fn main() -> Result<()> {
         ownership: Some(ownership_store),
         team_namespace: Some(Arc::clone(&team_namespace_store)),
         sbom: Some(Arc::clone(&sbom_svc)),
+        explore_cache: Some(Arc::clone(&admin_svc.explore_cache)),
     });
 
     // ── Warming services ──────────────────────────────────────────────────────

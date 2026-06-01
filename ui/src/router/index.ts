@@ -63,6 +63,7 @@ export const router = createRouter({
         { path: "beta-channel",    component: () => import("@/pages/AdminBetaChannel.vue") },
         { path: "team-namespaces", component: () => import("@/pages/AdminTeamNamespaces.vue") },
         { path: "config-reload",   component: () => import("@/pages/AdminConfigReload.vue") },
+        { path: "explore-cache",   component: () => import("@/pages/AdminExploreCache.vue") },
       ],
     },
   ],

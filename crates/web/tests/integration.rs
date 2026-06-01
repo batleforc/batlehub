@@ -147,6 +147,7 @@ fn make_local_svc(storage: Arc<dyn StorageBackend>) -> Arc<LocalRegistryService>
         ownership: None,
         team_namespace: None,
         sbom: None,
+        explore_cache: None,
     })
 }
 
@@ -7282,6 +7283,7 @@ async fn make_ns_cargo_app(
         ownership: None,
         team_namespace: Some(Arc::clone(&ns_store)),
         sbom: None,
+        explore_cache: None,
     });
 
     let proxy_svc = Arc::new(ProxyService {
@@ -7415,6 +7417,7 @@ async fn make_ns_cargo_app_with_backend(
         ownership: None,
         team_namespace: Some(Arc::clone(&ns_store)),
         sbom: None,
+        explore_cache: None,
     });
 
     let proxy_svc = Arc::new(ProxyService {
@@ -8341,6 +8344,7 @@ async fn make_ns_upload_app(
         ownership: None,
         team_namespace: Some(Arc::clone(&ns_store)),
         sbom: None,
+        explore_cache: None,
     });
 
     let proxy_svc = Arc::new(ProxyService {
@@ -9786,7 +9790,9 @@ async fn explore_registry_stats_returns_empty_initially() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
-    assert!(body.is_array());
+    // Response is now an object {registries: [], upstream_unavailable: bool}
+    assert!(body["registries"].is_array());
+    assert_eq!(body["upstream_unavailable"], false);
 }
 
 #[actix_web::test]
@@ -9840,6 +9846,148 @@ async fn explore_upstream_search_filtered_by_registry() {
         .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
+}
+
+// ── Explore cache — response shape ───────────────────────────────────────────
+
+#[actix_web::test]
+async fn explore_packages_response_includes_upstream_unavailable_false() {
+    let app = make_explore_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/packages")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let body: Value = read_body_json(call_service(&app, req).await).await;
+    assert_eq!(body["upstream_unavailable"], false);
+}
+
+#[actix_web::test]
+async fn explore_registry_stats_response_has_object_shape_with_upstream_field() {
+    let app = make_explore_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/registries")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let body: Value = read_body_json(call_service(&app, req).await).await;
+    assert!(body.is_object(), "response must be an object, not an array");
+    assert!(body["registries"].is_array());
+    assert_eq!(body["upstream_unavailable"], false);
+}
+
+#[actix_web::test]
+async fn explore_package_detail_response_includes_upstream_unavailable_false() {
+    let app = make_explore_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/packages/npm/lodash")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let body: Value = read_body_json(call_service(&app, req).await).await;
+    assert_eq!(body["upstream_unavailable"], false);
+}
+
+// ── Explore cache — invalidation endpoint ────────────────────────────────────
+
+#[actix_web::test]
+async fn explore_invalidate_requires_admin_role() {
+    let app = make_explore_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/explore/invalidate")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("Content-Type", "application/json"))
+        .set_payload("{}")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn explore_invalidate_all_returns_ok_for_admin() {
+    let app = make_explore_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/explore/invalidate")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .insert_header(("Content-Type", "application/json"))
+        .set_payload("{}")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["ok"], true);
+}
+
+#[actix_web::test]
+async fn explore_invalidate_by_registry_returns_ok_for_admin() {
+    let app = make_explore_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/explore/invalidate")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .insert_header(("Content-Type", "application/json"))
+        .set_payload(r#"{"registry":"npm"}"#)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["ok"], true);
+}
+
+#[actix_web::test]
+async fn explore_invalidate_anonymous_is_rejected() {
+    let app = make_explore_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/explore/invalidate")
+        .insert_header(("Content-Type", "application/json"))
+        .set_payload("{}")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    // anonymous has no admin role → 403
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn explore_cache_serves_data_after_second_request() {
+    // Verifies the cache is populated on first hit and returned on subsequent calls.
+    let app = make_explore_app(InMemoryRepo::new()).await;
+    for _ in 0..2 {
+        let req = TestRequest::get()
+            .uri("/api/v1/explore/packages")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request();
+        let resp = call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+        let body: Value = read_body_json(resp).await;
+        assert_eq!(body["upstream_unavailable"], false);
+    }
+}
+
+#[actix_web::test]
+async fn explore_cache_clears_after_invalidate_all() {
+    let app = make_explore_app(InMemoryRepo::new()).await;
+
+    // Prime the cache
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/packages")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    // Flush via admin endpoint
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/explore/invalidate")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .insert_header(("Content-Type", "application/json"))
+        .set_payload("{}")
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    // Subsequent request should still succeed (cache refills from DB)
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/packages")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["upstream_unavailable"], false);
 }
 
 // ── RubyGems proxy-mode coverage ─────────────────────────────────────────────

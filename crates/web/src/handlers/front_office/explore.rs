@@ -37,6 +37,9 @@ pub struct ExplorePackageListResponse {
     pub total: usize,
     pub page: u64,
     pub per_page: u64,
+    /// `true` when the upstream database was unreachable and no cached data was available.
+    /// The result set will be empty; the UI should surface a warning to the user.
+    pub upstream_unavailable: bool,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -82,6 +85,7 @@ pub async fn explore_packages(
                 total: 0,
                 page: query.page,
                 per_page: query.per_page,
+                upstream_unavailable: false,
             }));
         }
     }
@@ -115,7 +119,7 @@ pub async fn explore_packages(
         offset: 0,
     };
 
-    let (packages, total) = tokio::try_join!(
+    let ((packages, pkg_unavailable), (total, count_unavailable)) = tokio::try_join!(
         admin_svc.explore_packages(filter),
         admin_svc.count_explore_packages(count_filter),
     )
@@ -143,6 +147,7 @@ pub async fn explore_packages(
         items,
         page: query.page,
         per_page: query.per_page,
+        upstream_unavailable: pkg_unavailable || count_unavailable,
     }))
 }
 
@@ -155,13 +160,20 @@ pub struct RegistryStatDto {
     pub total_downloads: u64,
 }
 
+#[derive(Serialize, ToSchema)]
+pub struct ExploreRegistryStatsResponse {
+    pub registries: Vec<RegistryStatDto>,
+    /// `true` when the upstream database was unreachable and no cached data was available.
+    pub upstream_unavailable: bool,
+}
+
 /// Per-registry package counts and download totals for the explorer sidebar.
 #[utoipa::path(
     get,
     path = "/api/v1/explore/registries",
     tag = "explore",
     responses(
-        (status = 200, description = "Registry statistics", body = Vec<RegistryStatDto>),
+        (status = 200, description = "Registry statistics", body = ExploreRegistryStatsResponse),
     ),
     security(("bearer_token" = [])),
 )]
@@ -177,12 +189,12 @@ pub async fn explore_registry_stats(
         .into_iter()
         .collect();
 
-    let stats = admin_svc
+    let (stats, upstream_unavailable) = admin_svc
         .registry_explore_stats(&accessible)
         .await
         .map_err(AppError::from)?;
 
-    let dtos: Vec<RegistryStatDto> = stats
+    let registries: Vec<RegistryStatDto> = stats
         .into_iter()
         .map(|s| RegistryStatDto {
             registry: s.registry,
@@ -191,7 +203,10 @@ pub async fn explore_registry_stats(
         })
         .collect();
 
-    Ok(web::Json(dtos))
+    Ok(web::Json(ExploreRegistryStatsResponse {
+        registries,
+        upstream_unavailable,
+    }))
 }
 
 // ── Package detail ─────────────────────────────────────────────────────────────
@@ -208,6 +223,8 @@ pub struct ExplorePackageDetailResponse {
     pub name: String,
     pub gate: GateDto,
     pub versions: Vec<ExploreVersionDto>,
+    /// `true` when the upstream database was unreachable and this package has no cached data.
+    pub upstream_unavailable: bool,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -290,10 +307,11 @@ pub async fn explore_package_detail(
         limit: 500,
         offset: 0,
     };
-    let proxied_summaries = admin_svc
-        .list_packages(proxied_filter)
-        .await
-        .map_err(AppError::from)?;
+    let (proxied_summaries, upstream_unavailable) =
+        match admin_svc.list_packages(proxied_filter).await {
+            Ok(summaries) => (summaries, false),
+            Err(_) => (vec![], true),
+        };
 
     // Local versions from local_packages
     let local_versions = local_svc
@@ -371,6 +389,7 @@ pub async fn explore_package_detail(
             beta_member,
         },
         versions,
+        upstream_unavailable,
     }))
 }
 
@@ -472,7 +491,7 @@ pub async fn explore_upstream_search(
         limit: 500,
         offset: 0,
     };
-    let known = admin_svc
+    let (known, _) = admin_svc
         .explore_packages(known_filter)
         .await
         .map_err(AppError::from)?;

@@ -487,6 +487,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                 apply_pending_reload, clear_banner, discard_pending_reload, get_pending_reload,
                 list_config_changes, reload_config, set_banner,
             },
+            explore::invalidate_explore_cache,
             health::{clear_registry_cache, registry_health},
             ip_blocks::{block_ip, list_blocked_ips, unblock_ip},
             ownership::{add_package_owner, list_package_owners, remove_package_owner},
@@ -658,6 +659,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(explore_registry_stats);
     cfg.service(list_packages);
     cfg.service(check_access);
+    cfg.service(invalidate_explore_cache);
     cfg.service(admin_list_packages);
     cfg.service(package_detail);
     cfg.service(block_package);

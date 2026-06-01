@@ -10,6 +10,7 @@ use crate::{
         LocalRegistryBackend, OwnershipPort, StorageBackend, StorageMeta, TeamNamespacePort,
     },
     services::{
+        explore_cache::ExploreCache,
         hot_config::{HotConfigLock, VersioningPolicy},
         quota::{QuotaCheck, QuotaService},
         sbom::SbomService,
@@ -81,6 +82,8 @@ pub struct LocalRegistryService {
     pub team_namespace: Option<Arc<dyn TeamNamespacePort>>,
     /// Optional SBOM service; when `None`, SBOM generation is disabled globally.
     pub sbom: Option<Arc<SbomService>>,
+    /// Optional explore cache; invalidated automatically on successful publish.
+    pub explore_cache: Option<Arc<ExploreCache>>,
 }
 
 /// OS/architecture pair identifying a specific Terraform provider binary.
@@ -265,6 +268,11 @@ impl LocalRegistryService {
             self.revoke_quota(&req.publisher, &req.registry, bytes)
                 .await;
             return Err(e);
+        }
+
+        // Invalidate explore cache so the new version appears without waiting for TTL expiry.
+        if let Some(ref cache) = self.explore_cache {
+            cache.invalidate(Some(&req.registry)).await;
         }
 
         // Step 4: on first publish, register the publisher as the package admin.
@@ -1449,6 +1457,7 @@ mod tests {
             ownership: None,
             team_namespace: None,
             sbom: None,
+            explore_cache: None,
         }
     }
 
@@ -1681,6 +1690,7 @@ mod tests {
             ownership: None,
             team_namespace: None,
             sbom: None,
+            explore_cache: None,
         }
     }
 
@@ -2022,6 +2032,7 @@ mod tests {
             ownership: None,
             team_namespace: Some(ns),
             sbom: None,
+            explore_cache: None,
         }
     }
 
