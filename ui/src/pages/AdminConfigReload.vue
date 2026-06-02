@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useAuth } from "@/composables/useAuth";
-import { useBanner, type GlobalBanner } from "@/composables/useBanner";
+import { useBanner } from "@/composables/useBanner";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 
 const { token } = useAuth();
 const { banner } = useBanner();
-const API_BASE = (import.meta as Record<string, unknown> & { env: Record<string, string> }).env.VITE_API_BASE_URL ?? "";
+const API_BASE = (import.meta as unknown as { env: Record<string, string> }).env.VITE_API_BASE_URL ?? "";
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
