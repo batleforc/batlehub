@@ -240,30 +240,32 @@ impl PackageRepository for PgPackageRepository {
                 ps.block_reason,
                 ps.blocked_by,
                 ps.blocked_at,
-                COUNT(ae.id) AS access_count,
-                MAX(ae.created_at) AS last_accessed,
-                (
-                    SELECT ae2.user_id
-                    FROM access_events ae2
-                    WHERE ae2.registry = ps.registry
-                      AND ae2.package_name = ps.package_name
-                      AND ae2.package_version = ps.package_version
-                      AND ae2.outcome = 'allowed'
-                    ORDER BY ae2.created_at DESC
-                    LIMIT 1
-                ) AS last_accessed_by
+                COALESCE(ae_counts.access_count, 0) AS access_count,
+                ae_counts.last_accessed,
+                ae_user.last_accessed_by
             FROM package_statuses ps
-            LEFT JOIN access_events ae
-                ON ae.registry = ps.registry
-                AND ae.package_name = ps.package_name
-                AND ae.package_version = ps.package_version
+            LEFT JOIN LATERAL (
+                SELECT COUNT(*) AS access_count, MAX(ae.created_at) AS last_accessed
+                FROM access_events ae
+                WHERE ae.registry       = ps.registry
+                  AND ae.package_name   = ps.package_name
+                  AND ae.package_version = ps.package_version
+            ) ae_counts ON true
+            LEFT JOIN LATERAL (
+                SELECT ae2.user_id AS last_accessed_by
+                FROM access_events ae2
+                WHERE ae2.registry       = ps.registry
+                  AND ae2.package_name   = ps.package_name
+                  AND ae2.package_version = ps.package_version
+                  AND ae2.outcome = 'allowed'
+                ORDER BY ae2.created_at DESC
+                LIMIT 1
+            ) ae_user ON true
             WHERE ($1::text IS NULL OR ps.registry = $1)
               AND ($2::text IS NULL OR ps.package_name ILIKE '%' || $2 || '%')
               AND ($3::boolean = false OR ps.status = 'blocked')
               AND ($6::text IS NULL OR ps.package_name = $6)
               AND ($7::text[] IS NULL OR ps.registry = ANY($7::text[]))
-            GROUP BY ps.id, ps.registry, ps.package_name, ps.package_version,
-                     ps.package_artifact, ps.status, ps.block_reason, ps.blocked_by, ps.blocked_at
             ORDER BY ps.registry, ps.package_name, ps.package_version
             LIMIT $4 OFFSET $5
             "#,
@@ -301,7 +303,6 @@ impl PackageRepository for PgPackageRepository {
                     PackageStatus::Available
                 };
 
-                let count: Option<i64> = r.get("access_count");
                 PackageSummary {
                     id: r.get("id"),
                     package_id: PackageId {
@@ -313,7 +314,7 @@ impl PackageRepository for PgPackageRepository {
                     status: pkg_status,
                     last_accessed: r.get("last_accessed"),
                     last_accessed_by: r.get("last_accessed_by"),
-                    access_count: count.unwrap_or(0) as u64,
+                    access_count: r.get::<i64, _>("access_count") as u64,
                 }
             })
             .collect();
