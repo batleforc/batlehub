@@ -36,7 +36,7 @@ use batlehub_adapters::{
     registry::{
         CargoRegistryClient, ComposerRegistryClient, CondaRegistryClient, FanoutRegistryClient,
         GithubRegistryClient, GoProxyRegistryClient, MavenRegistryClient, NpmRegistryClient,
-        OpenVsxRegistryClient, PypiRegistryClient, RubyGemsRegistryClient,
+        NugetRegistryClient, OpenVsxRegistryClient, PypiRegistryClient, RubyGemsRegistryClient,
         TerraformRegistryClient, UpstreamHttpOptions, VsCodeMarketplaceRegistryClient,
     },
     storage::{FilesystemStorageBackend, StorageRouter},
@@ -798,6 +798,7 @@ fn build_registry_client(
             "github" => Arc::new(GithubRegistryClient::new(url, opts)?),
             "npm" => Arc::new(NpmRegistryClient::new(url, opts)?),
             "cargo" => Arc::new(CargoRegistryClient::new(url, opts)?),
+            "nuget" => Arc::new(NugetRegistryClient::new(url, opts)?),
             "openvsx" => Arc::new(OpenVsxRegistryClient::new(url, opts)?),
             "goproxy" => Arc::new(GoProxyRegistryClient::new(url, opts)?),
             "vscode-marketplace" => Arc::new(VsCodeMarketplaceRegistryClient::new(url, opts)?),
@@ -820,6 +821,7 @@ fn build_registry_client(
         "github" => resolve_urls(&reg.upstreams, "https://api.github.com"),
         "npm" => resolve_urls(&reg.upstreams, "https://registry.npmjs.org"),
         "cargo" => resolve_urls(&reg.upstreams, "https://crates.io"),
+        "nuget" => resolve_urls(&reg.upstreams, "https://api.nuget.org"),
         "openvsx" => resolve_urls(&reg.upstreams, "https://open-vsx.org"),
         "goproxy" => resolve_urls(&reg.upstreams, "https://proxy.golang.org"),
         "vscode-marketplace" => {
@@ -995,6 +997,7 @@ fn upstream_url_for(reg: &RegistryConfig) -> Option<String> {
         "terraform" => "https://registry.terraform.io",
         "pypi" => "https://pypi.org",
         "conda" => "https://conda.anaconda.org",
+        "nuget" => "https://api.nuget.org",
         _ => return None,
     };
     Some(reg.upstreams.first().cloned().unwrap_or_else(|| default_url.to_owned()))

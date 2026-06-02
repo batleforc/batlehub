@@ -36,7 +36,7 @@ impl std::ops::Deref for AuthIdentity {
 
 /// Builds a `RawAuthRequest` from the actix-web `HttpRequest`.
 pub fn raw_auth_from_request(req: &HttpRequest) -> batlehub_core::ports::RawAuthRequest {
-    let headers = req
+    let mut headers = req
         .headers()
         .iter()
         .filter_map(|(name, value)| {
@@ -46,6 +46,14 @@ pub fn raw_auth_from_request(req: &HttpRequest) -> batlehub_core::ports::RawAuth
                 .map(|v| (name.to_string(), v.to_owned()))
         })
         .collect::<HashMap<_, _>>();
+
+    // NuGet clients send X-NuGet-ApiKey instead of Authorization: Bearer.
+    // Normalise so all auth providers see a standard Bearer token.
+    if !headers.contains_key("authorization") {
+        if let Some(key) = headers.get("x-nuget-apikey").cloned() {
+            headers.insert("authorization".to_owned(), format!("Bearer {key}"));
+        }
+    }
 
     let query_params = req
         .query_string()

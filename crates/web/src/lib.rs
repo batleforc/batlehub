@@ -448,6 +448,7 @@ pub use middleware::RateLimitService;
         (name = "proxy/rubygems",   description = "RubyGems registry — gem downloads, version listing, and private gem publishing"),
         (name = "proxy/pypi",       description = "PyPI registry — simple index proxy with URL rewriting, wheel/sdist downloads, and twine-compatible publish"),
         (name = "proxy/conda",      description = "Conda channel proxy — repodata.json, package downloads, and private channel publishing"),
+        (name = "proxy/nuget",      description = "NuGet registry — service index, flat container, registration metadata, .nupkg download, and private package publishing"),
         (name = "front-office",     description = "User-facing package information"),
         (name = "explore",          description = "Package explorer — browse and search across registries"),
         (name = "back-office",    description = "Admin management (requires Admin role)"),
@@ -542,6 +543,10 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             },
             goproxy::{goproxy_file, goproxy_latest, goproxy_list, goproxy_publish},
             maven::{maven_get, maven_put},
+            nuget::{
+                nuget_flat_download, nuget_flat_versions, nuget_publish, nuget_registration,
+                nuget_search, nuget_service_index, nuget_yank,
+            },
             npm::{
                 audit_quick, download_tarball as npm_download_tarball, get_packument, get_version,
                 npm_publish,
@@ -595,6 +600,14 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     // Maven — PUT before GET (same path pattern, different method)
     cfg.service(maven_put);
     cfg.service(maven_get);
+    // NuGet: publish (PUT) and yank (DELETE) before read routes; literal paths before wildcards
+    cfg.service(nuget_publish);       // PUT  .../api/v2/package
+    cfg.service(nuget_yank);          // DELETE .../v2/package/{id}/{version}
+    cfg.service(nuget_service_index); // GET .../v3/index.json
+    cfg.service(nuget_registration);  // GET .../v3/registration5/{id}/index.json
+    cfg.service(nuget_flat_versions); // GET .../v3/flat/{id}/index.json
+    cfg.service(nuget_search);        // GET .../v3/query
+    cfg.service(nuget_flat_download); // GET .../v3/flat/{id}/{version}/{filename}
     // Terraform modules — longer paths first (unyank > yank > artifact > upload > download > versions)
     cfg.service(tf_module_unyank); // POST …/versions/{ver}/unyank
     cfg.service(tf_module_yank); // DELETE …/versions/{ver}

@@ -18,6 +18,7 @@
    - [Maven](#37-maven)
    - [Terraform](#38-terraform)
    - [RubyGems](#39-rubygems)
+   - [NuGet](#310-nuget)
 4. [Authentication](#4-authentication)
 5. [Exit Codes and CI Use](#5-exit-codes-and-ci-use)
 6. [Common Failures](#6-common-failures)
@@ -60,6 +61,7 @@ JSON field validation uses `jq` when available; without it the script falls back
   --maven <name>     Test the maven registry named <name>
   --terraform <name> Test the terraform registry named <name>
   --rubygems <name>  Test the rubygems registry named <name>
+  --nuget <name>     Test the nuget registry named <name>
 ```
 
 The `<name>` value for each flag is the `name` field you assigned that registry in your `config.toml`, not the `type`. Only the registries you specify are tested.
@@ -76,7 +78,8 @@ The `<name>` value for each flag is the `name` field you assigned that registry 
   --vscode-marketplace vscode \
   --maven maven \
   --terraform terraform \
-  --rubygems gems
+  --rubygems gems \
+  --nuget nuget
 ```
 
 **Test a remote instance with custom registry names and auth:**
@@ -253,6 +256,24 @@ GET /proxy/<name>/gems/rake-13.2.1.gem  →  200, valid tar (verified with tar t
 ```
 
 `.gem` files are standard POSIX tar archives containing `metadata.gz` and `data.tar.gz`. The `tar tf` command is used to inspect the archive structure without extracting. When `tar` is not available the check falls back to verifying the downloaded file is larger than 10 KiB.
+
+### 3.10 NuGet
+
+**HTTP check** — fetches the NuGet v3 service index and verifies the response contains `"version": "3.0.0"` and a non-empty `resources` array:
+
+```text
+GET /proxy/<name>/nuget/v3/index.json  →  200, JSON { "version": "3.0.0", "resources": [...] }
+```
+
+This exercises the service discovery endpoint which all NuGet v3 clients fetch first. If this succeeds, the proxy's NuGet routing is correctly wired. The service index is generated in-process — no upstream request is needed.
+
+**Troubleshooting:**
+
+**`nuget:http — HTTP 404`**  
+The proxy returned 404 for the service index. Verify the registry `name` in your config and that `type = "nuget"`.
+
+**`nuget:http — missing resources array`**  
+The proxy returned 200 but the body is not a valid service index. This should not occur unless the config points to a non-NuGet registry with the same name.
 
 ---
 

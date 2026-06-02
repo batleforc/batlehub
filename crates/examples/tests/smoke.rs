@@ -366,6 +366,11 @@ fn proxy_curl_endpoints() {
             name: "vscode-marketplace",
             path: "/proxy/my-vscode-marketplace/",
         },
+        // NuGet: flat container is proxied (service index is generated in-process).
+        Case {
+            name: "nuget",
+            path: "/proxy/my-nuget/nuget/v3/flat/newtonsoft.json/index.json",
+        },
     ];
 
     let mut failures = Vec::new();

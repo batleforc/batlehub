@@ -16,7 +16,8 @@ type RegistryType =
   | "rubygems"
   | "composer"
   | "pypi"
-  | "conda";
+  | "conda"
+  | "nuget";
 type AuthRole = "admin" | "user" | "anonymous";
 type StorageBackendType = "filesystem" | "s3";
 type StorageMode = "single" | "multi";
@@ -338,6 +339,7 @@ const defaultUpstream: Record<RegistryType, string> = {
   composer: "https://repo.packagist.org",
   pypi: "https://pypi.org",
   conda: "https://conda.anaconda.org",
+  nuget: "https://api.nuget.org",
 };
 
 function defaultRegistry(type: RegistryType = "npm"): Registry {
@@ -1454,6 +1456,7 @@ const composerAuthSnippet = `{
                 <option value="composer">Composer (PHP)</option>
                 <option value="pypi">PyPI (Python)</option>
                 <option value="conda">Conda</option>
+                <option value="nuget">NuGet (.NET)</option>
                 <option value="openvsx">OpenVSX</option>
                 <option value="vscode-marketplace">VS Code Marketplace</option>
                 <option value="goproxy">Go Modules</option>
@@ -1554,6 +1557,31 @@ curl -X POST \
   -H "Content-Type: application/octet-stream" \
   --data-binary @pkg-1.0.0-py311h0_0.tar.bz2 \
   "https://your-batlehub-host/proxy/{{ reg.name }}/linux-64/"</pre>
+          </div>
+
+          <!-- NuGet client config hint -->
+          <div v-if="reg.type === 'nuget'" class="cg-registry-hint">
+            <p class="cg-hint-title">NuGet client setup</p>
+            <p class="cg-hint-text">
+              Add the proxy as a NuGet source:
+            </p>
+            <pre class="cg-hint-code">dotnet nuget add source \
+  https://your-batlehub-host/proxy/{{ reg.name }}/nuget/v3/index.json \
+  --name {{ reg.name }}</pre>
+            <p class="cg-hint-text" style="margin-top: 0.5rem">
+              Or add to <code>nuget.config</code>:
+            </p>
+            <pre class="cg-hint-code">&lt;configuration&gt;
+  &lt;packageSources&gt;
+    &lt;add key="{{ reg.name }}" value="https://your-batlehub-host/proxy/{{ reg.name }}/nuget/v3/index.json" /&gt;
+  &lt;/packageSources&gt;
+&lt;/configuration&gt;</pre>
+            <p class="cg-hint-text" style="margin-top: 0.5rem" v-if="isLocalOrHybrid(reg)">
+              Publish a package (local/hybrid mode):
+            </p>
+            <pre class="cg-hint-code" v-if="isLocalOrHybrid(reg)">dotnet nuget push MyLib.1.0.0.nupkg \
+  --api-key &lt;your-token&gt; \
+  --source https://your-batlehub-host/proxy/{{ reg.name }}/nuget/v3/index.json</pre>
           </div>
 
           <label v-if="storageMode === 'multi'">

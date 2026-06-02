@@ -15,6 +15,7 @@ impl batlehub_core::ports::SbomExtractor for ArchiveSbomExtractor {
             "npm" => extract_npm_deps(data),
             "maven" => extract_maven_deps(data),
             "pypi" => extract_pypi_deps(data),
+            "nuget" => extract_nuget_deps(data),
             _ => vec![],
         }
     }
@@ -318,6 +319,122 @@ fn parse_pep_metadata(content: &str) -> Vec<SbomDependency> {
         })
         .filter(|d| !d.name.is_empty())
         .collect()
+}
+
+// ── NuGet (.nupkg = zip with *.nuspec) ───────────────────────────────────────
+
+fn extract_nuget_deps(data: &Bytes) -> Vec<SbomDependency> {
+    use std::io::{Cursor, Read};
+    use zip::ZipArchive;
+
+    let cursor = Cursor::new(data.as_ref());
+    let Ok(mut archive) = ZipArchive::new(cursor) else { return vec![] };
+
+    for i in 0..archive.len() {
+        let Ok(mut file) = archive.by_index(i) else { continue };
+        let name = file.name().to_owned();
+        if name.ends_with(".nuspec") {
+            let mut content = String::new();
+            if file.read_to_string(&mut content).is_err() {
+                return vec![];
+            }
+            return parse_nuspec_deps(&content);
+        }
+    }
+    vec![]
+}
+
+fn parse_nuspec_deps(content: &str) -> Vec<SbomDependency> {
+    use quick_xml::{events::Event, Reader};
+
+    let mut reader = Reader::from_str(content);
+    reader.config_mut().trim_text(true);
+
+    let mut deps = Vec::new();
+    let mut in_dependency = false;
+    let mut current_id = String::new();
+    let mut current_version = String::new();
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Empty(ref e)) => {
+                let ln = e.local_name();
+                let local = std::str::from_utf8(ln.as_ref()).unwrap_or("");
+                if local == "dependency" {
+                    let mut id = String::new();
+                    let mut version = String::new();
+                    for attr in e.attributes().flatten() {
+                        let kn = attr.key.local_name();
+                        let key = std::str::from_utf8(kn.as_ref()).unwrap_or("").to_owned();
+                        let val = attr
+                            .decoded_and_normalized_value(
+                                quick_xml::XmlVersion::Implicit1_0,
+                                reader.decoder(),
+                            )
+                            .map(|v| v.into_owned())
+                            .unwrap_or_default();
+                        match key.as_str() {
+                            "id" => id = val,
+                            "version" => version = val,
+                            _ => {}
+                        }
+                    }
+                    if !id.is_empty() {
+                        deps.push(SbomDependency {
+                            name: id,
+                            version_req: if version.is_empty() { None } else { Some(version) },
+                            ecosystem: "nuget".into(),
+                        });
+                    }
+                }
+            }
+            Ok(Event::Start(ref e)) => {
+                let ln = e.local_name();
+                let local = std::str::from_utf8(ln.as_ref()).unwrap_or("");
+                if local == "dependency" {
+                    in_dependency = true;
+                    for attr in e.attributes().flatten() {
+                        let kn = attr.key.local_name();
+                        let key = std::str::from_utf8(kn.as_ref()).unwrap_or("").to_owned();
+                        let val = attr
+                            .decoded_and_normalized_value(
+                                quick_xml::XmlVersion::Implicit1_0,
+                                reader.decoder(),
+                            )
+                            .map(|v| v.into_owned())
+                            .unwrap_or_default();
+                        match key.as_str() {
+                            "id" => current_id = val,
+                            "version" => current_version = val,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                let ln = e.local_name();
+                let local = std::str::from_utf8(ln.as_ref()).unwrap_or("");
+                if local == "dependency" && in_dependency {
+                    in_dependency = false;
+                    if !current_id.is_empty() {
+                        deps.push(SbomDependency {
+                            name: std::mem::take(&mut current_id),
+                            version_req: if current_version.is_empty() {
+                                None
+                            } else {
+                                Some(std::mem::take(&mut current_version))
+                            },
+                            ecosystem: "nuget".into(),
+                        });
+                    }
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
+    deps
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

@@ -16,7 +16,8 @@ This guide walks through publishing packages to a BatleHub private registry for 
 8. [Maven](#8-maven)
 9. [Terraform](#9-terraform)
 10. [Composer](#10-composer)
-11. [Troubleshooting](#11-troubleshooting)
+11. [NuGet](#11-nuget)
+12. [Troubleshooting](#12-troubleshooting)
 
 ---
 
@@ -878,7 +879,110 @@ curl -X DELETE \
 
 ---
 
-## 11. Troubleshooting
+## 11. NuGet
+
+NuGet packages are `.nupkg` files (ZIP archives containing a `.nuspec` manifest). BatleHub implements the [NuGet v3 protocol](https://learn.microsoft.com/en-us/nuget/api/overview), compatible with `dotnet` CLI, `nuget.exe`, and any NuGet v3 client.
+
+### Config
+
+```toml
+[[registries]]
+type = "nuget"
+name = "internal-nuget"
+mode = "local"          # or "hybrid" to fall back to api.nuget.org
+
+[registries.rbac]
+user  = ["releases:read"]
+admin = ["*"]
+```
+
+For hybrid mode add `upstreams = ["https://api.nuget.org"]`.
+
+### Configure dotnet / nuget.config
+
+**CLI (one-time):**
+```bash
+dotnet nuget add source \
+  https://batlehub.example.com/proxy/internal-nuget/nuget/v3/index.json \
+  --name internal-nuget \
+  --username __token__ --password <api-token>
+```
+
+**`nuget.config` (project-level):**
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <add key="internal-nuget"
+         value="https://batlehub.example.com/proxy/internal-nuget/nuget/v3/index.json" />
+  </packageSources>
+  <packageSourceCredentials>
+    <internal-nuget>
+      <add key="Username" value="__token__" />
+      <add key="ClearTextPassword" value="<api-token>" />
+    </internal-nuget>
+  </packageSourceCredentials>
+</configuration>
+```
+
+### Publish with dotnet nuget push
+
+Pack your project first, then push:
+
+```bash
+dotnet pack MyLib.csproj -c Release
+
+dotnet nuget push bin/Release/MyLib.1.0.0.nupkg \
+  --api-key <api-token> \
+  --source https://batlehub.example.com/proxy/internal-nuget/nuget/v3/index.json
+```
+
+The publish endpoint accepts `multipart/form-data` (as sent by `dotnet nuget push`). On success it returns **201 Created**.
+
+### Yank a version
+
+```bash
+curl -X DELETE \
+  -H "Authorization: Bearer <api-token>" \
+  "https://batlehub.example.com/proxy/internal-nuget/nuget/v2/package/mylib/1.0.0"
+```
+
+### Consume a package
+
+```bash
+# Add the package — dotnet fetches the index, resolves the version, downloads the .nupkg
+dotnet add package MyLib --version 1.0.0 --source internal-nuget
+
+# Restore all project dependencies
+dotnet restore
+```
+
+### Verify
+
+```bash
+# Service index should return JSON with "version": "3.0.0"
+curl -s https://batlehub.example.com/proxy/internal-nuget/nuget/v3/index.json | jq '.version'
+
+# Flat container version list after publish
+curl -s https://batlehub.example.com/proxy/internal-nuget/nuget/v3/flat/mylib/index.json
+# → {"versions":["1.0.0"]}
+```
+
+### Endpoint reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/proxy/{registry}/nuget/v3/index.json` | Generated service index |
+| `GET` | `/proxy/{registry}/nuget/v3/flat/{id}/index.json` | Version list |
+| `GET` | `/proxy/{registry}/nuget/v3/flat/{id}/{ver}/{file}` | Download `.nupkg` / `.nuspec` |
+| `GET` | `/proxy/{registry}/nuget/v3/registration5/{id}/index.json` | Package metadata |
+| `GET` | `/proxy/{registry}/nuget/v3/query` | Search |
+| `PUT` | `/proxy/{registry}/nuget/api/v2/package` | Publish `.nupkg` |
+| `DELETE` | `/proxy/{registry}/nuget/v2/package/{id}/{ver}` | Yank |
+
+---
+
+## 12. Troubleshooting
 
 ### `403 Forbidden` on publish
 

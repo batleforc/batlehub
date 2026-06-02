@@ -17,6 +17,11 @@ pub mod npm;
 #[cfg(feature = "registry-npm")]
 pub use npm::NpmRegistryClient;
 
+#[cfg(feature = "registry-nuget")]
+pub mod nuget;
+#[cfg(feature = "registry-nuget")]
+pub use nuget::NugetRegistryClient;
+
 #[cfg(feature = "registry-cargo")]
 pub mod cargo;
 #[cfg(feature = "registry-cargo")]

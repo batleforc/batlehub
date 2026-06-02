@@ -6,6 +6,7 @@ pub mod github;
 pub mod goproxy;
 pub mod maven;
 pub mod npm;
+pub mod nuget;
 pub mod openvsx;
 pub mod pypi;
 pub mod rubygems;

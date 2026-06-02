@@ -947,6 +947,26 @@ impl LocalRegistryService {
         Ok(versions)
     }
 
+    /// Return all locally published versions of a NuGet package.
+    pub async fn get_nuget_versions(
+        &self,
+        registry: &str,
+        name: &str,
+        identity: &Identity,
+    ) -> Result<Vec<PublishedPackage>, CoreError> {
+        self.check_visibility(registry, name, identity).await?;
+        let versions = self.backend.get_versions(registry, name).await?;
+        let versions = self
+            .filter_for_identity(registry, versions, identity)
+            .await?;
+        if versions.is_empty() {
+            return Err(CoreError::NotFound(format!(
+                "NuGet package '{name}' not found in local registry '{registry}'"
+            )));
+        }
+        Ok(versions)
+    }
+
     /// Build the Terraform module versions envelope from `local_packages`.
     pub async fn get_tf_module_versions_response(
         &self,

@@ -74,6 +74,7 @@ default = [
   "registry-npm",
   "registry-openvsx",
   "registry-pypi",
+  "registry-nuget",
   "registry-rubygems",
   "registry-terraform",
   "registry-vscode-marketplace",
@@ -93,6 +94,7 @@ registry-github = []
 registry-goproxy = []
 registry-maven = []
 registry-npm = []
+registry-nuget = ["dep:zip"]
 registry-openvsx = []
 registry-conda = ["dep:bzip2", "dep:zip", "dep:zstd", "dep:tar"]
 registry-pypi = []

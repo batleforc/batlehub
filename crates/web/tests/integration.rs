@@ -10194,3 +10194,340 @@ async fn gem_unyank_in_proxy_mode_returns_404() {
         .to_request();
     assert_eq!(call_service(&app, req).await.status(), 404);
 }
+
+// ══ NuGet local registry tests ════════════════════════════════════════════════
+
+/// Build a minimal in-memory .nupkg (ZIP) containing a .nuspec with the given id/version.
+fn make_sample_nupkg(id: &str, version: &str, description: &str) -> Vec<u8> {
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
+
+    let nuspec = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>{id}</id>
+    <version>{version}</version>
+    <description>{description}</description>
+    <authors>TestAuthor</authors>
+    <tags>test</tags>
+  </metadata>
+</package>"#
+    );
+
+    let mut buf = Vec::new();
+    let mut zip = ZipWriter::new(std::io::Cursor::new(&mut buf));
+    let opts = SimpleFileOptions::default();
+    zip.start_file(format!("{id}.nuspec"), opts).unwrap();
+    zip.write_all(nuspec.as_bytes()).unwrap();
+    zip.finish().unwrap();
+    buf
+}
+
+async fn make_local_nuget_app(
+    mode: RegistryMode,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+
+    let mut registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
+    if matches!(mode, RegistryMode::Hybrid) {
+        registries.insert(
+            "local-nuget".to_owned(),
+            FixedRegistry::new("nuget") as Arc<dyn RegistryClient>,
+        );
+    }
+    let policies: HashMap<String, Arc<RegistryPolicy>> =
+        [("local-nuget".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
+
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        hot: new_hot_lock(HotConfig {
+            registries,
+            policies,
+            versioning: HashMap::new(),
+            signing: HashMap::new(),
+            sbom: HashMap::new(),
+            beta_channel: HashMap::new(),
+            max_artifact_size_bytes: None,
+        }),
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = new_access_lock(batlehub_web::AccessConfig {
+        anonymous: [].iter().map(|s: &&str| s.to_string()).collect(),
+        user: ["local-nuget"].iter().map(|s| s.to_string()).collect(),
+        admin: ["local-nuget"].iter().map(|s| s.to_string()).collect(),
+        groups: std::collections::HashMap::new(),
+        explore_anonymous: std::collections::HashSet::new(),
+        explore_user: std::collections::HashSet::new(),
+        explore_admin: std::collections::HashSet::new(),
+    });
+    let registry_map = batlehub_web::RegistryMap::from(
+        [("local-nuget", "nuget")]
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.to_string()))
+            .collect::<std::collections::HashMap<String, String>>(),
+    );
+    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
+        std::collections::HashMap::new();
+    let mode_map = RegistryModeMap::default();
+    mode_map.insert("local-nuget".to_owned(), mode);
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+            None,
+        ))
+        .split_for_parts();
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(mode_map));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+}
+
+#[actix_web::test]
+async fn nuget_service_index_returns_valid_json() {
+    let app = make_local_nuget_app(RegistryMode::Local).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-nuget/nuget/v3/index.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["version"], "3.0.0");
+    assert!(body["resources"].as_array().map(|a| !a.is_empty()).unwrap_or(false));
+}
+
+#[actix_web::test]
+async fn nuget_publish_creates_version() {
+    let app = make_local_nuget_app(RegistryMode::Local).await;
+    let nupkg = make_sample_nupkg("MyLib", "1.0.0", "A test library");
+
+    // Build multipart body manually — boundary "boundary123"
+    let boundary = "boundary123";
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"package\"; filename=\"MyLib.1.0.0.nupkg\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+    ).into_bytes();
+    body.extend_from_slice(&nupkg);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-nuget/nuget/api/v2/package")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .insert_header(("Content-Type", format!("multipart/form-data; boundary={boundary}")))
+        .set_payload(body)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 201);
+
+    // Version should now appear in flat container
+    let req2 = TestRequest::get()
+        .uri("/proxy/local-nuget/nuget/v3/flat/mylib/index.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp2 = call_service(&app, req2).await;
+    assert_eq!(resp2.status(), 200);
+    let body2: Value = read_body_json(resp2).await;
+    let versions = body2["versions"].as_array().unwrap();
+    assert!(versions.iter().any(|v| v == "1.0.0"));
+}
+
+#[actix_web::test]
+async fn nuget_publish_requires_auth() {
+    let app = make_local_nuget_app(RegistryMode::Local).await;
+    let nupkg = make_sample_nupkg("MyLib", "1.0.0", "Test");
+    let boundary = "b";
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"package\"\r\n\r\n"
+    ).into_bytes();
+    body.extend_from_slice(&nupkg);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-nuget/nuget/api/v2/package")
+        .insert_header(("Content-Type", format!("multipart/form-data; boundary={boundary}")))
+        .set_payload(body)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn nuget_publish_duplicate_returns_409() {
+    let app = make_local_nuget_app(RegistryMode::Local).await;
+    let nupkg = make_sample_nupkg("MyLib", "1.0.0", "Test");
+
+    let publish = |nupkg: Vec<u8>| {
+        let boundary = "b";
+        let mut body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"package\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        ).into_bytes();
+        body.extend_from_slice(&nupkg);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        (body, boundary.to_owned())
+    };
+
+    let (body1, bnd1) = publish(nupkg.clone());
+    let req1 = TestRequest::put()
+        .uri("/proxy/local-nuget/nuget/api/v2/package")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .insert_header(("Content-Type", format!("multipart/form-data; boundary={bnd1}")))
+        .set_payload(body1)
+        .to_request();
+    assert_eq!(call_service(&app, req1).await.status(), 201);
+
+    let (body2, bnd2) = publish(nupkg);
+    let req2 = TestRequest::put()
+        .uri("/proxy/local-nuget/nuget/api/v2/package")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .insert_header(("Content-Type", format!("multipart/form-data; boundary={bnd2}")))
+        .set_payload(body2)
+        .to_request();
+    assert_eq!(call_service(&app, req2).await.status(), 409);
+}
+
+#[actix_web::test]
+async fn nuget_xnuget_apikey_header_authenticates() {
+    let app = make_local_nuget_app(RegistryMode::Local).await;
+    let nupkg = make_sample_nupkg("KeyLib", "0.1.0", "Test ApiKey auth");
+    let boundary = "bk";
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"package\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+    ).into_bytes();
+    body.extend_from_slice(&nupkg);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    // Use X-NuGet-ApiKey instead of Authorization: Bearer
+    let req = TestRequest::put()
+        .uri("/proxy/local-nuget/nuget/api/v2/package")
+        .insert_header(("X-NuGet-ApiKey", ADMIN_TOKEN))
+        .insert_header(("Content-Type", format!("multipart/form-data; boundary={boundary}")))
+        .set_payload(body)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 201, "X-NuGet-ApiKey should authenticate like Bearer");
+}
+
+#[actix_web::test]
+async fn nuget_yank_removes_from_versions() {
+    let app = make_local_nuget_app(RegistryMode::Local).await;
+    let nupkg = make_sample_nupkg("YankLib", "2.0.0", "Yank test");
+    let boundary = "by";
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"package\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+    ).into_bytes();
+    body.extend_from_slice(&nupkg);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    // Publish first
+    let req = TestRequest::put()
+        .uri("/proxy/local-nuget/nuget/api/v2/package")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .insert_header(("Content-Type", format!("multipart/form-data; boundary={boundary}")))
+        .set_payload(body)
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 201);
+
+    // Yank it
+    let req_yank = TestRequest::delete()
+        .uri("/proxy/local-nuget/nuget/v2/package/yanklib/2.0.0")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req_yank).await.status(), 204);
+
+    // Versions list should be empty (yanked packages are excluded)
+    let req_list = TestRequest::get()
+        .uri("/proxy/local-nuget/nuget/v3/flat/yanklib/index.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp_list = call_service(&app, req_list).await;
+    assert_eq!(resp_list.status(), 200);
+    let body_list: Value = read_body_json(resp_list).await;
+    let versions = body_list["versions"].as_array().unwrap();
+    assert!(
+        versions.is_empty(),
+        "yanked version should not appear in flat container versions list"
+    );
+}
+
+#[actix_web::test]
+async fn nuget_registration_local_has_catalog_entry() {
+    let app = make_local_nuget_app(RegistryMode::Local).await;
+    let nupkg = make_sample_nupkg("RegLib", "1.0.0", "Registration test");
+    let boundary = "br";
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"package\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+    ).into_bytes();
+    body.extend_from_slice(&nupkg);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-nuget/nuget/api/v2/package")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .insert_header(("Content-Type", format!("multipart/form-data; boundary={boundary}")))
+        .set_payload(body)
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 201);
+
+    let req2 = TestRequest::get()
+        .uri("/proxy/local-nuget/nuget/v3/registration5/reglib/index.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp2 = call_service(&app, req2).await;
+    assert_eq!(resp2.status(), 200);
+    let body2: Value = read_body_json(resp2).await;
+    assert!(body2["count"].as_u64().unwrap_or(0) >= 1);
+    let items = body2["items"].as_array().unwrap();
+    assert!(!items.is_empty());
+    let leaf_items = items[0]["items"].as_array().unwrap();
+    assert!(!leaf_items.is_empty());
+    let entry = &leaf_items[0]["catalogEntry"];
+    assert_eq!(entry["version"], "1.0.0");
+}
+
+#[actix_web::test]
+async fn nuget_publish_proxy_mode_returns_404() {
+    let app = make_local_nuget_app(RegistryMode::Proxy).await;
+    let nupkg = make_sample_nupkg("PxLib", "1.0.0", "test");
+    let boundary = "bp";
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"package\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+    ).into_bytes();
+    body.extend_from_slice(&nupkg);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-nuget/nuget/api/v2/package")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .insert_header(("Content-Type", format!("multipart/form-data; boundary={boundary}")))
+        .set_payload(body)
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 404);
+}
