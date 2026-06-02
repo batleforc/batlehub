@@ -14,7 +14,7 @@ use super::common::{collect_payload, proxy_stream, require_local_mode};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 fn require_composer(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
-    match map.type_of(registry) {
+    match map.type_of(registry).as_deref() {
         Some("composer") => Ok(()),
         Some(_) => Err(AppError::not_found(format!(
             "registry '{registry}' is not a Composer registry"

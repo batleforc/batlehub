@@ -91,11 +91,13 @@ Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules, 
 
 ## Hot reloading & dynamic config
 
-- [ ] Watch the config file for changes and prompt an admin for confirmation before applying
-- [ ] Validate the new config before applying it (schema check + connectivity probes) to avoid breaking a running server
-- [ ] Partial reloads: update RBAC rules or add/remove a registry without restarting the process
-- [ ] API endpoint for triggering a config reload (`POST /api/admin/config/reload`) for automation when file-watching is unavailable
-- [ ] Audit trail for all config changes (who triggered, what changed, when)
+- [x] Watch the config file for changes and prompt an admin for confirmation before applying — file watcher (using `notify` crate) loads a pending reload; admin confirms via `POST /api/v1/admin/config/pending/apply` or discards it
+- [x] Validate the new config before applying it (schema check + connectivity probes) to avoid breaking a running server — schema validation runs immediately; connectivity probes (`HEAD` to each upstream with a 5s timeout) run before the pending reload is stored
+- [x] Partial reloads: update RBAC rules or add/remove a registry without restarting the process — registries, policies, versioning, signing, and beta-channel maps are all behind `Arc<RwLock<HotConfig>>`; in-flight requests finish with the old data before the swap
+- [x] API endpoint for triggering a config reload (`POST /api/v1/admin/config/reload`) for automation when file-watching is unavailable — also `GET /api/v1/admin/config/pending`, `POST /api/v1/admin/config/pending/apply`, `DELETE /api/v1/admin/config/pending`
+- [x] Audit trail for all config changes (who triggered, what changed, when) — stored in `config_changes` table; retrievable via `GET /api/v1/admin/config/changes`
+- [x] **Global admin banner** — broadcast a message (info / warning / error) to all website visitors; automatically set during a reload and cleared on completion; backed by in-memory, Redis, or PostgreSQL depending on the cache backend; `PUT/DELETE /api/v1/admin/banner` + `/admin/config-reload` UI page
+- [x] `BATLEHUB_DISABLE_HOT_RELOAD=1` — disable the file watcher and all reload endpoints (e.g. when config is a read-only Kubernetes ConfigMap)
 - [ ] Dynamic blocking rules fetched from an external trusted source (e.g. a signed Git repository); verify signatures before applying
 - [ ] Dynamic allowlists of trusted publishers or approved versions, fetched from an external source and merged into RBAC / block rules automatically
 
@@ -137,16 +139,23 @@ Applies to registries running in `local` or `hybrid` mode.
 ### CLI tool
 
 - [ ] `batlehub-cli` — a standalone CLI for common private registry tasks (`publish`, `deprecate`, `yank`, `list`), suitable for use in CI pipelines
+  - [ ] Publish command that wraps the upload API, with support for multiple registry types and automatic metadata extraction from the artifact (e.g. `go.mod` for Go modules, `pom.xml` for Maven)
+  - [ ] Version management commands for deprecating, yanking, or deleting specific versions
+  - [ ] Package management commands for listing versions, viewing metadata, or managing owners
+  - [ ] Authentication support for all providers (static tokens, OIDC, Kubernetes service accounts)
+  - [ ] List of available registries and their types, with per-registry configuration details (e.g. whether publishing is enabled, versioning policies)
+  - [ ] List packages and versions in a registry, with filtering and sorting options
 
 ---
 
 ## SBOM support
 
-- [ ] Proxy existing SBOMs from upstreams that provide them (GitHub dependency graph API, npm `bom.json`)
-- [ ] Generate a minimal per-artifact SBOM (SPDX or CycloneDX) at cache time, from the registry metadata and checksum already available
-- [ ] Org-level SBOM export from the audit log: all artifacts served in a time range as a single document (`GET /api/sbom/export?from=…&format=spdx`)
-- [ ] Generate SBOMs at upload time for private registries, extracting dependency manifests from the package (e.g. `go.mod`, `Cargo.toml`, `package.json`)
-- [ ] Policy option: deny publishing a private package if no SBOM is provided or if the SBOM fails validation
+- [x] Proxy existing SBOMs from upstreams that provide them (GitHub dependency graph API, npm `bom.json`) — enabled by `fetch_upstream = true` in `[registries.sbom]`
+- [x] Generate a minimal per-artifact SBOM (SPDX 2.3 or CycloneDX 1.4) at proxy time, from registry metadata and the downloaded archive
+- [x] Org-level SBOM export: all artifacts served in a time range as a single merged document (`GET /api/v1/sbom/export?from=…&to=…&format=spdx|cyclonedx`) — admin UI at `/admin/sbom`
+- [x] Generate SBOMs at upload time for private registries, extracting dependency manifests from the archive (`go.mod`, `Cargo.toml`, `package.json`, `pom.xml`, `requirements.txt`)
+- [x] Policy option: deny publishing a private package if no manifest is found in the archive (`required = true` in `[registries.sbom]`)
+- [x] Per-artifact SBOM accessible from the Package Explorer version detail view (SPDX and CycloneDX download buttons per version)
 - [ ] Periodically re-check cached SBOMs against vulnerability databases (see [Artifact integrity](#artifact-integrity--security)) and update block / warn metadata automatically
 
 ---
@@ -154,8 +163,8 @@ Applies to registries running in `local` or `hybrid` mode.
 ## UI improvements
 
 - [x] **Package explorer** (`/explore`) — collapsible catalog with registry sidebar; search and sort across all cached and upstream packages; per-package detail page showing version history with gate/firewall status per version; `[registries.rbac.explore]` config block for independent search permissions
+- [ ] Package explorer caching and pagination for large registries (e.g. npm) to avoid fetching the entire index on every request; cache invalidation on new versions published or cache expiry
 - [ ] Package detail pages with full metadata, version history, and download links (full deep-linking beyond the explorer summary)
-- [ ] Search across all registries, including packages not yet cached (based on upstream registry metadata)
 - [ ] User listing and block management in the admin panel (OIDC and Kubernetes-sourced identities, not just static tokens)
 - [ ] Config editor with validation, diff preview, and apply button (integrates with hot reload)
   - [ ] Read-only warning when the config file is mounted from a Kubernetes ConfigMap, with instructions for applying changes externally

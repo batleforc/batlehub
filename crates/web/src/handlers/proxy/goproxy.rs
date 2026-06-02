@@ -15,7 +15,7 @@ use super::common::{collect_payload, extract_signature_headers, proxy_stream, re
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 pub fn require_goproxy(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
-    match map.type_of(registry) {
+    match map.type_of(registry).as_deref() {
         Some("goproxy") => Ok(()),
         Some(_) => Err(AppError::not_found(format!(
             "registry '{registry}' is not a goproxy registry"

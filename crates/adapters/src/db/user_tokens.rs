@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::Row;
 use uuid::Uuid;
+use crate::db::DbResultExt;
 
 use batlehub_core::{
     entities::Role,
@@ -84,7 +85,7 @@ impl UserTokenRepository for PgPackageRepository {
         .bind(token_hash)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
 
         Ok(row.map(|r| UserToken {
             id: r.get("id"),
@@ -109,7 +110,7 @@ impl UserTokenRepository for PgPackageRepository {
         .bind(user_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
 
         Ok(rows
             .into_iter()
@@ -138,7 +139,7 @@ impl UserTokenRepository for PgPackageRepository {
         .bind(user_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(e.to_string()))?;
+        .db_err()?;
 
         Ok(result.is_some())
     }

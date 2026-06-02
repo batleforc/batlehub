@@ -8,7 +8,7 @@ use super::common::proxy_stream;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
 fn require_github(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
-    match map.type_of(registry) {
+    match map.type_of(registry).as_deref() {
         Some("github") => Ok(()),
         Some(_) => Err(AppError::not_found(format!(
             "registry '{registry}' is not a github registry"

@@ -88,7 +88,7 @@ tasks:
       MINIO_CONTAINER: batlehub-cov-minio
       MINIO_PORT: "29000"
       CONF_OVERRIDE: /tmp/batlehub-cov-containers.conf
-      COVERAGE_EXCLUDE: "server/src/main\\.rs|crates/web/src/handlers/auth/oidc\\.rs|crates/web/src/handlers/back_office/health\\.rs|crates/adapters/src/db/|crates/adapters/src/registry/(cargo|github|npm)\\.rs"
+      COVERAGE_EXCLUDE: "server/src/main\\.rs|crates/web/src/handlers/auth/oidc\\.rs|crates/web/src/handlers/back_office/health\\.rs|crates/adapters/src/db/|crates/adapters/src/registry/(cargo|github|npm)\\.rs|crates/adapters/src/cache/(postgres|banner_redis)\\.rs|crates/adapters/src/local_registry/postgres\\.rs|crates/adapters/src/rate_limit/(postgres|ip_block_postgres)\\.rs|crates/adapters/src/storage/router\\.rs"
     env:
       CONTAINERS_CONF_OVERRIDE: "{{.CONF_OVERRIDE}}"
       DATABASE_URL: "postgresql://postgres:{{.PG_PASSWORD}}@127.0.0.1:{{.PG_PORT}}/postgres"
@@ -120,7 +120,7 @@ tasks:
       MINIO_CONTAINER: batlehub-cov-minio
       MINIO_PORT: "29000"
       CONF_OVERRIDE: /tmp/batlehub-cov-containers.conf
-      COVERAGE_EXCLUDE: "server/src/main\\.rs|crates/web/src/handlers/auth/oidc\\.rs|crates/web/src/handlers/back_office/health\\.rs|crates/adapters/src/db/|crates/adapters/src/registry/(cargo|github|npm)\\.rs"
+      COVERAGE_EXCLUDE: "server/src/main\\.rs|crates/web/src/handlers/auth/oidc\\.rs|crates/web/src/handlers/back_office/health\\.rs|crates/adapters/src/db/|crates/adapters/src/registry/(cargo|github|npm)\\.rs|crates/adapters/src/cache/(postgres|banner_redis)\\.rs|crates/adapters/src/local_registry/postgres\\.rs|crates/adapters/src/rate_limit/(postgres|ip_block_postgres)\\.rs|crates/adapters/src/storage/router\\.rs"
     env:
       CONTAINERS_CONF_OVERRIDE: "{{.CONF_OVERRIDE}}"
       DATABASE_URL: "postgresql://postgres:{{.PG_PASSWORD}}@127.0.0.1:{{.PG_PORT}}/postgres"

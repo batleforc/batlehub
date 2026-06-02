@@ -9,7 +9,7 @@ use batlehub_core::{
     services::AdminService,
 };
 
-use crate::{error::AppError, extractors::AuthIdentity, AccessConfig};
+use crate::{error::AppError, extractors::AuthIdentity};
 
 #[derive(Deserialize, IntoParams)]
 pub struct PackageQuery {
@@ -69,9 +69,9 @@ pub async fn list_packages(
     query: web::Query<PackageQuery>,
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
-    access: web::Data<AccessConfig>,
+    access: web::Data<crate::AccessConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    let accessible = access.accessible_registries_for(&identity);
+    let accessible = access.read().await.accessible_registries_for(&identity);
 
     // If the caller requested a specific registry they can't access, return empty.
     if let Some(ref reg) = query.registry {

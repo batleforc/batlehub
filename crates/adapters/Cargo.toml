@@ -47,6 +47,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+quick-xml = { workspace = true, optional = true }
 zip = { version = "8", optional = true }
 
 [dev-dependencies]
@@ -76,6 +77,7 @@ default = [
   "registry-rubygems",
   "registry-terraform",
   "registry-vscode-marketplace",
+  "sbom",
   "storage-fs"
 ]
 auth-actions-oidc = ["dep:glob", "dep:jsonwebtoken", "dep:regex"]
@@ -99,6 +101,7 @@ registry-terraform = []
 registry-vscode-marketplace = []
 storage-fs = []
 storage-s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
+sbom = ["db-postgres", "dep:flate2", "dep:tar", "dep:zip", "dep:quick-xml"]
 
 [lints]
 workspace = true

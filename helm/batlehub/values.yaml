@@ -46,91 +46,147 @@ resources: {}
   #   cpu: 500m
   #   memory: 512Mi
 
+# ── Environment variables ─────────────────────────────────────────────────────
+# Injected into the container at runtime. Use together with ${VAR_NAME}
+# placeholders inside config values — BatleHub expands them before parsing
+# the TOML file.
+#
+# If a placeholder references a variable that is not present in the container,
+# BatleHub exits immediately with a clear error naming the missing variable.
+#
+# Plain literal value (avoid for real secrets — use secretKeyRef instead):
+# env:
+#   - name: OIDC_CLIENT_SECRET
+#     value: "my-secret"
+#
+# From a Kubernetes Secret (recommended):
+# env:
+#   - name: OIDC_CLIENT_SECRET
+#     valueFrom:
+#       secretKeyRef:
+#         name: batlehub-secrets
+#         key: oidc-client-secret
+#   - name: REGISTRY_TOKEN
+#     valueFrom:
+#       secretKeyRef:
+#         name: batlehub-secrets
+#         key: registry-token
+env: []
+
+# Inject every key from a Secret or ConfigMap as env vars (bulk import):
+# envFrom:
+#   - secretRef:
+#       name: batlehub-secrets      # all keys become env vars
+#   - configMapRef:
+#       name: batlehub-env
+envFrom: []
+
 nodeSelector: {}
 tolerations: []
 affinity: {}
 
-# ── BatleHub configuration ────────────────────────────────────────────────────
+# ── BatleHub application config ───────────────────────────────────────────────
+# This object is serialized verbatim to config.toml via toToml.
+# All keys must be snake_case to match batlehub's TOML field names.
+# Optional top-level sections (otel, cache, limits, ip_blocking) must be
+# entirely absent — not null or {} — to be omitted from the rendered TOML.
+config:
 
-server:
-  host: "0.0.0.0"
-  port: 8080
-  # staticDir: "/app/ui/dist"
-  # corsAllowedOrigins: ["https://batlehub.example.com"]
+  # ── [server] ────────────────────────────────────────────────────────────────
+  server:
+    host: "0.0.0.0"
+    port: 8080
+    # static_dir: "/app/ui/dist"
+    # cors_allowed_origins:
+    #   - "https://batlehub.example.com"
 
-database:
-  url: "postgresql://batlehub:changeme@postgres:5432/batlehub"
+  # ── [database] ──────────────────────────────────────────────────────────────
+  database:
+    type: "postgresql"
+    url: "postgresql://batlehub:changeme@postgres:5432/batlehub"
 
-storage:
-  # "filesystem" or "s3"
-  type: filesystem
-  # Used when type = "filesystem"
-  path: /var/cache/batlehub
-  # Used when type = "s3"
-  s3:
-    bucket: ""
-    region: ""
-    endpoint: ""      # Leave empty for AWS S3
-    accessKeyId: ""
-    secretAccessKey: ""
+  # ── [storage] ───────────────────────────────────────────────────────────────
+  # Filesystem (default):
+  storage:
+    type: "filesystem"
+    path: "/var/cache/batlehub"
+  # S3 — replace the entire storage block with:
+  # storage:
+  #   type: "s3"
+  #   bucket: ""
+  #   region: "us-east-1"
+  #   endpoint_url: ""       # omit for AWS S3; set for MinIO/RustFS
+  #   force_path_style: true # required for MinIO, RustFS, etc.
+  #   prefix: ""             # optional: store under a bucket subfolder
 
-# Auth providers. Token auth and/or OIDC.
-auth:
-  # Static API tokens. The first admin token is used for initial setup.
-  tokens:
-    - value: "change-me-admin-token"
-      role: admin
-      userId: admin
-  # OIDC providers (optional, repeatable)
-  oidc: []
-  # - issuerUrl: "https://sso.example.com/application/o/batlehub/"
-  #   clientId: batlehub
-  #   clientSecret: "client-secret"
-  #   redirectUri: "https://batlehub.example.com/api/v1/auth/oidc/callback"
-  #   scopes: ["openid", "profile", "email", "groups"]
-  #   userIdClaim: preferred_username
-  #   roleClaim: groups
-  #   roleMappings: {}
-  #     "authentik Admins": admin
-  #     "proxy-users": user
+  # ── [[auth]] ────────────────────────────────────────────────────────────────
+  # Each list entry becomes a [[auth]] TOML block. The "type" key is required.
+  # Supported types: token | oidc | kubernetes | actions-oidc
+  auth:
+    - type: "token"
+      tokens:
+        - value: "change-me-admin-token"
+          role: "admin"
+          user_id: "admin"
+    # OIDC provider (uncomment and fill in to enable):
+    # - type: "oidc"
+    #   issuer_url: "https://sso.example.com/application/o/batlehub/"
+    #   client_id: "batlehub"
+    #   client_secret: "${OIDC_CLIENT_SECRET}"  # inject via env.secretKeyRef below
+    #   redirect_uri: "https://batlehub.example.com/api/v1/auth/oidc/callback"
+    #   scopes:
+    #     - openid
+    #     - profile
+    #     - email
+    #     - groups
+    #   user_id_claim: "preferred_username"
+    #   role_claim: "groups"
+    #   role_mappings:
+    #     "authentik Admins": "admin"
+    #     "proxy-users": "user"
 
-# Registry blocks as raw TOML. Paste your [[registries]] entries here.
-# Example:
-# registriesRaw: |
-#   [[registries]]
-#   type = "npm"
-#   name = "npm"
-#
-#   [registries.rbac]
-#   anonymous = ["releases:read", "source:read"]
-#
-#   [[registries]]
-#   type = "cargo"
-#   name = "internal"
-#   mode = "local"
-#
-#   [registries.rbac]
-#   user  = ["source:read"]
-#   admin = ["*"]
-registriesRaw: |
-  [[registries]]
-  type = "npm"
-  name = "npm"
+  # ── [[registries]] ──────────────────────────────────────────────────────────
+  # Each list entry becomes a [[registries]] TOML block.
+  # Supported types: npm | cargo | goproxy | pypi | conda | maven | terraform
+  #                  rubygems | github | openvsx | vscode-marketplace | composer
+  # mode: proxy (default) | local | hybrid
+  registries:
+    - type: "npm"
+      name: "npm"
+      rbac:
+        anonymous:
+          - "releases:read"
+          - "source:read"
+        user:
+          - "releases:read"
+          - "source:read"
+        admin:
+          - "*"
 
-  [registries.rbac]
-  anonymous = ["releases:read", "source:read"]
-  user      = ["releases:read", "source:read"]
-  admin     = ["*"]
+  # ── [otel] ──────────────────────────────────────────────────────────────────
+  # Uncomment to enable OpenTelemetry tracing. Must be absent (not null) to disable.
+  # otel:
+  #   endpoint: "http://jaeger:4317"
+  #   service_name: "batlehub"
 
-# OpenTelemetry (optional)
-otel:
-  enabled: false
-  endpoint: ""   # e.g. "http://jaeger:4317"
+  # ── [cache] ──────────────────────────────────────────────────────────────────
+  # Metadata cache backend. Defaults to in-memory when absent.
+  # cache:
+  #   type: "redis"   # memory | postgres | redis
+  #   url: "redis://localhost:6379"
 
-# Arbitrary extra TOML appended verbatim at the end of config.toml
-extraConfig: ""
+  # ── [limits] ────────────────────────────────────────────────────────────────
+  # limits:
+  #   max_artifact_size_bytes: 524288000  # 500 MiB
 
-# Persistent storage for the artifact cache (filesystem mode)
+  # ── [ip_blocking] ───────────────────────────────────────────────────────────
+  # ip_blocking:
+  #   enabled: true
+  #   violation_threshold: 10
+  #   violation_window_secs: 300
+  #   ban_duration_secs: 3600
+
+# ── Persistent storage for the artifact cache (filesystem mode) ───────────────
 persistence:
   enabled: true
   storageClass: ""
@@ -138,6 +194,13 @@ persistence:
   size: 10Gi
   # existingClaim: ""
 
-# Reference an existing Secret instead of creating one.
-# The Secret must contain a key named "config.toml".
-existingSecret: ""
+# ── External config manifest ──────────────────────────────────────────────────
+# When enabled, the chart skips creating a Secret and mounts this existing
+# Secret or ConfigMap instead. Use with Sealed Secrets, External Secrets
+# Operator, or Vault Agent to manage the config outside Helm.
+# The referenced manifest must contain a key matching `key` with valid TOML.
+externalManifest:
+  enabled: false
+  name: ""          # name of the existing Secret or ConfigMap
+  kind: Secret      # "Secret" or "ConfigMap"
+  key: config.toml  # key within the manifest that contains TOML content

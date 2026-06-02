@@ -69,7 +69,7 @@ pub async fn admin_stats(
     let mut total_misses: u64 = 0;
     let mut total_cached_bytes: u64 = 0;
 
-    let mut registries: Vec<String> = registry_map.0.keys().cloned().collect();
+    let mut registries: Vec<String> = registry_map.keys();
     registries.sort();
 
     for registry in registries {

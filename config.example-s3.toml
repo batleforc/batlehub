@@ -167,3 +167,13 @@ upstreams = ["https://repo.packagist.org"]
 anonymous = ["releases:read", "source:read"]
 user = ["releases:read", "source:read"]
 admin = ["*"]
+
+[[registries]]
+type = "composer"
+name = "local-composer"
+mode = "local"
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]

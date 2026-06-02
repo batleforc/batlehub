@@ -257,6 +257,84 @@ persistence:
 | `persistence.size` | `10Gi` | PVC capacity |
 | `existingSecret` | `""` | Use a pre-existing Secret for config |
 
+### Injecting secrets via environment variables {#helm-env-vars}
+
+BatleHub's config file supports `${VAR_NAME}` placeholders that are expanded at startup. The Helm chart lets you inject environment variables into the container so those placeholders resolve at runtime — keeping secrets out of the config Secret entirely.
+
+**1. Write `${...}` placeholders in your values:**
+
+```yaml
+# my-values.yaml
+config:
+  auth:
+    - type: "oidc"
+      issuer_url: "https://sso.example.com/application/o/batlehub/"
+      client_id: "batlehub"
+      client_secret: "${OIDC_CLIENT_SECRET}"   # resolved at runtime
+      redirect_uri: "https://hub.example.com/api/v1/auth/oidc/callback"
+
+  registries:
+    - type: "npm"
+      name: "internal-npm"
+      upstreams:
+        - "https://registry.corp.example.com/npm"
+      upstream_auth:
+        type: "bearer"
+        token: "${INTERNAL_NPM_TOKEN}"   # resolved at runtime
+```
+
+**2a. Inject each secret individually (`env` with `secretKeyRef`):**
+
+```yaml
+# my-values.yaml (continued)
+env:
+  - name: OIDC_CLIENT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: batlehub-secrets
+        key: oidc-client-secret
+  - name: INTERNAL_NPM_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: batlehub-secrets
+        key: npm-token
+```
+
+**2b. Or bulk-import all keys from a Secret (`envFrom`):**
+
+```yaml
+# my-values.yaml (continued)
+envFrom:
+  - secretRef:
+      name: batlehub-secrets   # all keys in this Secret become env vars
+```
+
+**3. Create the Kubernetes Secret separately:**
+
+```yaml
+# batlehub-secrets.yaml — managed by Sealed Secrets / ESO / Vault, not Helm
+apiVersion: v1
+kind: Secret
+metadata:
+  name: batlehub-secrets
+  namespace: batlehub
+type: Opaque
+stringData:
+  oidc-client-secret: "my-actual-secret"
+  npm-token: "npat-xxxxxxxxxxxx"
+```
+
+```sh
+kubectl apply -f batlehub-secrets.yaml
+helm install batlehub ./helm/batlehub --namespace batlehub -f my-values.yaml
+```
+
+::: tip
+If a placeholder references a variable that is not set in the container, BatleHub exits immediately at startup with a clear error message naming the missing variable — preventing silent misconfiguration.
+:::
+
+---
+
 ### Using an external secret (GitOps / Sealed Secrets)
 
 If you manage secrets externally (Sealed Secrets, External Secrets Operator, Vault), create the Secret yourself:

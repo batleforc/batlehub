@@ -89,8 +89,16 @@ pub fn percent_encode(s: &str) -> String {
             }
             _ => {
                 out.push('%');
-                out.push(char::from_digit((byte >> 4) as u32, 16).unwrap().to_ascii_uppercase());
-                out.push(char::from_digit((byte & 0xf) as u32, 16).unwrap().to_ascii_uppercase());
+                out.push(
+                    char::from_digit((byte >> 4) as u32, 16)
+                        .unwrap()
+                        .to_ascii_uppercase(),
+                );
+                out.push(
+                    char::from_digit((byte & 0xf) as u32, 16)
+                        .unwrap()
+                        .to_ascii_uppercase(),
+                );
             }
         }
     }
@@ -121,6 +129,7 @@ mod tests {
             basic_auth: Some(("user".to_owned(), "pass".to_owned())),
             custom_header: Some(("X-Key".to_owned(), "val".to_owned())),
             ca_cert_path: Some("/etc/ca.pem".to_owned()),
+            ..Default::default()
         };
         let cloned = opts.clone();
         assert_eq!(cloned.bearer_token.as_deref(), Some("tok"));

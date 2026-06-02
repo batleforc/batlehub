@@ -73,12 +73,13 @@ export default defineConfig({
       },
       {
         text: "Reference",
-        activeMatch: "/guide/(administration|caching|access-control|high-availability|package-explorer)",
+        activeMatch: "/guide/(administration|caching|access-control|high-availability|package-explorer|sbom|explore-cache)",
         items: [
           { text: "Administration", link: "/guide/administration" },
           { text: "Caching", link: "/guide/caching" },
           { text: "Access Control", link: "/guide/access-control" },
           { text: "Package Explorer", link: "/guide/package-explorer" },
+          { text: "SBOM", link: "/guide/sbom" },
           { text: "High Availability", link: "/guide/high-availability" },
         ],
       },
@@ -115,6 +116,10 @@ export default defineConfig({
             },
             { text: "Helm chart", link: "/guide/installation#helm-chart" },
             {
+              text: "Helm: secret injection",
+              link: "/guide/installation#helm-env-vars",
+            },
+            {
               text: "First-time setup",
               link: "/guide/installation#first-time-setup",
             },
@@ -128,6 +133,14 @@ export default defineConfig({
             {
               text: "Configuration",
               link: "/guide/administration#configuration",
+            },
+            {
+              text: "Secret injection (${VAR})",
+              link: "/guide/administration#env-inline",
+            },
+            {
+              text: "Named env overrides",
+              link: "/guide/administration#env-named",
             },
             { text: "Storage", link: "/guide/administration#storage" },
             {
@@ -271,7 +284,34 @@ export default defineConfig({
             { text: "Access control", link: "/guide/package-explorer#access-control" },
             { text: "RBAC configuration", link: "/guide/package-explorer#rbac-config" },
             { text: "REST API", link: "/guide/package-explorer#api" },
+            {
+              text: "Explorer cache",
+              link: "/guide/package-explorer#cache",
+              items: [
+                { text: "How it works", link: "/guide/package-explorer#cache-how" },
+                { text: "Stale-while-unavailable", link: "/guide/package-explorer#cache-stale" },
+                { text: "Auto-invalidation", link: "/guide/package-explorer#cache-auto-invalidate" },
+                { text: "Manual flush (UI + API)", link: "/guide/package-explorer#cache-admin" },
+                { text: "Multi-instance", link: "/guide/package-explorer#cache-ha" },
+              ],
+            },
             { text: "Performance notes", link: "/guide/package-explorer#performance" },
+          ],
+        },
+      ],
+      "/guide/sbom": [
+        {
+          text: "SBOM",
+          items: [
+            { text: "Overview", link: "/guide/sbom#overview" },
+            { text: "Supported formats", link: "/guide/sbom#formats" },
+            { text: "How SBOMs are generated", link: "/guide/sbom#generation" },
+            { text: "Configuration", link: "/guide/sbom#configuration" },
+            { text: "Per-artifact API", link: "/guide/sbom#per-artifact-api" },
+            { text: "Org-level export", link: "/guide/sbom#org-export" },
+            { text: "Admin UI", link: "/guide/sbom#admin-ui" },
+            { text: "PURL mapping", link: "/guide/sbom#purl" },
+            { text: "Worked examples", link: "/guide/sbom#examples" },
           ],
         },
       ],

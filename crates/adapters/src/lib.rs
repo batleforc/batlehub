@@ -2,6 +2,7 @@ pub mod cache;
 pub mod in_memory;
 pub mod migrations;
 pub mod rate_limit;
+pub mod sbom;
 
 #[cfg(feature = "auth-token")]
 pub mod auth;

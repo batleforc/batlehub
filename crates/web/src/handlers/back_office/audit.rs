@@ -5,11 +5,9 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use utoipa::IntoParams;
 
-use batlehub_core::{
-    entities::{EventFilter, Role},
-    services::AdminService,
-};
+use batlehub_core::{entities::EventFilter, services::AdminService};
 
+use super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity};
 
 #[derive(Deserialize, IntoParams)]
@@ -47,9 +45,7 @@ pub async fn audit_log(
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
 ) -> Result<impl Responder, AppError> {
-    if identity.role != Role::Admin {
-        return Err(AppError::forbidden("admin role required"));
-    }
+    require_admin(&identity)?;
 
     let filter = EventFilter {
         registry: query.registry.clone(),

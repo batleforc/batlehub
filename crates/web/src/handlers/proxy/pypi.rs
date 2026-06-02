@@ -21,7 +21,7 @@ use crate::{
 use batlehub_config::schema::RegistryMode as Mode;
 
 fn require_pypi(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
-    match map.type_of(registry) {
+    match map.type_of(registry).as_deref() {
         Some("pypi") => Ok(()),
         Some(_) => Err(AppError::not_found(format!(
             "registry '{registry}' is not a PyPI registry"
@@ -163,7 +163,7 @@ pub async fn pypi_simple_package(
 
     let (body, content_type) = batlehub_adapters::registry::pypi::fetch_simple_page(
         &http_client,
-        upstream,
+        &upstream,
         &package,
         None,
         accept.as_deref(),
@@ -385,7 +385,7 @@ mod tests {
     fn map_with(registry: &str, type_: &str) -> RegistryMap {
         let mut m = HashMap::new();
         m.insert(registry.to_owned(), type_.to_owned());
-        RegistryMap(m)
+        RegistryMap::from(m)
     }
 
     #[test]

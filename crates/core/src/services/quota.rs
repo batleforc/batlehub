@@ -364,4 +364,58 @@ mod tests {
             .unwrap();
         assert!(check.warning);
     }
+
+    #[tokio::test]
+    async fn revoke_publish_decrements_usage_for_configured_registry() {
+        let svc = svc_with(block_config(1_000_000, 100), 500, 2);
+        svc.revoke_publish(&user("alice"), "cargo", 200).await.unwrap();
+        let usage = svc.get_usage("alice", "cargo").await.unwrap();
+        assert_eq!(usage.bytes_published, 300);
+        assert_eq!(usage.packages_count, 1);
+    }
+
+    #[tokio::test]
+    async fn revoke_publish_noop_for_unconfigured_registry() {
+        let svc = QuotaService::new(
+            MockQuotaRepo::new(500, 2) as Arc<dyn QuotaRepository>,
+            HashMap::new(),
+        );
+        svc.revoke_publish(&user("alice"), "cargo", 200).await.unwrap();
+        let usage = svc.get_usage("alice", "cargo").await.unwrap();
+        assert_eq!(usage.bytes_published, 500);
+    }
+
+    #[tokio::test]
+    async fn revoke_publish_noop_for_anonymous() {
+        let svc = svc_with(block_config(1_000_000, 100), 500, 2);
+        svc.revoke_publish(&Identity::anonymous(), "cargo", 200).await.unwrap();
+        let usage = svc.get_usage("any", "cargo").await.unwrap();
+        assert_eq!(usage.bytes_published, 500);
+    }
+
+    #[tokio::test]
+    async fn get_usage_reflects_repo_state() {
+        let svc = svc_with(block_config(1_000_000, 100), 1_024, 3);
+        let usage = svc.get_usage("alice", "cargo").await.unwrap();
+        assert_eq!(usage.bytes_published, 1_024);
+        assert_eq!(usage.packages_count, 3);
+        assert_eq!(usage.user_id, "alice");
+        assert_eq!(usage.registry, "cargo");
+    }
+
+    #[tokio::test]
+    async fn list_usage_passes_through_to_repo() {
+        let svc = svc_with(block_config(1_000_000, 100), 0, 0);
+        let list = svc.list_usage(None).await.unwrap();
+        assert!(list.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reset_zeroes_usage_for_user() {
+        let svc = svc_with(block_config(1_000_000, 100), 5_000, 10);
+        svc.reset("alice", "cargo").await.unwrap();
+        let usage = svc.get_usage("alice", "cargo").await.unwrap();
+        assert_eq!(usage.bytes_published, 0);
+        assert_eq!(usage.packages_count, 0);
+    }
 }

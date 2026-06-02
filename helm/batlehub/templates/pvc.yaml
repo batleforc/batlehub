@@ -1,4 +1,4 @@
-{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) (eq .Values.storage.type "filesystem") -}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) (eq .Values.config.storage.type "filesystem") -}}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

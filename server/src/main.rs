@@ -29,9 +29,10 @@ use batlehub_adapters::{
     },
     db::{
         PgArtifactMetaRepository, PgBetaChannelStore, PgOwnershipStore, PgPackageRepository,
-        PgQuotaRepository, PgTeamNamespaceStore,
+        PgQuotaRepository, PgSbomRepository, PgTeamNamespaceStore,
     },
     local_registry::PostgresLocalRegistry,
+    sbom::HttpSbomFetcher,
     registry::{
         CargoRegistryClient, ComposerRegistryClient, CondaRegistryClient, FanoutRegistryClient,
         GithubRegistryClient, GoProxyRegistryClient, MavenRegistryClient, NpmRegistryClient,
@@ -52,19 +53,25 @@ use batlehub_core::{
     entities::Role,
     ports::{
         AuthProvider, BetaChannelPort, CacheStore, IpBlockStore, RateLimitStore,
-        UserTokenRepository,
+        SbomRepository, UserTokenRepository,
     },
     rules::{BlockListRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule},
     services::{
-        local_registry::{SigningConfig as CoreSigningConfig, VersioningPolicy},
-        AdminService, LocalRegistryService, ProxyMetrics, ProxyService, QuotaEnforcement,
-        QuotaService, RegistryPolicy, RegistryQuotaConfig,
+        new_hot_lock, AdminService, HotSbomConfig, LocalRegistryService, ProxyMetrics,
+        ProxyService, QuotaEnforcement, QuotaService, RegistryPolicy, RegistryQuotaConfig,
+        SbomService, SigningConfig as CoreSigningConfig, VersioningPolicy,
     },
 };
+use batlehub_adapters::cache::InMemoryBannerStore;
+#[cfg(feature = "cache-redis")]
+use batlehub_adapters::cache::RedisBannerStore;
+use batlehub_adapters::db::PgBannerStore;
+use batlehub_core::ports::BannerPort;
 use batlehub_web::handlers::back_office::warming::WarmingServiceMap;
+use batlehub_web::services::{BannerService, ConfigReloadService};
 use batlehub_web::{
-    configure_app, healthz, openapi_spec, prometheus_metrics, AccessConfig, ApiDoc,
-    CargoIndexProxy, IpBlockMiddlewareFactory, RateLimitMiddlewareFactory, RateLimitService,
+    configure_app, healthz, new_access_lock, openapi_spec, prometheus_metrics, AccessConfig,
+    ApiDoc, CargoIndexProxy, IpBlockMiddlewareFactory, RateLimitMiddlewareFactory, RateLimitService,
     RegistryMap, RegistryModeMap, UpstreamMap,
 };
 use metrics_exporter_prometheus::PrometheusBuilder;
@@ -327,72 +334,15 @@ async fn main() -> Result<()> {
         }
     };
 
-    // ── Registries + policies ─────────────────────────────────────────────────
-    let mut registry_clients: HashMap<String, Arc<dyn batlehub_core::ports::RegistryClient>> =
-        HashMap::new();
-    let mut policies: HashMap<String, RegistryPolicy> = HashMap::new();
+    // ── Cargo sparse indexes (not part of HotConfig, built once at startup) ────
     let mut cargo_indexes: HashMap<String, CargoIndexProxy> = HashMap::new();
-    let mut registry_type_map: HashMap<String, String> = HashMap::new();
-    let mut registry_mode_map_inner: HashMap<String, RegistryMode> = HashMap::new();
-    let mut npm_upstream_map: HashMap<String, String> = HashMap::new();
-
     for reg in &config.registries {
-        let client = build_registry_client(reg)
-            .with_context(|| format!("building registry client for '{}'", reg.name))?;
-        registry_clients.insert(reg.name.clone(), client);
-
-        let policy = build_policy(
-            reg,
-            repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>,
-        );
-        policies.insert(reg.name.clone(), policy);
-
-        registry_type_map.insert(reg.name.clone(), reg.registry_type.clone());
-        registry_mode_map_inner.insert(reg.name.clone(), reg.mode.clone());
-
-        if reg.registry_type == "npm" {
-            let first_url = if reg.upstreams.is_empty() {
-                "https://registry.npmjs.org".to_owned()
-            } else {
-                reg.upstreams[0].clone()
-            };
-            npm_upstream_map.insert(reg.name.clone(), first_url);
-        }
-        if reg.registry_type == "terraform" {
-            let first_url = if reg.upstreams.is_empty() {
-                "https://registry.terraform.io".to_owned()
-            } else {
-                reg.upstreams[0].clone()
-            };
-            npm_upstream_map.insert(reg.name.clone(), first_url);
-        }
-        if reg.registry_type == "pypi" {
-            let first_url = if reg.upstreams.is_empty() {
-                "https://pypi.org".to_owned()
-            } else {
-                reg.upstreams[0].clone()
-            };
-            npm_upstream_map.insert(reg.name.clone(), first_url);
-        }
-        if reg.registry_type == "conda" {
-            let first_url = if reg.upstreams.is_empty() {
-                "https://conda.anaconda.org".to_owned()
-            } else {
-                reg.upstreams[0].clone()
-            };
-            npm_upstream_map.insert(reg.name.clone(), first_url);
-        }
-
-        // Proxy and Hybrid modes need an upstream sparse index; Local mode does not.
         if reg.registry_type == "cargo" && !matches!(reg.mode, RegistryMode::Local) {
             let index = build_cargo_index(reg)
                 .with_context(|| format!("building cargo index client for '{}'", reg.name))?;
             cargo_indexes.insert(reg.name.clone(), index);
         }
     }
-
-    let upstream_map = UpstreamMap(npm_upstream_map);
-    let registry_mode_map = RegistryModeMap(registry_mode_map_inner);
 
     // ── Rate limiting ──────────────────────────────────────────────────────────
     let rate_limit_configs: std::collections::HashMap<
@@ -443,16 +393,6 @@ async fn main() -> Result<()> {
     let proxy_metrics = Arc::new(ProxyMetrics::new(&registry_names));
 
     let artifact_meta = Arc::new(PgArtifactMetaRepository::new(repo.pool()));
-    let proxy_svc = Arc::new(ProxyService {
-        registries: registry_clients,
-        storage: storage.clone(),
-        cache: cache.clone(),
-        repo: repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>,
-        artifact_meta,
-        policies,
-        max_artifact_size_bytes: config.limits.max_artifact_size_bytes,
-        metrics: Arc::clone(&proxy_metrics),
-    });
 
     let admin_svc = Arc::new(AdminService::new(
         repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>
@@ -462,14 +402,51 @@ async fn main() -> Result<()> {
     let quota_svc = Arc::new(build_quota_service(repo.pool(), &config.registries));
     let ownership_store = Arc::new(PgOwnershipStore::new(repo.pool()))
         as Arc<dyn batlehub_core::ports::OwnershipPort>;
-    let versioning_map = build_versioning_map(&config.registries);
-    let signing_map = build_signing_map(&config.registries);
     let beta_channel_store: Arc<dyn BetaChannelPort> =
         Arc::new(PgBetaChannelStore::new(repo.pool()));
-    let beta_channel_map =
-        build_beta_channel_map(Arc::clone(&beta_channel_store), &config.registries);
     let team_namespace_store: Arc<dyn batlehub_core::ports::TeamNamespacePort> =
         Arc::new(PgTeamNamespaceStore::new(repo.pool()));
+
+    // ── Shared hot-reloadable config ──────────────────────────────────────────
+    let (init_hot, init_access, registry_map, registry_mode_map, upstream_map) =
+        build_hot_bundle(
+            &config,
+            &beta_channel_store,
+            &(repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>),
+        )?;
+
+    // Clone warming clients before the hot lock consumes the HashMap.
+    let warming_clients: HashMap<String, Arc<dyn batlehub_core::ports::RegistryClient>> =
+        init_hot.registries.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect();
+
+    let hot = new_hot_lock(init_hot);
+
+    // ── SBOM service ─────────────────────────────────────────────────────────
+    let sbom_repo: Arc<dyn SbomRepository> = Arc::new(PgSbomRepository::new(repo.pool()));
+    #[cfg(feature = "sbom")]
+    let sbom_extractor: Option<Arc<dyn batlehub_core::ports::SbomExtractor>> =
+        Some(Arc::new(batlehub_adapters::sbom::ArchiveSbomExtractor));
+    #[cfg(not(feature = "sbom"))]
+    let sbom_extractor: Option<Arc<dyn batlehub_core::ports::SbomExtractor>> = None;
+    let sbom_http = reqwest::Client::builder()
+        .user_agent("batlehub/sbom")
+        .build()
+        .context("building SBOM HTTP client")?;
+    let sbom_svc = Arc::new(SbomService::new(
+        sbom_repo,
+        sbom_extractor,
+        Some(Arc::new(HttpSbomFetcher::new(sbom_http))),
+    ));
+
+    let proxy_svc = Arc::new(ProxyService {
+        hot: Arc::clone(&hot),
+        storage: storage.clone(),
+        cache: cache.clone(),
+        repo: repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>,
+        artifact_meta,
+        metrics: Arc::clone(&proxy_metrics),
+        sbom: Some(Arc::clone(&sbom_svc)),
+    });
 
     // ── IP blocking store ─────────────────────────────────────────────────────
     let ip_block_store: Arc<dyn IpBlockStore> = match config.cache.cache_type.as_str() {
@@ -504,19 +481,18 @@ async fn main() -> Result<()> {
     let local_svc = Arc::new(LocalRegistryService {
         backend: local_registry_backend,
         storage: storage.clone(),
-        max_artifact_bytes: config.limits.max_artifact_size_bytes,
+        hot: Arc::clone(&hot),
         quota: Some(Arc::clone(&quota_svc)),
         ownership: Some(ownership_store),
-        versioning: versioning_map,
-        signing: signing_map,
-        beta_channel: beta_channel_map,
         team_namespace: Some(Arc::clone(&team_namespace_store)),
+        sbom: Some(Arc::clone(&sbom_svc)),
+        explore_cache: Some(Arc::clone(&admin_svc.explore_cache)),
     });
 
     // ── Warming services ──────────────────────────────────────────────────────
     let mut warming_map: WarmingServiceMap = HashMap::new();
     for reg in &config.registries {
-        if let Some(client) = proxy_svc.registries.get(&reg.name) {
+        if let Some(client) = warming_clients.get(&reg.name) {
             let warming_svc = Arc::new(WarmingService {
                 client: Arc::clone(client),
                 storage: storage.clone(),
@@ -531,68 +507,61 @@ async fn main() -> Result<()> {
     }
 
     // ── Access config ─────────────────────────────────────────────────────────
-    // Respects role inheritance: user inherits anonymous, admin inherits both.
-    // Dynamic groups are additive on top of role-based access.
-    let mut group_access: HashMap<String, HashSet<String>> = HashMap::new();
-    for r in &config.registries {
-        for group_name in r.rbac.groups.keys() {
-            group_access
-                .entry(group_name.clone())
-                .or_default()
-                .insert(r.name.clone());
-        }
-    }
+    let access_config = new_access_lock(init_access);
 
-    let access_config = AccessConfig {
-        anonymous: config
-            .registries
-            .iter()
-            .filter(|r| !r.rbac.anonymous.is_empty())
-            .map(|r| r.name.clone())
-            .collect(),
-        user: config
-            .registries
-            .iter()
-            .filter(|r| !r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty())
-            .map(|r| r.name.clone())
-            .collect(),
-        admin: config
-            .registries
-            .iter()
-            .filter(|r| {
-                !r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty() || !r.rbac.admin.is_empty()
-            })
-            .map(|r| r.name.clone())
-            .collect(),
-        groups: group_access,
-        explore_anonymous: config
-            .registries
-            .iter()
-            .filter(|r| !r.rbac.anonymous.is_empty() && r.rbac.explore.anonymous)
-            .map(|r| r.name.clone())
-            .collect(),
-        explore_user: config
-            .registries
-            .iter()
-            .filter(|r| {
-                (!r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty()) && r.rbac.explore.user
-            })
-            .map(|r| r.name.clone())
-            .collect(),
-        explore_admin: config
-            .registries
-            .iter()
-            .filter(|r| {
-                (!r.rbac.anonymous.is_empty()
-                    || !r.rbac.user.is_empty()
-                    || !r.rbac.admin.is_empty())
-                    && r.rbac.explore.admin
-            })
-            .map(|r| r.name.clone())
-            .collect(),
+
+    // ── Hot reload & banner ───────────────────────────────────────────────────
+    let hot_reload_enabled = std::env::var("BATLEHUB_DISABLE_HOT_RELOAD")
+        .map(|v| v != "1" && v.to_lowercase() != "true")
+        .unwrap_or(true);
+
+    let banner_store: Arc<dyn BannerPort> = match config.cache.cache_type.as_str() {
+        "postgres" => Arc::new(PgBannerStore::new(repo.pool())),
+        "redis" => {
+            #[cfg(feature = "cache-redis")]
+            {
+                let url = config.cache.url.as_deref().unwrap_or("redis://127.0.0.1:6379");
+                Arc::new(
+                    RedisBannerStore::new(url)
+                        .await
+                        .context("connecting to Redis banner store")?,
+                )
+            }
+            #[cfg(not(feature = "cache-redis"))]
+            Arc::new(InMemoryBannerStore::new())
+        }
+        _ => Arc::new(InMemoryBannerStore::new()),
+    };
+    let banner_svc = Arc::new(BannerService::new(banner_store));
+
+    // Builder closure capturing the deps needed to rebuild HotConfig + AccessConfig.
+    let hot_builder: batlehub_web::services::HotConfigBuilder = {
+        let beta_channel_store = Arc::clone(&beta_channel_store);
+        let repo_for_builder = repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>;
+        Arc::new(move |cfg: &batlehub_config::schema::AppConfig| {
+            build_hot_bundle(cfg, &beta_channel_store, &repo_for_builder)
+        })
     };
 
-    let registry_map = RegistryMap(registry_type_map);
+    let reload_svc = Arc::new(ConfigReloadService::new(
+        Arc::clone(&hot),
+        Arc::clone(&access_config),
+        registry_map.clone(),
+        registry_mode_map.clone(),
+        upstream_map.clone(),
+        config_path.clone(),
+        Some(repo.pool()),
+        hot_reload_enabled,
+        hot_builder,
+        Some(Arc::clone(&banner_svc)),
+    ));
+
+    if hot_reload_enabled {
+        spawn_config_watcher(config_path.clone(), Arc::clone(&reload_svc));
+        tracing::info!("hot reload: enabled (watching {})", config_path);
+    } else {
+        tracing::info!("hot reload: disabled (BATLEHUB_DISABLE_HOT_RELOAD=1)");
+    }
 
     // ── HTTP server ───────────────────────────────────────────────────────────
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
@@ -628,6 +597,8 @@ async fn main() -> Result<()> {
         }
     }
 
+    let reload_svc_for_server = Arc::clone(&reload_svc);
+    let banner_svc_for_server = Arc::clone(&banner_svc);
     HttpServer::new(move || {
         let configure = configure_app(
             proxy_svc.clone(),
@@ -641,6 +612,7 @@ async fn main() -> Result<()> {
             warming_map.clone(),
             Arc::clone(&proxy_metrics),
             Some(prometheus_handle.clone()),
+            Some(sbom_svc.clone()),
         );
         let static_dir_inner = static_dir.clone();
         let cargo_indexes_inner = cargo_indexes.clone();
@@ -651,6 +623,8 @@ async fn main() -> Result<()> {
         let beta_channel_store_inner = Arc::clone(&beta_channel_store);
         let team_namespace_store_inner = Arc::clone(&team_namespace_store);
         let ip_blocking_cfg_inner = ip_blocking_cfg.clone();
+        let reload_svc_inner = Arc::clone(&reload_svc_for_server);
+        let banner_svc_inner = Arc::clone(&banner_svc_for_server);
 
         let (app, openapi) = App::new()
             .into_utoipa_app()
@@ -667,11 +641,13 @@ async fn main() -> Result<()> {
             .app_data(web::Data::new(ip_block_store_inner))
             .app_data(web::Data::new(beta_channel_store_inner))
             .app_data(web::Data::new(team_namespace_store_inner))
+            .app_data(web::Data::new(reload_svc_inner))
+            .app_data(web::Data::new(banner_svc_inner))
             .service(prometheus_metrics)
             .service(healthz);
 
         let cors_base = Cors::default()
-            .allowed_methods(vec!["GET", "POST", "HEAD", "OPTIONS", "DELETE"])
+            .allowed_methods(vec!["GET", "POST", "PUT", "HEAD", "OPTIONS", "DELETE"])
             .allowed_headers(vec![
                 http::header::AUTHORIZATION,
                 http::header::CONTENT_TYPE,
@@ -976,6 +952,27 @@ fn build_signing_map(registries: &[RegistryConfig]) -> HashMap<String, CoreSigni
         .collect()
 }
 
+/// Build per-registry `SbomConfig` map from registries that have `[sbom]` configured.
+fn build_sbom_map(registries: &[RegistryConfig]) -> HashMap<String, HotSbomConfig> {
+    registries
+        .iter()
+        .filter_map(|reg| {
+            reg.sbom.as_ref().map(|s| {
+                (
+                    reg.name.clone(),
+                    HotSbomConfig {
+                        enabled: s.enabled,
+                        formats: s.formats.clone(),
+                        required: s.required,
+                        fetch_upstream: s.fetch_upstream,
+                        registry_type: reg.registry_type.clone(),
+                    },
+                )
+            })
+        })
+        .collect()
+}
+
 /// Build per-registry `BetaChannelPort` map from registries that have `beta_channel.enabled = true`.
 ///
 /// Each enabled registry gets a clone of the same shared store Arc; no new connections are opened.
@@ -988,6 +985,225 @@ fn build_beta_channel_map(
         .filter(|reg| reg.beta_channel.as_ref().is_some_and(|bc| bc.enabled))
         .map(|reg| (reg.name.clone(), Arc::clone(&store)))
         .collect()
+}
+
+/// Return the first upstream URL for registry types that require one for audit pass-through
+/// (npm, terraform, pypi, conda). Returns `None` for all other types.
+fn upstream_url_for(reg: &RegistryConfig) -> Option<String> {
+    let default_url = match reg.registry_type.as_str() {
+        "npm" => "https://registry.npmjs.org",
+        "terraform" => "https://registry.terraform.io",
+        "pypi" => "https://pypi.org",
+        "conda" => "https://conda.anaconda.org",
+        _ => return None,
+    };
+    Some(reg.upstreams.first().cloned().unwrap_or_else(|| default_url.to_owned()))
+}
+
+/// Build the complete hot-reloadable bundle from a config snapshot.
+///
+/// Called both at startup (via direct call) and on reload (via the `HotConfigBuilder` closure).
+fn build_hot_bundle(
+    cfg: &batlehub_config::schema::AppConfig,
+    beta_channel_store: &Arc<dyn BetaChannelPort>,
+    repo: &Arc<dyn batlehub_core::ports::PackageRepository>,
+) -> anyhow::Result<(
+    batlehub_core::services::HotConfig,
+    AccessConfig,
+    RegistryMap,
+    RegistryModeMap,
+    UpstreamMap,
+)> {
+    let mut reg_clients: HashMap<String, Arc<dyn batlehub_core::ports::RegistryClient>> =
+        HashMap::new();
+    let mut reg_policies: HashMap<String, Arc<RegistryPolicy>> = HashMap::new();
+    let mut reg_type_map: HashMap<String, String> = HashMap::new();
+    let mut reg_mode_map: HashMap<String, RegistryMode> = HashMap::new();
+    let mut upstream_map: HashMap<String, String> = HashMap::new();
+
+    for reg in &cfg.registries {
+        let client = build_registry_client(reg)
+            .with_context(|| format!("building registry client for '{}'", reg.name))?;
+        reg_clients.insert(reg.name.clone(), client);
+        reg_policies.insert(
+            reg.name.clone(),
+            Arc::new(build_policy(reg, Arc::clone(repo))),
+        );
+        reg_type_map.insert(reg.name.clone(), reg.registry_type.clone());
+        reg_mode_map.insert(reg.name.clone(), reg.mode.clone());
+        if let Some(url) = upstream_url_for(reg) {
+            upstream_map.insert(reg.name.clone(), url);
+        }
+    }
+
+    let hot = batlehub_core::services::HotConfig {
+        registries: reg_clients,
+        policies: reg_policies,
+        versioning: build_versioning_map(&cfg.registries),
+        signing: build_signing_map(&cfg.registries),
+        sbom: build_sbom_map(&cfg.registries),
+        beta_channel: build_beta_channel_map(Arc::clone(beta_channel_store), &cfg.registries),
+        max_artifact_size_bytes: cfg.limits.max_artifact_size_bytes,
+    };
+
+    Ok((
+        hot,
+        build_access_config(cfg),
+        RegistryMap::from(reg_type_map),
+        RegistryModeMap::from(reg_mode_map),
+        UpstreamMap::from(upstream_map),
+    ))
+}
+
+/// Build the `AccessConfig` from a full app config (used at startup and on reload).
+fn build_access_config(config: &batlehub_config::schema::AppConfig) -> AccessConfig {
+    let mut group_access: HashMap<String, HashSet<String>> = HashMap::new();
+    for r in &config.registries {
+        for group_name in r.rbac.groups.keys() {
+            group_access
+                .entry(group_name.clone())
+                .or_default()
+                .insert(r.name.clone());
+        }
+    }
+    AccessConfig {
+        anonymous: config
+            .registries
+            .iter()
+            .filter(|r| !r.rbac.anonymous.is_empty())
+            .map(|r| r.name.clone())
+            .collect(),
+        user: config
+            .registries
+            .iter()
+            .filter(|r| !r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty())
+            .map(|r| r.name.clone())
+            .collect(),
+        admin: config
+            .registries
+            .iter()
+            .filter(|r| {
+                !r.rbac.anonymous.is_empty()
+                    || !r.rbac.user.is_empty()
+                    || !r.rbac.admin.is_empty()
+            })
+            .map(|r| r.name.clone())
+            .collect(),
+        groups: group_access,
+        explore_anonymous: config
+            .registries
+            .iter()
+            .filter(|r| !r.rbac.anonymous.is_empty() && r.rbac.explore.anonymous)
+            .map(|r| r.name.clone())
+            .collect(),
+        explore_user: config
+            .registries
+            .iter()
+            .filter(|r| {
+                (!r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty())
+                    && r.rbac.explore.user
+            })
+            .map(|r| r.name.clone())
+            .collect(),
+        explore_admin: config
+            .registries
+            .iter()
+            .filter(|r| {
+                (!r.rbac.anonymous.is_empty()
+                    || !r.rbac.user.is_empty()
+                    || !r.rbac.admin.is_empty())
+                    && r.rbac.explore.admin
+            })
+            .map(|r| r.name.clone())
+            .collect(),
+    }
+}
+
+/// Spawn a background task that watches the config file and loads a pending reload
+/// when the file changes. The task runs until the process exits.
+fn spawn_config_watcher(config_path: String, reload_svc: Arc<ConfigReloadService>) {
+    use batlehub_web::services::ReloadSource;
+    use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
+    use std::sync::mpsc::channel;
+    use std::time::Duration as StdDuration;
+
+    // Bridge: OS thread sends a unit notification; async task receives and reloads.
+    // Using an unbounded tokio channel so the OS thread never blocks on send.
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+
+    // ── OS thread — owns the blocking file watcher ────────────────────────────
+    // Runs recv_timeout in a real OS thread, never touching the tokio scheduler.
+    // Exits cleanly when event_tx.is_closed() (i.e., the async task was dropped).
+    std::thread::Builder::new()
+        .name("config-watcher".to_owned())
+        .spawn(move || {
+            let (notify_tx, notify_rx) = channel();
+            let mut watcher = match RecommendedWatcher::new(
+                notify_tx,
+                NotifyConfig::default().with_poll_interval(StdDuration::from_secs(2)),
+            ) {
+                Ok(w) => w,
+                Err(e) => {
+                    tracing::error!(error = %e, "config file watcher init failed");
+                    return;
+                }
+            };
+            if let Err(e) = watcher
+                .watch(std::path::Path::new(&config_path), RecursiveMode::NonRecursive)
+            {
+                tracing::error!(
+                    error = %e,
+                    "config file watcher: failed to watch {config_path}"
+                );
+                return;
+            }
+            tracing::info!(path = %config_path, "config file watcher started");
+
+            loop {
+                // Short timeout so we check event_tx.is_closed() frequently.
+                match notify_rx.recv_timeout(StdDuration::from_secs(2)) {
+                    Ok(_) => {
+                        // Debounce: drain any queued events before signalling.
+                        while notify_rx.try_recv().is_ok() {}
+                        if event_tx.send(()).is_err() {
+                            // Async side shut down — exit cleanly.
+                            break;
+                        }
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if event_tx.is_closed() {
+                            break; // Async side shut down.
+                        }
+                    }
+                    Err(_) => break, // Watcher channel error.
+                }
+            }
+
+            // watcher is dropped here, unregistering the OS file watch.
+            tracing::info!("config file watcher stopped");
+        })
+        .expect("failed to spawn config-watcher thread");
+
+    // ── Async task — handles reload logic ─────────────────────────────────────
+    // Receives notifications from the OS thread via a non-blocking tokio channel.
+    // When the tokio runtime shuts down this task is dropped, which closes
+    // event_rx, causing the OS thread to detect the closed channel and exit.
+    tokio::spawn(async move {
+        while let Some(()) = event_rx.recv().await {
+            tracing::info!("config file changed, loading pending reload");
+            match reload_svc.load_pending(ReloadSource::FileWatcher).await {
+                Ok(diff) => tracing::info!(
+                    added = diff.added_registries.len(),
+                    removed = diff.removed_registries.len(),
+                    "pending reload ready — confirm at POST /api/v1/admin/config/pending/apply"
+                ),
+                Err(e) => tracing::warn!(error = %e, "config file reload validation failed"),
+            }
+        }
+        // Channel closed (runtime shutting down): expire any pending reload.
+        reload_svc.expire_pending_if_stale();
+        tracing::debug!("config reload task exiting");
+    });
 }
 
 /// Build a `QuotaService` from the registries that have a `[quota]` section.

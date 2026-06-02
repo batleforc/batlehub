@@ -10,7 +10,7 @@ use batlehub_core::{
     services::{AdminService, LocalRegistryService, ProxyService},
 };
 
-use crate::{error::AppError, extractors::AuthIdentity, AccessConfig};
+use crate::{error::AppError, extractors::AuthIdentity};
 
 // ── List packages (collapsed) ─────────────────────────────────────────────────
 
@@ -37,6 +37,9 @@ pub struct ExplorePackageListResponse {
     pub total: usize,
     pub page: u64,
     pub per_page: u64,
+    /// `true` when the upstream database was unreachable and no cached data was available.
+    /// The result set will be empty; the UI should surface a warning to the user.
+    pub upstream_unavailable: bool,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -71,9 +74,9 @@ pub async fn explore_packages(
     query: web::Query<ExploreQuery>,
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
-    access: web::Data<AccessConfig>,
+    access: web::Data<crate::AccessConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    let accessible = access.explore_accessible_registries_for(&identity);
+    let accessible = access.read().await.explore_accessible_registries_for(&identity);
 
     if let Some(ref reg) = query.registry {
         if !accessible.contains(reg) {
@@ -82,6 +85,7 @@ pub async fn explore_packages(
                 total: 0,
                 page: query.page,
                 per_page: query.per_page,
+                upstream_unavailable: false,
             }));
         }
     }
@@ -115,7 +119,7 @@ pub async fn explore_packages(
         offset: 0,
     };
 
-    let (packages, total) = tokio::try_join!(
+    let ((packages, pkg_unavailable), (total, count_unavailable)) = tokio::try_join!(
         admin_svc.explore_packages(filter),
         admin_svc.count_explore_packages(count_filter),
     )
@@ -143,6 +147,7 @@ pub async fn explore_packages(
         items,
         page: query.page,
         per_page: query.per_page,
+        upstream_unavailable: pkg_unavailable || count_unavailable,
     }))
 }
 
@@ -155,13 +160,20 @@ pub struct RegistryStatDto {
     pub total_downloads: u64,
 }
 
+#[derive(Serialize, ToSchema)]
+pub struct ExploreRegistryStatsResponse {
+    pub registries: Vec<RegistryStatDto>,
+    /// `true` when the upstream database was unreachable and no cached data was available.
+    pub upstream_unavailable: bool,
+}
+
 /// Per-registry package counts and download totals for the explorer sidebar.
 #[utoipa::path(
     get,
     path = "/api/v1/explore/registries",
     tag = "explore",
     responses(
-        (status = 200, description = "Registry statistics", body = Vec<RegistryStatDto>),
+        (status = 200, description = "Registry statistics", body = ExploreRegistryStatsResponse),
     ),
     security(("bearer_token" = [])),
 )]
@@ -169,19 +181,20 @@ pub struct RegistryStatDto {
 pub async fn explore_registry_stats(
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
-    access: web::Data<AccessConfig>,
+    access: web::Data<crate::AccessConfigLock>,
 ) -> Result<impl Responder, AppError> {
     let accessible: Vec<String> = access
+        .read().await
         .explore_accessible_registries_for(&identity)
         .into_iter()
         .collect();
 
-    let stats = admin_svc
+    let (stats, upstream_unavailable) = admin_svc
         .registry_explore_stats(&accessible)
         .await
         .map_err(AppError::from)?;
 
-    let dtos: Vec<RegistryStatDto> = stats
+    let registries: Vec<RegistryStatDto> = stats
         .into_iter()
         .map(|s| RegistryStatDto {
             registry: s.registry,
@@ -190,7 +203,10 @@ pub async fn explore_registry_stats(
         })
         .collect();
 
-    Ok(web::Json(dtos))
+    Ok(web::Json(ExploreRegistryStatsResponse {
+        registries,
+        upstream_unavailable,
+    }))
 }
 
 // ── Package detail ─────────────────────────────────────────────────────────────
@@ -207,6 +223,8 @@ pub struct ExplorePackageDetailResponse {
     pub name: String,
     pub gate: GateDto,
     pub versions: Vec<ExploreVersionDto>,
+    /// `true` when the upstream database was unreachable and this package has no cached data.
+    pub upstream_unavailable: bool,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -258,24 +276,25 @@ pub async fn explore_package_detail(
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
-    access: web::Data<AccessConfig>,
+    access: web::Data<crate::AccessConfigLock>,
 ) -> Result<impl Responder, AppError> {
     let registry = &path.registry;
     let name = &path.name;
 
     // Gate: registry-level proxy access
     let registry_accessible = access
+        .read().await
         .accessible_registries_for(&identity)
         .contains(registry);
 
     // Gate: beta channel membership
-    let beta_member = if let Some(beta_port) = local_svc.beta_channel.get(registry) {
-        beta_port
-            .is_member(registry, &identity)
-            .await
-            .unwrap_or(false)
-    } else {
-        false
+    let beta_member = {
+        let beta_port = local_svc.hot.read().await.beta_channel.get(registry).cloned();
+        if let Some(bp) = beta_port {
+            bp.is_member(registry, &identity).await.unwrap_or(false)
+        } else {
+            false
+        }
     };
 
     // Proxied versions from package_statuses
@@ -288,10 +307,11 @@ pub async fn explore_package_detail(
         limit: 500,
         offset: 0,
     };
-    let proxied_summaries = admin_svc
-        .list_packages(proxied_filter)
-        .await
-        .map_err(AppError::from)?;
+    let (proxied_summaries, upstream_unavailable) =
+        match admin_svc.list_packages(proxied_filter).await {
+            Ok(summaries) => (summaries, false),
+            Err(_) => (vec![], true),
+        };
 
     // Local versions from local_packages
     let local_versions = local_svc
@@ -369,6 +389,7 @@ pub async fn explore_package_detail(
             beta_member,
         },
         versions,
+        upstream_unavailable,
     }))
 }
 
@@ -426,9 +447,9 @@ pub async fn explore_upstream_search(
     identity: AuthIdentity,
     proxy_svc: web::Data<Arc<ProxyService>>,
     admin_svc: web::Data<Arc<AdminService>>,
-    access: web::Data<AccessConfig>,
+    access: web::Data<crate::AccessConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    let accessible = access.explore_accessible_registries_for(&identity);
+    let accessible = access.read().await.explore_accessible_registries_for(&identity);
 
     tracing::info!(
         name = %query.name,
@@ -436,19 +457,21 @@ pub async fn explore_upstream_search(
         "upstream search: resolving clients"
     );
 
-    // Collect registry clients to search
-    let clients_to_search: Vec<(String, _)> = proxy_svc
-        .registries
-        .iter()
-        .filter(|(name, _)| {
-            if let Some(ref reg) = query.registry {
-                name.as_str() == reg && accessible.contains(name.as_str())
-            } else {
-                accessible.contains(name.as_str())
-            }
-        })
-        .map(|(name, client)| (name.clone(), Arc::clone(client)))
-        .collect();
+    // Collect registry clients to search (snapshot from hot config)
+    let clients_to_search: Vec<(String, Arc<dyn batlehub_core::ports::RegistryClient>)> = {
+        let hot = proxy_svc.hot.read().await;
+        hot.registries
+            .iter()
+            .filter(|(name, _)| {
+                if let Some(ref reg) = query.registry {
+                    name.as_str() == reg && accessible.contains(name.as_str())
+                } else {
+                    accessible.contains(name.as_str())
+                }
+            })
+            .map(|(name, client)| (name.clone(), Arc::clone(client)))
+            .collect()
+    };
 
     tracing::info!(
         clients = ?clients_to_search.iter().map(|(n, _)| n).collect::<Vec<_>>(),
@@ -468,7 +491,7 @@ pub async fn explore_upstream_search(
         limit: 500,
         offset: 0,
     };
-    let known = admin_svc
+    let (known, _) = admin_svc
         .explore_packages(known_filter)
         .await
         .map_err(AppError::from)?;

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { ArrowLeft, ShieldCheck, ShieldAlert, Lock, Unlock, Package } from "@lucide/vue";
+import { ArrowLeft, ShieldCheck, ShieldAlert, Lock, Unlock, Package, FileJson, FileCode } from "@lucide/vue";
 import { useAuth } from "@/composables/useAuth";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -53,6 +53,40 @@ function headers() {
   const h: Record<string, string> = {};
   if (token.value) h["Authorization"] = `Bearer ${token.value}`;
   return h;
+}
+
+// ── Per-artifact SBOM download ─────────────────────────────────────────────
+
+const sbomLoading = ref<string | null>(null); // "registry/name/version:format"
+const sbomMissing = ref<Set<string>>(new Set());
+
+async function downloadSbom(version: string, fmt: "spdx" | "cyclonedx") {
+  const key = `${registry.value}/${name.value}/${version}:${fmt}`;
+  sbomLoading.value = key;
+  try {
+    const ext = fmt === "cyclonedx" ? "cyclonedx.json" : "spdx.json";
+    const url = `/api/v1/sbom/${encodeURIComponent(registry.value)}/${encodeURIComponent(name.value)}/${encodeURIComponent(version)}?format=${fmt}`;
+    const resp = await fetch(`${API_BASE}${url}`, { headers: headers() });
+    if (resp.status === 404) {
+      sbomMissing.value = new Set([...sbomMissing.value, `${registry.value}/${name.value}/${version}`]);
+      return;
+    }
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const disposition = resp.headers.get("Content-Disposition") ?? "";
+    const match = disposition.match(/filename="([^"]+)"/);
+    const filename = match?.[1] ?? `${name.value}-${version}.${ext}`;
+    const blob = await resp.blob();
+    const a = Object.assign(document.createElement("a"), {
+      href: URL.createObjectURL(blob),
+      download: filename,
+    });
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch {
+    // silently ignore download errors
+  } finally {
+    sbomLoading.value = null;
+  }
 }
 
 async function fetchDetail() {
@@ -187,6 +221,7 @@ onMounted(fetchDetail);
                 <TableHead class="text-right">Downloads</TableHead>
                 <TableHead>Last Accessed</TableHead>
                 <TableHead>Published</TableHead>
+                <TableHead v-if="token">SBOM</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -244,9 +279,37 @@ onMounted(fetchDetail);
                 <TableCell class="text-sm text-muted-foreground">
                   {{ formatDate(ver.published_at) }}
                 </TableCell>
+                <TableCell v-if="token" class="text-sm">
+                  <span
+                    v-if="sbomMissing.has(`${registry}/${name}/${ver.version}`)"
+                    class="text-muted-foreground text-xs"
+                  >
+                    No SBOM
+                  </span>
+                  <div v-else class="flex gap-1">
+                    <button
+                      :disabled="sbomLoading === `${registry}/${name}/${ver.version}:spdx`"
+                      class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs hover:bg-accent disabled:opacity-50"
+                      title="Download SPDX 2.3"
+                      @click="downloadSbom(ver.version, 'spdx')"
+                    >
+                      <FileJson class="h-3 w-3" />
+                      SPDX
+                    </button>
+                    <button
+                      :disabled="sbomLoading === `${registry}/${name}/${ver.version}:cyclonedx`"
+                      class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs hover:bg-accent disabled:opacity-50"
+                      title="Download CycloneDX 1.4"
+                      @click="downloadSbom(ver.version, 'cyclonedx')"
+                    >
+                      <FileCode class="h-3 w-3" />
+                      CDX
+                    </button>
+                  </div>
+                </TableCell>
               </TableRow>
               <TableRow v-if="data.versions.length === 0">
-                <TableCell colspan="6" class="text-center text-muted-foreground py-6">
+                <TableCell :colspan="token ? 7 : 6" class="text-center text-muted-foreground py-6">
                   No versions found
                 </TableCell>
               </TableRow>

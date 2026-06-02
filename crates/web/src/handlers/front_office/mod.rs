@@ -1,3 +1,4 @@
+pub mod banner;
 pub mod explore;
 pub mod me;
 pub mod packages;

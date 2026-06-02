@@ -1,30 +1,23 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
 use futures::StreamExt;
-use regex::Regex;
 
 use crate::{
-    entities::{Identity, PublishedPackage, Role, Visibility},
+    entities::{Identity, PublishedPackage, Role, SbomFormat, Visibility},
     error::CoreError,
     ports::{
-        BetaChannelPort, LocalRegistryBackend, OwnershipPort, StorageBackend, StorageMeta,
-        TeamNamespacePort,
+        LocalRegistryBackend, OwnershipPort, StorageBackend, StorageMeta, TeamNamespacePort,
     },
-    services::quota::{QuotaCheck, QuotaService},
+    services::{
+        explore_cache::ExploreCache,
+        hot_config::{HotConfigLock, VersioningPolicy},
+        quota::{QuotaCheck, QuotaService},
+        sbom::SbomService,
+    },
 };
 
-/// Versioning policy enforced at publish time for a single registry.
-#[derive(Default)]
-pub struct VersioningPolicy {
-    /// Reject versions that are not valid semver.
-    pub enforce_semver: bool,
-    /// If `enforce_semver` is true, also reject pre-release versions (e.g. `1.0.0-beta.1`).
-    pub allow_prerelease: bool,
-    /// Optional compiled regex; publish is rejected when the version string does not match.
-    pub version_pattern: Option<Regex>,
-}
+// `VersioningPolicy` and `SigningConfig` are defined in hot_config and re-exported from services.
 
 fn validate_version(version: &str, policy: &VersioningPolicy) -> Result<(), CoreError> {
     if policy.enforce_semver {
@@ -79,28 +72,18 @@ pub struct PublishRequest {
 pub struct LocalRegistryService {
     pub backend: Arc<dyn LocalRegistryBackend>,
     pub storage: Arc<dyn StorageBackend>,
-    /// Maximum artifact size in bytes. Defaults to 500 MiB when `None`.
-    pub max_artifact_bytes: Option<u64>,
+    /// Hot-swappable state (versioning, signing, beta_channel, size limit).
+    pub hot: HotConfigLock,
     /// Optional publish quota enforcement. When `None`, quotas are disabled.
     pub quota: Option<Arc<QuotaService>>,
     /// Optional per-package ownership enforcement. When `None`, ownership is not enforced.
     pub ownership: Option<Arc<dyn OwnershipPort>>,
-    /// Per-registry versioning policies. Keyed by registry name.
-    pub versioning: HashMap<String, VersioningPolicy>,
-    /// Per-registry signing configs. Keyed by registry name.
-    pub signing: HashMap<String, SigningConfig>,
-    /// Per-registry beta-channel ports. Keyed by registry name.
-    /// When present, pre-release versions are gated behind beta-channel membership.
-    pub beta_channel: HashMap<String, Arc<dyn BetaChannelPort>>,
     /// Optional team namespace enforcement. When `None`, namespace gating is disabled.
     pub team_namespace: Option<Arc<dyn TeamNamespacePort>>,
-}
-
-/// Signing configuration stored in the service (mirrors config-layer `SigningConfig`).
-#[derive(Debug, Default, Clone)]
-pub struct SigningConfig {
-    pub required: bool,
-    pub allowed_types: Vec<String>,
+    /// Optional SBOM service; when `None`, SBOM generation is disabled globally.
+    pub sbom: Option<Arc<SbomService>>,
+    /// Optional explore cache; invalidated automatically on successful publish.
+    pub explore_cache: Option<Arc<ExploreCache>>,
 }
 
 /// OS/architecture pair identifying a specific Terraform provider binary.
@@ -123,13 +106,22 @@ impl LocalRegistryService {
             ));
         }
 
+        // Snapshot hot-swappable policy (versioning, signing, size limit).
+        let (versioning, signing, limit) = {
+            let hot = self.hot.read().await;
+            let versioning = hot.versioning.get(&req.registry).cloned();
+            let signing = hot.signing.get(&req.registry).cloned();
+            let limit = hot.max_artifact_size_bytes.unwrap_or(500 * 1024 * 1024);
+            (versioning, signing, limit)
+        };
+
         // Versioning policy check.
-        if let Some(policy) = self.versioning.get(&req.registry) {
+        if let Some(ref policy) = versioning {
             validate_version(&req.version, policy)?;
         }
 
         // Signing check.
-        if let Some(signing) = self.signing.get(&req.registry) {
+        if let Some(ref signing) = signing {
             if signing.required && req.signature_bytes.is_none() {
                 return Err(CoreError::AccessDenied(
                     "artifact signature required (X-Artifact-Signature header missing)".into(),
@@ -186,7 +178,7 @@ impl LocalRegistryService {
             false
         };
 
-        let limit = self.max_artifact_bytes.unwrap_or(500 * 1024 * 1024);
+        // `limit` was extracted from hot config above.
         if req.artifact.len() as u64 > limit {
             return Err(CoreError::PayloadTooLarge(format!(
                 "artifact is {} bytes; limit is {}",
@@ -278,6 +270,11 @@ impl LocalRegistryService {
             return Err(e);
         }
 
+        // Invalidate explore cache so the new version appears without waiting for TTL expiry.
+        if let Some(ref cache) = self.explore_cache {
+            cache.invalidate(Some(&req.registry)).await;
+        }
+
         // Step 4: on first publish, register the publisher as the package admin.
         if is_new_package {
             if let (Some(ref ownership), Some(ref uid)) = (&self.ownership, &req.publisher.user_id)
@@ -287,6 +284,49 @@ impl LocalRegistryService {
                     .await
                 {
                     tracing::warn!("initialize_owner failed (non-fatal): {err}");
+                }
+            }
+        }
+
+        // Step 5: generate SBOM. When `required` is true and generation fails,
+        // roll back the publish and return the error.
+        if let Some(ref sbom_svc) = self.sbom {
+            let sbom_cfg = {
+                let hot = self.hot.read().await;
+                hot.sbom.get(&req.registry).cloned()
+            };
+            if let Some(cfg) = sbom_cfg.filter(|c| c.enabled) {
+                let formats: Vec<SbomFormat> = cfg
+                    .formats
+                    .iter()
+                    .filter_map(|s| SbomFormat::from_str(s))
+                    .collect();
+                let result = sbom_svc
+                    .record_for_published(
+                        &req.registry,
+                        &req.name,
+                        &req.version,
+                        &storage_key,
+                        &req.artifact,
+                        &cfg.registry_type,
+                        &formats,
+                        cfg.required,
+                    )
+                    .await;
+                match result {
+                    Err(e) if cfg.required => {
+                        self.remove_pending(&req.registry, &req.name, &req.version)
+                            .await;
+                        if let Err(err) = self.storage.delete(&storage_key).await {
+                            tracing::error!("storage cleanup after sbom failure: {err}");
+                        }
+                        self.revoke_quota(&req.publisher, &req.registry, bytes).await;
+                        return Err(e);
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "sbom generation failed (non-fatal)");
+                    }
+                    Ok(()) => {}
                 }
             }
         }
@@ -617,7 +657,8 @@ impl LocalRegistryService {
         versions: Vec<PublishedPackage>,
         identity: &Identity,
     ) -> Result<Vec<PublishedPackage>, CoreError> {
-        let Some(beta_port) = self.beta_channel.get(registry) else {
+        let beta_port = self.hot.read().await.beta_channel.get(registry).cloned();
+        let Some(beta_port) = beta_port else {
             return Ok(versions);
         };
         if beta_port.is_member(registry, identity).await? {
@@ -640,7 +681,8 @@ impl LocalRegistryService {
         if !Self::is_prerelease(version) {
             return Ok(());
         }
-        let Some(beta_port) = self.beta_channel.get(registry) else {
+        let beta_port = self.hot.read().await.beta_channel.get(registry).cloned();
+        let Some(beta_port) = beta_port else {
             return Ok(());
         };
         if beta_port.is_member(registry, identity).await? {
@@ -1304,6 +1346,7 @@ pub fn tf_provider_binary_storage_key(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
@@ -1315,6 +1358,7 @@ mod tests {
         entities::{Identity, Role},
         error::CoreError,
         ports::{StorageBackend, StorageMeta, StoredArtifact},
+        services::hot_config::{new_hot_lock, HotConfig},
     };
 
     // ── Minimal mock backend ──────────────────────────────────────────────────
@@ -1400,13 +1444,20 @@ mod tests {
         LocalRegistryService {
             backend,
             storage: Arc::new(NoopStorage),
-            max_artifact_bytes: max_bytes,
+            hot: new_hot_lock(HotConfig {
+                registries: HashMap::new(),
+                policies: HashMap::new(),
+                versioning: HashMap::new(),
+                signing: HashMap::new(),
+                sbom: HashMap::new(),
+                beta_channel: HashMap::new(),
+                max_artifact_size_bytes: max_bytes,
+            }),
             quota: None,
             ownership: None,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            beta_channel: HashMap::new(),
             team_namespace: None,
+            sbom: None,
+            explore_cache: None,
         }
     }
 
@@ -1622,20 +1673,24 @@ mod tests {
         beta: Arc<dyn crate::ports::BetaChannelPort>,
     ) -> LocalRegistryService {
         let mut bc = HashMap::new();
-        bc.insert(
-            "reg".to_owned(),
-            beta as Arc<dyn crate::ports::BetaChannelPort>,
-        );
+        bc.insert("reg".to_owned(), beta as Arc<dyn crate::ports::BetaChannelPort>);
         LocalRegistryService {
             backend,
             storage: Arc::new(NoopStorage),
-            max_artifact_bytes: None,
+            hot: new_hot_lock(HotConfig {
+                registries: HashMap::new(),
+                policies: HashMap::new(),
+                versioning: HashMap::new(),
+                signing: HashMap::new(),
+                sbom: HashMap::new(),
+                beta_channel: bc,
+                max_artifact_size_bytes: None,
+            }),
             quota: None,
             ownership: None,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            beta_channel: bc,
             team_namespace: None,
+            sbom: None,
+            explore_cache: None,
         }
     }
 
@@ -1964,13 +2019,20 @@ mod tests {
         LocalRegistryService {
             backend,
             storage: Arc::new(NoopStorage),
-            max_artifact_bytes: None,
+            hot: new_hot_lock(HotConfig {
+                registries: HashMap::new(),
+                policies: HashMap::new(),
+                versioning: HashMap::new(),
+                signing: HashMap::new(),
+                sbom: HashMap::new(),
+                beta_channel: HashMap::new(),
+                max_artifact_size_bytes: None,
+            }),
             quota: None,
             ownership: None,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            beta_channel: HashMap::new(),
             team_namespace: Some(ns),
+            sbom: None,
+            explore_cache: None,
         }
     }
 

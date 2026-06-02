@@ -16,7 +16,7 @@ use super::common::{collect_payload, extract_signature_headers, proxy_stream, re
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
 
 fn require_npm_or_cargo(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
-    match map.type_of(registry) {
+    match map.type_of(registry).as_deref() {
         Some("npm") | Some("cargo") | Some("openvsx") => Ok(()),
         Some(_) => Err(AppError::not_found(format!(
             "registry '{registry}' is not an npm, cargo, or openvsx registry"
@@ -28,7 +28,7 @@ fn require_npm_or_cargo(registry: &str, map: &RegistryMap) -> Result<(), AppErro
 }
 
 fn require_npm(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
-    match map.type_of(registry) {
+    match map.type_of(registry).as_deref() {
         Some("npm") => Ok(()),
         Some(_) => Err(AppError::not_found(format!(
             "registry '{registry}' is not an npm registry"

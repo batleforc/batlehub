@@ -1,11 +1,14 @@
 pub mod audit;
 pub mod beta_channel;
 pub mod bulk;
+pub mod config;
+pub mod explore;
 pub mod health;
 pub mod ip_blocks;
 pub mod ownership;
 pub mod packages;
 pub mod quota;
+pub mod sbom;
 pub mod stats;
 pub mod team_namespaces;
 pub mod visibility;

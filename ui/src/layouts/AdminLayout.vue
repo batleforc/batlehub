@@ -3,12 +3,15 @@ import { RouterView, RouterLink, useRoute } from "vue-router";
 import {
   ShieldCheck,
   Package,
+  RefreshCw,
   Upload,
   ScrollText,
   HeartPulse,
   Shield,
   FlaskConical,
   FolderKey,
+  FileJson,
+  DatabaseZap,
 } from "@lucide/vue";
 
 const route = useRoute();
@@ -18,9 +21,12 @@ const adminLinks = [
   { to: "/admin/bulk",         label: "Bulk Import",  icon: Upload },
   { to: "/admin/audit-log",    label: "Audit Log",    icon: ScrollText },
   { to: "/admin/health",       label: "Health",       icon: HeartPulse },
+  { to: "/admin/sbom",          label: "SBOM Export",  icon: FileJson },
   { to: "/admin/ip-blocks",    label: "IP Blocks",    icon: Shield },
   { to: "/admin/beta-channel",    label: "Beta Channel",    icon: FlaskConical },
   { to: "/admin/team-namespaces", label: "Team Namespaces", icon: FolderKey },
+  { to: "/admin/config-reload",   label: "Config Reload",   icon: RefreshCw },
+  { to: "/admin/explore-cache",  label: "Explore Cache",   icon: DatabaseZap },
 ];
 
 function isActive(to: string) {

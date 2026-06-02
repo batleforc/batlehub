@@ -2,7 +2,7 @@ use actix_web::{get, web, Responder};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::{extractors::AuthIdentity, AccessConfig, RegistryMap, RegistryModeMap};
+use crate::{extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 #[derive(Serialize, ToSchema)]
 pub struct RegistryInfo {
@@ -26,12 +26,14 @@ pub struct RegistryInfo {
 pub async fn list_registries(
     map: web::Data<RegistryMap>,
     modes: web::Data<RegistryModeMap>,
-    access: web::Data<AccessConfig>,
+    access: web::Data<crate::AccessConfigLock>,
     identity: AuthIdentity,
 ) -> impl Responder {
-    let accessible = access.accessible_registries_for(&identity);
+    let accessible = access.read().await.accessible_registries_for(&identity);
     let mut registries: Vec<RegistryInfo> = map
         .0
+        .read()
+        .unwrap()
         .iter()
         .filter(|(name, _)| accessible.contains(name.as_str()))
         .map(|(name, registry_type)| RegistryInfo {

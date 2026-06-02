@@ -93,6 +93,9 @@ argon2 = { version = "0.5", features = ["std"] }
 # CLI
 clap = { version = "4", features = ["derive"] }
 
+# File watching (hot reload)
+notify = "6"
+
 # Testing utilities
 tempfile = "3"
 
