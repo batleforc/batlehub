@@ -1,6 +1,7 @@
 import { defineConfig } from "vitepress";
 
 export default defineConfig({
+  appearance: "dark",
   title: "BatleHub",
   description:
     "Your package hub. Proxy, cache, and host npm, Cargo, Go, Maven, Terraform, and RubyGems registries.",
@@ -20,7 +21,7 @@ export default defineConfig({
         href: (process.env.BASE_URL || "/") + "logo.svg",
       },
     ],
-    ["meta", { name: "theme-color", content: "#646cff" }],
+    ["meta", { name: "theme-color", content: "#dc2626" }],
     ["meta", { property: "og:type", content: "website" }],
     ["meta", { property: "og:site_name", content: "BatleHub" }],
     ["meta", { property: "og:title", content: "BatleHub" }],
@@ -60,6 +61,7 @@ export default defineConfig({
 
   themeConfig: {
     logo: "/logo.svg",
+    siteTitle: "BatleHub.",
 
     nav: [
       { text: "Home", link: "/" },
