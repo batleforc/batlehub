@@ -56,7 +56,7 @@ pub async fn get_artifact_sbom(
 
     let (registry, name, version) = path.into_inner();
 
-    let format = SbomFormat::from_str(&query.format)
+    let format = SbomFormat::parse(&query.format)
         .ok_or_else(|| AppError::bad_request(format!("unknown SBOM format '{}'", query.format)))?;
 
     // Try proxy artifact key first, then local registry key.
@@ -124,7 +124,7 @@ pub async fn export_org_sbom(
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
 
-    let format = SbomFormat::from_str(&query.format)
+    let format = SbomFormat::parse(&query.format)
         .ok_or_else(|| AppError::bad_request(format!("unknown SBOM format '{}'", query.format)))?;
 
     let ext = match format {

@@ -9,7 +9,7 @@ const props = defineProps<{ class?: HTMLAttributes["class"] }>();
   <th
     :class="
       cn(
-        'h-12 px-4 text-left align-middle font-medium text-muted-foreground [&:has([role=checkbox])]:pr-0',
+        'h-10 px-4 text-left align-middle font-mono text-xs font-semibold uppercase tracking-wider text-muted-foreground [&:has([role=checkbox])]:pr-0',
         props.class,
       )
     "

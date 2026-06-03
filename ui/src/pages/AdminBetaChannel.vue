@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
-import { useAuth } from "@/composables/useAuth";
+import { registryHealth, listBetaMembers, addBetaMember, removeBetaMember } from "@/client/sdk.gen";
+import type { RegistryHealthDto } from "@/client/types.gen";
+import type { BetaChannelMemberDto } from "@/lib/registry-types";
 import { useApi } from "@/composables/useApi";
+import { useAuth } from "@/composables/useAuth";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -14,27 +17,9 @@ import {
 import Dialog from "@/components/ui/dialog/Dialog.vue";
 
 const { token } = useAuth();
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
-
-interface RegistryHealthDto {
-  registry: string;
-  registry_type: string;
-}
-
-interface BetaChannelMemberDto {
-  principal_type: string;
-  principal_id: string;
-  granted_by: string | null;
-}
 
 const { data: registriesData } = useApi<RegistryHealthDto[]>(
-  () =>
-    fetch(`${API_BASE}/api/v1/admin/health`, {
-      headers: token.value ? { Authorization: `Bearer ${token.value}` } : {},
-    }).then(async (r) => {
-      if (!r.ok) throw new Error(await r.text());
-      return { data: await r.json() };
-    }) as Promise<{ data?: unknown; error?: unknown }>,
+  () => registryHealth() as Promise<{ data?: unknown; error?: unknown }>,
   [token],
 );
 
@@ -57,16 +42,8 @@ const {
   reload: reloadMembers,
 } = useApi<BetaChannelMemberDto[]>(
   () => {
-    if (!selectedRegistry.value) {
-      return Promise.resolve({ data: [] }) as Promise<{ data?: unknown; error?: unknown }>;
-    }
-    return fetch(
-      `${API_BASE}/api/v1/admin/registries/${encodeURIComponent(selectedRegistry.value)}/beta-channel`,
-      { headers: token.value ? { Authorization: `Bearer ${token.value}` } : {} },
-    ).then(async (r) => {
-      if (!r.ok) throw new Error(await r.text());
-      return { data: await r.json() };
-    }) as Promise<{ data?: unknown; error?: unknown }>;
+    if (!selectedRegistry.value) return Promise.resolve({ data: [] });
+    return listBetaMembers({ path: { registry: selectedRegistry.value } }) as Promise<{ data?: unknown; error?: unknown }>;
   },
   [token, selectedRegistry],
 );
@@ -81,22 +58,15 @@ async function submitAdd() {
   addLoading.value = true;
   addError.value = null;
   try {
-    const r = await fetch(
-      `${API_BASE}/api/v1/admin/registries/${encodeURIComponent(selectedRegistry.value)}/beta-channel`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token.value ? { Authorization: `Bearer ${token.value}` } : {}),
-        },
-        body: JSON.stringify({
-          principal_type: addForm.value.principal_type,
-          principal_id: addForm.value.principal_id.trim(),
-          granted_by: addForm.value.granted_by.trim() || undefined,
-        }),
+    const { error: apiErr } = await addBetaMember({
+      path: { registry: selectedRegistry.value },
+      body: {
+        principal_type: addForm.value.principal_type,
+        principal_id: addForm.value.principal_id.trim(),
+        granted_by: addForm.value.granted_by.trim() || undefined,
       },
-    );
-    if (!r.ok) throw new Error(await r.text());
+    });
+    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? "API error");
     addDialogOpen.value = false;
     addForm.value = { principal_type: "user", principal_id: "", granted_by: "" };
     reloadMembers();
@@ -117,14 +87,10 @@ async function confirmRemove() {
   removeError.value = null;
   try {
     const { principal_type, principal_id } = removeTarget.value;
-    const r = await fetch(
-      `${API_BASE}/api/v1/admin/registries/${encodeURIComponent(selectedRegistry.value)}/beta-channel/${encodeURIComponent(principal_type)}/${encodeURIComponent(principal_id)}`,
-      {
-        method: "DELETE",
-        headers: token.value ? { Authorization: `Bearer ${token.value}` } : {},
-      },
-    );
-    if (!r.ok) throw new Error(await r.text());
+    const { error: apiErr } = await removeBetaMember({
+      path: { registry: selectedRegistry.value, principal_type, principal_id },
+    });
+    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? "API error");
     removeTarget.value = null;
     reloadMembers();
   } catch (e) {

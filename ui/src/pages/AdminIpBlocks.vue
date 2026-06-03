@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { useAuth } from "@/composables/useAuth";
+import { listBlockedIps, blockIp, unblockIp } from "@/client/sdk.gen";
+import type { BlockedIpDto } from "@/lib/registry-types";
 import { useApi } from "@/composables/useApi";
+import { useAuth } from "@/composables/useAuth";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -13,23 +15,9 @@ import {
 import Dialog from "@/components/ui/dialog/Dialog.vue";
 
 const { token } = useAuth();
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
-
-interface BlockedIpDto {
-  ip: string;
-  blocked_at: number;
-  unblock_at: number;
-  reason: string;
-}
 
 const { data, error, loading, reload } = useApi<BlockedIpDto[]>(
-  () =>
-    fetch(`${API_BASE}/api/v1/admin/ip-blocks`, {
-      headers: token.value ? { Authorization: `Bearer ${token.value}` } : {},
-    }).then(async (r) => {
-      if (!r.ok) throw new Error(await r.text());
-      return { data: await r.json() };
-    }) as Promise<{ data?: unknown; error?: unknown }>,
+  () => listBlockedIps() as Promise<{ data?: unknown; error?: unknown }>,
   [token],
 );
 
@@ -43,19 +31,14 @@ async function submitBlock() {
   blockLoading.value = true;
   blockError.value = null;
   try {
-    const r = await fetch(`${API_BASE}/api/v1/admin/ip-blocks`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token.value ? { Authorization: `Bearer ${token.value}` } : {}),
-      },
-      body: JSON.stringify({
+    const { error: apiErr } = await blockIp({
+      body: {
         ip: blockForm.value.ip.trim(),
         reason: blockForm.value.reason.trim() || undefined,
         duration_secs: blockForm.value.duration_secs || undefined,
-      }),
+      },
     });
-    if (!r.ok) throw new Error(await r.text());
+    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? "API error");
     blockDialogOpen.value = false;
     blockForm.value = { ip: "", reason: "", duration_secs: 3600 };
     reload();
@@ -75,14 +58,8 @@ async function confirmUnblock() {
   unblockLoading.value = true;
   unblockError.value = null;
   try {
-    const r = await fetch(
-      `${API_BASE}/api/v1/admin/ip-blocks/${encodeURIComponent(unblockTarget.value)}`,
-      {
-        method: "DELETE",
-        headers: token.value ? { Authorization: `Bearer ${token.value}` } : {},
-      },
-    );
-    if (!r.ok) throw new Error(await r.text());
+    const { error: apiErr } = await unblockIp({ path: { ip: unblockTarget.value } });
+    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? "API error");
     unblockTarget.value = null;
     reload();
   } catch (e) {

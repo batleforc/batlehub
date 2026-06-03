@@ -154,7 +154,7 @@ const lifetimePresets = [7, 30, 90];
     <!-- Header -->
     <div class="flex items-start justify-between gap-4">
       <div>
-        <h1 class="text-2xl font-semibold flex items-center gap-2">
+        <h1 class="font-mono text-2xl font-bold cyber-text-glow flex items-center gap-2">
           <Key class="h-5 w-5 text-primary" />
           Personal API Tokens
         </h1>
@@ -195,7 +195,7 @@ const lifetimePresets = [7, 30, 90];
           >
             <Check
               v-if="copied"
-              class="h-3.5 w-3.5 text-green-600"
+              class="h-3.5 w-3.5 text-primary"
             />
             <Copy
               v-else

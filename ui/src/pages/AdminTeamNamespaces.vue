@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
-import { useAuth } from "@/composables/useAuth";
+import { registryHealth, listNamespaces, claimNamespace, releaseNamespace } from "@/client/sdk.gen";
+import type { RegistryHealthDto } from "@/client/types.gen";
+import type { TeamNamespaceDto } from "@/lib/registry-types";
 import { useApi } from "@/composables/useApi";
+import { useAuth } from "@/composables/useAuth";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -14,32 +17,11 @@ import {
 import Dialog from "@/components/ui/dialog/Dialog.vue";
 
 const { token } = useAuth();
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
-
-interface RegistryHealthDto {
-  registry: string;
-  registry_type: string;
-}
-
-interface TeamNamespaceDto {
-  registry: string;
-  /** Package name prefix; may contain slashes, e.g. "frontend/ui" */
-  prefix: string;
-  /** Auth-provider group name, e.g. "oidc:frontend-team" */
-  group_id: string;
-  claimed_by: string | null;
-}
 
 // ── Registry selector ─────────────────────────────────────────────────────────
 
 const { data: registriesData } = useApi<RegistryHealthDto[]>(
-  () =>
-    fetch(`${API_BASE}/api/v1/admin/health`, {
-      headers: token.value ? { Authorization: `Bearer ${token.value}` } : {},
-    }).then(async (r) => {
-      if (!r.ok) throw new Error(await r.text());
-      return { data: await r.json() };
-    }) as Promise<{ data?: unknown; error?: unknown }>,
+  () => registryHealth() as Promise<{ data?: unknown; error?: unknown }>,
   [token],
 );
 
@@ -64,16 +46,8 @@ const {
   reload: reloadNamespaces,
 } = useApi<TeamNamespaceDto[]>(
   () => {
-    if (!selectedRegistry.value) {
-      return Promise.resolve({ data: [] }) as Promise<{ data?: unknown; error?: unknown }>;
-    }
-    return fetch(
-      `${API_BASE}/api/v1/admin/registries/${encodeURIComponent(selectedRegistry.value)}/namespaces`,
-      { headers: token.value ? { Authorization: `Bearer ${token.value}` } : {} },
-    ).then(async (r) => {
-      if (!r.ok) throw new Error(await r.text());
-      return { data: await r.json() };
-    }) as Promise<{ data?: unknown; error?: unknown }>;
+    if (!selectedRegistry.value) return Promise.resolve({ data: [] });
+    return listNamespaces({ path: { registry: selectedRegistry.value } }) as Promise<{ data?: unknown; error?: unknown }>;
   },
   [token, selectedRegistry],
 );
@@ -90,22 +64,15 @@ async function submitClaim() {
   claimLoading.value = true;
   claimError.value = null;
   try {
-    const r = await fetch(
-      `${API_BASE}/api/v1/admin/registries/${encodeURIComponent(selectedRegistry.value)}/namespaces`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token.value ? { Authorization: `Bearer ${token.value}` } : {}),
-        },
-        body: JSON.stringify({
-          prefix: claimForm.value.prefix.trim(),
-          group_id: claimForm.value.group_id.trim(),
-          claimed_by: claimForm.value.claimed_by.trim() || undefined,
-        }),
+    const { error: apiErr } = await claimNamespace({
+      path: { registry: selectedRegistry.value },
+      body: {
+        prefix: claimForm.value.prefix.trim(),
+        group_id: claimForm.value.group_id.trim(),
+        claimed_by: claimForm.value.claimed_by.trim() || undefined,
       },
-    );
-    if (!r.ok) throw new Error(await r.text());
+    });
+    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? "API error");
     claimDialogOpen.value = false;
     claimForm.value = { prefix: "", group_id: "", claimed_by: "" };
     reloadNamespaces();
@@ -127,15 +94,11 @@ async function confirmRelease() {
   releaseLoading.value = true;
   releaseError.value = null;
   try {
-    // The prefix may contain slashes — pass verbatim; the backend route uses {prefix:.*}
-    const r = await fetch(
-      `${API_BASE}/api/v1/admin/registries/${encodeURIComponent(selectedRegistry.value)}/namespaces/${releaseTarget.value.prefix}`,
-      {
-        method: "DELETE",
-        headers: token.value ? { Authorization: `Bearer ${token.value}` } : {},
-      },
-    );
-    if (!r.ok) throw new Error(await r.text());
+    // The prefix may contain slashes — passed verbatim; the backend route uses {prefix:.*}
+    const { error: apiErr } = await releaseNamespace({
+      path: { registry: selectedRegistry.value, prefix: releaseTarget.value.prefix },
+    });
+    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? "API error");
     releaseTarget.value = null;
     reloadNamespaces();
   } catch (e) {

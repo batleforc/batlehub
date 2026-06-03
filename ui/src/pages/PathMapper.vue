@@ -239,7 +239,7 @@ function fullUrl(path: string) {
 <template>
   <div class="max-w-2xl space-y-6">
     <div>
-      <h1 class="text-2xl font-semibold">
+      <h1 class="font-mono text-2xl font-bold cyber-text-glow">
         URL Mapper
       </h1>
       <p class="text-sm text-muted-foreground mt-1">
@@ -266,14 +266,14 @@ function fullUrl(path: string) {
     </Card>
 
     <!-- Registry tabs (plain buttons) -->
-    <div class="flex gap-1 rounded-lg border bg-muted p-1">
+    <div class="flex gap-0.5 rounded-sm border border-border/50 bg-secondary p-0.5">
       <button
         v-for="tab in (['github', 'npm', 'cargo', 'composer'] as const)"
         :key="tab"
-        class="flex-1 rounded-md py-1.5 text-sm font-medium transition-colors"
+        class="flex-1 rounded-sm py-1.5 font-mono text-sm font-medium transition-colors"
         :class="registry === tab
-          ? 'bg-background text-foreground shadow-sm'
-          : 'text-muted-foreground hover:text-foreground'"
+          ? 'bg-accent text-accent-foreground [box-shadow:var(--cyber-glow)] border border-primary/30'
+          : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground'"
         @click="registry = tab"
       >
         {{ tab === 'github' ? 'GitHub' : tab === 'npm' ? 'npm' : tab === 'cargo' ? 'Cargo' : 'Composer' }}
@@ -512,7 +512,7 @@ function fullUrl(path: string) {
       <h2 class="text-sm font-medium text-muted-foreground uppercase tracking-wide">
         Proxy paths
       </h2>
-      <div class="rounded-lg border divide-y">
+      <div class="rounded-sm border divide-y">
         <div
           v-for="entry in activePaths"
           :key="entry.url"

@@ -17,20 +17,10 @@ use batlehub_core::{
     },
 };
 
-use super::common::{collect_payload, proxy_stream, require_local_mode};
+use super::common::{
+    collect_payload, collect_storage_stream, proxy_stream, require_local_mode, require_registry_type,
+};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
-
-fn require_maven(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
-    match map.type_of(registry).as_deref() {
-        Some("maven") => Ok(()),
-        Some(_) => Err(AppError::not_found(format!(
-            "registry '{registry}' is not a Maven registry"
-        ))),
-        None => Err(AppError::not_found(format!(
-            "unknown registry '{registry}'"
-        ))),
-    }
-}
 
 fn content_type_for(filename: &str) -> &'static str {
     if filename.ends_with(".jar") {
@@ -285,7 +275,7 @@ pub async fn maven_get(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, maven_path) = path.into_inner();
-    require_maven(&registry, &map)?;
+    require_registry_type(&registry, "maven", &map)?;
 
     let mode = mode_map.get(&registry);
     let kind = parse_maven_path(&registry, &maven_path)?;
@@ -343,14 +333,7 @@ pub async fn maven_get(
                         };
                         match local_svc.storage.retrieve(&storage_key).await {
                             Ok(Some(artifact)) => {
-                                use futures::StreamExt;
-                                let mut buf = Vec::new();
-                                let mut stream = artifact.stream;
-                                while let Some(chunk) = stream.next().await {
-                                    buf.extend_from_slice(
-                                        &chunk.map_err(|e| AppError::internal(e.to_string()))?,
-                                    );
-                                }
+                                let buf = collect_storage_stream(artifact.stream).await?;
                                 return Ok(HttpResponse::Ok()
                                     .content_type(content_type_for(filename))
                                     .body(buf));
@@ -435,7 +418,7 @@ pub async fn maven_put(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, maven_path) = path.into_inner();
-    require_maven(&registry, &map)?;
+    require_registry_type(&registry, "maven", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     let kind = parse_maven_path(&registry, &maven_path)?;
@@ -516,5 +499,152 @@ pub async fn maven_put(
             }
             Ok(resp.finish())
         }
+    }
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── content_type_for ──────────────────────────────────────────────────────
+
+    #[test]
+    fn content_type_jar() {
+        assert_eq!(content_type_for("artifact-1.0.jar"), "application/java-archive");
+    }
+
+    #[test]
+    fn content_type_pom() {
+        assert_eq!(content_type_for("artifact-1.0.pom"), "application/xml");
+        assert_eq!(content_type_for("maven-metadata.xml"), "application/xml");
+    }
+
+    #[test]
+    fn content_type_checksums() {
+        assert_eq!(content_type_for("artifact.sha1"), "text/plain");
+        assert_eq!(content_type_for("artifact.md5"), "text/plain");
+        assert_eq!(content_type_for("artifact.sha256"), "text/plain");
+        assert_eq!(content_type_for("artifact.sha512"), "text/plain");
+    }
+
+    #[test]
+    fn content_type_unknown_defaults_to_octet_stream() {
+        assert_eq!(content_type_for("artifact.aar"), "application/octet-stream");
+        assert_eq!(content_type_for(""), "application/octet-stream");
+    }
+
+    // ── parse_maven_path ──────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_maven_path_metadata() {
+        let kind = parse_maven_path("r", "com/example/mylib/maven-metadata.xml").unwrap();
+        match kind {
+            MavenPathKind::Metadata { name } => assert_eq!(name, "com.example:mylib"),
+            _ => panic!("expected Metadata"),
+        }
+    }
+
+    #[test]
+    fn parse_maven_path_artifact() {
+        let kind = parse_maven_path("r", "com/example/mylib/1.0.0/mylib-1.0.0.jar").unwrap();
+        match kind {
+            MavenPathKind::Artifact { name, version, filename } => {
+                assert_eq!(name, "com.example:mylib");
+                assert_eq!(version, "1.0.0");
+                assert_eq!(filename, "mylib-1.0.0.jar");
+            }
+            _ => panic!("expected Artifact"),
+        }
+    }
+
+    #[test]
+    fn parse_maven_path_empty_returns_error() {
+        assert!(parse_maven_path("r", "").is_err());
+    }
+
+    #[test]
+    fn parse_maven_path_too_short_artifact_returns_error() {
+        assert!(parse_maven_path("r", "mylib/1.0.0/mylib-1.0.0.jar").is_err());
+    }
+
+    #[test]
+    fn parse_maven_path_metadata_missing_group_returns_error() {
+        assert!(parse_maven_path("r", "maven-metadata.xml").is_err());
+    }
+
+    // ── parse_pom ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_pom_extracts_required_fields() {
+        let xml = r#"<?xml version="1.0"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <groupId>com.example</groupId>
+  <artifactId>mylib</artifactId>
+  <version>1.2.3</version>
+  <description>A test library</description>
+</project>"#;
+        let m = parse_pom(xml.as_bytes()).unwrap();
+        assert_eq!(m.group_id, "com.example");
+        assert_eq!(m.artifact_id, "mylib");
+        assert_eq!(m.version, "1.2.3");
+        assert_eq!(m.description.as_deref(), Some("A test library"));
+    }
+
+    #[test]
+    fn parse_pom_missing_group_id_returns_error() {
+        let xml = r#"<project><artifactId>mylib</artifactId></project>"#;
+        assert!(parse_pom(xml.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn parse_pom_missing_artifact_id_returns_error() {
+        let xml = r#"<project><groupId>com.example</groupId></project>"#;
+        assert!(parse_pom(xml.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn parse_pom_missing_version_yields_empty_string() {
+        let xml = r#"<project><groupId>g</groupId><artifactId>a</artifactId></project>"#;
+        let m = parse_pom(xml.as_bytes()).unwrap();
+        assert!(m.version.is_empty());
+    }
+
+    // ── build_metadata_xml ────────────────────────────────────────────────────
+
+    fn make_pkg(version: &str, yanked: bool) -> batlehub_core::entities::PublishedPackage {
+        use batlehub_core::entities::{PublishedPackage, Visibility};
+        use chrono::Utc;
+        PublishedPackage {
+            registry: "maven-local".to_owned(),
+            name: "com.example:mylib".to_owned(),
+            version: version.to_owned(),
+            checksum: "abc".to_owned(),
+            yanked,
+            index_metadata: serde_json::Value::Null,
+            published_at: Utc::now(),
+            published_by: None,
+            signature_bytes: None,
+            signature_type: None,
+            visibility: Visibility::default(),
+        }
+    }
+
+    #[test]
+    fn build_metadata_xml_contains_version() {
+        let versions = vec![make_pkg("1.0.0", false)];
+        let xml = build_metadata_xml("com.example", "mylib", &versions).unwrap();
+        assert!(xml.contains("<groupId>com.example</groupId>"));
+        assert!(xml.contains("<artifactId>mylib</artifactId>"));
+        assert!(xml.contains("<version>1.0.0</version>"));
+    }
+
+    #[test]
+    fn build_metadata_xml_excludes_yanked_versions() {
+        let versions = vec![make_pkg("1.0.0", true), make_pkg("2.0.0", false)];
+        let xml = build_metadata_xml("com.example", "mylib", &versions).unwrap();
+        assert!(!xml.contains("<version>1.0.0</version>"), "yanked version must not appear");
+        assert!(xml.contains("<version>2.0.0</version>"));
     }
 }

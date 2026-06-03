@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { useAuth } from "@/composables/useAuth";
+import { registryHealth, adminStats, clearRegistryCache } from "@/client/sdk.gen";
+import type { RegistryHealthDto, StatsResponse } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
+import { useAuth } from "@/composables/useAuth";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -12,66 +14,13 @@ import Dialog from "@/components/ui/dialog/Dialog.vue";
 
 const { token } = useAuth();
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
-
-interface RegistryAccessInfo {
-  roles: string[];
-  groups: string[];
-}
-
-interface RecentErrorDto {
-  timestamp: string;
-  user_id: string | null;
-  package_name: string;
-  version: string;
-  error_type: string;
-  reason: string;
-}
-
-interface RegistryHealthDto {
-  registry: string;
-  registry_type: string;
-  package_count: number;
-  cached_artifact_count: number;
-  total_size_bytes: number | null;
-  last_pull_at: string | null;
-  pulls_last_hour: number;
-  pulls_last_day: number;
-  recent_errors: RecentErrorDto[];
-  access: RegistryAccessInfo;
-}
-
 const { data, error, loading, reload } = useApi<RegistryHealthDto[]>(
-  () =>
-    fetch(`${API_BASE}/api/v1/admin/health`, {
-      headers: token.value ? { Authorization: `Bearer ${token.value}` } : {},
-    }).then(async (r) => {
-      if (!r.ok) throw new Error(await r.text());
-      return { data: await r.json() };
-    }) as Promise<{ data?: unknown; error?: unknown }>,
+  () => registryHealth() as Promise<{ data?: unknown; error?: unknown }>,
   [token],
 );
 
-interface AggregateStats {
-  artifact_hits: number;
-  artifact_misses: number;
-  hit_rate: number | null;
-  cached_bytes: number;
-}
-
-interface StatsResponse {
-  since_startup: string;
-  aggregate: AggregateStats;
-}
-
 const { data: statsData } = useApi<StatsResponse>(
-  () =>
-    fetch(`${API_BASE}/api/v1/admin/stats`, {
-      headers: token.value ? { Authorization: `Bearer ${token.value}` } : {},
-    }).then(async (r) => {
-      if (!r.ok) throw new Error(await r.text());
-      return { data: await r.json() };
-    }) as Promise<{ data?: unknown; error?: unknown }>,
+  () => adminStats() as Promise<{ data?: unknown; error?: unknown }>,
   [token],
 );
 
@@ -86,14 +35,8 @@ async function confirmClearCache() {
   clearing.value = true;
   clearError.value = null;
   try {
-    const r = await fetch(
-      `${API_BASE}/api/v1/admin/registries/${encodeURIComponent(clearTarget.value)}/clear-cache`,
-      {
-        method: "POST",
-        headers: token.value ? { Authorization: `Bearer ${token.value}` } : {},
-      },
-    );
-    if (!r.ok) throw new Error(await r.text());
+    const { error: apiErr } = await clearRegistryCache({ path: { registry: clearTarget.value } });
+    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? "API error");
     clearTarget.value = null;
     reload();
   } catch (e) {
@@ -155,7 +98,7 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
     <!-- Page header -->
     <div class="flex items-center justify-between">
       <div>
-        <h1 class="text-2xl font-semibold">
+        <h1 class="font-mono text-2xl font-bold cyber-text-glow">
           Registry Health
         </h1>
         <p class="text-sm text-muted-foreground mt-0.5">
@@ -206,36 +149,36 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
       </CardHeader>
       <CardContent>
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+          <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
             <p class="text-xs text-muted-foreground">
               Cache hit rate
             </p>
             <p
               class="text-2xl font-semibold tabular-nums"
-              :class="statsData.aggregate.hit_rate !== null && statsData.aggregate.hit_rate >= 0.7
-                ? 'text-green-600 dark:text-green-400'
-                : statsData.aggregate.hit_rate !== null && statsData.aggregate.hit_rate >= 0.4
-                  ? 'text-yellow-600 dark:text-yellow-400'
+              :class="statsData.aggregate.hit_rate != null && statsData.aggregate.hit_rate >= 0.7
+                ? 'text-primary'
+                : statsData.aggregate.hit_rate != null && statsData.aggregate.hit_rate >= 0.4
+                  ? 'text-copper'
                   : 'text-muted-foreground'"
             >
-              {{ statsData.aggregate.hit_rate !== null ? `${(statsData.aggregate.hit_rate * 100).toFixed(1)}%` : '—' }}
+              {{ statsData.aggregate.hit_rate != null ? `${(statsData.aggregate.hit_rate * 100).toFixed(1)}%` : '—' }}
             </p>
             <p class="text-xs text-muted-foreground">
               artifact requests
             </p>
           </div>
-          <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+          <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
             <p class="text-xs text-muted-foreground">
               Cache hits
             </p>
-            <p class="text-2xl font-semibold tabular-nums text-green-600 dark:text-green-400">
+            <p class="text-2xl font-semibold tabular-nums text-primary">
               {{ statsData.aggregate.artifact_hits.toLocaleString() }}
             </p>
             <p class="text-xs text-muted-foreground">
               served from cache
             </p>
           </div>
-          <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+          <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
             <p class="text-xs text-muted-foreground">
               Cache misses
             </p>
@@ -246,7 +189,7 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
               fetched from upstream
             </p>
           </div>
-          <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+          <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
             <p class="text-xs text-muted-foreground">
               Total cached
             </p>
@@ -299,7 +242,7 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
           <!-- Stats row -->
           <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
             <!-- Packages -->
-            <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+            <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
               <p class="text-xs text-muted-foreground">
                 Packages
               </p>
@@ -312,12 +255,12 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
             </div>
 
             <!-- Cache size -->
-            <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+            <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
               <p class="text-xs text-muted-foreground">
                 Cache size
               </p>
               <p class="text-xl font-semibold">
-                {{ fmtBytes(reg.total_size_bytes) }}
+                {{ fmtBytes(reg.total_size_bytes ?? null) }}
               </p>
               <p class="text-xs text-muted-foreground">
                 {{ reg.cached_artifact_count }} artifacts
@@ -325,36 +268,36 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
             </div>
 
             <!-- Last pull -->
-            <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+            <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
               <p class="text-xs text-muted-foreground">
                 Last pull
               </p>
               <p class="text-base font-semibold">
-                {{ fmtRelative(reg.last_pull_at) }}
+                {{ fmtRelative(reg.last_pull_at ?? null) }}
               </p>
               <p
                 v-if="reg.last_pull_at"
                 class="text-xs text-muted-foreground"
               >
-                {{ fmtDate(reg.last_pull_at) }}
+                {{ fmtDate(reg.last_pull_at ?? "") }}
               </p>
             </div>
 
             <!-- Pulls / hour -->
-            <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+            <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
               <p class="text-xs text-muted-foreground">
                 Pulls / hour
               </p>
               <p
                 class="text-xl font-semibold tabular-nums"
-                :class="reg.pulls_last_hour > 0 ? 'text-green-600 dark:text-green-400' : 'text-muted-foreground'"
+                :class="reg.pulls_last_hour > 0 ? 'text-primary' : 'text-muted-foreground'"
               >
                 {{ reg.pulls_last_hour.toLocaleString() }}
               </p>
             </div>
 
             <!-- Pulls / day -->
-            <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+            <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
               <p class="text-xs text-muted-foreground">
                 Pulls / day
               </p>
@@ -367,21 +310,24 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
           <!-- Recent errors -->
           <div>
             <button
-              class="flex items-center gap-2 w-full text-left text-sm font-medium py-1"
+              class="flex items-center gap-2 w-full text-left font-mono text-sm font-medium py-1 hover:text-accent-foreground transition-colors"
               @click="toggleErrors(reg.registry)"
             >
               <span
                 v-if="reg.recent_errors.length === 0"
                 class="flex items-center gap-1.5 text-green-600 dark:text-green-400"
               >
-                <span class="inline-block h-2 w-2 rounded-full bg-green-500" />
+                <span class="relative flex h-2 w-2 shrink-0">
+                  <span class="animate-ping absolute inline-flex h-full w-full rounded-sm bg-green-500 opacity-75" />
+                  <span class="relative inline-flex h-2 w-2 rounded-sm bg-green-500" />
+                </span>
                 No errors in the last 24 h
               </span>
               <span
                 v-else
-                class="flex items-center gap-1.5 text-orange-600 dark:text-orange-400"
+                class="flex items-center gap-1.5 text-destructive"
               >
-                <span class="inline-block h-2 w-2 rounded-full bg-orange-500" />
+                <span class="inline-block h-2 w-2 rounded-sm bg-destructive" />
                 {{ reg.recent_errors.length }} error{{ reg.recent_errors.length > 1 ? 's' : '' }} in 24 h
                 <span class="text-muted-foreground text-xs ml-auto">
                   {{ expandedErrors.has(reg.registry) ? '▲ hide' : '▼ show' }}
@@ -391,7 +337,7 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
 
             <div
               v-if="expandedErrors.has(reg.registry) && reg.recent_errors.length > 0"
-              class="mt-2 rounded-md border overflow-x-auto"
+              class="mt-2 rounded-sm border overflow-x-auto"
             >
               <Table>
                 <TableHeader>
@@ -482,7 +428,7 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
               </Badge>
               <span
                 v-else-if="!reg.access.roles.includes('anonymous') && !reg.access.roles.includes('user')"
-                class="text-xs text-orange-600 dark:text-orange-400 flex items-center gap-1"
+                class="text-xs text-copper flex items-center gap-1"
               >
                 ⚠ Restricted — no public access
               </span>

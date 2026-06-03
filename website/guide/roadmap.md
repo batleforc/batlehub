@@ -26,7 +26,7 @@ BatleHub currently supports npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go
 | **Composer** | ✅ Shipped | Packagist v2 protocol; packages.json + p2 metadata + dist downloads; private ZIP publishing in local/hybrid mode |
 | **PyPI** | ✅ Shipped | Simple API proxy with URL rewriting (pip, uv, Poetry); wheel and sdist downloads; twine-compatible private publishing in local/hybrid mode |
 | **Conda** | ✅ Shipped | repodata.json proxy (all platforms); `.conda` and `.tar.bz2` downloads; private channel publishing; hybrid repodata merge |
-| **NuGet** | Planned | .NET package protocol |
+| **NuGet** | ✅ Shipped | NuGet v3 service index + flat container proxy; `.nupkg` and `.nuspec` downloads; private publishing via `dotnet nuget push` in `local`/`hybrid` mode |
 | **Deb / RPM** | Planned | Debian APT and Red Hat YUM repository proxying |
 | **GitLab** | Planned | Releases and packages — similar to GitHub, different auth / pagination |
 | **Forgejo** | Planned | Gitea fork with minor API differences |

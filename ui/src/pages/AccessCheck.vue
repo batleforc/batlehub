@@ -103,7 +103,7 @@ async function check() {
 
       <div
         v-if="result"
-        class="rounded-md border p-4 space-y-2"
+        class="rounded-sm border p-4 space-y-2"
       >
         <div class="flex items-center gap-2">
           <Badge :variant="result.can_access ? 'default' : 'destructive'">

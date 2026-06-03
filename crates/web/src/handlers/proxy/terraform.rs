@@ -14,22 +14,10 @@ use batlehub_core::{
 };
 
 use super::common::{
-    append_signature_headers, collect_payload, extract_signature_headers, proxy_stream,
-    require_local_mode,
+    append_signature_headers, collect_payload, collect_storage_stream, extract_signature_headers,
+    proxy_stream, require_local_mode, require_registry_type,
 };
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
-
-fn require_terraform(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
-    match map.type_of(registry).as_deref() {
-        Some("terraform") => Ok(()),
-        Some(_) => Err(AppError::not_found(format!(
-            "registry '{registry}' is not a Terraform registry"
-        ))),
-        None => Err(AppError::not_found(format!(
-            "unknown registry '{registry}'"
-        ))),
-    }
-}
 
 fn base_url_from_req(req: &HttpRequest) -> String {
     let info = req.connection_info();
@@ -65,7 +53,7 @@ pub async fn tf_provider_versions(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, ptype) = path.into_inner();
-    require_terraform(&registry, &map)?;
+    require_registry_type(&registry, "terraform", &map)?;
 
     let name = format!("providers/{namespace}/{ptype}");
     let mode = mode_map.get(&registry);
@@ -126,7 +114,7 @@ pub async fn tf_provider_download(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, ptype, version, os, arch) = path.into_inner();
-    require_terraform(&registry, &map)?;
+    require_registry_type(&registry, "terraform", &map)?;
 
     let name = format!("providers/{namespace}/{ptype}");
     let mode = mode_map.get(&registry);
@@ -206,7 +194,7 @@ pub async fn tf_provider_upload(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, ptype) = path.into_inner();
-    require_terraform(&registry, &map)?;
+    require_registry_type(&registry, "terraform", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     let bytes = collect_payload(payload).await?;
@@ -282,7 +270,7 @@ pub async fn tf_provider_binary_upload(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, ptype, version, os, arch) = path.into_inner();
-    require_terraform(&registry, &map)?;
+    require_registry_type(&registry, "terraform", &map)?;
     require_local_mode(&registry, &mode_map)?;
     let _ = &identity; // auth presence validated by middleware
 
@@ -332,7 +320,7 @@ pub async fn tf_provider_artifact(
     map: web::Data<RegistryMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, ptype, version, os, arch) = path.into_inner();
-    require_terraform(&registry, &map)?;
+    require_registry_type(&registry, "terraform", &map)?;
 
     local_svc
         .check_prerelease_access(&registry, &version, &identity)
@@ -351,12 +339,7 @@ pub async fn tf_provider_artifact(
             ))
         })?;
 
-    use futures::StreamExt;
-    let mut buf = Vec::new();
-    let mut stream = artifact.stream;
-    while let Some(chunk) = stream.next().await {
-        buf.extend_from_slice(&chunk.map_err(|e| AppError::internal(e.to_string()))?);
-    }
+    let buf = collect_storage_stream(artifact.stream).await?;
     Ok(HttpResponse::Ok().content_type("application/zip").body(buf))
 }
 
@@ -390,7 +373,7 @@ pub async fn tf_provider_yank(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, ptype, version) = path.into_inner();
-    require_terraform(&registry, &map)?;
+    require_registry_type(&registry, "terraform", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     let name = format!("providers/{namespace}/{ptype}");
@@ -432,7 +415,7 @@ pub async fn tf_provider_unyank(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, ptype, version) = path.into_inner();
-    require_terraform(&registry, &map)?;
+    require_registry_type(&registry, "terraform", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     let name = format!("providers/{namespace}/{ptype}");
@@ -476,7 +459,7 @@ pub async fn tf_module_versions(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, name, provider) = path.into_inner();
-    require_terraform(&registry, &map)?;
+    require_registry_type(&registry, "terraform", &map)?;
 
     let pkg_name = format!("modules/{namespace}/{name}/{provider}");
     let mode = mode_map.get(&registry);
@@ -538,7 +521,7 @@ pub async fn tf_module_download(
     client: web::Data<reqwest::Client>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, name, provider, version) = path.into_inner();
-    require_terraform(&registry, &map)?;
+    require_registry_type(&registry, "terraform", &map)?;
 
     let mode = mode_map.get(&registry);
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
@@ -631,7 +614,7 @@ pub async fn tf_module_upload(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, name, provider, version) = path.into_inner();
-    require_terraform(&registry, &map)?;
+    require_registry_type(&registry, "terraform", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     let bytes = collect_payload(payload).await?;
@@ -700,7 +683,7 @@ pub async fn tf_module_artifact(
     map: web::Data<RegistryMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, name, provider, version) = path.into_inner();
-    require_terraform(&registry, &map)?;
+    require_registry_type(&registry, "terraform", &map)?;
 
     local_svc
         .check_prerelease_access(&registry, &version, &identity)
@@ -749,7 +732,7 @@ pub async fn tf_module_yank(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, name, provider, version) = path.into_inner();
-    require_terraform(&registry, &map)?;
+    require_registry_type(&registry, "terraform", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     let pkg_name = format!("modules/{namespace}/{name}/{provider}");
@@ -792,7 +775,7 @@ pub async fn tf_module_unyank(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, name, provider, version) = path.into_inner();
-    require_terraform(&registry, &map)?;
+    require_registry_type(&registry, "terraform", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     let pkg_name = format!("modules/{namespace}/{name}/{provider}");

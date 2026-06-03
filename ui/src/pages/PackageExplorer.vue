@@ -2,7 +2,8 @@
 import { ref, computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { Search, Package, RefreshCw } from "@lucide/vue";
-import { useAuth } from "@/composables/useAuth";
+import { listRegistries, exploreRegistryStats, explorePackages, exploreUpstreamSearch } from "@/client/sdk.gen";
+import type { RegistryInfo, RegistryStatDto, ExploreEntryDto, ExplorePackageListResponse, UpstreamPackageDto } from "@/client/types.gen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,45 +11,6 @@ import {
   Table, TableHeader, TableHead, TableBody, TableRow, TableCell,
 } from "@/components/ui/table";
 import { Card, CardContent } from "@/components/ui/card";
-
-// ── API types ─────────────────────────────────────────────────────────────────
-
-interface RegistryInfo {
-  name: string;
-  type: string;
-  mode: string;
-}
-
-interface RegistryStatDto {
-  registry: string;
-  package_count: number;
-  total_downloads: number;
-}
-
-interface ExploreEntryDto {
-  registry: string;
-  name: string;
-  version_count: number;
-  total_downloads: number;
-  last_accessed: string | null;
-  source: "proxied" | "local" | "both";
-  has_blocked: boolean;
-}
-
-interface ExploreListResponse {
-  items: ExploreEntryDto[];
-  total: number;
-  page: number;
-  per_page: number;
-}
-
-interface UpstreamPackageDto {
-  registry: string;
-  name: string;
-  latest_version: string;
-  description: string | null;
-  already_cached: boolean;
-}
 
 // ── Unified row type for the table ────────────────────────────────────────────
 
@@ -58,8 +20,6 @@ type TableRow = CachedRow | UpstreamRow;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
-const { token } = useAuth();
 const router = useRouter();
 
 const selectedRegistry = ref<string | null>(null);
@@ -111,12 +71,6 @@ const totalPages = computed(() => Math.max(1, Math.ceil(total.value / perPage)))
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function headers(): Record<string, string> {
-  const h: Record<string, string> = {};
-  if (token.value) h["Authorization"] = `Bearer ${token.value}`;
-  return h;
-}
-
 function sourceLabel(source: string) {
   if (source === "both") return "Both";
   if (source === "local") return "Local";
@@ -134,17 +88,17 @@ function sourceVariant(source: string): "default" | "secondary" | "outline" {
 async function fetchAllRegistries() {
   loadingRegs.value = true;
   try {
-    const [regsRes, statsRes] = await Promise.all([
-      fetch(`${API_BASE}/api/v1/registries`, { headers: headers() }),
-      fetch(`${API_BASE}/api/v1/explore/registries`, { headers: headers() }),
+    const [regsResult, statsResult] = await Promise.all([
+      listRegistries(),
+      exploreRegistryStats(),
     ]);
-    if (regsRes.ok) {
-      allRegistries.value = (await regsRes.json() as RegistryInfo[])
+    if (regsResult.data) {
+      allRegistries.value = (regsResult.data as RegistryInfo[])
         .sort((a, b) => a.name.localeCompare(b.name));
     }
-    if (statsRes.ok) {
-      const stats: RegistryStatDto[] = await statsRes.json();
-      registryStats.value = new Map(stats.map(s => [s.registry, s]));
+    if (statsResult.data) {
+      const body = statsResult.data as { registries?: RegistryStatDto[] };
+      registryStats.value = new Map((body.registries ?? []).map(s => [s.registry, s]));
     }
   } catch {
     // non-fatal
@@ -157,21 +111,19 @@ async function fetchPackages() {
   loading.value = true;
   error.value = null;
   try {
-    const params = new URLSearchParams({
-      page: String(page.value),
-      per_page: String(perPage),
-      sort: sort.value,
+    const { data: res, error: apiErr } = await explorePackages({
+      query: {
+        page: page.value,
+        per_page: perPage,
+        sort: sort.value,
+        registry: selectedRegistry.value ?? undefined,
+        name: search.value.trim() || undefined,
+      },
     });
-    if (selectedRegistry.value) params.set("registry", selectedRegistry.value);
-    if (search.value.trim()) params.set("name", search.value.trim());
-
-    const res = await fetch(`${API_BASE}/api/v1/explore/packages?${params}`, {
-      headers: headers(),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data: ExploreListResponse = await res.json();
-    packages.value = data.items;
-    total.value = data.total;
+    if (apiErr) throw new Error("Failed to load packages");
+    const body = res as ExplorePackageListResponse;
+    packages.value = body.items;
+    total.value = body.total;
   } catch (e) {
     error.value = e instanceof Error ? e.message : "Failed to load packages";
   } finally {
@@ -183,14 +135,16 @@ async function fetchUpstream() {
   if (!search.value.trim()) return;
   loadingUpstream.value = true;
   try {
-    const params = new URLSearchParams({ name: search.value.trim(), limit: "10" });
-    if (selectedRegistry.value) params.set("registry", selectedRegistry.value);
-    const res = await fetch(`${API_BASE}/api/v1/explore/upstream?${params}`, {
-      headers: headers(),
+    const { data: res } = await exploreUpstreamSearch({
+      query: {
+        name: search.value.trim(),
+        limit: 10,
+        registry: selectedRegistry.value ?? undefined,
+      },
     });
-    if (res.ok) {
-      const data: { items: UpstreamPackageDto[] } = await res.json();
-      upstreamResults.value = data.items;
+    if (res) {
+      const body = res as { items?: UpstreamPackageDto[] };
+      upstreamResults.value = body.items ?? [];
     }
   } catch {
     // non-fatal
@@ -252,17 +206,17 @@ onMounted(() => {
 <template>
   <div class="flex gap-6 min-h-[60vh]">
     <!-- Sidebar: full registry list (including those with 0 packages) -->
-    <aside class="hidden md:flex flex-col w-56 shrink-0 gap-1">
-      <p class="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-2 mb-1">
+    <aside class="hidden md:flex flex-col w-56 shrink-0 gap-0.5 border-r border-border/60 pr-4">
+      <p class="font-mono text-xs font-semibold text-copper uppercase tracking-wider px-2 mb-2">
         Registries
       </p>
 
       <button
         :class="[
-          'flex items-center justify-between px-2 py-1.5 rounded-md text-sm transition-colors w-full text-left',
+          'flex items-center justify-between px-2 py-1.5 rounded-sm font-mono text-sm transition-colors w-full text-left',
           selectedRegistry === null
-            ? 'bg-accent text-accent-foreground font-medium'
-            : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+            ? 'bg-accent text-accent-foreground font-semibold'
+            : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
         ]"
         @click="selectRegistry(null)"
       >
@@ -274,12 +228,12 @@ onMounted(() => {
         v-for="reg in sidebarRegistries"
         :key="reg.name"
         :class="[
-          'flex items-center justify-between px-2 py-1.5 rounded-md text-sm transition-colors w-full text-left',
+          'flex items-center justify-between px-2 py-1.5 rounded-sm font-mono text-sm transition-colors w-full text-left',
           selectedRegistry === reg.name
-            ? 'bg-accent text-accent-foreground font-medium'
+            ? 'bg-accent text-accent-foreground font-semibold'
             : reg.package_count === 0
-              ? 'text-muted-foreground/50 hover:bg-accent hover:text-accent-foreground'
-              : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+              ? 'text-muted-foreground/50 hover:bg-accent/60 hover:text-accent-foreground'
+              : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
         ]"
         @click="selectRegistry(reg.name)"
       >
@@ -297,7 +251,7 @@ onMounted(() => {
     <div class="flex-1 min-w-0 space-y-4">
       <!-- Header -->
       <div class="flex items-center justify-between gap-4 flex-wrap">
-        <h1 class="text-xl font-semibold flex items-center gap-2">
+        <h1 class="font-mono text-xl font-bold flex items-center gap-2 text-foreground cyber-text-glow">
           <Package class="h-5 w-5 text-primary" />
           Package Explorer
         </h1>
@@ -319,7 +273,7 @@ onMounted(() => {
           />
         </div>
         <select
-          class="h-9 rounded-md border border-input bg-background px-3 text-sm"
+          class="h-9 rounded-sm border border-input bg-background px-3 font-mono text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
           :value="sort"
           @change="onSortChange(($event.target as HTMLSelectElement).value)"
         >
@@ -367,10 +321,7 @@ onMounted(() => {
               <TableRow
                 v-for="row in tableRows"
                 :key="`${row.kind}-${row.registry}/${row.name}`"
-                :class="[
-                  'hover:bg-muted/50',
-                  row.kind === 'cached' ? 'cursor-pointer' : 'cursor-default opacity-80',
-                ]"
+                :class="row.kind === 'cached' ? 'cursor-pointer' : 'cursor-default opacity-70'"
                 @click="goToDetail(row)"
               >
                 <TableCell class="font-mono text-sm font-medium">{{ row.name }}</TableCell>

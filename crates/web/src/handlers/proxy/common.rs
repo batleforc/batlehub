@@ -8,10 +8,11 @@ use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
     entities::PackageId,
     error::CoreError,
+    ports::ByteStream,
     services::{LocalRegistryService, ProxyRequest, ProxyResponse, ProxyService},
 };
 
-use crate::{error::AppError, extractors::AuthIdentity, RegistryModeMap};
+use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 /// Decode `X-Artifact-Signature` (base64) and `X-Signature-Type` headers from a request.
 ///
@@ -70,6 +71,35 @@ pub async fn collect_payload(mut payload: web::Payload) -> Result<Bytes, AppErro
     Ok(raw.freeze())
 }
 
+/// Drain a storage `ByteStream` into contiguous `Bytes`.
+pub async fn collect_storage_stream(mut stream: ByteStream) -> Result<Bytes, AppError> {
+    let mut buf = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        buf.extend_from_slice(&chunk.map_err(|e| AppError::internal(e.to_string()))?);
+    }
+    Ok(Bytes::from(buf))
+}
+
+/// Reject the request if `registry` is not of the expected type.
+///
+/// Returns `404 Not Found` with a descriptive message for both "wrong type" and
+/// "registry does not exist" — the two cases are indistinguishable to the caller.
+pub fn require_registry_type(
+    registry: &str,
+    expected: &str,
+    map: &RegistryMap,
+) -> Result<(), AppError> {
+    match map.type_of(registry).as_deref() {
+        Some(t) if t == expected => Ok(()),
+        Some(_) => Err(AppError::not_found(format!(
+            "registry '{registry}' is not a {expected} registry"
+        ))),
+        None => Err(AppError::not_found(format!(
+            "unknown registry '{registry}'"
+        ))),
+    }
+}
+
 /// Reject registries that are not in local or hybrid mode.
 pub fn require_local_mode(registry: &str, mode_map: &RegistryModeMap) -> Result<(), AppError> {
     match mode_map.get(registry) {
@@ -107,5 +137,35 @@ pub async fn proxy_stream(
             }
             Ok(resp.streaming(body))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn map_with(registry: &str, type_: &str) -> RegistryMap {
+        let mut m = HashMap::new();
+        m.insert(registry.to_owned(), type_.to_owned());
+        RegistryMap::from(m)
+    }
+
+    #[test]
+    fn require_registry_type_ok() {
+        let map = map_with("r1", "nuget");
+        assert!(require_registry_type("r1", "nuget", &map).is_ok());
+    }
+
+    #[test]
+    fn require_registry_type_wrong_type() {
+        let map = map_with("r1", "cargo");
+        assert!(require_registry_type("r1", "nuget", &map).is_err());
+    }
+
+    #[test]
+    fn require_registry_type_unknown_registry() {
+        let map = RegistryMap::from(HashMap::new());
+        assert!(require_registry_type("nonexistent", "nuget", &map).is_err());
     }
 }

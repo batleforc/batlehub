@@ -1,12 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import { useAuth } from "@/composables/useAuth";
+import { registryHealth, invalidateExploreCache } from "@/client/sdk.gen";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-
-const { token } = useAuth();
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -17,24 +14,6 @@ const loadingAll = ref(false);
 const loadingRegistry = ref(false);
 const successMsg = ref<string | null>(null);
 const errorMsg = ref<string | null>(null);
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function authHeaders(): HeadersInit {
-  return token.value ? { Authorization: `Bearer ${token.value}` } : {};
-}
-
-async function apiFetch(path: string, opts: RequestInit = {}) {
-  const resp = await fetch(`${API_BASE}${path}`, {
-    ...opts,
-    headers: { ...authHeaders(), ...(opts.headers ?? {}) },
-  });
-  if (!resp.ok) {
-    const body = await resp.text().catch(() => "");
-    throw new Error(body || `HTTP ${resp.status}`);
-  }
-  return resp;
-}
 
 function notify(msg: string, isError = false) {
   successMsg.value = null;
@@ -47,10 +26,11 @@ function notify(msg: string, isError = false) {
 
 async function fetchRegistries() {
   try {
-    const resp = await apiFetch("/api/v1/admin/health");
-    const list = (await resp.json()) as { registry: string }[];
-    registries.value = list.map((r) => r.registry).sort();
-    if (registries.value.length > 0) selectedRegistry.value = registries.value[0];
+    const { data } = await registryHealth();
+    if (data) {
+      registries.value = (data as { registry: string }[]).map((r) => r.registry).sort();
+      if (registries.value.length > 0) selectedRegistry.value = registries.value[0];
+    }
   } catch {
     // non-fatal — the UI still works with a text input fallback
   }
@@ -63,11 +43,8 @@ async function invalidateAll() {
   successMsg.value = null;
   errorMsg.value = null;
   try {
-    await apiFetch("/api/v1/admin/explore/invalidate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
+    const { error: apiErr } = await invalidateExploreCache({ body: {} });
+    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? "API error");
     notify("Entire explore cache cleared. Next requests will hit the database.");
   } catch (e) {
     notify(e instanceof Error ? e.message : String(e), true);
@@ -82,11 +59,8 @@ async function invalidateRegistry() {
   successMsg.value = null;
   errorMsg.value = null;
   try {
-    await apiFetch("/api/v1/admin/explore/invalidate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ registry: selectedRegistry.value.trim() }),
-    });
+    const { error: apiErr } = await invalidateExploreCache({ body: { registry: selectedRegistry.value.trim() } });
+    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? "API error");
     notify(`Explore cache cleared for registry "${selectedRegistry.value}".`);
   } catch (e) {
     notify(e instanceof Error ? e.message : String(e), true);
@@ -113,13 +87,13 @@ onMounted(fetchRegistries);
     <!-- Feedback -->
     <div
       v-if="successMsg"
-      class="rounded-md bg-green-50 dark:bg-green-950 border border-green-400 px-4 py-2 text-green-800 dark:text-green-200 text-sm"
+      class="rounded-sm bg-primary/10 border border-primary/30 px-4 py-2 text-primary text-sm"
     >
       {{ successMsg }}
     </div>
     <div
       v-if="errorMsg"
-      class="rounded-md bg-red-50 dark:bg-red-950 border border-red-400 px-4 py-2 text-red-800 dark:text-red-200 text-sm"
+      class="rounded-sm bg-destructive/10 border border-destructive/30 px-4 py-2 text-destructive text-sm"
     >
       {{ errorMsg }}
     </div>
@@ -140,7 +114,7 @@ onMounted(fetchRegistries);
             <label class="text-xs text-muted-foreground font-medium">Registry</label>
             <select
               v-model="selectedRegistry"
-              class="border rounded px-2 py-2 text-sm bg-background min-w-[10rem]"
+              class="border border-input rounded-sm px-2 py-2 font-mono text-sm bg-background min-w-[10rem] focus:outline-none focus:ring-2 focus:ring-ring"
             >
               <option v-for="r in registries" :key="r" :value="r">{{ r }}</option>
             </select>
@@ -151,7 +125,7 @@ onMounted(fetchRegistries);
             <input
               v-model="selectedRegistry"
               placeholder="e.g. npm"
-              class="border rounded px-2 py-2 text-sm bg-background min-w-[10rem]"
+              class="border border-input rounded-sm px-2 py-2 font-mono text-sm bg-background min-w-[10rem] focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
 

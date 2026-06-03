@@ -2,7 +2,11 @@
 import { ref, computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ArrowLeft, ShieldCheck, ShieldAlert, Lock, Unlock, Package, FileJson, FileCode } from "@lucide/vue";
+import { explorePackageDetail } from "@/client/sdk.gen";
+import type { ExplorePackageDetailResponse, FirewallDto } from "@/client/types.gen";
 import { useAuth } from "@/composables/useAuth";
+import { useAuthFetch } from "@/composables/useAuthFetch";
+import { API_BASE_URL } from "@/config";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,35 +14,8 @@ import {
   Table, TableHeader, TableHead, TableBody, TableRow, TableCell,
 } from "@/components/ui/table";
 
-interface GateDto {
-  registry_accessible: boolean;
-  beta_member: boolean;
-}
-
-interface FirewallClear { status: "clear" }
-interface FirewallBlocked { status: "blocked"; reason: string; blocked_by: string; blocked_at: string }
-interface FirewallYanked { status: "yanked" }
-type FirewallDto = FirewallClear | FirewallBlocked | FirewallYanked;
-
-interface ExploreVersionDto {
-  version: string;
-  source: "proxied" | "local";
-  firewall: FirewallDto;
-  download_count: number;
-  last_accessed: string | null;
-  published_at: string | null;
-  is_prerelease: boolean;
-}
-
-interface ExplorePackageDetailResponse {
-  registry: string;
-  name: string;
-  gate: GateDto;
-  versions: ExploreVersionDto[];
-}
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const { token } = useAuth();
+const { authFetch } = useAuthFetch();
 const route = useRoute();
 const router = useRouter();
 
@@ -48,12 +25,6 @@ const name = computed(() => String(route.params.name ?? ""));
 const data = ref<ExplorePackageDetailResponse | null>(null);
 const loading = ref(false);
 const error = ref<string | null>(null);
-
-function headers() {
-  const h: Record<string, string> = {};
-  if (token.value) h["Authorization"] = `Bearer ${token.value}`;
-  return h;
-}
 
 // ── Per-artifact SBOM download ─────────────────────────────────────────────
 
@@ -66,7 +37,7 @@ async function downloadSbom(version: string, fmt: "spdx" | "cyclonedx") {
   try {
     const ext = fmt === "cyclonedx" ? "cyclonedx.json" : "spdx.json";
     const url = `/api/v1/sbom/${encodeURIComponent(registry.value)}/${encodeURIComponent(name.value)}/${encodeURIComponent(version)}?format=${fmt}`;
-    const resp = await fetch(`${API_BASE}${url}`, { headers: headers() });
+    const resp = await authFetch(`${API_BASE_URL}${url}`);
     if (resp.status === 404) {
       sbomMissing.value = new Set([...sbomMissing.value, `${registry.value}/${name.value}/${version}`]);
       return;
@@ -93,10 +64,11 @@ async function fetchDetail() {
   loading.value = true;
   error.value = null;
   try {
-    const url = `${API_BASE}/api/v1/explore/packages/${encodeURIComponent(registry.value)}/${encodeURIComponent(name.value)}`;
-    const res = await fetch(url, { headers: headers() });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    data.value = await res.json();
+    const { data: res, error: apiErr } = await explorePackageDetail({
+      path: { registry: registry.value, name: name.value },
+    });
+    if (apiErr) throw new Error(`HTTP error`);
+    data.value = res as ExplorePackageDetailResponse;
   } catch (e) {
     error.value = e instanceof Error ? e.message : "Failed to load package detail";
   } finally {
@@ -111,7 +83,8 @@ function goBack() {
   });
 }
 
-function firewallVariant(fw: FirewallDto): "default" | "destructive" | "secondary" | "outline" {
+function firewallVariant(fw: FirewallDto | undefined): "default" | "destructive" | "secondary" | "outline" {
+  if (!fw) return "outline";
   if (fw.status === "blocked") return "destructive";
   if (fw.status === "yanked") return "secondary";
   return "outline";
@@ -181,11 +154,11 @@ onMounted(fetchDetail);
             <div class="flex items-center gap-2 text-sm">
               <component
                 :is="data.gate.registry_accessible ? ShieldCheck : ShieldAlert"
-                :class="data.gate.registry_accessible ? 'text-green-500' : 'text-destructive'"
+                :class="data.gate.registry_accessible ? 'text-primary' : 'text-destructive'"
                 class="h-4 w-4 shrink-0"
               />
               <span class="text-muted-foreground">Registry access:</span>
-              <span :class="data.gate.registry_accessible ? 'text-green-600 font-medium' : 'text-destructive font-medium'">
+              <span :class="data.gate.registry_accessible ? 'text-primary font-medium' : 'text-destructive font-medium'">
                 {{ data.gate.registry_accessible ? "Allowed" : "Denied" }}
               </span>
             </div>
@@ -194,11 +167,11 @@ onMounted(fetchDetail);
             <div class="flex items-center gap-2 text-sm">
               <component
                 :is="data.gate.beta_member ? Unlock : Lock"
-                :class="data.gate.beta_member ? 'text-green-500' : 'text-muted-foreground'"
+                :class="data.gate.beta_member ? 'text-primary' : 'text-muted-foreground'"
                 class="h-4 w-4 shrink-0"
               />
               <span class="text-muted-foreground">Beta channel:</span>
-              <span :class="data.gate.beta_member ? 'text-green-600 font-medium' : 'text-muted-foreground'">
+              <span :class="data.gate.beta_member ? 'text-primary font-medium' : 'text-muted-foreground'">
                 {{ data.gate.beta_member ? "Member — pre-release versions visible" : "Non-member" }}
               </span>
             </div>
@@ -255,7 +228,7 @@ onMounted(fetchDetail);
                   >
                     <Badge variant="destructive" class="text-xs cursor-help">Blocked</Badge>
                     <span
-                      class="absolute bottom-full left-0 mb-1 hidden group-hover:block z-10 w-64 rounded bg-popover border p-2 text-xs text-popover-foreground shadow-md"
+                      class="absolute bottom-full left-0 mb-1 hidden group-hover:block z-10 w-64 rounded-sm bg-popover border p-2 text-xs text-popover-foreground shadow-md"
                     >
                       <strong>Reason:</strong> {{ (ver.firewall as any).reason }}<br />
                       <strong>By:</strong> {{ (ver.firewall as any).blocked_by }}<br />
@@ -274,10 +247,10 @@ onMounted(fetchDetail);
                   {{ ver.download_count.toLocaleString() }}
                 </TableCell>
                 <TableCell class="text-sm text-muted-foreground">
-                  {{ formatDate(ver.last_accessed) }}
+                  {{ formatDate(ver.last_accessed ?? null) }}
                 </TableCell>
                 <TableCell class="text-sm text-muted-foreground">
-                  {{ formatDate(ver.published_at) }}
+                  {{ formatDate(ver.published_at ?? null) }}
                 </TableCell>
                 <TableCell v-if="token" class="text-sm">
                   <span

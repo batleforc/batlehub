@@ -8,12 +8,12 @@ For discussion or to propose a feature, open an issue on the [project repository
 
 ## New registry types
 
-Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules, Maven, RubyGems, Terraform, Composer, PyPI, Conda.
+Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules, Maven, RubyGems, Terraform, Composer, PyPI, Conda, NuGet.
 
 - [x] **PyPI** — Python package index; Simple API proxy with URL rewriting; wheel / sdist downloads; private publishing via `twine` in `local`/`hybrid` mode
 - [x] **Maven / Gradle** — Maven Central-compatible metadata XML + JAR / POM downloads; private publishing via `mvn deploy` in `local`/`hybrid` mode
 - [x] **RubyGems** — gem downloads and version listing (proxy + local/hybrid with publish/yank/unyank)
-- [ ] **NuGet** — .NET package protocol
+- [x] **NuGet** — .NET package protocol; NuGet v3 service index + flat container proxy; `.nupkg` and `.nuspec` downloads; private publishing via `dotnet nuget push` in `local`/`hybrid` mode
 - [ ] **Deb / RPM** — Debian APT and Red Hat YUM repository proxying
 - [x] **Terraform registry** — provider and module proxy protocol; private module + provider publishing in `local`/`hybrid` mode
 - [ ] **GitLab releases and packages** — similar to GitHub but with different auth and pagination

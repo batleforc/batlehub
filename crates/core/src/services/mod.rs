@@ -21,6 +21,6 @@ pub use local_registry::{
 };
 pub use metrics::ProxyMetrics;
 pub use proxy::{ProxyRequest, ProxyResponse, ProxyService};
-pub use sbom::SbomService;
+pub use sbom::{SbomPublishOptions, SbomService};
 pub use quota::{QuotaCheck, QuotaEnforcement, QuotaService, RegistryQuotaConfig};
 pub use warming::{WarmingReport, WarmingService};

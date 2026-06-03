@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { useAuth } from "@/composables/useAuth";
+import { useAuthFetch } from "@/composables/useAuthFetch";
+import { API_BASE_URL } from "@/config";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-const { token } = useAuth();
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+const { authFetch } = useAuthFetch();
 
 // ── Filter state ──────────────────────────────────────────────────────────────
 
@@ -21,12 +21,8 @@ const errorMsg = ref<string | null>(null);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function authHeaders(): HeadersInit {
-  return token.value ? { Authorization: `Bearer ${token.value}` } : {};
-}
-
 async function downloadBlob(url: string, defaultFilename: string) {
-  const resp = await fetch(`${API_BASE}${url}`, { headers: authHeaders() });
+  const resp = await authFetch(`${API_BASE_URL}${url}`);
   if (!resp.ok) throw new Error(await resp.text().catch(() => `HTTP ${resp.status}`));
   const disposition = resp.headers.get("Content-Disposition") ?? "";
   const match = disposition.match(/filename="([^"]+)"/);
@@ -68,12 +64,12 @@ async function exportSbom() {
 
 <template>
   <div class="space-y-6">
-    <h1 class="text-2xl font-bold">SBOM Export</h1>
+    <h1 class="font-mono text-2xl font-bold cyber-text-glow">SBOM Export</h1>
 
     <!-- Feedback -->
     <div
       v-if="errorMsg"
-      class="rounded-md bg-red-50 dark:bg-red-950 border border-red-400 px-4 py-2 text-red-800 dark:text-red-200 text-sm"
+      class="rounded-sm bg-destructive/10 border border-destructive/30 px-4 py-2 text-destructive text-sm"
     >
       {{ errorMsg }}
     </div>
@@ -106,7 +102,7 @@ async function exportSbom() {
             <select
               id="sbom-format"
               v-model="format"
-              class="w-full border rounded px-2 py-2 text-sm bg-background"
+              class="w-full border border-input rounded-sm px-2 py-2 font-mono text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
             >
               <option value="spdx">SPDX 2.3</option>
               <option value="cyclonedx">CycloneDX 1.4</option>

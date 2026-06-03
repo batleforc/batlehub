@@ -16,7 +16,8 @@ type RegistryType =
   | "rubygems"
   | "composer"
   | "pypi"
-  | "conda";
+  | "conda"
+  | "nuget";
 type AuthRole = "admin" | "user" | "anonymous";
 type StorageBackendType = "filesystem" | "s3";
 type StorageMode = "single" | "multi";
@@ -338,6 +339,7 @@ const defaultUpstream: Record<RegistryType, string> = {
   composer: "https://repo.packagist.org",
   pypi: "https://pypi.org",
   conda: "https://conda.anaconda.org",
+  nuget: "https://api.nuget.org",
 };
 
 function defaultRegistry(type: RegistryType = "npm"): Registry {
@@ -753,6 +755,67 @@ const toml = computed(() => {
 
   return lines.join("\n");
 });
+
+// ── Syntax highlighting ─────────────────────────────────────────────────────
+
+function escHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function hlVal(val: string): string {
+  if (!val) return "";
+  if (val.startsWith('"') && val.endsWith('"') && val.length >= 2) {
+    return `<span class="cg-hl-string">${escHtml(val)}</span>`;
+  }
+  if (val === "true" || val === "false") {
+    return `<span class="cg-hl-bool">${val}</span>`;
+  }
+  if (/^-?\d+(\.\d+)?$/.test(val)) {
+    return `<span class="cg-hl-number">${val}</span>`;
+  }
+  if (val.startsWith("[") && val.endsWith("]")) {
+    const inner = val.slice(1, -1);
+    let result = "";
+    let last = 0;
+    const strRe = /"([^"]*)"/g;
+    let m: RegExpExecArray | null;
+    while ((m = strRe.exec(inner)) !== null) {
+      result += escHtml(inner.slice(last, m.index));
+      result += `<span class="cg-hl-string">${escHtml(m[0])}</span>`;
+      last = m.index + m[0].length;
+    }
+    result += escHtml(inner.slice(last));
+    return `[${result}]`;
+  }
+  return escHtml(val);
+}
+
+const highlightedToml = computed(() =>
+  toml.value
+    .split("\n")
+    .map((line) => {
+      const trimmed = line.trimStart();
+      const indent = escHtml(line.slice(0, line.length - trimmed.length));
+      if (!trimmed) return "";
+      if (trimmed.startsWith("#")) {
+        return `<span class="cg-hl-comment">${escHtml(line)}</span>`;
+      }
+      const arrM = trimmed.match(/^(\[\[)([\w.]+)(\]\])$/);
+      if (arrM) {
+        return `${indent}<span class="cg-hl-bracket">[[</span><span class="cg-hl-table">${escHtml(arrM[2])}</span><span class="cg-hl-bracket">]]</span>`;
+      }
+      const tblM = trimmed.match(/^(\[)([\w.]+)(\])$/);
+      if (tblM) {
+        return `${indent}<span class="cg-hl-bracket">[</span><span class="cg-hl-table">${escHtml(tblM[2])}</span><span class="cg-hl-bracket">]</span>`;
+      }
+      const kvM = trimmed.match(/^([\w-]+)\s*=\s*(.+)$/);
+      if (kvM) {
+        return `${indent}<span class="cg-hl-key">${escHtml(kvM[1])}</span> <span class="cg-hl-eq">=</span> ${hlVal(kvM[2])}`;
+      }
+      return escHtml(line);
+    })
+    .join("\n"),
+);
 
 // ── Actions ─────────────────────────────────────────────────────────────────
 
@@ -1454,6 +1517,7 @@ const composerAuthSnippet = `{
                 <option value="composer">Composer (PHP)</option>
                 <option value="pypi">PyPI (Python)</option>
                 <option value="conda">Conda</option>
+                <option value="nuget">NuGet (.NET)</option>
                 <option value="openvsx">OpenVSX</option>
                 <option value="vscode-marketplace">VS Code Marketplace</option>
                 <option value="goproxy">Go Modules</option>
@@ -1554,6 +1618,31 @@ curl -X POST \
   -H "Content-Type: application/octet-stream" \
   --data-binary @pkg-1.0.0-py311h0_0.tar.bz2 \
   "https://your-batlehub-host/proxy/{{ reg.name }}/linux-64/"</pre>
+          </div>
+
+          <!-- NuGet client config hint -->
+          <div v-if="reg.type === 'nuget'" class="cg-registry-hint">
+            <p class="cg-hint-title">NuGet client setup</p>
+            <p class="cg-hint-text">
+              Add the proxy as a NuGet source:
+            </p>
+            <pre class="cg-hint-code">dotnet nuget add source \
+  https://your-batlehub-host/proxy/{{ reg.name }}/nuget/v3/index.json \
+  --name {{ reg.name }}</pre>
+            <p class="cg-hint-text" style="margin-top: 0.5rem">
+              Or add to <code>nuget.config</code>:
+            </p>
+            <pre class="cg-hint-code">&lt;configuration&gt;
+  &lt;packageSources&gt;
+    &lt;add key="{{ reg.name }}" value="https://your-batlehub-host/proxy/{{ reg.name }}/nuget/v3/index.json" /&gt;
+  &lt;/packageSources&gt;
+&lt;/configuration&gt;</pre>
+            <p class="cg-hint-text" style="margin-top: 0.5rem" v-if="isLocalOrHybrid(reg)">
+              Publish a package (local/hybrid mode):
+            </p>
+            <pre class="cg-hint-code" v-if="isLocalOrHybrid(reg)">dotnet nuget push MyLib.1.0.0.nupkg \
+  --api-key &lt;your-token&gt; \
+  --source https://your-batlehub-host/proxy/{{ reg.name }}/nuget/v3/index.json</pre>
           </div>
 
           <label v-if="storageMode === 'multi'">
@@ -1935,7 +2024,7 @@ curl -X POST \
           <button class="cg-btn-action" @click="downloadToml">Download</button>
         </div>
       </div>
-      <pre class="cg-code"><code>{{ toml }}</code></pre>
+      <pre class="cg-code"><code v-html="highlightedToml" /></pre>
     </div>
   </div>
 </template>
@@ -2368,4 +2457,26 @@ textarea {
   padding: 0.1em 0.3em;
   border-radius: 3px;
 }
+</style>
+
+<style>
+/* TOML syntax token colours — light mode */
+.cg-hl-comment  { color: #6e7781; font-style: italic; }
+.cg-hl-bracket  { color: #0969da; }
+.cg-hl-table    { color: #0969da; font-weight: 600; }
+.cg-hl-key      { color: #0550ae; }
+.cg-hl-eq       { color: #57606a; }
+.cg-hl-string   { color: #116329; }
+.cg-hl-number   { color: #953800; }
+.cg-hl-bool     { color: #8250df; }
+
+/* dark mode overrides */
+.dark .cg-hl-comment { color: #8b949e; }
+.dark .cg-hl-bracket { color: #58a6ff; }
+.dark .cg-hl-table   { color: #58a6ff; }
+.dark .cg-hl-key     { color: #79c0ff; }
+.dark .cg-hl-eq      { color: #8b949e; }
+.dark .cg-hl-string  { color: #7ee787; }
+.dark .cg-hl-number  { color: #ffa657; }
+.dark .cg-hl-bool    { color: #d2a8ff; }
 </style>
