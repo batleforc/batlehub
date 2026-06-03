@@ -756,6 +756,67 @@ const toml = computed(() => {
   return lines.join("\n");
 });
 
+// ── Syntax highlighting ─────────────────────────────────────────────────────
+
+function escHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function hlVal(val: string): string {
+  if (!val) return "";
+  if (val.startsWith('"') && val.endsWith('"') && val.length >= 2) {
+    return `<span class="cg-hl-string">${escHtml(val)}</span>`;
+  }
+  if (val === "true" || val === "false") {
+    return `<span class="cg-hl-bool">${val}</span>`;
+  }
+  if (/^-?\d+(\.\d+)?$/.test(val)) {
+    return `<span class="cg-hl-number">${val}</span>`;
+  }
+  if (val.startsWith("[") && val.endsWith("]")) {
+    const inner = val.slice(1, -1);
+    let result = "";
+    let last = 0;
+    const strRe = /"([^"]*)"/g;
+    let m: RegExpExecArray | null;
+    while ((m = strRe.exec(inner)) !== null) {
+      result += escHtml(inner.slice(last, m.index));
+      result += `<span class="cg-hl-string">${escHtml(m[0])}</span>`;
+      last = m.index + m[0].length;
+    }
+    result += escHtml(inner.slice(last));
+    return `[${result}]`;
+  }
+  return escHtml(val);
+}
+
+const highlightedToml = computed(() =>
+  toml.value
+    .split("\n")
+    .map((line) => {
+      const trimmed = line.trimStart();
+      const indent = escHtml(line.slice(0, line.length - trimmed.length));
+      if (!trimmed) return "";
+      if (trimmed.startsWith("#")) {
+        return `<span class="cg-hl-comment">${escHtml(line)}</span>`;
+      }
+      const arrM = trimmed.match(/^(\[\[)([\w.]+)(\]\])$/);
+      if (arrM) {
+        return `${indent}<span class="cg-hl-bracket">[[</span><span class="cg-hl-table">${escHtml(arrM[2])}</span><span class="cg-hl-bracket">]]</span>`;
+      }
+      const tblM = trimmed.match(/^(\[)([\w.]+)(\])$/);
+      if (tblM) {
+        return `${indent}<span class="cg-hl-bracket">[</span><span class="cg-hl-table">${escHtml(tblM[2])}</span><span class="cg-hl-bracket">]</span>`;
+      }
+      const kvM = trimmed.match(/^([\w-]+)\s*=\s*(.+)$/);
+      if (kvM) {
+        return `${indent}<span class="cg-hl-key">${escHtml(kvM[1])}</span> <span class="cg-hl-eq">=</span> ${hlVal(kvM[2])}`;
+      }
+      return escHtml(line);
+    })
+    .join("\n"),
+);
+
 // ── Actions ─────────────────────────────────────────────────────────────────
 
 const copied = ref(false);
@@ -1963,7 +2024,7 @@ curl -X POST \
           <button class="cg-btn-action" @click="downloadToml">Download</button>
         </div>
       </div>
-      <pre class="cg-code"><code>{{ toml }}</code></pre>
+      <pre class="cg-code"><code v-html="highlightedToml" /></pre>
     </div>
   </div>
 </template>
@@ -2396,4 +2457,26 @@ textarea {
   padding: 0.1em 0.3em;
   border-radius: 3px;
 }
+</style>
+
+<style>
+/* TOML syntax token colours — light mode */
+.cg-hl-comment  { color: #6e7781; font-style: italic; }
+.cg-hl-bracket  { color: #0969da; }
+.cg-hl-table    { color: #0969da; font-weight: 600; }
+.cg-hl-key      { color: #0550ae; }
+.cg-hl-eq       { color: #57606a; }
+.cg-hl-string   { color: #116329; }
+.cg-hl-number   { color: #953800; }
+.cg-hl-bool     { color: #8250df; }
+
+/* dark mode overrides */
+.dark .cg-hl-comment { color: #8b949e; }
+.dark .cg-hl-bracket { color: #58a6ff; }
+.dark .cg-hl-table   { color: #58a6ff; }
+.dark .cg-hl-key     { color: #79c0ff; }
+.dark .cg-hl-eq      { color: #8b949e; }
+.dark .cg-hl-string  { color: #7ee787; }
+.dark .cg-hl-number  { color: #ffa657; }
+.dark .cg-hl-bool    { color: #d2a8ff; }
 </style>
