@@ -136,15 +136,24 @@ Applies to registries running in `local` or `hybrid` mode.
 - [x] Content-addressable deduplication for stored artifacts (ref-counted via `artifact_dedup_index` / `artifact_dedup_refs`)
 - [ ] Integrity verification: verify checksums on re-serve, not only at publish time
 
-### CLI tool
+### CLI tool - `batlehub-cli`
 
-- [ ] `batlehub-cli` — a standalone CLI for common private registry tasks (`publish`, `deprecate`, `yank`, `list`), suitable for use in CI pipelines
+- [ ] a CLI for common private registry tasks (`publish`, `deprecate`, `yank`, `list`), suitable for use in CI pipelines
   - [ ] Publish command that wraps the upload API, with support for multiple registry types and automatic metadata extraction from the artifact (e.g. `go.mod` for Go modules, `pom.xml` for Maven)
   - [ ] Version management commands for deprecating, yanking, or deleting specific versions
   - [ ] Package management commands for listing versions, viewing metadata, or managing owners
   - [ ] Authentication support for all providers (static tokens, OIDC, Kubernetes service accounts)
   - [ ] List of available registries and their types, with per-registry configuration details (e.g. whether publishing is enabled, versioning policies)
   - [ ] List packages and versions in a registry, with filtering and sorting options
+  - [ ] Autocompletion support for shell integration (e.g. `batlehub-cli publish <TAB>` to complete registry names)
+  - [ ] Config file support for storing credentials and default options, with CLI overrides
+  - [ ] Config file output for both CI automation and human use, with clear documentation of the expected format and options
+- [ ] A TUI mode for interactive use
+  - [ ] List of registries with search and filter capabilities
+  - [ ] Per-registry package explorer with version details and management actions
+  - [ ] Interactive prompts for publishing new versions, managing owners, or applying bulk operations
+  - [ ] Help setup registry for a current project by scanning local files (e.g. `go.mod`, `package.json`) and suggesting the appropriate registry and metadata
+  - [ ] Auth workflow integration for OIDC and Kubernetes service accounts, including token caching and refresh
 
 ---
 

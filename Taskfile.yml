@@ -187,6 +187,21 @@ tasks:
     cmds:
       - cargo run -p batlehub-server --features storage-s3 -- --config config.example-s3.toml
 
+  cli:
+    desc: "Run batlehub-cli with any arguments (e.g. task cli -- registry list)"
+    cmds:
+      - cargo run -p batlehub-cli -- {{.CLI_ARGS}}
+
+  cli:tui:
+    desc: Launch the batlehub-cli interactive TUI
+    cmds:
+      - cargo run -p batlehub-cli -- tui
+
+  cli:help:
+    desc: Print batlehub-cli help
+    cmds:
+      - cargo run -p batlehub-cli -- --help
+
   dump-spec:
     desc: Dump the OpenAPI spec to ui/openapi.json
     cmds:

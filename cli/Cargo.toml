@@ -1,0 +1,39 @@
+[package]
+name = "batlehub-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "batlehub-cli"
+path = "src/main.rs"
+
+[dependencies]
+# Async
+tokio = { workspace = true }
+# HTTP client
+reqwest = { workspace = true, features = ["json", "stream", "multipart", "query"] }
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+# Error handling
+anyhow = { workspace = true }
+# CLI
+clap = { workspace = true, features = ["derive", "env"] }
+# Dates
+chrono = { workspace = true }
+# UUIDs
+uuid = { workspace = true }
+# TUI
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+# Text input widget for TUI
+tui-input = "0.11"
+# Config dir resolution
+dirs = "6"
+# Pretty table output for plain CLI mode
+comfy-table = "7"
+
+[lints]
+workspace = true
