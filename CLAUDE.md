@@ -118,6 +118,15 @@ SQL migrations live in `crates/adapters/migrations/`. They are embedded via `cra
 
 The Vue SPA lives in `ui/`. The TypeScript API client (`ui/src/client/`) is auto-generated from `ui/openapi.json` via `npm run generate` — do not edit it manually. Setup snippets for the Setup Guide are defined in `ui/src/config/registryTypes.ts` as `REGISTRY_TYPE_DEFS`.
 
+#### Sync SDK
+
+When the backend api is updated, the openapi spec/sdk must be resynced:
+
+1. Generate the swagger spec : `task dump-spec` (copies to `ui/openapi.json`)
+2. Generate the Typescript client: `task ui:generate` (reads from `ui/openapi.json`, outputs to `ui/src/client/`)
+
+The generated use fetch and include the full model spec, so any changes to the API will be reflected in the generated client. The client is used in the frontend and can also be imported by external users who want a typed API client for the server.
+
 ## Docs
 
 The doc live in two places:
