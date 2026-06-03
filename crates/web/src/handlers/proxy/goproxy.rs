@@ -340,3 +340,53 @@ pub async fn goproxy_publish(
     }
     Ok(resp.json(serde_json::json!({ "ok": true })))
 }
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
+
+    fn make_zip_with_go_mod(entry_name: &str, content: &str) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let mut zip = ZipWriter::new(std::io::Cursor::new(&mut buf));
+        zip.start_file(entry_name, SimpleFileOptions::default()).unwrap();
+        zip.write_all(content.as_bytes()).unwrap();
+        zip.finish().unwrap();
+        buf
+    }
+
+    #[test]
+    fn extract_go_mod_exact_name_match() {
+        let content = "module github.com/foo/bar\n\ngo 1.21\n";
+        let zip = make_zip_with_go_mod("github.com/foo/bar@v1.0.0/go.mod", content);
+        let result = extract_go_mod(&zip, "github.com/foo/bar", "v1.0.0");
+        assert_eq!(result, content);
+    }
+
+    #[test]
+    fn extract_go_mod_fallback_suffix_match() {
+        let content = "module example.com/mod\n\ngo 1.22\n";
+        let zip = make_zip_with_go_mod("example.com/mod@v2.0.0/go.mod", content);
+        // Pass a different module/version — falls back to suffix match
+        let result = extract_go_mod(&zip, "other/path", "v0.0.0");
+        assert_eq!(result, content);
+    }
+
+    #[test]
+    fn extract_go_mod_not_found_returns_minimal_fallback() {
+        let zip = make_zip_with_go_mod("README.md", "hello");
+        let result = extract_go_mod(&zip, "github.com/foo/bar", "v1.0.0");
+        assert!(result.contains("module github.com/foo/bar"));
+        assert!(result.contains("go 1.21"));
+    }
+
+    #[test]
+    fn extract_go_mod_invalid_zip_returns_fallback() {
+        let result = extract_go_mod(b"not a zip", "example.com/mod", "v1.0.0");
+        assert!(result.contains("module example.com/mod"));
+    }
+}

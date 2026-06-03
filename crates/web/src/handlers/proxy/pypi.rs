@@ -94,6 +94,7 @@ pub async fn pypi_simple_root(
     ),
     security(("bearer_token" = [])),
 )]
+#[allow(clippy::too_many_arguments)]
 #[get("/proxy/{registry}/simple/{package}/")]
 pub async fn pypi_simple_package(
     path: web::Path<(String, String)>,
@@ -111,9 +112,10 @@ pub async fn pypi_simple_package(
     let mode = mode_map.get(&registry);
     let normalized = batlehub_adapters::registry::pypi::normalize_name(&package);
 
-    let conn_info = req.connection_info();
-    let proxy_base = format!("{}://{}", conn_info.scheme(), conn_info.host());
-    drop(conn_info);
+    let proxy_base = {
+        let conn_info = req.connection_info();
+        format!("{}://{}", conn_info.scheme(), conn_info.host())
+    };
 
     if mode == Mode::Local {
         let html = local_svc

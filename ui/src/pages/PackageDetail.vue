@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { blockPackage, unblockPackage, listPackages2, listRegistries } from "@/client/sdk.gen";
-import type { RegistryInfo, PackageSummaryDto } from "@/client/types.gen";
+import { blockPackage, unblockPackage, listPackages2, listRegistries, packageDetail } from "@/client/sdk.gen";
+import type { RegistryInfo, PackageSummaryDto, PackageDetailResponse, PackageVersionDetail, PackageEventDto } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
 import { Button } from "@/components/ui/button";
@@ -12,38 +12,7 @@ import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
 } from "@/components/ui/table";
 
-interface VersionStatus { status: "available" }
-interface BlockedStatus { status: "blocked"; reason: string; blocked_by: string; blocked_at: string }
-interface PackageVersionDetail {
-  id: string;
-  version: string;
-  artifact: string | null;
-  status: VersionStatus | BlockedStatus;
-  storage_key: string;
-  storage_backend: string | null;
-  cached: boolean;
-  cached_at: string | null;
-  access_count: number;
-  last_accessed: string | null;
-  last_accessed_by: string | null;
-}
-interface PackageEventDto {
-  id: string;
-  user_id: string | null;
-  user_role: string;
-  version: string;
-  artifact: string | null;
-  action: string;
-  outcome: string;
-  deny_reason: string | null;
-  timestamp: string;
-}
-interface AdminDetailResponse {
-  registry: string;
-  name: string;
-  versions: PackageVersionDetail[];
-  recent_events: PackageEventDto[];
-}
+type BlockedStatus = Extract<PackageVersionDetail["status"], { status: "blocked" }>;
 
 const route = useRoute();
 const router = useRouter();
@@ -53,8 +22,6 @@ const registry = computed(() => String(route.query.registry ?? ""));
 const name = computed(() => String(route.query.name ?? ""));
 const version = computed(() => String(route.query.version ?? ""));
 const artifact = computed(() => route.query.artifact ? String(route.query.artifact) : null);
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
 const { data: registriesList } = useApi<RegistryInfo[]>(
   () => listRegistries() as Promise<{ data?: unknown; error?: unknown }>,
@@ -75,16 +42,10 @@ const upstreamUrl = computed(() => {
   }
 });
 
-const { data: adminData, error: adminError, loading: adminLoading, reload: adminReload } = useApi<AdminDetailResponse>(
+const { data: adminData, error: adminError, loading: adminLoading, reload: adminReload } = useApi<PackageDetailResponse>(
   () => {
     if (!isAdmin.value) return Promise.resolve({ data: null as unknown });
-    return fetch(
-      `${API_BASE}/api/v1/admin/packages/detail?registry=${encodeURIComponent(registry.value)}&name=${encodeURIComponent(name.value)}`,
-      { headers: token.value ? { Authorization: `Bearer ${token.value}` } : {} },
-    ).then(async (r) => {
-      if (!r.ok) throw new Error(await r.text());
-      return { data: await r.json() };
-    }) as Promise<{ data?: unknown; error?: unknown }>;
+    return packageDetail({ query: { registry: registry.value, name: name.value } }) as Promise<{ data?: unknown; error?: unknown }>;
   },
   [token, registry, name, isAdmin],
 );

@@ -378,7 +378,7 @@ impl ProxyService {
                     let formats: Vec<SbomFormat> = cfg
                         .formats
                         .iter()
-                        .filter_map(|s| SbomFormat::from_str(s))
+                        .filter_map(|s| SbomFormat::parse(s))
                         .collect();
                     tokio::spawn(async move {
                         if let Err(e) = sbom

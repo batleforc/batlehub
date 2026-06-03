@@ -24,7 +24,7 @@ impl SbomFormat {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "spdx" => Some(SbomFormat::Spdx),
             "cyclonedx" => Some(SbomFormat::CycloneDx),
@@ -50,7 +50,7 @@ impl SbomSource {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "generated" => Some(SbomSource::Generated),
             "upstream" => Some(SbomSource::Upstream),

@@ -28,10 +28,10 @@ fn row_to_sbom(r: &sqlx::postgres::PgRow) -> ArtifactSbom {
         registry: r.get("registry"),
         package_name: r.get("package_name"),
         version: r.get("version"),
-        format: SbomFormat::from_str(&format_str).unwrap_or(SbomFormat::Spdx),
+        format: SbomFormat::parse(&format_str).unwrap_or(SbomFormat::Spdx),
         spec_version: r.get("spec_version"),
         document: r.get("document"),
-        source: SbomSource::from_str(&source_str).unwrap_or(SbomSource::Generated),
+        source: SbomSource::parse(&source_str).unwrap_or(SbomSource::Generated),
         created_at: r.get("created_at"),
     }
 }
@@ -138,12 +138,12 @@ mod tests {
         assert_eq!(SbomSource::Upstream.as_str(), "upstream");
         assert_eq!(SbomSource::Extracted.as_str(), "extracted");
 
-        assert_eq!(SbomFormat::from_str("spdx"), Some(SbomFormat::Spdx));
-        assert_eq!(SbomFormat::from_str("cyclonedx"), Some(SbomFormat::CycloneDx));
-        assert_eq!(SbomFormat::from_str("unknown"), None);
+        assert_eq!(SbomFormat::parse("spdx"), Some(SbomFormat::Spdx));
+        assert_eq!(SbomFormat::parse("cyclonedx"), Some(SbomFormat::CycloneDx));
+        assert_eq!(SbomFormat::parse("unknown"), None);
 
-        assert_eq!(SbomSource::from_str("generated"), Some(SbomSource::Generated));
-        assert_eq!(SbomSource::from_str("unknown"), None);
+        assert_eq!(SbomSource::parse("generated"), Some(SbomSource::Generated));
+        assert_eq!(SbomSource::parse("unknown"), None);
     }
 
     #[test]

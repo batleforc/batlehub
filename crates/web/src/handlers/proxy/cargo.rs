@@ -378,10 +378,12 @@ pub async fn cargo_yank(
     path: web::Path<(String, String, String)>,
     identity: AuthIdentity,
     map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, name, version) = path.into_inner();
     require_cargo(&registry, &map)?;
+    require_local_mode(&registry, &mode_map)?;
     local_svc
         .yank(&registry, &name, &version, &identity.0)
         .await
@@ -410,10 +412,12 @@ pub async fn cargo_unyank(
     path: web::Path<(String, String, String)>,
     identity: AuthIdentity,
     map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, name, version) = path.into_inner();
     require_cargo(&registry, &map)?;
+    require_local_mode(&registry, &mode_map)?;
     local_svc
         .unyank(&registry, &name, &version, &identity.0)
         .await

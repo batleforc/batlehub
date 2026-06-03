@@ -4414,6 +4414,26 @@ async fn cargo_unyank_user_can_unyank() {
     assert_eq!(body["ok"], true);
 }
 
+#[actix_web::test]
+async fn cargo_yank_proxy_mode_returns_404() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::delete()
+        .uri("/proxy/cargo/api/v1/crates/my-crate/1.0.0/yank")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 404);
+}
+
+#[actix_web::test]
+async fn cargo_unyank_proxy_mode_returns_404() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::put()
+        .uri("/proxy/cargo/api/v1/crates/my-crate/1.0.0/unyank")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 404);
+}
+
 // ── owners ────────────────────────────────────────────────────────────────────
 
 #[actix_web::test]
@@ -10494,6 +10514,93 @@ async fn nuget_publish_proxy_mode_returns_404() {
         .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
         .insert_header(("Content-Type", ct))
         .set_payload(body)
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 404);
+}
+
+#[actix_web::test]
+async fn nuget_flat_download_local_returns_nupkg() {
+    let app = make_local_nuget_app(RegistryMode::Local).await;
+    let nupkg = make_sample_nupkg("DlLib", "1.0.0", "Download test");
+    let (body, ct) = make_nuget_publish_body(&nupkg);
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-nuget/nuget/api/v2/package")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .insert_header(("Content-Type", ct))
+        .set_payload(body)
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 201);
+
+    let req_dl = TestRequest::get()
+        .uri("/proxy/local-nuget/nuget/v3/flat/dllib/1.0.0/dllib.1.0.0.nupkg")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp_dl = call_service(&app, req_dl).await;
+    assert_eq!(resp_dl.status(), 200);
+    let bytes = read_body(resp_dl).await;
+    assert!(!bytes.is_empty(), "nupkg download should return artifact bytes");
+}
+
+#[actix_web::test]
+async fn nuget_flat_download_local_returns_nuspec() {
+    let app = make_local_nuget_app(RegistryMode::Local).await;
+    let nupkg = make_sample_nupkg("NuspecLib", "2.0.0", "Nuspec extract test");
+    let (body, ct) = make_nuget_publish_body(&nupkg);
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-nuget/nuget/api/v2/package")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .insert_header(("Content-Type", ct))
+        .set_payload(body)
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 201);
+
+    let req_nuspec = TestRequest::get()
+        .uri("/proxy/local-nuget/nuget/v3/flat/nuspeclib/2.0.0/nuspeclib.2.0.0.nuspec")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp_nuspec = call_service(&app, req_nuspec).await;
+    assert_eq!(resp_nuspec.status(), 200);
+    let body_bytes = read_body(resp_nuspec).await;
+    let xml = std::str::from_utf8(&body_bytes).unwrap();
+    assert!(xml.contains("<id>NuspecLib</id>"), "nuspec should contain the package id");
+    assert!(xml.contains("<version>2.0.0</version>"), "nuspec should contain the version");
+}
+
+#[actix_web::test]
+async fn nuget_search_local_returns_packages() {
+    let app = make_local_nuget_app(RegistryMode::Local).await;
+    let nupkg = make_sample_nupkg("SearchMe", "1.0.0", "Search test");
+    let (body, ct) = make_nuget_publish_body(&nupkg);
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-nuget/nuget/api/v2/package")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .insert_header(("Content-Type", ct))
+        .set_payload(body)
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 201);
+
+    let req2 = TestRequest::get()
+        .uri("/proxy/local-nuget/nuget/v3/query?q=search")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp2 = call_service(&app, req2).await;
+    assert_eq!(resp2.status(), 200);
+    let body2: Value = read_body_json(resp2).await;
+    assert!(
+        body2["totalHits"].as_u64().unwrap_or(0) >= 1,
+        "search should return at least one hit"
+    );
+}
+
+#[actix_web::test]
+async fn nuget_flat_download_missing_returns_404() {
+    let app = make_local_nuget_app(RegistryMode::Local).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-nuget/nuget/v3/flat/ghost/9.9.9/ghost.9.9.9.nupkg")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
         .to_request();
     assert_eq!(call_service(&app, req).await.status(), 404);
 }

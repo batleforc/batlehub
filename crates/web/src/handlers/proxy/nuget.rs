@@ -326,15 +326,20 @@ pub async fn nuget_flat_download(
         match local_svc.storage.retrieve(&storage_key).await {
             Ok(Some(artifact)) => {
                 let buf = collect_storage_stream(artifact.stream).await?;
+                let body = if filename.ends_with(".nuspec") {
+                    extract_nuspec_from_nupkg(&buf)?
+                } else {
+                    buf.to_vec()
+                };
                 let mut resp = HttpResponse::Ok();
                 resp.content_type(content_type_for(&filename));
                 append_signature_headers(&mut resp, &local_svc, &registry, &id, &version).await;
-                return Ok(resp.body(buf));
+                return Ok(resp.body(body));
             }
             Ok(None) if mode == RegistryMode::Hybrid => {} // fall through
             Ok(None) => {
                 return Err(AppError::not_found(format!(
-                    "{id}@{version}/{filename} not found in local registry"
+                    "{id}@{version} not found in local registry"
                 )));
             }
             Err(e) if mode == RegistryMode::Hybrid => {
@@ -632,11 +637,10 @@ pub async fn nuget_publish(
     let nuspec = parse_nuspec(&nuspec_bytes)?;
 
     let id_lower = nuspec.id.to_lowercase();
-    let version = if nuspec.version.is_empty() {
+    if nuspec.version.is_empty() {
         return Err(AppError::unprocessable("nuspec missing <version>"));
-    } else {
-        nuspec.version.clone()
-    };
+    }
+    let version = nuspec.version.clone();
 
     let checksum = hex::encode(Sha256::digest(&nupkg_bytes));
     let index_metadata = serde_json::json!({
@@ -714,4 +718,76 @@ pub async fn nuget_yank(
         .map_err(AppError::from)?;
 
     Ok(HttpResponse::NoContent().finish())
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_type_nupkg() {
+        assert_eq!(content_type_for("mylib.1.0.0.nupkg"), "application/octet-stream");
+    }
+
+    #[test]
+    fn content_type_nuspec() {
+        assert_eq!(content_type_for("mylib.1.0.0.nuspec"), "application/xml");
+    }
+
+    #[test]
+    fn content_type_checksum() {
+        assert_eq!(content_type_for("mylib.1.0.0.sha512"), "text/plain");
+        assert_eq!(content_type_for("mylib.1.0.0.sha256"), "text/plain");
+    }
+
+    #[test]
+    fn content_type_unknown_defaults_to_octet_stream() {
+        assert_eq!(content_type_for("file.bin"), "application/octet-stream");
+        assert_eq!(content_type_for(""), "application/octet-stream");
+    }
+
+    #[test]
+    fn parse_nuspec_extracts_all_fields() {
+        let xml = r#"<?xml version="1.0"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>MyLib</id>
+    <version>1.2.3</version>
+    <description>A test library</description>
+    <authors>Alice, Bob</authors>
+    <tags>test utils</tags>
+  </metadata>
+</package>"#;
+        let m = parse_nuspec(xml.as_bytes()).unwrap();
+        assert_eq!(m.id, "MyLib");
+        assert_eq!(m.version, "1.2.3");
+        assert_eq!(m.description.as_deref(), Some("A test library"));
+        assert_eq!(m.authors.as_deref(), Some("Alice, Bob"));
+        assert_eq!(m.tags.as_deref(), Some("test utils"));
+    }
+
+    #[test]
+    fn parse_nuspec_missing_id_returns_error() {
+        let xml = r#"<package><metadata><version>1.0.0</version></metadata></package>"#;
+        assert!(parse_nuspec(xml.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn parse_nuspec_missing_version_yields_empty_string() {
+        let xml = r#"<package><metadata><id>Foo</id></metadata></package>"#;
+        let m = parse_nuspec(xml.as_bytes()).unwrap();
+        assert_eq!(m.id, "Foo");
+        assert!(m.version.is_empty());
+    }
+
+    #[test]
+    fn parse_nuspec_optional_fields_absent() {
+        let xml = r#"<package><metadata><id>Bare</id><version>0.1</version></metadata></package>"#;
+        let m = parse_nuspec(xml.as_bytes()).unwrap();
+        assert!(m.description.is_none());
+        assert!(m.authors.is_none());
+        assert!(m.tags.is_none());
+    }
 }

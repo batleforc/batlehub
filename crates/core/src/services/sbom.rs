@@ -15,6 +15,13 @@ pub struct SbomService {
     pub fetcher: Option<Arc<dyn UpstreamSbomFetcher>>,
 }
 
+/// Options for recording an SBOM when a package is published locally.
+pub struct SbomPublishOptions<'a> {
+    pub registry_type: &'a str,
+    pub formats: &'a [SbomFormat],
+    pub required: bool,
+}
+
 // ── PURL helpers ──────────────────────────────────────────────────────────────
 
 fn registry_to_purl(registry_type: &str, name: &str, version: &str) -> String {
@@ -254,10 +261,9 @@ impl SbomService {
         version: &str,
         artifact_key: &str,
         data: &Bytes,
-        registry_type: &str,
-        formats: &[SbomFormat],
-        required: bool,
+        opts: SbomPublishOptions<'_>,
     ) -> Result<(), CoreError> {
+        let SbomPublishOptions { registry_type, formats, required } = opts;
         let deps: Vec<SbomDependency> = self
             .extractor
             .as_ref()

@@ -47,18 +47,8 @@ impl NugetRegistryClient {
         let base = base_url.into();
         let base = base.trim_end_matches('/').to_owned();
 
-        // For nuget.org the flat container lives at a different host than the API.
-        let (flat_url, reg_url) = if base == "https://api.nuget.org" {
-            (
-                "https://api.nuget.org/v3-flatcontainer".to_owned(),
-                "https://api.nuget.org/v3/registration5".to_owned(),
-            )
-        } else {
-            (
-                format!("{base}/v3-flatcontainer"),
-                format!("{base}/v3/registration5"),
-            )
-        };
+        let flat_url = format!("{base}/v3-flatcontainer");
+        let reg_url = format!("{base}/v3/registration5");
 
         // Search base: explicit config wins; fall back to nuget.org search for nuget.org upstream.
         let search_base = match opts.search_url.as_deref() {
@@ -562,6 +552,40 @@ mod tests {
         assert_eq!(results[0].name, "Newtonsoft.Json");
         assert_eq!(results[0].latest_version, "13.0.3");
         assert_eq!(results[0].description.as_deref(), Some("JSON framework"));
+    }
+
+    #[tokio::test]
+    async fn resolve_metadata_registration_sentinel() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/v3/registration5/mylib/index.json")
+            .with_status(200)
+            .with_header("cache-control", "max-age=120")
+            .with_body(r#"{"count":1,"items":[]}"#)
+            .create_async()
+            .await;
+
+        let c = client(&server.url());
+        let pkg = PackageId::new("nuget", "mylib", "__registration__");
+        let meta = c.resolve_metadata(&pkg).await.unwrap();
+        assert_eq!(meta.cache_control.as_deref(), Some("max-age=120"));
+        assert!(meta.download_url.is_none());
+    }
+
+    #[tokio::test]
+    async fn fetch_artifact_not_found_returns_error() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/v3-flatcontainer/ghost/9.9.9/ghost.9.9.9.nupkg")
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let c = client(&server.url());
+        let pkg = PackageId::new("nuget", "ghost", "9.9.9");
+        let result = c.fetch_artifact(&pkg).await;
+        assert!(result.is_err());
+        assert!(matches!(result.err().unwrap(), CoreError::NotFound(_)));
     }
 
     #[test]

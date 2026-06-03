@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { useAuth } from "@/composables/useAuth";
+import { registryHealth, adminStats, clearRegistryCache } from "@/client/sdk.gen";
+import type { RegistryHealthDto, StatsResponse } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
+import { useAuth } from "@/composables/useAuth";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -12,66 +14,13 @@ import Dialog from "@/components/ui/dialog/Dialog.vue";
 
 const { token } = useAuth();
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
-
-interface RegistryAccessInfo {
-  roles: string[];
-  groups: string[];
-}
-
-interface RecentErrorDto {
-  timestamp: string;
-  user_id: string | null;
-  package_name: string;
-  version: string;
-  error_type: string;
-  reason: string;
-}
-
-interface RegistryHealthDto {
-  registry: string;
-  registry_type: string;
-  package_count: number;
-  cached_artifact_count: number;
-  total_size_bytes: number | null;
-  last_pull_at: string | null;
-  pulls_last_hour: number;
-  pulls_last_day: number;
-  recent_errors: RecentErrorDto[];
-  access: RegistryAccessInfo;
-}
-
 const { data, error, loading, reload } = useApi<RegistryHealthDto[]>(
-  () =>
-    fetch(`${API_BASE}/api/v1/admin/health`, {
-      headers: token.value ? { Authorization: `Bearer ${token.value}` } : {},
-    }).then(async (r) => {
-      if (!r.ok) throw new Error(await r.text());
-      return { data: await r.json() };
-    }) as Promise<{ data?: unknown; error?: unknown }>,
+  () => registryHealth() as Promise<{ data?: unknown; error?: unknown }>,
   [token],
 );
 
-interface AggregateStats {
-  artifact_hits: number;
-  artifact_misses: number;
-  hit_rate: number | null;
-  cached_bytes: number;
-}
-
-interface StatsResponse {
-  since_startup: string;
-  aggregate: AggregateStats;
-}
-
 const { data: statsData } = useApi<StatsResponse>(
-  () =>
-    fetch(`${API_BASE}/api/v1/admin/stats`, {
-      headers: token.value ? { Authorization: `Bearer ${token.value}` } : {},
-    }).then(async (r) => {
-      if (!r.ok) throw new Error(await r.text());
-      return { data: await r.json() };
-    }) as Promise<{ data?: unknown; error?: unknown }>,
+  () => adminStats() as Promise<{ data?: unknown; error?: unknown }>,
   [token],
 );
 
@@ -86,14 +35,8 @@ async function confirmClearCache() {
   clearing.value = true;
   clearError.value = null;
   try {
-    const r = await fetch(
-      `${API_BASE}/api/v1/admin/registries/${encodeURIComponent(clearTarget.value)}/clear-cache`,
-      {
-        method: "POST",
-        headers: token.value ? { Authorization: `Bearer ${token.value}` } : {},
-      },
-    );
-    if (!r.ok) throw new Error(await r.text());
+    const { error: apiErr } = await clearRegistryCache({ path: { registry: clearTarget.value } });
+    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? "API error");
     clearTarget.value = null;
     reload();
   } catch (e) {
@@ -212,13 +155,13 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
             </p>
             <p
               class="text-2xl font-semibold tabular-nums"
-              :class="statsData.aggregate.hit_rate !== null && statsData.aggregate.hit_rate >= 0.7
+              :class="statsData.aggregate.hit_rate != null && statsData.aggregate.hit_rate >= 0.7
                 ? 'text-primary'
-                : statsData.aggregate.hit_rate !== null && statsData.aggregate.hit_rate >= 0.4
+                : statsData.aggregate.hit_rate != null && statsData.aggregate.hit_rate >= 0.4
                   ? 'text-copper'
                   : 'text-muted-foreground'"
             >
-              {{ statsData.aggregate.hit_rate !== null ? `${(statsData.aggregate.hit_rate * 100).toFixed(1)}%` : '—' }}
+              {{ statsData.aggregate.hit_rate != null ? `${(statsData.aggregate.hit_rate * 100).toFixed(1)}%` : '—' }}
             </p>
             <p class="text-xs text-muted-foreground">
               artifact requests
@@ -317,7 +260,7 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
                 Cache size
               </p>
               <p class="text-xl font-semibold">
-                {{ fmtBytes(reg.total_size_bytes) }}
+                {{ fmtBytes(reg.total_size_bytes ?? null) }}
               </p>
               <p class="text-xs text-muted-foreground">
                 {{ reg.cached_artifact_count }} artifacts
@@ -330,13 +273,13 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
                 Last pull
               </p>
               <p class="text-base font-semibold">
-                {{ fmtRelative(reg.last_pull_at) }}
+                {{ fmtRelative(reg.last_pull_at ?? null) }}
               </p>
               <p
                 v-if="reg.last_pull_at"
                 class="text-xs text-muted-foreground"
               >
-                {{ fmtDate(reg.last_pull_at) }}
+                {{ fmtDate(reg.last_pull_at ?? "") }}
               </p>
             </div>
 

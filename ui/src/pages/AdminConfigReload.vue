@@ -1,42 +1,27 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
-import { useAuth } from "@/composables/useAuth";
+import {
+  discardPendingReload, applyPendingReload,
+  reloadConfig, listConfigChanges, setBanner, clearBanner,
+} from "@/client/sdk.gen";
+import type { PendingReloadSnapshot, ConfigChangeRow } from "@/client/types.gen";
+import { useAuthFetch } from "@/composables/useAuthFetch";
 import { useBanner } from "@/composables/useBanner";
+import { API_BASE_URL } from "@/config";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-const { token } = useAuth();
+const { authFetch } = useAuthFetch();
 const { banner } = useBanner();
-const API_BASE = (import.meta as unknown as { env: Record<string, string> }).env.VITE_API_BASE_URL ?? "";
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
 const hotReloadEnabled = ref<boolean | null>(null);
-const pendingReload = ref<null | {
-  id: string;
-  created_at: string;
-  expires_at: string;
-  source: string;
-  diff: {
-    added_registries: string[];
-    removed_registries: string[];
-    changed_registries: { name: string; fields: string[] }[];
-    access_config_changed: boolean;
-    limits_changed: boolean;
-  };
-}>(null);
-const changeHistory = ref<{
-  id: string;
-  triggered_by: string;
-  triggered_at: string;
-  status: string;
-  summary: string;
-  diff: unknown;
-  error_msg: string | null;
-}[]>([]);
+const pendingReload = ref<PendingReloadSnapshot | null>(null);
+const changeHistory = ref<ConfigChangeRow[]>([]);
 
 const loadingPending = ref(false);
 const loadingForce = ref(false);
@@ -57,28 +42,17 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function authHeaders(): HeadersInit {
-  return token.value ? { Authorization: `Bearer ${token.value}` } : {};
-}
-
-async function apiFetch(path: string, opts: RequestInit = {}) {
-  const resp = await fetch(`${API_BASE}${path}`, {
-    ...opts,
-    headers: { ...authHeaders(), ...(opts.headers ?? {}) },
-  });
-  if (!resp.ok) {
-    const body = await resp.text().catch(() => "");
-    throw new Error(body || `HTTP ${resp.status}`);
-  }
-  return resp;
+function sdkErrMsg(err: unknown): string {
+  if (!err) return "API error";
+  const e = err as { message?: string };
+  return e.message ?? String(err);
 }
 
 async function fetchPending() {
   loadingPending.value = true;
   try {
-    const resp = await fetch(`${API_BASE}/api/v1/admin/config/pending`, {
-      headers: authHeaders(),
-    });
+    // Use raw fetch to distinguish 404 (no pending) from 503 (hot reload disabled).
+    const resp = await authFetch(`${API_BASE_URL}/api/v1/admin/config/pending`);
     if (resp.status === 404) {
       pendingReload.value = null;
     } else if (resp.ok) {
@@ -95,11 +69,9 @@ async function fetchPending() {
 async function fetchHistory() {
   loadingHistory.value = true;
   try {
-    const resp = await apiFetch("/api/v1/admin/config/changes?per_page=20");
-    const data = await resp.json();
-    changeHistory.value = data.items ?? [];
+    const { data } = await listConfigChanges({ query: { per_page: 20 } });
+    changeHistory.value = (data as { items?: ConfigChangeRow[] })?.items ?? [];
   } catch (e: unknown) {
-    // non-fatal
     console.warn("config history fetch failed:", e);
   } finally {
     loadingHistory.value = false;
@@ -111,10 +83,10 @@ async function forceReload() {
   errorMsg.value = null;
   successMsg.value = null;
   try {
-    const resp = await apiFetch("/api/v1/admin/config/reload", { method: "POST" });
-    const data = await resp.json();
-    const diff = data.diff;
-    successMsg.value = `Reloaded: +${diff.added_registries.length} -${diff.removed_registries.length} registries`;
+    const { data, error: apiErr } = await reloadConfig();
+    if (apiErr) throw new Error(sdkErrMsg(apiErr));
+    const diff = (data as { diff?: { added_registries: string[]; removed_registries: string[] } })?.diff;
+    successMsg.value = `Reloaded: +${diff?.added_registries.length ?? 0} -${diff?.removed_registries.length ?? 0} registries`;
     await fetchPending();
     await fetchHistory();
   } catch (e: unknown) {
@@ -129,10 +101,10 @@ async function applyPending() {
   errorMsg.value = null;
   successMsg.value = null;
   try {
-    const resp = await apiFetch("/api/v1/admin/config/pending/apply", { method: "POST" });
-    const data = await resp.json();
-    const diff = data.diff;
-    successMsg.value = `Applied: +${diff.added_registries.length} -${diff.removed_registries.length} registries`;
+    const { data, error: apiErr } = await applyPendingReload();
+    if (apiErr) throw new Error(sdkErrMsg(apiErr));
+    const diff = (data as { diff?: { added_registries: string[]; removed_registries: string[] } })?.diff;
+    successMsg.value = `Applied: +${diff?.added_registries.length ?? 0} -${diff?.removed_registries.length ?? 0} registries`;
     pendingReload.value = null;
     await fetchHistory();
   } catch (e: unknown) {
@@ -146,7 +118,8 @@ async function discardPending() {
   loadingDiscard.value = true;
   errorMsg.value = null;
   try {
-    await apiFetch("/api/v1/admin/config/pending", { method: "DELETE" });
+    const { error: apiErr } = await discardPendingReload();
+    if (apiErr) throw new Error(sdkErrMsg(apiErr));
     pendingReload.value = null;
   } catch (e: unknown) {
     errorMsg.value = e instanceof Error ? e.message : String(e);
@@ -160,11 +133,8 @@ async function setBannerAction() {
   loadingSetBanner.value = true;
   errorMsg.value = null;
   try {
-    await apiFetch("/api/v1/admin/banner", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: bannerMessage.value, level: bannerLevel.value }),
-    });
+    const { error: apiErr } = await setBanner({ body: { message: bannerMessage.value, level: bannerLevel.value } });
+    if (apiErr) throw new Error(sdkErrMsg(apiErr));
     successMsg.value = "Banner set";
     bannerMessage.value = "";
   } catch (e: unknown) {
@@ -178,7 +148,8 @@ async function clearBannerAction() {
   loadingClearBanner.value = true;
   errorMsg.value = null;
   try {
-    await apiFetch("/api/v1/admin/banner", { method: "DELETE" });
+    const { error: apiErr } = await clearBanner();
+    if (apiErr) throw new Error(sdkErrMsg(apiErr));
     successMsg.value = "Banner cleared";
   } catch (e: unknown) {
     errorMsg.value = e instanceof Error ? e.message : String(e);

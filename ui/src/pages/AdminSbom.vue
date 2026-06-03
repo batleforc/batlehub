@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { useAuth } from "@/composables/useAuth";
+import { useAuthFetch } from "@/composables/useAuthFetch";
+import { API_BASE_URL } from "@/config";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-const { token } = useAuth();
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+const { authFetch } = useAuthFetch();
 
 // ── Filter state ──────────────────────────────────────────────────────────────
 
@@ -21,12 +21,8 @@ const errorMsg = ref<string | null>(null);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function authHeaders(): HeadersInit {
-  return token.value ? { Authorization: `Bearer ${token.value}` } : {};
-}
-
 async function downloadBlob(url: string, defaultFilename: string) {
-  const resp = await fetch(`${API_BASE}${url}`, { headers: authHeaders() });
+  const resp = await authFetch(`${API_BASE_URL}${url}`);
   if (!resp.ok) throw new Error(await resp.text().catch(() => `HTTP ${resp.status}`));
   const disposition = resp.headers.get("Content-Disposition") ?? "";
   const match = disposition.match(/filename="([^"]+)"/);

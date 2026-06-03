@@ -13,7 +13,7 @@ use crate::{
         explore_cache::ExploreCache,
         hot_config::{HotConfigLock, VersioningPolicy},
         quota::{QuotaCheck, QuotaService},
-        sbom::SbomService,
+        sbom::{SbomPublishOptions, SbomService},
     },
 };
 
@@ -299,7 +299,7 @@ impl LocalRegistryService {
                 let formats: Vec<SbomFormat> = cfg
                     .formats
                     .iter()
-                    .filter_map(|s| SbomFormat::from_str(s))
+                    .filter_map(|s| SbomFormat::parse(s))
                     .collect();
                 let result = sbom_svc
                     .record_for_published(
@@ -308,9 +308,11 @@ impl LocalRegistryService {
                         &req.version,
                         &storage_key,
                         &req.artifact,
-                        &cfg.registry_type,
-                        &formats,
-                        cfg.required,
+                        SbomPublishOptions {
+                            registry_type: &cfg.registry_type,
+                            formats: &formats,
+                            required: cfg.required,
+                        },
                     )
                     .await;
                 match result {
