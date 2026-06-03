@@ -6,9 +6,7 @@ use futures::StreamExt;
 use crate::{
     entities::{Identity, PublishedPackage, Role, SbomFormat, Visibility},
     error::CoreError,
-    ports::{
-        LocalRegistryBackend, OwnershipPort, StorageBackend, StorageMeta, TeamNamespacePort,
-    },
+    ports::{LocalRegistryBackend, OwnershipPort, StorageBackend, StorageMeta, TeamNamespacePort},
     services::{
         explore_cache::ExploreCache,
         hot_config::{HotConfigLock, VersioningPolicy},
@@ -322,7 +320,8 @@ impl LocalRegistryService {
                         if let Err(err) = self.storage.delete(&storage_key).await {
                             tracing::error!("storage cleanup after sbom failure: {err}");
                         }
-                        self.revoke_quota(&req.publisher, &req.registry, bytes).await;
+                        self.revoke_quota(&req.publisher, &req.registry, bytes)
+                            .await;
                         return Err(e);
                     }
                     Err(e) => {
@@ -725,7 +724,9 @@ impl LocalRegistryService {
         module: &str,
         identity: &Identity,
     ) -> Result<String, CoreError> {
-        let versions = self.load_visible_versions(registry, module, identity).await?;
+        let versions = self
+            .load_visible_versions(registry, module, identity)
+            .await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "module '{}' not found in local registry '{}'",
@@ -823,7 +824,9 @@ impl LocalRegistryService {
         module: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
-        let versions = self.load_visible_versions(registry, module, identity).await?;
+        let versions = self
+            .load_visible_versions(registry, module, identity)
+            .await?;
         let pkg = versions
             .iter()
             .rev()
@@ -1268,10 +1271,7 @@ impl LocalRegistryService {
                     Some(f) => f.to_owned(),
                     None => {
                         // Reconstruct filename from name/version/build
-                        let build = meta
-                            .get("build")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("0");
+                        let build = meta.get("build").and_then(|v| v.as_str()).unwrap_or("0");
                         format!("{}-{}-{}.tar.bz2", pkg.name, pkg.version, build)
                     }
                 };
@@ -1718,7 +1718,10 @@ mod tests {
         beta: Arc<dyn crate::ports::BetaChannelPort>,
     ) -> LocalRegistryService {
         let mut bc = HashMap::new();
-        bc.insert("reg".to_owned(), beta as Arc<dyn crate::ports::BetaChannelPort>);
+        bc.insert(
+            "reg".to_owned(),
+            beta as Arc<dyn crate::ports::BetaChannelPort>,
+        );
         LocalRegistryService {
             backend,
             storage: Arc::new(NoopStorage),

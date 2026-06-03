@@ -11,7 +11,9 @@ use super::require_admin;
 use crate::{
     error::AppError,
     extractors::AuthIdentity,
-    services::{BannerService, ConfigChangeRow, ConfigReloadService, PendingReloadSnapshot, ReloadDiff},
+    services::{
+        BannerService, ConfigChangeRow, ConfigReloadService, PendingReloadSnapshot, ReloadDiff,
+    },
 };
 
 // ── Shared guards ─────────────────────────────────────────────────────────────
@@ -224,7 +226,11 @@ pub async fn set_banner(
     banner_svc: web::Data<Arc<BannerService>>,
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
-    let set_by = identity.0.user_id.clone().unwrap_or_else(|| "admin".to_owned());
+    let set_by = identity
+        .0
+        .user_id
+        .clone()
+        .unwrap_or_else(|| "admin".to_owned());
     banner_svc
         .set(GlobalBanner {
             message: body.message.clone(),
@@ -306,9 +312,8 @@ mod tests {
             explore_user: Default::default(),
             explore_admin: Default::default(),
         });
-        let builder: HotConfigBuilder = Arc::new(|_| {
-            anyhow::bail!("builder not used in this test")
-        });
+        let builder: HotConfigBuilder =
+            Arc::new(|_| anyhow::bail!("builder not used in this test"));
         Arc::new(ConfigReloadService::new(
             hot,
             access,

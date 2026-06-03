@@ -6,13 +6,16 @@ use futures::StreamExt;
 
 use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
-    entities::PackageId,
+    entities::{NotificationEvent, NotificationEventType, PackageId},
     error::CoreError,
     ports::ByteStream,
     services::{LocalRegistryService, ProxyRequest, ProxyResponse, ProxyService},
 };
 
-use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+use crate::{
+    error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
+    RegistryModeMap,
+};
 
 /// Decode `X-Artifact-Signature` (base64) and `X-Signature-Type` headers from a request.
 ///
@@ -78,6 +81,23 @@ pub async fn collect_storage_stream(mut stream: ByteStream) -> Result<Bytes, App
         buf.extend_from_slice(&chunk.map_err(|e| AppError::internal(e.to_string()))?);
     }
     Ok(Bytes::from(buf))
+}
+
+/// Fire-and-forget notification dispatch.
+///
+/// Silently skips if notifications are not configured (`None`).
+pub fn dispatch_notification(
+    svc: &web::Data<Option<Arc<NotificationService>>>,
+    event_type: NotificationEventType,
+    registry: &str,
+    package_name: &str,
+    version: Option<String>,
+    actor: &str,
+) {
+    if let Some(svc) = svc.as_ref().as_ref() {
+        let event = NotificationEvent::new(event_type, registry, package_name, version, actor);
+        svc.dispatch_event_background(event);
+    }
 }
 
 /// Reject the request if `registry` is not of the expected type.

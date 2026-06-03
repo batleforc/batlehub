@@ -1,7 +1,7 @@
+use crate::db::DbResultExt;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Row};
-use crate::db::DbResultExt;
 
 use crate::migrations::embedded_migrator;
 use uuid::Uuid;
@@ -22,9 +22,7 @@ pub struct PgPackageRepository {
 
 impl PgPackageRepository {
     pub async fn new(database_url: &str) -> Result<Self, CoreError> {
-        let pool = PgPool::connect(database_url)
-            .await
-            .db_err()?;
+        let pool = PgPool::connect(database_url).await.db_err()?;
         Ok(Self { pool })
     }
 

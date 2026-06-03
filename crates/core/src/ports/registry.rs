@@ -77,7 +77,9 @@ mod tests {
 
     #[async_trait]
     impl RegistryClient for MinimalClient {
-        fn registry_type(&self) -> &str { "minimal" }
+        fn registry_type(&self) -> &str {
+            "minimal"
+        }
         async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
             Ok(PackageMetadata {
                 id: pkg.clone(),

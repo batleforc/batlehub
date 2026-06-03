@@ -14,9 +14,14 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 use utoipa::OpenApi as _;
 use utoipa_actix_web::AppExt;
 
+use batlehub_adapters::cache::InMemoryBannerStore;
+#[cfg(feature = "cache-redis")]
+use batlehub_adapters::cache::RedisBannerStore;
 #[cfg(feature = "cache-redis")]
 use batlehub_adapters::cache::RedisCacheStore;
 use batlehub_adapters::cache::{InMemoryCacheStore, PgCacheStore};
+use batlehub_adapters::db::PgBannerStore;
+use batlehub_adapters::notification::PgNotificationStore;
 use batlehub_adapters::rate_limit::{
     InMemoryIpBlockStore, InMemoryRateLimitStore, PgIpBlockStore, PgRateLimitStore,
 };
@@ -32,13 +37,13 @@ use batlehub_adapters::{
         PgQuotaRepository, PgSbomRepository, PgTeamNamespaceStore,
     },
     local_registry::PostgresLocalRegistry,
-    sbom::HttpSbomFetcher,
     registry::{
         CargoRegistryClient, ComposerRegistryClient, CondaRegistryClient, FanoutRegistryClient,
         GithubRegistryClient, GoProxyRegistryClient, MavenRegistryClient, NpmRegistryClient,
         NugetRegistryClient, OpenVsxRegistryClient, PypiRegistryClient, RubyGemsRegistryClient,
         TerraformRegistryClient, UpstreamHttpOptions, VsCodeMarketplaceRegistryClient,
     },
+    sbom::HttpSbomFetcher,
     storage::{FilesystemStorageBackend, StorageRouter},
 };
 use batlehub_config::{
@@ -48,12 +53,13 @@ use batlehub_config::{
         RegistryMode, RuleConfig, StorageBackendConfig, StoragesConfig, UpstreamAuthConfig,
     },
 };
+use batlehub_core::ports::{BannerPort, NotificationPort};
 use batlehub_core::services::WarmingService;
 use batlehub_core::{
     entities::Role,
     ports::{
-        AuthProvider, BetaChannelPort, CacheStore, IpBlockStore, RateLimitStore,
-        SbomRepository, UserTokenRepository,
+        AuthProvider, BetaChannelPort, CacheStore, IpBlockStore, RateLimitStore, SbomRepository,
+        UserTokenRepository,
     },
     rules::{BlockListRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule},
     services::{
@@ -62,17 +68,12 @@ use batlehub_core::{
         SbomService, SigningConfig as CoreSigningConfig, VersioningPolicy,
     },
 };
-use batlehub_adapters::cache::InMemoryBannerStore;
-#[cfg(feature = "cache-redis")]
-use batlehub_adapters::cache::RedisBannerStore;
-use batlehub_adapters::db::PgBannerStore;
-use batlehub_core::ports::BannerPort;
 use batlehub_web::handlers::back_office::warming::WarmingServiceMap;
-use batlehub_web::services::{BannerService, ConfigReloadService};
+use batlehub_web::services::{BannerService, ConfigReloadService, NotificationService};
 use batlehub_web::{
     configure_app, healthz, new_access_lock, openapi_spec, prometheus_metrics, AccessConfig,
-    ApiDoc, CargoIndexProxy, IpBlockMiddlewareFactory, RateLimitMiddlewareFactory, RateLimitService,
-    RegistryMap, RegistryModeMap, UpstreamMap,
+    ApiDoc, CargoIndexProxy, IpBlockMiddlewareFactory, RateLimitMiddlewareFactory,
+    RateLimitService, RegistryMap, RegistryModeMap, UpstreamMap,
 };
 use metrics_exporter_prometheus::PrometheusBuilder;
 
@@ -159,7 +160,8 @@ async fn main() -> Result<()> {
         None => {}
     }
 
-    let config_path = cli.config
+    let config_path = cli
+        .config
         .or_else(|| std::env::var("BATLEHUB_CONFIG").ok())
         .unwrap_or_else(|| "config.toml".to_string());
     let config =
@@ -408,16 +410,18 @@ async fn main() -> Result<()> {
         Arc::new(PgTeamNamespaceStore::new(repo.pool()));
 
     // ── Shared hot-reloadable config ──────────────────────────────────────────
-    let (init_hot, init_access, registry_map, registry_mode_map, upstream_map) =
-        build_hot_bundle(
-            &config,
-            &beta_channel_store,
-            &(repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>),
-        )?;
+    let (init_hot, init_access, registry_map, registry_mode_map, upstream_map) = build_hot_bundle(
+        &config,
+        &beta_channel_store,
+        &(repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>),
+    )?;
 
     // Clone warming clients before the hot lock consumes the HashMap.
-    let warming_clients: HashMap<String, Arc<dyn batlehub_core::ports::RegistryClient>> =
-        init_hot.registries.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect();
+    let warming_clients: HashMap<String, Arc<dyn batlehub_core::ports::RegistryClient>> = init_hot
+        .registries
+        .iter()
+        .map(|(k, v)| (k.clone(), Arc::clone(v)))
+        .collect();
 
     let hot = new_hot_lock(init_hot);
 
@@ -509,7 +513,6 @@ async fn main() -> Result<()> {
     // ── Access config ─────────────────────────────────────────────────────────
     let access_config = new_access_lock(init_access);
 
-
     // ── Hot reload & banner ───────────────────────────────────────────────────
     let hot_reload_enabled = std::env::var("BATLEHUB_DISABLE_HOT_RELOAD")
         .map(|v| v != "1" && v.to_lowercase() != "true")
@@ -520,7 +523,11 @@ async fn main() -> Result<()> {
         "redis" => {
             #[cfg(feature = "cache-redis")]
             {
-                let url = config.cache.url.as_deref().unwrap_or("redis://127.0.0.1:6379");
+                let url = config
+                    .cache
+                    .url
+                    .as_deref()
+                    .unwrap_or("redis://127.0.0.1:6379");
                 Arc::new(
                     RedisBannerStore::new(url)
                         .await
@@ -533,6 +540,21 @@ async fn main() -> Result<()> {
         _ => Arc::new(InMemoryBannerStore::new()),
     };
     let banner_svc = Arc::new(BannerService::new(banner_store));
+
+    // ── Notifications ─────────────────────────────────────────────────────────
+    let notification_store: Arc<dyn NotificationPort> =
+        Arc::new(PgNotificationStore::new(repo.pool()));
+
+    let notifications_config = config.notifications.clone();
+    let notification_svc: Option<Arc<NotificationService>> = notifications_config
+        .as_ref()
+        .filter(|nc| nc.enabled)
+        .map(|nc| {
+            Arc::new(NotificationService::new(
+                Arc::clone(&notification_store),
+                nc,
+            ))
+        });
 
     // Builder closure capturing the deps needed to rebuild HotConfig + AccessConfig.
     let hot_builder: batlehub_web::services::HotConfigBuilder = {
@@ -599,6 +621,9 @@ async fn main() -> Result<()> {
 
     let reload_svc_for_server = Arc::clone(&reload_svc);
     let banner_svc_for_server = Arc::clone(&banner_svc);
+    let notification_svc_for_server = notification_svc.clone();
+    let notification_store_for_server = Arc::clone(&notification_store);
+    let notifications_config_for_server = notifications_config.clone();
     HttpServer::new(move || {
         let configure = configure_app(
             proxy_svc.clone(),
@@ -613,6 +638,9 @@ async fn main() -> Result<()> {
             Arc::clone(&proxy_metrics),
             Some(prometheus_handle.clone()),
             Some(sbom_svc.clone()),
+            notification_svc_for_server.clone(),
+            Arc::clone(&notification_store_for_server),
+            notifications_config_for_server.clone(),
         );
         let static_dir_inner = static_dir.clone();
         let cargo_indexes_inner = cargo_indexes.clone();
@@ -1000,7 +1028,12 @@ fn upstream_url_for(reg: &RegistryConfig) -> Option<String> {
         "nuget" => "https://api.nuget.org",
         _ => return None,
     };
-    Some(reg.upstreams.first().cloned().unwrap_or_else(|| default_url.to_owned()))
+    Some(
+        reg.upstreams
+            .first()
+            .cloned()
+            .unwrap_or_else(|| default_url.to_owned()),
+    )
 }
 
 /// Build the complete hot-reloadable bundle from a config snapshot.
@@ -1086,9 +1119,7 @@ fn build_access_config(config: &batlehub_config::schema::AppConfig) -> AccessCon
             .registries
             .iter()
             .filter(|r| {
-                !r.rbac.anonymous.is_empty()
-                    || !r.rbac.user.is_empty()
-                    || !r.rbac.admin.is_empty()
+                !r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty() || !r.rbac.admin.is_empty()
             })
             .map(|r| r.name.clone())
             .collect(),
@@ -1103,8 +1134,7 @@ fn build_access_config(config: &batlehub_config::schema::AppConfig) -> AccessCon
             .registries
             .iter()
             .filter(|r| {
-                (!r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty())
-                    && r.rbac.explore.user
+                (!r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty()) && r.rbac.explore.user
             })
             .map(|r| r.name.clone())
             .collect(),
@@ -1151,9 +1181,10 @@ fn spawn_config_watcher(config_path: String, reload_svc: Arc<ConfigReloadService
                     return;
                 }
             };
-            if let Err(e) = watcher
-                .watch(std::path::Path::new(&config_path), RecursiveMode::NonRecursive)
-            {
+            if let Err(e) = watcher.watch(
+                std::path::Path::new(&config_path),
+                RecursiveMode::NonRecursive,
+            ) {
                 tracing::error!(
                     error = %e,
                     "config file watcher: failed to watch {config_path}"

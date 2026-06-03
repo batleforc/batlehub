@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod in_memory;
 pub mod migrations;
+pub mod notification;
 pub mod rate_limit;
 pub mod sbom;
 

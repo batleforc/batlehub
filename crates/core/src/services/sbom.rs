@@ -133,8 +133,11 @@ fn generate_cyclonedx(
     let dep_components: Vec<_> = deps
         .iter()
         .map(|d| {
-            let dep_purl =
-                registry_to_purl(&meta.id.registry, &d.name, d.version_req.as_deref().unwrap_or("*"));
+            let dep_purl = registry_to_purl(
+                &meta.id.registry,
+                &d.name,
+                d.version_req.as_deref().unwrap_or("*"),
+            );
             serde_json::json!({
                 "type": "library",
                 "name": d.name,
@@ -172,7 +175,11 @@ impl SbomService {
         extractor: Option<Arc<dyn SbomExtractor>>,
         fetcher: Option<Arc<dyn UpstreamSbomFetcher>>,
     ) -> Self {
-        Self { repo, extractor, fetcher }
+        Self {
+            repo,
+            extractor,
+            fetcher,
+        }
     }
 
     /// Store both SPDX and CycloneDX SBOMs for a proxied artifact.
@@ -223,11 +230,9 @@ impl SbomService {
 
         for format in formats {
             let document = match format {
-                SbomFormat::Spdx => {
-                    upstream_spdx
-                        .clone()
-                        .unwrap_or_else(|| generate_spdx(meta, artifact_key, &deps))
-                }
+                SbomFormat::Spdx => upstream_spdx
+                    .clone()
+                    .unwrap_or_else(|| generate_spdx(meta, artifact_key, &deps)),
                 SbomFormat::CycloneDx => generate_cyclonedx(meta, artifact_key, &deps),
             };
 
@@ -263,7 +268,11 @@ impl SbomService {
         data: &Bytes,
         opts: SbomPublishOptions<'_>,
     ) -> Result<(), CoreError> {
-        let SbomPublishOptions { registry_type, formats, required } = opts;
+        let SbomPublishOptions {
+            registry_type,
+            formats,
+            required,
+        } = opts;
         let deps: Vec<SbomDependency> = self
             .extractor
             .as_ref()
@@ -349,20 +358,25 @@ impl SbomService {
                         .await?;
                     let done = page.len() < page_size as usize;
                     for sbom in page {
-                        if let Some(pkgs) = sbom.document.get("packages").and_then(|v| v.as_array()) {
+                        if let Some(pkgs) = sbom.document.get("packages").and_then(|v| v.as_array())
+                        {
                             for pkg in pkgs {
                                 let key = format!(
                                     "{}@{}",
                                     pkg.get("name").and_then(|v| v.as_str()).unwrap_or(""),
-                                    pkg.get("versionInfo").and_then(|v| v.as_str()).unwrap_or(""),
+                                    pkg.get("versionInfo")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or(""),
                                 );
                                 if seen.insert(key) {
                                     all_packages.push(pkg.clone());
                                 }
                             }
                         }
-                        if let Some(rels) =
-                            sbom.document.get("relationships").and_then(|v| v.as_array())
+                        if let Some(rels) = sbom
+                            .document
+                            .get("relationships")
+                            .and_then(|v| v.as_array())
                         {
                             all_relationships.extend_from_slice(rels);
                         }
@@ -441,7 +455,12 @@ mod tests {
     use super::*;
     use crate::entities::PackageId;
 
-    fn make_meta(registry: &str, name: &str, version: &str, checksum: Option<&str>) -> PackageMetadata {
+    fn make_meta(
+        registry: &str,
+        name: &str,
+        version: &str,
+        checksum: Option<&str>,
+    ) -> PackageMetadata {
         PackageMetadata {
             id: PackageId::new(registry, name, version),
             published_at: None,
@@ -462,7 +481,10 @@ mod tests {
         assert_eq!(doc["dataLicense"], "CC0-1.0");
         assert_eq!(doc["packages"][0]["versionInfo"], "1.0.0");
         assert_eq!(doc["packages"][0]["checksums"][0]["algorithm"], "SHA256");
-        assert_eq!(doc["packages"][0]["checksums"][0]["checksumValue"], "abc123");
+        assert_eq!(
+            doc["packages"][0]["checksums"][0]["checksumValue"],
+            "abc123"
+        );
         assert_eq!(doc["relationships"][0]["relationshipType"], "DESCRIBES");
     }
 
@@ -470,15 +492,20 @@ mod tests {
     fn generate_spdx_no_checksum() {
         let meta = make_meta("npm", "lodash", "4.17.21", None);
         let doc = generate_spdx(&meta, "k", &[]);
-        assert!(doc["packages"][0]["checksums"].as_array().unwrap().is_empty());
+        assert!(doc["packages"][0]["checksums"]
+            .as_array()
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
     fn generate_spdx_with_deps() {
         let meta = make_meta("npm", "express", "4.0.0", None);
-        let deps = vec![
-            SbomDependency { name: "accepts".into(), version_req: Some("1.3.8".into()), ecosystem: "npm".into() },
-        ];
+        let deps = vec![SbomDependency {
+            name: "accepts".into(),
+            version_req: Some("1.3.8".into()),
+            ecosystem: "npm".into(),
+        }];
         let doc = generate_spdx(&meta, "k", &deps);
         // main package + 1 dep
         assert_eq!(doc["packages"].as_array().unwrap().len(), 2);
@@ -501,11 +528,29 @@ mod tests {
 
     #[test]
     fn registry_to_purl_variants() {
-        assert_eq!(registry_to_purl("cargo", "tokio", "1.0.0"), "pkg:cargo/tokio@1.0.0");
-        assert_eq!(registry_to_purl("npm", "lodash", "4.17.21"), "pkg:npm/lodash@4.17.21");
-        assert_eq!(registry_to_purl("pypi", "requests", "2.31.0"), "pkg:pypi/requests@2.31.0");
-        assert_eq!(registry_to_purl("rubygems", "rails", "7.0.0"), "pkg:gem/rails@7.0.0");
-        assert_eq!(registry_to_purl("goproxy", "github.com/gin-gonic/gin", "v1.9.0"), "pkg:golang/github.com/gin-gonic/gin@v1.9.0");
-        assert_eq!(registry_to_purl("unknown", "foo", "1.0"), "pkg:generic/foo@1.0");
+        assert_eq!(
+            registry_to_purl("cargo", "tokio", "1.0.0"),
+            "pkg:cargo/tokio@1.0.0"
+        );
+        assert_eq!(
+            registry_to_purl("npm", "lodash", "4.17.21"),
+            "pkg:npm/lodash@4.17.21"
+        );
+        assert_eq!(
+            registry_to_purl("pypi", "requests", "2.31.0"),
+            "pkg:pypi/requests@2.31.0"
+        );
+        assert_eq!(
+            registry_to_purl("rubygems", "rails", "7.0.0"),
+            "pkg:gem/rails@7.0.0"
+        );
+        assert_eq!(
+            registry_to_purl("goproxy", "github.com/gin-gonic/gin", "v1.9.0"),
+            "pkg:golang/github.com/gin-gonic/gin@v1.9.0"
+        );
+        assert_eq!(
+            registry_to_purl("unknown", "foo", "1.0"),
+            "pkg:generic/foo@1.0"
+        );
     }
 }

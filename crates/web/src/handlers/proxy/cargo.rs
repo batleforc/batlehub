@@ -16,7 +16,11 @@ use super::common::{
     append_signature_headers, collect_payload, extract_signature_headers, proxy_stream,
     require_local_mode,
 };
-use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+use crate::{
+    error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
+    RegistryModeMap,
+};
+use batlehub_core::entities::NotificationEventType;
 
 // ── Sparse index proxy ────────────────────────────────────────────────────────
 
@@ -281,6 +285,7 @@ pub async fn download_crate(
     ),
     security(("bearer_token" = [])),
 )]
+#[allow(clippy::too_many_arguments)]
 #[put("/proxy/{registry}/api/v1/crates/new")]
 pub async fn cargo_publish(
     req: actix_web::HttpRequest,
@@ -290,6 +295,7 @@ pub async fn cargo_publish(
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
     require_cargo(&registry, &map)?;
@@ -328,12 +334,13 @@ pub async fn cargo_publish(
         serde_json::to_value(&entry).map_err(|e| AppError::bad_request(e.to_string()))?;
 
     let (signature_bytes, signature_type) = extract_signature_headers(&req);
+    let actor = identity.0.user_id.clone().unwrap_or_default();
 
     let quota = local_svc
         .publish(PublishRequest {
-            registry,
-            name,
-            version,
+            registry: registry.clone(),
+            name: name.clone(),
+            version: version.clone(),
             artifact: crate_bytes,
             checksum,
             index_metadata,
@@ -344,9 +351,18 @@ pub async fn cargo_publish(
         .await
         .map_err(AppError::from)?;
 
+    super::common::dispatch_notification(
+        &notification_svc,
+        NotificationEventType::PackagePublished,
+        &registry,
+        &name,
+        Some(version),
+        &actor,
+    );
+
     let mut resp = HttpResponse::Ok();
-    for (name, value) in quota.headers() {
-        resp.insert_header((name, value));
+    for (k, v) in quota.headers() {
+        resp.insert_header((k, v));
     }
     Ok(resp.json(serde_json::json!({
         "warnings": {
@@ -380,14 +396,24 @@ pub async fn cargo_yank(
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, name, version) = path.into_inner();
     require_cargo(&registry, &map)?;
     require_local_mode(&registry, &mode_map)?;
+    let actor = identity.0.user_id.clone().unwrap_or_default();
     local_svc
         .yank(&registry, &name, &version, &identity.0)
         .await
         .map_err(AppError::from)?;
+    super::common::dispatch_notification(
+        &notification_svc,
+        NotificationEventType::PackageYanked,
+        &registry,
+        &name,
+        Some(version),
+        &actor,
+    );
     Ok(HttpResponse::Ok().json(serde_json::json!({ "ok": true })))
 }
 
@@ -414,14 +440,24 @@ pub async fn cargo_unyank(
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, name, version) = path.into_inner();
     require_cargo(&registry, &map)?;
     require_local_mode(&registry, &mode_map)?;
+    let actor = identity.0.user_id.clone().unwrap_or_default();
     local_svc
         .unyank(&registry, &name, &version, &identity.0)
         .await
         .map_err(AppError::from)?;
+    super::common::dispatch_notification(
+        &notification_svc,
+        NotificationEventType::PackageUnyanked,
+        &registry,
+        &name,
+        Some(version),
+        &actor,
+    );
     Ok(HttpResponse::Ok().json(serde_json::json!({ "ok": true })))
 }
 

@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use actix_multipart::Multipart;
 use actix_web::{delete, get, put, web, HttpRequest, HttpResponse, Responder};
-use futures::StreamExt;
 use bytes::BytesMut;
+use futures::StreamExt;
 use quick_xml::{events::Event as XmlEvent, Reader as XmlReader};
 use sha2::{Digest, Sha256};
 use zip::ZipArchive;
@@ -19,7 +19,11 @@ use super::common::{
     append_signature_headers, collect_storage_stream, extract_signature_headers, proxy_stream,
     require_local_mode, require_registry_type,
 };
-use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+use crate::{
+    error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
+    RegistryModeMap,
+};
+use batlehub_core::entities::NotificationEventType;
 
 // ── Content-type helpers ──────────────────────────────────────────────────────
 
@@ -447,14 +451,8 @@ pub async fn nuget_registration(
             })
             .collect();
 
-        let lower = versions
-            .first()
-            .map(|v| v.version.as_str())
-            .unwrap_or("");
-        let upper = versions
-            .last()
-            .map(|v| v.version.as_str())
-            .unwrap_or("");
+        let lower = versions.first().map(|v| v.version.as_str()).unwrap_or("");
+        let upper = versions.last().map(|v| v.version.as_str()).unwrap_or("");
 
         let response = serde_json::json!({
             "@id": format!("{base}/proxy/{registry}/nuget/v3/registration5/{id}/index.json"),
@@ -555,9 +553,9 @@ pub async fn nuget_search(
             })
             .collect();
 
-        return Ok(HttpResponse::Ok().content_type("application/json").json(
-            serde_json::json!({ "totalHits": matched.len(), "data": matched }),
-        ));
+        return Ok(HttpResponse::Ok()
+            .content_type("application/json")
+            .json(serde_json::json!({ "totalHits": matched.len(), "data": matched })));
     }
 
     // Proxy/hybrid: NuGet search is handled by the explore service (client.search_packages).
@@ -589,6 +587,7 @@ pub async fn nuget_search(
     ),
     security(("bearer_token" = [])),
 )]
+#[allow(clippy::too_many_arguments)]
 #[put("/proxy/{registry}/nuget/api/v2/package")]
 pub async fn nuget_publish(
     req: HttpRequest,
@@ -598,6 +597,7 @@ pub async fn nuget_publish(
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
     require_registry_type(&registry, "nuget", &map)?;
@@ -607,8 +607,8 @@ pub async fn nuget_publish(
     // Accept any field that looks like the package file.
     let mut nupkg_bytes_opt: Option<bytes::Bytes> = None;
     while let Some(field_result) = multipart.next().await {
-        let mut field = field_result
-            .map_err(|e| AppError::bad_request(format!("multipart error: {e}")))?;
+        let mut field =
+            field_result.map_err(|e| AppError::bad_request(format!("multipart error: {e}")))?;
         let field_name = field
             .content_disposition()
             .and_then(|cd| cd.get_name())
@@ -616,8 +616,7 @@ pub async fn nuget_publish(
             .to_owned();
         let mut buf = BytesMut::new();
         while let Some(chunk) = field.next().await {
-            let chunk =
-                chunk.map_err(|e| AppError::bad_request(format!("chunk error: {e}")))?;
+            let chunk = chunk.map_err(|e| AppError::bad_request(format!("chunk error: {e}")))?;
             buf.extend_from_slice(&chunk);
         }
         // Accept "package" field or the first non-empty field.
@@ -653,6 +652,7 @@ pub async fn nuget_publish(
     });
 
     let (signature_bytes, signature_type) = extract_signature_headers(&req);
+    let actor = identity.0.user_id.clone().unwrap_or_default();
 
     let quota_check = local_svc
         .publish(PublishRequest {
@@ -668,6 +668,15 @@ pub async fn nuget_publish(
         })
         .await
         .map_err(AppError::from)?;
+
+    super::common::dispatch_notification(
+        &notification_svc,
+        NotificationEventType::PackagePublished,
+        &registry,
+        &id_lower,
+        Some(version),
+        &actor,
+    );
 
     let mut resp = HttpResponse::Created();
     if let Some(limit) = quota_check.bytes_limit {
@@ -705,17 +714,28 @@ pub async fn nuget_yank(
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, id_raw, version) = path.into_inner();
     require_registry_type(&registry, "nuget", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     let id = id_raw.to_lowercase();
+    let actor = identity.0.user_id.clone().unwrap_or_default();
 
     local_svc
         .yank(&registry, &id, &version, &identity.0)
         .await
         .map_err(AppError::from)?;
+
+    super::common::dispatch_notification(
+        &notification_svc,
+        NotificationEventType::PackageYanked,
+        &registry,
+        &id,
+        Some(version),
+        &actor,
+    );
 
     Ok(HttpResponse::NoContent().finish())
 }
@@ -728,7 +748,10 @@ mod tests {
 
     #[test]
     fn content_type_nupkg() {
-        assert_eq!(content_type_for("mylib.1.0.0.nupkg"), "application/octet-stream");
+        assert_eq!(
+            content_type_for("mylib.1.0.0.nupkg"),
+            "application/octet-stream"
+        );
     }
 
     #[test]

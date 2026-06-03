@@ -405,7 +405,10 @@ impl RegistryClient for TerraformRegistryClient {
                             log::debug!(count = body.modules.len(), "tf module search: ok");
                             for m in body.modules.into_iter().take(per) {
                                 results.push(UpstreamPackage {
-                                    name: format!("modules/{}/{}/{}", m.namespace, m.name, m.provider),
+                                    name: format!(
+                                        "modules/{}/{}/{}",
+                                        m.namespace, m.name, m.provider
+                                    ),
                                     latest_version: m.version,
                                     description: m.description,
                                 });
@@ -431,7 +434,9 @@ impl RegistryClient for TerraformRegistryClient {
                             for p in body.providers.into_iter().take(per) {
                                 results.push(UpstreamPackage {
                                     name: format!("providers/{}/{}", p.namespace, p.name),
-                                    latest_version: p.version.unwrap_or_else(|| "latest".to_string()),
+                                    latest_version: p
+                                        .version
+                                        .unwrap_or_else(|| "latest".to_string()),
                                     description: p.description,
                                 });
                             }
@@ -451,12 +456,16 @@ impl RegistryClient for TerraformRegistryClient {
                         log::warn!(%url, %status, "tf provider exact: bad status");
                     } else {
                         match res.json::<ProviderList>().await {
-                            Err(e) => log::warn!(error = %e, "tf provider exact: json parse failed"),
+                            Err(e) => {
+                                log::warn!(error = %e, "tf provider exact: json parse failed")
+                            }
                             Ok(body) => {
                                 for p in body.providers.into_iter().take(per) {
                                     results.push(UpstreamPackage {
                                         name: format!("providers/{}/{}", p.namespace, p.name),
-                                        latest_version: p.version.unwrap_or_else(|| "latest".to_string()),
+                                        latest_version: p
+                                            .version
+                                            .unwrap_or_else(|| "latest".to_string()),
                                         description: p.description,
                                     });
                                 }

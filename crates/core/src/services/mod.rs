@@ -11,16 +11,19 @@ pub mod sbom;
 pub mod warming;
 
 pub use admin::{AdminService, BulkActionResult, BulkBlockItem};
-pub use explore_cache::ExploreCache;
 pub use cache_control::{parse_cache_control, CacheControlDirectives};
 pub use eviction::{CoherenceReport, EvictionConfig, EvictionReport, EvictionService};
-pub use hot_config::{new_hot_lock, HotConfig, HotConfigLock, RegistryPolicy, SbomConfig as HotSbomConfig, SigningConfig, VersioningPolicy};
+pub use explore_cache::ExploreCache;
+pub use hot_config::{
+    new_hot_lock, HotConfig, HotConfigLock, RegistryPolicy, SbomConfig as HotSbomConfig,
+    SigningConfig, VersioningPolicy,
+};
 pub use local_registry::{
     artifact_storage_key, maven_artifact_storage_key, tf_provider_binary_storage_key,
     LocalRegistryService, PublishRequest, TerraformPlatform,
 };
 pub use metrics::ProxyMetrics;
 pub use proxy::{ProxyRequest, ProxyResponse, ProxyService};
-pub use sbom::{SbomPublishOptions, SbomService};
 pub use quota::{QuotaCheck, QuotaEnforcement, QuotaService, RegistryQuotaConfig};
+pub use sbom::{SbomPublishOptions, SbomService};
 pub use warming::{WarmingReport, WarmingService};

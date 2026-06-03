@@ -71,8 +71,13 @@ pub struct PendingReloadSnapshot {
 pub type HotConfigBuilder = Arc<
     dyn Fn(
             &batlehub_config::schema::AppConfig,
-        ) -> anyhow::Result<(HotConfig, AccessConfig, RegistryMap, RegistryModeMap, UpstreamMap)>
-        + Send
+        ) -> anyhow::Result<(
+            HotConfig,
+            AccessConfig,
+            RegistryMap,
+            RegistryModeMap,
+            UpstreamMap,
+        )> + Send
         + Sync,
 >;
 
@@ -220,13 +225,17 @@ impl ConfigReloadService {
 
     /// Returns a non-sensitive snapshot of the pending reload for the GET endpoint.
     pub fn pending_snapshot(&self) -> Option<PendingReloadSnapshot> {
-        self.pending.lock().unwrap().as_ref().map(|p| PendingReloadSnapshot {
-            id: p.id,
-            created_at: p.created_at,
-            expires_at: p.expires_at,
-            source: p.source.clone(),
-            diff: p.diff.clone(),
-        })
+        self.pending
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|p| PendingReloadSnapshot {
+                id: p.id,
+                created_at: p.created_at,
+                expires_at: p.expires_at,
+                source: p.source.clone(),
+                diff: p.diff.clone(),
+            })
     }
 
     /// Drops the pending reload if it has passed its expiry time.
@@ -297,8 +306,14 @@ impl ConfigReloadService {
         let new_names: std::collections::HashSet<&str> =
             new_hot.registries.keys().map(String::as_str).collect();
 
-        let added: Vec<String> = new_names.difference(&old_names).map(|s| s.to_string()).collect();
-        let removed: Vec<String> = old_names.difference(&new_names).map(|s| s.to_string()).collect();
+        let added: Vec<String> = new_names
+            .difference(&old_names)
+            .map(|s| s.to_string())
+            .collect();
+        let removed: Vec<String> = old_names
+            .difference(&new_names)
+            .map(|s| s.to_string())
+            .collect();
         let limits_changed = old_hot.max_artifact_size_bytes != new_hot.max_artifact_size_bytes;
 
         // AccessConfig doesn't implement PartialEq (HashSet comparison is cheap but
@@ -405,7 +420,8 @@ mod tests {
             explore_user: Default::default(),
             explore_admin: Default::default(),
         });
-        let builder: HotConfigBuilder = Arc::new(|_| anyhow::bail!("builder not used in unit tests"));
+        let builder: HotConfigBuilder =
+            Arc::new(|_| anyhow::bail!("builder not used in unit tests"));
         Arc::new(ConfigReloadService::new(
             hot,
             access,
@@ -423,7 +439,10 @@ mod tests {
     #[tokio::test]
     async fn load_pending_returns_error_when_disabled() {
         let svc = make_svc(false);
-        let err = svc.load_pending(ReloadSource::AdminRequest).await.unwrap_err();
+        let err = svc
+            .load_pending(ReloadSource::AdminRequest)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("disabled"));
     }
 

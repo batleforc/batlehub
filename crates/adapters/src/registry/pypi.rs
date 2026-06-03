@@ -544,7 +544,10 @@ mod tests {
         let out = rewrite_simple_json(&body, "my-pypi", "http://localhost");
         let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
         let url = parsed["files"][0]["url"].as_str().unwrap();
-        assert_eq!(url, "http://localhost/proxy/my-pypi/packages/foo-1.0.whl#sha256=deadbeef");
+        assert_eq!(
+            url,
+            "http://localhost/proxy/my-pypi/packages/foo-1.0.whl#sha256=deadbeef"
+        );
     }
 
     #[tokio::test]
@@ -603,13 +606,16 @@ mod tests {
             .mock("GET", "/pypi/requests/json")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(serde_json::to_string(&serde_json::json!({
-                "releases": {
-                    "2.27.0": [],
-                    "2.28.0": [],
-                    "2.28.1": []
-                }
-            })).unwrap())
+            .with_body(
+                serde_json::to_string(&serde_json::json!({
+                    "releases": {
+                        "2.27.0": [],
+                        "2.28.0": [],
+                        "2.28.1": []
+                    }
+                }))
+                .unwrap(),
+            )
             .create_async()
             .await;
 

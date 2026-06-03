@@ -51,7 +51,9 @@ pub async fn get_artifact_sbom(
 ) -> Result<impl Responder, AppError> {
     // Requires at least an authenticated user (not anonymous).
     if identity.role == batlehub_core::entities::Role::Anonymous {
-        return Err(AppError::forbidden("authentication required to access SBOMs"));
+        return Err(AppError::forbidden(
+            "authentication required to access SBOMs",
+        ));
     }
 
     let (registry, name, version) = path.into_inner();
@@ -137,12 +139,7 @@ pub async fn export_org_sbom(
     let filename = format!("sbom-export-{registry_label}-{ts}.{ext}");
 
     let document = sbom_svc
-        .export_org_sbom(
-            query.registry.as_deref(),
-            query.from,
-            query.to,
-            &format,
-        )
+        .export_org_sbom(query.registry.as_deref(), query.from, query.to, &format)
         .await
         .map_err(AppError::from)?;
 

@@ -9,8 +9,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<AppConfig> {
     let raw = std::fs::read_to_string(path.as_ref())
         .with_context(|| format!("reading config file: {}", path.as_ref().display()))?;
     let expanded = expand_env_vars(&raw)?;
-    let mut config: AppConfig =
-        toml::from_str(&expanded).with_context(|| "parsing config TOML")?;
+    let mut config: AppConfig = toml::from_str(&expanded).with_context(|| "parsing config TOML")?;
     config.apply_env_overrides();
     config.validate()?;
     Ok(config)
@@ -59,9 +58,7 @@ fn expand_env_vars(raw: &str) -> Result<String> {
                     bail!("empty variable name in '${{}}' placeholder in config file");
                 }
                 let value = std::env::var(&var_name).with_context(|| {
-                    format!(
-                        "config references env var '${{{var_name}}}' but it is not set"
-                    )
+                    format!("config references env var '${{{var_name}}}' but it is not set")
                 })?;
                 out.push_str(&value);
             }
@@ -73,8 +70,8 @@ fn expand_env_vars(raw: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{expand_env_vars, load};
     use crate::schema::{AppConfig, AuthConfig, StorageBackendConfig, StoragesConfig};
+    use crate::{expand_env_vars, load};
 
     fn parse(toml: &str) -> AppConfig {
         let config: AppConfig = toml::from_str(toml).expect("parse failed");
@@ -636,8 +633,7 @@ mod tests {
     fn env_interpolation_multiple_vars_in_one_file() {
         std::env::set_var("_TEST_MULTI_A", "val-a");
         std::env::set_var("_TEST_MULTI_B", "val-b");
-        let result =
-            expand_env_vars("a = \"${_TEST_MULTI_A}\"\nb = \"${_TEST_MULTI_B}\"").unwrap();
+        let result = expand_env_vars("a = \"${_TEST_MULTI_A}\"\nb = \"${_TEST_MULTI_B}\"").unwrap();
         std::env::remove_var("_TEST_MULTI_A");
         std::env::remove_var("_TEST_MULTI_B");
         assert_eq!(result, "a = \"val-a\"\nb = \"val-b\"");
@@ -737,7 +733,10 @@ path = "./tmp"
 "#,
         )
         .unwrap();
-        std::env::set_var("_TEST_LOAD_DB_URL", "postgresql://env-user:env-pass@db/mydb");
+        std::env::set_var(
+            "_TEST_LOAD_DB_URL",
+            "postgresql://env-user:env-pass@db/mydb",
+        );
         let cfg = load(&path).expect("load failed");
         std::env::remove_var("_TEST_LOAD_DB_URL");
         let _ = std::fs::remove_file(&path);

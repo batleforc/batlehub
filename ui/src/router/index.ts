@@ -64,6 +64,7 @@ export const router = createRouter({
         { path: "team-namespaces", component: () => import("@/pages/AdminTeamNamespaces.vue") },
         { path: "config-reload",   component: () => import("@/pages/AdminConfigReload.vue") },
         { path: "explore-cache",   component: () => import("@/pages/AdminExploreCache.vue") },
+        { path: "notifications",   component: () => import("@/pages/AdminNotifications.vue") },
       ],
     },
   ],

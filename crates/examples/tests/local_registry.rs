@@ -38,6 +38,7 @@ use batlehub_adapters::{
         NullUserTokenRepository,
     },
     local_registry::InMemoryLocalRegistry,
+    notification::InMemoryNotificationStore,
 };
 use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
@@ -50,7 +51,8 @@ use batlehub_core::{
     },
 };
 use batlehub_web::{
-    configure_app, new_access_lock, AccessConfig, AuthMiddlewareFactory, RegistryMap, RegistryModeMap, UpstreamMap,
+    configure_app, new_access_lock, AccessConfig, AuthMiddlewareFactory, RegistryMap,
+    RegistryModeMap, UpstreamMap,
 };
 
 // ── Local proxy server ────────────────────────────────────────────────────────
@@ -102,44 +104,44 @@ impl LocalProxy {
             .collect();
 
         let local_svc = Arc::new(LocalRegistryService {
-        backend: Arc::new(InMemoryLocalRegistry::new()),
-        storage: storage.clone(),
-        hot: new_hot_lock(HotConfig {
-            registries: HashMap::new(),
-            policies: HashMap::new(),
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
-        }),
-        quota: None,
-        ownership: None,
-        team_namespace: None,
-        sbom: None,
-        explore_cache: None,
-    });
+            backend: Arc::new(InMemoryLocalRegistry::new()),
+            storage: storage.clone(),
+            hot: new_hot_lock(HotConfig {
+                registries: HashMap::new(),
+                policies: HashMap::new(),
+                versioning: HashMap::new(),
+                signing: HashMap::new(),
+                sbom: HashMap::new(),
+                beta_channel: HashMap::new(),
+                max_artifact_size_bytes: None,
+            }),
+            quota: None,
+            ownership: None,
+            team_namespace: None,
+            sbom: None,
+            explore_cache: None,
+        });
 
         // No upstream registries — local mode only.
         let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
 
         let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
-        }),
-        storage: storage,
-        cache: cache,
-        repo: repo.clone(),
-        artifact_meta: NoopArtifactMetaRepository::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
-        sbom: None,
-    });
+            hot: new_hot_lock(HotConfig {
+                registries: registries,
+                policies: policies,
+                versioning: HashMap::new(),
+                signing: HashMap::new(),
+                sbom: HashMap::new(),
+                beta_channel: HashMap::new(),
+                max_artifact_size_bytes: None,
+            }),
+            storage: storage,
+            cache: cache,
+            repo: repo.clone(),
+            artifact_meta: NoopArtifactMetaRepository::arc(),
+            metrics: Arc::new(ProxyMetrics::new(&[])),
+            sbom: None,
+        });
         let admin_svc = Arc::new(AdminService::new(repo));
         let token_repo = NullUserTokenRepository::arc();
 
@@ -180,7 +182,10 @@ impl LocalProxy {
             HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         );
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -427,7 +432,9 @@ fn composer_zip(vendor: &str, pkg: &str, version: &str) -> Vec<u8> {
 
 #[test]
 fn local_npm_publish_pull() {
-    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-npm".to_owned(), "npm".to_owned())])));
+    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(
+        std::collections::HashMap::from([("my-npm".to_owned(), "npm".to_owned())]),
+    ));
     let tmp = TempDir::new().unwrap();
 
     let body = npm_publish_body("test-pkg", "1.0.0", b"fake tarball bytes");
@@ -463,7 +470,9 @@ fn local_npm_publish_pull() {
 
 #[test]
 fn local_cargo_publish_pull() {
-    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-cargo".to_owned(), "cargo".to_owned())])));
+    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(
+        std::collections::HashMap::from([("my-cargo".to_owned(), "cargo".to_owned())]),
+    ));
     let tmp = TempDir::new().unwrap();
 
     let body = cargo_publish_body("test-crate", "1.0.0", b"fake .crate bytes");
@@ -491,7 +500,9 @@ fn local_cargo_publish_pull() {
 
 #[test]
 fn local_go_publish_pull() {
-    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-go".to_owned(), "goproxy".to_owned())])));
+    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(
+        std::collections::HashMap::from([("my-go".to_owned(), "goproxy".to_owned())]),
+    ));
     let tmp = TempDir::new().unwrap();
 
     const MODULE: &str = "example.com/testmod";
@@ -542,7 +553,9 @@ fn local_go_publish_pull() {
 
 #[test]
 fn local_rubygems_publish_pull() {
-    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-gems".to_owned(), "rubygems".to_owned())])));
+    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(
+        std::collections::HashMap::from([("my-gems".to_owned(), "rubygems".to_owned())]),
+    ));
     let tmp = TempDir::new().unwrap();
 
     let gem_bytes = minimal_gem("test-gem", "1.0.0");
@@ -570,7 +583,9 @@ fn local_rubygems_publish_pull() {
 
 #[test]
 fn local_composer_publish_pull() {
-    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-composer".to_owned(), "composer".to_owned())])));
+    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(
+        std::collections::HashMap::from([("my-composer".to_owned(), "composer".to_owned())]),
+    ));
     let tmp = TempDir::new().unwrap();
 
     let zip_bytes = composer_zip("myvendor", "mypkg", "1.0.0");
@@ -614,7 +629,9 @@ fn local_composer_publish_pull() {
 
 #[test]
 fn local_maven_publish_pull() {
-    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-maven".to_owned(), "maven".to_owned())])));
+    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(
+        std::collections::HashMap::from([("my-maven".to_owned(), "maven".to_owned())]),
+    ));
     let tmp = TempDir::new().unwrap();
 
     let jar_bytes = b"fake jar bytes for test artifact";
@@ -644,7 +661,9 @@ fn local_maven_publish_pull() {
 
 #[test]
 fn local_openvsx_publish_pull() {
-    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-openvsx".to_owned(), "openvsx".to_owned())])));
+    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(
+        std::collections::HashMap::from([("my-openvsx".to_owned(), "openvsx".to_owned())]),
+    ));
     let tmp = TempDir::new().unwrap();
 
     let vsix_bytes = b"fake vsix extension bytes";
@@ -679,7 +698,9 @@ fn local_openvsx_publish_pull() {
 
 #[test]
 fn local_terraform_module_publish_pull() {
-    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-terraform".to_owned(), "terraform".to_owned())])));
+    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(
+        std::collections::HashMap::from([("my-terraform".to_owned(), "terraform".to_owned())]),
+    ));
     let tmp = TempDir::new().unwrap();
 
     let module_bytes = b"fake terraform module tarball";
@@ -734,14 +755,13 @@ fn minimal_wheel(name: &str, version: &str) -> Vec<u8> {
     use std::io::Write as _;
 
     let dist_name = format!("{}-{}.dist-info", name.replace('-', "_"), version);
-    let metadata = format!(
-        "Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n"
-    );
+    let metadata = format!("Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n");
     let mut buf = std::io::Cursor::new(Vec::new());
     {
         let mut zw = zip::ZipWriter::new(&mut buf);
         let opts = zip::write::SimpleFileOptions::default();
-        zw.start_file(format!("{dist_name}/METADATA"), opts).unwrap();
+        zw.start_file(format!("{dist_name}/METADATA"), opts)
+            .unwrap();
         zw.write_all(metadata.as_bytes()).unwrap();
         zw.finish().unwrap();
     }
@@ -785,7 +805,9 @@ fn pypi_upload(url: &str, name: &str, version: &str, file: &std::path::Path) -> 
 
 #[test]
 fn local_pypi_publish_pull() {
-    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-pypi".to_owned(), "pypi".to_owned())])));
+    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(
+        std::collections::HashMap::from([("my-pypi".to_owned(), "pypi".to_owned())]),
+    ));
     let tmp = TempDir::new().unwrap();
 
     let wheel_bytes = minimal_wheel("myapp", "1.0.0");
@@ -800,10 +822,8 @@ fn local_pypi_publish_pull() {
     assert_eq!(status, 200, "pypi publish: expected 200, got {status}");
 
     // GET simple index page
-    let (simple_status, simple_body) = get(&format!(
-        "{}/simple/myapp/",
-        proxy.proxy_url("my-pypi")
-    ));
+    let (simple_status, simple_body) =
+        get(&format!("{}/simple/myapp/", proxy.proxy_url("my-pypi")));
     assert_eq!(
         simple_status, 200,
         "pypi simple: expected 200, got {simple_status}"
@@ -862,7 +882,9 @@ fn minimal_conda_tar_bz2(name: &str, version: &str, build: &str) -> Vec<u8> {
 
 #[test]
 fn local_conda_publish_pull() {
-    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(std::collections::HashMap::from([("my-conda".to_owned(), "conda".to_owned())])));
+    let proxy = LocalProxy::start(batlehub_web::RegistryMap::from(
+        std::collections::HashMap::from([("my-conda".to_owned(), "conda".to_owned())]),
+    ));
     let tmp = TempDir::new().unwrap();
 
     let pkg_bytes = minimal_conda_tar_bz2("numpy-stub", "1.26.0", "py311h0_0");

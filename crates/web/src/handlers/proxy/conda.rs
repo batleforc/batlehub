@@ -14,7 +14,11 @@ use super::common::{
     collect_payload, extract_signature_headers, proxy_stream, require_local_mode,
     require_registry_type,
 };
-use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+use crate::{
+    error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
+    RegistryModeMap,
+};
+use batlehub_core::entities::NotificationEventType;
 
 // ── Proxy routes ──────────────────────────────────────────────────────────────
 
@@ -67,11 +71,15 @@ pub async fn conda_repodata(
         // Fetch upstream repodata via ProxyService (cached), then merge local packages.
         let pkg = PackageId::new(&registry, "repodata", &platform).with_artifact("repodata.json");
 
-        match svc.handle(batlehub_core::services::ProxyRequest {
-            package_id: pkg,
-            identity: identity.0.clone(),
-            resource_type: "releases:read".to_owned(),
-        }).await.map_err(AppError::from)? {
+        match svc
+            .handle(batlehub_core::services::ProxyRequest {
+                package_id: pkg,
+                identity: identity.0.clone(),
+                resource_type: "releases:read".to_owned(),
+            })
+            .await
+            .map_err(AppError::from)?
+        {
             batlehub_core::services::ProxyResponse::Denied { reason } => {
                 return Err(AppError::forbidden(reason));
             }
@@ -105,7 +113,14 @@ pub async fn conda_repodata(
 
     // Proxy mode: stream through cache.
     let pkg = PackageId::new(&registry, "repodata", &platform).with_artifact("repodata.json");
-    proxy_stream(svc, pkg, identity, "releases:read", Some("application/json")).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        "releases:read",
+        Some("application/json"),
+    )
+    .await
 }
 
 /// Merge a locally-built repodata JSON overlay into upstream `repodata.json` bytes.
@@ -117,9 +132,7 @@ fn merge_repodata(upstream_bytes: &[u8], local: &serde_json::Value) -> Vec<u8> {
 
     for key in ["packages", "packages.conda"] {
         if let Some(local_pkgs) = local.get(key).and_then(|v| v.as_object()) {
-            let upstream_pkgs = upstream
-                .get_mut(key)
-                .and_then(|v| v.as_object_mut());
+            let upstream_pkgs = upstream.get_mut(key).and_then(|v| v.as_object_mut());
             if let Some(up) = upstream_pkgs {
                 for (filename, entry) in local_pkgs {
                     up.insert(filename.clone(), entry.clone());
@@ -168,7 +181,14 @@ pub async fn conda_current_repodata(
 
     let pkg =
         PackageId::new(&registry, "repodata", &platform).with_artifact("current_repodata.json");
-    proxy_stream(svc, pkg, identity, "releases:read", Some("application/json")).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        "releases:read",
+        Some("application/json"),
+    )
+    .await
 }
 
 /// Download a conda package file (`.conda` or `.tar.bz2`) through the proxy cache.
@@ -247,7 +267,14 @@ pub async fn conda_file_download(
         .or_else(|| filename.strip_suffix(".tar.bz2"))
         .unwrap_or(&filename);
     let pkg = PackageId::new(&registry, stem, &platform).with_artifact(&filename);
-    proxy_stream(svc, pkg, identity, "releases:read", Some("application/octet-stream")).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        "releases:read",
+        Some("application/octet-stream"),
+    )
+    .await
 }
 
 /// Extract package name from a conda filename.
@@ -303,6 +330,7 @@ fn conda_version_from_filename(filename: &str) -> Option<String> {
     ),
     security(("bearer_token" = [])),
 )]
+#[allow(clippy::too_many_arguments)]
 #[post("/proxy/{registry}/{platform}/")]
 pub async fn conda_publish(
     req: HttpRequest,
@@ -312,6 +340,7 @@ pub async fn conda_publish(
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, platform) = path.into_inner();
     require_registry_type(&registry, "conda", &map)?;
@@ -351,6 +380,7 @@ pub async fn conda_publish(
     });
 
     let (signature_bytes, signature_type) = extract_signature_headers(&req);
+    let actor = identity.0.user_id.clone().unwrap_or_default();
 
     let quota_check = local_svc
         .publish(PublishRequest {
@@ -366,6 +396,15 @@ pub async fn conda_publish(
         })
         .await
         .map_err(AppError::from)?;
+
+    super::common::dispatch_notification(
+        &notification_svc,
+        NotificationEventType::PackagePublished,
+        &registry,
+        &pkg_info.name,
+        Some(version_key),
+        &actor,
+    );
 
     let mut resp = HttpResponse::Ok();
     for (header, value) in quota_check.headers() {

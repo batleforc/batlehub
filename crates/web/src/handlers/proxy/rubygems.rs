@@ -13,7 +13,11 @@ use super::common::{
     append_signature_headers, collect_payload, extract_signature_headers, proxy_stream,
     require_local_mode, require_registry_type,
 };
-use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+use crate::{
+    error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
+    RegistryModeMap,
+};
+use batlehub_core::entities::NotificationEventType;
 
 // ── Proxy & shared download routes ───────────────────────────────────────────
 
@@ -396,6 +400,7 @@ pub async fn gem_gemspec(
     ),
     security(("bearer_token" = [])),
 )]
+#[allow(clippy::too_many_arguments)]
 #[post("/proxy/{registry}/api/v1/gems")]
 pub async fn gem_publish(
     req: HttpRequest,
@@ -405,6 +410,7 @@ pub async fn gem_publish(
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
     require_registry_type(&registry, "rubygems", &map)?;
@@ -430,6 +436,7 @@ pub async fn gem_publish(
     let version = gem_meta.version.clone();
 
     let (signature_bytes, signature_type) = extract_signature_headers(&req);
+    let actor = identity.0.user_id.clone().unwrap_or_default();
 
     let quota_check = local_svc
         .publish(PublishRequest {
@@ -445,6 +452,15 @@ pub async fn gem_publish(
         })
         .await
         .map_err(AppError::from)?;
+
+    super::common::dispatch_notification(
+        &notification_svc,
+        NotificationEventType::PackagePublished,
+        &registry,
+        &name,
+        Some(version.clone()),
+        &actor,
+    );
 
     let mut resp = HttpResponse::Ok();
     for (header, value) in quota_check.headers() {
@@ -486,15 +502,26 @@ pub async fn gem_yank(
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
     require_registry_type(&registry, "rubygems", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
+    let actor = identity.0.user_id.clone().unwrap_or_default();
     local_svc
         .yank(&registry, &query.gem_name, &query.version, &identity.0)
         .await
         .map_err(AppError::from)?;
+
+    super::common::dispatch_notification(
+        &notification_svc,
+        NotificationEventType::PackageYanked,
+        &registry,
+        &query.gem_name,
+        Some(query.version.clone()),
+        &actor,
+    );
 
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "message": format!("Successfully yanked gem: {} ({})", query.gem_name, query.version)
@@ -526,15 +553,26 @@ pub async fn gem_unyank(
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
     require_registry_type(&registry, "rubygems", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
+    let actor = identity.0.user_id.clone().unwrap_or_default();
     local_svc
         .unyank(&registry, &query.gem_name, &query.version, &identity.0)
         .await
         .map_err(AppError::from)?;
+
+    super::common::dispatch_notification(
+        &notification_svc,
+        NotificationEventType::PackageUnyanked,
+        &registry,
+        &query.gem_name,
+        Some(query.version.clone()),
+        &actor,
+    );
 
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "message": format!("Successfully unyanked gem: {} ({})", query.gem_name, query.version)

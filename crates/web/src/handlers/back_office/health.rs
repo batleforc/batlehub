@@ -201,39 +201,49 @@ pub async fn registry_health(
                     package_name: r.get("package_name"),
                     version: r.get("package_version"),
                     error_type: r.get::<String, _>("outcome"),
-                    reason: r.get::<Option<String>, _>("deny_reason").unwrap_or_default(),
+                    reason: r
+                        .get::<Option<String>, _>("deny_reason")
+                        .unwrap_or_default(),
                 })
                 .collect();
 
-            (registry, cached_artifact_count, total_size_bytes, recent_errors)
+            (
+                registry,
+                cached_artifact_count,
+                total_size_bytes,
+                recent_errors,
+            )
         }
     });
 
     let per_reg_results: Vec<(String, i64, Option<i64>, Vec<RecentErrorDto>)> =
         join_all(per_reg_futures).await;
 
-    let mut per_reg_map: HashMap<String, (i64, Option<i64>, Vec<RecentErrorDto>)> =
-        per_reg_results
-            .into_iter()
-            .map(|(reg, art_cnt, size, errors)| (reg, (art_cnt, size, errors)))
-            .collect();
+    let mut per_reg_map: HashMap<String, (i64, Option<i64>, Vec<RecentErrorDto>)> = per_reg_results
+        .into_iter()
+        .map(|(reg, art_cnt, size, errors)| (reg, (art_cnt, size, errors)))
+        .collect();
 
     // ── Assemble final response ───────────────────────────────────────────────
     let mut result: Vec<RegistryHealthDto> = registries
         .into_iter()
         .map(|(registry, registry_type)| {
             let package_count = pkg_counts.get(&registry).copied().unwrap_or(0);
-            let (last_pull_at, pulls_last_hour, pulls_last_day) = event_stats
-                .remove(&registry)
-                .unwrap_or((None, 0, 0));
-            let (cached_artifact_count, total_size_bytes, recent_errors) = per_reg_map
-                .remove(&registry)
-                .unwrap_or((0, None, vec![]));
+            let (last_pull_at, pulls_last_hour, pulls_last_day) =
+                event_stats.remove(&registry).unwrap_or((None, 0, 0));
+            let (cached_artifact_count, total_size_bytes, recent_errors) =
+                per_reg_map.remove(&registry).unwrap_or((0, None, vec![]));
 
             let mut roles = Vec::new();
-            if anon_set.contains(&registry) { roles.push("anonymous".to_string()); }
-            if user_set.contains(&registry) { roles.push("user".to_string()); }
-            if admin_set.contains(&registry) { roles.push("admin".to_string()); }
+            if anon_set.contains(&registry) {
+                roles.push("anonymous".to_string());
+            }
+            if user_set.contains(&registry) {
+                roles.push("user".to_string());
+            }
+            if admin_set.contains(&registry) {
+                roles.push("admin".to_string());
+            }
             let groups: Vec<String> = groups_map
                 .iter()
                 .filter(|(_, regs)| regs.contains(&registry))

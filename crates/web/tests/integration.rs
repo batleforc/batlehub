@@ -24,18 +24,21 @@ use utoipa_actix_web::AppExt;
 
 use base64::Engine as _;
 use batlehub_adapters::auth::StaticTokenAuthProvider;
+use batlehub_adapters::cache::InMemoryBannerStore;
 use batlehub_adapters::cache::InMemoryCacheStore;
 use batlehub_adapters::in_memory::{
     InMemoryPackageRepository as InMemoryRepo, InMemoryStorageBackend as InMemoryStorage,
     NoopArtifactMetaRepository as NoopArtifactMeta, NullUserTokenRepository as NullTokenRepository,
 };
 use batlehub_adapters::local_registry::InMemoryLocalRegistry;
+use batlehub_adapters::notification::InMemoryNotificationStore;
 use batlehub_adapters::rate_limit::{InMemoryIpBlockStore, InMemoryRateLimitStore};
 use batlehub_config::schema::{
     GroupRateLimitConfig, RateLimitConfig, RateLimitEnforcement, RegistryMode,
 };
 use batlehub_core::entities::Identity;
 use batlehub_core::entities::{NamespacePackage, TeamNamespace, Visibility};
+use batlehub_core::ports::BannerPort;
 use batlehub_core::ports::{BetaChannelEntry, BetaChannelPort, IpBlockStore, TeamNamespacePort};
 use batlehub_core::{
     entities::{AccessEvent, PackageId, PackageMetadata, PackageStatus, Role},
@@ -50,13 +53,11 @@ use batlehub_core::{
         RegistryPolicy,
     },
 };
-use batlehub_adapters::cache::InMemoryBannerStore;
-use batlehub_core::ports::BannerPort;
+use batlehub_web::services::{BannerService, ConfigReloadService, HotConfigBuilder};
 use batlehub_web::{
-    configure_app, new_access_lock, healthz, prometheus_metrics, AuthMiddlewareFactory,
+    configure_app, healthz, new_access_lock, prometheus_metrics, AuthMiddlewareFactory,
     RateLimitMiddlewareFactory, RateLimitService, RegistryModeMap,
 };
-use batlehub_web::services::{BannerService, ConfigReloadService, HotConfigBuilder};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use uuid::Uuid;
 
@@ -213,7 +214,10 @@ async fn make_app(
         ("github".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
         ("npm".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
         ("cargo".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
-        ("openvsx".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
+        (
+            "openvsx".to_owned(),
+            Arc::new(rbac_policy(repo_dyn.clone())),
+        ),
         ("go".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
         ("vscode".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
     ]
@@ -287,7 +291,10 @@ async fn make_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
@@ -344,7 +351,10 @@ async fn make_app_ext(
         ("github".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
         ("npm".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
         ("cargo".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
-        ("openvsx".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
+        (
+            "openvsx".to_owned(),
+            Arc::new(rbac_policy(repo_dyn.clone())),
+        ),
         ("go".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
         ("vscode".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
     ]
@@ -418,7 +428,10 @@ async fn make_app_ext(
             std::collections::HashMap::new(),
             proxy_metrics,
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
@@ -553,7 +566,10 @@ async fn make_app_with_ip_store(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
@@ -625,7 +641,10 @@ async fn make_app_with_beta_store(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
@@ -749,7 +768,10 @@ async fn make_rate_limited_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
@@ -1837,7 +1859,10 @@ async fn make_group_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
@@ -2288,7 +2313,10 @@ async fn make_app_with_tokens(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
@@ -2684,7 +2712,10 @@ async fn make_app_with_cargo_index(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
@@ -3361,7 +3392,10 @@ async fn make_unavailable_npm_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
@@ -3802,7 +3836,10 @@ async fn audit_quick_forwards_to_upstream_and_returns_response() {
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
@@ -4024,7 +4061,10 @@ async fn cargo_registry_index_fetches_from_upstream_and_returns_content() {
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
@@ -4106,8 +4146,11 @@ async fn make_local_registry_app(
         FixedRegistry::new("cargo") as Arc<dyn RegistryClient>,
     )]
     .into();
-    let policies: HashMap<String, Arc<RegistryPolicy>> =
-        [("local-cargo".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
+    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
+        "local-cargo".to_owned(),
+        Arc::new(rbac_policy(repo_dyn.clone())),
+    )]
+    .into();
 
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
@@ -4175,7 +4218,10 @@ async fn make_local_registry_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
@@ -4536,8 +4582,11 @@ async fn make_local_npm_app(
         FixedRegistry::new("npm") as Arc<dyn RegistryClient>,
     )]
     .into();
-    let policies: HashMap<String, Arc<RegistryPolicy>> =
-        [("local-npm".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
+    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
+        "local-npm".to_owned(),
+        Arc::new(rbac_policy(repo_dyn.clone())),
+    )]
+    .into();
 
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
@@ -4594,7 +4643,10 @@ async fn make_local_npm_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
@@ -4798,8 +4850,11 @@ async fn make_local_vsx_app(
         FixedRegistry::new("openvsx") as Arc<dyn RegistryClient>,
     )]
     .into();
-    let policies: HashMap<String, Arc<RegistryPolicy>> =
-        [("local-vsx".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
+    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
+        "local-vsx".to_owned(),
+        Arc::new(rbac_policy(repo_dyn.clone())),
+    )]
+    .into();
 
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
@@ -4856,7 +4911,10 @@ async fn make_local_vsx_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
@@ -5007,8 +5065,11 @@ async fn make_local_go_app(
         FixedRegistry::new("goproxy") as Arc<dyn RegistryClient>,
     )]
     .into();
-    let policies: HashMap<String, Arc<RegistryPolicy>> =
-        [("local-go".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
+    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
+        "local-go".to_owned(),
+        Arc::new(rbac_policy(repo_dyn.clone())),
+    )]
+    .into();
 
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
@@ -5065,7 +5126,10 @@ async fn make_local_go_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
@@ -5493,8 +5557,11 @@ async fn make_local_maven_app(
             FixedRegistry::new("maven") as Arc<dyn RegistryClient>,
         );
     }
-    let policies: HashMap<String, Arc<RegistryPolicy>> =
-        [("local-maven".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
+    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
+        "local-maven".to_owned(),
+        Arc::new(rbac_policy(repo_dyn.clone())),
+    )]
+    .into();
 
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
@@ -5550,7 +5617,10 @@ async fn make_local_maven_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
@@ -5711,8 +5781,11 @@ async fn make_local_terraform_app(
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
 
     let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
-    let policies: HashMap<String, Arc<RegistryPolicy>> =
-        [("local-tf".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
+    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
+        "local-tf".to_owned(),
+        Arc::new(rbac_policy(repo_dyn.clone())),
+    )]
+    .into();
 
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
@@ -5768,7 +5841,10 @@ async fn make_local_terraform_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
@@ -6267,8 +6343,11 @@ async fn make_local_composer_app(
         FixedRegistry::new("composer") as Arc<dyn RegistryClient>,
     )]
     .into();
-    let policies: HashMap<String, Arc<RegistryPolicy>> =
-        [("local-composer".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
+    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
+        "local-composer".to_owned(),
+        Arc::new(rbac_policy(repo_dyn.clone())),
+    )]
+    .into();
 
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
@@ -6324,7 +6403,10 @@ async fn make_local_composer_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
@@ -7244,7 +7326,10 @@ async fn make_app_with_ns_store(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
 
@@ -7278,8 +7363,11 @@ async fn make_ns_cargo_app(
         FixedRegistry::new("cargo") as Arc<dyn RegistryClient>,
     )]
     .into();
-    let policies: HashMap<String, Arc<RegistryPolicy>> =
-        [("local-cargo".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
+    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
+        "local-cargo".to_owned(),
+        Arc::new(rbac_policy(repo_dyn.clone())),
+    )]
+    .into();
 
     // Build the local registry service WITH the namespace store so enforcement fires.
     let backend = Arc::new(InMemoryLocalRegistry::new());
@@ -7339,8 +7427,7 @@ async fn make_ns_cargo_app(
     let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
         std::collections::HashMap::new();
     let mode_map = RegistryModeMap::default();
-    mode_map
-        .insert("local-cargo".to_owned(), RegistryMode::Local);
+    mode_map.insert("local-cargo".to_owned(), RegistryMode::Local);
 
     let (app, _) = App::new()
         .into_utoipa_app()
@@ -7356,7 +7443,10 @@ async fn make_ns_cargo_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
 
@@ -7414,8 +7504,11 @@ async fn make_ns_cargo_app_with_backend(
         FixedRegistry::new("cargo") as Arc<dyn RegistryClient>,
     )]
     .into();
-    let policies: HashMap<String, Arc<RegistryPolicy>> =
-        [("local-cargo".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
+    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
+        "local-cargo".to_owned(),
+        Arc::new(rbac_policy(repo_dyn.clone())),
+    )]
+    .into();
 
     let local_svc = Arc::new(LocalRegistryService {
         backend: backend.clone(),
@@ -7473,8 +7566,7 @@ async fn make_ns_cargo_app_with_backend(
     let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
         std::collections::HashMap::new();
     let mode_map = RegistryModeMap::default();
-    mode_map
-        .insert("local-cargo".to_owned(), RegistryMode::Local);
+    mode_map.insert("local-cargo".to_owned(), RegistryMode::Local);
 
     let (app, _) = App::new()
         .into_utoipa_app()
@@ -7490,7 +7582,10 @@ async fn make_ns_cargo_app_with_backend(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
 
@@ -8340,8 +8435,11 @@ async fn make_ns_upload_app(
         FixedRegistry::new(registry_type) as Arc<dyn RegistryClient>,
     )]
     .into();
-    let policies: HashMap<String, Arc<RegistryPolicy>> =
-        [(registry_name.to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
+    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
+        registry_name.to_owned(),
+        Arc::new(rbac_policy(repo_dyn.clone())),
+    )]
+    .into();
 
     let backend = Arc::new(InMemoryLocalRegistry::new());
     let local_svc = Arc::new(LocalRegistryService {
@@ -8391,14 +8489,14 @@ async fn make_ns_upload_app(
         explore_user: std::collections::HashSet::new(),
         explore_admin: std::collections::HashSet::new(),
     });
-    let registry_map = batlehub_web::RegistryMap::from(
-        std::collections::HashMap::from([(registry_name.to_string(), registry_type.to_string())])
-    );
+    let registry_map = batlehub_web::RegistryMap::from(std::collections::HashMap::from([(
+        registry_name.to_string(),
+        registry_type.to_string(),
+    )]));
     let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
         std::collections::HashMap::new();
     let mode_map = RegistryModeMap::default();
-    mode_map
-        .insert(registry_name.to_owned(), RegistryMode::Local);
+    mode_map.insert(registry_name.to_owned(), RegistryMode::Local);
 
     let (app, _) = App::new()
         .into_utoipa_app()
@@ -8414,7 +8512,10 @@ async fn make_ns_upload_app(
             std::collections::HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
 
@@ -9038,16 +9139,22 @@ async fn make_banner_app() -> impl actix_web::dev::Service<
             HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(banner_svc))
         .app_data(actix_web::web::Data::new(reload_svc))
+        .app_data(actix_web::web::Data::new(std::collections::HashMap::<
+            String,
+            batlehub_web::CargoIndexProxy,
+        >::new()))
         .app_data(actix_web::web::Data::new(
-            std::collections::HashMap::<String, batlehub_web::CargoIndexProxy>::new(),
-        ))
-        .app_data(actix_web::web::Data::new(batlehub_web::RegistryModeMap::default()));
+            batlehub_web::RegistryModeMap::default(),
+        ));
 
     init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
 }
@@ -9121,11 +9228,7 @@ async fn clear_banner_removes_it() {
     .await;
     assert_eq!(del_resp.status(), 204);
 
-    let get_resp = call_service(
-        &app,
-        TestRequest::get().uri("/api/v1/banner").to_request(),
-    )
-    .await;
+    let get_resp = call_service(&app, TestRequest::get().uri("/api/v1/banner").to_request()).await;
     assert_eq!(get_resp.status(), 200);
     let body: Value = read_body_json(get_resp).await;
     assert!(body.is_null());
@@ -9199,15 +9302,21 @@ async fn reload_config_returns_503_when_disabled() {
             HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(reload_svc))
+        .app_data(actix_web::web::Data::new(std::collections::HashMap::<
+            String,
+            batlehub_web::CargoIndexProxy,
+        >::new()))
         .app_data(actix_web::web::Data::new(
-            std::collections::HashMap::<String, batlehub_web::CargoIndexProxy>::new(),
-        ))
-        .app_data(actix_web::web::Data::new(batlehub_web::RegistryModeMap::default()));
+            batlehub_web::RegistryModeMap::default(),
+        ));
     let app = init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await;
 
     let resp = call_service(
@@ -9277,11 +9386,7 @@ async fn config_reload_endpoints_require_admin() {
             .insert_header(("Authorization", bearer(USER_TOKEN)))
             .to_request();
         let resp = call_service(&app, req).await;
-        assert_eq!(
-            resp.status(),
-            403,
-            "{method} {uri} should require admin"
-        );
+        assert_eq!(resp.status(), 403, "{method} {uri} should require admin");
     }
 }
 
@@ -9535,7 +9640,11 @@ async fn list_package_owners_returns_200_for_admin() {
         .to_request();
     let resp = call_service(&app, req).await;
     // ownership is not configured in make_app → 503 or 403 for admin
-    assert!(resp.status().is_success() || resp.status().is_client_error() || resp.status().is_server_error());
+    assert!(
+        resp.status().is_success()
+            || resp.status().is_client_error()
+            || resp.status().is_server_error()
+    );
 }
 
 #[actix_web::test]
@@ -9544,7 +9653,9 @@ async fn add_package_owner_requires_admin() {
     let req = TestRequest::post()
         .uri("/api/v1/admin/registries/npm/packages/lodash/owners")
         .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .set_json(serde_json::json!({"principal_type": "user", "principal_id": "alice", "role": "admin"}))
+        .set_json(
+            serde_json::json!({"principal_type": "user", "principal_id": "alice", "role": "admin"}),
+        )
         .to_request();
     assert_eq!(call_service(&app, req).await.status(), 403);
 }
@@ -9649,7 +9760,12 @@ async fn make_explore_app(
     let reg_names = ["github", "npm", "cargo", "openvsx", "go", "vscode"];
     let registries: HashMap<String, Arc<dyn RegistryClient>> = reg_names
         .iter()
-        .map(|n| (n.to_string(), FixedRegistry::new(*n) as Arc<dyn RegistryClient>))
+        .map(|n| {
+            (
+                n.to_string(),
+                FixedRegistry::new(*n) as Arc<dyn RegistryClient>,
+            )
+        })
         .collect();
     let policies: HashMap<String, Arc<RegistryPolicy>> = reg_names
         .iter()
@@ -9677,8 +9793,7 @@ async fn make_explore_app(
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
 
-    let regs: std::collections::HashSet<String> =
-        reg_names.iter().map(|s| s.to_string()).collect();
+    let regs: std::collections::HashSet<String> = reg_names.iter().map(|s| s.to_string()).collect();
     let access_config = new_access_lock(batlehub_web::AccessConfig {
         anonymous: regs.clone(),
         user: regs.clone(),
@@ -9716,7 +9831,10 @@ async fn make_explore_app(
             HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
@@ -9743,7 +9861,9 @@ async fn explore_packages_returns_empty_list_initially() {
 #[actix_web::test]
 async fn explore_packages_anonymous_returns_empty_with_explore_access() {
     let app = make_explore_app(InMemoryRepo::new()).await;
-    let req = TestRequest::get().uri("/api/v1/explore/packages").to_request();
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/packages")
+        .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
 }
@@ -9824,7 +9944,9 @@ async fn explore_package_detail_returns_empty_versions_for_unknown_package() {
     assert_eq!(body["registry"], "npm");
     assert_eq!(body["name"], "lodash");
     assert_eq!(body["versions"], serde_json::json!([]));
-    assert!(body["gate"]["registry_accessible"].as_bool().unwrap_or(false));
+    assert!(body["gate"]["registry_accessible"]
+        .as_bool()
+        .unwrap_or(false));
 }
 
 #[actix_web::test]
@@ -9837,7 +9959,9 @@ async fn explore_package_detail_inaccessible_registry() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
-    assert!(!body["gate"]["registry_accessible"].as_bool().unwrap_or(true));
+    assert!(!body["gate"]["registry_accessible"]
+        .as_bool()
+        .unwrap_or(true));
 }
 
 #[actix_web::test]
@@ -10074,7 +10198,10 @@ async fn make_rubygems_proxy_app() -> impl actix_web::dev::Service<
             HashMap::new(),
             Arc::new(ProxyMetrics::new(&[])),
             None,
-            None, // sbom_svc
+            None,                                       // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
@@ -10271,8 +10398,11 @@ async fn make_local_nuget_app(
             FixedRegistry::new("nuget") as Arc<dyn RegistryClient>,
         );
     }
-    let policies: HashMap<String, Arc<RegistryPolicy>> =
-        [("local-nuget".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
+    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
+        "local-nuget".to_owned(),
+        Arc::new(rbac_policy(repo_dyn.clone())),
+    )]
+    .into();
 
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
@@ -10329,6 +10459,9 @@ async fn make_local_nuget_app(
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
         ))
         .split_for_parts();
     let app = app
@@ -10350,7 +10483,10 @@ async fn nuget_service_index_returns_valid_json() {
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
     assert_eq!(body["version"], "3.0.0");
-    assert!(body["resources"].as_array().map(|a| !a.is_empty()).unwrap_or(false));
+    assert!(body["resources"]
+        .as_array()
+        .map(|a| !a.is_empty())
+        .unwrap_or(false));
 }
 
 #[actix_web::test]
@@ -10433,7 +10569,11 @@ async fn nuget_xnuget_apikey_header_authenticates() {
         .set_payload(body)
         .to_request();
     let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 201, "X-NuGet-ApiKey should authenticate like Bearer");
+    assert_eq!(
+        resp.status(),
+        201,
+        "X-NuGet-ApiKey should authenticate like Bearer"
+    );
 }
 
 #[actix_web::test]
@@ -10539,7 +10679,10 @@ async fn nuget_flat_download_local_returns_nupkg() {
     let resp_dl = call_service(&app, req_dl).await;
     assert_eq!(resp_dl.status(), 200);
     let bytes = read_body(resp_dl).await;
-    assert!(!bytes.is_empty(), "nupkg download should return artifact bytes");
+    assert!(
+        !bytes.is_empty(),
+        "nupkg download should return artifact bytes"
+    );
 }
 
 #[actix_web::test]
@@ -10564,8 +10707,14 @@ async fn nuget_flat_download_local_returns_nuspec() {
     assert_eq!(resp_nuspec.status(), 200);
     let body_bytes = read_body(resp_nuspec).await;
     let xml = std::str::from_utf8(&body_bytes).unwrap();
-    assert!(xml.contains("<id>NuspecLib</id>"), "nuspec should contain the package id");
-    assert!(xml.contains("<version>2.0.0</version>"), "nuspec should contain the version");
+    assert!(
+        xml.contains("<id>NuspecLib</id>"),
+        "nuspec should contain the package id"
+    );
+    assert!(
+        xml.contains("<version>2.0.0</version>"),
+        "nuspec should contain the version"
+    );
 }
 
 #[actix_web::test]

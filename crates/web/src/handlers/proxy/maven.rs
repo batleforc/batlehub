@@ -18,9 +18,14 @@ use batlehub_core::{
 };
 
 use super::common::{
-    collect_payload, collect_storage_stream, proxy_stream, require_local_mode, require_registry_type,
+    collect_payload, collect_storage_stream, proxy_stream, require_local_mode,
+    require_registry_type,
 };
-use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+use crate::{
+    error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
+    RegistryModeMap,
+};
+use batlehub_core::entities::NotificationEventType;
 
 fn content_type_for(filename: &str) -> &'static str {
     if filename.ends_with(".jar") {
@@ -408,6 +413,7 @@ pub async fn maven_get(
     ),
     security(("bearer_token" = [])),
 )]
+#[allow(clippy::too_many_arguments)]
 #[put("/proxy/{registry}/maven2/{path:.*}")]
 pub async fn maven_put(
     path: web::Path<(String, String)>,
@@ -416,6 +422,7 @@ pub async fn maven_put(
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, maven_path) = path.into_inner();
     require_registry_type(&registry, "maven", &map)?;
@@ -477,6 +484,8 @@ pub async fn maven_put(
                 "yanked": false,
             });
 
+            let actor = identity.0.user_id.clone().unwrap_or_default();
+
             let quota_check = local_svc
                 .publish(PublishRequest {
                     registry: registry.clone(),
@@ -491,6 +500,15 @@ pub async fn maven_put(
                 })
                 .await
                 .map_err(AppError::from)?;
+
+            super::common::dispatch_notification(
+                &notification_svc,
+                NotificationEventType::PackagePublished,
+                &registry,
+                &name,
+                Some(resolved_version),
+                &actor,
+            );
 
             let mut resp = HttpResponse::Created();
             if let Some(limit) = quota_check.bytes_limit {
@@ -512,7 +530,10 @@ mod tests {
 
     #[test]
     fn content_type_jar() {
-        assert_eq!(content_type_for("artifact-1.0.jar"), "application/java-archive");
+        assert_eq!(
+            content_type_for("artifact-1.0.jar"),
+            "application/java-archive"
+        );
     }
 
     #[test]
@@ -550,7 +571,11 @@ mod tests {
     fn parse_maven_path_artifact() {
         let kind = parse_maven_path("r", "com/example/mylib/1.0.0/mylib-1.0.0.jar").unwrap();
         match kind {
-            MavenPathKind::Artifact { name, version, filename } => {
+            MavenPathKind::Artifact {
+                name,
+                version,
+                filename,
+            } => {
                 assert_eq!(name, "com.example:mylib");
                 assert_eq!(version, "1.0.0");
                 assert_eq!(filename, "mylib-1.0.0.jar");
@@ -644,7 +669,10 @@ mod tests {
     fn build_metadata_xml_excludes_yanked_versions() {
         let versions = vec![make_pkg("1.0.0", true), make_pkg("2.0.0", false)];
         let xml = build_metadata_xml("com.example", "mylib", &versions).unwrap();
-        assert!(!xml.contains("<version>1.0.0</version>"), "yanked version must not appear");
+        assert!(
+            !xml.contains("<version>1.0.0</version>"),
+            "yanked version must not appear"
+        );
         assert!(xml.contains("<version>2.0.0</version>"));
     }
 }

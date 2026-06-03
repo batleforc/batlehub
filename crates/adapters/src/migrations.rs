@@ -71,13 +71,24 @@ pub fn embedded_migrator() -> Migrator {
                 "access events indexes",
                 "../migrations/017_access_events_idx.sql"
             ),
-            mig!(
-                18,
-                "config changes",
-                "../migrations/018_config_changes.sql"
-            ),
+            mig!(18, "config changes", "../migrations/018_config_changes.sql"),
             mig!(19, "system kv", "../migrations/019_system_kv.sql"),
             mig!(20, "artifact sboms", "../migrations/020_artifact_sboms.sql"),
+            mig!(
+                21,
+                "access events covering idx",
+                "../migrations/021_access_events_covering_idx.sql"
+            ),
+            mig!(
+                22,
+                "notification subscriptions",
+                "../migrations/022_notification_subscriptions.sql"
+            ),
+            mig!(
+                23,
+                "inbound webhook events",
+                "../migrations/023_inbound_webhook_events.sql"
+            ),
         ]),
         ignore_missing: false,
         locking: true,
@@ -92,8 +103,8 @@ mod tests {
     #[test]
     fn embedded_migrator_has_all_migrations() {
         let m = embedded_migrator();
-        assert_eq!(m.migrations.len(), 20, "all 20 migrations must be embedded");
+        assert_eq!(m.migrations.len(), 23, "all 23 migrations must be embedded");
         assert_eq!(m.migrations[0].version, 1);
-        assert_eq!(m.migrations[19].version, 20);
+        assert_eq!(m.migrations[22].version, 23);
     }
 }

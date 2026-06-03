@@ -31,7 +31,9 @@ fn extract_cargo_deps(data: &Bytes) -> Vec<SbomDependency> {
     let gz = GzDecoder::new(data.as_ref());
     let mut archive = Archive::new(gz);
 
-    let Ok(entries) = archive.entries() else { return vec![] };
+    let Ok(entries) = archive.entries() else {
+        return vec![];
+    };
 
     for entry in entries.flatten() {
         let Ok(path) = entry.path() else { continue };
@@ -87,7 +89,10 @@ fn parse_cargo_toml_deps(content: &str) -> Vec<SbomDependency> {
                 rest.trim_matches('"').to_owned()
             } else if let Some(start) = rest.find("version = \"") {
                 let after = &rest[start + 11..];
-                after.find('"').map(|end| after[..end].to_owned()).unwrap_or_default()
+                after
+                    .find('"')
+                    .map(|end| after[..end].to_owned())
+                    .unwrap_or_default()
             } else {
                 String::new()
             };
@@ -95,7 +100,11 @@ fn parse_cargo_toml_deps(content: &str) -> Vec<SbomDependency> {
             if !name.is_empty() {
                 deps.push(SbomDependency {
                     name: name.to_owned(),
-                    version_req: if version.is_empty() { None } else { Some(version) },
+                    version_req: if version.is_empty() {
+                        None
+                    } else {
+                        Some(version)
+                    },
                     ecosystem: "cargo".into(),
                 });
             }
@@ -114,7 +123,9 @@ fn extract_npm_deps(data: &Bytes) -> Vec<SbomDependency> {
     let gz = GzDecoder::new(data.as_ref());
     let mut archive = Archive::new(gz);
 
-    let Ok(entries) = archive.entries() else { return vec![] };
+    let Ok(entries) = archive.entries() else {
+        return vec![];
+    };
 
     for entry in entries.flatten() {
         let Ok(path) = entry.path() else { continue };
@@ -136,7 +147,9 @@ fn extract_npm_deps(data: &Bytes) -> Vec<SbomDependency> {
 }
 
 fn parse_npm_package_json(content: &str) -> Vec<SbomDependency> {
-    let Ok(val) = serde_json::from_str::<serde_json::Value>(content) else { return vec![] };
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(content) else {
+        return vec![];
+    };
 
     let mut deps = Vec::new();
     for key in &["dependencies", "peerDependencies"] {
@@ -160,10 +173,14 @@ fn extract_maven_deps(data: &Bytes) -> Vec<SbomDependency> {
     use zip::ZipArchive;
 
     let cursor = Cursor::new(data.as_ref());
-    let Ok(mut archive) = ZipArchive::new(cursor) else { return vec![] };
+    let Ok(mut archive) = ZipArchive::new(cursor) else {
+        return vec![];
+    };
 
     for i in 0..archive.len() {
-        let Ok(mut file) = archive.by_index(i) else { continue };
+        let Ok(mut file) = archive.by_index(i) else {
+            continue;
+        };
         let name = file.name().to_owned();
         if name.ends_with("pom.xml") {
             let mut content = String::new();
@@ -255,7 +272,9 @@ fn parse_maven_pom(content: &str) -> Vec<SbomDependency> {
 
 fn extract_pypi_deps(data: &Bytes) -> Vec<SbomDependency> {
     // Try wheel (zip) first, then sdist (tar.gz).
-    extract_pypi_wheel(data).or_else(|| extract_pypi_sdist(data)).unwrap_or_default()
+    extract_pypi_wheel(data)
+        .or_else(|| extract_pypi_sdist(data))
+        .unwrap_or_default()
 }
 
 fn extract_pypi_wheel(data: &Bytes) -> Option<Vec<SbomDependency>> {
@@ -328,10 +347,14 @@ fn extract_nuget_deps(data: &Bytes) -> Vec<SbomDependency> {
     use zip::ZipArchive;
 
     let cursor = Cursor::new(data.as_ref());
-    let Ok(mut archive) = ZipArchive::new(cursor) else { return vec![] };
+    let Ok(mut archive) = ZipArchive::new(cursor) else {
+        return vec![];
+    };
 
     for i in 0..archive.len() {
-        let Ok(mut file) = archive.by_index(i) else { continue };
+        let Ok(mut file) = archive.by_index(i) else {
+            continue;
+        };
         let name = file.name().to_owned();
         if name.ends_with(".nuspec") {
             let mut content = String::new();
@@ -382,7 +405,11 @@ fn parse_nuspec_deps(content: &str) -> Vec<SbomDependency> {
                 if !id.is_empty() {
                     deps.push(SbomDependency {
                         name: id,
-                        version_req: if version.is_empty() { None } else { Some(version) },
+                        version_req: if version.is_empty() {
+                            None
+                        } else {
+                            Some(version)
+                        },
                         ecosystem: "nuget".into(),
                     });
                 }

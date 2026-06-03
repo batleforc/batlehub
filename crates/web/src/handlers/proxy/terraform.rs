@@ -17,7 +17,11 @@ use super::common::{
     append_signature_headers, collect_payload, collect_storage_stream, extract_signature_headers,
     proxy_stream, require_local_mode, require_registry_type,
 };
-use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
+use crate::{
+    error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
+    RegistryModeMap, UpstreamMap,
+};
+use batlehub_core::entities::NotificationEventType;
 
 fn base_url_from_req(req: &HttpRequest) -> String {
     let info = req.connection_info();
@@ -183,6 +187,7 @@ pub async fn tf_provider_download(
     ),
     security(("bearer_token" = [])),
 )]
+#[allow(clippy::too_many_arguments)]
 #[post("/proxy/{registry}/v1/providers/{namespace}/{ptype}/versions")]
 pub async fn tf_provider_upload(
     req: HttpRequest,
@@ -192,6 +197,7 @@ pub async fn tf_provider_upload(
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, ptype) = path.into_inner();
     require_registry_type(&registry, "terraform", &map)?;
@@ -217,12 +223,13 @@ pub async fn tf_provider_upload(
 
     let name = format!("providers/{namespace}/{ptype}");
     let (signature_bytes, signature_type) = extract_signature_headers(&req);
+    let actor = identity.0.user_id.clone().unwrap_or_default();
 
     let quota_check = local_svc
         .publish(PublishRequest {
             registry: registry.clone(),
-            name,
-            version,
+            name: name.clone(),
+            version: version.clone(),
             artifact: bytes,
             checksum,
             index_metadata,
@@ -232,6 +239,15 @@ pub async fn tf_provider_upload(
         })
         .await
         .map_err(AppError::from)?;
+
+    super::common::dispatch_notification(
+        &notification_svc,
+        NotificationEventType::PackagePublished,
+        &registry,
+        &name,
+        Some(version),
+        &actor,
+    );
 
     let mut resp = HttpResponse::Created();
     for (header, value) in quota_check.headers() {
@@ -371,16 +387,27 @@ pub async fn tf_provider_yank(
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, ptype, version) = path.into_inner();
     require_registry_type(&registry, "terraform", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     let name = format!("providers/{namespace}/{ptype}");
+    let actor = identity.0.user_id.clone().unwrap_or_default();
     local_svc
         .yank(&registry, &name, &version, &identity.0)
         .await
         .map_err(AppError::from)?;
+
+    super::common::dispatch_notification(
+        &notification_svc,
+        NotificationEventType::PackageYanked,
+        &registry,
+        &name,
+        Some(version.clone()),
+        &actor,
+    );
 
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "message": format!("yanked provider {namespace}/{ptype}@{version}")
@@ -413,16 +440,27 @@ pub async fn tf_provider_unyank(
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, ptype, version) = path.into_inner();
     require_registry_type(&registry, "terraform", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     let name = format!("providers/{namespace}/{ptype}");
+    let actor = identity.0.user_id.clone().unwrap_or_default();
     local_svc
         .unyank(&registry, &name, &version, &identity.0)
         .await
         .map_err(AppError::from)?;
+
+    super::common::dispatch_notification(
+        &notification_svc,
+        NotificationEventType::PackageUnyanked,
+        &registry,
+        &name,
+        Some(version.clone()),
+        &actor,
+    );
 
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "message": format!("unyanked provider {namespace}/{ptype}@{version}")
@@ -603,6 +641,7 @@ pub async fn tf_module_download(
     ),
     security(("bearer_token" = [])),
 )]
+#[allow(clippy::too_many_arguments)]
 #[post("/proxy/{registry}/v1/modules/{namespace}/{name}/{provider}/{version}")]
 pub async fn tf_module_upload(
     req: HttpRequest,
@@ -612,6 +651,7 @@ pub async fn tf_module_upload(
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, name, provider, version) = path.into_inner();
     require_registry_type(&registry, "terraform", &map)?;
@@ -630,12 +670,13 @@ pub async fn tf_module_upload(
 
     let pkg_name = format!("modules/{namespace}/{name}/{provider}");
     let (signature_bytes, signature_type) = extract_signature_headers(&req);
+    let actor = identity.0.user_id.clone().unwrap_or_default();
 
     let quota_check = local_svc
         .publish(PublishRequest {
             registry: registry.clone(),
-            name: pkg_name,
-            version,
+            name: pkg_name.clone(),
+            version: version.clone(),
             artifact: bytes,
             checksum,
             index_metadata,
@@ -645,6 +686,15 @@ pub async fn tf_module_upload(
         })
         .await
         .map_err(AppError::from)?;
+
+    super::common::dispatch_notification(
+        &notification_svc,
+        NotificationEventType::PackagePublished,
+        &registry,
+        &pkg_name,
+        Some(version),
+        &actor,
+    );
 
     let mut resp = HttpResponse::Created();
     for (header, value) in quota_check.headers() {
@@ -730,16 +780,27 @@ pub async fn tf_module_yank(
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, name, provider, version) = path.into_inner();
     require_registry_type(&registry, "terraform", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     let pkg_name = format!("modules/{namespace}/{name}/{provider}");
+    let actor = identity.0.user_id.clone().unwrap_or_default();
     local_svc
         .yank(&registry, &pkg_name, &version, &identity.0)
         .await
         .map_err(AppError::from)?;
+
+    super::common::dispatch_notification(
+        &notification_svc,
+        NotificationEventType::PackageYanked,
+        &registry,
+        &pkg_name,
+        Some(version.clone()),
+        &actor,
+    );
 
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "message": format!("yanked module {namespace}/{name}/{provider}@{version}")
@@ -773,16 +834,27 @@ pub async fn tf_module_unyank(
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, name, provider, version) = path.into_inner();
     require_registry_type(&registry, "terraform", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     let pkg_name = format!("modules/{namespace}/{name}/{provider}");
+    let actor = identity.0.user_id.clone().unwrap_or_default();
     local_svc
         .unyank(&registry, &pkg_name, &version, &identity.0)
         .await
         .map_err(AppError::from)?;
+
+    super::common::dispatch_notification(
+        &notification_svc,
+        NotificationEventType::PackageUnyanked,
+        &registry,
+        &pkg_name,
+        Some(version.clone()),
+        &actor,
+    );
 
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "message": format!("unyanked module {namespace}/{name}/{provider}@{version}")

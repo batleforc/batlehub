@@ -105,10 +105,10 @@ Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules, 
 
 ## Webhooks & notifications
 
-- [ ] Subscribe to notifications for specific packages, versions, or registries (new version published, version deprecated, package removed)
-- [ ] Multiple notification channels: email, Slack, Microsoft Teams, outbound webhooks
-- [ ] User-configurable notification preferences and channel configuration in the UI
-- [ ] Inbound webhook API so external systems (CI pipelines, security scanners) can push events into BatleHub and trigger notifications or policy updates
+- [x] Subscribe to notifications for specific packages, versions, or registries (new version published, version deprecated, package removed)
+- [x] Multiple notification channels: email, Slack, Microsoft Teams, outbound webhooks
+- [x] User-configurable notification preferences and channel configuration in the UI
+- [x] Inbound webhook API so external systems (CI pipelines, security scanners) can push events into BatleHub and trigger notifications or policy updates
 
 ---
 

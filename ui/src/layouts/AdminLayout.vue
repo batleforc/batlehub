@@ -12,6 +12,7 @@ import {
   FolderKey,
   FileJson,
   DatabaseZap,
+  Bell,
 } from "@lucide/vue";
 
 const route = useRoute();
@@ -27,6 +28,7 @@ const adminLinks = [
   { to: "/admin/team-namespaces", label: "Team Namespaces", icon: FolderKey },
   { to: "/admin/config-reload",  label: "Config Reload",   icon: RefreshCw },
   { to: "/admin/explore-cache",  label: "Explore Cache",   icon: DatabaseZap },
+  { to: "/admin/notifications",  label: "Notifications",   icon: Bell },
 ];
 
 function isActive(to: string) {

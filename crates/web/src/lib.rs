@@ -93,10 +93,16 @@ mod access_config_tests {
     use batlehub_core::entities::Identity;
 
     fn make_config() -> AccessConfig {
-        let regs: HashSet<String> = ["public", "user-only", "admin-only", "group-a-reg", "group-b-reg"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let regs: HashSet<String> = [
+            "public",
+            "user-only",
+            "admin-only",
+            "group-a-reg",
+            "group-b-reg",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         AccessConfig {
             anonymous: ["public"].iter().map(|s| s.to_string()).collect(),
             user: ["public", "user-only"]
@@ -364,7 +370,12 @@ impl RegistryModeMap {
     }
 
     pub fn get(&self, name: &str) -> RegistryMode {
-        self.0.read().unwrap().get(name).cloned().unwrap_or_default()
+        self.0
+            .read()
+            .unwrap()
+            .get(name)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn insert(&self, name: String, mode: RegistryMode) {
@@ -452,6 +463,7 @@ pub use middleware::RateLimitService;
         (name = "front-office",     description = "User-facing package information"),
         (name = "explore",          description = "Package explorer — browse and search across registries"),
         (name = "back-office",    description = "Admin management (requires Admin role)"),
+        (name = "notifications",  description = "Inbound webhook receiver — accepts events from external systems"),
     ),
     modifiers(&SecurityAddon),
 )]
@@ -491,6 +503,11 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             explore::invalidate_explore_cache,
             health::{clear_registry_cache, registry_health},
             ip_blocks::{block_ip, list_blocked_ips, unblock_ip},
+            notification::{
+                create_subscription, delete_subscription, get_subscription,
+                list_notification_channels, list_subscriptions, test_subscription,
+                update_subscription,
+            },
             ownership::{add_package_owner, list_package_owners, remove_package_owner},
             packages::{
                 block_package, bulk_block_packages, bulk_unblock_packages, invalidate_package,
@@ -518,10 +535,15 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             packages::{check_access, list_packages},
             registries::list_registries,
         },
+        inbound_webhook::{list_inbound_events, receive_inbound_webhook},
         proxy::{
             cargo::{
                 cargo_owners, cargo_publish, cargo_registry_config, cargo_registry_index,
                 cargo_unyank, cargo_yank, download_crate,
+            },
+            composer::{
+                composer_dist, composer_p2_metadata, composer_packages_json, composer_upload,
+                composer_yank,
             },
             // Register most-specific patterns first so actix-web resolves correctly:
             // cargo api/v1 (literal "api" segment) > cargo index (literal "registry" segment) >
@@ -530,26 +552,20 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             // openvsx vsix (literal "vsix") > npm audit (literal "/-/npm/v1/audit/quick") >
             // npm tarball (literal "tarball") > shared version metadata > shared packument
             // composer: upload/yank (literal "api") > p2 (literal "p2") > dist > packages.json
-            conda::{
-                conda_current_repodata, conda_file_download, conda_publish, conda_repodata,
-            },
-            composer::{
-                composer_dist, composer_p2_metadata, composer_packages_json, composer_upload,
-                composer_yank,
-            },
+            conda::{conda_current_repodata, conda_file_download, conda_publish, conda_repodata},
             github::{
                 download_asset, download_asset_by_name, download_raw, download_tarball,
                 download_zipball, get_release, list_releases,
             },
             goproxy::{goproxy_file, goproxy_latest, goproxy_list, goproxy_publish},
             maven::{maven_get, maven_put},
-            nuget::{
-                nuget_flat_download, nuget_flat_versions, nuget_publish, nuget_registration,
-                nuget_search, nuget_service_index, nuget_yank,
-            },
             npm::{
                 audit_quick, download_tarball as npm_download_tarball, get_packument, get_version,
                 npm_publish,
+            },
+            nuget::{
+                nuget_flat_download, nuget_flat_versions, nuget_publish, nuget_registration,
+                nuget_search, nuget_service_index, nuget_yank,
             },
             openvsx::{download_vsix, vsix_publish},
             pypi::{pypi_file_download, pypi_publish, pypi_simple_package, pypi_simple_root},
@@ -601,14 +617,14 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(maven_put);
     cfg.service(maven_get);
     // NuGet: publish (PUT) and yank (DELETE) before read routes; literal paths before wildcards
-    cfg.service(nuget_publish);       // PUT  .../api/v2/package
-    cfg.service(nuget_yank);          // DELETE .../v2/package/{id}/{version}
+    cfg.service(nuget_publish); // PUT  .../api/v2/package
+    cfg.service(nuget_yank); // DELETE .../v2/package/{id}/{version}
     cfg.service(nuget_service_index); // GET .../v3/index.json
-    cfg.service(nuget_registration);  // GET .../v3/registration5/{id}/index.json
+    cfg.service(nuget_registration); // GET .../v3/registration5/{id}/index.json
     cfg.service(nuget_flat_versions); // GET .../v3/flat/{id}/index.json
-    cfg.service(nuget_search);        // GET .../v3/query
+    cfg.service(nuget_search); // GET .../v3/query
     cfg.service(nuget_flat_download); // GET .../v3/flat/{id}/{version}/{filename}
-    // Terraform modules — longer paths first (unyank > yank > artifact > upload > download > versions)
+                                      // Terraform modules — longer paths first (unyank > yank > artifact > upload > download > versions)
     cfg.service(tf_module_unyank); // POST …/versions/{ver}/unyank
     cfg.service(tf_module_yank); // DELETE …/versions/{ver}
     cfg.service(tf_module_artifact); // GET …/{ver}/artifact
@@ -651,7 +667,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(conda_repodata); // GET …/{platform}/repodata.json
     cfg.service(conda_current_repodata); // GET …/{platform}/current_repodata.json
     cfg.service(conda_file_download); // GET …/{platform}/{filename}
-                                         // OpenVSX/VSCode VSIX publish (PUT) and download (GET) — same path, different method
+                                      // OpenVSX/VSCode VSIX publish (PUT) and download (GET) — same path, different method
     cfg.service(vsix_publish);
     cfg.service(download_vsix);
     // npm audit pass-through (literal "/-/npm/v1/audit/quick" path)
@@ -729,6 +745,17 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     // SBOM: export (literal "export") before per-artifact (parameterised path)
     cfg.service(export_org_sbom);
     cfg.service(get_artifact_sbom);
+    // Notifications admin (subscriptions/{id}/test before subscriptions/{id} — more specific first)
+    cfg.service(list_notification_channels);
+    cfg.service(list_subscriptions);
+    cfg.service(create_subscription);
+    cfg.service(test_subscription);
+    cfg.service(get_subscription);
+    cfg.service(update_subscription);
+    cfg.service(delete_subscription);
+    cfg.service(list_inbound_events);
+    // Inbound webhooks (public-facing — no admin auth required)
+    cfg.service(receive_inbound_webhook);
 }
 
 /// Return the raw OpenAPI JSON spec (auto-collected from route registrations).
@@ -752,7 +779,7 @@ pub fn scalar(openapi: utoipa::openapi::OpenApi) -> Scalar<utoipa::openapi::Open
 /// the plain `actix_web::App` returned by `split_for_parts()` after this configure
 /// call, so that `actix_files::Files` (which is not an `OpenApiFactory`) does not
 /// interfere with path collection.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn configure_app(
     proxy_svc: Arc<ProxyService>,
     admin_svc: Arc<AdminService>,
@@ -766,6 +793,9 @@ pub fn configure_app(
     proxy_metrics: Arc<ProxyMetrics>,
     prometheus_handle: Option<PrometheusHandle>,
     sbom_svc: Option<Arc<SbomService>>,
+    notification_svc: Option<Arc<services::NotificationService>>,
+    notification_store: Arc<dyn batlehub_core::ports::NotificationPort + 'static>,
+    notifications_config: Option<batlehub_config::schema::NotificationsConfig>,
 ) -> impl Fn(&mut UtoipaServiceConfig) + Clone + 'static {
     let audit_client = reqwest::Client::builder()
         .user_agent("batlehub/0.1")
@@ -791,6 +821,10 @@ pub fn configure_app(
         if let Some(ref s) = sbom_svc {
             cfg.app_data(web::Data::new(s.clone()));
         }
+        // Always register as Option so handlers can extract without a 500 when disabled.
+        cfg.app_data(web::Data::new(notification_svc.clone()));
+        cfg.app_data(web::Data::new(notification_store.clone()));
+        cfg.app_data(web::Data::new(notifications_config.clone()));
         collect_routes(cfg);
     }
 }

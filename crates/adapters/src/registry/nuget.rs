@@ -89,21 +89,17 @@ impl NugetRegistryClient {
     }
 
     /// `GET {flat_url}/{id}/index.json` → `{"versions":[…]}`
-    async fn fetch_flat_index(
-        &self,
-        id: &str,
-    ) -> Result<(Vec<String>, Option<String>), CoreError> {
+    async fn fetch_flat_index(&self, id: &str) -> Result<(Vec<String>, Option<String>), CoreError> {
         #[derive(Deserialize)]
         struct FlatIndex {
             versions: Vec<String>,
         }
 
         let url = format!("{}/{}/index.json", self.flat_url, id);
-        let resp = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(format!("NuGet flat index request failed: {e}")))?;
+        let resp =
+            self.get(&url).send().await.map_err(|e| {
+                CoreError::Registry(format!("NuGet flat index request failed: {e}"))
+            })?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(CoreError::NotFound(format!(
@@ -172,7 +168,10 @@ impl NugetRegistryClient {
         id: &str,
         version: &str,
     ) -> Option<chrono::DateTime<chrono::Utc>> {
-        let url = format!("{}/{}/{}/{}.{}.nupkg", self.flat_url, id, version, id, version);
+        let url = format!(
+            "{}/{}/{}/{}.{}.nupkg",
+            self.flat_url, id, version, id, version
+        );
         let resp = self.head(&url).send().await.ok()?;
         if !resp.status().is_success() {
             return None;
@@ -277,7 +276,10 @@ impl RegistryClient for NugetRegistryClient {
                 format!("{}/{}/{}/{}", self.flat_url, id, version, filename)
             }
             (version, None) => {
-                format!("{}/{}/{}/{}.{}.nupkg", self.flat_url, id, version, id, version)
+                format!(
+                    "{}/{}/{}/{}.{}.nupkg",
+                    self.flat_url, id, version, id, version
+                )
             }
         };
 
@@ -483,10 +485,7 @@ mod tests {
     async fn fetch_artifact_nupkg() {
         let mut server = Server::new_async().await;
         let _mock = server
-            .mock(
-                "GET",
-                "/v3-flatcontainer/mylib/1.0.0/mylib.1.0.0.nupkg",
-            )
+            .mock("GET", "/v3-flatcontainer/mylib/1.0.0/mylib.1.0.0.nupkg")
             .with_status(200)
             .with_header("content-type", "application/octet-stream")
             .with_body(b"FAKEZIP".as_ref())
@@ -516,8 +515,7 @@ mod tests {
             .await;
 
         let c = client(&server.url());
-        let pkg =
-            PackageId::new("nuget", "mylib", "1.0.0").with_artifact("mylib.1.0.0.nuspec");
+        let pkg = PackageId::new("nuget", "mylib", "1.0.0").with_artifact("mylib.1.0.0.nuspec");
         let artifact = c.fetch_artifact(&pkg).await.unwrap();
         use futures::StreamExt;
         let mut buf = Vec::new();
