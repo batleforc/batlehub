@@ -132,7 +132,7 @@ function reset() {
 <template>
   <div class="space-y-6 max-w-4xl">
     <div>
-      <h1 class="text-xl font-semibold">
+      <h1 class="font-mono text-xl font-bold cyber-text-glow">
         Bulk Import
       </h1>
       <p class="text-sm text-muted-foreground mt-1">
@@ -206,14 +206,14 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
             v-model="csvText"
             rows="8"
             placeholder="registry,name,version,artifact,reason&#10;npm,lodash,4.17.21,,CVE-2021-23337"
-            class="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
+            class="flex w-full rounded-sm border border-input bg-transparent px-3 py-2 text-sm font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
           />
         </div>
 
         <!-- File upload -->
         <div class="flex items-center gap-3">
           <label
-            class="flex items-center gap-2 px-3 py-1.5 rounded-md border border-input text-sm cursor-pointer hover:bg-accent transition-colors"
+            class="flex items-center gap-2 px-3 py-1.5 rounded-sm border border-input text-sm cursor-pointer hover:bg-accent transition-colors"
           >
             <Upload class="h-3.5 w-3.5" />
             Upload .csv file
@@ -334,7 +334,7 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
     <Card v-if="result">
       <CardHeader class="pb-3">
         <CardTitle class="text-base flex items-center gap-2">
-          <CheckCircle2 class="h-4 w-4 text-green-500" />
+          <CheckCircle2 class="h-4 w-4 text-primary" />
           Done — {{ result.succeeded_count }} succeeded, {{ result.failed_count }} failed
         </CardTitle>
       </CardHeader>

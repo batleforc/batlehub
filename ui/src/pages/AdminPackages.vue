@@ -265,7 +265,7 @@ async function submitPreBlock() {
             <select
               id="pb-registry"
               v-model="preBlock.registry"
-              class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring font-mono"
+              class="flex h-9 w-full rounded-sm border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring font-mono"
             >
               <option
                 v-for="reg in registries"
@@ -337,7 +337,7 @@ async function submitPreBlock() {
     <!-- Bulk action bar -->
     <div
       v-if="selected.size > 0"
-      class="sticky top-16 z-30 flex items-center gap-3 rounded-lg border bg-card px-4 py-2.5 shadow-sm"
+      class="sticky top-16 z-30 flex items-center gap-3 rounded-sm border bg-card px-4 py-2.5 shadow-sm"
     >
       <span class="text-sm font-medium">{{ selected.size }} selected</span>
       <Button

@@ -10,20 +10,8 @@ use batlehub_core::{
     services::{LocalRegistryService, ProxyService, PublishRequest},
 };
 
-use super::common::{collect_payload, proxy_stream, require_local_mode};
+use super::common::{collect_payload, proxy_stream, require_local_mode, require_registry_type};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
-
-fn require_composer(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
-    match map.type_of(registry).as_deref() {
-        Some("composer") => Ok(()),
-        Some(_) => Err(AppError::not_found(format!(
-            "registry '{registry}' is not a Composer registry"
-        ))),
-        None => Err(AppError::not_found(format!(
-            "unknown registry '{registry}'"
-        ))),
-    }
-}
 
 /// Extract base URL from the incoming request, owned so the `ConnectionInfo`
 /// borrow can be released before any `.await` points.
@@ -60,7 +48,7 @@ pub async fn composer_packages_json(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_composer(&registry, &map)?;
+    require_registry_type(&registry, "composer", &map)?;
 
     let base_url = build_base_url(&req);
     let metadata_url = format!("{base_url}/proxy/{registry}/p2/%package%.json");
@@ -120,7 +108,7 @@ pub async fn composer_p2_metadata(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, p2_path) = path.into_inner();
-    require_composer(&registry, &map)?;
+    require_registry_type(&registry, "composer", &map)?;
 
     // Parse the path: "vendor/package.json" or "vendor/package~dev.json".
     // The `~dev` suffix is significant — Packagist serves different JSON for dev variants,
@@ -198,7 +186,7 @@ pub async fn composer_dist(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, vendor, package, version) = path.into_inner();
-    require_composer(&registry, &map)?;
+    require_registry_type(&registry, "composer", &map)?;
 
     let name = format!("{vendor}/{package}");
     let mode = mode_map.get(&registry);
@@ -289,7 +277,7 @@ pub async fn composer_upload(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_composer(&registry, &map)?;
+    require_registry_type(&registry, "composer", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     // Validate the version override early before buffering the payload.
@@ -370,7 +358,7 @@ pub async fn composer_yank(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, vendor, package, version) = path.into_inner();
-    require_composer(&registry, &map)?;
+    require_registry_type(&registry, "composer", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     let name = format!("{vendor}/{package}");

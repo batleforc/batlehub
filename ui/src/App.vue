@@ -23,11 +23,9 @@ const route = useRoute();
 const router = useRouter();
 const mobileOpen = ref(false);
 
-// Any non-null auth_provider means the session came through OIDC or Kubernetes.
 const isOidcUser = computed(
   () => isAuthenticated.value && !!identity.value?.auth_provider
 );
-
 
 const userLinks = [
   { to: "/packages", label: "Packages" },
@@ -56,49 +54,45 @@ function isActive(to: string) {
 
 <template>
   <div class="min-h-screen bg-background">
-    <!-- Header + sticky banner -->
-    <header class="sticky top-0 z-40 bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/60">
+    <!-- Sticky header with circuit-grid background -->
+    <header class="sticky top-0 z-40 cyber-grid-bg border-b border-border/60 bg-background/90 backdrop-blur-md">
       <div class="container mx-auto flex h-14 items-center gap-4 px-4">
         <!-- Logo -->
         <RouterLink
           to="/packages"
-          class="flex items-center gap-2 font-semibold text-sm hover:text-foreground/80 shrink-0"
+          class="flex items-center gap-2 shrink-0 font-mono font-bold text-base text-primary cyber-text-glow hover:text-primary/80 transition-colors"
         >
-          <Package class="h-4 w-4 text-primary" />
-          BatleHub
+          <Package class="h-4 w-4" />
+          BatleHub.
         </RouterLink>
 
         <!-- Desktop nav -->
-        <nav class="hidden md:flex items-center gap-1 text-sm">
+        <nav class="hidden md:flex items-center gap-0.5 text-sm">
           <RouterLink
             v-for="link in userLinks"
             :key="link.to"
             :to="link.to"
             :class="[
-              'px-3 py-1.5 rounded-md transition-colors hover:bg-accent hover:text-accent-foreground',
+              'px-3 py-1.5 rounded-sm font-mono text-sm transition-colors',
               isActive(link.to)
-                ? 'bg-accent text-accent-foreground font-medium'
-                : 'text-muted-foreground',
+                ? 'bg-accent text-accent-foreground font-semibold'
+                : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
             ]"
           >
             {{ link.label }}
           </RouterLink>
-
         </nav>
 
         <!-- Admin entry point (desktop) -->
-        <div
-          v-if="isAdmin"
-          class="hidden md:flex items-center gap-1"
-        >
+        <div v-if="isAdmin" class="hidden md:flex items-center gap-1">
           <div class="mx-2 h-4 w-px bg-border" />
           <RouterLink
             to="/admin/packages"
             :class="[
-              'flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors text-sm hover:bg-accent hover:text-accent-foreground',
+              'flex items-center gap-1.5 px-3 py-1.5 rounded-sm font-mono text-sm transition-colors',
               isActive('/admin')
-                ? 'bg-accent text-accent-foreground font-medium'
-                : 'text-muted-foreground',
+                ? 'bg-accent text-accent-foreground font-semibold'
+                : 'text-copper hover:bg-accent/60 hover:text-accent-foreground',
             ]"
           >
             <ShieldCheck class="h-3.5 w-3.5" />
@@ -107,12 +101,12 @@ function isActive(to: string) {
         </div>
 
         <!-- Right side -->
-        <div class="ml-auto flex items-center gap-2">
+        <div class="ml-auto flex items-center gap-1.5">
           <a
             :href="DOCS_URL"
             target="_blank"
             rel="noopener noreferrer"
-            class="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+            class="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-sm font-mono text-sm text-muted-foreground transition-colors hover:bg-accent/60 hover:text-accent-foreground"
           >
             <BookOpen class="h-3.5 w-3.5" />
             Docs
@@ -122,17 +116,17 @@ function isActive(to: string) {
           <template v-if="isAuthenticated">
             <DropdownMenuRoot>
               <DropdownMenuTrigger
-                class="hidden sm:flex items-center gap-1.5 rounded-md px-1.5 py-1 text-sm hover:bg-accent transition-colors outline-none"
+                class="hidden sm:flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-sm hover:bg-accent/60 transition-colors outline-none"
               >
                 <div
-                  class="h-7 w-7 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-semibold shrink-0"
+                  class="h-7 w-7 rounded-sm bg-primary text-primary-foreground flex items-center justify-center text-xs font-mono font-bold shrink-0"
                 >
                   {{ userInitials }}
                 </div>
-                <span class="text-muted-foreground hidden lg:inline max-w-[10rem] truncate">
+                <span class="text-muted-foreground hidden lg:inline max-w-[10rem] truncate font-mono text-xs">
                   {{ identity?.user_id }}
                 </span>
-                <Badge v-if="isAdmin" variant="secondary" class="text-xs">admin</Badge>
+                <Badge v-if="isAdmin" variant="copper" class="text-xs">admin</Badge>
                 <Badge v-else-if="identity?.role !== 'anonymous'" variant="outline" class="text-xs">
                   {{ identity?.role }}
                 </Badge>
@@ -140,16 +134,16 @@ function isActive(to: string) {
               </DropdownMenuTrigger>
               <DropdownMenuContent
                 align="end"
-                class="z-50 min-w-[11rem] rounded-md border bg-popover p-1 shadow-md"
+                class="z-50 min-w-[11rem] rounded-sm border border-border bg-popover p-1 shadow-[var(--cyber-glow)]"
               >
-                <DropdownMenuLabel class="px-2 py-1.5 text-xs text-muted-foreground font-normal truncate">
+                <DropdownMenuLabel class="px-2 py-1.5 text-xs text-muted-foreground font-mono font-normal truncate">
                   {{ identity?.user_id }}
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator class="my-1 h-px bg-border" />
                 <DropdownMenuItem as-child>
                   <RouterLink
                     to="/profile"
-                    class="flex items-center gap-2 px-2 py-1.5 text-sm rounded cursor-pointer hover:bg-accent outline-none"
+                    class="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm cursor-pointer hover:bg-accent hover:text-accent-foreground outline-none transition-colors"
                   >
                     <User class="h-3.5 w-3.5" />
                     My Profile
@@ -158,7 +152,7 @@ function isActive(to: string) {
                 <DropdownMenuItem v-if="isOidcUser" as-child>
                   <RouterLink
                     to="/tokens"
-                    class="flex items-center gap-2 px-2 py-1.5 text-sm rounded cursor-pointer hover:bg-accent outline-none"
+                    class="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm cursor-pointer hover:bg-accent hover:text-accent-foreground outline-none transition-colors"
                   >
                     <KeyRound class="h-3.5 w-3.5" />
                     My Tokens
@@ -167,7 +161,7 @@ function isActive(to: string) {
                 <DropdownMenuItem as-child>
                   <RouterLink
                     to="/my-namespace"
-                    class="flex items-center gap-2 px-2 py-1.5 text-sm rounded cursor-pointer hover:bg-accent outline-none"
+                    class="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm cursor-pointer hover:bg-accent hover:text-accent-foreground outline-none transition-colors"
                   >
                     <FolderKey class="h-3.5 w-3.5" />
                     My Namespace
@@ -175,7 +169,7 @@ function isActive(to: string) {
                 </DropdownMenuItem>
                 <DropdownMenuSeparator class="my-1 h-px bg-border" />
                 <DropdownMenuItem
-                  class="flex items-center gap-2 px-2 py-1.5 text-sm rounded cursor-pointer hover:bg-accent text-destructive hover:text-destructive outline-none"
+                  class="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm cursor-pointer hover:bg-destructive/10 text-destructive hover:text-destructive outline-none transition-colors"
                   @select="handleLogout"
                 >
                   <LogOut class="h-3.5 w-3.5" />
@@ -187,7 +181,7 @@ function isActive(to: string) {
           <RouterLink
             v-else
             to="/login"
-            class="text-sm text-muted-foreground hover:text-foreground transition-colors"
+            class="font-mono text-sm text-muted-foreground hover:text-primary transition-colors"
           >
             Sign in
           </RouterLink>
@@ -199,14 +193,8 @@ function isActive(to: string) {
             class="md:hidden"
             @click="mobileOpen = !mobileOpen"
           >
-            <X
-              v-if="mobileOpen"
-              class="h-4 w-4"
-            />
-            <Menu
-              v-else
-              class="h-4 w-4"
-            />
+            <X v-if="mobileOpen" class="h-4 w-4" />
+            <Menu v-else class="h-4 w-4" />
           </Button>
         </div>
       </div>
@@ -214,16 +202,16 @@ function isActive(to: string) {
       <!-- Mobile nav -->
       <div
         v-if="mobileOpen"
-        class="md:hidden border-t bg-card px-4 py-3 space-y-1"
+        class="md:hidden border-t border-border/60 bg-card px-4 py-3 space-y-1"
       >
         <RouterLink
           v-for="link in userLinks"
           :key="link.to"
           :to="link.to"
           :class="[
-            'block px-3 py-2 rounded-md text-sm transition-colors',
+            'block px-3 py-2 rounded-sm font-mono text-sm transition-colors',
             isActive(link.to)
-              ? 'bg-accent text-accent-foreground font-medium'
+              ? 'bg-accent text-accent-foreground font-semibold'
               : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
           ]"
           @click="mobileOpen = false"
@@ -234,9 +222,9 @@ function isActive(to: string) {
           v-if="isOidcUser"
           to="/tokens"
           :class="[
-            'block px-3 py-2 rounded-md text-sm transition-colors',
+            'block px-3 py-2 rounded-sm font-mono text-sm transition-colors',
             isActive('/tokens')
-              ? 'bg-accent text-accent-foreground font-medium'
+              ? 'bg-accent text-accent-foreground font-semibold'
               : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
           ]"
           @click="mobileOpen = false"
@@ -247,9 +235,9 @@ function isActive(to: string) {
           v-if="isAuthenticated"
           to="/profile"
           :class="[
-            'block px-3 py-2 rounded-md text-sm transition-colors',
+            'block px-3 py-2 rounded-sm font-mono text-sm transition-colors',
             isActive('/profile')
-              ? 'bg-accent text-accent-foreground font-medium'
+              ? 'bg-accent text-accent-foreground font-semibold'
               : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
           ]"
           @click="mobileOpen = false"
@@ -260,9 +248,9 @@ function isActive(to: string) {
           v-if="isAuthenticated"
           to="/my-namespace"
           :class="[
-            'flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors',
+            'flex items-center gap-2 px-3 py-2 rounded-sm font-mono text-sm transition-colors',
             isActive('/my-namespace')
-              ? 'bg-accent text-accent-foreground font-medium'
+              ? 'bg-accent text-accent-foreground font-semibold'
               : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
           ]"
           @click="mobileOpen = false"
@@ -274,10 +262,10 @@ function isActive(to: string) {
           v-if="isAdmin"
           to="/admin/packages"
           :class="[
-            'flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors',
+            'flex items-center gap-2 px-3 py-2 rounded-sm font-mono text-sm transition-colors',
             isActive('/admin')
-              ? 'bg-accent text-accent-foreground font-medium'
-              : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+              ? 'bg-accent text-accent-foreground font-semibold'
+              : 'text-copper hover:bg-accent hover:text-accent-foreground',
           ]"
           @click="mobileOpen = false"
         >
@@ -288,32 +276,32 @@ function isActive(to: string) {
           :href="DOCS_URL"
           target="_blank"
           rel="noopener noreferrer"
-          class="flex items-center gap-2 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          class="flex items-center gap-2 px-3 py-2 rounded-sm font-mono text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
           @click="mobileOpen = false"
         >
           <BookOpen class="h-4 w-4" />
           Documentation
         </a>
-        <div
-          v-if="isAuthenticated"
-          class="pt-2 border-t"
-        >
+        <div v-if="isAuthenticated" class="pt-2 border-t border-border/60">
           <button
-            class="block w-full text-left px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            class="block w-full text-left px-3 py-2 rounded-sm font-mono text-sm text-destructive hover:bg-destructive/10 transition-colors"
             @click="handleLogout"
           >
             Sign out
           </button>
         </div>
       </div>
-      <!-- Global admin banner — rendered inside the sticky header so it scrolls with it -->
+
+      <!-- Global admin banner -->
       <div
         v-if="banner"
         :class="[
-          'border-t px-4 py-1.5 flex items-center gap-2 text-sm font-medium',
-          banner.level === 'error'   ? 'bg-destructive/10 border-destructive text-destructive' :
-          banner.level === 'warning' ? 'bg-yellow-50 border-yellow-300 text-yellow-800 dark:bg-yellow-950 dark:border-yellow-700 dark:text-yellow-200' :
-                                       'bg-blue-50 border-blue-300 text-blue-800 dark:bg-blue-950 dark:border-blue-700 dark:text-blue-200'
+          'border-t px-4 py-1.5 flex items-center gap-2 text-sm font-mono font-medium',
+          banner.level === 'error'
+            ? 'bg-destructive/10 border-destructive/40 text-destructive'
+            : banner.level === 'warning'
+              ? 'bg-copper/10 border-copper/40 text-copper'
+              : 'bg-primary/10 border-primary/30 text-primary',
         ]"
       >
         <XCircle v-if="banner.level === 'error'" class="h-3.5 w-3.5 shrink-0" />

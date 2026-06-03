@@ -143,8 +143,8 @@ async function fetchAllRegistries() {
         .sort((a, b) => a.name.localeCompare(b.name));
     }
     if (statsRes.ok) {
-      const stats: RegistryStatDto[] = await statsRes.json();
-      registryStats.value = new Map(stats.map(s => [s.registry, s]));
+      const body: { registries: RegistryStatDto[] } = await statsRes.json();
+      registryStats.value = new Map((body.registries ?? []).map(s => [s.registry, s]));
     }
   } catch {
     // non-fatal
@@ -252,17 +252,17 @@ onMounted(() => {
 <template>
   <div class="flex gap-6 min-h-[60vh]">
     <!-- Sidebar: full registry list (including those with 0 packages) -->
-    <aside class="hidden md:flex flex-col w-56 shrink-0 gap-1">
-      <p class="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-2 mb-1">
+    <aside class="hidden md:flex flex-col w-56 shrink-0 gap-0.5 border-r border-border/60 pr-4">
+      <p class="font-mono text-xs font-semibold text-copper uppercase tracking-wider px-2 mb-2">
         Registries
       </p>
 
       <button
         :class="[
-          'flex items-center justify-between px-2 py-1.5 rounded-md text-sm transition-colors w-full text-left',
+          'flex items-center justify-between px-2 py-1.5 rounded-sm font-mono text-sm transition-colors w-full text-left',
           selectedRegistry === null
-            ? 'bg-accent text-accent-foreground font-medium'
-            : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+            ? 'bg-accent text-accent-foreground font-semibold'
+            : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
         ]"
         @click="selectRegistry(null)"
       >
@@ -274,12 +274,12 @@ onMounted(() => {
         v-for="reg in sidebarRegistries"
         :key="reg.name"
         :class="[
-          'flex items-center justify-between px-2 py-1.5 rounded-md text-sm transition-colors w-full text-left',
+          'flex items-center justify-between px-2 py-1.5 rounded-sm font-mono text-sm transition-colors w-full text-left',
           selectedRegistry === reg.name
-            ? 'bg-accent text-accent-foreground font-medium'
+            ? 'bg-accent text-accent-foreground font-semibold'
             : reg.package_count === 0
-              ? 'text-muted-foreground/50 hover:bg-accent hover:text-accent-foreground'
-              : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+              ? 'text-muted-foreground/50 hover:bg-accent/60 hover:text-accent-foreground'
+              : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
         ]"
         @click="selectRegistry(reg.name)"
       >
@@ -297,7 +297,7 @@ onMounted(() => {
     <div class="flex-1 min-w-0 space-y-4">
       <!-- Header -->
       <div class="flex items-center justify-between gap-4 flex-wrap">
-        <h1 class="text-xl font-semibold flex items-center gap-2">
+        <h1 class="font-mono text-xl font-bold flex items-center gap-2 text-foreground cyber-text-glow">
           <Package class="h-5 w-5 text-primary" />
           Package Explorer
         </h1>
@@ -319,7 +319,7 @@ onMounted(() => {
           />
         </div>
         <select
-          class="h-9 rounded-md border border-input bg-background px-3 text-sm"
+          class="h-9 rounded-sm border border-input bg-background px-3 font-mono text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
           :value="sort"
           @change="onSortChange(($event.target as HTMLSelectElement).value)"
         >
@@ -367,10 +367,7 @@ onMounted(() => {
               <TableRow
                 v-for="row in tableRows"
                 :key="`${row.kind}-${row.registry}/${row.name}`"
-                :class="[
-                  'hover:bg-muted/50',
-                  row.kind === 'cached' ? 'cursor-pointer' : 'cursor-default opacity-80',
-                ]"
+                :class="row.kind === 'cached' ? 'cursor-pointer' : 'cursor-default opacity-70'"
                 @click="goToDetail(row)"
               >
                 <TableCell class="font-mono text-sm font-medium">{{ row.name }}</TableCell>

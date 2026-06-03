@@ -50,7 +50,7 @@ function statusLabel(pkg: PackageSummaryDto) {
   <Card>
     <CardHeader class="space-y-3 pb-3">
       <div class="flex flex-row items-center justify-between space-y-0">
-        <CardTitle class="text-lg">
+        <CardTitle class="font-mono text-lg cyber-text-glow">
           Packages
           <span
             v-if="data"
@@ -104,7 +104,7 @@ function statusLabel(pkg: PackageSummaryDto) {
           <TableRow
             v-for="(pkg, i) in filteredItems"
             :key="i"
-            class="cursor-pointer hover:bg-muted/50"
+            class="cursor-pointer"
             @click="router.push({ path: '/packages/detail', query: { registry: pkg.registry, name: pkg.name, version: pkg.version, ...(pkg.artifact ? { artifact: pkg.artifact } : {}) } })"
           >
             <TableCell class="font-mono text-xs">

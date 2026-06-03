@@ -38,15 +38,11 @@ use batlehub_core::entities::Identity;
 use batlehub_core::entities::{NamespacePackage, TeamNamespace, Visibility};
 use batlehub_core::ports::{BetaChannelEntry, BetaChannelPort, IpBlockStore, TeamNamespacePort};
 use batlehub_core::{
-    entities::{
-        AccessEvent, EventFilter, PackageFilter, PackageId, PackageMetadata, PackageStatus,
-        PackageSummary, PublishedPackage, Role,
-    },
+    entities::{AccessEvent, PackageId, PackageMetadata, PackageStatus, Role},
     error::CoreError,
     ports::{
-        ArtifactMeta, ArtifactMetaRepository, AuthProvider, ByteStream, CacheStore,
-        FetchedArtifact, LocalRegistryBackend, PackageRepository, RegistryClient, StorageBackend,
-        StorageMeta, StoredArtifact, UserToken, UserTokenRepository,
+        AuthProvider, CacheStore, FetchedArtifact, LocalRegistryBackend, PackageRepository,
+        RegistryClient, StorageBackend, UserToken, UserTokenRepository,
     },
     rules::{BlockListRule, RbacRule},
     services::{
@@ -10225,6 +10221,18 @@ fn make_sample_nupkg(id: &str, version: &str, description: &str) -> Vec<u8> {
     buf
 }
 
+/// Wrap a .nupkg in a `multipart/form-data` body and return `(body_bytes, content_type_header)`.
+fn make_nuget_publish_body(nupkg: &[u8]) -> (Vec<u8>, String) {
+    let boundary = "nugetboundary";
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"package\"; filename=\"package.nupkg\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+    ).into_bytes();
+    body.extend_from_slice(nupkg);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let ct = format!("multipart/form-data; boundary={boundary}");
+    (body, ct)
+}
+
 async fn make_local_nuget_app(
     mode: RegistryMode,
 ) -> impl actix_web::dev::Service<
@@ -10329,19 +10337,12 @@ async fn nuget_service_index_returns_valid_json() {
 async fn nuget_publish_creates_version() {
     let app = make_local_nuget_app(RegistryMode::Local).await;
     let nupkg = make_sample_nupkg("MyLib", "1.0.0", "A test library");
-
-    // Build multipart body manually — boundary "boundary123"
-    let boundary = "boundary123";
-    let mut body = format!(
-        "--{boundary}\r\nContent-Disposition: form-data; name=\"package\"; filename=\"MyLib.1.0.0.nupkg\"\r\nContent-Type: application/octet-stream\r\n\r\n"
-    ).into_bytes();
-    body.extend_from_slice(&nupkg);
-    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let (body, ct) = make_nuget_publish_body(&nupkg);
 
     let req = TestRequest::put()
         .uri("/proxy/local-nuget/nuget/api/v2/package")
         .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .insert_header(("Content-Type", format!("multipart/form-data; boundary={boundary}")))
+        .insert_header(("Content-Type", ct))
         .set_payload(body)
         .to_request();
     let resp = call_service(&app, req).await;
@@ -10363,16 +10364,11 @@ async fn nuget_publish_creates_version() {
 async fn nuget_publish_requires_auth() {
     let app = make_local_nuget_app(RegistryMode::Local).await;
     let nupkg = make_sample_nupkg("MyLib", "1.0.0", "Test");
-    let boundary = "b";
-    let mut body = format!(
-        "--{boundary}\r\nContent-Disposition: form-data; name=\"package\"\r\n\r\n"
-    ).into_bytes();
-    body.extend_from_slice(&nupkg);
-    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let (body, ct) = make_nuget_publish_body(&nupkg);
 
     let req = TestRequest::put()
         .uri("/proxy/local-nuget/nuget/api/v2/package")
-        .insert_header(("Content-Type", format!("multipart/form-data; boundary={boundary}")))
+        .insert_header(("Content-Type", ct))
         .set_payload(body)
         .to_request();
     let resp = call_service(&app, req).await;
@@ -10384,30 +10380,20 @@ async fn nuget_publish_duplicate_returns_409() {
     let app = make_local_nuget_app(RegistryMode::Local).await;
     let nupkg = make_sample_nupkg("MyLib", "1.0.0", "Test");
 
-    let publish = |nupkg: Vec<u8>| {
-        let boundary = "b";
-        let mut body = format!(
-            "--{boundary}\r\nContent-Disposition: form-data; name=\"package\"\r\nContent-Type: application/octet-stream\r\n\r\n"
-        ).into_bytes();
-        body.extend_from_slice(&nupkg);
-        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-        (body, boundary.to_owned())
-    };
-
-    let (body1, bnd1) = publish(nupkg.clone());
+    let (body1, ct1) = make_nuget_publish_body(&nupkg);
     let req1 = TestRequest::put()
         .uri("/proxy/local-nuget/nuget/api/v2/package")
         .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .insert_header(("Content-Type", format!("multipart/form-data; boundary={bnd1}")))
+        .insert_header(("Content-Type", ct1))
         .set_payload(body1)
         .to_request();
     assert_eq!(call_service(&app, req1).await.status(), 201);
 
-    let (body2, bnd2) = publish(nupkg);
+    let (body2, ct2) = make_nuget_publish_body(&nupkg);
     let req2 = TestRequest::put()
         .uri("/proxy/local-nuget/nuget/api/v2/package")
         .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .insert_header(("Content-Type", format!("multipart/form-data; boundary={bnd2}")))
+        .insert_header(("Content-Type", ct2))
         .set_payload(body2)
         .to_request();
     assert_eq!(call_service(&app, req2).await.status(), 409);
@@ -10417,18 +10403,13 @@ async fn nuget_publish_duplicate_returns_409() {
 async fn nuget_xnuget_apikey_header_authenticates() {
     let app = make_local_nuget_app(RegistryMode::Local).await;
     let nupkg = make_sample_nupkg("KeyLib", "0.1.0", "Test ApiKey auth");
-    let boundary = "bk";
-    let mut body = format!(
-        "--{boundary}\r\nContent-Disposition: form-data; name=\"package\"\r\nContent-Type: application/octet-stream\r\n\r\n"
-    ).into_bytes();
-    body.extend_from_slice(&nupkg);
-    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let (body, ct) = make_nuget_publish_body(&nupkg);
 
     // Use X-NuGet-ApiKey instead of Authorization: Bearer
     let req = TestRequest::put()
         .uri("/proxy/local-nuget/nuget/api/v2/package")
         .insert_header(("X-NuGet-ApiKey", ADMIN_TOKEN))
-        .insert_header(("Content-Type", format!("multipart/form-data; boundary={boundary}")))
+        .insert_header(("Content-Type", ct))
         .set_payload(body)
         .to_request();
     let resp = call_service(&app, req).await;
@@ -10439,18 +10420,13 @@ async fn nuget_xnuget_apikey_header_authenticates() {
 async fn nuget_yank_removes_from_versions() {
     let app = make_local_nuget_app(RegistryMode::Local).await;
     let nupkg = make_sample_nupkg("YankLib", "2.0.0", "Yank test");
-    let boundary = "by";
-    let mut body = format!(
-        "--{boundary}\r\nContent-Disposition: form-data; name=\"package\"\r\nContent-Type: application/octet-stream\r\n\r\n"
-    ).into_bytes();
-    body.extend_from_slice(&nupkg);
-    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let (body, ct) = make_nuget_publish_body(&nupkg);
 
     // Publish first
     let req = TestRequest::put()
         .uri("/proxy/local-nuget/nuget/api/v2/package")
         .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .insert_header(("Content-Type", format!("multipart/form-data; boundary={boundary}")))
+        .insert_header(("Content-Type", ct))
         .set_payload(body)
         .to_request();
     assert_eq!(call_service(&app, req).await.status(), 201);
@@ -10481,17 +10457,12 @@ async fn nuget_yank_removes_from_versions() {
 async fn nuget_registration_local_has_catalog_entry() {
     let app = make_local_nuget_app(RegistryMode::Local).await;
     let nupkg = make_sample_nupkg("RegLib", "1.0.0", "Registration test");
-    let boundary = "br";
-    let mut body = format!(
-        "--{boundary}\r\nContent-Disposition: form-data; name=\"package\"\r\nContent-Type: application/octet-stream\r\n\r\n"
-    ).into_bytes();
-    body.extend_from_slice(&nupkg);
-    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let (body, ct) = make_nuget_publish_body(&nupkg);
 
     let req = TestRequest::put()
         .uri("/proxy/local-nuget/nuget/api/v2/package")
         .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .insert_header(("Content-Type", format!("multipart/form-data; boundary={boundary}")))
+        .insert_header(("Content-Type", ct))
         .set_payload(body)
         .to_request();
     assert_eq!(call_service(&app, req).await.status(), 201);
@@ -10516,17 +10487,12 @@ async fn nuget_registration_local_has_catalog_entry() {
 async fn nuget_publish_proxy_mode_returns_404() {
     let app = make_local_nuget_app(RegistryMode::Proxy).await;
     let nupkg = make_sample_nupkg("PxLib", "1.0.0", "test");
-    let boundary = "bp";
-    let mut body = format!(
-        "--{boundary}\r\nContent-Disposition: form-data; name=\"package\"\r\nContent-Type: application/octet-stream\r\n\r\n"
-    ).into_bytes();
-    body.extend_from_slice(&nupkg);
-    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let (body, ct) = make_nuget_publish_body(&nupkg);
 
     let req = TestRequest::put()
         .uri("/proxy/local-nuget/nuget/api/v2/package")
         .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .insert_header(("Content-Type", format!("multipart/form-data; boundary={boundary}")))
+        .insert_header(("Content-Type", ct))
         .set_payload(body)
         .to_request();
     assert_eq!(call_service(&app, req).await.status(), 404);

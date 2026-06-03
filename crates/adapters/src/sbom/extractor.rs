@@ -349,88 +349,45 @@ fn parse_nuspec_deps(content: &str) -> Vec<SbomDependency> {
 
     let mut reader = Reader::from_str(content);
     reader.config_mut().trim_text(true);
-
     let mut deps = Vec::new();
-    let mut in_dependency = false;
-    let mut current_id = String::new();
-    let mut current_version = String::new();
 
+    // <dependency> elements in .nuspec are always self-closing:
+    //   <dependency id="Newtonsoft.Json" version="[13.0,)" />
     loop {
         match reader.read_event() {
             Ok(Event::Empty(ref e)) => {
                 let ln = e.local_name();
                 let local = std::str::from_utf8(ln.as_ref()).unwrap_or("");
-                if local == "dependency" {
-                    let mut id = String::new();
-                    let mut version = String::new();
-                    for attr in e.attributes().flatten() {
-                        let kn = attr.key.local_name();
-                        let key = std::str::from_utf8(kn.as_ref()).unwrap_or("").to_owned();
-                        let val = attr
-                            .decoded_and_normalized_value(
-                                quick_xml::XmlVersion::Implicit1_0,
-                                reader.decoder(),
-                            )
-                            .map(|v| v.into_owned())
-                            .unwrap_or_default();
-                        match key.as_str() {
-                            "id" => id = val,
-                            "version" => version = val,
-                            _ => {}
-                        }
-                    }
-                    if !id.is_empty() {
-                        deps.push(SbomDependency {
-                            name: id,
-                            version_req: if version.is_empty() { None } else { Some(version) },
-                            ecosystem: "nuget".into(),
-                        });
+                if local != "dependency" {
+                    continue;
+                }
+                let mut id = String::new();
+                let mut version = String::new();
+                for attr in e.attributes().flatten() {
+                    let kn = attr.key.local_name();
+                    let key = std::str::from_utf8(kn.as_ref()).unwrap_or("");
+                    let val = attr
+                        .decoded_and_normalized_value(
+                            quick_xml::XmlVersion::Implicit1_0,
+                            reader.decoder(),
+                        )
+                        .map(|v| v.into_owned())
+                        .unwrap_or_default();
+                    match key {
+                        "id" => id = val,
+                        "version" => version = val,
+                        _ => {}
                     }
                 }
-            }
-            Ok(Event::Start(ref e)) => {
-                let ln = e.local_name();
-                let local = std::str::from_utf8(ln.as_ref()).unwrap_or("");
-                if local == "dependency" {
-                    in_dependency = true;
-                    for attr in e.attributes().flatten() {
-                        let kn = attr.key.local_name();
-                        let key = std::str::from_utf8(kn.as_ref()).unwrap_or("").to_owned();
-                        let val = attr
-                            .decoded_and_normalized_value(
-                                quick_xml::XmlVersion::Implicit1_0,
-                                reader.decoder(),
-                            )
-                            .map(|v| v.into_owned())
-                            .unwrap_or_default();
-                        match key.as_str() {
-                            "id" => current_id = val,
-                            "version" => current_version = val,
-                            _ => {}
-                        }
-                    }
+                if !id.is_empty() {
+                    deps.push(SbomDependency {
+                        name: id,
+                        version_req: if version.is_empty() { None } else { Some(version) },
+                        ecosystem: "nuget".into(),
+                    });
                 }
             }
-            Ok(Event::End(ref e)) => {
-                let ln = e.local_name();
-                let local = std::str::from_utf8(ln.as_ref()).unwrap_or("");
-                if local == "dependency" && in_dependency {
-                    in_dependency = false;
-                    if !current_id.is_empty() {
-                        deps.push(SbomDependency {
-                            name: std::mem::take(&mut current_id),
-                            version_req: if current_version.is_empty() {
-                                None
-                            } else {
-                                Some(std::mem::take(&mut current_version))
-                            },
-                            ecosystem: "nuget".into(),
-                        });
-                    }
-                }
-            }
-            Ok(Event::Eof) => break,
-            Err(_) => break,
+            Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }
     }
@@ -486,5 +443,78 @@ tokio = { version = "1.0", features = ["full"] }
         let extractor = ArchiveSbomExtractor;
         let data = Bytes::from_static(b"not an archive");
         assert!(extractor.extract(&data, "unknown").is_empty());
+    }
+
+    #[test]
+    fn parse_nuspec_deps_basic() {
+        let nuspec = r#"<?xml version="1.0"?>
+<package>
+  <metadata>
+    <id>MyLib</id>
+    <version>1.0.0</version>
+    <dependencies>
+      <group targetFramework="net6.0">
+        <dependency id="Newtonsoft.Json" version="[13.0,)" />
+        <dependency id="Serilog" version="2.12.0" />
+      </group>
+    </dependencies>
+  </metadata>
+</package>"#;
+        let deps = parse_nuspec_deps(nuspec);
+        assert_eq!(deps.len(), 2);
+        assert_eq!(deps[0].name, "Newtonsoft.Json");
+        assert_eq!(deps[0].version_req.as_deref(), Some("[13.0,)"));
+        assert_eq!(deps[0].ecosystem, "nuget");
+        assert_eq!(deps[1].name, "Serilog");
+        assert_eq!(deps[1].version_req.as_deref(), Some("2.12.0"));
+    }
+
+    #[test]
+    fn parse_nuspec_deps_no_version() {
+        let nuspec = r#"<package><metadata><dependencies>
+          <dependency id="SomeLib" />
+        </dependencies></metadata></package>"#;
+        let deps = parse_nuspec_deps(nuspec);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "SomeLib");
+        assert!(deps[0].version_req.is_none());
+    }
+
+    #[test]
+    fn parse_nuspec_deps_empty_deps() {
+        let nuspec = r#"<package><metadata><id>Foo</id></metadata></package>"#;
+        let deps = parse_nuspec_deps(nuspec);
+        assert!(deps.is_empty());
+    }
+
+    fn make_nupkg_with_nuspec(nuspec: &str) -> Bytes {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+        let mut buf = Vec::new();
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        zip.start_file("mylib.nuspec", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(nuspec.as_bytes()).unwrap();
+        zip.finish().unwrap();
+        Bytes::from(buf)
+    }
+
+    #[test]
+    fn extract_nuget_deps_from_nupkg() {
+        let nuspec = r#"<package><metadata><dependencies>
+          <dependency id="Newtonsoft.Json" version="13.0.0" />
+        </dependencies></metadata></package>"#;
+        let data = make_nupkg_with_nuspec(nuspec);
+        let extractor = ArchiveSbomExtractor;
+        let deps = extractor.extract(&data, "nuget");
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "Newtonsoft.Json");
+    }
+
+    #[test]
+    fn extract_nuget_deps_invalid_zip() {
+        let extractor = ArchiveSbomExtractor;
+        let deps = extractor.extract(&Bytes::from_static(b"not a zip"), "nuget");
+        assert!(deps.is_empty());
     }
 }

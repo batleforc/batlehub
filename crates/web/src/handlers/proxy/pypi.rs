@@ -13,24 +13,14 @@ use batlehub_core::{
     services::{LocalRegistryService, ProxyService, PublishRequest},
 };
 
-use super::common::{extract_signature_headers, proxy_stream, require_local_mode};
+use super::common::{
+    extract_signature_headers, proxy_stream, require_local_mode, require_registry_type,
+};
 use crate::{
     error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap,
 };
 
 use batlehub_config::schema::RegistryMode as Mode;
-
-fn require_pypi(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
-    match map.type_of(registry).as_deref() {
-        Some("pypi") => Ok(()),
-        Some(_) => Err(AppError::not_found(format!(
-            "registry '{registry}' is not a PyPI registry"
-        ))),
-        None => Err(AppError::not_found(format!(
-            "unknown registry '{registry}'"
-        ))),
-    }
-}
 
 /// Parse a PyPI distribution filename into `(normalized_name, version)`.
 ///
@@ -79,7 +69,7 @@ pub async fn pypi_simple_root(
     map: web::Data<RegistryMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_pypi(&registry, &map)?;
+    require_registry_type(&registry, "pypi", &map)?;
 
     // Represent the root index as a special sentinel PackageId.
     let pkg = PackageId::new(&registry, "__simple__", "__root__");
@@ -116,7 +106,7 @@ pub async fn pypi_simple_package(
     http_client: web::Data<reqwest::Client>,
 ) -> Result<impl Responder, AppError> {
     let (registry, package) = path.into_inner();
-    require_pypi(&registry, &map)?;
+    require_registry_type(&registry, "pypi", &map)?;
 
     let mode = mode_map.get(&registry);
     let normalized = batlehub_adapters::registry::pypi::normalize_name(&package);
@@ -208,7 +198,7 @@ pub async fn pypi_file_download(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, filename) = path.into_inner();
-    require_pypi(&registry, &map)?;
+    require_registry_type(&registry, "pypi", &map)?;
 
     let mode = mode_map.get(&registry);
 
@@ -279,7 +269,7 @@ pub async fn pypi_publish(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_pypi(&registry, &map)?;
+    require_registry_type(&registry, "pypi", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     let mut action: Option<String> = None;
@@ -379,26 +369,6 @@ pub async fn pypi_publish(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RegistryMap;
-    use std::collections::HashMap;
-
-    fn map_with(registry: &str, type_: &str) -> RegistryMap {
-        let mut m = HashMap::new();
-        m.insert(registry.to_owned(), type_.to_owned());
-        RegistryMap::from(m)
-    }
-
-    #[test]
-    fn require_pypi_ok() {
-        let map = map_with("pypi1", "pypi");
-        assert!(require_pypi("pypi1", &map).is_ok());
-    }
-
-    #[test]
-    fn require_pypi_err_wrong_type() {
-        let map = map_with("cargo1", "cargo");
-        assert!(require_pypi("cargo1", &map).is_err());
-    }
 
     #[test]
     fn parse_wheel_filename() {

@@ -122,7 +122,7 @@ async function copy(key: string, text: string) {
 <template>
   <div class="max-w-7xl space-y-8">
     <div>
-      <h1 class="text-2xl font-semibold">
+      <h1 class="font-mono text-2xl font-bold cyber-text-glow">
         Setup Guide
       </h1>
       <p class="text-sm text-muted-foreground mt-1">
@@ -154,19 +154,19 @@ async function copy(key: string, text: string) {
       v-else
       :default-value="defaultTab"
     >
-      <TabsList class="flex flex-wrap h-auto gap-1 justify-start bg-transparent p-0 mb-2">
+      <TabsList class="flex flex-wrap h-auto gap-1 justify-start bg-transparent border-none p-0 mb-2">
         <TabsTrigger
           v-for="def in activeDefs"
           :key="def.id"
           :value="def.id"
-          class="rounded-md border border-transparent data-[state=active]:border-border data-[state=active]:bg-background data-[state=active]:shadow-sm"
+          class="rounded-sm"
         >
           {{ def.label }}
         </TabsTrigger>
         <TabsTrigger
           v-if="isAuthenticated"
           value="netrc"
-          class="rounded-md border border-transparent data-[state=active]:border-border data-[state=active]:bg-background data-[state=active]:shadow-sm"
+          class="rounded-sm"
         >
           .netrc
         </TabsTrigger>

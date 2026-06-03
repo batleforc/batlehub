@@ -82,20 +82,20 @@ impl NugetRegistryClient {
         })
     }
 
-    fn get(&self, url: &str) -> reqwest::RequestBuilder {
-        let rb = self.http.get(url);
+    fn request(&self, method: reqwest::Method, url: &str) -> reqwest::RequestBuilder {
+        let rb = self.http.request(method, url);
         match &self.api_key {
             Some(key) => rb.header("X-NuGet-ApiKey", key),
             None => rb,
         }
     }
 
+    fn get(&self, url: &str) -> reqwest::RequestBuilder {
+        self.request(reqwest::Method::GET, url)
+    }
+
     fn head(&self, url: &str) -> reqwest::RequestBuilder {
-        let rb = self.http.head(url);
-        match &self.api_key {
-            Some(key) => rb.header("X-NuGet-ApiKey", key),
-            None => rb,
-        }
+        self.request(reqwest::Method::HEAD, url)
     }
 
     /// `GET {flat_url}/{id}/index.json` → `{"versions":[…]}`
@@ -141,6 +141,41 @@ impl NugetRegistryClient {
         Ok((body.versions, cache_control))
     }
 
+    /// Fetch a URL and return only its `cache-control` header value.
+    ///
+    /// Used for sentinel versions (`__index__`, `__registration__`) where the body
+    /// is irrelevant to metadata resolution — we just need to confirm the resource
+    /// exists and capture its caching hint.
+    async fn fetch_cache_control(
+        &self,
+        url: &str,
+        label: &str,
+    ) -> Result<Option<String>, CoreError> {
+        let resp = self
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| CoreError::Registry(format!("NuGet {label} request failed: {e}")))?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(CoreError::NotFound(format!(
+                "NuGet {label} not found on upstream"
+            )));
+        }
+        if !resp.status().is_success() {
+            return Err(CoreError::Registry(format!(
+                "NuGet {label} returned {} from upstream",
+                resp.status()
+            )));
+        }
+
+        Ok(resp
+            .headers()
+            .get(reqwest::header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned))
+    }
+
     /// HEAD the `.nupkg` artifact URL to get its `Last-Modified` timestamp.
     async fn head_nupkg_last_modified(
         &self,
@@ -183,27 +218,10 @@ impl RegistryClient for NugetRegistryClient {
 
         match pkg.version.as_str() {
             "__index__" => {
-                // Flat container version list — treat the JSON as the cached artifact.
                 let url = format!("{}/{}/index.json", self.flat_url, id);
-                let resp = self.get(&url).send().await.map_err(|e| {
-                    CoreError::Registry(format!("NuGet flat index request failed: {e}"))
-                })?;
-                if resp.status() == reqwest::StatusCode::NOT_FOUND {
-                    return Err(CoreError::NotFound(format!(
-                        "NuGet package '{id}' not found"
-                    )));
-                }
-                if !resp.status().is_success() {
-                    return Err(CoreError::Registry(format!(
-                        "NuGet flat index returned {} for '{id}'",
-                        resp.status()
-                    )));
-                }
-                let cache_control = resp
-                    .headers()
-                    .get(reqwest::header::CACHE_CONTROL)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_owned);
+                let cache_control = self
+                    .fetch_cache_control(&url, &format!("flat index for '{id}'"))
+                    .await?;
                 Ok(PackageMetadata {
                     id: pkg.clone(),
                     published_at: None,
@@ -216,27 +234,10 @@ impl RegistryClient for NugetRegistryClient {
             }
 
             "__registration__" => {
-                // Registration index — proxy metadata JSON.
                 let url = format!("{}/{}/index.json", self.reg_url, id);
-                let resp = self.get(&url).send().await.map_err(|e| {
-                    CoreError::Registry(format!("NuGet registration request failed: {e}"))
-                })?;
-                if resp.status() == reqwest::StatusCode::NOT_FOUND {
-                    return Err(CoreError::NotFound(format!(
-                        "NuGet registration for '{id}' not found"
-                    )));
-                }
-                if !resp.status().is_success() {
-                    return Err(CoreError::Registry(format!(
-                        "NuGet registration returned {} for '{id}'",
-                        resp.status()
-                    )));
-                }
-                let cache_control = resp
-                    .headers()
-                    .get(reqwest::header::CACHE_CONTROL)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_owned);
+                let cache_control = self
+                    .fetch_cache_control(&url, &format!("registration for '{id}'"))
+                    .await?;
                 Ok(PackageMetadata {
                     id: pkg.clone(),
                     published_at: None,

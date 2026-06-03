@@ -155,7 +155,7 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
     <!-- Page header -->
     <div class="flex items-center justify-between">
       <div>
-        <h1 class="text-2xl font-semibold">
+        <h1 class="font-mono text-2xl font-bold cyber-text-glow">
           Registry Health
         </h1>
         <p class="text-sm text-muted-foreground mt-0.5">
@@ -206,16 +206,16 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
       </CardHeader>
       <CardContent>
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+          <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
             <p class="text-xs text-muted-foreground">
               Cache hit rate
             </p>
             <p
               class="text-2xl font-semibold tabular-nums"
               :class="statsData.aggregate.hit_rate !== null && statsData.aggregate.hit_rate >= 0.7
-                ? 'text-green-600 dark:text-green-400'
+                ? 'text-primary'
                 : statsData.aggregate.hit_rate !== null && statsData.aggregate.hit_rate >= 0.4
-                  ? 'text-yellow-600 dark:text-yellow-400'
+                  ? 'text-copper'
                   : 'text-muted-foreground'"
             >
               {{ statsData.aggregate.hit_rate !== null ? `${(statsData.aggregate.hit_rate * 100).toFixed(1)}%` : '—' }}
@@ -224,18 +224,18 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
               artifact requests
             </p>
           </div>
-          <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+          <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
             <p class="text-xs text-muted-foreground">
               Cache hits
             </p>
-            <p class="text-2xl font-semibold tabular-nums text-green-600 dark:text-green-400">
+            <p class="text-2xl font-semibold tabular-nums text-primary">
               {{ statsData.aggregate.artifact_hits.toLocaleString() }}
             </p>
             <p class="text-xs text-muted-foreground">
               served from cache
             </p>
           </div>
-          <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+          <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
             <p class="text-xs text-muted-foreground">
               Cache misses
             </p>
@@ -246,7 +246,7 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
               fetched from upstream
             </p>
           </div>
-          <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+          <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
             <p class="text-xs text-muted-foreground">
               Total cached
             </p>
@@ -299,7 +299,7 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
           <!-- Stats row -->
           <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
             <!-- Packages -->
-            <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+            <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
               <p class="text-xs text-muted-foreground">
                 Packages
               </p>
@@ -312,7 +312,7 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
             </div>
 
             <!-- Cache size -->
-            <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+            <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
               <p class="text-xs text-muted-foreground">
                 Cache size
               </p>
@@ -325,7 +325,7 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
             </div>
 
             <!-- Last pull -->
-            <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+            <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
               <p class="text-xs text-muted-foreground">
                 Last pull
               </p>
@@ -341,20 +341,20 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
             </div>
 
             <!-- Pulls / hour -->
-            <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+            <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
               <p class="text-xs text-muted-foreground">
                 Pulls / hour
               </p>
               <p
                 class="text-xl font-semibold tabular-nums"
-                :class="reg.pulls_last_hour > 0 ? 'text-green-600 dark:text-green-400' : 'text-muted-foreground'"
+                :class="reg.pulls_last_hour > 0 ? 'text-primary' : 'text-muted-foreground'"
               >
                 {{ reg.pulls_last_hour.toLocaleString() }}
               </p>
             </div>
 
             <!-- Pulls / day -->
-            <div class="rounded-lg border bg-muted/30 p-3 space-y-0.5">
+            <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
               <p class="text-xs text-muted-foreground">
                 Pulls / day
               </p>
@@ -367,21 +367,24 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
           <!-- Recent errors -->
           <div>
             <button
-              class="flex items-center gap-2 w-full text-left text-sm font-medium py-1"
+              class="flex items-center gap-2 w-full text-left font-mono text-sm font-medium py-1 hover:text-accent-foreground transition-colors"
               @click="toggleErrors(reg.registry)"
             >
               <span
                 v-if="reg.recent_errors.length === 0"
                 class="flex items-center gap-1.5 text-green-600 dark:text-green-400"
               >
-                <span class="inline-block h-2 w-2 rounded-full bg-green-500" />
+                <span class="relative flex h-2 w-2 shrink-0">
+                  <span class="animate-ping absolute inline-flex h-full w-full rounded-sm bg-green-500 opacity-75" />
+                  <span class="relative inline-flex h-2 w-2 rounded-sm bg-green-500" />
+                </span>
                 No errors in the last 24 h
               </span>
               <span
                 v-else
-                class="flex items-center gap-1.5 text-orange-600 dark:text-orange-400"
+                class="flex items-center gap-1.5 text-destructive"
               >
-                <span class="inline-block h-2 w-2 rounded-full bg-orange-500" />
+                <span class="inline-block h-2 w-2 rounded-sm bg-destructive" />
                 {{ reg.recent_errors.length }} error{{ reg.recent_errors.length > 1 ? 's' : '' }} in 24 h
                 <span class="text-muted-foreground text-xs ml-auto">
                   {{ expandedErrors.has(reg.registry) ? '▲ hide' : '▼ show' }}
@@ -391,7 +394,7 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
 
             <div
               v-if="expandedErrors.has(reg.registry) && reg.recent_errors.length > 0"
-              class="mt-2 rounded-md border overflow-x-auto"
+              class="mt-2 rounded-sm border overflow-x-auto"
             >
               <Table>
                 <TableHeader>
@@ -482,7 +485,7 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
               </Badge>
               <span
                 v-else-if="!reg.access.roles.includes('anonymous') && !reg.access.roles.includes('user')"
-                class="text-xs text-orange-600 dark:text-orange-400 flex items-center gap-1"
+                class="text-xs text-copper flex items-center gap-1"
               >
                 ⚠ Restricted — no public access
               </span>

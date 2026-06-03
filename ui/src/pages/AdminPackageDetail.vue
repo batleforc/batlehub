@@ -399,7 +399,7 @@ async function bulkUnblockVersions() {
       <!-- Bulk action bar for versions -->
       <div
         v-if="selectedVersionIds.size > 0"
-        class="sticky top-16 z-30 flex items-center gap-3 rounded-lg border bg-card px-4 py-2.5 shadow-sm"
+        class="sticky top-16 z-30 flex items-center gap-3 rounded-sm border bg-card px-4 py-2.5 shadow-sm"
       >
         <span class="text-sm font-medium">{{ selectedVersionIds.size }} version(s) selected</span>
         <Button
@@ -690,7 +690,7 @@ async function bulkUnblockVersions() {
           <div class="flex items-center gap-3 flex-wrap">
             <Badge
               :variant="selectedVisibility === 'public' ? 'default' : selectedVisibility === 'internal' ? 'secondary' : 'outline'"
-              :class="selectedVisibility === 'team' ? 'border-blue-500 text-blue-600' : ''"
+              :class="selectedVisibility === 'team' ? 'border-primary text-primary' : ''"
               class="capitalize text-xs"
             >
               {{ visibilityData?.visibility ?? "public" }}

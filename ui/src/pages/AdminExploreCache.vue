@@ -113,13 +113,13 @@ onMounted(fetchRegistries);
     <!-- Feedback -->
     <div
       v-if="successMsg"
-      class="rounded-md bg-green-50 dark:bg-green-950 border border-green-400 px-4 py-2 text-green-800 dark:text-green-200 text-sm"
+      class="rounded-sm bg-primary/10 border border-primary/30 px-4 py-2 text-primary text-sm"
     >
       {{ successMsg }}
     </div>
     <div
       v-if="errorMsg"
-      class="rounded-md bg-red-50 dark:bg-red-950 border border-red-400 px-4 py-2 text-red-800 dark:text-red-200 text-sm"
+      class="rounded-sm bg-destructive/10 border border-destructive/30 px-4 py-2 text-destructive text-sm"
     >
       {{ errorMsg }}
     </div>
@@ -140,7 +140,7 @@ onMounted(fetchRegistries);
             <label class="text-xs text-muted-foreground font-medium">Registry</label>
             <select
               v-model="selectedRegistry"
-              class="border rounded px-2 py-2 text-sm bg-background min-w-[10rem]"
+              class="border border-input rounded-sm px-2 py-2 font-mono text-sm bg-background min-w-[10rem] focus:outline-none focus:ring-2 focus:ring-ring"
             >
               <option v-for="r in registries" :key="r" :value="r">{{ r }}</option>
             </select>
@@ -151,7 +151,7 @@ onMounted(fetchRegistries);
             <input
               v-model="selectedRegistry"
               placeholder="e.g. npm"
-              class="border rounded px-2 py-2 text-sm bg-background min-w-[10rem]"
+              class="border border-input rounded-sm px-2 py-2 font-mono text-sm bg-background min-w-[10rem] focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
 

@@ -11,20 +11,11 @@ use batlehub_core::{
     services::{LocalRegistryService, ProxyService, PublishRequest},
 };
 
-use super::common::{collect_payload, extract_signature_headers, proxy_stream, require_local_mode};
+use super::common::{
+    collect_payload, extract_signature_headers, proxy_stream, require_local_mode,
+    require_registry_type,
+};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
-
-pub fn require_goproxy(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
-    match map.type_of(registry).as_deref() {
-        Some("goproxy") => Ok(()),
-        Some(_) => Err(AppError::not_found(format!(
-            "registry '{registry}' is not a goproxy registry"
-        ))),
-        None => Err(AppError::not_found(format!(
-            "unknown registry '{registry}'"
-        ))),
-    }
-}
 
 /// Extract the go.mod content from a Go module zip archive.
 /// Go module zips contain entries named `{module}@{version}/{path}`.
@@ -76,7 +67,7 @@ pub async fn goproxy_latest(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, raw_module) = path.into_inner();
-    require_goproxy(&registry, &map)?;
+    require_registry_type(&registry, "goproxy", &map)?;
     let module = raw_module.trim_end_matches('/');
     let mode = mode_map.get(&registry);
 
@@ -132,7 +123,7 @@ pub async fn goproxy_list(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, raw_module) = path.into_inner();
-    require_goproxy(&registry, &map)?;
+    require_registry_type(&registry, "goproxy", &map)?;
     let module = raw_module.trim_end_matches('/');
     let mode = mode_map.get(&registry);
 
@@ -184,7 +175,7 @@ pub async fn goproxy_file(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, raw_module, filename) = path.into_inner();
-    require_goproxy(&registry, &map)?;
+    require_registry_type(&registry, "goproxy", &map)?;
     let module = raw_module.trim_end_matches('/');
     let mode = mode_map.get(&registry);
 
@@ -302,7 +293,7 @@ pub async fn goproxy_publish(
     local_svc: web::Data<Arc<LocalRegistryService>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, raw_module, filename) = path.into_inner();
-    require_goproxy(&registry, &map)?;
+    require_registry_type(&registry, "goproxy", &map)?;
     require_local_mode(&registry, &mode_map)?;
     let module = raw_module.trim_end_matches('/');
 

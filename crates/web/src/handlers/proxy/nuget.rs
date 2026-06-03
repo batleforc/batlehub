@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use actix_multipart::Multipart;
 use actix_web::{delete, get, put, web, HttpRequest, HttpResponse, Responder};
-use bytes::BytesMut;
 use futures::StreamExt;
+use bytes::BytesMut;
 use quick_xml::{events::Event as XmlEvent, Reader as XmlReader};
 use sha2::{Digest, Sha256};
 use zip::ZipArchive;
@@ -16,23 +16,10 @@ use batlehub_core::{
 };
 
 use super::common::{
-    append_signature_headers, extract_signature_headers, proxy_stream, require_local_mode,
+    append_signature_headers, collect_storage_stream, extract_signature_headers, proxy_stream,
+    require_local_mode, require_registry_type,
 };
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
-
-// ── Guard ─────────────────────────────────────────────────────────────────────
-
-fn require_nuget(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
-    match map.type_of(registry).as_deref() {
-        Some("nuget") => Ok(()),
-        Some(_) => Err(AppError::not_found(format!(
-            "registry '{registry}' is not a NuGet registry"
-        ))),
-        None => Err(AppError::not_found(format!(
-            "unknown registry '{registry}'"
-        ))),
-    }
-}
 
 // ── Content-type helpers ──────────────────────────────────────────────────────
 
@@ -179,7 +166,7 @@ pub async fn nuget_service_index(
     map: web::Data<RegistryMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_nuget(&registry, &map)?;
+    require_registry_type(&registry, "nuget", &map)?;
 
     // Build the base URL from the incoming request so the service index works
     // behind reverse proxies and in local dev alike.
@@ -255,7 +242,7 @@ pub async fn nuget_flat_versions(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, id_raw) = path.into_inner();
-    require_nuget(&registry, &map)?;
+    require_registry_type(&registry, "nuget", &map)?;
 
     let id = id_raw.to_lowercase();
     let mode = mode_map.get(&registry);
@@ -324,7 +311,7 @@ pub async fn nuget_flat_download(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, id_raw, version, filename) = path.into_inner();
-    require_nuget(&registry, &map)?;
+    require_registry_type(&registry, "nuget", &map)?;
 
     let id = id_raw.to_lowercase();
     let mode = mode_map.get(&registry);
@@ -338,13 +325,7 @@ pub async fn nuget_flat_download(
         let storage_key = artifact_storage_key(&registry, &id, &version);
         match local_svc.storage.retrieve(&storage_key).await {
             Ok(Some(artifact)) => {
-                let mut buf = Vec::new();
-                let mut stream = artifact.stream;
-                while let Some(chunk) = stream.next().await {
-                    buf.extend_from_slice(
-                        &chunk.map_err(|e| AppError::internal(e.to_string()))?,
-                    );
-                }
+                let buf = collect_storage_stream(artifact.stream).await?;
                 let mut resp = HttpResponse::Ok();
                 resp.content_type(content_type_for(&filename));
                 append_signature_headers(&mut resp, &local_svc, &registry, &id, &version).await;
@@ -404,7 +385,7 @@ pub async fn nuget_registration(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, id_raw) = path.into_inner();
-    require_nuget(&registry, &map)?;
+    require_registry_type(&registry, "nuget", &map)?;
 
     let id = id_raw.to_lowercase();
     let mode = mode_map.get(&registry);
@@ -500,6 +481,18 @@ pub async fn nuget_registration(
 
 // ── Search ────────────────────────────────────────────────────────────────────
 
+#[derive(serde::Deserialize)]
+struct SearchQuery {
+    #[serde(default)]
+    q: String,
+    #[serde(default = "default_take")]
+    take: usize,
+}
+
+fn default_take() -> usize {
+    20
+}
+
 /// Search for NuGet packages.
 ///
 /// In proxy/hybrid mode the query is forwarded to the upstream search API.
@@ -521,23 +514,18 @@ pub async fn nuget_registration(
 )]
 #[get("/proxy/{registry}/nuget/v3/query")]
 pub async fn nuget_search(
-    req: HttpRequest,
     path: web::Path<String>,
+    query: web::Query<SearchQuery>,
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_nuget(&registry, &map)?;
+    require_registry_type(&registry, "nuget", &map)?;
 
-    let query_string = req.query_string().to_owned();
-    let q = extract_query_param(&query_string, "q").unwrap_or_default();
-    let take: usize = extract_query_param(&query_string, "take")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(20)
-        .min(100);
-
+    let q = &query.q;
+    let take = query.take.min(100);
     let mode = mode_map.get(&registry);
 
     // Search in local mode: scan published package names for the query.
@@ -550,7 +538,7 @@ pub async fn nuget_search(
 
         let matched: Vec<serde_json::Value> = names
             .into_iter()
-            .filter(|name| q.is_empty() || name.contains(&q))
+            .filter(|name| q.is_empty() || name.contains(q.as_str()))
             .take(take)
             .map(|name| {
                 serde_json::json!({
@@ -573,18 +561,6 @@ pub async fn nuget_search(
     Ok(HttpResponse::Ok()
         .content_type("application/json")
         .json(serde_json::json!({ "totalHits": 0, "data": [] })))
-}
-
-fn extract_query_param<'a>(query_string: &'a str, key: &str) -> Option<String> {
-    query_string
-        .split('&')
-        .filter_map(|pair| {
-            let mut parts = pair.splitn(2, '=');
-            let k = parts.next()?;
-            let v = parts.next().unwrap_or("");
-            if k == key { Some(v.to_owned()) } else { None }
-        })
-        .next()
 }
 
 // ── Publish ───────────────────────────────────────────────────────────────────
@@ -619,7 +595,7 @@ pub async fn nuget_publish(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_nuget(&registry, &map)?;
+    require_registry_type(&registry, "nuget", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     // dotnet nuget push and nuget.exe always send multipart/form-data.
@@ -727,7 +703,7 @@ pub async fn nuget_yank(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, id_raw, version) = path.into_inner();
-    require_nuget(&registry, &map)?;
+    require_registry_type(&registry, "nuget", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     let id = id_raw.to_lowercase();

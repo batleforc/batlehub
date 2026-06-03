@@ -336,7 +336,7 @@ function formatDate(iso: string) {
   <div class="space-y-6 max-w-4xl">
     <!-- Header -->
     <div>
-      <h1 class="text-2xl font-semibold">
+      <h1 class="font-mono text-2xl font-bold cyber-text-glow">
         Team Namespace
       </h1>
       <p class="text-sm text-muted-foreground mt-0.5">
@@ -537,7 +537,7 @@ function formatDate(iso: string) {
                       v-else
                       :variant="visibilityVariant(pkg.visibility)"
                       class="capitalize text-xs cursor-pointer"
-                      :class="pkg.visibility === 'team' ? 'border-blue-500 text-blue-600' : ''"
+                      :class="pkg.visibility === 'team' ? 'border-primary text-primary' : ''"
                       @click="startEdit(pkg)"
                     >
                       {{ pkg.visibility }}
@@ -688,7 +688,7 @@ function formatDate(iso: string) {
                   <input
                     type="file"
                     :accept="acceptForType(uploadRegistryType)"
-                    class="block text-sm text-muted-foreground file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-medium file:bg-secondary file:text-secondary-foreground hover:file:bg-secondary/80 cursor-pointer"
+                    class="block text-sm text-muted-foreground file:mr-3 file:py-1.5 file:px-3 file:rounded-sm file:border-0 file:text-xs file:font-medium file:bg-secondary file:text-secondary-foreground hover:file:bg-secondary/80 cursor-pointer"
                     @change="onFileChange"
                   >
                 </div>
@@ -702,7 +702,7 @@ function formatDate(iso: string) {
                   </Button>
                   <span
                     v-if="uploadSuccess"
-                    class="text-sm text-green-600"
+                    class="text-sm text-primary"
                   >Published successfully.</span>
                   <span
                     v-if="uploadError"

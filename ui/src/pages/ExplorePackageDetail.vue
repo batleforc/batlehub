@@ -181,11 +181,11 @@ onMounted(fetchDetail);
             <div class="flex items-center gap-2 text-sm">
               <component
                 :is="data.gate.registry_accessible ? ShieldCheck : ShieldAlert"
-                :class="data.gate.registry_accessible ? 'text-green-500' : 'text-destructive'"
+                :class="data.gate.registry_accessible ? 'text-primary' : 'text-destructive'"
                 class="h-4 w-4 shrink-0"
               />
               <span class="text-muted-foreground">Registry access:</span>
-              <span :class="data.gate.registry_accessible ? 'text-green-600 font-medium' : 'text-destructive font-medium'">
+              <span :class="data.gate.registry_accessible ? 'text-primary font-medium' : 'text-destructive font-medium'">
                 {{ data.gate.registry_accessible ? "Allowed" : "Denied" }}
               </span>
             </div>
@@ -194,11 +194,11 @@ onMounted(fetchDetail);
             <div class="flex items-center gap-2 text-sm">
               <component
                 :is="data.gate.beta_member ? Unlock : Lock"
-                :class="data.gate.beta_member ? 'text-green-500' : 'text-muted-foreground'"
+                :class="data.gate.beta_member ? 'text-primary' : 'text-muted-foreground'"
                 class="h-4 w-4 shrink-0"
               />
               <span class="text-muted-foreground">Beta channel:</span>
-              <span :class="data.gate.beta_member ? 'text-green-600 font-medium' : 'text-muted-foreground'">
+              <span :class="data.gate.beta_member ? 'text-primary font-medium' : 'text-muted-foreground'">
                 {{ data.gate.beta_member ? "Member — pre-release versions visible" : "Non-member" }}
               </span>
             </div>
@@ -255,7 +255,7 @@ onMounted(fetchDetail);
                   >
                     <Badge variant="destructive" class="text-xs cursor-help">Blocked</Badge>
                     <span
-                      class="absolute bottom-full left-0 mb-1 hidden group-hover:block z-10 w-64 rounded bg-popover border p-2 text-xs text-popover-foreground shadow-md"
+                      class="absolute bottom-full left-0 mb-1 hidden group-hover:block z-10 w-64 rounded-sm bg-popover border p-2 text-xs text-popover-foreground shadow-md"
                     >
                       <strong>Reason:</strong> {{ (ver.firewall as any).reason }}<br />
                       <strong>By:</strong> {{ (ver.firewall as any).blocked_by }}<br />

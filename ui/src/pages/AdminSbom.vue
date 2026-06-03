@@ -68,12 +68,12 @@ async function exportSbom() {
 
 <template>
   <div class="space-y-6">
-    <h1 class="text-2xl font-bold">SBOM Export</h1>
+    <h1 class="font-mono text-2xl font-bold cyber-text-glow">SBOM Export</h1>
 
     <!-- Feedback -->
     <div
       v-if="errorMsg"
-      class="rounded-md bg-red-50 dark:bg-red-950 border border-red-400 px-4 py-2 text-red-800 dark:text-red-200 text-sm"
+      class="rounded-sm bg-destructive/10 border border-destructive/30 px-4 py-2 text-destructive text-sm"
     >
       {{ errorMsg }}
     </div>
@@ -106,7 +106,7 @@ async function exportSbom() {
             <select
               id="sbom-format"
               v-model="format"
-              class="w-full border rounded px-2 py-2 text-sm bg-background"
+              class="w-full border border-input rounded-sm px-2 py-2 font-mono text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
             >
               <option value="spdx">SPDX 2.3</option>
               <option value="cyclonedx">CycloneDX 1.4</option>

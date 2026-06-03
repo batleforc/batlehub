@@ -10,22 +10,11 @@ use batlehub_core::{
     services::{LocalRegistryService, ProxyService, PublishRequest},
 };
 
-use super::common::{collect_payload, extract_signature_headers, proxy_stream, require_local_mode};
-use crate::{
-    error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap,
+use super::common::{
+    collect_payload, extract_signature_headers, proxy_stream, require_local_mode,
+    require_registry_type,
 };
-
-fn require_conda(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
-    match map.type_of(registry).as_deref() {
-        Some("conda") => Ok(()),
-        Some(_) => Err(AppError::not_found(format!(
-            "registry '{registry}' is not a Conda registry"
-        ))),
-        None => Err(AppError::not_found(format!(
-            "unknown registry '{registry}'"
-        ))),
-    }
-}
+use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 // ── Proxy routes ──────────────────────────────────────────────────────────────
 
@@ -60,7 +49,7 @@ pub async fn conda_repodata(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, platform) = path.into_inner();
-    require_conda(&registry, &map)?;
+    require_registry_type(&registry, "conda", &map)?;
 
     let mode = mode_map.get(&registry);
 
@@ -169,7 +158,7 @@ pub async fn conda_current_repodata(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, platform) = path.into_inner();
-    require_conda(&registry, &map)?;
+    require_registry_type(&registry, "conda", &map)?;
 
     if mode_map.get(&registry) == RegistryMode::Local {
         return Err(AppError::not_found(
@@ -210,7 +199,7 @@ pub async fn conda_file_download(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, platform, filename) = path.into_inner();
-    require_conda(&registry, &map)?;
+    require_registry_type(&registry, "conda", &map)?;
 
     let mode = mode_map.get(&registry);
 
@@ -325,7 +314,7 @@ pub async fn conda_publish(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, platform) = path.into_inner();
-    require_conda(&registry, &map)?;
+    require_registry_type(&registry, "conda", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     let data = collect_payload(payload).await?;
@@ -392,26 +381,6 @@ pub async fn conda_publish(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RegistryMap;
-    use std::collections::HashMap;
-
-    fn map_with(registry: &str, type_: &str) -> RegistryMap {
-        let mut m = HashMap::new();
-        m.insert(registry.to_owned(), type_.to_owned());
-        RegistryMap::from(m)
-    }
-
-    #[test]
-    fn require_conda_ok() {
-        let map = map_with("conda1", "conda");
-        assert!(require_conda("conda1", &map).is_ok());
-    }
-
-    #[test]
-    fn require_conda_err_wrong_type() {
-        let map = map_with("pypi1", "pypi");
-        assert!(require_conda("pypi1", &map).is_err());
-    }
 
     #[test]
     fn package_name_from_filename() {

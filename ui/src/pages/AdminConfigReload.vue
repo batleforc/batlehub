@@ -211,7 +211,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer); });
     <!-- Status: hot reload disabled -->
     <Card v-if="hotReloadEnabled === false" class="border-yellow-400">
       <CardContent class="pt-4">
-        <p class="text-yellow-700 dark:text-yellow-300 font-medium">
+        <p class="text-copper font-medium">
           Hot reload is disabled on this instance (<code>BATLEHUB_DISABLE_HOT_RELOAD=1</code>).
           Config changes require a server restart.
         </p>
@@ -219,10 +219,10 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer); });
     </Card>
 
     <!-- Feedback -->
-    <div v-if="successMsg" class="rounded-md bg-green-50 dark:bg-green-950 border border-green-400 px-4 py-2 text-green-800 dark:text-green-200 text-sm">
+    <div v-if="successMsg" class="rounded-sm bg-primary/10 border border-primary/30 px-4 py-2 text-primary text-sm">
       {{ successMsg }}
     </div>
-    <div v-if="errorMsg" class="rounded-md bg-red-50 dark:bg-red-950 border border-red-400 px-4 py-2 text-red-800 dark:text-red-200 text-sm">
+    <div v-if="errorMsg" class="rounded-sm bg-destructive/10 border border-destructive/30 px-4 py-2 text-destructive text-sm">
       {{ errorMsg }}
     </div>
 
@@ -243,9 +243,9 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer); });
             <span><strong>Expires in:</strong> {{ expiresIn }}</span>
           </div>
           <div class="flex gap-2 flex-wrap">
-            <Badge v-for="r in pendingReload.diff.added_registries" :key="r" class="bg-green-100 text-green-800">+{{ r }}</Badge>
-            <Badge v-for="r in pendingReload.diff.removed_registries" :key="r" class="bg-red-100 text-red-800">-{{ r }}</Badge>
-            <Badge v-for="r in pendingReload.diff.changed_registries" :key="r.name" class="bg-yellow-100 text-yellow-800">~{{ r.name }}</Badge>
+            <Badge v-for="r in pendingReload.diff.added_registries" :key="r" class="bg-primary/10 text-primary">+{{ r }}</Badge>
+            <Badge v-for="r in pendingReload.diff.removed_registries" :key="r" class="bg-destructive/10 text-destructive">-{{ r }}</Badge>
+            <Badge v-for="r in pendingReload.diff.changed_registries" :key="r.name" class="bg-copper/10 text-copper">~{{ r.name }}</Badge>
             <Badge v-if="pendingReload.diff.limits_changed" class="bg-purple-100 text-purple-800">limits changed</Badge>
           </div>
           <div class="flex gap-2">
@@ -281,7 +281,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer); });
         <CardTitle>Global Banner</CardTitle>
       </CardHeader>
       <CardContent class="space-y-4">
-        <div v-if="banner" class="rounded-md border px-3 py-2 text-sm">
+        <div v-if="banner" class="rounded-sm border px-3 py-2 text-sm">
           <strong>Current:</strong> [{{ banner.level }}] {{ banner.message }}
           <span class="text-muted-foreground ml-2">— set by {{ banner.set_by }}</span>
         </div>
@@ -293,7 +293,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer); });
           </div>
           <div class="space-y-1">
             <Label>Level</Label>
-            <select v-model="bannerLevel" class="border rounded px-2 py-2 text-sm bg-background">
+            <select v-model="bannerLevel" class="border border-input rounded-sm px-2 py-2 font-mono text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring">
               <option value="info">Info</option>
               <option value="warning">Warning</option>
               <option value="error">Error</option>
@@ -335,7 +335,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer); });
                 <td class="py-2 pr-4">{{ new Date(row.triggered_at).toLocaleString() }}</td>
                 <td class="py-2 pr-4">{{ row.triggered_by }}</td>
                 <td class="py-2 pr-4">
-                  <Badge :class="row.status === 'applied' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'">
+                  <Badge :class="row.status === 'applied' ? 'bg-green-100 text-primary' : 'bg-destructive/10 text-destructive'">
                     {{ row.status }}
                   </Badge>
                 </td>

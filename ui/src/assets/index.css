@@ -1,54 +1,49 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap');
 @import "tailwindcss";
 @import "tw-animate-css";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
-  --font-family-sans: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-family-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-family-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
 
   --radius-lg: var(--radius);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: var(--radius);
+  --radius-sm: var(--radius);
 
-  --color-background: hsl(var(--background));
-  --color-foreground: hsl(var(--foreground));
-  --color-card: hsl(var(--card));
-  --color-card-foreground: hsl(var(--card-foreground));
-  --color-popover: hsl(var(--popover));
-  --color-popover-foreground: hsl(var(--popover-foreground));
-  --color-primary: hsl(var(--primary));
-  --color-primary-foreground: hsl(var(--primary-foreground));
-  --color-secondary: hsl(var(--secondary));
-  --color-secondary-foreground: hsl(var(--secondary-foreground));
-  --color-muted: hsl(var(--muted));
-  --color-muted-foreground: hsl(var(--muted-foreground));
-  --color-accent: hsl(var(--accent));
-  --color-accent-foreground: hsl(var(--accent-foreground));
-  --color-destructive: hsl(var(--destructive));
-  --color-destructive-foreground: hsl(var(--destructive-foreground));
-  --color-border: hsl(var(--border));
-  --color-input: hsl(var(--input));
-  --color-ring: hsl(var(--ring));
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-copper: var(--copper);
 
   --animate-accordion-down: accordion-down 0.2s ease-out;
   --animate-accordion-up: accordion-up 0.2s ease-out;
 
   @keyframes accordion-down {
-    from {
-      height: 0;
-    }
-    to {
-      height: var(--radix-accordion-content-height);
-    }
+    from { height: 0; }
+    to { height: var(--radix-accordion-content-height); }
   }
 
   @keyframes accordion-up {
-    from {
-      height: var(--radix-accordion-content-height);
-    }
-    to {
-      height: 0;
-    }
+    from { height: var(--radix-accordion-content-height); }
+    to { height: 0; }
   }
 }
 
@@ -58,50 +53,60 @@
   max-width: 1400px;
 }
 
+/* ── Light mode (warm Monofolio adaptation) ──────────────────────────────── */
 :root {
-  --background: 0 0% 100%;
-  --foreground: 222.2 84% 4.9%;
-  --card: 0 0% 100%;
-  --card-foreground: 222.2 84% 4.9%;
-  --popover: 0 0% 100%;
-  --popover-foreground: 222.2 84% 4.9%;
-  --primary: 222.2 47.4% 11.2%;
-  --primary-foreground: 210 40% 98%;
-  --secondary: 210 40% 96.1%;
-  --secondary-foreground: 222.2 47.4% 11.2%;
-  --muted: 210 40% 96.1%;
-  --muted-foreground: 215.4 16.3% 46.9%;
-  --accent: 210 40% 96.1%;
-  --accent-foreground: 222.2 47.4% 11.2%;
-  --destructive: 0 84.2% 60.2%;
-  --destructive-foreground: 210 40% 98%;
-  --border: 214.3 31.8% 91.4%;
-  --input: 214.3 31.8% 91.4%;
-  --ring: 222.2 84% 4.9%;
-  --radius: 0.5rem;
-  --font-sans: ui-sans-serif, system-ui, sans-serif;
+  --background: oklch(0.97 0.008 18);
+  --foreground: oklch(0.12 0.022 20);
+  --card: oklch(0.95 0.006 18);
+  --card-foreground: oklch(0.12 0.022 20);
+  --popover: oklch(0.95 0.006 18);
+  --popover-foreground: oklch(0.12 0.022 20);
+  --primary: oklch(0.52 0.24 25);
+  --primary-foreground: oklch(0.97 0.01 0);
+  --secondary: oklch(0.92 0.01 18);
+  --secondary-foreground: oklch(0.52 0.24 25);
+  --muted: oklch(0.92 0.01 18);
+  --muted-foreground: oklch(0.44 0.04 25);
+  --accent: oklch(0.52 0.24 25 / 0.10);
+  --accent-foreground: oklch(0.52 0.24 25);
+  --copper: oklch(0.58 0.12 52);
+  --destructive: oklch(0.50 0.26 25);
+  --destructive-foreground: oklch(0.97 0.01 0);
+  --border: oklch(0.52 0.24 25 / 0.20);
+  --input: oklch(0.52 0.24 25 / 0.10);
+  --ring: oklch(0.52 0.24 25 / 0.40);
+  --radius: 0.125rem;
+  --grid-line: oklch(0.52 0.24 25 / 0.06);
+  --cyber-glow: 0 0 6px oklch(0.52 0.24 25 / 0.50), 0 0 20px oklch(0.52 0.24 25 / 0.18);
+  --steam-glow: 0 0 6px oklch(0.58 0.12 52 / 0.50), 0 0 20px oklch(0.58 0.12 52 / 0.18);
 }
 
+/* ── Dark mode (full Monofolio cyberpunk) ─────────────────────────────────── */
 .dark {
-  --background: 222.2 84% 4.9%;
-  --foreground: 210 40% 98%;
-  --card: 222.2 84% 4.9%;
-  --card-foreground: 210 40% 98%;
-  --popover: 222.2 84% 4.9%;
-  --popover-foreground: 210 40% 98%;
-  --primary: 210 40% 98%;
-  --primary-foreground: 222.2 47.4% 11.2%;
-  --secondary: 217.2 32.6% 17.5%;
-  --secondary-foreground: 210 40% 98%;
-  --muted: 217.2 32.6% 17.5%;
-  --muted-foreground: 215 20.2% 65.1%;
-  --accent: 217.2 32.6% 17.5%;
-  --accent-foreground: 210 40% 98%;
-  --destructive: 0 62.8% 30.6%;
-  --destructive-foreground: 210 40% 98%;
-  --border: 217.2 32.6% 17.5%;
-  --input: 217.2 32.6% 17.5%;
-  --ring: 212.7 26.8% 83.9%;
+  --background: oklch(0.07 0.018 18);
+  --foreground: oklch(0.93 0.018 25);
+  --card: oklch(0.10 0.018 18);
+  --card-foreground: oklch(0.93 0.018 25);
+  --popover: oklch(0.10 0.018 18);
+  --popover-foreground: oklch(0.93 0.018 25);
+  --primary: oklch(0.65 0.26 25);
+  --primary-foreground: oklch(0.97 0.01 0);
+  --secondary: oklch(0.14 0.022 18);
+  --secondary-foreground: oklch(0.65 0.26 25);
+  --muted: oklch(0.13 0.016 18);
+  --muted-foreground: oklch(0.58 0.04 30);
+  --accent: oklch(0.65 0.26 25 / 0.12);
+  --accent-foreground: oklch(0.65 0.26 25);
+  --copper: oklch(0.72 0.14 52);
+  --destructive: oklch(0.55 0.28 25);
+  --destructive-foreground: oklch(0.97 0.01 0);
+  --border: oklch(0.65 0.26 25 / 0.22);
+  --input: oklch(0.65 0.26 25 / 0.12);
+  --ring: oklch(0.65 0.26 25 / 0.45);
+  --radius: 0.125rem;
+  --grid-line: oklch(0.65 0.26 25 / 0.06);
+  --cyber-glow: 0 0 6px oklch(0.65 0.26 25 / 0.65), 0 0 22px oklch(0.65 0.26 25 / 0.30);
+  --steam-glow: 0 0 6px oklch(0.72 0.14 52 / 0.60), 0 0 22px oklch(0.72 0.14 52 / 0.25);
 }
 
 @layer base {
@@ -114,16 +119,28 @@
   }
 }
 
-/* Shiki highlighted code blocks — dual-theme with Tailwind class-based dark mode */
+/* ── Signature effect utilities ──────────────────────────────────────────── */
+
+.cyber-grid-bg {
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+.cyber-text-glow { text-shadow: var(--cyber-glow); }
+.cyber-glow { box-shadow: var(--cyber-glow); }
+.steam-glow { box-shadow: var(--steam-glow); }
+
+/* ── Shiki highlighted code blocks ───────────────────────────────────────── */
 .shiki-wrapper .shiki {
-  border-radius: 0.375rem;
+  border-radius: var(--radius);
   padding: 1rem;
   font-size: 0.75rem;
   line-height: 1.625;
   overflow-x: auto;
   margin: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-    "Liberation Mono", "Courier New", monospace;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
 }
 
 .shiki-wrapper .shiki,

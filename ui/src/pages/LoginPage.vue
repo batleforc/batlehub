@@ -99,10 +99,10 @@ function providerLabel(name: string): string {
 </script>
 
 <template>
-  <div class="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
-    <Card class="w-full max-w-sm">
+  <div class="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4 cyber-grid-bg">
+    <Card class="w-full max-w-sm [box-shadow:var(--cyber-glow)]">
       <CardHeader class="space-y-1">
-        <CardTitle class="text-2xl">
+        <CardTitle class="font-mono text-2xl font-bold cyber-text-glow">
           Sign in
         </CardTitle>
         <CardDescription>
@@ -134,10 +134,10 @@ function providerLabel(name: string): string {
           <!-- Divider between OIDC and token form -->
           <div class="relative">
             <div class="absolute inset-0 flex items-center">
-              <span class="w-full border-t" />
+              <span class="w-full border-t border-border/60" />
             </div>
             <div class="relative flex justify-center text-xs uppercase">
-              <span class="bg-card px-2 text-muted-foreground">or use a token</span>
+              <span class="bg-card px-2 font-mono text-muted-foreground tracking-widest">or use a token</span>
             </div>
           </div>
         </template>

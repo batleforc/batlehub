@@ -421,11 +421,7 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<String, CoreError> {
-        self.check_visibility(registry, name, identity).await?;
-        let versions = self.backend.get_versions(registry, name).await?;
-        let versions = self
-            .filter_for_identity(registry, versions, identity)
-            .await?;
+        let versions = self.load_visible_versions(registry, name, identity).await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "crate '{}' not found in local registry '{}'",
@@ -449,11 +445,7 @@ impl LocalRegistryService {
         base_url: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
-        self.check_visibility(registry, name, identity).await?;
-        let versions = self.backend.get_versions(registry, name).await?;
-        let versions = self
-            .filter_for_identity(registry, versions, identity)
-            .await?;
+        let versions = self.load_visible_versions(registry, name, identity).await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "package '{}' not found in local registry '{}'",
@@ -670,6 +662,20 @@ impl LocalRegistryService {
             .collect())
     }
 
+    /// Convenience wrapper: `check_visibility` → `get_versions` → `filter_for_identity`.
+    ///
+    /// Returns the filtered list (may be empty — callers decide whether that is an error).
+    async fn load_visible_versions(
+        &self,
+        registry: &str,
+        name: &str,
+        identity: &Identity,
+    ) -> Result<Vec<PublishedPackage>, CoreError> {
+        self.check_visibility(registry, name, identity).await?;
+        let versions = self.backend.get_versions(registry, name).await?;
+        self.filter_for_identity(registry, versions, identity).await
+    }
+
     /// Returns `CoreError::NotFound` if `version` is a pre-release and the caller
     /// is not a beta-channel member for `registry`.
     pub async fn check_prerelease_access(
@@ -717,11 +723,7 @@ impl LocalRegistryService {
         module: &str,
         identity: &Identity,
     ) -> Result<String, CoreError> {
-        self.check_visibility(registry, module, identity).await?;
-        let versions = self.backend.get_versions(registry, module).await?;
-        let versions = self
-            .filter_for_identity(registry, versions, identity)
-            .await?;
+        let versions = self.load_visible_versions(registry, module, identity).await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "module '{}' not found in local registry '{}'",
@@ -819,11 +821,7 @@ impl LocalRegistryService {
         module: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
-        self.check_visibility(registry, module, identity).await?;
-        let versions = self.backend.get_versions(registry, module).await?;
-        let versions = self
-            .filter_for_identity(registry, versions, identity)
-            .await?;
+        let versions = self.load_visible_versions(registry, module, identity).await?;
         let pkg = versions
             .iter()
             .rev()
@@ -856,11 +854,7 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
-        self.check_visibility(registry, name, identity).await?;
-        let versions = self.backend.get_versions(registry, name).await?;
-        let versions = self
-            .filter_for_identity(registry, versions, identity)
-            .await?;
+        let versions = self.load_visible_versions(registry, name, identity).await?;
         let latest = versions
             .iter()
             .rev()
@@ -894,11 +888,7 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<Vec<serde_json::Value>, CoreError> {
-        self.check_visibility(registry, name, identity).await?;
-        let versions = self.backend.get_versions(registry, name).await?;
-        let versions = self
-            .filter_for_identity(registry, versions, identity)
-            .await?;
+        let versions = self.load_visible_versions(registry, name, identity).await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "gem '{name}' not found in local registry '{registry}'"
@@ -934,11 +924,7 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<Vec<PublishedPackage>, CoreError> {
-        self.check_visibility(registry, name, identity).await?;
-        let versions = self.backend.get_versions(registry, name).await?;
-        let versions = self
-            .filter_for_identity(registry, versions, identity)
-            .await?;
+        let versions = self.load_visible_versions(registry, name, identity).await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "artifact '{name}' not found in local registry '{registry}'"
@@ -954,11 +940,7 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<Vec<PublishedPackage>, CoreError> {
-        self.check_visibility(registry, name, identity).await?;
-        let versions = self.backend.get_versions(registry, name).await?;
-        let versions = self
-            .filter_for_identity(registry, versions, identity)
-            .await?;
+        let versions = self.load_visible_versions(registry, name, identity).await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "NuGet package '{name}' not found in local registry '{registry}'"
@@ -974,11 +956,7 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
-        self.check_visibility(registry, name, identity).await?;
-        let versions = self.backend.get_versions(registry, name).await?;
-        let versions = self
-            .filter_for_identity(registry, versions, identity)
-            .await?;
+        let versions = self.load_visible_versions(registry, name, identity).await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "module '{name}' not found in local registry '{registry}'"
@@ -999,11 +977,7 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
-        self.check_visibility(registry, name, identity).await?;
-        let versions = self.backend.get_versions(registry, name).await?;
-        let versions = self
-            .filter_for_identity(registry, versions, identity)
-            .await?;
+        let versions = self.load_visible_versions(registry, name, identity).await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "provider '{name}' not found in local registry '{registry}'"
@@ -1131,11 +1105,7 @@ impl LocalRegistryService {
         base_url: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
-        self.check_visibility(registry, name, identity).await?;
-        let versions = self.backend.get_versions(registry, name).await?;
-        let versions = self
-            .filter_for_identity(registry, versions, identity)
-            .await?;
+        let versions = self.load_visible_versions(registry, name, identity).await?;
 
         // Exclude yanked versions: Composer clients have no standard way to
         // interpret a `yanked` field, so they would happily install yanked releases.
@@ -1236,10 +1206,8 @@ impl LocalRegistryService {
         base_url: &str,
         identity: &Identity,
     ) -> Result<String, CoreError> {
-        self.check_visibility(registry, package_name, identity).await?;
-        let versions = self.backend.get_versions(registry, package_name).await?;
         let versions = self
-            .filter_for_identity(registry, versions, identity)
+            .load_visible_versions(registry, package_name, identity)
             .await?;
         if versions.is_empty() {
             return Err(CoreError::NotFound(format!(
@@ -1636,6 +1604,61 @@ mod tests {
         let s = svc(InMemBackend::arc(), None);
         let err = s
             .get_go_latest("go", "example.com/mod", &anon())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CoreError::NotFound(_)));
+    }
+
+    // ── maven / nuget / pypi / composer not-found ────────────────────────────────
+
+    #[tokio::test]
+    async fn get_maven_versions_not_found_when_no_versions() {
+        let s = svc(InMemBackend::arc(), None);
+        let err = s
+            .get_maven_versions("maven", "com.example:mylib", &anon())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CoreError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn get_nuget_versions_not_found_when_no_versions() {
+        let s = svc(InMemBackend::arc(), None);
+        let err = s
+            .get_nuget_versions("nuget", "Newtonsoft.Json", &anon())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CoreError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn get_nuget_versions_returns_versions_when_published() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("nuget", "mylib", "1.0.0"));
+        backend.seed(pkg("nuget", "mylib", "2.0.0"));
+        let s = svc(backend, None);
+        let versions = s
+            .get_nuget_versions("nuget", "mylib", &anon())
+            .await
+            .unwrap();
+        assert_eq!(versions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn get_pypi_simple_page_not_found_when_no_versions() {
+        let s = svc(InMemBackend::arc(), None);
+        let err = s
+            .get_pypi_simple_page("pypi", "requests", "http://localhost", &anon())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CoreError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn get_composer_p2_response_not_found_when_no_versions() {
+        let s = svc(InMemBackend::arc(), None);
+        let err = s
+            .get_composer_p2_response("composer", "vendor/pkg", "http://localhost", &anon())
             .await
             .unwrap_err();
         assert!(matches!(err, CoreError::NotFound(_)));

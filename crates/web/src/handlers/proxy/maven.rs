@@ -17,20 +17,10 @@ use batlehub_core::{
     },
 };
 
-use super::common::{collect_payload, proxy_stream, require_local_mode};
+use super::common::{
+    collect_payload, collect_storage_stream, proxy_stream, require_local_mode, require_registry_type,
+};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
-
-fn require_maven(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
-    match map.type_of(registry).as_deref() {
-        Some("maven") => Ok(()),
-        Some(_) => Err(AppError::not_found(format!(
-            "registry '{registry}' is not a Maven registry"
-        ))),
-        None => Err(AppError::not_found(format!(
-            "unknown registry '{registry}'"
-        ))),
-    }
-}
 
 fn content_type_for(filename: &str) -> &'static str {
     if filename.ends_with(".jar") {
@@ -285,7 +275,7 @@ pub async fn maven_get(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, maven_path) = path.into_inner();
-    require_maven(&registry, &map)?;
+    require_registry_type(&registry, "maven", &map)?;
 
     let mode = mode_map.get(&registry);
     let kind = parse_maven_path(&registry, &maven_path)?;
@@ -343,14 +333,7 @@ pub async fn maven_get(
                         };
                         match local_svc.storage.retrieve(&storage_key).await {
                             Ok(Some(artifact)) => {
-                                use futures::StreamExt;
-                                let mut buf = Vec::new();
-                                let mut stream = artifact.stream;
-                                while let Some(chunk) = stream.next().await {
-                                    buf.extend_from_slice(
-                                        &chunk.map_err(|e| AppError::internal(e.to_string()))?,
-                                    );
-                                }
+                                let buf = collect_storage_stream(artifact.stream).await?;
                                 return Ok(HttpResponse::Ok()
                                     .content_type(content_type_for(filename))
                                     .body(buf));
@@ -435,7 +418,7 @@ pub async fn maven_put(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, maven_path) = path.into_inner();
-    require_maven(&registry, &map)?;
+    require_registry_type(&registry, "maven", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     let kind = parse_maven_path(&registry, &maven_path)?;

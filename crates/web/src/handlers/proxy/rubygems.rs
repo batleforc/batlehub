@@ -11,52 +11,9 @@ use batlehub_core::{
 
 use super::common::{
     append_signature_headers, collect_payload, extract_signature_headers, proxy_stream,
-    require_local_mode,
+    require_local_mode, require_registry_type,
 };
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
-
-fn require_rubygems(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
-    match map.type_of(registry).as_deref() {
-        Some("rubygems") => Ok(()),
-        Some(_) => Err(AppError::not_found(format!(
-            "registry '{registry}' is not a RubyGems registry"
-        ))),
-        None => Err(AppError::not_found(format!(
-            "unknown registry '{registry}'"
-        ))),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::RegistryMap;
-    use std::collections::HashMap;
-
-    fn map_with(registry: &str, type_: &str) -> RegistryMap {
-        let mut m = HashMap::new();
-        m.insert(registry.to_owned(), type_.to_owned());
-        RegistryMap::from(m)
-    }
-
-    #[test]
-    fn require_rubygems_ok_for_rubygems_registry() {
-        let map = map_with("gems1", "rubygems");
-        assert!(require_rubygems("gems1", &map).is_ok());
-    }
-
-    #[test]
-    fn require_rubygems_err_for_wrong_type() {
-        let map = map_with("cargo1", "cargo");
-        assert!(require_rubygems("cargo1", &map).is_err());
-    }
-
-    #[test]
-    fn require_rubygems_err_for_unknown_registry() {
-        let map = RegistryMap::new(HashMap::new());
-        assert!(require_rubygems("nonexistent", &map).is_err());
-    }
-}
 
 // ── Proxy & shared download routes ───────────────────────────────────────────
 
@@ -86,7 +43,7 @@ pub async fn gem_download(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, filename) = path.into_inner();
-    require_rubygems(&registry, &map)?;
+    require_registry_type(&registry, "rubygems", &map)?;
 
     let stem = filename
         .strip_suffix(".gem")
@@ -170,7 +127,7 @@ pub async fn gem_info(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, name) = path.into_inner();
-    require_rubygems(&registry, &map)?;
+    require_registry_type(&registry, "rubygems", &map)?;
 
     let mode = mode_map.get(&registry);
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
@@ -225,7 +182,7 @@ pub async fn gem_versions(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, name) = path.into_inner();
-    require_rubygems(&registry, &map)?;
+    require_registry_type(&registry, "rubygems", &map)?;
 
     let mode = mode_map.get(&registry);
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
@@ -275,7 +232,7 @@ pub async fn gem_specs_full(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_rubygems(&registry, &map)?;
+    require_registry_type(&registry, "rubygems", &map)?;
 
     if mode_map.get(&registry) == RegistryMode::Local {
         return Err(AppError::not_found(
@@ -315,7 +272,7 @@ pub async fn gem_specs_latest(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_rubygems(&registry, &map)?;
+    require_registry_type(&registry, "rubygems", &map)?;
 
     if mode_map.get(&registry) == RegistryMode::Local {
         return Err(AppError::not_found(
@@ -355,7 +312,7 @@ pub async fn gem_specs_prerelease(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_rubygems(&registry, &map)?;
+    require_registry_type(&registry, "rubygems", &map)?;
 
     if mode_map.get(&registry) == RegistryMode::Local {
         return Err(AppError::not_found(
@@ -398,7 +355,7 @@ pub async fn gem_gemspec(
     map: web::Data<RegistryMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, filename) = path.into_inner();
-    require_rubygems(&registry, &map)?;
+    require_registry_type(&registry, "rubygems", &map)?;
 
     let stem = filename
         .strip_suffix(".gemspec.rz")
@@ -450,7 +407,7 @@ pub async fn gem_publish(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_rubygems(&registry, &map)?;
+    require_registry_type(&registry, "rubygems", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     let data = collect_payload(payload).await?;
@@ -531,7 +488,7 @@ pub async fn gem_yank(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_rubygems(&registry, &map)?;
+    require_registry_type(&registry, "rubygems", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     local_svc
@@ -571,7 +528,7 @@ pub async fn gem_unyank(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_rubygems(&registry, &map)?;
+    require_registry_type(&registry, "rubygems", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     local_svc
