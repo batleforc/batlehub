@@ -520,6 +520,83 @@ curl -s "https://batlehub.example.com/proxy/my-conda/linux-64/repodata.json" \
 
 ---
 
+## NuGet (.NET) {#nuget}
+
+### Point dotnet at BatleHub (proxy mode)
+
+Add the BatleHub source once with the CLI:
+
+```sh
+dotnet nuget add source \
+  https://batlehub.example.com/proxy/nuget/nuget/v3/index.json \
+  --name batlehub \
+  --username __token__ \
+  --password $BATLEHUB_TOKEN
+```
+
+Or declare it in a project-level `nuget.config`:
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <add key="batlehub"
+         value="https://batlehub.example.com/proxy/nuget/nuget/v3/index.json" />
+  </packageSources>
+  <packageSourceCredentials>
+    <batlehub>
+      <add key="Username" value="__token__" />
+      <add key="ClearTextPassword" value="<your-token>" />
+    </batlehub>
+  </packageSourceCredentials>
+</configuration>
+```
+
+### Install packages
+
+```sh
+dotnet add package Newtonsoft.Json
+dotnet restore
+```
+
+### Private registry (local/hybrid mode)
+
+The registry must be in `local` or `hybrid` mode — ask your administrator.
+
+**Pack and publish:**
+
+```sh
+dotnet pack MyLib.csproj -c Release
+
+dotnet nuget push bin/Release/MyLib.1.0.0.nupkg \
+  --api-key $BATLEHUB_TOKEN \
+  --source https://batlehub.example.com/proxy/internal-nuget/nuget/v3/index.json
+```
+
+`dotnet nuget push` sends a `multipart/form-data` request; BatleHub returns **201 Created** on success and **409 Conflict** if the version already exists.
+
+### Yank a version
+
+```sh
+curl -X DELETE \
+  -H "Authorization: Bearer $BATLEHUB_TOKEN" \
+  "https://batlehub.example.com/proxy/internal-nuget/nuget/v2/package/mylib/1.0.0"
+```
+
+### Verify
+
+```sh
+# Service index (all NuGet clients fetch this first)
+curl -s https://batlehub.example.com/proxy/nuget/nuget/v3/index.json | jq '.version'
+# → "3.0.0"
+
+# Version list after publish
+curl -s https://batlehub.example.com/proxy/internal-nuget/nuget/v3/flat/mylib/index.json
+# → {"versions":["1.0.0"]}
+```
+
+---
+
 ## Team Namespace dashboard {#team-namespace}
 
 If your administrator has assigned namespace claims to your group, the **Team Namespace** page at `/my-namespace` gives you a single place to view your ownership, browse published packages, manage visibility, and upload new packages without needing CLI access.
@@ -577,7 +654,7 @@ Select the registry, fill in any extra fields, choose the file, and click **Uplo
 The zip must follow the standard Go module layout — every entry must be prefixed with `{module}@{version}/`. Running `go mod zip` produces this layout automatically.
 :::
 
-#### CLI (npm, Cargo, Maven, Terraform)
+#### CLI (npm, Cargo, Maven, Terraform, NuGet)
 
 For registry types without a browser-friendly binary format, the **CLI instructions** tab shows ready-to-paste commands pre-filled with your registry name. See [the full publishing guide](#npm) for each ecosystem's complete setup steps.
 
@@ -609,3 +686,5 @@ sparse+https://batlehub.example.com/proxy/internal/registry/
 ```
 
 **Go: `disabled by GOPROXY=...off`:** The proxy can't reach the upstream or the module doesn't exist there. Remove `,off` from `GOPROXY` to allow direct fallback, or check that the upstream is reachable from the BatleHub server.
+
+**`dotnet nuget push` returns 401:** BatleHub accepts the `--api-key` value as a Bearer token (the `X-NuGet-ApiKey` header is transparently normalised to `Authorization: Bearer`). Make sure the token has `releases:write` or admin permissions on the registry.

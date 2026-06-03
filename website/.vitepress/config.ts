@@ -4,7 +4,7 @@ export default defineConfig({
   appearance: "dark",
   title: "BatleHub",
   description:
-    "Your package hub. Proxy, cache, and host npm, Cargo, Go, Maven, Terraform, and RubyGems registries.",
+    "Your package hub. Proxy, cache, and host npm, Cargo, Maven, PyPI, NuGet, Go, RubyGems, Terraform, and more.",
   cleanUrls: false,
   base: process.env.BASE_URL || "/",
   vite: {
@@ -30,7 +30,7 @@ export default defineConfig({
       {
         property: "og:description",
         content:
-          "Your package hub. Proxy, cache, and host npm, Cargo, Go, Maven, Terraform, and RubyGems registries.",
+          "Your package hub. Proxy, cache, and host npm, Cargo, Maven, PyPI, NuGet, Go, RubyGems, Terraform, and more.",
       },
     ],
     [
@@ -47,7 +47,7 @@ export default defineConfig({
       {
         name: "twitter:description",
         content:
-          "Your package hub. Proxy, cache, and host npm, Cargo, Go, Maven, Terraform, and RubyGems registries.",
+          "Your package hub. Proxy, cache, and host npm, Cargo, Maven, PyPI, NuGet, Go, RubyGems, Terraform, and more.",
       },
     ],
     [
@@ -209,6 +209,7 @@ export default defineConfig({
             { text: "Composer (PHP)", link: "/guide/user#composer" },
             { text: "PyPI (Python)", link: "/guide/user#pypi" },
             { text: "Conda", link: "/guide/user#conda" },
+            { text: "NuGet (.NET)", link: "/guide/user#nuget" },
             { text: "Troubleshooting", link: "/guide/user#troubleshooting" },
           ],
         },

@@ -22,7 +22,7 @@ features:
     details: First download is fetched from upstream and stored locally or in S3. Every subsequent request is served from cache — fast and bandwidth-free.
   - icon: 🔒
     title: Private Registries
-    details: Publish private npm packages, Cargo crates, Go modules, VS Code extensions, Python wheels, conda packages, and more directly to BatleHub. Use local or hybrid mode per registry.
+    details: Publish private npm packages, Cargo crates, Go modules, VS Code extensions, Python wheels, conda packages, NuGet packages, and more directly to BatleHub. Use local or hybrid mode per registry.
   - icon: 🛡️
     title: Role-Based Access Control
     details: Per-registry permissions for anonymous, user, and admin roles. Group-based access from OIDC claims, Kubernetes service accounts, or GitHub/Forgejo Actions OIDC tokens.
@@ -60,7 +60,7 @@ features:
 
 ## Supported registries
 
-BatleHub proxies twelve registry types. Every registry type can run as a pure cache (proxy mode), a fully private registry (local mode), or a hybrid of both.
+BatleHub proxies thirteen registry types. Every registry type can run as a pure cache (proxy mode), a fully private registry (local mode), or a hybrid of both.
 
 | Registry | Protocol | Default upstream |
 |----------|----------|-----------------|
@@ -76,17 +76,18 @@ BatleHub proxies twelve registry types. Every registry type can run as a pure ca
 | **Composer** | Packagist v2 protocol (`packages.json`, p2 metadata, dist downloads) | `repo.packagist.org` |
 | **PyPI** | Simple Repository API (PEP 503/691) + JSON API; URL-rewriting for pip/uv/Poetry | `pypi.org` |
 | **Conda** | repodata.json channel proxy; `.conda` and `.tar.bz2` package downloads | `conda.anaconda.org` |
+| **NuGet** | NuGet v3 service index, flat container metadata, `.nupkg` downloads and publish | `api.nuget.org` |
 
-| Feature | GitHub | npm | Cargo | OpenVSX | VS Code | Go | Maven | Terraform | RubyGems | Composer | PyPI | Conda |
-|---------|:------:|:---:|:-----:|:-------:|:-------:|:--:|:-----:|:---------:|:--------:|:--------:|:----:|:-----:|
-| Version listing | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ ¹ |
-| Source archive | ✓ | ✓ | ✓ | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Binary / extension | ✓ | — | — | ✓ | ✓ | — | ✓ | ✓ | — | — | ✓ | ✓ |
-| **Private publish** | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Multi-upstream fanout | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Release age gate | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ⚠ ² |
-| RBAC | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Cache warming (version enumeration) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — | ✓ | ✓ ¹ |
+| Feature | GitHub | npm | Cargo | OpenVSX | VS Code | Go | Maven | Terraform | RubyGems | Composer | PyPI | Conda | NuGet |
+|---------|:------:|:---:|:-----:|:-------:|:-------:|:--:|:-----:|:---------:|:--------:|:--------:|:----:|:-----:|:-----:|
+| Version listing | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ ¹ | ✓ |
+| Source archive | ✓ | ✓ | ✓ | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| Binary / extension | ✓ | — | — | ✓ | ✓ | — | ✓ | ✓ | — | — | ✓ | ✓ | ✓ |
+| **Private publish** | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Multi-upstream fanout | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Release age gate | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ⚠ ² | ✓ |
+| RBAC | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Cache warming (version enumeration) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — | ✓ | ✓ ¹ | ✓ |
 
 > ¹ Conda has no dedicated per-package version listing API. BatleHub synthesises one by scanning `repodata.json` for `noarch`, `linux-64`, `osx-64`, `osx-arm64`, and `win-64`. Results are the union of versions found across all available platforms.
 >
