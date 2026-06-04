@@ -423,6 +423,30 @@ impl From<HashMap<String, String>> for UpstreamMap {
     }
 }
 
+/// Maps Cargo registry name → [`CargoIndexProxy`] (sparse-index HTTP client + URL).
+///
+/// Inner `HashMap` is behind `Arc<RwLock<>>` so hot-reload can swap proxy settings
+/// without restarting actix workers. Clone shares the same lock.
+#[derive(Clone, Default)]
+pub struct CargoIndexMap(pub Arc<std::sync::RwLock<HashMap<String, CargoIndexProxy>>>);
+
+impl CargoIndexMap {
+    pub fn new(map: HashMap<String, CargoIndexProxy>) -> Self {
+        Self(Arc::new(std::sync::RwLock::new(map)))
+    }
+
+    /// Clone the proxy for the given registry name, if configured.
+    pub fn get(&self, name: &str) -> Option<CargoIndexProxy> {
+        self.0.read().unwrap().get(name).cloned()
+    }
+}
+
+impl From<HashMap<String, CargoIndexProxy>> for CargoIndexMap {
+    fn from(map: HashMap<String, CargoIndexProxy>) -> Self {
+        Self::new(map)
+    }
+}
+
 use actix_web::web;
 use handlers::back_office::warming::WarmingServiceMap;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};

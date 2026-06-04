@@ -376,7 +376,7 @@ impl RealProxy {
                 Role::Admin,
             )]))];
 
-        let cargo_indexes: HashMap<String, batlehub_web::CargoIndexProxy> = HashMap::new();
+        let cargo_indexes = batlehub_web::CargoIndexMap::default();
 
         let configure = configure_app(
             proxy_svc,
@@ -551,7 +551,7 @@ impl RealProxy {
             let mode_map = mode_map.clone();
             let configure = configure.clone();
             let auth_providers = auth_providers.clone();
-            let cargo_indexes: HashMap<String, batlehub_web::CargoIndexProxy> = HashMap::new();
+            let cargo_indexes = batlehub_web::CargoIndexMap::default();
 
             let server = HttpServer::new(move || {
                 let (app, _) = App::new()

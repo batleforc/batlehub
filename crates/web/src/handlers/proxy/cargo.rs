@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use actix_web::{delete, get, put, web, HttpRequest, HttpResponse, Responder};
@@ -17,8 +16,8 @@ use super::common::{
     require_local_mode,
 };
 use crate::{
-    error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
-    RegistryModeMap,
+    error::AppError, extractors::AuthIdentity, services::NotificationService, CargoIndexMap,
+    RegistryMap, RegistryModeMap,
 };
 use batlehub_core::entities::NotificationEventType;
 
@@ -59,7 +58,7 @@ fn require_cargo(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
 #[get("/proxy/{registry}/registry/config.json")]
 pub async fn cargo_registry_config(
     path: web::Path<String>,
-    indexes: web::Data<HashMap<String, CargoIndexProxy>>,
+    indexes: web::Data<CargoIndexMap>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
     req: HttpRequest,
@@ -113,7 +112,7 @@ pub async fn cargo_registry_config(
 #[get("/proxy/{registry}/registry/{path:.*}")]
 pub async fn cargo_registry_index(
     path: web::Path<(String, String)>,
-    indexes: web::Data<HashMap<String, CargoIndexProxy>>,
+    indexes: web::Data<CargoIndexMap>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
@@ -170,7 +169,7 @@ async fn serve_local_index(
 }
 
 async fn proxy_upstream_index(
-    indexes: &HashMap<String, CargoIndexProxy>,
+    indexes: &CargoIndexMap,
     registry: &str,
     index_path: &str,
 ) -> HttpResponse {

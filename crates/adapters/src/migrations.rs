@@ -89,6 +89,11 @@ pub fn embedded_migrator() -> Migrator {
                 "inbound webhook events",
                 "../migrations/023_inbound_webhook_events.sql"
             ),
+            mig!(
+                24,
+                "notification subscriptions gin index",
+                "../migrations/024_notification_subs_gin_index.sql"
+            ),
         ]),
         ignore_missing: false,
         locking: true,
@@ -103,8 +108,8 @@ mod tests {
     #[test]
     fn embedded_migrator_has_all_migrations() {
         let m = embedded_migrator();
-        assert_eq!(m.migrations.len(), 23, "all 23 migrations must be embedded");
+        assert_eq!(m.migrations.len(), 24, "all 24 migrations must be embedded");
         assert_eq!(m.migrations[0].version, 1);
-        assert_eq!(m.migrations[22].version, 23);
+        assert_eq!(m.migrations[23].version, 24);
     }
 }

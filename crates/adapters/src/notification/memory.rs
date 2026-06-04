@@ -95,11 +95,8 @@ impl NotificationPort for InMemoryNotificationStore {
 
     async fn list_inbound_events(&self, limit: i64) -> Result<Vec<InboundWebhookEvent>, CoreError> {
         let lock = self.inbound_events.read().await;
-        let limit = if limit <= 0 {
-            lock.len()
-        } else {
-            limit as usize
-        };
+        // Cap at 100 when limit <= 0 to match PgNotificationStore behaviour.
+        let limit = if limit <= 0 { 100 } else { limit as usize };
         Ok(lock.iter().rev().take(limit).cloned().collect())
     }
 }

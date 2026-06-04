@@ -275,8 +275,7 @@ async fn make_app(
         .map(|(n, t)| (n.to_string(), t.to_string()))
         .collect::<std::collections::HashMap<String, String>>(),
     );
-    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
-        std::collections::HashMap::new();
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let (app, _) = App::new()
         .into_utoipa_app()
         .configure(configure_app(
@@ -412,8 +411,7 @@ async fn make_app_ext(
         .map(|(n, t)| (n.to_string(), t.to_string()))
         .collect::<std::collections::HashMap<String, String>>(),
     );
-    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
-        std::collections::HashMap::new();
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let (app, _) = App::new()
         .into_utoipa_app()
         .configure(configure_app(
@@ -549,8 +547,7 @@ async fn make_app_with_ip_store(
         explore_admin: std::collections::HashSet::new(),
     });
     let registry_map = batlehub_web::RegistryMap::from(std::collections::HashMap::new());
-    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
-        std::collections::HashMap::new();
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
 
     let (app, _) = App::new()
         .into_utoipa_app()
@@ -624,8 +621,7 @@ async fn make_app_with_beta_store(
         explore_admin: std::collections::HashSet::new(),
     });
     let registry_map = batlehub_web::RegistryMap::from(std::collections::HashMap::new());
-    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
-        std::collections::HashMap::new();
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
 
     let (app, _) = App::new()
         .into_utoipa_app()
@@ -775,10 +771,7 @@ async fn make_rate_limited_app(
         ))
         .split_for_parts();
     let app = app
-        .app_data(actix_web::web::Data::new(std::collections::HashMap::<
-            String,
-            batlehub_web::CargoIndexProxy,
-        >::new()))
+        .app_data(actix_web::web::Data::new(batlehub_web::CargoIndexMap::default()))
         .app_data(actix_web::web::Data::new(local_svc))
         .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
 
@@ -1843,8 +1836,7 @@ async fn make_group_app(
             .map(|(n, t)| (n.to_string(), t.to_string()))
             .collect::<std::collections::HashMap<String, String>>(),
     );
-    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
-        std::collections::HashMap::new();
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let (app, _) = App::new()
         .into_utoipa_app()
         .configure(configure_app(
@@ -2296,8 +2288,7 @@ async fn make_app_with_tokens(
             .map(|(n, t)| (n.to_string(), t.to_string()))
             .collect::<std::collections::HashMap<String, String>>(),
     );
-    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
-        std::collections::HashMap::new();
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
 
     let (app, _) = App::new()
         .into_utoipa_app()
@@ -2688,15 +2679,13 @@ async fn make_app_with_cargo_index(
     );
 
     // Wire up a real CargoIndexProxy entry so cargo_registry_config can return a config
-    let mut cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
-        std::collections::HashMap::new();
-    cargo_indexes.insert(
+    let cargo_indexes = batlehub_web::CargoIndexMap::new(std::collections::HashMap::from([(
         "cargo".to_owned(),
         batlehub_web::CargoIndexProxy {
             http: reqwest::Client::new(),
             index_url: "https://index.crates.io".to_owned(),
         },
-    );
+    )]));
 
     let (app, _) = App::new()
         .into_utoipa_app()
@@ -3376,8 +3365,7 @@ async fn make_unavailable_npm_app(
             .map(|(n, t)| (n.to_string(), t.to_string()))
             .collect::<std::collections::HashMap<String, String>>(),
     );
-    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
-        std::collections::HashMap::new();
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let (app, _) = App::new()
         .into_utoipa_app()
         .configure(configure_app(
@@ -3820,8 +3808,7 @@ async fn audit_quick_forwards_to_upstream_and_returns_response() {
     let mut upstream_entries = std::collections::HashMap::new();
     upstream_entries.insert("npm".to_owned(), upstream_url);
     let upstream_map = batlehub_web::UpstreamMap::from(upstream_entries);
-    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
-        std::collections::HashMap::new();
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let (app, _) = App::new()
         .into_utoipa_app()
         .configure(configure_app(
@@ -4038,15 +4025,13 @@ async fn cargo_registry_index_fetches_from_upstream_and_returns_content() {
             .map(|(n, t)| (n.to_string(), t.to_string()))
             .collect::<std::collections::HashMap<String, String>>(),
     );
-    let mut cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
-        std::collections::HashMap::new();
-    cargo_indexes.insert(
+    let cargo_indexes = batlehub_web::CargoIndexMap::new(std::collections::HashMap::from([(
         "cargo".to_owned(),
         batlehub_web::CargoIndexProxy {
             http: reqwest::Client::new(),
             index_url,
         },
-    );
+    )]));
     let (app, _) = App::new()
         .into_utoipa_app()
         .configure(configure_app(
@@ -4189,10 +4174,10 @@ async fn make_local_registry_app(
     );
     // Hybrid mode requires an upstream index for config.json to succeed.
     // A dummy URL is sufficient — upstream fetches only happen on actual index lookups.
-    let mut cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
+    let mut cargo_map: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
         std::collections::HashMap::new();
     if matches!(mode, RegistryMode::Hybrid) {
-        cargo_indexes.insert(
+        cargo_map.insert(
             "local-cargo".to_owned(),
             batlehub_web::CargoIndexProxy {
                 http: reqwest::Client::new(),
@@ -4200,6 +4185,7 @@ async fn make_local_registry_app(
             },
         );
     }
+    let cargo_indexes = batlehub_web::CargoIndexMap::new(cargo_map);
 
     let mode_map = RegistryModeMap::default();
     mode_map.insert("local-cargo".to_owned(), mode);
@@ -4623,8 +4609,7 @@ async fn make_local_npm_app(
             .map(|(n, t)| (n.to_string(), t.to_string()))
             .collect::<std::collections::HashMap<String, String>>(),
     );
-    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
-        std::collections::HashMap::new();
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
 
     let mode_map = RegistryModeMap::default();
     mode_map.insert("local-npm".to_owned(), mode);
@@ -4891,8 +4876,7 @@ async fn make_local_vsx_app(
             .map(|(n, t)| (n.to_string(), t.to_string()))
             .collect::<std::collections::HashMap<String, String>>(),
     );
-    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
-        std::collections::HashMap::new();
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
 
     let mode_map = RegistryModeMap::default();
     mode_map.insert("local-vsx".to_owned(), mode);
@@ -5106,8 +5090,7 @@ async fn make_local_go_app(
             .map(|(n, t)| (n.to_string(), t.to_string()))
             .collect::<std::collections::HashMap<String, String>>(),
     );
-    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
-        std::collections::HashMap::new();
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
 
     let mode_map = RegistryModeMap::default();
     mode_map.insert("local-go".to_owned(), mode);
@@ -5598,8 +5581,7 @@ async fn make_local_maven_app(
             .map(|(n, t)| (n.to_string(), t.to_string()))
             .collect::<std::collections::HashMap<String, String>>(),
     );
-    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
-        std::collections::HashMap::new();
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let mode_map = RegistryModeMap::default();
     mode_map.insert("local-maven".to_owned(), mode);
 
@@ -5822,8 +5804,7 @@ async fn make_local_terraform_app(
             .map(|(n, t)| (n.to_string(), t.to_string()))
             .collect::<std::collections::HashMap<String, String>>(),
     );
-    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
-        std::collections::HashMap::new();
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let mode_map = RegistryModeMap::default();
     mode_map.insert("local-tf".to_owned(), mode);
 
@@ -6384,8 +6365,7 @@ async fn make_local_composer_app(
             .map(|(n, t)| (n.to_string(), t.to_string()))
             .collect::<std::collections::HashMap<String, String>>(),
     );
-    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
-        std::collections::HashMap::new();
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let mode_map = RegistryModeMap::default();
     mode_map.insert("local-composer".to_owned(), mode);
 
@@ -7309,8 +7289,7 @@ async fn make_app_with_ns_store(
         explore_admin: std::collections::HashSet::new(),
     });
     let registry_map = batlehub_web::RegistryMap::from(std::collections::HashMap::new());
-    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
-        std::collections::HashMap::new();
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
 
     let (app, _) = App::new()
         .into_utoipa_app()
@@ -7424,8 +7403,7 @@ async fn make_ns_cargo_app(
             .map(|(n, t)| (n.to_string(), t.to_string()))
             .collect::<std::collections::HashMap<String, String>>(),
     );
-    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
-        std::collections::HashMap::new();
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let mode_map = RegistryModeMap::default();
     mode_map.insert("local-cargo".to_owned(), RegistryMode::Local);
 
@@ -7563,8 +7541,7 @@ async fn make_ns_cargo_app_with_backend(
             .map(|(n, t)| (n.to_string(), t.to_string()))
             .collect::<std::collections::HashMap<String, String>>(),
     );
-    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
-        std::collections::HashMap::new();
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let mode_map = RegistryModeMap::default();
     mode_map.insert("local-cargo".to_owned(), RegistryMode::Local);
 
@@ -8493,8 +8470,7 @@ async fn make_ns_upload_app(
         registry_name.to_string(),
         registry_type.to_string(),
     )]));
-    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
-        std::collections::HashMap::new();
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let mode_map = RegistryModeMap::default();
     mode_map.insert(registry_name.to_owned(), RegistryMode::Local);
 
@@ -9118,6 +9094,7 @@ async fn make_banner_app() -> impl actix_web::dev::Service<
         batlehub_web::RegistryMap::new(HashMap::new()),
         batlehub_web::RegistryModeMap::new(HashMap::new()),
         batlehub_web::UpstreamMap::new(HashMap::new()),
+        batlehub_web::CargoIndexMap::new(HashMap::new()),
         "config.toml".to_owned(),
         None,
         true,
@@ -9148,10 +9125,7 @@ async fn make_banner_app() -> impl actix_web::dev::Service<
     let app = app
         .app_data(actix_web::web::Data::new(banner_svc))
         .app_data(actix_web::web::Data::new(reload_svc))
-        .app_data(actix_web::web::Data::new(std::collections::HashMap::<
-            String,
-            batlehub_web::CargoIndexProxy,
-        >::new()))
+        .app_data(actix_web::web::Data::new(batlehub_web::CargoIndexMap::default()))
         .app_data(actix_web::web::Data::new(
             batlehub_web::RegistryModeMap::default(),
         ));
@@ -9281,6 +9255,7 @@ async fn reload_config_returns_503_when_disabled() {
         batlehub_web::RegistryMap::new(HashMap::new()),
         batlehub_web::RegistryModeMap::new(HashMap::new()),
         batlehub_web::UpstreamMap::new(HashMap::new()),
+        batlehub_web::CargoIndexMap::new(HashMap::new()),
         "config.toml".to_owned(),
         None,
         false, // disabled
@@ -9310,10 +9285,7 @@ async fn reload_config_returns_503_when_disabled() {
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(reload_svc))
-        .app_data(actix_web::web::Data::new(std::collections::HashMap::<
-            String,
-            batlehub_web::CargoIndexProxy,
-        >::new()))
+        .app_data(actix_web::web::Data::new(batlehub_web::CargoIndexMap::default()))
         .app_data(actix_web::web::Data::new(
             batlehub_web::RegistryModeMap::default(),
         ));
@@ -9816,7 +9788,7 @@ async fn make_explore_app(
         .map(|(n, t)| (n.to_string(), t.to_string()))
         .collect::<HashMap<String, String>>(),
     );
-    let cargo_indexes: HashMap<String, batlehub_web::CargoIndexProxy> = HashMap::new();
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let (app, _) = actix_web::App::new()
         .into_utoipa_app()
         .configure(configure_app(
@@ -10183,7 +10155,7 @@ async fn make_rubygems_proxy_app() -> impl actix_web::dev::Service<
         "gems".to_string(),
         "rubygems".to_string(),
     )]));
-    let cargo_indexes: HashMap<String, batlehub_web::CargoIndexProxy> = HashMap::new();
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let (app, _) = actix_web::App::new()
         .into_utoipa_app()
         .configure(configure_app(
@@ -10439,8 +10411,7 @@ async fn make_local_nuget_app(
             .map(|(n, t)| (n.to_string(), t.to_string()))
             .collect::<std::collections::HashMap<String, String>>(),
     );
-    let cargo_indexes: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
-        std::collections::HashMap::new();
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let mode_map = RegistryModeMap::default();
     mode_map.insert("local-nuget".to_owned(), mode);
 
@@ -10832,7 +10803,7 @@ async fn cli_download_serves_binary_when_configured() {
 
     let local_svc = make_local_svc(InMemoryStorage::new());
     let app = init_service(
-        raw.app_data(actix_web::web::Data::new(Arc::new(CliBinaryPath(path))))
+        raw.app_data(actix_web::web::Data::new(CliBinaryPath(path)))
             .app_data(actix_web::web::Data::new(local_svc))
             .app_data(actix_web::web::Data::new(batlehub_web::RegistryModeMap::default()))
             .wrap(AuthMiddlewareFactory::new(test_auth_providers())),

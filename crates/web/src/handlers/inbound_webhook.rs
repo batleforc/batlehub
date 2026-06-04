@@ -43,25 +43,30 @@ pub async fn receive_inbound_webhook(
 ) -> Result<impl Responder, AppError> {
     let name = path.into_inner();
 
+    // Validate name and enabled flag BEFORE reading the body so that large
+    // payloads to unknown/disabled webhook names are rejected cheaply.
+    let inbound_cfg = notifications_config
+        .as_ref()
+        .as_ref()
+        .filter(|nc| nc.enabled)
+        .and_then(|nc| nc.inbound.iter().find(|i| i.name == name));
+
+    let inbound_cfg = match inbound_cfg {
+        Some(cfg) => cfg,
+        None => {
+            // Be vague about whether it exists to avoid enumeration.
+            return Err(AppError::bad_request(format!(
+                "unknown inbound webhook: {name}"
+            )));
+        }
+    };
+
     let mut raw = BytesMut::new();
     while let Some(chunk) = payload.next().await {
         let chunk = chunk.map_err(|e| AppError::bad_request(e.to_string()))?;
         raw.extend_from_slice(&chunk);
     }
     let body = raw.freeze();
-
-    let inbound_cfg = notifications_config
-        .as_ref()
-        .as_ref()
-        .and_then(|nc| nc.inbound.iter().find(|i| i.name == name));
-
-    if inbound_cfg.is_none() {
-        // Be vague about whether it exists to avoid enumeration.
-        return Err(AppError::bad_request(format!(
-            "unknown inbound webhook: {name}"
-        )));
-    }
-    let inbound_cfg = inbound_cfg.unwrap();
 
     // Empty secrets provide no security (attacker can compute HMAC with empty key),
     // so treat them the same as no secret configured.

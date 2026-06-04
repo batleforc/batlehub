@@ -72,8 +72,8 @@ use batlehub_web::handlers::back_office::warming::WarmingServiceMap;
 use batlehub_web::services::{BannerService, ConfigReloadService, NotificationService};
 use batlehub_web::{
     configure_app, healthz, new_access_lock, openapi_spec, prometheus_metrics, AccessConfig,
-    ApiDoc, CargoIndexProxy, CliBinaryPath, IpBlockMiddlewareFactory, RateLimitMiddlewareFactory,
-    RateLimitService, RegistryMap, RegistryModeMap, UpstreamMap,
+    ApiDoc, CargoIndexMap, CargoIndexProxy, CliBinaryPath, IpBlockMiddlewareFactory,
+    RateLimitMiddlewareFactory, RateLimitService, RegistryMap, RegistryModeMap, UpstreamMap,
 };
 use metrics_exporter_prometheus::PrometheusBuilder;
 
@@ -336,15 +336,20 @@ async fn main() -> Result<()> {
         }
     };
 
-    // ── Cargo sparse indexes (not part of HotConfig, built once at startup) ────
-    let mut cargo_indexes: HashMap<String, CargoIndexProxy> = HashMap::new();
-    for reg in &config.registries {
-        if reg.registry_type == "cargo" && !matches!(reg.mode, RegistryMode::Local) {
-            let index = build_cargo_index(reg, config.proxy.as_ref())
-                .with_context(|| format!("building cargo index client for '{}'", reg.name))?;
-            cargo_indexes.insert(reg.name.clone(), index);
+    // ── Cargo sparse indexes ──────────────────────────────────────────────────
+    // Wrapped in CargoIndexMap (Arc<RwLock<...>>) so hot-reload can swap proxy
+    // settings without restarting workers.
+    let cargo_index_map = {
+        let mut map: HashMap<String, CargoIndexProxy> = HashMap::new();
+        for reg in &config.registries {
+            if reg.registry_type == "cargo" && !matches!(reg.mode, RegistryMode::Local) {
+                let index = build_cargo_index(reg, config.proxy.as_ref())
+                    .with_context(|| format!("building cargo index client for '{}'", reg.name))?;
+                map.insert(reg.name.clone(), index);
+            }
         }
-    }
+        CargoIndexMap::new(map)
+    };
 
     // ── Rate limiting ──────────────────────────────────────────────────────────
     let rate_limit_configs: std::collections::HashMap<
@@ -556,12 +561,24 @@ async fn main() -> Result<()> {
             ))
         });
 
-    // Builder closure capturing the deps needed to rebuild HotConfig + AccessConfig.
+    // Builder closure capturing the deps needed to rebuild HotConfig + AccessConfig + CargoIndexMap.
     let hot_builder: batlehub_web::services::HotConfigBuilder = {
         let beta_channel_store = Arc::clone(&beta_channel_store);
         let repo_for_builder = repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>;
         Arc::new(move |cfg: &batlehub_config::schema::AppConfig| {
-            build_hot_bundle(cfg, &beta_channel_store, &repo_for_builder)
+            let (hot, access, rm, rmm, um) =
+                build_hot_bundle(cfg, &beta_channel_store, &repo_for_builder)?;
+            let mut cargo_map: HashMap<String, CargoIndexProxy> = HashMap::new();
+            for reg in &cfg.registries {
+                if reg.registry_type == "cargo" && !matches!(reg.mode, RegistryMode::Local) {
+                    let index = build_cargo_index(reg, cfg.proxy.as_ref())
+                        .with_context(|| {
+                            format!("building cargo index client for '{}'", reg.name)
+                        })?;
+                    cargo_map.insert(reg.name.clone(), index);
+                }
+            }
+            Ok((hot, access, rm, rmm, um, CargoIndexMap::new(cargo_map)))
         })
     };
 
@@ -571,6 +588,7 @@ async fn main() -> Result<()> {
         registry_map.clone(),
         registry_mode_map.clone(),
         upstream_map.clone(),
+        cargo_index_map.clone(),
         config_path.clone(),
         Some(repo.pool()),
         hot_reload_enabled,
@@ -650,7 +668,7 @@ async fn main() -> Result<()> {
         );
         let static_dir_inner = static_dir.clone();
         let cli_binary_path_inner = cli_binary_path.clone();
-        let cargo_indexes_inner = cargo_indexes.clone();
+        let cargo_indexes_inner = cargo_index_map.clone();
         let local_svc_inner = local_svc.clone();
         let quota_svc_inner = Arc::clone(&quota_svc);
         let registry_mode_map_inner = registry_mode_map.clone();
@@ -669,7 +687,7 @@ async fn main() -> Result<()> {
 
         // Register app-data and non-OpenAPI routes that are handled outside configure_app.
         let mut app = app
-            .app_data(web::Data::new(cargo_indexes_inner))
+            .app_data(web::Data::new(cargo_indexes_inner))  // web::Data<CargoIndexMap>
             .app_data(web::Data::new(local_svc_inner))
             .app_data(web::Data::new(quota_svc_inner))
             .app_data(web::Data::new(registry_mode_map_inner))
@@ -682,7 +700,7 @@ async fn main() -> Result<()> {
             .service(healthz);
 
         if let Some(path) = cli_binary_path_inner {
-            app = app.app_data(web::Data::new(Arc::new(CliBinaryPath(path))));
+            app = app.app_data(web::Data::new(CliBinaryPath(path)));
         }
 
         let cors_base = Cors::default()

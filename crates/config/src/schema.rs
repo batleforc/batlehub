@@ -1193,7 +1193,7 @@ pub struct WebhookChannelConfig {
     pub name: String,
     pub url: String,
     /// Optional HMAC-SHA256 signing secret. When set, a
-    /// `X-BatleHub-Signature-256: hmac-sha256=<hex>` header is added to each POST.
+    /// `X-BatleHub-Signature-256: sha256=<hex>` header is added to each POST.
     pub secret: Option<String>,
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,

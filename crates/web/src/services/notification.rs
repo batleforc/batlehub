@@ -1,5 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
+const MAX_CONCURRENT_DISPATCHES: usize = 64;
+
 use batlehub_config::schema::{
     EmailChannelConfig, NotificationChannelConfig, NotificationsConfig, SlackChannelConfig,
     TeamsChannelConfig, WebhookChannelConfig,
@@ -159,13 +161,13 @@ impl ChannelDispatcher for EmailDispatcher {
         let body = format_event_text(event);
 
         let from_addr: lettre::message::Mailbox = self.from.parse()?;
-        let mut last_err: Option<anyhow::Error> = None;
+        let mut errors: Vec<String> = Vec::new();
         for recipient in &self.to {
             let to_addr = match recipient.parse() {
                 Ok(a) => a,
                 Err(e) => {
                     tracing::warn!(recipient, "email: invalid recipient address: {e}");
-                    last_err = Some(anyhow::anyhow!("{e}"));
+                    errors.push(format!("{recipient}: {e}"));
                     continue;
                 }
             };
@@ -177,11 +179,14 @@ impl ChannelDispatcher for EmailDispatcher {
                 .body(body.clone())?;
             if let Err(e) = self.transport.send(email).await {
                 tracing::warn!(recipient, "email: send failed: {e}");
-                last_err = Some(e.into());
+                errors.push(format!("{recipient}: {e}"));
+                // Break on the first transport failure — remaining sends would also
+                // hang until timeout (e.g. SMTP server down), exhausting semaphore slots.
+                break;
             }
         }
-        if let Some(e) = last_err {
-            return Err(e);
+        if !errors.is_empty() {
+            anyhow::bail!("email delivery failed for {} recipient(s): {}", errors.len(), errors.join("; "));
         }
         Ok(())
     }
@@ -202,6 +207,8 @@ pub struct NotificationService {
     channels: HashMap<String, Box<dyn ChannelDispatcher>>,
     /// Tracks in-flight background dispatch tasks for graceful shutdown.
     pending: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// Caps the number of concurrently-running dispatch tasks to prevent burst storms.
+    dispatch_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl NotificationService {
@@ -235,32 +242,49 @@ impl NotificationService {
             store,
             channels,
             pending: std::sync::Mutex::new(Vec::new()),
+            dispatch_semaphore: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DISPATCHES)),
         }
     }
 
     /// Query matching subscriptions and spawn a background task per subscription.
     /// Never blocks the caller; errors are logged as warnings.
     /// The spawned task is tracked so `shutdown()` can await its completion.
+    /// Drops the event (with a warning) if the concurrency cap is already reached.
     pub fn dispatch_event_background(self: &Arc<Self>, event: NotificationEvent) {
+        let permit = match Arc::clone(&self.dispatch_semaphore).try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                tracing::warn!(
+                    event_type = %event.event_type,
+                    registry   = %event.registry,
+                    "notification: dispatch semaphore full ({MAX_CONCURRENT_DISPATCHES} in-flight), dropping event"
+                );
+                return;
+            }
+        };
+        // Lock BEFORE spawning so shutdown() cannot drain the vec in the gap
+        // between tokio::spawn() returning a handle and the handle being pushed.
+        let mut guard = self
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Prune completed handles to prevent unbounded growth.
+        guard.retain(|h| !h.is_finished());
         let svc = Arc::clone(self);
         let handle = tokio::spawn(async move {
+            let _permit = permit;
             svc.dispatch_event(event).await;
         });
-        if let Ok(mut guard) = self.pending.lock() {
-            // Prune completed handles to prevent unbounded growth.
-            guard.retain(|h| !h.is_finished());
-            guard.push(handle);
-        }
+        guard.push(handle);
     }
 
     /// Await all in-flight background dispatch tasks. Call this during graceful shutdown
     /// before the tokio runtime exits, so no in-flight notifications are dropped.
     pub async fn shutdown(&self) {
-        let handles = self
-            .pending
-            .lock()
-            .map(|mut g| std::mem::take(&mut *g))
-            .unwrap_or_default();
+        let handles = {
+            let mut g = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *g)
+        };
         for handle in handles {
             let _ = handle.await;
         }
