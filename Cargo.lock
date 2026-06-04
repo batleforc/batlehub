@@ -987,7 +987,12 @@ dependencies = [
 name = "batlehub-cli"
 version = "0.1.0"
 dependencies = [
+ "actix-web",
  "anyhow",
+ "batlehub-adapters",
+ "batlehub-config",
+ "batlehub-core",
+ "batlehub-web",
  "chrono",
  "clap",
  "comfy-table",
@@ -997,10 +1002,13 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "toml",
  "tui-input",
+ "utoipa-actix-web",
  "uuid",
+ "zip",
 ]
 
 [[package]]
@@ -1124,6 +1132,7 @@ dependencies = [
  "sha2 0.11.0",
  "sqlx",
  "tar",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",

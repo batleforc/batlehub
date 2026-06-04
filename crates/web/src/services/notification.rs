@@ -47,7 +47,7 @@ impl ChannelDispatcher for WebhookDispatcher {
 
         if let Some(secret) = &self.secret {
             let sig = hmac_sha256_hex(secret.as_bytes(), body.as_bytes());
-            req = req.header("X-BatleHub-Signature-256", format!("hmac-sha256={sig}"));
+            req = req.header("X-BatleHub-Signature-256", format!("sha256={sig}"));
         }
 
         let resp = req.body(body).send().await?;
@@ -158,14 +158,30 @@ impl ChannelDispatcher for EmailDispatcher {
         );
         let body = format_event_text(event);
 
+        let from_addr: lettre::message::Mailbox = self.from.parse()?;
+        let mut last_err: Option<anyhow::Error> = None;
         for recipient in &self.to {
+            let to_addr = match recipient.parse() {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::warn!(recipient, "email: invalid recipient address: {e}");
+                    last_err = Some(anyhow::anyhow!("{e}"));
+                    continue;
+                }
+            };
             let email = Message::builder()
-                .from(self.from.parse()?)
-                .to(recipient.parse()?)
+                .from(from_addr.clone())
+                .to(to_addr)
                 .subject(&subject)
                 .header(ContentType::TEXT_PLAIN)
                 .body(body.clone())?;
-            self.transport.send(email).await?;
+            if let Err(e) = self.transport.send(email).await {
+                tracing::warn!(recipient, "email: send failed: {e}");
+                last_err = Some(e.into());
+            }
+        }
+        if let Some(e) = last_err {
+            return Err(e);
         }
         Ok(())
     }
@@ -184,6 +200,8 @@ impl ChannelDispatcher for EmailDispatcher {
 pub struct NotificationService {
     store: Arc<dyn NotificationPort>,
     channels: HashMap<String, Box<dyn ChannelDispatcher>>,
+    /// Tracks in-flight background dispatch tasks for graceful shutdown.
+    pending: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl NotificationService {
@@ -213,16 +231,39 @@ impl NotificationService {
             channels.insert(name, dispatcher);
         }
 
-        Self { store, channels }
+        Self {
+            store,
+            channels,
+            pending: std::sync::Mutex::new(Vec::new()),
+        }
     }
 
     /// Query matching subscriptions and spawn a background task per subscription.
     /// Never blocks the caller; errors are logged as warnings.
+    /// The spawned task is tracked so `shutdown()` can await its completion.
     pub fn dispatch_event_background(self: &Arc<Self>, event: NotificationEvent) {
         let svc = Arc::clone(self);
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             svc.dispatch_event(event).await;
         });
+        if let Ok(mut guard) = self.pending.lock() {
+            // Prune completed handles to prevent unbounded growth.
+            guard.retain(|h| !h.is_finished());
+            guard.push(handle);
+        }
+    }
+
+    /// Await all in-flight background dispatch tasks. Call this during graceful shutdown
+    /// before the tokio runtime exits, so no in-flight notifications are dropped.
+    pub async fn shutdown(&self) {
+        let handles = self
+            .pending
+            .lock()
+            .map(|mut g| std::mem::take(&mut *g))
+            .unwrap_or_default();
+        for handle in handles {
+            let _ = handle.await;
+        }
     }
 
     pub async fn dispatch_event(&self, event: NotificationEvent) {

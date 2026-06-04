@@ -23,6 +23,7 @@ batlehub is configured with a single TOML file. This document covers every optio
      - [beta_channel](#registriesbeta_channel)
    - [ip_blocking](#36-ip_blocking-optional)
    - [otel](#37-otel-optional)
+   - [proxy](#38-proxy-optional)
 4. [Permissions Reference](#4-permissions-reference)
 5. [Environment Variable Overrides](#5-environment-variable-overrides)
 6. [Worked Examples](#6-worked-examples)
@@ -41,6 +42,7 @@ batlehub is configured with a single TOML file. This document covers every optio
    - [6.13 Private Terraform Registry (local / hybrid mode)](#613-private-terraform-registry-local--hybrid-mode)
    - [6.14 Rate Limiting — Per-User + Per-Group](#614-rate-limiting)
    - [6.15 Private Composer Registry (local / hybrid mode)](#615-private-composer-registry-local--hybrid-mode)
+   - [6.16 Corporate HTTP Proxy (air-gapped environments)](#616-corporate-http-proxy-air-gapped-environments)
 7. [CLI Reference](#7-cli-reference)
 8. [User-Generated API Tokens](#8-user-generated-api-tokens)
 9. [Hot Reload & Dynamic Config](#9-hot-reload--dynamic-config)
@@ -592,6 +594,7 @@ deny_missing_timestamp = false   # set true to block packages with no timestamp
 | `storage` | string | no | Name of the storage backend. Must match a `[[storage.backends]]` name. Omit to use the default backend. |
 | `upstream_auth` | table | no | Credentials sent on every upstream request. See [upstream auth](#upstream_auth). |
 | `tls` | table | no | TLS settings for upstream connections. See [upstream TLS](#upstream_tls). |
+| `proxy` | table | no | HTTP/SOCKS proxy for upstream connections. See [upstream proxy](#upstream_proxy). |
 
 #### Registry modes {#registry-modes}
 
@@ -990,6 +993,58 @@ ca_cert_path = "/etc/ssl/corp-ca.pem"
 
 ---
 
+#### `[registries.proxy]` {#upstream_proxy}
+
+Route all outgoing upstream registry requests through an HTTP, HTTPS, or SOCKS5 proxy. Use this in corporate or air-gapped environments where direct Internet access is restricted.
+
+```toml
+[registries.proxy]
+url = "http://proxy.corp.example.com:3128"
+
+# Optional: proxy credentials (alternative to embedding in the URL)
+# username = "proxyuser"
+# password = "${PROXY_PASSWORD}"
+
+# Optional: bypass the proxy for specific hosts/domains (comma-separated).
+# Equivalent to the NO_PROXY environment variable.
+# no_proxy = "localhost,10.0.0.0/8,internal.example.com"
+```
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `url` | string | yes | Proxy URL. Supports `http://`, `https://`, and `socks5://` schemes. Credentials can be embedded directly: `http://user:pass@proxy:3128`. |
+| `username` | string | no | Proxy Basic-auth username. Overrides any credentials embedded in `url`. Use `${VAR}` to inject from an environment variable. |
+| `password` | string | no | Proxy Basic-auth password. Overrides any credentials embedded in `url`. Use `${VAR}` to inject from an environment variable. |
+| `no_proxy` | string | no | Comma-separated list of hosts, domains, or CIDR ranges to bypass the proxy for (e.g. `"localhost,10.0.0.0/8,corp.example.com"`). Equivalent to the standard `NO_PROXY` environment variable. |
+
+> **Scope:** The proxy applies only to upstream registry requests for the registry it is configured on. When absent, the global `[proxy]` section (if set) is used as a fallback — so you can set a single global proxy and override it per-registry where needed.
+
+> **Security:** Avoid committing proxy credentials to version control. Use `${VAR_NAME}` placeholders — see [§5 Environment Variable Overrides](#5-environment-variable-overrides).
+
+> **`HTTP_PROXY` / `HTTPS_PROXY` environment variables:** When no `[registries.proxy]` (and no global `[proxy]`) is configured for a registry, the underlying HTTP client automatically reads the standard `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` env vars. As soon as any proxy is configured via the config file, env-var proxy reading is disabled for that registry's client — the config value fully replaces the env var.
+
+#### Forwarding `HTTP_PROXY` into the config
+
+If you want to keep using the standard `HTTP_PROXY` env var while still being able to set `no_proxy` or credentials in the config file, forward the variable through the `${VAR}` substitution mechanism:
+
+```toml
+# Shell: export HTTP_PROXY=http://proxy.corp.example.com:3128
+
+[registries.proxy]
+url      = "${HTTP_PROXY}"
+no_proxy = "localhost,10.0.0.0/8"
+```
+
+The same pattern works for the global section:
+
+```toml
+[proxy]
+url      = "${HTTP_PROXY}"
+no_proxy = "${NO_PROXY}"   # forward the standard NO_PROXY list too
+```
+
+---
+
 #### `[registries.rate_limit]` {#rate_limit}
 
 Per-registry rate limiting using a **fixed-window counter** algorithm. Limits are tracked per authenticated user (by `user_id`) or per client IP for anonymous requests.
@@ -1141,6 +1196,40 @@ service_name = "batlehub"   # default
 | `service_name` | string | `"batlehub"` | Service name reported in traces |
 
 The entire section can be enabled without a config file change by setting `PROXY_CACHE__OTEL__ENDPOINT` — the section is created automatically if the env var is present.
+
+---
+
+### 3.8 `[proxy]` (optional)
+
+A **global** HTTP/SOCKS proxy that applies to all upstream registry requests. Individual registries that define their own `[registries.proxy]` section override this global setting for that registry only.
+
+```toml
+[proxy]
+url      = "http://proxy.corp.example.com:3128"
+# username = "proxyuser"   # optional
+# password = "${PROXY_PASSWORD}"   # optional
+# no_proxy = "localhost,10.0.0.0/8,internal.example.com"  # optional
+```
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `url` | string | yes | Proxy URL (`http://`, `https://`, or `socks5://`). Credentials can be embedded: `http://user:pass@proxy:3128`. |
+| `username` | string | no | Proxy Basic-auth username. |
+| `password` | string | no | Proxy Basic-auth password. Use `${VAR}` to keep secrets out of the file. |
+| `no_proxy` | string | no | Comma-separated hosts/domains/CIDRs to bypass the proxy for. |
+
+The entire section can be set without touching the config file via environment variables:
+
+```sh
+export PROXY_CACHE__PROXY__URL="http://proxy.corp.example.com:3128"
+export PROXY_CACHE__PROXY__USERNAME="proxyuser"
+export PROXY_CACHE__PROXY__PASSWORD="s3cr3t"
+export PROXY_CACHE__PROXY__NO_PROXY="localhost,10.0.0.0/8"
+```
+
+`PROXY_CACHE__PROXY__URL` creates the `[proxy]` section automatically if it is not present in the TOML file, so a minimal deployment only needs the single env var set.
+
+> **Precedence:** per-registry `[registries.proxy]` > global `[proxy]`. When neither is set, the underlying HTTP client reads the standard `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` env vars automatically. Configuring any proxy via the config file disables env-var proxy reading for that registry's client — to forward those env vars in, see [Forwarding `HTTP_PROXY` into the config](#forwarding-http_proxy-into-the-config) above.
 
 ---
 
@@ -1300,6 +1389,10 @@ A fixed set of top-level fields can also be overridden via named environment var
 | `PROXY_CACHE__STORAGE__ENDPOINT_URL` | `storage.endpoint_url` | Single S3 backend only |
 | `PROXY_CACHE__OTEL__ENDPOINT` | `otel.endpoint` | Creates the `[otel]` section if absent |
 | `PROXY_CACHE__OTEL__SERVICE_NAME` | `otel.service_name` | |
+| `PROXY_CACHE__PROXY__URL` | `proxy.url` | Creates the `[proxy]` section if absent; applies to all registries |
+| `PROXY_CACHE__PROXY__USERNAME` | `proxy.username` | |
+| `PROXY_CACHE__PROXY__PASSWORD` | `proxy.password` | |
+| `PROXY_CACHE__PROXY__NO_PROXY` | `proxy.no_proxy` | |
 
 > Storage env-var overrides only work with the **single-backend** `[storage]` form. Multi-backend configs (`[[storage.backends]]`) must be changed in the file.
 
@@ -2712,3 +2805,91 @@ required = true   # deny publish if package.json not found in the tarball
 If a package tarball does not contain a `package.json`, `npm publish` will receive HTTP 422 and the error message `"no dependency manifest found"`.
 
 For full SBOM API reference and tooling integration see [`docs/sbom.md`](sbom.md).
+
+---
+
+### 6.16 Corporate HTTP Proxy (air-gapped environments) {#616-corporate-http-proxy-air-gapped-environments}
+
+Use this when BatleHub is deployed inside a network perimeter that requires all outbound HTTP/HTTPS traffic to route through a corporate proxy (e.g. Squid, Zscaler, Tinyproxy).
+
+In this example, npm and Cargo packages are fetched through a Squid proxy that requires Basic authentication. A private internal Gitea npm registry is also configured — its traffic bypasses the proxy via `no_proxy` because it is reachable directly.
+
+```toml
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[database]
+type = "postgresql"
+url  = "postgresql://batlehub:changeme@db:5432/batlehub"
+
+[[auth]]
+type = "token"
+
+[[auth.tokens]]
+value   = "admin-token"
+role    = "admin"
+user_id = "admin"
+
+[storage]
+type = "filesystem"
+path = "/data/cache"
+
+# ── Public registries (routed through the corporate proxy) ────────────────────
+
+[[registries]]
+type = "npm"
+name = "npm"
+
+[registries.rbac]
+anonymous = ["releases:read"]
+user      = ["releases:read", "source:read"]
+admin     = ["*"]
+
+[registries.proxy]
+url      = "http://squid.corp.example.com:3128"
+username = "proxyuser"
+password = "${PROXY_PASSWORD}"    # export PROXY_PASSWORD=s3cr3t
+
+[[registries]]
+type = "cargo"
+name = "cargo"
+
+[registries.rbac]
+anonymous = ["source:read"]
+user      = ["source:read"]
+admin     = ["*"]
+
+[registries.proxy]
+url      = "http://squid.corp.example.com:3128"
+username = "proxyuser"
+password = "${PROXY_PASSWORD}"
+
+# ── Internal Gitea registry (direct — bypasses the proxy) ────────────────────
+
+[[registries]]
+type      = "npm"
+name      = "npm-internal"
+upstreams = ["https://gitea.corp.example.com/api/packages/myorg/npm"]
+
+[registries.upstream_auth]
+type  = "bearer"
+token = "${GITEA_TOKEN}"
+
+[registries.proxy]
+url      = "http://squid.corp.example.com:3128"
+username = "proxyuser"
+password = "${PROXY_PASSWORD}"
+no_proxy = "gitea.corp.example.com"   # reach Gitea directly
+
+[registries.rbac]
+anonymous = []
+user      = ["releases:read", "source:read"]
+admin     = ["*"]
+```
+
+> **SOCKS5 proxy:** Replace `http://` with `socks5://` in the `url` field if your environment uses a SOCKS5 proxy (e.g. an SSH tunnel: `socks5://localhost:1080`).
+
+> **Global proxy:** Instead of repeating `[registries.proxy]` on every registry, add a single `[proxy]` section at the top level — it applies to all registries at once. Per-registry `[registries.proxy]` blocks override the global value for that specific registry. The global proxy can also be set without touching the config file via `PROXY_CACHE__PROXY__URL` (and related env vars) — see [§3.8](#38-proxy-optional).
+
+> **SOCKS5 proxy:** Replace `http://` with `socks5://` in the `url` field if your environment uses a SOCKS5 proxy (e.g. an SSH tunnel: `socks5://localhost:1080`).

@@ -18,6 +18,7 @@ import TokensPage from "@/pages/TokensPage.vue";
 import MyProfile from "@/pages/MyProfile.vue";
 import AdminLayout from "@/layouts/AdminLayout.vue";
 import MyNamespace from "@/pages/MyNamespace.vue";
+import CliDownload from "@/pages/CliDownload.vue";
 
 const OIDC_STATE_KEY = "oidc_state";
 
@@ -46,6 +47,11 @@ export const router = createRouter({
     {
       path: "/my-namespace",
       component: MyNamespace,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: "/cli",
+      component: CliDownload,
       meta: { requiresAuth: true },
     },
     {

@@ -107,11 +107,11 @@ impl BatleHubClient {
         expect_no_content(resp).await
     }
 
-    pub async fn post_multipart(
+    pub async fn put_multipart_void(
         &self,
         path: &str,
         form: reqwest::multipart::Form,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<()> {
         let mut req = self
             .inner
             .request(Method::PUT, self.url(path))
@@ -120,7 +120,7 @@ impl BatleHubClient {
             req = req.header("Authorization", auth);
         }
         let resp = req.send().await?;
-        expect_ok(resp).await
+        expect_no_content(resp).await
     }
 }
 

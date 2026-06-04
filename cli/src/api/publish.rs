@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use anyhow::Result;
-use serde_json::Value;
 
 use super::BatleHubClient;
 
@@ -63,7 +62,7 @@ pub fn detect_meta(path: &Path) -> Option<ArtifactMeta> {
 
 impl BatleHubClient {
     /// Upload a `.nupkg` artifact to a NuGet local/hybrid registry.
-    pub async fn publish_nuget(&self, registry: &str, file_path: &Path) -> Result<Value> {
+    pub async fn publish_nuget(&self, registry: &str, file_path: &Path) -> Result<()> {
         let bytes = std::fs::read(file_path)?;
         let file_name = file_path
             .file_name()
@@ -76,7 +75,7 @@ impl BatleHubClient {
             .mime_str("application/octet-stream")?;
         let form = reqwest::multipart::Form::new().part("package", part);
 
-        self.post_multipart(&format!("/api/v1/local/{registry}/nuget/v2/package"), form)
+        self.put_multipart_void(&format!("/proxy/{registry}/nuget/api/v2/package"), form)
             .await
     }
 }

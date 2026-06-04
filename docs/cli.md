@@ -145,6 +145,23 @@ Use `--json` to get the raw JSON array — useful in scripts:
 batlehub-cli --json package list --registry internal | jq '.[].name' | sort -u
 ```
 
+The JSON items use an internally-tagged `status` field:
+
+```json
+[
+  { "registry": "internal", "name": "serilog", "version": "3.1.1",
+    "status": {"status": "available"}, "access_count": 1234 },
+  { "registry": "internal", "name": "serilog", "version": "3.0.0",
+    "status": {"status": "blocked", "reason": "yanked"}, "access_count": 89 }
+]
+```
+
+Filter in scripts with `jq`:
+```bash
+# List only blocked packages
+batlehub-cli --json package list | jq '[.[] | select(.status.status == "blocked")]'
+```
+
 ### `package versions <registry> <name>`
 
 List all cached versions of a package with their status and download count.
@@ -166,6 +183,8 @@ These commands require an admin token.
 | `yank` | Marks a version unavailable (kept in storage, download blocked) |
 | `unyank` | Reverses a yank |
 | `delete` | Permanently removes the version and its artifact |
+
+> **Package name casing**: package names are normalized to lowercase when published (NuGet lowercases the package ID, cargo and npm use lowercase by convention). Use the lowercase form with `version yank/unyank/delete` to match the stored name — e.g. `serilog`, not `Serilog`.
 
 `delete` prompts for confirmation unless `--yes` is passed:
 

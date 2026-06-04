@@ -439,6 +439,7 @@ use batlehub_core::{
 };
 use metrics_exporter_prometheus::PrometheusHandle;
 
+pub use handlers::front_office::cli_download::CliBinaryPath;
 pub use handlers::healthz::healthz;
 pub use handlers::metrics::prometheus_metrics;
 pub use handlers::proxy::cargo::CargoIndexProxy;
@@ -527,6 +528,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
         },
         front_office::{
             banner::get_banner,
+            cli_download::download_cli,
             explore::{
                 explore_package_detail, explore_packages, explore_registry_stats,
                 explore_upstream_search,
@@ -680,6 +682,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(get_version);
     cfg.service(get_packument);
     cfg.service(me);
+    cfg.service(download_cli);
     cfg.service(list_registries);
     // Explore: detail path before list (more specific first); upstream before list
     cfg.service(explore_package_detail);

@@ -72,7 +72,7 @@ use batlehub_web::handlers::back_office::warming::WarmingServiceMap;
 use batlehub_web::services::{BannerService, ConfigReloadService, NotificationService};
 use batlehub_web::{
     configure_app, healthz, new_access_lock, openapi_spec, prometheus_metrics, AccessConfig,
-    ApiDoc, CargoIndexProxy, IpBlockMiddlewareFactory, RateLimitMiddlewareFactory,
+    ApiDoc, CargoIndexProxy, CliBinaryPath, IpBlockMiddlewareFactory, RateLimitMiddlewareFactory,
     RateLimitService, RegistryMap, RegistryModeMap, UpstreamMap,
 };
 use metrics_exporter_prometheus::PrometheusBuilder;
@@ -340,7 +340,7 @@ async fn main() -> Result<()> {
     let mut cargo_indexes: HashMap<String, CargoIndexProxy> = HashMap::new();
     for reg in &config.registries {
         if reg.registry_type == "cargo" && !matches!(reg.mode, RegistryMode::Local) {
-            let index = build_cargo_index(reg)
+            let index = build_cargo_index(reg, config.proxy.as_ref())
                 .with_context(|| format!("building cargo index client for '{}'", reg.name))?;
             cargo_indexes.insert(reg.name.clone(), index);
         }
@@ -588,6 +588,11 @@ async fn main() -> Result<()> {
     // ── HTTP server ───────────────────────────────────────────────────────────
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
     let static_dir = config.server.static_dir.clone();
+    let cli_binary_path = config
+        .server
+        .cli_binary_path
+        .as_deref()
+        .map(std::path::PathBuf::from);
     let cors_allowed_origins = config
         .server
         .cors_allowed_origins
@@ -624,6 +629,7 @@ async fn main() -> Result<()> {
     let notification_svc_for_server = notification_svc.clone();
     let notification_store_for_server = Arc::clone(&notification_store);
     let notifications_config_for_server = notifications_config.clone();
+    let notification_svc_for_shutdown = notification_svc.clone();
     HttpServer::new(move || {
         let configure = configure_app(
             proxy_svc.clone(),
@@ -643,6 +649,7 @@ async fn main() -> Result<()> {
             notifications_config_for_server.clone(),
         );
         let static_dir_inner = static_dir.clone();
+        let cli_binary_path_inner = cli_binary_path.clone();
         let cargo_indexes_inner = cargo_indexes.clone();
         let local_svc_inner = local_svc.clone();
         let quota_svc_inner = Arc::clone(&quota_svc);
@@ -661,7 +668,7 @@ async fn main() -> Result<()> {
             .split_for_parts();
 
         // Register app-data and non-OpenAPI routes that are handled outside configure_app.
-        let app = app
+        let mut app = app
             .app_data(web::Data::new(cargo_indexes_inner))
             .app_data(web::Data::new(local_svc_inner))
             .app_data(web::Data::new(quota_svc_inner))
@@ -673,6 +680,10 @@ async fn main() -> Result<()> {
             .app_data(web::Data::new(banner_svc_inner))
             .service(prometheus_metrics)
             .service(healthz);
+
+        if let Some(path) = cli_binary_path_inner {
+            app = app.app_data(web::Data::new(Arc::new(CliBinaryPath(path))));
+        }
 
         let cors_base = Cors::default()
             .allowed_methods(vec!["GET", "POST", "PUT", "HEAD", "OPTIONS", "DELETE"])
@@ -724,6 +735,11 @@ async fn main() -> Result<()> {
     .await
     .context("HTTP server error")?;
 
+    // Drain any in-flight notification tasks before the runtime exits.
+    if let Some(svc) = &notification_svc_for_shutdown {
+        svc.shutdown().await;
+    }
+
     Ok(())
 }
 
@@ -762,7 +778,10 @@ fn parse_role(s: &str) -> Role {
     }
 }
 
-fn upstream_options(reg: &RegistryConfig) -> UpstreamHttpOptions {
+fn upstream_options(
+    reg: &RegistryConfig,
+    global_proxy: Option<&batlehub_config::schema::UpstreamProxyConfig>,
+) -> UpstreamHttpOptions {
     let (bearer_token, basic_auth, custom_header) = match &reg.upstream_auth {
         Some(UpstreamAuthConfig::Bearer(b)) => (Some(b.token.clone()), None, None),
         Some(UpstreamAuthConfig::Basic(b)) => {
@@ -773,16 +792,25 @@ fn upstream_options(reg: &RegistryConfig) -> UpstreamHttpOptions {
         }
         None => (None, None, None),
     };
+    // Per-registry proxy takes precedence; fall back to the global proxy.
+    let proxy = reg.proxy.as_ref().or(global_proxy);
     UpstreamHttpOptions {
         bearer_token,
         basic_auth,
         custom_header,
         ca_cert_path: reg.tls.as_ref().and_then(|t| t.ca_cert_path.clone()),
         search_url: reg.search_url.clone(),
+        proxy_url: proxy.map(|p| p.url.clone()),
+        proxy_username: proxy.and_then(|p| p.username.clone()),
+        proxy_password: proxy.and_then(|p| p.password.clone()),
+        no_proxy: proxy.and_then(|p| p.no_proxy.clone()),
     }
 }
 
-fn build_cargo_index(reg: &RegistryConfig) -> anyhow::Result<CargoIndexProxy> {
+fn build_cargo_index(
+    reg: &RegistryConfig,
+    global_proxy: Option<&batlehub_config::schema::UpstreamProxyConfig>,
+) -> anyhow::Result<CargoIndexProxy> {
     let index_url = if let Some(ref url) = reg.index_url {
         url.clone()
     } else {
@@ -797,7 +825,7 @@ fn build_cargo_index(reg: &RegistryConfig) -> anyhow::Result<CargoIndexProxy> {
             upstream.to_owned()
         }
     };
-    let opts = upstream_options(reg);
+    let opts = upstream_options(reg, global_proxy);
     let http = batlehub_adapters::registry::apply_upstream_options(
         reqwest::Client::builder().user_agent("batlehub/0.1"),
         &opts,
@@ -808,6 +836,7 @@ fn build_cargo_index(reg: &RegistryConfig) -> anyhow::Result<CargoIndexProxy> {
 
 fn build_registry_client(
     reg: &RegistryConfig,
+    global_proxy: Option<&batlehub_config::schema::UpstreamProxyConfig>,
 ) -> anyhow::Result<Arc<dyn batlehub_core::ports::RegistryClient>> {
     fn resolve_urls(configured: &[String], default: &str) -> Vec<String> {
         if configured.is_empty() {
@@ -843,7 +872,7 @@ fn build_registry_client(
         Ok(client)
     }
 
-    let opts = upstream_options(reg);
+    let opts = upstream_options(reg, global_proxy);
 
     let urls = match reg.registry_type.as_str() {
         "github" => resolve_urls(&reg.upstreams, "https://api.github.com"),
@@ -1058,7 +1087,7 @@ fn build_hot_bundle(
     let mut upstream_map: HashMap<String, String> = HashMap::new();
 
     for reg in &cfg.registries {
-        let client = build_registry_client(reg)
+        let client = build_registry_client(reg, cfg.proxy.as_ref())
             .with_context(|| format!("building registry client for '{}'", reg.name))?;
         reg_clients.insert(reg.name.clone(), client);
         reg_policies.insert(

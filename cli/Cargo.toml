@@ -35,5 +35,18 @@ dirs = "6"
 # Pretty table output for plain CLI mode
 comfy-table = "7"
 
+[dev-dependencies]
+batlehub-web      = { path = "../crates/web" }
+batlehub-adapters = { path = "../crates/adapters" }
+batlehub-core     = { path = "../crates/core" }
+batlehub-config   = { path = "../crates/config" }
+tokio             = { workspace = true }
+actix-web         = { workspace = true }
+utoipa-actix-web  = { workspace = true }
+tempfile          = { workspace = true }
+serde_json        = { workspace = true }
+reqwest           = { workspace = true, features = ["blocking"] }
+zip               = "8"
+
 [lints]
 workspace = true

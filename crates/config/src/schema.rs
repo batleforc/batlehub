@@ -26,6 +26,13 @@ pub struct AppConfig {
     /// Optional webhook and notification configuration.
     #[serde(default)]
     pub notifications: Option<NotificationsConfig>,
+    /// Global HTTP/SOCKS proxy applied to all registry upstreams that do not
+    /// define their own `[registries.proxy]` section.
+    ///
+    /// Can be overridden at runtime via `PROXY_CACHE__PROXY__URL` (and related
+    /// variables) without changing the config file.
+    #[serde(default)]
+    pub proxy: Option<UpstreamProxyConfig>,
 }
 
 // ── Limits ────────────────────────────────────────────────────────────────────
@@ -179,6 +186,32 @@ impl AppConfig {
                 otel.service_name = v;
             }
         }
+
+        // global proxy — creates the section if not present in the file
+        if let Some(v) = env("PROXY_CACHE__PROXY__URL") {
+            match &mut self.proxy {
+                Some(proxy) => proxy.url = v,
+                None => {
+                    self.proxy = Some(UpstreamProxyConfig {
+                        url: v,
+                        username: env("PROXY_CACHE__PROXY__USERNAME"),
+                        password: env("PROXY_CACHE__PROXY__PASSWORD"),
+                        no_proxy: env("PROXY_CACHE__PROXY__NO_PROXY"),
+                    })
+                }
+            }
+        }
+        if let Some(proxy) = &mut self.proxy {
+            if let Some(v) = env("PROXY_CACHE__PROXY__USERNAME") {
+                proxy.username = Some(v);
+            }
+            if let Some(v) = env("PROXY_CACHE__PROXY__PASSWORD") {
+                proxy.password = Some(v);
+            }
+            if let Some(v) = env("PROXY_CACHE__PROXY__NO_PROXY") {
+                proxy.no_proxy = Some(v);
+            }
+        }
     }
 }
 
@@ -192,6 +225,15 @@ pub struct ServerConfig {
     pub port: u16,
     /// Directory from which to serve the built SPA (optional).
     pub static_dir: Option<String>,
+    /// Path to the `batlehub-cli` binary to serve via `GET /api/v1/cli/download`.
+    /// When absent the endpoint returns 404.
+    ///
+    /// ```toml
+    /// [server]
+    /// cli_binary_path = "/usr/local/bin/batlehub-cli"
+    /// ```
+    #[serde(default)]
+    pub cli_binary_path: Option<String>,
     /// Allowed CORS origins. When set, only the listed origins receive
     /// Access-Control-Allow-Origin headers. When absent, all origins are
     /// allowed (suitable for development; restrict in production).
@@ -564,6 +606,9 @@ pub struct RegistryConfig {
     /// TLS settings for upstream connections (e.g. custom CA certificate).
     #[serde(default)]
     pub tls: Option<UpstreamTlsConfig>,
+    /// Optional HTTP/SOCKS proxy for upstream connections.
+    #[serde(default)]
+    pub proxy: Option<UpstreamProxyConfig>,
     /// Controls proxy vs. local vs. hybrid behaviour for this registry.
     #[serde(default)]
     pub mode: RegistryMode,
@@ -899,6 +944,33 @@ pub struct HeaderAuthConfig {
 pub struct UpstreamTlsConfig {
     /// Path to a PEM-encoded CA certificate to trust for this registry's upstream.
     pub ca_cert_path: Option<String>,
+}
+
+/// HTTP/SOCKS proxy to use when connecting to upstream registries.
+///
+/// ```toml
+/// [registries.proxy]
+/// url = "http://proxy.corp.example.com:3128"
+/// # username = "proxyuser"   # optional; alternative to embedding in the URL
+/// # password = "proxypass"   # optional
+/// # no_proxy = "localhost,internal.example.com"
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpstreamProxyConfig {
+    /// Proxy URL. Supports `http://`, `https://`, and `socks5://` schemes.
+    /// Credentials can be embedded: `http://user:pass@proxy:3128`.
+    pub url: String,
+    /// Optional proxy username (sets Basic auth; overrides any credentials in `url`).
+    #[serde(default)]
+    pub username: Option<String>,
+    /// Optional proxy password (sets Basic auth; overrides any credentials in `url`).
+    #[serde(default)]
+    pub password: Option<String>,
+    /// Comma-separated list of hosts or domains to bypass the proxy for
+    /// (e.g. `"localhost,10.0.0.0/8,internal.example.com"`).
+    /// Equivalent to the `NO_PROXY` environment variable.
+    #[serde(default)]
+    pub no_proxy: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

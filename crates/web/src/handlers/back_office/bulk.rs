@@ -91,7 +91,7 @@ pub async fn bulk_yank(
         .into_inner()
         .packages
         .into_iter()
-        .map(|p| (p.name, p.version))
+        .map(|p| (p.name.to_lowercase(), p.version))
         .collect();
     let result = local_svc
         .backend
@@ -139,7 +139,7 @@ pub async fn bulk_unyank(
         .into_inner()
         .packages
         .into_iter()
-        .map(|p| (p.name, p.version))
+        .map(|p| (p.name.to_lowercase(), p.version))
         .collect();
     let result = local_svc
         .backend
@@ -187,7 +187,7 @@ pub async fn bulk_delete(
         .into_inner()
         .packages
         .into_iter()
-        .map(|p| (p.name, p.version))
+        .map(|p| (p.name.to_lowercase(), p.version))
         .collect();
     let result = local_svc
         .backend

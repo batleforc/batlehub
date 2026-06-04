@@ -10753,3 +10753,104 @@ async fn nuget_flat_download_missing_returns_404() {
         .to_request();
     assert_eq!(call_service(&app, req).await.status(), 404);
 }
+
+// ══ CLI download endpoint ══════════════════════════════════════════════════════
+
+#[actix_web::test]
+async fn cli_download_returns_404_when_not_configured() {
+    // No CliBinaryPath in app_data → handler returns 404
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/cli/download")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 404);
+}
+
+#[actix_web::test]
+async fn cli_download_serves_binary_when_configured() {
+    use batlehub_web::CliBinaryPath;
+
+    // Write a fake binary to a temp file.
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(tmp.path(), b"fake-cli-bytes").unwrap();
+    let path = tmp.path().to_path_buf();
+
+    // Build a minimal app, identical to make_app but with CliBinaryPath added.
+    let repo: Arc<dyn PackageRepository> = InMemoryRepo::new();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+    let proxy_svc = Arc::new(ProxyService {
+        hot: new_hot_lock(HotConfig {
+            registries: HashMap::new(),
+            policies: HashMap::new(),
+            versioning: HashMap::new(),
+            signing: HashMap::new(),
+            sbom: HashMap::new(),
+            beta_channel: HashMap::new(),
+            max_artifact_size_bytes: None,
+        }),
+        storage,
+        cache,
+        repo: repo.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
+    });
+    let admin_svc = Arc::new(AdminService::new(repo));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = new_access_lock(batlehub_web::AccessConfig {
+        anonymous: Default::default(),
+        user: Default::default(),
+        admin: Default::default(),
+        groups: Default::default(),
+        explore_anonymous: Default::default(),
+        explore_user: Default::default(),
+        explore_admin: Default::default(),
+    });
+
+    let (raw, _) = actix_web::App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            batlehub_web::RegistryMap::from(HashMap::new()),
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+            None,
+            None,
+            Arc::new(batlehub_adapters::notification::InMemoryNotificationStore::new()),
+            None,
+        ))
+        .split_for_parts();
+
+    let local_svc = make_local_svc(InMemoryStorage::new());
+    let app = init_service(
+        raw.app_data(actix_web::web::Data::new(Arc::new(CliBinaryPath(path))))
+            .app_data(actix_web::web::Data::new(local_svc))
+            .app_data(actix_web::web::Data::new(batlehub_web::RegistryModeMap::default()))
+            .wrap(AuthMiddlewareFactory::new(test_auth_providers())),
+    )
+    .await;
+
+    let req = TestRequest::get()
+        .uri("/api/v1/cli/download")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(ct, "application/octet-stream");
+    let body = read_body(resp).await;
+    assert_eq!(&body[..], b"fake-cli-bytes");
+}
