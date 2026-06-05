@@ -19,19 +19,21 @@ pub fn detect_meta(path: &Path) -> Option<ArtifactMeta> {
 
     match ext {
         "nupkg" => {
-            // filename: <name>.<version>.nupkg
+            // filename: <id>.<version>.nupkg
+            // Split at the first dot-delimited segment that starts with a digit;
+            // everything before is the id, everything from that segment onward is the version.
             let stem = file_name.strip_suffix(".nupkg")?;
-            // find the first segment that looks like a semver part
-            let dot_pos = stem.find(|c: char| c.is_ascii_digit())?;
-            if dot_pos == 0 {
+            let parts: Vec<&str> = stem.split('.').collect();
+            let version_start = parts
+                .iter()
+                .position(|s| s.starts_with(|c: char| c.is_ascii_digit()))?;
+            if version_start == 0 {
                 return None;
             }
-            let name = &stem[..dot_pos - 1];
-            let version = &stem[dot_pos..];
             Some(ArtifactMeta {
                 registry_type: "nuget".into(),
-                name: name.to_string(),
-                version: version.to_string(),
+                name: parts[..version_start].join("."),
+                version: parts[version_start..].join("."),
             })
         }
         "whl" => {

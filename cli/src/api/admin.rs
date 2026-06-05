@@ -9,8 +9,10 @@ use super::BatleHubClient;
 pub struct QuotaEntry {
     pub registry: String,
     pub user_id: String,
-    pub storage_bytes: i64,
-    pub package_count: i64,
+    #[serde(rename = "bytes_published")]
+    pub storage_bytes: u64,
+    #[serde(rename = "packages_count")]
+    pub package_count: u32,
 }
 
 // ── IP blocking ───────────────────────────────────────────────────────────────
@@ -18,8 +20,9 @@ pub struct QuotaEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpBlockEntry {
     pub ip: String,
-    pub reason: Option<String>,
-    pub blocked_at: Option<String>,
+    pub reason: String,
+    pub blocked_at: u64,
+    pub unblock_at: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -43,9 +46,10 @@ pub struct SetBannerRequest {
 pub struct ConfigChangeEntry {
     pub id: Option<String>,
     pub triggered_by: Option<String>,
-    pub source: Option<String>,
+    #[serde(rename = "triggered_at")]
     pub applied_at: Option<String>,
     pub summary: Option<String>,
+    pub status: Option<String>,
 }
 
 // ── Warm ──────────────────────────────────────────────────────────────────────
@@ -59,13 +63,26 @@ pub struct WarmRequest {
 // ── Audit log ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditPackageRef {
+    pub registry: String,
+    pub name: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditOutcome {
+    pub outcome: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
-    pub registry: Option<String>,
     pub user_id: Option<String>,
+    pub package_id: Option<AuditPackageRef>,
     pub action: Option<String>,
-    pub package: Option<String>,
     pub timestamp: Option<String>,
-    pub denied: Option<bool>,
+    pub result: Option<AuditOutcome>,
 }
 
 #[derive(Debug, Serialize)]
@@ -82,12 +99,6 @@ pub struct AuditQuery {
     pub denied_only: Option<bool>,
     pub page: u64,
     pub per_page: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuditLogResponse {
-    pub items: Vec<AuditEntry>,
-    pub total: usize,
 }
 
 impl BatleHubClient {
@@ -130,7 +141,12 @@ impl BatleHubClient {
     }
 
     pub async fn config_changes(&self) -> Result<Vec<ConfigChangeEntry>> {
-        self.get("/api/v1/admin/config/changes").await
+        #[derive(Deserialize)]
+        struct Wrapper {
+            items: Vec<ConfigChangeEntry>,
+        }
+        let w: Wrapper = self.get("/api/v1/admin/config/changes").await?;
+        Ok(w.items)
     }
 
     // ── Cache ──────────────────────────────────────────────────────────────────
@@ -162,7 +178,7 @@ impl BatleHubClient {
 
     // ── Audit log ──────────────────────────────────────────────────────────────
 
-    pub async fn audit_log(&self, query: AuditQuery) -> Result<AuditLogResponse> {
+    pub async fn audit_log(&self, query: AuditQuery) -> Result<Vec<AuditEntry>> {
         self.get_with_params("/api/v1/admin/audit-log", &query)
             .await
     }

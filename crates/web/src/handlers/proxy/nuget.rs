@@ -673,7 +673,7 @@ pub async fn nuget_publish(
         &notification_svc,
         NotificationEventType::PackagePublished,
         &registry,
-        &id_lower,
+        &nuspec.id,
         Some(version),
         &actor,
     );
