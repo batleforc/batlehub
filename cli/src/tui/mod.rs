@@ -1,0 +1,419 @@
+mod help;
+mod login;
+mod package_detail;
+mod package_list;
+mod publish_form;
+mod registry_list;
+mod setup_wizard;
+
+use anyhow::Result;
+use crossterm::{
+    event::{self, Event, KeyCode, KeyModifiers},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::{backend::CrosstermBackend, Terminal};
+
+use crate::api::{package::PackageQuery, BatleHubClient};
+use uuid::Uuid;
+
+use login::LoginWidget;
+use package_detail::PackageDetailWidget;
+use package_list::PackageListWidget;
+use publish_form::PublishFormWidget;
+use registry_list::RegistryListWidget;
+use setup_wizard::SetupWizardWidget;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Screen {
+    RegistryList,
+    PackageList { registry: String },
+    PackageDetail { registry: String, name: String },
+    PublishWizard,
+    SetupWizard,
+    Login,
+    Help,
+}
+
+pub struct App {
+    pub screen: Screen,
+    pub prev_screen: Option<Screen>,
+    pub registry_list: RegistryListWidget,
+    pub package_list: PackageListWidget,
+    pub package_detail: PackageDetailWidget,
+    pub publish_form: PublishFormWidget,
+    pub setup_wizard: SetupWizardWidget,
+    pub login: LoginWidget,
+    pub client: BatleHubClient,
+    pub status_msg: Option<String>,
+    pub should_quit: bool,
+}
+
+impl App {
+    pub fn new(client: BatleHubClient) -> Self {
+        Self {
+            screen: Screen::RegistryList,
+            prev_screen: None,
+            registry_list: RegistryListWidget::new(),
+            package_list: PackageListWidget::new(),
+            package_detail: PackageDetailWidget::new(),
+            publish_form: PublishFormWidget::new(),
+            setup_wizard: SetupWizardWidget::new(),
+            login: LoginWidget::new(),
+            client,
+            status_msg: None,
+            should_quit: false,
+        }
+    }
+
+    pub fn go_back(&mut self) {
+        if let Some(prev) = self.prev_screen.take() {
+            self.screen = prev;
+        } else {
+            self.screen = Screen::RegistryList;
+        }
+    }
+}
+
+pub async fn run(client: BatleHubClient) -> Result<()> {
+    enable_raw_mode()?;
+    let mut stdout = std::io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut app = App::new(client);
+
+    // Load initial registry list
+    match app.client.list_registries().await {
+        Ok(registries) => app.registry_list.set_items(registries),
+        Err(e) => app.status_msg = Some(format!("Error loading registries: {e}")),
+    }
+
+    let result = event_loop(&mut terminal, &mut app).await;
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+
+    result
+}
+
+async fn event_loop(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    app: &mut App,
+) -> Result<()> {
+    loop {
+        terminal.draw(|f| render(f, app))?;
+
+        if event::poll(std::time::Duration::from_millis(250))? {
+            if let Event::Key(key) = event::read()? {
+                // Global quit
+                if key.code == KeyCode::Char('q')
+                    || (key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL))
+                {
+                    app.should_quit = true;
+                }
+
+                if app.should_quit {
+                    break;
+                }
+
+                handle_key(app, key).await;
+            }
+        }
+
+        if app.should_quit {
+            break;
+        }
+    }
+    Ok(())
+}
+
+async fn handle_key(app: &mut App, key: event::KeyEvent) {
+    match &app.screen.clone() {
+        Screen::RegistryList => handle_registry_list(app, key).await,
+        Screen::PackageList { registry } => handle_package_list(app, key, registry.clone()).await,
+        Screen::PackageDetail { registry, name } => {
+            handle_package_detail(app, key, registry.clone(), name.clone()).await
+        }
+        Screen::PublishWizard => handle_publish_form(app, key),
+        Screen::SetupWizard => handle_setup_wizard(app, key),
+        Screen::Login => handle_login(app, key).await,
+        Screen::Help => {
+            if matches!(
+                key.code,
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?')
+            ) {
+                app.go_back();
+            }
+        }
+    }
+}
+
+async fn handle_registry_list(app: &mut App, key: event::KeyEvent) {
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => app.registry_list.prev(),
+        KeyCode::Down | KeyCode::Char('j') => app.registry_list.next(),
+        KeyCode::Enter => {
+            if let Some(reg) = app.registry_list.selected() {
+                let registry = reg.name.clone();
+                // Load packages for this registry
+                match app
+                    .client
+                    .list_packages(PackageQuery {
+                        registry: Some(registry.clone()),
+                        name: None,
+                        page: 0,
+                        per_page: 100,
+                    })
+                    .await
+                {
+                    Ok(resp) => {
+                        app.package_list.set_items(resp.items, resp.total);
+                        app.prev_screen = Some(Screen::RegistryList);
+                        app.screen = Screen::PackageList {
+                            registry: registry.clone(),
+                        };
+                    }
+                    Err(e) => {
+                        app.status_msg = Some(format!("Error: {e}"));
+                    }
+                }
+            }
+        }
+        KeyCode::Char('p') => {
+            app.prev_screen = Some(Screen::RegistryList);
+            app.screen = Screen::PublishWizard;
+        }
+        KeyCode::Char('s') => {
+            let server_url = app.client.base_url.clone();
+            let cwd = std::env::current_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| ".".to_string());
+            let items = crate::api::setup::scan_project_types(
+                std::path::Path::new(&cwd),
+                &server_url,
+                2,
+            );
+            app.setup_wizard.set_items(items, cwd);
+            app.prev_screen = Some(Screen::RegistryList);
+            app.screen = Screen::SetupWizard;
+        }
+        KeyCode::Char('L') => {
+            app.login = LoginWidget::new();
+            app.prev_screen = Some(Screen::RegistryList);
+            app.screen = Screen::Login;
+        }
+        KeyCode::Char('?') => {
+            app.prev_screen = Some(Screen::RegistryList);
+            app.screen = Screen::Help;
+        }
+        _ => {}
+    }
+}
+
+async fn handle_package_list(app: &mut App, key: event::KeyEvent, registry: String) {
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => app.package_list.prev(),
+        KeyCode::Down | KeyCode::Char('j') => app.package_list.next(),
+        KeyCode::Esc => app.go_back(),
+        KeyCode::Enter => {
+            if let Some(pkg) = app.package_list.selected() {
+                let name = pkg.name.clone();
+                // Load versions
+                match app
+                    .client
+                    .list_packages(PackageQuery {
+                        registry: Some(registry.clone()),
+                        name: Some(name.clone()),
+                        page: 0,
+                        per_page: 200,
+                    })
+                    .await
+                {
+                    Ok(resp) => {
+                        let versions: Vec<_> = resp
+                            .items
+                            .into_iter()
+                            .filter(|p| p.name == name && p.registry == registry)
+                            .collect();
+                        app.package_detail.set_items(versions);
+                        app.prev_screen = Some(Screen::PackageList {
+                            registry: registry.clone(),
+                        });
+                        app.screen = Screen::PackageDetail {
+                            registry: registry.clone(),
+                            name: name.clone(),
+                        };
+                    }
+                    Err(e) => {
+                        app.status_msg = Some(format!("Error: {e}"));
+                    }
+                }
+            }
+        }
+        KeyCode::Char('/') => {
+            app.package_list.toggle_search();
+        }
+        KeyCode::Char('?') => {
+            app.prev_screen = Some(Screen::PackageList { registry });
+            app.screen = Screen::Help;
+        }
+        _ => {
+            // Pass other keys to search box if active
+            if app.package_list.search_active {
+                app.package_list.handle_search_key(key);
+            }
+        }
+    }
+}
+
+async fn handle_package_detail(
+    app: &mut App,
+    key: event::KeyEvent,
+    registry: String,
+    name: String,
+) {
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => app.package_detail.prev(),
+        KeyCode::Down | KeyCode::Char('j') => app.package_detail.next(),
+        KeyCode::Esc => app.go_back(),
+        KeyCode::Char('y') => {
+            if let Some(pkg) = app.package_detail.selected() {
+                let version = pkg.version.clone();
+                match app.client.yank_version(&registry, &name, &version).await {
+                    Ok(()) => {
+                        app.status_msg = Some(format!("Yanked {name}@{version}"));
+                        // Refresh
+                        refresh_detail(app, &registry, &name).await;
+                    }
+                    Err(e) => app.status_msg = Some(format!("Error: {e}")),
+                }
+            }
+        }
+        KeyCode::Char('u') => {
+            if let Some(pkg) = app.package_detail.selected() {
+                let version = pkg.version.clone();
+                match app.client.unyank_version(&registry, &name, &version).await {
+                    Ok(()) => {
+                        app.status_msg = Some(format!("Unyanked {name}@{version}"));
+                        refresh_detail(app, &registry, &name).await;
+                    }
+                    Err(e) => app.status_msg = Some(format!("Error: {e}")),
+                }
+            }
+        }
+        KeyCode::Char('?') => {
+            app.prev_screen = Some(Screen::PackageDetail { registry, name });
+            app.screen = Screen::Help;
+        }
+        _ => {}
+    }
+}
+
+async fn refresh_detail(app: &mut App, registry: &str, name: &str) {
+    if let Ok(resp) = app
+        .client
+        .list_packages(PackageQuery {
+            registry: Some(registry.to_string()),
+            name: Some(name.to_string()),
+            page: 0,
+            per_page: 200,
+        })
+        .await
+    {
+        let versions: Vec<_> = resp
+            .items
+            .into_iter()
+            .filter(|p| p.name == name && p.registry == registry)
+            .collect();
+        app.package_detail.set_items(versions);
+    }
+}
+
+fn handle_setup_wizard(app: &mut App, key: event::KeyEvent) {
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => app.setup_wizard.prev(),
+        KeyCode::Down | KeyCode::Char('j') => app.setup_wizard.next(),
+        KeyCode::Esc => app.go_back(),
+        KeyCode::Char('?') => {
+            app.prev_screen = Some(Screen::SetupWizard);
+            app.screen = Screen::Help;
+        }
+        _ => {}
+    }
+}
+
+async fn handle_login(app: &mut App, key: event::KeyEvent) {
+    // Switching to OIDC tab fetches the authorization URL asynchronously
+    if key.code == KeyCode::Char('2') {
+        app.login.method = login::LoginMethod::Oidc;
+        app.login.status = None;
+        if app.login.oidc_url.is_none() {
+            let csrf = Uuid::new_v4().to_string();
+            match crate::api::auth::get_oidc_login_url(&app.client.base_url, &csrf, None).await {
+                Ok(url) => app.login.oidc_url = Some(url),
+                Err(e) => app.login.status = Some(format!("OIDC unavailable: {e}")),
+            }
+        }
+        return;
+    }
+
+    if let Some(_back) = login::handle_key(app, key) {
+        app.go_back();
+        app.status_msg =
+            Some("Credentials saved. Restart TUI to connect with new credentials.".into());
+    }
+}
+
+fn handle_publish_form(app: &mut App, key: event::KeyEvent) {
+    if key.code == KeyCode::Esc {
+        app.go_back();
+    } else {
+        app.publish_form.handle_key(key);
+    }
+}
+
+fn render(f: &mut ratatui::Frame, app: &App) {
+    match &app.screen {
+        Screen::RegistryList => {
+            registry_list::render(f, app);
+        }
+        Screen::PackageList { registry } => {
+            package_list::render(f, app, registry);
+        }
+        Screen::PackageDetail { registry, name } => {
+            package_detail::render(f, app, registry, name);
+        }
+        Screen::PublishWizard => {
+            publish_form::render(f, app);
+        }
+        Screen::SetupWizard => {
+            setup_wizard::render(f, app);
+        }
+        Screen::Login => {
+            login::render(f, app);
+        }
+        Screen::Help => {
+            help::render(f, app);
+        }
+    }
+
+    // Status bar overlay
+    if let Some(msg) = &app.status_msg {
+        let area = f.area();
+        let status_area = ratatui::layout::Rect {
+            x: 0,
+            y: area.height.saturating_sub(1),
+            width: area.width,
+            height: 1,
+        };
+        f.render_widget(
+            ratatui::widgets::Paragraph::new(msg.as_str())
+                .style(ratatui::style::Style::default().fg(ratatui::style::Color::Yellow)),
+            status_area,
+        );
+    }
+}

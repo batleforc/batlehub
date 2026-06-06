@@ -347,9 +347,9 @@ mod tests {
 
     // ── Functional mocks for active warming tests ─────────────────────────────
 
+    use futures::stream;
     use std::collections::HashMap;
     use tokio::sync::Mutex as TokioMutex;
-    use futures::stream;
 
     struct StubClient {
         versions: Vec<String>,
@@ -366,16 +366,26 @@ mod tests {
             })
         }
         fn failing_list() -> Arc<Self> {
-            Arc::new(Self { versions: vec![], fail_fetch: false, fail_list: true })
+            Arc::new(Self {
+                versions: vec![],
+                fail_fetch: false,
+                fail_list: true,
+            })
         }
         fn failing_fetch() -> Arc<Self> {
-            Arc::new(Self { versions: vec!["1.0.0".into()], fail_fetch: true, fail_list: false })
+            Arc::new(Self {
+                versions: vec!["1.0.0".into()],
+                fail_fetch: true,
+                fail_list: false,
+            })
         }
     }
 
     #[async_trait]
     impl RegistryClient for StubClient {
-        fn registry_type(&self) -> &str { "stub" }
+        fn registry_type(&self) -> &str {
+            "stub"
+        }
         async fn resolve_metadata(&self, _: &PackageId) -> Result<PackageMetadata, CoreError> {
             Ok(PackageMetadata {
                 id: PackageId::new("stub", "pkg", "0.0.0"),
@@ -412,10 +422,16 @@ mod tests {
 
     impl StubStorage {
         fn new() -> Arc<Self> {
-            Arc::new(Self { data: Arc::new(TokioMutex::new(HashMap::new())), fail_store: false })
+            Arc::new(Self {
+                data: Arc::new(TokioMutex::new(HashMap::new())),
+                fail_store: false,
+            })
         }
         fn failing_store() -> Arc<Self> {
-            Arc::new(Self { data: Arc::new(TokioMutex::new(HashMap::new())), fail_store: true })
+            Arc::new(Self {
+                data: Arc::new(TokioMutex::new(HashMap::new())),
+                fail_store: true,
+            })
         }
     }
 
@@ -453,29 +469,81 @@ mod tests {
         async fn stat_by_prefix(&self, prefix: &str) -> Result<(u64, u64), CoreError> {
             let m = self.data.lock().await;
             let matching: Vec<_> = m.iter().filter(|(k, _)| k.starts_with(prefix)).collect();
-            Ok((matching.len() as u64, matching.iter().map(|(_, v)| v.len() as u64).sum()))
+            Ok((
+                matching.len() as u64,
+                matching.iter().map(|(_, v)| v.len() as u64).sum(),
+            ))
         }
         async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, CoreError> {
-            Ok(self.data.lock().await.keys().filter(|k| k.starts_with(prefix)).cloned().collect())
+            Ok(self
+                .data
+                .lock()
+                .await
+                .keys()
+                .filter(|k| k.starts_with(prefix))
+                .cloned()
+                .collect())
         }
     }
 
     struct NoopMeta;
     #[async_trait]
     impl ArtifactMetaRepository for NoopMeta {
-        async fn record_artifact(&self, _: &str, _: &str, _: &str, _: &str, _: Option<u64>) -> Result<(), CoreError> { Ok(()) }
-        async fn touch_artifact(&self, _: &str) -> Result<(), CoreError> { Ok(()) }
-        async fn list_artifacts(&self, _: &str) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
-        async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
-        async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> { Ok(()) }
-        async fn is_artifact_expired(&self, _: &str, _: chrono::DateTime<Utc>) -> Result<bool, CoreError> { Ok(false) }
-        async fn list_expired_by_ttl(&self, _: &str, _: chrono::DateTime<Utc>) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
-        async fn list_idle(&self, _: &str, _: chrono::DateTime<Utc>) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
-        async fn total_size_bytes(&self, _: &str) -> Result<u64, CoreError> { Ok(0) }
-        async fn list_lru(&self, _: &str, _: i64) -> Result<Vec<ArtifactMeta>, CoreError> { Ok(vec![]) }
+        async fn record_artifact(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: Option<u64>,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn touch_artifact(&self, _: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn list_artifacts(&self, _: &str) -> Result<Vec<ArtifactMeta>, CoreError> {
+            Ok(vec![])
+        }
+        async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> {
+            Ok(vec![])
+        }
+        async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn is_artifact_expired(
+            &self,
+            _: &str,
+            _: chrono::DateTime<Utc>,
+        ) -> Result<bool, CoreError> {
+            Ok(false)
+        }
+        async fn list_expired_by_ttl(
+            &self,
+            _: &str,
+            _: chrono::DateTime<Utc>,
+        ) -> Result<Vec<ArtifactMeta>, CoreError> {
+            Ok(vec![])
+        }
+        async fn list_idle(
+            &self,
+            _: &str,
+            _: chrono::DateTime<Utc>,
+        ) -> Result<Vec<ArtifactMeta>, CoreError> {
+            Ok(vec![])
+        }
+        async fn total_size_bytes(&self, _: &str) -> Result<u64, CoreError> {
+            Ok(0)
+        }
+        async fn list_lru(&self, _: &str, _: i64) -> Result<Vec<ArtifactMeta>, CoreError> {
+            Ok(vec![])
+        }
     }
 
-    fn active_svc(client: Arc<dyn RegistryClient>, storage: Arc<dyn StorageBackend>) -> WarmingService {
+    fn active_svc(
+        client: Arc<dyn RegistryClient>,
+        storage: Arc<dyn StorageBackend>,
+    ) -> WarmingService {
         WarmingService {
             client,
             storage,
@@ -502,7 +570,11 @@ mod tests {
     async fn warm_package_skips_already_cached_version() {
         let storage = StubStorage::new();
         storage
-            .store("artifact:test-reg/mylib:1.0.0", Bytes::from("old"), StorageMeta::default())
+            .store(
+                "artifact:test-reg/mylib:1.0.0",
+                Bytes::from("old"),
+                StorageMeta::default(),
+            )
             .await
             .unwrap();
         let svc = active_svc(StubClient::with_versions(vec!["1.0.0"]), storage.clone());
@@ -547,7 +619,10 @@ mod tests {
 
     #[tokio::test]
     async fn warm_package_records_error_when_store_fails() {
-        let svc = active_svc(StubClient::with_versions(vec!["1.0.0"]), StubStorage::failing_store());
+        let svc = active_svc(
+            StubClient::with_versions(vec!["1.0.0"]),
+            StubStorage::failing_store(),
+        );
         let report = svc.warm_package("mylib@1.0.0").await;
         assert_eq!(report.errors, 1);
         assert_eq!(report.warmed, 0);
@@ -557,7 +632,9 @@ mod tests {
     async fn warm_all_aggregates_multiple_packages() {
         let storage = StubStorage::new();
         let svc = active_svc(StubClient::with_versions(vec!["1.0.0"]), storage.clone());
-        let report = svc.warm_all(&["pkgA@1.0.0".to_string(), "pkgB@1.0.0".to_string()]).await;
+        let report = svc
+            .warm_all(&["pkgA@1.0.0".to_string(), "pkgB@1.0.0".to_string()])
+            .await;
         assert_eq!(report.warmed, 2);
         assert_eq!(report.errors, 0);
     }
@@ -573,8 +650,16 @@ mod tests {
 
     #[tokio::test]
     async fn warming_report_add_assign_aggregates() {
-        let mut a = WarmingReport { warmed: 1, skipped: 2, errors: 3 };
-        let b = WarmingReport { warmed: 10, skipped: 20, errors: 30 };
+        let mut a = WarmingReport {
+            warmed: 1,
+            skipped: 2,
+            errors: 3,
+        };
+        let b = WarmingReport {
+            warmed: 10,
+            skipped: 20,
+            errors: 30,
+        };
         a += b;
         assert_eq!(a.warmed, 11);
         assert_eq!(a.skipped, 22);

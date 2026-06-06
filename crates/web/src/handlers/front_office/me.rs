@@ -4,7 +4,7 @@ use utoipa::ToSchema;
 
 use batlehub_core::entities::Role;
 
-use crate::{extractors::AuthIdentity};
+use crate::extractors::AuthIdentity;
 
 #[derive(Serialize, ToSchema)]
 pub struct MeResponse {
@@ -28,7 +28,10 @@ pub struct MeResponse {
     security(("bearer_token" = [])),
 )]
 #[get("/api/v1/me")]
-pub async fn me(identity: AuthIdentity, access: web::Data<crate::AccessConfigLock>) -> impl Responder {
+pub async fn me(
+    identity: AuthIdentity,
+    access: web::Data<crate::AccessConfigLock>,
+) -> impl Responder {
     web::Json(MeResponse {
         user_id: identity.user_id.clone(),
         role: identity.role.clone(),

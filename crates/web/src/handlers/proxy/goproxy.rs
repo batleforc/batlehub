@@ -353,7 +353,8 @@ mod tests {
     fn make_zip_with_go_mod(entry_name: &str, content: &str) -> Vec<u8> {
         let mut buf = Vec::new();
         let mut zip = ZipWriter::new(std::io::Cursor::new(&mut buf));
-        zip.start_file(entry_name, SimpleFileOptions::default()).unwrap();
+        zip.start_file(entry_name, SimpleFileOptions::default())
+            .unwrap();
         zip.write_all(content.as_bytes()).unwrap();
         zip.finish().unwrap();
         buf

@@ -17,8 +17,10 @@ use super::common::{
     extract_signature_headers, proxy_stream, require_local_mode, require_registry_type,
 };
 use crate::{
-    error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap,
+    error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
+    RegistryModeMap, UpstreamMap,
 };
+use batlehub_core::entities::NotificationEventType;
 
 use batlehub_config::schema::RegistryMode as Mode;
 
@@ -239,7 +241,14 @@ pub async fn pypi_file_download(
     })?;
 
     let pkg = PackageId::new(&registry, &name, &version).with_artifact(filename);
-    proxy_stream(svc, pkg, identity, "releases:read", Some("application/octet-stream")).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        "releases:read",
+        Some("application/octet-stream"),
+    )
+    .await
 }
 
 // ── Publish route (twine-compatible) ─────────────────────────────────────────
@@ -260,6 +269,7 @@ pub async fn pypi_file_download(
     ),
     security(("bearer_token" = [])),
 )]
+#[allow(clippy::too_many_arguments)]
 #[post("/proxy/{registry}/legacy/")]
 pub async fn pypi_publish(
     req: HttpRequest,
@@ -269,6 +279,7 @@ pub async fn pypi_publish(
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
     require_registry_type(&registry, "pypi", &map)?;
@@ -282,8 +293,8 @@ pub async fn pypi_publish(
     let mut filename: Option<String> = None;
 
     while let Some(field_result) = multipart.next().await {
-        let mut field = field_result
-            .map_err(|e| AppError::bad_request(format!("multipart error: {e}")))?;
+        let mut field =
+            field_result.map_err(|e| AppError::bad_request(format!("multipart error: {e}")))?;
 
         let field_name = field.name().unwrap_or("").to_owned();
         let file_name = field
@@ -341,6 +352,7 @@ pub async fn pypi_publish(
     });
 
     let (signature_bytes, signature_type) = extract_signature_headers(&req);
+    let actor = identity.0.user_id.clone().unwrap_or_default();
 
     let quota_check = local_svc
         .publish(PublishRequest {
@@ -356,6 +368,15 @@ pub async fn pypi_publish(
         })
         .await
         .map_err(AppError::from)?;
+
+    super::common::dispatch_notification(
+        &notification_svc,
+        NotificationEventType::PackagePublished,
+        &registry,
+        &name,
+        Some(version),
+        &actor,
+    );
 
     let mut resp = HttpResponse::Ok();
     for (header, value) in quota_check.headers() {

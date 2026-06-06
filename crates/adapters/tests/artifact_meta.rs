@@ -249,12 +249,16 @@ async fn list_lru_returns_oldest_accessed_first() {
     let Some(url) = db_url() else { return };
     let t = make_repo(&url).await;
     let pool = sqlx::PgPool::connect(&url).await.unwrap();
+    // Use a unique registry name so parallel tests in other test functions
+    // (e.g. list_idle_filters_correctly which backdates to 10 days ago) cannot
+    // contaminate the LRU query results.
+    let registry = format!("npm-lru-{}", t.prefix);
 
     let keys = ["lru-a:1.0", "lru-b:1.0", "lru-c:1.0"];
     for (i, name) in keys.iter().enumerate() {
         let k = t.key(name);
         t.repo
-            .record_artifact(&k, "npm", name, "1.0", Some(10))
+            .record_artifact(&k, &registry, name, "1.0", Some(10))
             .await
             .unwrap();
         // Spread out last_accessed_at: lru-a accessed 3h ago, lru-b 2h, lru-c 1h
@@ -269,7 +273,7 @@ async fn list_lru_returns_oldest_accessed_first() {
         .unwrap();
     }
 
-    let lru = t.repo.list_lru("npm", 2).await.unwrap();
+    let lru = t.repo.list_lru(&registry, 2).await.unwrap();
     assert_eq!(lru.len(), 2);
     // lru-a (3h) should be first, lru-b (2h) second
     assert!(
@@ -360,14 +364,18 @@ async fn list_artifacts_with_empty_registry_spans_all() {
         .await
         .unwrap();
 
+    let key_a = t.key("a:1.0");
+    let key_b = t.key("b:1.0");
     let all = t.repo.list_artifacts("").await.unwrap();
-    let test_rows: Vec<_> = all
-        .iter()
-        .filter(|r| r.artifact_key.contains(&t.prefix))
-        .collect();
-    assert_eq!(
-        test_rows.len(),
-        2,
-        "empty registry string must return artifacts from all registries"
+    // Check presence of both keys rather than asserting an exact count.
+    // The Postgres instance is shared across runs, so stale rows from previous
+    // runs with the same prefix would cause a count-based assertion to flap.
+    assert!(
+        all.iter().any(|r| r.artifact_key == key_a),
+        "npm artifact must be returned by empty-registry query"
+    );
+    assert!(
+        all.iter().any(|r| r.artifact_key == key_b),
+        "cargo artifact must be returned by empty-registry query"
     );
 }

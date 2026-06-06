@@ -16,11 +16,11 @@ pub mod team_namespace;
 pub mod user_tokens;
 
 pub use artifact_meta::NoopArtifactMetaRepository;
-pub use sbom::NoopSbomRepository;
 pub use beta_channel::InMemoryBetaChannelStore;
 pub use ownership::InMemoryOwnershipStore;
 pub use package_repo::InMemoryPackageRepository;
 pub use quota::InMemoryQuotaRepository;
+pub use sbom::NoopSbomRepository;
 pub use storage::InMemoryStorageBackend;
 pub use team_namespace::InMemoryTeamNamespaceStore;
 pub use user_tokens::NullUserTokenRepository;

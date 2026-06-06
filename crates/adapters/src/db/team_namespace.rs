@@ -1,5 +1,5 @@
-use std::str::FromStr;
 use crate::db::DbResultExt;
+use std::str::FromStr;
 
 use async_trait::async_trait;
 use sqlx::{PgPool, Row};

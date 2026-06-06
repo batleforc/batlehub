@@ -76,7 +76,10 @@ pub async fn explore_packages(
     admin_svc: web::Data<Arc<AdminService>>,
     access: web::Data<crate::AccessConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    let accessible = access.read().await.explore_accessible_registries_for(&identity);
+    let accessible = access
+        .read()
+        .await
+        .explore_accessible_registries_for(&identity);
 
     if let Some(ref reg) = query.registry {
         if !accessible.contains(reg) {
@@ -184,7 +187,8 @@ pub async fn explore_registry_stats(
     access: web::Data<crate::AccessConfigLock>,
 ) -> Result<impl Responder, AppError> {
     let accessible: Vec<String> = access
-        .read().await
+        .read()
+        .await
         .explore_accessible_registries_for(&identity)
         .into_iter()
         .collect();
@@ -283,13 +287,20 @@ pub async fn explore_package_detail(
 
     // Gate: registry-level proxy access
     let registry_accessible = access
-        .read().await
+        .read()
+        .await
         .accessible_registries_for(&identity)
         .contains(registry);
 
     // Gate: beta channel membership
     let beta_member = {
-        let beta_port = local_svc.hot.read().await.beta_channel.get(registry).cloned();
+        let beta_port = local_svc
+            .hot
+            .read()
+            .await
+            .beta_channel
+            .get(registry)
+            .cloned();
         if let Some(bp) = beta_port {
             bp.is_member(registry, &identity).await.unwrap_or(false)
         } else {
@@ -449,7 +460,10 @@ pub async fn explore_upstream_search(
     admin_svc: web::Data<Arc<AdminService>>,
     access: web::Data<crate::AccessConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    let accessible = access.read().await.explore_accessible_registries_for(&identity);
+    let accessible = access
+        .read()
+        .await
+        .explore_accessible_registries_for(&identity);
 
     tracing::info!(
         name = %query.name,

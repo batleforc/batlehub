@@ -1,0 +1,53 @@
+[package]
+name = "batlehub-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "batlehub-cli"
+path = "src/main.rs"
+
+[dependencies]
+# Async
+tokio = { workspace = true }
+# HTTP client
+reqwest = { workspace = true, features = ["json", "stream", "multipart", "query"] }
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+# Error handling
+anyhow = { workspace = true }
+# CLI
+clap = { workspace = true, features = ["derive", "env"] }
+clap_complete = "4"
+# Dates
+chrono = { workspace = true }
+# UUIDs
+uuid = { workspace = true }
+# TUI
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+# Text input widget for TUI
+tui-input = "0.11"
+# Config dir resolution
+dirs = "6"
+# Pretty table output for plain CLI mode
+comfy-table = "7"
+
+[dev-dependencies]
+batlehub-web      = { path = "../crates/web" }
+batlehub-adapters = { path = "../crates/adapters" }
+batlehub-core     = { path = "../crates/core" }
+batlehub-config   = { path = "../crates/config" }
+tokio             = { workspace = true }
+actix-web         = { workspace = true }
+utoipa-actix-web  = { workspace = true }
+tempfile          = { workspace = true }
+serde_json        = { workspace = true }
+reqwest           = { workspace = true, features = ["blocking"] }
+zip               = "8"
+
+[lints]
+workspace = true

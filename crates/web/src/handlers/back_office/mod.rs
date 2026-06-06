@@ -5,6 +5,7 @@ pub mod config;
 pub mod explore;
 pub mod health;
 pub mod ip_blocks;
+pub mod notification;
 pub mod ownership;
 pub mod packages;
 pub mod quota;
@@ -19,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::{error::AppError, extractors::AuthIdentity};
 use batlehub_core::entities::Role;
 
-pub(super) fn require_admin(identity: &AuthIdentity) -> Result<(), AppError> {
+pub(crate) fn require_admin(identity: &AuthIdentity) -> Result<(), AppError> {
     if identity.role != Role::Admin {
         Err(AppError::forbidden("admin role required"))
     } else {

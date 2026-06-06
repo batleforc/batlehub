@@ -13,25 +13,30 @@ COPY crates/core/Cargo.toml        crates/core/Cargo.toml
 COPY crates/config/Cargo.toml      crates/config/Cargo.toml
 COPY crates/adapters/Cargo.toml    crates/adapters/Cargo.toml
 COPY crates/web/Cargo.toml         crates/web/Cargo.toml
+COPY crates/examples/Cargo.toml    crates/examples/Cargo.toml
 COPY server/Cargo.toml             server/Cargo.toml
+COPY cli/Cargo.toml                cli/Cargo.toml
 COPY patches/ patches/
 
 # Stub out every lib/main so cargo can resolve and compile deps.
 RUN for crate in crates/core crates/config crates/adapters crates/web; do \
     mkdir -p $crate/src && echo "pub fn _stub() {}" > $crate/src/lib.rs; \
     done && \
-    mkdir -p server/src && echo "fn main() {}" > server/src/main.rs
+    mkdir -p crates/examples/src && echo "pub fn _stub() {}" > crates/examples/src/lib.rs && \
+    mkdir -p server/src && echo "fn main() {}" > server/src/main.rs && \
+    mkdir -p cli/src    && echo "fn main() {}" > cli/src/main.rs
 
-RUN cargo build --release -p batlehub-server 2>/dev/null; exit 0
+RUN cargo build --release -p batlehub-server -p batlehub-cli 2>/dev/null; exit 0
 
 # Now copy real source and rebuild (only changed crates recompile).
 COPY crates/ crates/
 COPY server/ server/
+COPY cli/    cli/
 
 # Touch lib/main files so cargo detects the change.
-RUN touch crates/*/src/lib.rs server/src/main.rs
+RUN touch crates/*/src/lib.rs server/src/main.rs cli/src/main.rs
 
-RUN cargo build --release -p batlehub-server
+RUN cargo build --release -p batlehub-server -p batlehub-cli
 
 # Pre-create runtime directories so they can be copied into the shell-less distroless image.
 RUN mkdir -p /var/cache/batlehub
@@ -55,9 +60,10 @@ RUN batlehub --config /etc/batlehub/config.toml dump-spec > openapi.json && \
 # ── Runtime image ─────────────────────────────────────────────────────────────
 FROM gcr.io/distroless/cc-debian12 AS runtime
 
-COPY --from=builder  /build/target/release/batlehub /usr/local/bin/batlehub
-COPY --from=builder  /var/cache/batlehub             /var/cache/batlehub
-COPY --from=ui-builder /ui/dist                      /app/ui/dist
+COPY --from=builder  /build/target/release/batlehub     /usr/local/bin/batlehub
+COPY --from=builder  /build/target/release/batlehub-cli /usr/local/bin/batlehub-cli
+COPY --from=builder  /var/cache/batlehub                /var/cache/batlehub
+COPY --from=ui-builder /ui/dist                         /app/ui/dist
 
 EXPOSE 8080
 

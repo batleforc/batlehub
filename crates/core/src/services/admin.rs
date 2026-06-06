@@ -223,7 +223,11 @@ impl AdminService {
         if let Some(stats) = self.explore_cache.get_stats(&key).await {
             return Ok((stats, false));
         }
-        match self.repo.registry_explore_stats(accessible_registries).await {
+        match self
+            .repo
+            .registry_explore_stats(accessible_registries)
+            .await
+        {
             Ok(stats) => {
                 self.explore_cache
                     .set_stats(&key, stats.clone(), accessible_registries.to_vec())
@@ -529,13 +533,19 @@ mod tests {
 
     impl StubExploreRepo {
         fn arc(entries: Vec<ExploreEntry>, count: u64, stats: Vec<RegistryStat>) -> Arc<Self> {
-            Arc::new(Self { entries, count, stats })
+            Arc::new(Self {
+                entries,
+                count,
+                stats,
+            })
         }
     }
 
     #[async_trait]
     impl PackageRepository for StubExploreRepo {
-        async fn record_access(&self, _: AccessEvent) -> Result<(), CoreError> { Ok(()) }
+        async fn record_access(&self, _: AccessEvent) -> Result<(), CoreError> {
+            Ok(())
+        }
         async fn get_status(&self, _: &PackageId) -> Result<PackageStatus, CoreError> {
             Ok(PackageStatus::Available)
         }
@@ -545,7 +555,9 @@ mod tests {
         async fn list_packages(&self, _: PackageFilter) -> Result<Vec<PackageSummary>, CoreError> {
             Ok(vec![])
         }
-        async fn count_packages(&self, _: PackageFilter) -> Result<u64, CoreError> { Ok(0) }
+        async fn count_packages(&self, _: PackageFilter) -> Result<u64, CoreError> {
+            Ok(0)
+        }
         async fn list_events(&self, _: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
             Ok(vec![])
         }
@@ -567,12 +579,16 @@ mod tests {
     struct FailingExploreRepo;
 
     impl FailingExploreRepo {
-        fn arc() -> Arc<Self> { Arc::new(Self) }
+        fn arc() -> Arc<Self> {
+            Arc::new(Self)
+        }
     }
 
     #[async_trait]
     impl PackageRepository for FailingExploreRepo {
-        async fn record_access(&self, _: AccessEvent) -> Result<(), CoreError> { Ok(()) }
+        async fn record_access(&self, _: AccessEvent) -> Result<(), CoreError> {
+            Ok(())
+        }
         async fn get_status(&self, _: &PackageId) -> Result<PackageStatus, CoreError> {
             Ok(PackageStatus::Available)
         }
@@ -582,7 +598,9 @@ mod tests {
         async fn list_packages(&self, _: PackageFilter) -> Result<Vec<PackageSummary>, CoreError> {
             Ok(vec![])
         }
-        async fn count_packages(&self, _: PackageFilter) -> Result<u64, CoreError> { Ok(0) }
+        async fn count_packages(&self, _: PackageFilter) -> Result<u64, CoreError> {
+            Ok(0)
+        }
         async fn list_events(&self, _: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
             Ok(vec![])
         }
@@ -613,7 +631,11 @@ mod tests {
     }
 
     fn sample_stat() -> RegistryStat {
-        RegistryStat { registry: "npm".into(), package_count: 1, total_downloads: 10 }
+        RegistryStat {
+            registry: "npm".into(),
+            package_count: 1,
+            total_downloads: 10,
+        }
     }
 
     fn default_filter() -> ExploreFilter {
@@ -628,7 +650,10 @@ mod tests {
         repo: Arc<dyn PackageRepository>,
         cache: Arc<ExploreCache>,
     ) -> AdminService {
-        AdminService { repo, explore_cache: cache }
+        AdminService {
+            repo,
+            explore_cache: cache,
+        }
     }
 
     // ── explore_packages ──────────────────────────────────────────────────────
@@ -644,7 +669,9 @@ mod tests {
 
         // Use the same key the service would compute
         let key = crate::services::explore_cache::packages_cache_key(&filter);
-        cache.set_packages(&key, vec![sample_entry()], 1, vec!["npm".into()]).await;
+        cache
+            .set_packages(&key, vec![sample_entry()], 1, vec!["npm".into()])
+            .await;
 
         // FailingRepo would return Err, but the cache hit prevents it from being called
         let svc = make_svc_with_cache(FailingExploreRepo::arc(), Arc::clone(&cache));
@@ -678,7 +705,9 @@ mod tests {
         let cache = Arc::new(ExploreCache::with_ttl(Duration::ZERO));
         let filter = default_filter();
         let key = crate::services::explore_cache::packages_cache_key(&filter);
-        cache.set_packages(&key, vec![sample_entry()], 1, vec!["npm".into()]).await;
+        cache
+            .set_packages(&key, vec![sample_entry()], 1, vec!["npm".into()])
+            .await;
 
         let svc = make_svc_with_cache(FailingExploreRepo::arc(), Arc::clone(&cache));
         let (items, unavailable) = svc.explore_packages(filter).await.unwrap();
@@ -704,7 +733,9 @@ mod tests {
         let filter = default_filter();
         let key = crate::services::explore_cache::packages_cache_key(&filter);
         // set_packages stores the count too
-        cache.set_packages(&key, vec![], 42, vec!["npm".into()]).await;
+        cache
+            .set_packages(&key, vec![], 42, vec!["npm".into()])
+            .await;
 
         let svc = make_svc_with_cache(FailingExploreRepo::arc(), Arc::clone(&cache));
         let (count, unavailable) = svc.count_explore_packages(filter).await.unwrap();
@@ -726,7 +757,9 @@ mod tests {
         let cache = Arc::new(ExploreCache::with_ttl(Duration::ZERO));
         let filter = default_filter();
         let key = crate::services::explore_cache::packages_cache_key(&filter);
-        cache.set_packages(&key, vec![], 7, vec!["npm".into()]).await;
+        cache
+            .set_packages(&key, vec![], 7, vec!["npm".into()])
+            .await;
 
         let svc = make_svc_with_cache(FailingExploreRepo::arc(), Arc::clone(&cache));
         let (count, unavailable) = svc.count_explore_packages(filter).await.unwrap();
@@ -741,7 +774,9 @@ mod tests {
         let cache = Arc::new(ExploreCache::new());
         let regs = vec!["npm".to_string()];
         let key = crate::services::explore_cache::stats_cache_key(&regs);
-        cache.set_stats(&key, vec![sample_stat()], regs.clone()).await;
+        cache
+            .set_stats(&key, vec![sample_stat()], regs.clone())
+            .await;
 
         let svc = make_svc_with_cache(FailingExploreRepo::arc(), Arc::clone(&cache));
         let (stats, unavailable) = svc.registry_explore_stats(&regs).await.unwrap();
@@ -772,7 +807,9 @@ mod tests {
         let cache = Arc::new(ExploreCache::with_ttl(Duration::ZERO));
         let regs = vec!["npm".to_string()];
         let key = crate::services::explore_cache::stats_cache_key(&regs);
-        cache.set_stats(&key, vec![sample_stat()], regs.clone()).await;
+        cache
+            .set_stats(&key, vec![sample_stat()], regs.clone())
+            .await;
 
         let svc = make_svc_with_cache(FailingExploreRepo::arc(), Arc::clone(&cache));
         let (stats, unavailable) = svc.registry_explore_stats(&regs).await.unwrap();
@@ -796,7 +833,9 @@ mod tests {
         let cache = Arc::new(ExploreCache::new());
         let filter = default_filter();
         let key = crate::services::explore_cache::packages_cache_key(&filter);
-        cache.set_packages(&key, vec![sample_entry()], 1, vec!["npm".into()]).await;
+        cache
+            .set_packages(&key, vec![sample_entry()], 1, vec!["npm".into()])
+            .await;
 
         // Invalidate npm
         cache.invalidate(Some("npm")).await;

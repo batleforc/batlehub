@@ -368,7 +368,9 @@ mod tests {
     #[tokio::test]
     async fn revoke_publish_decrements_usage_for_configured_registry() {
         let svc = svc_with(block_config(1_000_000, 100), 500, 2);
-        svc.revoke_publish(&user("alice"), "cargo", 200).await.unwrap();
+        svc.revoke_publish(&user("alice"), "cargo", 200)
+            .await
+            .unwrap();
         let usage = svc.get_usage("alice", "cargo").await.unwrap();
         assert_eq!(usage.bytes_published, 300);
         assert_eq!(usage.packages_count, 1);
@@ -380,7 +382,9 @@ mod tests {
             MockQuotaRepo::new(500, 2) as Arc<dyn QuotaRepository>,
             HashMap::new(),
         );
-        svc.revoke_publish(&user("alice"), "cargo", 200).await.unwrap();
+        svc.revoke_publish(&user("alice"), "cargo", 200)
+            .await
+            .unwrap();
         let usage = svc.get_usage("alice", "cargo").await.unwrap();
         assert_eq!(usage.bytes_published, 500);
     }
@@ -388,7 +392,9 @@ mod tests {
     #[tokio::test]
     async fn revoke_publish_noop_for_anonymous() {
         let svc = svc_with(block_config(1_000_000, 100), 500, 2);
-        svc.revoke_publish(&Identity::anonymous(), "cargo", 200).await.unwrap();
+        svc.revoke_publish(&Identity::anonymous(), "cargo", 200)
+            .await
+            .unwrap();
         let usage = svc.get_usage("any", "cargo").await.unwrap();
         assert_eq!(usage.bytes_published, 500);
     }

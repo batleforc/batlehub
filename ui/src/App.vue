@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { RouterView, RouterLink, useRoute, useRouter } from "vue-router";
-import { AlertTriangle, Info, Menu, X, XCircle, Package, ShieldCheck, BookOpen, FolderKey, User, KeyRound, LogOut, ChevronDown } from "@lucide/vue";
+import { AlertTriangle, Info, Menu, X, XCircle, Package, ShieldCheck, BookOpen, FolderKey, User, KeyRound, LogOut, ChevronDown, Terminal } from "@lucide/vue";
 import {
   DropdownMenuRoot,
   DropdownMenuTrigger,
@@ -165,6 +165,15 @@ function isActive(to: string) {
                   >
                     <FolderKey class="h-3.5 w-3.5" />
                     My Namespace
+                  </RouterLink>
+                </DropdownMenuItem>
+                <DropdownMenuItem as-child>
+                  <RouterLink
+                    to="/cli"
+                    class="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm cursor-pointer hover:bg-accent hover:text-accent-foreground outline-none transition-colors"
+                  >
+                    <Terminal class="h-3.5 w-3.5" />
+                    Download CLI
                   </RouterLink>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator class="my-1 h-px bg-border" />

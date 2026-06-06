@@ -1,6 +1,6 @@
+use crate::db::DbResultExt;
 use async_trait::async_trait;
 use sqlx::PgPool;
-use crate::db::DbResultExt;
 
 use batlehub_core::{entities::GlobalBanner, error::CoreError, ports::BannerPort};
 

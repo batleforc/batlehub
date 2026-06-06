@@ -105,10 +105,10 @@ Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules, 
 
 ## Webhooks & notifications
 
-- [ ] Subscribe to notifications for specific packages, versions, or registries (new version published, version deprecated, package removed)
-- [ ] Multiple notification channels: email, Slack, Microsoft Teams, outbound webhooks
-- [ ] User-configurable notification preferences and channel configuration in the UI
-- [ ] Inbound webhook API so external systems (CI pipelines, security scanners) can push events into BatleHub and trigger notifications or policy updates
+- [x] Subscribe to notifications for specific packages, versions, or registries (new version published, version deprecated, package removed)
+- [x] Multiple notification channels: email, Slack, Microsoft Teams, outbound webhooks
+- [x] User-configurable notification preferences and channel configuration in the UI
+- [x] Inbound webhook API so external systems (CI pipelines, security scanners) can push events into BatleHub and trigger notifications or policy updates
 
 ---
 
@@ -136,15 +136,24 @@ Applies to registries running in `local` or `hybrid` mode.
 - [x] Content-addressable deduplication for stored artifacts (ref-counted via `artifact_dedup_index` / `artifact_dedup_refs`)
 - [ ] Integrity verification: verify checksums on re-serve, not only at publish time
 
-### CLI tool
+### CLI tool - `batlehub-cli`
 
-- [ ] `batlehub-cli` — a standalone CLI for common private registry tasks (`publish`, `deprecate`, `yank`, `list`), suitable for use in CI pipelines
-  - [ ] Publish command that wraps the upload API, with support for multiple registry types and automatic metadata extraction from the artifact (e.g. `go.mod` for Go modules, `pom.xml` for Maven)
-  - [ ] Version management commands for deprecating, yanking, or deleting specific versions
-  - [ ] Package management commands for listing versions, viewing metadata, or managing owners
-  - [ ] Authentication support for all providers (static tokens, OIDC, Kubernetes service accounts)
-  - [ ] List of available registries and their types, with per-registry configuration details (e.g. whether publishing is enabled, versioning policies)
-  - [ ] List packages and versions in a registry, with filtering and sorting options
+- [x] a CLI for common private registry tasks (`publish`, `yank`, `list`), suitable for use in CI pipelines — `batlehub-cli` binary in `cli/`; global flags `--profile`, `--server`, `--token`, `--registry`, `--json` and env-var equivalents (`BATLEHUB_*`)
+  - [x] Publish command that wraps the upload API, with support for multiple registry types and automatic metadata extraction from the artifact (e.g. extension, archive contents, manifest files) — `batlehub-cli publish <file>`; `detect_meta` auto-detects registry type, name, and version
+  - [x] Version management commands for yanking, unyanking, or deleting specific versions — `batlehub-cli version yank|unyank|delete`
+  - [x] Package management commands for listing versions, viewing metadata, or managing owners — `batlehub-cli package list|versions` and `batlehub-cli owners list|add|remove`
+  - [x] Authentication support for static tokens and token management — `batlehub-cli auth whoami` and `token list|create|revoke`; token passed via `--token` / `BATLEHUB_TOKEN`
+  - [x] List of available registries and their types, with per-registry configuration details — `batlehub-cli registry list|info`
+  - [x] List packages and versions in a registry, with filtering options — `batlehub-cli package list|versions`
+  - [x] Autocompletion support for shell integration — `batlehub-cli completion bash|zsh|fish|...` generates and prints the completion script; pipe to shell RC file
+  - [x] Config file support for storing credentials and default options, with CLI overrides — `~/.config/batlehub/config.toml` with named profiles; `batlehub-cli config init|show|set`
+  - [x] Config file output for both CI automation and human use — `config init` interactive wizard; `--json` flag on all commands for machine-readable output
+- [x] A TUI mode for interactive use — `batlehub-cli tui` launches a `ratatui` / `crossterm` terminal UI
+  - [x] List of registries with search and filter capabilities — `registry_list` screen
+  - [x] Per-registry package explorer with version details and management actions — `package_list` screen (live search/filter) + `package_detail` screen (yank / unyank keybindings)
+  - [x] Interactive prompts for publishing new versions — `publish_form` screen with auto-detected name and version fields
+  - [x] Help setup registry for a current project by scanning local files — TUI `SetupWizard` screen (`s` from registry list); detects Cargo.toml, go.mod, package.json, pyproject.toml, pom.xml, composer.json, *.gemspec, *.nuspec, *.csproj, *.tf, environment.yml; shows per-type config snippets and publish commands
+  - [x] Auth workflow integration for OIDC and Kubernetes service accounts, including token caching and refresh — `batlehub-cli auth login` (OIDC browser flow + K8s token path); `auth refresh`; `oidc_refresh_token` / `oidc_expires_at` / `kubernetes_token_path` persisted in profile; auto-refresh on startup; TUI `Login` screen (`L` from registry list) with three-tab method selector
 
 ---
 
@@ -174,5 +183,6 @@ Applies to registries running in `local` or `hybrid` mode.
 ## Testing
 
 - [~] Unit tests for all registry adapters and policy evaluation logic — significant coverage added (entities, services, auth, storage router, registry adapters, web middleware, handler guards); ≥80% line coverage enforced by `task coverage-check`
+- [x] CLI test suite — 23 unit tests (`parse_oidc_paste`, `is_token_expiring_soon`, `detect_project_types` for all 9 manifest types) + 16 integration tests (registry, package, version yank/unyank/delete, publish, auth, shell completion, Kubernetes login); fixed `InMemoryLocalRegistry` case-sensitivity bug so yank/delete tests pass end-to-end
 - [ ] Integration tests against real upstream registries (gated, opt-in)
 - [ ] Broader fuzzing targets beyond the current four (RBAC, cache key, deny-latest, release age)

@@ -348,10 +348,7 @@ impl RegistryClient for GithubRegistryClient {
     /// Fetches up to 10 pages of 100 releases each (1 000 releases maximum).
     /// Pagination is driven by the `Link: <url>; rel="next"` response header.
     async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
-        let mut url = format!(
-            "{}/repos/{}/releases?per_page=100",
-            self.base_url, package
-        );
+        let mut url = format!("{}/repos/{}/releases?per_page=100", self.base_url, package);
         let mut versions = Vec::new();
 
         for _ in 0..10 {
@@ -536,7 +533,8 @@ mod tests {
         let body = serde_json::to_string(&serde_json::json!([
             { "id": 1, "tag_name": "v1.1.0", "published_at": "2024-01-02T00:00:00Z", "assets": [] },
             { "id": 2, "tag_name": "v1.0.0", "published_at": "2024-01-01T00:00:00Z", "assets": [] },
-        ])).unwrap();
+        ]))
+        .unwrap();
         let _mock = server
             .mock("GET", "/repos/owner/repo/releases?per_page=100")
             .with_status(200)
@@ -556,13 +554,18 @@ mod tests {
 
         let page1 = serde_json::to_string(&serde_json::json!([
             { "id": 1, "tag_name": "v1.2.0", "published_at": null, "assets": [] }
-        ])).unwrap();
+        ]))
+        .unwrap();
         let page2 = serde_json::to_string(&serde_json::json!([
             { "id": 2, "tag_name": "v1.1.0", "published_at": null, "assets": [] },
             { "id": 3, "tag_name": "v1.0.0", "published_at": null, "assets": [] }
-        ])).unwrap();
+        ]))
+        .unwrap();
 
-        let page2_url = format!("{}/repos/owner/repo/releases?page=2&per_page=100", server.url());
+        let page2_url = format!(
+            "{}/repos/owner/repo/releases?page=2&per_page=100",
+            server.url()
+        );
         let link_header = format!(r#"<{page2_url}>; rel="next""#);
 
         let _m1 = server

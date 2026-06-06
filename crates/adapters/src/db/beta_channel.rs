@@ -1,6 +1,6 @@
+use crate::db::DbResultExt;
 use async_trait::async_trait;
 use sqlx::{PgPool, Row};
-use crate::db::DbResultExt;
 
 use batlehub_core::{
     entities::Identity,

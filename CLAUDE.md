@@ -15,6 +15,7 @@ cargo check --workspace
 cargo test --workspace                              # all unit + in-process integration tests
 cargo test --package batlehub-web nuget            # single package, filter by name
 cargo test --package batlehub-adapters --lib rbac  # lib-only tests (no integration)
+cargo test -p batlehub-cli --test integration      # CLI integration tests (subprocess binary)
 
 # Linting (CI fails on any warning)
 cargo clippy --workspace -- -D warnings
@@ -55,8 +56,9 @@ crates/core      — domain: entities, ports (traits), rules, services (no I/O)
 crates/config    — TOML schema (AppConfig, RegistryConfig, …) + loader
 crates/adapters  — infrastructure: HTTP registry clients, Postgres, Redis, S3, in-memory impls
 crates/web       — actix-web handlers, middleware, extractors
-crates/examples  — shared test helpers (re-exported by adapters/tests)
+crates/examples  — integration test helpers and smoke/real-proxy test binaries
 server/          — binary: wires everything together, no domain logic
+cli/             — batlehub-cli binary: clap commands + reqwest API client + ratatui TUI
 ui/              — Vue 3 + Vite SPA (TypeScript, Tailwind, shadcn-inspired components)
 ```
 
@@ -95,8 +97,15 @@ For **local/hybrid mode**, additionally implement `get_<name>_versions` (and rel
 
 - **Unit tests**: `#[cfg(test)] mod tests` inside the same file. Registry adapter tests use `mockito::Server` to mock HTTP upstreams.
 - **Integration tests** (in-process): `crates/web/tests/integration.rs` — spins up a full actix-web app with `InMemoryPackageRepository`, `InMemoryStorageBackend`, `InMemoryCacheStore`, and `FixedRegistry`. Each registry type has a `make_local_<type>_app(mode: RegistryMode)` factory and a helper to build publish payloads.
+- **CLI integration tests**: `cli/tests/integration.rs` — builds the CLI binary then invokes it as a subprocess against an in-memory actix-web server (same pattern as the web tests). Uses `env!("CARGO_BIN_EXE_batlehub-cli")` so cargo builds the binary automatically before running. See architecture note below about in-memory store separation.
 - **External integration tests**: `crates/adapters/tests/pg_*.rs`, `s3_storage.rs` — require real Postgres/MinIO (run via `task test:pg-*` / `task test:s3`).
 - **Fuzz targets**: `fuzz/fuzz_targets/` — run with nightly via `task fuzz`.
+
+#### CLI test architecture — in-memory store separation
+
+`InMemoryLocalRegistry` (used by `LocalRegistryService` — publish/yank/delete) and `InMemoryPackageRepository` (used by `AdminService` — package list/block) are **separate** in-memory stores. In Postgres they share the same tables, so this separation only matters in tests.
+
+Consequence: packages published via the local-registry HTTP endpoint do **not** appear in `GET /api/v1/packages` (which queries `AdminService`). Use `TestServer::seed_package()` to inject entries directly into `InMemoryPackageRepository` when testing commands like `package list`. To verify yank/unyank/delete state, query the registry-specific endpoints (e.g. the NuGet flat-index at `/proxy/{reg}/nuget/v3/flat/{id}/index.json`) rather than `package list`.
 
 Coverage is enforced at 80% lines. Excluded paths (DB adapters, some registry clients, auth/OIDC handlers, server main) are listed in the `COVERAGE_EXCLUDE` variable in `Taskfile.yml`.
 

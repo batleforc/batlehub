@@ -18,6 +18,7 @@ import TokensPage from "@/pages/TokensPage.vue";
 import MyProfile from "@/pages/MyProfile.vue";
 import AdminLayout from "@/layouts/AdminLayout.vue";
 import MyNamespace from "@/pages/MyNamespace.vue";
+import CliDownload from "@/pages/CliDownload.vue";
 
 const OIDC_STATE_KEY = "oidc_state";
 
@@ -49,6 +50,11 @@ export const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: "/cli",
+      component: CliDownload,
+      meta: { requiresAuth: true },
+    },
+    {
       path: "/admin",
       component: AdminLayout,
       meta: { requiresAdmin: true },
@@ -64,6 +70,7 @@ export const router = createRouter({
         { path: "team-namespaces", component: () => import("@/pages/AdminTeamNamespaces.vue") },
         { path: "config-reload",   component: () => import("@/pages/AdminConfigReload.vue") },
         { path: "explore-cache",   component: () => import("@/pages/AdminExploreCache.vue") },
+        { path: "notifications",   component: () => import("@/pages/AdminNotifications.vue") },
       ],
     },
   ],

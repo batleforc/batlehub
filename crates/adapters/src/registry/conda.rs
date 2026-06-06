@@ -135,7 +135,10 @@ impl RegistryClient for CondaRegistryClient {
                 if let Some(entry) = entry {
                     // repodata.json timestamps are milliseconds since epoch.
                     let published_at = entry.timestamp.and_then(|ms| {
-                        chrono::DateTime::from_timestamp(ms / 1000, ((ms % 1000) * 1_000_000) as u32)
+                        chrono::DateTime::from_timestamp(
+                            ms / 1000,
+                            ((ms % 1000) * 1_000_000) as u32,
+                        )
                     });
                     return Ok(PackageMetadata {
                         id: pkg.clone(),
@@ -348,9 +351,8 @@ fn parse_tar_bz2(data: &[u8]) -> Result<CondaPackageInfo, CoreError> {
     let bz = BzDecoder::new(cursor);
     let mut archive = tar::Archive::new(bz);
 
-    let index_bytes = find_in_tar(&mut archive, "info/index.json").map_err(|e| {
-        CoreError::Registry(format!("conda: read .tar.bz2 archive: {e}"))
-    })?;
+    let index_bytes = find_in_tar(&mut archive, "info/index.json")
+        .map_err(|e| CoreError::Registry(format!("conda: read .tar.bz2 archive: {e}")))?;
 
     parse_index_json(&index_bytes)
 }
@@ -485,7 +487,11 @@ mod tests {
             .with_artifact("numpy-1.26.0-py311h0.tar.bz2");
         let meta = client.resolve_metadata(&pkg).await.unwrap();
         assert_eq!(meta.checksum.as_deref(), Some("deadbeef"));
-        assert!(meta.download_url.as_deref().unwrap().ends_with("linux-64/numpy-1.26.0-py311h0.tar.bz2"));
+        assert!(meta
+            .download_url
+            .as_deref()
+            .unwrap()
+            .ends_with("linux-64/numpy-1.26.0-py311h0.tar.bz2"));
     }
 
     #[tokio::test]
@@ -507,12 +513,34 @@ mod tests {
                 "numpy-1.25.2-py311h0_0.conda": { "name": "numpy", "version": "1.25.2", "build": "py311h0_0" }
             }
         });
-        let _m1 = server.mock("GET", "/noarch/repodata.json").with_status(200).with_body(noarch.to_string()).create_async().await;
-        let _m2 = server.mock("GET", "/linux-64/repodata.json").with_status(200).with_body(linux64.to_string()).create_async().await;
+        let _m1 = server
+            .mock("GET", "/noarch/repodata.json")
+            .with_status(200)
+            .with_body(noarch.to_string())
+            .create_async()
+            .await;
+        let _m2 = server
+            .mock("GET", "/linux-64/repodata.json")
+            .with_status(200)
+            .with_body(linux64.to_string())
+            .create_async()
+            .await;
         // Other platforms return 404 — should be silently skipped
-        let _m3 = server.mock("GET", "/osx-64/repodata.json").with_status(404).create_async().await;
-        let _m4 = server.mock("GET", "/osx-arm64/repodata.json").with_status(404).create_async().await;
-        let _m5 = server.mock("GET", "/win-64/repodata.json").with_status(404).create_async().await;
+        let _m3 = server
+            .mock("GET", "/osx-64/repodata.json")
+            .with_status(404)
+            .create_async()
+            .await;
+        let _m4 = server
+            .mock("GET", "/osx-arm64/repodata.json")
+            .with_status(404)
+            .create_async()
+            .await;
+        let _m5 = server
+            .mock("GET", "/win-64/repodata.json")
+            .with_status(404)
+            .create_async()
+            .await;
 
         let opts = UpstreamHttpOptions::default();
         let client = CondaRegistryClient::new(server.url(), &opts).unwrap();
@@ -527,7 +555,8 @@ mod tests {
         let mut server = mockito::Server::new_async().await;
         let repodata = serde_json::json!({ "packages": {}, "packages.conda": {} });
         for platform in ["noarch", "linux-64", "osx-64", "osx-arm64", "win-64"] {
-            server.mock("GET", &*format!("/{platform}/repodata.json"))
+            server
+                .mock("GET", &*format!("/{platform}/repodata.json"))
                 .with_status(200)
                 .with_body(repodata.to_string())
                 .create_async()
@@ -567,7 +596,10 @@ mod tests {
         let pkg = PackageId::new("reg", "numpy-1.26.0-py311h0", "linux-64")
             .with_artifact("numpy-1.26.0-py311h0.tar.bz2");
         let meta = client.resolve_metadata(&pkg).await.unwrap();
-        assert!(meta.published_at.is_some(), "published_at should be parsed from timestamp");
+        assert!(
+            meta.published_at.is_some(),
+            "published_at should be parsed from timestamp"
+        );
         let ts = meta.published_at.unwrap();
         assert_eq!(ts.timestamp(), 1697145600);
     }
@@ -598,7 +630,10 @@ mod tests {
         let pkg = PackageId::new("reg", "bzip2-1.0.8-h5", "linux-64")
             .with_artifact("bzip2-1.0.8-h5.tar.bz2");
         let meta = client.resolve_metadata(&pkg).await.unwrap();
-        assert!(meta.published_at.is_none(), "published_at should be None when timestamp is absent");
+        assert!(
+            meta.published_at.is_none(),
+            "published_at should be None when timestamp is absent"
+        );
     }
 
     #[tokio::test]

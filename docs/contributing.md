@@ -48,8 +48,11 @@ batlehub/
 │   ├── config/        Config schema (TOML → typed structs) and validation
 │   ├── core/          Domain types, port traits, pure business logic — no I/O
 │   ├── adapters/      Concrete I/O implementations: Postgres, S3, HTTP clients
-│   └── web/           actix-web handlers, middleware, OpenAPI wiring
+│   ├── web/           actix-web handlers, middleware, OpenAPI wiring
+│   └── examples/      Integration test helpers (smoke, local_registry, real_proxy tests)
 ├── server/            Binary entry point: wires everything together
+├── cli/               batlehub-cli binary: clap commands, reqwest API client, ratatui TUI
+│   └── tests/         CLI integration tests — subprocess binary against in-memory server
 ├── docs/              Guides (you are here)
 ├── ui/                Vue 3 front-end
 └── patches/           sqlx-macros stub (see sqlx note in Cargo.toml)
@@ -259,6 +262,30 @@ These tests cover the largest surface area and run without any external services
 
 ---
 
+### Layer 1.5 — CLI integration tests (no external dependencies)
+
+```bash
+cargo test -p batlehub-cli --test integration
+```
+
+`cli/tests/integration.rs` compiles `batlehub-cli` as a real binary and invokes it as a subprocess against a genuine in-memory batlehub server started in the same process. The binary path is resolved at compile-time via `env!("CARGO_BIN_EXE_batlehub-cli")`, so cargo automatically rebuilds the binary before running the tests.
+
+**What they validate:**
+- All CLI commands round-trip correctly through the HTTP API: `registry list/info`, `auth whoami`, `package list/versions`, `version yank/unyank/delete`, `publish`.
+- JSON output (`--json`) is valid and contains the expected fields — asserted with `serde_json::Value` rather than string matching.
+- Auth: authenticated (admin token) vs. anonymous identity.
+- Error paths: unknown registry returns non-zero exit with a "not found" message in stderr.
+
+#### Important: in-memory store separation
+
+`InMemoryLocalRegistry` (backing `LocalRegistryService`, used for publish/yank/delete) and `InMemoryPackageRepository` (backing `AdminService`, used for `package list`) are **two separate in-memory stores**. In PostgreSQL they share the same tables, so this only matters in tests.
+
+As a result:
+- Packages published via the NuGet local endpoint do **not** appear in `package list` (which queries `AdminService`). The tests use `TestServer::seed_package()` to inject records directly into `InMemoryPackageRepository` when they need a package to appear in the admin list.
+- Yank/unyank/delete state is verified via the NuGet flat-index endpoint (`GET /proxy/{reg}/nuget/v3/flat/{id}/index.json`), which queries `LocalRegistryService` — the same store the operations write to.
+
+---
+
 ### Layer 2 — example structure tests (no network)
 
 ```bash
@@ -444,6 +471,16 @@ boundary — a transient overshoot of one version is acceptable.
 single `BEGIN … SELECT … FOR UPDATE … UPDATE … COMMIT` transaction inside
 `PgQuotaRepository`, and update `QuotaRepository::check_and_record_publish`
 (or introduce a new method) to execute both steps atomically.
+
+---
+
+### In-memory adapters have separate package stores
+
+`InMemoryLocalRegistry` and `InMemoryPackageRepository` are independent in-memory stores. In production (PostgreSQL), `PostgresLocalRegistry` and `PgPackageRepository` share the same database pool, so packages published via the local registry automatically appear in `GET /api/v1/packages`.
+
+**Consequence for tests**: if you add a test that publishes via a local-registry HTTP endpoint and then queries `GET /api/v1/packages`, it will see an empty list. Seed the `InMemoryPackageRepository` explicitly via `record_access` if you need the package to appear in admin queries.
+
+Additionally, `bulk_yank`, `bulk_unyank`, and `bulk_delete` in `crates/web/src/handlers/back_office/bulk.rs` normalize package names to lowercase before passing them to the backend. This matches the NuGet publish handler, which lowercases the package ID on store. Any test or script that sends mixed-case names to the bulk API must use the normalized (lowercase) form.
 
 ---
 

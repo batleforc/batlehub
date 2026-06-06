@@ -11,8 +11,8 @@ use batlehub_core::{
 use sqlx::PgPool;
 
 use crate::{
-    services::banner::BannerService, AccessConfig, AccessConfigLock, RegistryMap, RegistryModeMap,
-    UpstreamMap,
+    services::banner::BannerService, AccessConfig, AccessConfigLock, CargoIndexMap, RegistryMap,
+    RegistryModeMap, UpstreamMap,
 };
 
 const PENDING_TTL_SECS: i64 = 600; // 10 minutes
@@ -51,6 +51,7 @@ pub struct PendingReload {
     pub new_registry_map: RegistryMap,
     pub new_registry_mode_map: RegistryModeMap,
     pub new_upstream_map: UpstreamMap,
+    pub new_cargo_index_map: CargoIndexMap,
 }
 
 /// Snapshot of a pending reload returned to the GET /pending endpoint.
@@ -63,7 +64,7 @@ pub struct PendingReloadSnapshot {
     pub diff: ReloadDiff,
 }
 
-/// Builds a new `(HotConfig, AccessConfig, RegistryMap, RegistryModeMap, UpstreamMap)` from an `AppConfig`.
+/// Builds a new hot-reloadable bundle from an `AppConfig`.
 ///
 /// Created in `server/src/main.rs` as a closure capturing `beta_channel_store`,
 /// `repo`, etc. Passed to `ConfigReloadService` so the service can rebuild state
@@ -71,8 +72,14 @@ pub struct PendingReloadSnapshot {
 pub type HotConfigBuilder = Arc<
     dyn Fn(
             &batlehub_config::schema::AppConfig,
-        ) -> anyhow::Result<(HotConfig, AccessConfig, RegistryMap, RegistryModeMap, UpstreamMap)>
-        + Send
+        ) -> anyhow::Result<(
+            HotConfig,
+            AccessConfig,
+            RegistryMap,
+            RegistryModeMap,
+            UpstreamMap,
+            CargoIndexMap,
+        )> + Send
         + Sync,
 >;
 
@@ -83,6 +90,7 @@ pub struct ConfigReloadService {
     registry_map: RegistryMap,
     registry_mode_map: RegistryModeMap,
     upstream_map: UpstreamMap,
+    cargo_index_map: CargoIndexMap,
     config_path: String,
     pool: Option<PgPool>,
     pub hot_reload_enabled: bool,
@@ -99,6 +107,7 @@ impl ConfigReloadService {
         registry_map: RegistryMap,
         registry_mode_map: RegistryModeMap,
         upstream_map: UpstreamMap,
+        cargo_index_map: CargoIndexMap,
         config_path: String,
         pool: Option<PgPool>,
         hot_reload_enabled: bool,
@@ -111,6 +120,7 @@ impl ConfigReloadService {
             registry_map,
             registry_mode_map,
             upstream_map,
+            cargo_index_map,
             config_path,
             pool,
             hot_reload_enabled,
@@ -128,8 +138,14 @@ impl ConfigReloadService {
             anyhow::bail!("hot reload is disabled (BATLEHUB_DISABLE_HOT_RELOAD=1)");
         }
         let new_config = load_config(&self.config_path)?;
-        let (new_hot, new_access, new_registry_map, new_registry_mode_map, new_upstream_map) =
-            (self.builder)(&new_config)?;
+        let (
+            new_hot,
+            new_access,
+            new_registry_map,
+            new_registry_mode_map,
+            new_upstream_map,
+            new_cargo_index_map,
+        ) = (self.builder)(&new_config)?;
         let diff = self.compute_diff(&new_hot, &new_access).await;
         let now = Utc::now();
         let pending = PendingReload {
@@ -143,6 +159,7 @@ impl ConfigReloadService {
             new_registry_map,
             new_registry_mode_map,
             new_upstream_map,
+            new_cargo_index_map,
         };
         *self.pending.lock().unwrap() = Some(pending);
         Ok(diff)
@@ -200,6 +217,10 @@ impl ConfigReloadService {
             let mut um = self.upstream_map.0.write().unwrap();
             *um = pending.new_upstream_map.0.read().unwrap().clone();
         }
+        {
+            let mut cm = self.cargo_index_map.0.write().unwrap();
+            *cm = pending.new_cargo_index_map.0.read().unwrap().clone();
+        }
 
         // Clear the in-progress banner on success.
         if let Some(ref banner) = self.banner {
@@ -220,13 +241,17 @@ impl ConfigReloadService {
 
     /// Returns a non-sensitive snapshot of the pending reload for the GET endpoint.
     pub fn pending_snapshot(&self) -> Option<PendingReloadSnapshot> {
-        self.pending.lock().unwrap().as_ref().map(|p| PendingReloadSnapshot {
-            id: p.id,
-            created_at: p.created_at,
-            expires_at: p.expires_at,
-            source: p.source.clone(),
-            diff: p.diff.clone(),
-        })
+        self.pending
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|p| PendingReloadSnapshot {
+                id: p.id,
+                created_at: p.created_at,
+                expires_at: p.expires_at,
+                source: p.source.clone(),
+                diff: p.diff.clone(),
+            })
     }
 
     /// Drops the pending reload if it has passed its expiry time.
@@ -297,8 +322,14 @@ impl ConfigReloadService {
         let new_names: std::collections::HashSet<&str> =
             new_hot.registries.keys().map(String::as_str).collect();
 
-        let added: Vec<String> = new_names.difference(&old_names).map(|s| s.to_string()).collect();
-        let removed: Vec<String> = old_names.difference(&new_names).map(|s| s.to_string()).collect();
+        let added: Vec<String> = new_names
+            .difference(&old_names)
+            .map(|s| s.to_string())
+            .collect();
+        let removed: Vec<String> = old_names
+            .difference(&new_names)
+            .map(|s| s.to_string())
+            .collect();
         let limits_changed = old_hot.max_artifact_size_bytes != new_hot.max_artifact_size_bytes;
 
         // AccessConfig doesn't implement PartialEq (HashSet comparison is cheap but
@@ -405,13 +436,15 @@ mod tests {
             explore_user: Default::default(),
             explore_admin: Default::default(),
         });
-        let builder: HotConfigBuilder = Arc::new(|_| anyhow::bail!("builder not used in unit tests"));
+        let builder: HotConfigBuilder =
+            Arc::new(|_| anyhow::bail!("builder not used in unit tests"));
         Arc::new(ConfigReloadService::new(
             hot,
             access,
             crate::RegistryMap::new(HashMap::new()),
             crate::RegistryModeMap::new(HashMap::new()),
             crate::UpstreamMap::new(HashMap::new()),
+            crate::CargoIndexMap::new(HashMap::new()),
             "config.toml".to_owned(),
             None,
             enabled,
@@ -423,7 +456,10 @@ mod tests {
     #[tokio::test]
     async fn load_pending_returns_error_when_disabled() {
         let svc = make_svc(false);
-        let err = svc.load_pending(ReloadSource::AdminRequest).await.unwrap_err();
+        let err = svc
+            .load_pending(ReloadSource::AdminRequest)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("disabled"));
     }
 
@@ -486,6 +522,7 @@ mod tests {
             new_registry_map: crate::RegistryMap::new(HashMap::new()),
             new_registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
             new_upstream_map: crate::UpstreamMap::new(HashMap::new()),
+            new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         };
         *svc.pending.lock().unwrap() = Some(pending);
 
@@ -526,6 +563,7 @@ mod tests {
             new_registry_map: crate::RegistryMap::new(HashMap::new()),
             new_registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
             new_upstream_map: crate::UpstreamMap::new(HashMap::new()),
+            new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         };
         *svc.pending.lock().unwrap() = Some(expired);
 
@@ -568,6 +606,7 @@ mod tests {
             new_registry_map: crate::RegistryMap::new(HashMap::new()),
             new_registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
             new_upstream_map: crate::UpstreamMap::new(HashMap::new()),
+            new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         };
         *svc.pending.lock().unwrap() = Some(pending);
 
@@ -629,6 +668,7 @@ mod tests {
                 crate::RegistryMap::new(HashMap::new()),
                 crate::RegistryModeMap::new(HashMap::new()),
                 crate::UpstreamMap::new(HashMap::new()),
+                crate::CargoIndexMap::new(HashMap::new()),
             ))
         });
         let svc = Arc::new(ConfigReloadService::new(
@@ -637,6 +677,7 @@ mod tests {
             crate::RegistryMap::new(HashMap::new()),
             crate::RegistryModeMap::new(HashMap::new()),
             crate::UpstreamMap::new(HashMap::new()),
+            crate::CargoIndexMap::new(HashMap::new()),
             tmp_path.clone(),
             None,
             true,
@@ -692,6 +733,7 @@ mod tests {
             new_registry_map: crate::RegistryMap::new(HashMap::new()),
             new_registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
             new_upstream_map: crate::UpstreamMap::new(HashMap::new()),
+            new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         };
         *svc.pending.lock().unwrap() = Some(expired);
 

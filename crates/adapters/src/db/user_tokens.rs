@@ -1,8 +1,8 @@
+use crate::db::DbResultExt;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::Row;
 use uuid::Uuid;
-use crate::db::DbResultExt;
 
 use batlehub_core::{
     entities::Role,

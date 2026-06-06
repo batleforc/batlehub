@@ -1,0 +1,1101 @@
+/// Integration tests for `batlehub-cli`.
+///
+/// Each test starts a genuine in-memory batlehub server on a random port, then
+/// invokes the compiled `batlehub-cli` binary via `std::process::Command` and
+/// asserts on exit status and JSON output.
+///
+/// ## Running
+///
+/// ```
+/// cargo test -p batlehub-cli --test integration
+/// ```
+use std::collections::HashMap;
+use std::io::Write as _;
+use std::net::TcpStream;
+use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use actix_web::{web, App, HttpServer};
+use utoipa_actix_web::AppExt;
+
+use batlehub_adapters::{
+    auth::StaticTokenAuthProvider,
+    cache::InMemoryCacheStore,
+    in_memory::{
+        InMemoryPackageRepository, InMemoryStorageBackend, NoopArtifactMetaRepository,
+        NullUserTokenRepository,
+    },
+    local_registry::InMemoryLocalRegistry,
+    notification::InMemoryNotificationStore,
+};
+use batlehub_config::schema::RegistryMode;
+use batlehub_core::{
+    entities::{AccessEvent, PackageId, Role},
+    ports::{AuthProvider, CacheStore, PackageRepository, RegistryClient},
+    rules::{BlockListRule, RbacRule},
+    services::{
+        new_hot_lock, AdminService, HotConfig, LocalRegistryService, ProxyMetrics, ProxyService,
+        RegistryPolicy,
+    },
+};
+use batlehub_web::{
+    configure_app, new_access_lock, AccessConfig, AuthMiddlewareFactory, RegistryMap,
+    RegistryModeMap, UpstreamMap,
+};
+
+const AUTH_TOKEN: &str = "test-cli-token";
+const REGISTRY: &str = "test-nuget";
+
+// ── In-memory batlehub server ─────────────────────────────────────────────────
+
+struct TestServer {
+    port: u16,
+    /// Exposed so tests can seed packages into the package repository directly.
+    /// This is necessary because in-memory local-registry and admin-service
+    /// backends are separate stores (in Postgres they share the same tables).
+    repo: Arc<InMemoryPackageRepository>,
+    _runtime: tokio::runtime::Runtime,
+}
+
+impl TestServer {
+    fn start() -> Self {
+        let registry_map = RegistryMap::from(
+            [(REGISTRY.to_owned(), "nuget".to_owned())]
+                .into_iter()
+                .collect::<HashMap<String, String>>(),
+        );
+        let registry_names: Vec<String> = registry_map.keys();
+
+        let repo = InMemoryPackageRepository::new();
+        let storage = InMemoryStorageBackend::new();
+        let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+
+        let policies: HashMap<String, Arc<RegistryPolicy>> = registry_names
+            .iter()
+            .map(|name| {
+                let perms = HashMap::from([
+                    (Role::Anonymous, vec!["*".to_owned()]),
+                    (Role::User, vec!["*".to_owned()]),
+                    (Role::Admin, vec!["*".to_owned()]),
+                ]);
+                (
+                    name.clone(),
+                    Arc::new(RegistryPolicy {
+                        metadata_ttl: None,
+                        firewall_only: false,
+                        serve_stale_metadata: false,
+                        artifact_ttl: None,
+                        rules: vec![
+                            Box::new(RbacRule::new(perms)),
+                            Box::new(BlockListRule::new(repo.clone())),
+                        ],
+                    }),
+                )
+            })
+            .collect();
+
+        let local_svc = Arc::new(LocalRegistryService {
+            backend: Arc::new(InMemoryLocalRegistry::new()),
+            storage: storage.clone(),
+            hot: new_hot_lock(HotConfig {
+                registries: HashMap::new(),
+                policies: HashMap::new(),
+                versioning: HashMap::new(),
+                signing: HashMap::new(),
+                sbom: HashMap::new(),
+                beta_channel: HashMap::new(),
+                max_artifact_size_bytes: None,
+            }),
+            quota: None,
+            ownership: None,
+            team_namespace: None,
+            sbom: None,
+            explore_cache: None,
+        });
+
+        let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
+        let proxy_svc = Arc::new(ProxyService {
+            hot: new_hot_lock(HotConfig {
+                registries,
+                policies,
+                versioning: HashMap::new(),
+                signing: HashMap::new(),
+                sbom: HashMap::new(),
+                beta_channel: HashMap::new(),
+                max_artifact_size_bytes: None,
+            }),
+            storage,
+            cache,
+            repo: repo.clone(),
+            artifact_meta: NoopArtifactMetaRepository::arc(),
+            metrics: Arc::new(ProxyMetrics::new(&[])),
+            sbom: None,
+        });
+
+        let admin_svc = Arc::new(AdminService::new(repo.clone()));
+        let token_repo = NullUserTokenRepository::arc();
+
+        let access_config = new_access_lock(AccessConfig {
+            anonymous: registry_names.iter().cloned().collect(),
+            user: registry_names.iter().cloned().collect(),
+            admin: registry_names.iter().cloned().collect(),
+            groups: HashMap::new(),
+            explore_anonymous: std::collections::HashSet::new(),
+            explore_user: std::collections::HashSet::new(),
+            explore_admin: std::collections::HashSet::new(),
+        });
+
+        let auth_providers: Vec<Arc<dyn AuthProvider>> =
+            vec![Arc::new(StaticTokenAuthProvider::new([(
+                AUTH_TOKEN.to_owned(),
+                Some("test-user".to_owned()),
+                Role::Admin,
+            )]))];
+
+        let mode_map = RegistryModeMap::from(
+            registry_names
+                .iter()
+                .map(|n| (n.clone(), RegistryMode::Local))
+                .collect::<HashMap<_, _>>(),
+        );
+
+        let configure = configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            UpstreamMap::default(),
+            vec![],
+            HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+            None,
+            None,
+            Arc::new(InMemoryNotificationStore::new()),
+            None,
+        );
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let port = rt.block_on(async {
+            let local_svc = local_svc.clone();
+            let mode_map = mode_map.clone();
+            let configure = configure.clone();
+            let auth_providers = auth_providers.clone();
+            let cargo_indexes = batlehub_web::CargoIndexMap::default();
+
+            let server = HttpServer::new(move || {
+                let (app, _) = App::new()
+                    .into_utoipa_app()
+                    .configure(configure.clone())
+                    .split_for_parts();
+                app.app_data(web::Data::new(cargo_indexes.clone()))
+                    .app_data(web::Data::new(local_svc.clone()))
+                    .app_data(web::Data::new(mode_map.clone()))
+                    .wrap(AuthMiddlewareFactory::new(auth_providers.clone()))
+            })
+            .bind("127.0.0.1:0")
+            .expect("bind to random port");
+
+            let port = server.addrs()[0].port();
+            tokio::spawn(server.run());
+            port
+        });
+
+        assert!(
+            wait_for_port(port, Duration::from_secs(10)),
+            "test server did not start on port {port}"
+        );
+
+        Self {
+            port,
+            repo,
+            _runtime: rt,
+        }
+    }
+
+    fn base_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// Seed a package entry directly into the `PackageRepository` that the admin
+    /// service queries. Required because the in-memory local-registry backend and
+    /// the package repository are separate stores (unlike PostgreSQL, where they
+    /// share the same tables).
+    fn seed_package(&self, name: &str, version: &str) {
+        let pkg = PackageId {
+            registry: REGISTRY.to_owned(),
+            name: name.to_owned(),
+            version: version.to_owned(),
+            artifact: None,
+        };
+        let event = AccessEvent::allowed_download(pkg, Some("test-user".to_owned()), Role::Admin);
+        let repo = self.repo.clone();
+        // Run in a fresh single-threaded runtime so we don't nest runtimes.
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(async move { repo.record_access(event).await.unwrap() });
+    }
+}
+
+fn wait_for_port(port: u16, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(300));
+    }
+    false
+}
+
+// ── Test helpers ──────────────────────────────────────────────────────────────
+
+/// Run the CLI binary with env-injected server/token and return (success, stdout, stderr).
+fn cli_cmd(args: &[&str], server: &str, token: &str) -> (bool, String, String) {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
+        .args(args)
+        .env("BATLEHUB_SERVER", server)
+        .env("BATLEHUB_TOKEN", token)
+        .env("HOME", "/tmp")
+        .env("XDG_CONFIG_HOME", "/tmp/.xdg-batlehub-test")
+        .output()
+        .expect("failed to run batlehub-cli binary");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// Build a minimal `.nupkg` ZIP containing only a `.nuspec` file.
+fn make_nupkg(id: &str, version: &str) -> Vec<u8> {
+    let nuspec = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>{id}</id>
+    <version>{version}</version>
+    <description>Integration test package</description>
+    <authors>TestAuthor</authors>
+  </metadata>
+</package>"#
+    );
+    let mut buf = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let opts = zip::write::SimpleFileOptions::default();
+        zip.start_file(format!("{id}.nuspec"), opts).unwrap();
+        zip.write_all(nuspec.as_bytes()).unwrap();
+        zip.finish().unwrap();
+    }
+    buf
+}
+
+/// Publish a minimal NuGet package directly via HTTP (not via CLI) to the local
+/// registry endpoint. Used for `publish_nuget_via_cli` which tests the CLI publish
+/// path itself. Note: this does NOT populate `InMemoryPackageRepository`; use
+/// `TestServer::seed_package` if you need the package to appear in `package list`.
+fn http_publish_nuget(base_url: &str, registry: &str, name: &str, version: &str) {
+    let nupkg = make_nupkg(name, version);
+    let boundary = "batlehub_test_boundary";
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"package\"; \
+         filename=\"package.nupkg\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+    )
+    .into_bytes();
+    body.extend_from_slice(&nupkg);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let resp = reqwest::blocking::Client::new()
+        .put(format!("{base_url}/proxy/{registry}/nuget/api/v2/package"))
+        .header("Authorization", format!("Bearer {AUTH_TOKEN}"))
+        .header(
+            "Content-Type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(body)
+        .send()
+        .expect("HTTP publish request failed");
+
+    assert!(
+        resp.status().is_success(),
+        "HTTP publish returned {}: {}",
+        resp.status(),
+        resp.text().unwrap_or_default()
+    );
+}
+
+// ── Tests: registry ───────────────────────────────────────────────────────────
+
+#[test]
+fn registry_list_json() {
+    let srv = TestServer::start();
+    let (ok, stdout, _stderr) =
+        cli_cmd(&["registry", "list", "--json"], &srv.base_url(), AUTH_TOKEN);
+    assert!(ok, "registry list should succeed");
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["name"], REGISTRY);
+    assert_eq!(arr[0]["type"], "nuget");
+    assert_eq!(arr[0]["mode"], "local");
+}
+
+#[test]
+fn registry_info_found() {
+    let srv = TestServer::start();
+    let (ok, stdout, _stderr) = cli_cmd(
+        &["registry", "info", REGISTRY, "--json"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "registry info for known registry should succeed");
+    let val: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(val["name"], REGISTRY);
+    assert_eq!(val["type"], "nuget");
+    assert_eq!(val["mode"], "local");
+}
+
+#[test]
+fn registry_info_not_found() {
+    let srv = TestServer::start();
+    let (ok, _stdout, stderr) = cli_cmd(
+        &["registry", "info", "no-such-registry", "--json"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(!ok, "registry info for unknown registry should fail");
+    assert!(
+        stderr.to_lowercase().contains("not found"),
+        "stderr should mention 'not found', got: {stderr}"
+    );
+}
+
+// ── Tests: auth ───────────────────────────────────────────────────────────────
+
+#[test]
+fn auth_whoami_authenticated() {
+    let srv = TestServer::start();
+    let (ok, stdout, _stderr) = cli_cmd(&["auth", "whoami", "--json"], &srv.base_url(), AUTH_TOKEN);
+    assert!(ok, "auth whoami should succeed with valid token");
+    let val: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(val["user_id"], "test-user");
+    assert_eq!(val["role"], "admin");
+}
+
+#[test]
+fn auth_whoami_anonymous() {
+    let srv = TestServer::start();
+    // Empty token → anonymous
+    let (ok, stdout, _stderr) = cli_cmd(&["auth", "whoami", "--json"], &srv.base_url(), "");
+    assert!(ok, "auth whoami without token should succeed (anonymous)");
+    let val: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(val["role"], "anonymous");
+}
+
+// ── Tests: package ────────────────────────────────────────────────────────────
+
+#[test]
+fn package_list_empty() {
+    let srv = TestServer::start();
+    let (ok, stdout, _stderr) = cli_cmd(
+        &["package", "list", "--registry", REGISTRY, "--json"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "package list on empty registry should succeed");
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON array");
+    assert!(arr.is_empty(), "expected empty list, got {arr:?}");
+}
+
+#[test]
+fn package_list_after_seed() {
+    let srv = TestServer::start();
+    srv.seed_package("MyLib", "1.0.0");
+
+    let (ok, stdout, _stderr) = cli_cmd(
+        &["package", "list", "--registry", REGISTRY, "--json"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "package list should succeed");
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON array");
+    assert_eq!(arr.len(), 1, "expected one package");
+    assert_eq!(
+        arr[0]["name"].as_str().unwrap_or("").to_lowercase(),
+        "mylib"
+    );
+    assert_eq!(arr[0]["version"], "1.0.0");
+    assert_eq!(arr[0]["registry"], REGISTRY);
+}
+
+#[test]
+fn package_versions_after_seed() {
+    let srv = TestServer::start();
+    srv.seed_package("SomeLib", "2.3.4");
+    srv.seed_package("SomeLib", "2.3.5");
+
+    let (ok, stdout, _stderr) = cli_cmd(
+        &["package", "versions", REGISTRY, "SomeLib", "--json"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "package versions should succeed");
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON array");
+    assert!(
+        arr.iter().any(|v| v["version"] == "2.3.4"),
+        "expected version 2.3.4 in {arr:?}"
+    );
+    assert!(
+        arr.iter().any(|v| v["version"] == "2.3.5"),
+        "expected version 2.3.5 in {arr:?}"
+    );
+}
+
+// ── Tests: version lifecycle ──────────────────────────────────────────────────
+//
+// Yank/unyank/delete operate on InMemoryLocalRegistry (the local-registry backend).
+// Verification is done via the NuGet flat-index endpoint which also reads from
+// InMemoryLocalRegistry. We don't use `package list` here because that queries
+// InMemoryPackageRepository, a separate in-memory store (in Postgres they share
+// the same tables).
+
+fn nuget_flat_versions(base_url: &str, registry: &str, id_lower: &str) -> Vec<String> {
+    let resp = reqwest::blocking::Client::new()
+        .get(format!(
+            "{base_url}/proxy/{registry}/nuget/v3/flat/{id_lower}/index.json"
+        ))
+        .header("Authorization", format!("Bearer {AUTH_TOKEN}"))
+        .send()
+        .expect("GET flat index");
+    if !resp.status().is_success() {
+        return vec![];
+    }
+    let body: serde_json::Value = resp.json().expect("flat index JSON");
+    body["versions"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_owned))
+        .collect()
+}
+
+#[test]
+fn version_yank_and_unyank() {
+    let srv = TestServer::start();
+    http_publish_nuget(&srv.base_url(), REGISTRY, "YankLib", "0.1.0");
+
+    // Confirm visible before yank
+    assert!(
+        nuget_flat_versions(&srv.base_url(), REGISTRY, "yanklib").contains(&"0.1.0".to_owned()),
+        "version should be in flat index before yank"
+    );
+
+    // Yank
+    let (ok, _stdout, stderr) = cli_cmd(
+        &["version", "yank", REGISTRY, "YankLib", "0.1.0"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "version yank should succeed; stderr: {stderr}");
+
+    // Yanked versions are filtered from the flat index
+    assert!(
+        !nuget_flat_versions(&srv.base_url(), REGISTRY, "yanklib").contains(&"0.1.0".to_owned()),
+        "yanked version should not appear in flat index"
+    );
+
+    // Unyank
+    let (ok, _stdout, stderr) = cli_cmd(
+        &["version", "unyank", REGISTRY, "YankLib", "0.1.0"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "version unyank should succeed; stderr: {stderr}");
+
+    // Unyanked version reappears in flat index
+    assert!(
+        nuget_flat_versions(&srv.base_url(), REGISTRY, "yanklib").contains(&"0.1.0".to_owned()),
+        "unyanked version should reappear in flat index"
+    );
+}
+
+#[test]
+fn version_delete() {
+    let srv = TestServer::start();
+    http_publish_nuget(&srv.base_url(), REGISTRY, "DeleteLib", "3.0.0");
+
+    // Confirm visible before delete
+    assert!(
+        nuget_flat_versions(&srv.base_url(), REGISTRY, "deletelib").contains(&"3.0.0".to_owned()),
+        "version should be in flat index before delete"
+    );
+
+    let (ok, _stdout, stderr) = cli_cmd(
+        &["version", "delete", REGISTRY, "DeleteLib", "3.0.0", "--yes"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "version delete --yes should succeed; stderr: {stderr}");
+
+    // Deleted version no longer in flat index
+    assert!(
+        !nuget_flat_versions(&srv.base_url(), REGISTRY, "deletelib").contains(&"3.0.0".to_owned()),
+        "deleted version should not appear in flat index"
+    );
+}
+
+// ── Tests: publish ────────────────────────────────────────────────────────────
+
+#[test]
+fn publish_nuget_via_cli() {
+    let srv = TestServer::start();
+    let tmp = tempfile::tempdir().unwrap();
+    let nupkg_path = tmp.path().join("TestPkg.1.2.3.nupkg");
+    std::fs::write(&nupkg_path, make_nupkg("TestPkg", "1.2.3")).unwrap();
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "publish",
+            nupkg_path.to_str().unwrap(),
+            "--registry",
+            REGISTRY,
+        ],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "publish should succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("Published successfully"),
+        "expected success message in stdout, got: {stdout}"
+    );
+}
+
+// ── Tests: completion ─────────────────────────────────────────────────────────
+
+/// Shell completion output requires no running server; the binary exits early.
+#[test]
+fn completion_bash_produces_output() {
+    let (ok, stdout, stderr) = cli_cmd(&["completion", "bash"], "http://127.0.0.1:1", "");
+    assert!(ok, "completion bash failed; stderr: {stderr}");
+    assert!(!stdout.is_empty(), "bash completion should produce output");
+    assert!(
+        stdout.contains("batlehub-cli"),
+        "bash completion should mention the binary name; got: {stdout:.200}"
+    );
+}
+
+#[test]
+fn completion_zsh_produces_output() {
+    let (ok, stdout, stderr) = cli_cmd(&["completion", "zsh"], "http://127.0.0.1:1", "");
+    assert!(ok, "completion zsh failed; stderr: {stderr}");
+    assert!(!stdout.is_empty(), "zsh completion should produce output");
+}
+
+// ── Tests: auth login / refresh ───────────────────────────────────────────────
+
+/// `auth login --kubernetes-token-path` should save the path to the config and
+/// exit 0, without contacting any OIDC endpoint.
+#[test]
+fn auth_login_kubernetes_saves_config() {
+    // Create an isolated config directory so this test does not interfere with others.
+    let config_dir = tempfile::tempdir().unwrap();
+    let token_dir = tempfile::tempdir().unwrap();
+    let token_file = token_dir.path().join("sa-token");
+    std::fs::write(&token_file, "my-k8s-service-account-token").unwrap();
+
+    let token_path = token_file.to_str().unwrap();
+    let srv = TestServer::start();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
+        .args(["auth", "login", "--kubernetes-token-path", token_path])
+        .env("BATLEHUB_SERVER", &srv.base_url())
+        .env("BATLEHUB_TOKEN", AUTH_TOKEN)
+        .env("HOME", "/tmp")
+        .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run batlehub-cli");
+
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        out.status.success(),
+        "auth login kubernetes should succeed; stderr: {stderr}"
+    );
+
+    let config_path = config_dir.path().join("batlehub/config.toml");
+    assert!(
+        config_path.exists(),
+        "config file should be written at {config_path:?}"
+    );
+    let content = std::fs::read_to_string(&config_path).unwrap();
+    assert!(
+        content.contains(token_path),
+        "config should contain the kubernetes_token_path; content: {content}"
+    );
+}
+
+/// `auth refresh` with no stored refresh token should exit non-zero and print
+/// a helpful error message.
+#[test]
+fn auth_refresh_no_stored_token_fails() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let srv = TestServer::start();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
+        .args(["auth", "refresh"])
+        .env("BATLEHUB_SERVER", &srv.base_url())
+        .env("BATLEHUB_TOKEN", AUTH_TOKEN)
+        .env("HOME", "/tmp")
+        .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run batlehub-cli");
+
+    assert!(
+        !out.status.success(),
+        "auth refresh with no stored token should fail"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("refresh token") || stderr.contains("auth login"),
+        "error should guide the user; stderr: {stderr}"
+    );
+}
+
+// ── Tests: setup detect ───────────────────────────────────────────────────────
+//
+// These tests exercise `batlehub-cli setup detect --dir <path>` (and its JSON
+// variant) to verify that the TUI setup-wizard detection logic works end-to-end
+// when invoked from the compiled binary. No server connection is needed.
+
+/// Helper: run `setup detect --json --dir <dir>` and return the parsed JSON array.
+fn setup_detect_json(dir: &std::path::Path) -> (bool, Vec<serde_json::Value>, String) {
+    setup_detect_json_depth(dir, 0)
+}
+
+fn setup_detect_json_depth(
+    dir: &std::path::Path,
+    depth: usize,
+) -> (bool, Vec<serde_json::Value>, String) {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
+        .args([
+            "setup",
+            "detect",
+            "--json",
+            "--dir",
+            dir.to_str().unwrap(),
+            "--depth",
+            &depth.to_string(),
+        ])
+        .env("BATLEHUB_SERVER", "http://127.0.0.1:1") // no real server needed
+        .env("HOME", "/tmp")
+        .env("XDG_CONFIG_HOME", "/tmp/.xdg-batlehub-detect-test")
+        .output()
+        .expect("failed to run batlehub-cli");
+    let ok = out.status.success();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let items: Vec<serde_json::Value> = if ok {
+        serde_json::from_slice(&out.stdout).unwrap_or_default()
+    } else {
+        vec![]
+    };
+    (ok, items, stderr)
+}
+
+fn registry_types(items: &[serde_json::Value]) -> Vec<&str> {
+    items
+        .iter()
+        .filter_map(|v| v["registry_type"].as_str())
+        .collect()
+}
+
+#[test]
+fn setup_detect_empty_dir_returns_empty_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ok, items, stderr) = setup_detect_json(dir.path());
+    assert!(ok, "setup detect should succeed; stderr: {stderr}");
+    assert!(items.is_empty(), "empty dir should produce no detections; got: {items:?}");
+}
+
+#[test]
+fn setup_detect_cargo_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"my-crate\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    let (ok, items, stderr) = setup_detect_json(dir.path());
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    let types = registry_types(&items);
+    assert_eq!(types, ["cargo"], "expected cargo; got {types:?}");
+    assert_eq!(
+        items[0]["package_name"].as_str(),
+        Some("my-crate"),
+        "wrong package name"
+    );
+}
+
+#[test]
+fn setup_detect_go_mod() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("go.mod"),
+        "module github.com/example/myapp\n\ngo 1.21\n",
+    )
+    .unwrap();
+    let (ok, items, stderr) = setup_detect_json(dir.path());
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    let types = registry_types(&items);
+    assert_eq!(types, ["gomodules"], "expected gomodules; got {types:?}");
+    assert_eq!(items[0]["package_name"].as_str(), Some("myapp"));
+}
+
+#[test]
+fn setup_detect_package_json() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"name":"my-frontend","version":"1.0.0"}"#,
+    )
+    .unwrap();
+    let (ok, items, stderr) = setup_detect_json(dir.path());
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    let types = registry_types(&items);
+    assert_eq!(types, ["npm"], "expected npm; got {types:?}");
+    assert_eq!(items[0]["package_name"].as_str(), Some("my-frontend"));
+}
+
+#[test]
+fn setup_detect_pom_xml() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("pom.xml"),
+        "<project><artifactId>my-library</artifactId></project>",
+    )
+    .unwrap();
+    let (ok, items, stderr) = setup_detect_json(dir.path());
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    let types = registry_types(&items);
+    assert_eq!(types, ["maven"], "expected maven; got {types:?}");
+    assert_eq!(items[0]["package_name"].as_str(), Some("my-library"));
+}
+
+#[test]
+fn setup_detect_nuspec() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("MyLib.nuspec"), "<package/>").unwrap();
+    let (ok, items, stderr) = setup_detect_json(dir.path());
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    let types = registry_types(&items);
+    assert_eq!(types, ["nuget"], "expected nuget; got {types:?}");
+    assert_eq!(items[0]["package_name"].as_str(), Some("MyLib"));
+}
+
+#[test]
+fn setup_detect_terraform() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("main.tf"), "provider \"aws\" {}").unwrap();
+    let (ok, items, stderr) = setup_detect_json(dir.path());
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    let types = registry_types(&items);
+    assert_eq!(types, ["terraform"], "expected terraform; got {types:?}");
+}
+
+#[test]
+fn setup_detect_conda_environment_yml() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("environment.yml"),
+        "name: data-science-env\ndependencies:\n  - numpy\n  - pandas\n",
+    )
+    .unwrap();
+    let (ok, items, stderr) = setup_detect_json(dir.path());
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    let types = registry_types(&items);
+    assert_eq!(types, ["conda"], "expected conda; got {types:?}");
+    assert_eq!(items[0]["package_name"].as_str(), Some("data-science-env"));
+}
+
+#[test]
+fn setup_detect_multiple_manifests() {
+    // A monorepo-style directory with both Rust and Node projects.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"backend\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"name":"frontend"}"#,
+    )
+    .unwrap();
+    let (ok, items, stderr) = setup_detect_json(dir.path());
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    let mut types = registry_types(&items);
+    types.sort_unstable();
+    assert_eq!(types, ["cargo", "npm"], "expected cargo+npm; got {types:?}");
+    let cargo = items.iter().find(|v| v["registry_type"] == "cargo").unwrap();
+    let npm = items.iter().find(|v| v["registry_type"] == "npm").unwrap();
+    assert_eq!(cargo["package_name"].as_str(), Some("backend"));
+    assert_eq!(npm["package_name"].as_str(), Some("frontend"));
+}
+
+#[test]
+fn setup_detect_human_readable_output_contains_instructions() {
+    // Without --json the output should contain human-readable setup instructions.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"my-crate\"\n",
+    )
+    .unwrap();
+    let (ok, stdout, stderr) = cli_cmd(
+        &["setup", "detect", "--dir", dir.path().to_str().unwrap()],
+        "http://127.0.0.1:1",
+        "",
+    );
+    assert!(ok, "setup detect (human) failed; stderr: {stderr}");
+    assert!(stdout.contains("cargo"), "expected 'cargo' in output; got: {stdout}");
+    assert!(
+        stdout.contains("cargo publish"),
+        "expected publish instructions; got: {stdout}"
+    );
+    assert!(
+        stdout.contains("my-crate"),
+        "expected package name in output; got: {stdout}"
+    );
+}
+
+#[test]
+fn setup_detect_no_manifests_human_readable() {
+    // Empty dir with human-readable output should list supported manifest types.
+    let dir = tempfile::tempdir().unwrap();
+    let (ok, stdout, stderr) = cli_cmd(
+        &["setup", "detect", "--dir", dir.path().to_str().unwrap()],
+        "http://127.0.0.1:1",
+        "",
+    );
+    assert!(ok, "setup detect on empty dir failed; stderr: {stderr}");
+    assert!(
+        stdout.contains("No known project manifests"),
+        "expected 'no manifests' message; got: {stdout}"
+    );
+    assert!(stdout.contains("Cargo.toml"), "expected manifest list in output");
+}
+
+// ── Tests: setup detect — subfolder scanning ──────────────────────────────────
+
+/// depth=0 must NOT find a manifest that lives only in a subdirectory.
+#[test]
+fn setup_detect_depth0_ignores_subfolders() {
+    let root = tempfile::tempdir().unwrap();
+    let sub = root.path().join("crate-a");
+    std::fs::create_dir(&sub).unwrap();
+    std::fs::write(sub.join("Cargo.toml"), "[package]\nname = \"crate-a\"\n").unwrap();
+
+    let (ok, items, stderr) = setup_detect_json(root.path()); // depth=0
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    assert!(
+        items.is_empty(),
+        "depth=0 should not find subfolder manifests; got: {items:?}"
+    );
+}
+
+/// depth=1 finds a manifest one level deep and reports the correct relative path.
+#[test]
+fn setup_detect_depth1_finds_immediate_subdir() {
+    let root = tempfile::tempdir().unwrap();
+    let sub = root.path().join("crate-a");
+    std::fs::create_dir(&sub).unwrap();
+    std::fs::write(sub.join("Cargo.toml"), "[package]\nname = \"crate-a\"\n").unwrap();
+
+    let (ok, items, stderr) = setup_detect_json_depth(root.path(), 1);
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    let types = registry_types(&items);
+    assert_eq!(types, ["cargo"], "expected cargo; got {types:?}");
+    assert_eq!(items[0]["package_name"].as_str(), Some("crate-a"));
+    assert_eq!(
+        items[0]["relative_path"].as_str(),
+        Some("crate-a"),
+        "relative_path should be the subdirectory name"
+    );
+}
+
+/// depth=1 does NOT look two levels deep.
+#[test]
+fn setup_detect_depth1_ignores_deeply_nested() {
+    let root = tempfile::tempdir().unwrap();
+    let deep = root.path().join("packages").join("core");
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(deep.join("Cargo.toml"), "[package]\nname = \"core\"\n").unwrap();
+
+    let (ok, items, stderr) = setup_detect_json_depth(root.path(), 1);
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    assert!(
+        items.is_empty(),
+        "depth=1 should not reach two levels deep; got: {items:?}"
+    );
+}
+
+/// depth=2 finds a manifest two levels deep with the correct relative path.
+#[test]
+fn setup_detect_depth2_finds_nested_subdir() {
+    let root = tempfile::tempdir().unwrap();
+    let deep = root.path().join("packages").join("core");
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(deep.join("Cargo.toml"), "[package]\nname = \"core\"\n").unwrap();
+
+    let (ok, items, stderr) = setup_detect_json_depth(root.path(), 2);
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    let types = registry_types(&items);
+    assert_eq!(types, ["cargo"], "expected cargo; got {types:?}");
+    assert_eq!(items[0]["package_name"].as_str(), Some("core"));
+    assert_eq!(
+        items[0]["relative_path"].as_str(),
+        Some("packages/core"),
+        "relative_path should include both directory components"
+    );
+}
+
+/// Root manifest + subfolder manifest both appear; each has the correct
+/// relative_path (empty for root, subdirectory name for the child).
+#[test]
+fn setup_detect_root_and_subdir_both_detected() {
+    let root = tempfile::tempdir().unwrap();
+    // Root: a Node project
+    std::fs::write(root.path().join("package.json"), r#"{"name":"root-app"}"#).unwrap();
+    // Subfolder: a Rust crate
+    let sub = root.path().join("server");
+    std::fs::create_dir(&sub).unwrap();
+    std::fs::write(sub.join("Cargo.toml"), "[package]\nname = \"server\"\n").unwrap();
+
+    let (ok, items, stderr) = setup_detect_json_depth(root.path(), 1);
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    assert_eq!(items.len(), 2, "expected 2 detections; got: {items:?}");
+
+    let npm = items.iter().find(|v| v["registry_type"] == "npm").unwrap();
+    let cargo = items.iter().find(|v| v["registry_type"] == "cargo").unwrap();
+
+    assert_eq!(npm["package_name"].as_str(), Some("root-app"));
+    assert_eq!(npm["relative_path"].as_str(), Some(""), "root entry must have empty relative_path");
+
+    assert_eq!(cargo["package_name"].as_str(), Some("server"));
+    assert_eq!(cargo["relative_path"].as_str(), Some("server"));
+}
+
+/// Workspace-style monorepo: multiple crates at depth 1, each with its own name.
+#[test]
+fn setup_detect_monorepo_multiple_crates() {
+    let root = tempfile::tempdir().unwrap();
+    for (subdir, name) in [("api", "my-api"), ("cli", "my-cli"), ("lib", "my-lib")] {
+        let path = root.path().join(subdir);
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(
+            path.join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\n"),
+        )
+        .unwrap();
+    }
+
+    let (ok, items, stderr) = setup_detect_json_depth(root.path(), 1);
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    assert_eq!(items.len(), 3, "expected 3 crates; got: {items:?}");
+
+    let mut names: Vec<&str> = items
+        .iter()
+        .filter_map(|v| v["package_name"].as_str())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(names, ["my-api", "my-cli", "my-lib"]);
+
+    // All relative paths must be non-empty and match the subdirectory.
+    for item in &items {
+        let rp = item["relative_path"].as_str().unwrap_or("");
+        assert!(!rp.is_empty(), "relative_path must not be empty for subdir crates; item: {item}");
+    }
+}
+
+/// hidden directories (`.git`, `.github`) and well-known skip dirs
+/// (`node_modules`, `target`) are never entered.
+#[test]
+fn setup_detect_skips_hidden_and_ignored_dirs() {
+    let root = tempfile::tempdir().unwrap();
+    for skip in [".git", "node_modules", "target", ".github"] {
+        let path = root.path().join(skip);
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("Cargo.toml"), "[package]\nname = \"should-not-appear\"\n")
+            .unwrap();
+    }
+
+    let (ok, items, stderr) = setup_detect_json_depth(root.path(), 1);
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    assert!(
+        items.is_empty(),
+        "hidden/ignored dirs must not be scanned; got: {items:?}"
+    );
+}
+
+/// Mixed language monorepo: Rust at root + Go in one subdir + npm in another.
+#[test]
+fn setup_detect_mixed_language_monorepo() {
+    let root = tempfile::tempdir().unwrap();
+    // Root: Rust workspace stub
+    std::fs::write(root.path().join("Cargo.toml"), "[package]\nname = \"root\"\n").unwrap();
+    // Go service
+    let go_dir = root.path().join("gateway");
+    std::fs::create_dir(&go_dir).unwrap();
+    std::fs::write(go_dir.join("go.mod"), "module github.com/example/gateway\ngo 1.22\n").unwrap();
+    // Frontend
+    let ui_dir = root.path().join("ui");
+    std::fs::create_dir(&ui_dir).unwrap();
+    std::fs::write(ui_dir.join("package.json"), r#"{"name":"web-ui"}"#).unwrap();
+
+    let (ok, items, stderr) = setup_detect_json_depth(root.path(), 1);
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    assert_eq!(items.len(), 3, "expected cargo+gomodules+npm; got: {items:?}");
+
+    let mut types = registry_types(&items);
+    types.sort_unstable();
+    assert_eq!(types, ["cargo", "gomodules", "npm"]);
+
+    let go = items.iter().find(|v| v["registry_type"] == "gomodules").unwrap();
+    assert_eq!(go["package_name"].as_str(), Some("gateway"));
+    assert_eq!(go["relative_path"].as_str(), Some("gateway"));
+
+    let ui = items.iter().find(|v| v["registry_type"] == "npm").unwrap();
+    assert_eq!(ui["package_name"].as_str(), Some("web-ui"));
+    assert_eq!(ui["relative_path"].as_str(), Some("ui"));
+}
+
+/// Verify that the NuGet package uploaded via CLI is accessible via the proxy
+/// flat-index endpoint (the local registry's own query path, not the admin list).
+#[test]
+fn publish_nuget_package_accessible_via_proxy() {
+    let srv = TestServer::start();
+    http_publish_nuget(&srv.base_url(), REGISTRY, "PubLib", "4.0.0");
+
+    // The NuGet flat index returns the list of available versions.
+    let resp = reqwest::blocking::Client::new()
+        .get(format!(
+            "{}/proxy/{REGISTRY}/nuget/v3/flat/publib/index.json",
+            srv.base_url()
+        ))
+        .header("Authorization", format!("Bearer {AUTH_TOKEN}"))
+        .send()
+        .expect("GET flat index");
+    assert!(
+        resp.status().is_success(),
+        "flat index returned {}",
+        resp.status()
+    );
+    let body: serde_json::Value = resp.json().expect("valid JSON from flat index");
+    let versions = body["versions"].as_array().expect("versions array");
+    assert!(
+        versions.iter().any(|v| v == "4.0.0"),
+        "expected 4.0.0 in flat index versions: {versions:?}"
+    );
+}

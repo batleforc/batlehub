@@ -188,7 +188,9 @@ pub fn stats_cache_key(accessible_registries: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entities::{ExploreEntry, ExploreFilter, ExploreSortBy, PackageSource, RegistryStat};
+    use crate::entities::{
+        ExploreEntry, ExploreFilter, ExploreSortBy, PackageSource, RegistryStat,
+    };
 
     fn sample_entries() -> Vec<ExploreEntry> {
         vec![ExploreEntry {
@@ -215,7 +217,9 @@ mod tests {
     #[tokio::test]
     async fn packages_fresh_hit_returns_data() {
         let cache = ExploreCache::new();
-        cache.set_packages("k", sample_entries(), 1, vec!["npm".into()]).await;
+        cache
+            .set_packages("k", sample_entries(), 1, vec!["npm".into()])
+            .await;
         let result = cache.get_packages("k").await;
         assert!(result.is_some());
         let (items, count) = result.unwrap();
@@ -232,7 +236,9 @@ mod tests {
     #[tokio::test]
     async fn packages_expired_returns_none() {
         let cache = ExploreCache::with_ttl(Duration::from_nanos(1));
-        cache.set_packages("k", sample_entries(), 1, vec!["npm".into()]).await;
+        cache
+            .set_packages("k", sample_entries(), 1, vec!["npm".into()])
+            .await;
         // 1 ns has elapsed by the time we get here
         assert!(cache.get_packages("k").await.is_none());
     }
@@ -240,7 +246,9 @@ mod tests {
     #[tokio::test]
     async fn packages_expired_stale_still_returns_data() {
         let cache = ExploreCache::with_ttl(Duration::from_nanos(1));
-        cache.set_packages("k", sample_entries(), 1, vec!["npm".into()]).await;
+        cache
+            .set_packages("k", sample_entries(), 1, vec!["npm".into()])
+            .await;
         let result = cache.get_stale_packages("k").await;
         assert!(result.is_some());
         let (items, _) = result.unwrap();
@@ -258,7 +266,9 @@ mod tests {
     #[tokio::test]
     async fn stats_fresh_hit_returns_data() {
         let cache = ExploreCache::new();
-        cache.set_stats("k", sample_stats(), vec!["npm".into()]).await;
+        cache
+            .set_stats("k", sample_stats(), vec!["npm".into()])
+            .await;
         let result = cache.get_stats("k").await;
         assert!(result.is_some());
         assert_eq!(result.unwrap()[0].registry, "npm");
@@ -267,14 +277,18 @@ mod tests {
     #[tokio::test]
     async fn stats_expired_returns_none() {
         let cache = ExploreCache::with_ttl(Duration::from_nanos(1));
-        cache.set_stats("k", sample_stats(), vec!["npm".into()]).await;
+        cache
+            .set_stats("k", sample_stats(), vec!["npm".into()])
+            .await;
         assert!(cache.get_stats("k").await.is_none());
     }
 
     #[tokio::test]
     async fn stats_expired_stale_still_returns_data() {
         let cache = ExploreCache::with_ttl(Duration::from_nanos(1));
-        cache.set_stats("k", sample_stats(), vec!["npm".into()]).await;
+        cache
+            .set_stats("k", sample_stats(), vec!["npm".into()])
+            .await;
         let result = cache.get_stale_stats("k").await;
         assert!(result.is_some());
         assert_eq!(result.unwrap()[0].registry, "npm");
@@ -285,8 +299,12 @@ mod tests {
     #[tokio::test]
     async fn invalidate_all_clears_packages_and_stats() {
         let cache = ExploreCache::new();
-        cache.set_packages("pk", sample_entries(), 1, vec!["npm".into()]).await;
-        cache.set_stats("sk", sample_stats(), vec!["npm".into()]).await;
+        cache
+            .set_packages("pk", sample_entries(), 1, vec!["npm".into()])
+            .await;
+        cache
+            .set_stats("sk", sample_stats(), vec!["npm".into()])
+            .await;
 
         cache.invalidate(None).await;
 
@@ -297,23 +315,45 @@ mod tests {
     #[tokio::test]
     async fn invalidate_by_registry_removes_only_matching_entries() {
         let cache = ExploreCache::new();
-        cache.set_packages("npm-k", sample_entries(), 1, vec!["npm".into()]).await;
-        cache.set_packages("cargo-k", vec![], 0, vec!["cargo".into()]).await;
-        cache.set_stats("npm-s", sample_stats(), vec!["npm".into()]).await;
-        cache.set_stats("cargo-s", vec![], vec!["cargo".into()]).await;
+        cache
+            .set_packages("npm-k", sample_entries(), 1, vec!["npm".into()])
+            .await;
+        cache
+            .set_packages("cargo-k", vec![], 0, vec!["cargo".into()])
+            .await;
+        cache
+            .set_stats("npm-s", sample_stats(), vec!["npm".into()])
+            .await;
+        cache
+            .set_stats("cargo-s", vec![], vec!["cargo".into()])
+            .await;
 
         cache.invalidate(Some("npm")).await;
 
-        assert!(cache.get_stale_packages("npm-k").await.is_none(), "npm entry should be gone");
-        assert!(cache.get_stale_packages("cargo-k").await.is_some(), "cargo entry should remain");
-        assert!(cache.get_stale_stats("npm-s").await.is_none(), "npm stats should be gone");
-        assert!(cache.get_stale_stats("cargo-s").await.is_some(), "cargo stats should remain");
+        assert!(
+            cache.get_stale_packages("npm-k").await.is_none(),
+            "npm entry should be gone"
+        );
+        assert!(
+            cache.get_stale_packages("cargo-k").await.is_some(),
+            "cargo entry should remain"
+        );
+        assert!(
+            cache.get_stale_stats("npm-s").await.is_none(),
+            "npm stats should be gone"
+        );
+        assert!(
+            cache.get_stale_stats("cargo-s").await.is_some(),
+            "cargo stats should remain"
+        );
     }
 
     #[tokio::test]
     async fn invalidate_unknown_registry_leaves_cache_intact() {
         let cache = ExploreCache::new();
-        cache.set_packages("k", sample_entries(), 1, vec!["npm".into()]).await;
+        cache
+            .set_packages("k", sample_entries(), 1, vec!["npm".into()])
+            .await;
         cache.invalidate(Some("pypi")).await;
         assert!(cache.get_stale_packages("k").await.is_some());
     }
@@ -361,10 +401,23 @@ mod tests {
             offset: 0,
         };
 
-        let with_name = ExploreFilter { name_contains: Some("lodash".into()), ..base.clone() };
-        let with_sort = ExploreFilter { sort_by: ExploreSortBy::Name, ..base.clone() };
-        let with_page = ExploreFilter { offset: 20, ..base.clone() };
-        let with_registry = ExploreFilter { registry: Some("npm".into()), registries: vec![], ..base.clone() };
+        let with_name = ExploreFilter {
+            name_contains: Some("lodash".into()),
+            ..base.clone()
+        };
+        let with_sort = ExploreFilter {
+            sort_by: ExploreSortBy::Name,
+            ..base.clone()
+        };
+        let with_page = ExploreFilter {
+            offset: 20,
+            ..base.clone()
+        };
+        let with_registry = ExploreFilter {
+            registry: Some("npm".into()),
+            registries: vec![],
+            ..base.clone()
+        };
 
         let keys: Vec<_> = [base, with_name, with_sort, with_page, with_registry]
             .iter()

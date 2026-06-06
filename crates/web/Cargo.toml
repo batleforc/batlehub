@@ -8,6 +8,7 @@ license.workspace = true
 batlehub-core = { path = "../core" }
 batlehub-config = { path = "../config" }
 batlehub-adapters = { path = "../adapters" }
+async-trait.workspace = true
 actix-web.workspace = true
 actix-files.workspace = true
 actix-multipart = "0.7"
@@ -30,17 +31,19 @@ tokio.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 sha2 = "0.11"
+hmac = "0.13"
 hex = "0.4"
+lettre = { version = "0.11", features = ["tokio1", "tokio1-native-tls", "smtp-transport", "builder", "native-tls"], default-features = false }
 quick-xml = { workspace = true }
 base64 = "0.22"
 zip = "8"
 
 [dev-dependencies]
-async-trait.workspace = true
 batlehub-adapters = { path = "../adapters" }
 actix-http = "3"
 flate2 = "1"
 tar = "0.4"
+tempfile.workspace = true
 
 [lints]
 workspace = true

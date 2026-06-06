@@ -1,7 +1,7 @@
+use crate::db::DbResultExt;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Row};
-use crate::db::DbResultExt;
 
 use batlehub_core::{
     error::CoreError,
@@ -70,9 +70,7 @@ impl ArtifactMetaRepository for PgArtifactMetaRepository {
                 .bind(registry)
                 .fetch_all(&self.pool)
         };
-        let rows = query
-            .await
-            .db_err()?;
+        let rows = query.await.db_err()?;
         Ok(rows.into_iter().map(row_to_meta).collect())
     }
 

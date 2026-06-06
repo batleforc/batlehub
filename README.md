@@ -119,6 +119,20 @@ task ui:dev        # vite dev server (proxies /api and /proxy to :8080)
 task test          # cargo test --workspace
 ```
 
+### Install batlehub-cli
+
+**via mise** (recommended — manages version automatically):
+
+```sh
+mise use "github:batleforc/batlehub[asset_pattern=batlehub-cli-*]"
+```
+
+**via cargo** (builds from source):
+
+```sh
+cargo install --git https://github.com/batleforc/batlehub batlehub-cli
+```
+
 ---
 
 ## Configuration at a glance

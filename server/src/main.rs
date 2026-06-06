@@ -14,9 +14,14 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 use utoipa::OpenApi as _;
 use utoipa_actix_web::AppExt;
 
+use batlehub_adapters::cache::InMemoryBannerStore;
+#[cfg(feature = "cache-redis")]
+use batlehub_adapters::cache::RedisBannerStore;
 #[cfg(feature = "cache-redis")]
 use batlehub_adapters::cache::RedisCacheStore;
 use batlehub_adapters::cache::{InMemoryCacheStore, PgCacheStore};
+use batlehub_adapters::db::PgBannerStore;
+use batlehub_adapters::notification::PgNotificationStore;
 use batlehub_adapters::rate_limit::{
     InMemoryIpBlockStore, InMemoryRateLimitStore, PgIpBlockStore, PgRateLimitStore,
 };
@@ -32,13 +37,13 @@ use batlehub_adapters::{
         PgQuotaRepository, PgSbomRepository, PgTeamNamespaceStore,
     },
     local_registry::PostgresLocalRegistry,
-    sbom::HttpSbomFetcher,
     registry::{
         CargoRegistryClient, ComposerRegistryClient, CondaRegistryClient, FanoutRegistryClient,
         GithubRegistryClient, GoProxyRegistryClient, MavenRegistryClient, NpmRegistryClient,
         NugetRegistryClient, OpenVsxRegistryClient, PypiRegistryClient, RubyGemsRegistryClient,
         TerraformRegistryClient, UpstreamHttpOptions, VsCodeMarketplaceRegistryClient,
     },
+    sbom::HttpSbomFetcher,
     storage::{FilesystemStorageBackend, StorageRouter},
 };
 use batlehub_config::{
@@ -48,12 +53,13 @@ use batlehub_config::{
         RegistryMode, RuleConfig, StorageBackendConfig, StoragesConfig, UpstreamAuthConfig,
     },
 };
+use batlehub_core::ports::{BannerPort, NotificationPort};
 use batlehub_core::services::WarmingService;
 use batlehub_core::{
     entities::Role,
     ports::{
-        AuthProvider, BetaChannelPort, CacheStore, IpBlockStore, RateLimitStore,
-        SbomRepository, UserTokenRepository,
+        AuthProvider, BetaChannelPort, CacheStore, IpBlockStore, RateLimitStore, SbomRepository,
+        UserTokenRepository,
     },
     rules::{BlockListRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule},
     services::{
@@ -62,17 +68,12 @@ use batlehub_core::{
         SbomService, SigningConfig as CoreSigningConfig, VersioningPolicy,
     },
 };
-use batlehub_adapters::cache::InMemoryBannerStore;
-#[cfg(feature = "cache-redis")]
-use batlehub_adapters::cache::RedisBannerStore;
-use batlehub_adapters::db::PgBannerStore;
-use batlehub_core::ports::BannerPort;
 use batlehub_web::handlers::back_office::warming::WarmingServiceMap;
-use batlehub_web::services::{BannerService, ConfigReloadService};
+use batlehub_web::services::{BannerService, ConfigReloadService, NotificationService};
 use batlehub_web::{
     configure_app, healthz, new_access_lock, openapi_spec, prometheus_metrics, AccessConfig,
-    ApiDoc, CargoIndexProxy, IpBlockMiddlewareFactory, RateLimitMiddlewareFactory, RateLimitService,
-    RegistryMap, RegistryModeMap, UpstreamMap,
+    ApiDoc, CargoIndexMap, CargoIndexProxy, CliBinaryPath, IpBlockMiddlewareFactory,
+    RateLimitMiddlewareFactory, RateLimitService, RegistryMap, RegistryModeMap, UpstreamMap,
 };
 use metrics_exporter_prometheus::PrometheusBuilder;
 
@@ -159,7 +160,8 @@ async fn main() -> Result<()> {
         None => {}
     }
 
-    let config_path = cli.config
+    let config_path = cli
+        .config
         .or_else(|| std::env::var("BATLEHUB_CONFIG").ok())
         .unwrap_or_else(|| "config.toml".to_string());
     let config =
@@ -334,15 +336,20 @@ async fn main() -> Result<()> {
         }
     };
 
-    // ── Cargo sparse indexes (not part of HotConfig, built once at startup) ────
-    let mut cargo_indexes: HashMap<String, CargoIndexProxy> = HashMap::new();
-    for reg in &config.registries {
-        if reg.registry_type == "cargo" && !matches!(reg.mode, RegistryMode::Local) {
-            let index = build_cargo_index(reg)
-                .with_context(|| format!("building cargo index client for '{}'", reg.name))?;
-            cargo_indexes.insert(reg.name.clone(), index);
+    // ── Cargo sparse indexes ──────────────────────────────────────────────────
+    // Wrapped in CargoIndexMap (Arc<RwLock<...>>) so hot-reload can swap proxy
+    // settings without restarting workers.
+    let cargo_index_map = {
+        let mut map: HashMap<String, CargoIndexProxy> = HashMap::new();
+        for reg in &config.registries {
+            if reg.registry_type == "cargo" && !matches!(reg.mode, RegistryMode::Local) {
+                let index = build_cargo_index(reg, config.proxy.as_ref())
+                    .with_context(|| format!("building cargo index client for '{}'", reg.name))?;
+                map.insert(reg.name.clone(), index);
+            }
         }
-    }
+        CargoIndexMap::new(map)
+    };
 
     // ── Rate limiting ──────────────────────────────────────────────────────────
     let rate_limit_configs: std::collections::HashMap<
@@ -408,16 +415,18 @@ async fn main() -> Result<()> {
         Arc::new(PgTeamNamespaceStore::new(repo.pool()));
 
     // ── Shared hot-reloadable config ──────────────────────────────────────────
-    let (init_hot, init_access, registry_map, registry_mode_map, upstream_map) =
-        build_hot_bundle(
-            &config,
-            &beta_channel_store,
-            &(repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>),
-        )?;
+    let (init_hot, init_access, registry_map, registry_mode_map, upstream_map) = build_hot_bundle(
+        &config,
+        &beta_channel_store,
+        &(repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>),
+    )?;
 
     // Clone warming clients before the hot lock consumes the HashMap.
-    let warming_clients: HashMap<String, Arc<dyn batlehub_core::ports::RegistryClient>> =
-        init_hot.registries.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect();
+    let warming_clients: HashMap<String, Arc<dyn batlehub_core::ports::RegistryClient>> = init_hot
+        .registries
+        .iter()
+        .map(|(k, v)| (k.clone(), Arc::clone(v)))
+        .collect();
 
     let hot = new_hot_lock(init_hot);
 
@@ -509,7 +518,6 @@ async fn main() -> Result<()> {
     // ── Access config ─────────────────────────────────────────────────────────
     let access_config = new_access_lock(init_access);
 
-
     // ── Hot reload & banner ───────────────────────────────────────────────────
     let hot_reload_enabled = std::env::var("BATLEHUB_DISABLE_HOT_RELOAD")
         .map(|v| v != "1" && v.to_lowercase() != "true")
@@ -520,7 +528,11 @@ async fn main() -> Result<()> {
         "redis" => {
             #[cfg(feature = "cache-redis")]
             {
-                let url = config.cache.url.as_deref().unwrap_or("redis://127.0.0.1:6379");
+                let url = config
+                    .cache
+                    .url
+                    .as_deref()
+                    .unwrap_or("redis://127.0.0.1:6379");
                 Arc::new(
                     RedisBannerStore::new(url)
                         .await
@@ -534,12 +546,38 @@ async fn main() -> Result<()> {
     };
     let banner_svc = Arc::new(BannerService::new(banner_store));
 
-    // Builder closure capturing the deps needed to rebuild HotConfig + AccessConfig.
+    // ── Notifications ─────────────────────────────────────────────────────────
+    let notification_store: Arc<dyn NotificationPort> =
+        Arc::new(PgNotificationStore::new(repo.pool()));
+
+    let notifications_config = config.notifications.clone();
+    let notification_svc: Option<Arc<NotificationService>> = notifications_config
+        .as_ref()
+        .filter(|nc| nc.enabled)
+        .map(|nc| {
+            Arc::new(NotificationService::new(
+                Arc::clone(&notification_store),
+                nc,
+            ))
+        });
+
+    // Builder closure capturing the deps needed to rebuild HotConfig + AccessConfig + CargoIndexMap.
     let hot_builder: batlehub_web::services::HotConfigBuilder = {
         let beta_channel_store = Arc::clone(&beta_channel_store);
         let repo_for_builder = repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>;
         Arc::new(move |cfg: &batlehub_config::schema::AppConfig| {
-            build_hot_bundle(cfg, &beta_channel_store, &repo_for_builder)
+            let (hot, access, rm, rmm, um) =
+                build_hot_bundle(cfg, &beta_channel_store, &repo_for_builder)?;
+            let mut cargo_map: HashMap<String, CargoIndexProxy> = HashMap::new();
+            for reg in &cfg.registries {
+                if reg.registry_type == "cargo" && !matches!(reg.mode, RegistryMode::Local) {
+                    let index = build_cargo_index(reg, cfg.proxy.as_ref()).with_context(|| {
+                        format!("building cargo index client for '{}'", reg.name)
+                    })?;
+                    cargo_map.insert(reg.name.clone(), index);
+                }
+            }
+            Ok((hot, access, rm, rmm, um, CargoIndexMap::new(cargo_map)))
         })
     };
 
@@ -549,6 +587,7 @@ async fn main() -> Result<()> {
         registry_map.clone(),
         registry_mode_map.clone(),
         upstream_map.clone(),
+        cargo_index_map.clone(),
         config_path.clone(),
         Some(repo.pool()),
         hot_reload_enabled,
@@ -566,6 +605,11 @@ async fn main() -> Result<()> {
     // ── HTTP server ───────────────────────────────────────────────────────────
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
     let static_dir = config.server.static_dir.clone();
+    let cli_binary_path = config
+        .server
+        .cli_binary_path
+        .as_deref()
+        .map(std::path::PathBuf::from);
     let cors_allowed_origins = config
         .server
         .cors_allowed_origins
@@ -599,6 +643,10 @@ async fn main() -> Result<()> {
 
     let reload_svc_for_server = Arc::clone(&reload_svc);
     let banner_svc_for_server = Arc::clone(&banner_svc);
+    let notification_svc_for_server = notification_svc.clone();
+    let notification_store_for_server = Arc::clone(&notification_store);
+    let notifications_config_for_server = notifications_config.clone();
+    let notification_svc_for_shutdown = notification_svc.clone();
     HttpServer::new(move || {
         let configure = configure_app(
             proxy_svc.clone(),
@@ -613,9 +661,13 @@ async fn main() -> Result<()> {
             Arc::clone(&proxy_metrics),
             Some(prometheus_handle.clone()),
             Some(sbom_svc.clone()),
+            notification_svc_for_server.clone(),
+            Arc::clone(&notification_store_for_server),
+            notifications_config_for_server.clone(),
         );
         let static_dir_inner = static_dir.clone();
-        let cargo_indexes_inner = cargo_indexes.clone();
+        let cli_binary_path_inner = cli_binary_path.clone();
+        let cargo_indexes_inner = cargo_index_map.clone();
         let local_svc_inner = local_svc.clone();
         let quota_svc_inner = Arc::clone(&quota_svc);
         let registry_mode_map_inner = registry_mode_map.clone();
@@ -633,8 +685,8 @@ async fn main() -> Result<()> {
             .split_for_parts();
 
         // Register app-data and non-OpenAPI routes that are handled outside configure_app.
-        let app = app
-            .app_data(web::Data::new(cargo_indexes_inner))
+        let mut app = app
+            .app_data(web::Data::new(cargo_indexes_inner)) // web::Data<CargoIndexMap>
             .app_data(web::Data::new(local_svc_inner))
             .app_data(web::Data::new(quota_svc_inner))
             .app_data(web::Data::new(registry_mode_map_inner))
@@ -645,6 +697,10 @@ async fn main() -> Result<()> {
             .app_data(web::Data::new(banner_svc_inner))
             .service(prometheus_metrics)
             .service(healthz);
+
+        if let Some(path) = cli_binary_path_inner {
+            app = app.app_data(web::Data::new(CliBinaryPath(path)));
+        }
 
         let cors_base = Cors::default()
             .allowed_methods(vec!["GET", "POST", "PUT", "HEAD", "OPTIONS", "DELETE"])
@@ -696,6 +752,11 @@ async fn main() -> Result<()> {
     .await
     .context("HTTP server error")?;
 
+    // Drain any in-flight notification tasks before the runtime exits.
+    if let Some(svc) = &notification_svc_for_shutdown {
+        svc.shutdown().await;
+    }
+
     Ok(())
 }
 
@@ -734,7 +795,10 @@ fn parse_role(s: &str) -> Role {
     }
 }
 
-fn upstream_options(reg: &RegistryConfig) -> UpstreamHttpOptions {
+fn upstream_options(
+    reg: &RegistryConfig,
+    global_proxy: Option<&batlehub_config::schema::UpstreamProxyConfig>,
+) -> UpstreamHttpOptions {
     let (bearer_token, basic_auth, custom_header) = match &reg.upstream_auth {
         Some(UpstreamAuthConfig::Bearer(b)) => (Some(b.token.clone()), None, None),
         Some(UpstreamAuthConfig::Basic(b)) => {
@@ -745,16 +809,25 @@ fn upstream_options(reg: &RegistryConfig) -> UpstreamHttpOptions {
         }
         None => (None, None, None),
     };
+    // Per-registry proxy takes precedence; fall back to the global proxy.
+    let proxy = reg.proxy.as_ref().or(global_proxy);
     UpstreamHttpOptions {
         bearer_token,
         basic_auth,
         custom_header,
         ca_cert_path: reg.tls.as_ref().and_then(|t| t.ca_cert_path.clone()),
         search_url: reg.search_url.clone(),
+        proxy_url: proxy.map(|p| p.url.clone()),
+        proxy_username: proxy.and_then(|p| p.username.clone()),
+        proxy_password: proxy.and_then(|p| p.password.clone()),
+        no_proxy: proxy.and_then(|p| p.no_proxy.clone()),
     }
 }
 
-fn build_cargo_index(reg: &RegistryConfig) -> anyhow::Result<CargoIndexProxy> {
+fn build_cargo_index(
+    reg: &RegistryConfig,
+    global_proxy: Option<&batlehub_config::schema::UpstreamProxyConfig>,
+) -> anyhow::Result<CargoIndexProxy> {
     let index_url = if let Some(ref url) = reg.index_url {
         url.clone()
     } else {
@@ -769,7 +842,7 @@ fn build_cargo_index(reg: &RegistryConfig) -> anyhow::Result<CargoIndexProxy> {
             upstream.to_owned()
         }
     };
-    let opts = upstream_options(reg);
+    let opts = upstream_options(reg, global_proxy);
     let http = batlehub_adapters::registry::apply_upstream_options(
         reqwest::Client::builder().user_agent("batlehub/0.1"),
         &opts,
@@ -780,6 +853,7 @@ fn build_cargo_index(reg: &RegistryConfig) -> anyhow::Result<CargoIndexProxy> {
 
 fn build_registry_client(
     reg: &RegistryConfig,
+    global_proxy: Option<&batlehub_config::schema::UpstreamProxyConfig>,
 ) -> anyhow::Result<Arc<dyn batlehub_core::ports::RegistryClient>> {
     fn resolve_urls(configured: &[String], default: &str) -> Vec<String> {
         if configured.is_empty() {
@@ -815,7 +889,7 @@ fn build_registry_client(
         Ok(client)
     }
 
-    let opts = upstream_options(reg);
+    let opts = upstream_options(reg, global_proxy);
 
     let urls = match reg.registry_type.as_str() {
         "github" => resolve_urls(&reg.upstreams, "https://api.github.com"),
@@ -1000,7 +1074,12 @@ fn upstream_url_for(reg: &RegistryConfig) -> Option<String> {
         "nuget" => "https://api.nuget.org",
         _ => return None,
     };
-    Some(reg.upstreams.first().cloned().unwrap_or_else(|| default_url.to_owned()))
+    Some(
+        reg.upstreams
+            .first()
+            .cloned()
+            .unwrap_or_else(|| default_url.to_owned()),
+    )
 }
 
 /// Build the complete hot-reloadable bundle from a config snapshot.
@@ -1025,7 +1104,7 @@ fn build_hot_bundle(
     let mut upstream_map: HashMap<String, String> = HashMap::new();
 
     for reg in &cfg.registries {
-        let client = build_registry_client(reg)
+        let client = build_registry_client(reg, cfg.proxy.as_ref())
             .with_context(|| format!("building registry client for '{}'", reg.name))?;
         reg_clients.insert(reg.name.clone(), client);
         reg_policies.insert(
@@ -1086,9 +1165,7 @@ fn build_access_config(config: &batlehub_config::schema::AppConfig) -> AccessCon
             .registries
             .iter()
             .filter(|r| {
-                !r.rbac.anonymous.is_empty()
-                    || !r.rbac.user.is_empty()
-                    || !r.rbac.admin.is_empty()
+                !r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty() || !r.rbac.admin.is_empty()
             })
             .map(|r| r.name.clone())
             .collect(),
@@ -1103,8 +1180,7 @@ fn build_access_config(config: &batlehub_config::schema::AppConfig) -> AccessCon
             .registries
             .iter()
             .filter(|r| {
-                (!r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty())
-                    && r.rbac.explore.user
+                (!r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty()) && r.rbac.explore.user
             })
             .map(|r| r.name.clone())
             .collect(),
@@ -1151,9 +1227,10 @@ fn spawn_config_watcher(config_path: String, reload_svc: Arc<ConfigReloadService
                     return;
                 }
             };
-            if let Err(e) = watcher
-                .watch(std::path::Path::new(&config_path), RecursiveMode::NonRecursive)
-            {
+            if let Err(e) = watcher.watch(
+                std::path::Path::new(&config_path),
+                RecursiveMode::NonRecursive,
+            ) {
                 tracing::error!(
                     error = %e,
                     "config file watcher: failed to watch {config_path}"

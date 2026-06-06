@@ -48,7 +48,13 @@ impl TestStore {
 
 async fn make_store(url: &str) -> TestStore {
     let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
-    let prefix = format!("{id}");
+    // Include a nanosecond timestamp so keys from different test-binary invocations
+    // never collide with leftover rows in the shared Postgres instance.
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let prefix = format!("{ts}-{id}");
     let pool = PgPool::connect(url).await.expect("connect to postgres");
     batlehub_adapters::migrations::embedded_migrator()
         .run(&pool)
