@@ -153,8 +153,7 @@ mod tests {
     /// - forwards to the upstream and pipes the response back.
     ///
     /// Returns the proxy port and a receiver for recorded requests.
-    async fn start_recording_proxy()
-    -> (u16, tokio::sync::mpsc::UnboundedReceiver<ProxyRequest>) {
+    async fn start_recording_proxy() -> (u16, tokio::sync::mpsc::UnboundedReceiver<ProxyRequest>) {
         use tokio::net::TcpListener;
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -228,7 +227,10 @@ mod tests {
             if line.is_empty() {
                 break;
             }
-            if line.to_ascii_lowercase().starts_with("proxy-authorization:") {
+            if line
+                .to_ascii_lowercase()
+                .starts_with("proxy-authorization:")
+            {
                 proxy_auth = Some(line.to_owned());
             } else {
                 forwarded_headers.push(line.to_owned());
@@ -301,7 +303,11 @@ mod tests {
         let client = apply_upstream_options(reqwest::Client::builder(), &opts).unwrap();
 
         let url = format!("{}/registry-path", upstream.url());
-        let resp = client.get(&url).send().await.expect("request should succeed");
+        let resp = client
+            .get(&url)
+            .send()
+            .await
+            .expect("request should succeed");
         assert_eq!(resp.status(), 200);
 
         // The proxy must have received exactly one request for our URL.

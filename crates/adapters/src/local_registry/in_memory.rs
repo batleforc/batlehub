@@ -47,7 +47,7 @@ impl InMemoryLocalRegistry {
 }
 
 fn pkg_key(registry: &str, name: &str) -> PackageKey {
-    format!("{registry}:{name}")
+    format!("{registry}:{}", name.to_lowercase())
 }
 
 #[async_trait]
@@ -195,11 +195,12 @@ impl LocalRegistryBackend for InMemoryLocalRegistry {
         let mut names: Vec<String> = {
             let map = self.inner.read().await;
             map.iter()
-                .filter(|(k, vs)| {
-                    k.starts_with(&prefix)
-                        && vs.values().any(|r| r.status == RecordStatus::Published)
+                .filter(|(k, _)| k.starts_with(&prefix))
+                .filter_map(|(_, vs)| {
+                    vs.values()
+                        .find(|r| r.status == RecordStatus::Published)
+                        .map(|r| r.pkg.name.clone())
                 })
-                .map(|(k, _)| k[prefix.len()..].to_owned())
                 .collect()
         }; // read lock dropped here
         names.sort();

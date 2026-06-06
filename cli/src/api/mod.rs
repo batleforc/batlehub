@@ -4,6 +4,7 @@ pub mod owner;
 pub mod package;
 pub mod publish;
 pub mod registry;
+pub mod setup;
 pub mod version;
 
 use anyhow::{bail, Result};

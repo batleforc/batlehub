@@ -571,10 +571,9 @@ async fn main() -> Result<()> {
             let mut cargo_map: HashMap<String, CargoIndexProxy> = HashMap::new();
             for reg in &cfg.registries {
                 if reg.registry_type == "cargo" && !matches!(reg.mode, RegistryMode::Local) {
-                    let index = build_cargo_index(reg, cfg.proxy.as_ref())
-                        .with_context(|| {
-                            format!("building cargo index client for '{}'", reg.name)
-                        })?;
+                    let index = build_cargo_index(reg, cfg.proxy.as_ref()).with_context(|| {
+                        format!("building cargo index client for '{}'", reg.name)
+                    })?;
                     cargo_map.insert(reg.name.clone(), index);
                 }
             }
@@ -687,7 +686,7 @@ async fn main() -> Result<()> {
 
         // Register app-data and non-OpenAPI routes that are handled outside configure_app.
         let mut app = app
-            .app_data(web::Data::new(cargo_indexes_inner))  // web::Data<CargoIndexMap>
+            .app_data(web::Data::new(cargo_indexes_inner)) // web::Data<CargoIndexMap>
             .app_data(web::Data::new(local_svc_inner))
             .app_data(web::Data::new(quota_svc_inner))
             .app_data(web::Data::new(registry_mode_map_inner))

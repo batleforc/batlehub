@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -9,6 +10,31 @@ pub struct Profile {
     pub server_url: Option<String>,
     pub token: Option<String>,
     pub registry: Option<String>,
+
+    /// Cached OIDC refresh token (stored after `auth login`).
+    #[serde(default)]
+    pub oidc_refresh_token: Option<String>,
+    /// Unix timestamp (seconds) when the OIDC access token expires.
+    #[serde(default)]
+    pub oidc_expires_at: Option<i64>,
+    /// OIDC provider name used at login — forwarded on refresh so the server
+    /// selects the correct provider in multi-provider deployments.
+    #[serde(default)]
+    pub oidc_provider: Option<String>,
+
+    /// Path to a Kubernetes service account token file; read fresh on every request.
+    #[serde(default)]
+    pub kubernetes_token_path: Option<String>,
+}
+
+impl Profile {
+    /// True if the OIDC access token expires within the next 120 seconds.
+    pub fn is_token_expiring_soon(&self) -> bool {
+        match self.oidc_expires_at {
+            Some(exp) => Utc::now().timestamp() >= exp - 120,
+            None => false,
+        }
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -92,6 +118,7 @@ mod tests {
                 server_url: Some(url.to_string()),
                 token: Some(token.to_string()),
                 registry: None,
+                ..Default::default()
             },
             profiles: HashMap::new(),
         }
@@ -127,6 +154,7 @@ mod tests {
                 server_url: Some("http://prod.example.com".into()),
                 token: Some("prod-tok".into()),
                 registry: None,
+                ..Default::default()
             },
         );
         let r = cfg.resolve(Some("prod"), None, None, None);
@@ -139,5 +167,38 @@ mod tests {
         let r = cfg.resolve(None, None, None, None);
         assert_eq!(r.server_url, "http://localhost:8080");
         assert!(r.token.is_none());
+    }
+
+    #[test]
+    fn token_expiring_soon_when_within_threshold() {
+        let profile = Profile {
+            oidc_expires_at: Some(Utc::now().timestamp() + 60),
+            ..Default::default()
+        };
+        assert!(profile.is_token_expiring_soon());
+    }
+
+    #[test]
+    fn token_already_expired_is_expiring_soon() {
+        let profile = Profile {
+            oidc_expires_at: Some(Utc::now().timestamp() - 1),
+            ..Default::default()
+        };
+        assert!(profile.is_token_expiring_soon());
+    }
+
+    #[test]
+    fn token_not_expiring_when_far_future() {
+        let profile = Profile {
+            oidc_expires_at: Some(Utc::now().timestamp() + 3600),
+            ..Default::default()
+        };
+        assert!(!profile.is_token_expiring_soon());
+    }
+
+    #[test]
+    fn token_not_expiring_when_no_expiry_set() {
+        let profile = Profile::default();
+        assert!(!profile.is_token_expiring_soon());
     }
 }

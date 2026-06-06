@@ -23,17 +23,46 @@
 
 ## 1. Installation
 
-Build from source inside the repository:
+**via mise** (recommended — manages version automatically):
 
 ```bash
-cargo build -p batlehub-cli --release
-# Binary at: target/release/batlehub-cli
+mise use "github:batleforc/batlehub[asset_pattern=batlehub-cli-*]"
 ```
 
-Or run directly without installing:
+**via cargo** (builds from source — requires Rust toolchain):
 
 ```bash
-# Using the Taskfile helpers
+cargo install --git https://github.com/batleforc/batlehub batlehub-cli
+```
+
+**Pre-built binaries** — download from [GitHub Releases](https://github.com/batleforc/batlehub/releases/latest):
+
+```bash
+# Linux x86_64
+curl -fSL https://github.com/batleforc/batlehub/releases/latest/download/batlehub-cli-linux-amd64.tar.gz | tar xz
+sudo mv batlehub-cli /usr/local/bin/batlehub-cli
+
+# Linux aarch64
+curl -fSL https://github.com/batleforc/batlehub/releases/latest/download/batlehub-cli-linux-arm64.tar.gz | tar xz
+sudo mv batlehub-cli /usr/local/bin/batlehub-cli
+
+# macOS Apple Silicon (M1/M2/M3)
+curl -fSL https://github.com/batleforc/batlehub/releases/latest/download/batlehub-cli-darwin-arm64.tar.gz | tar xz
+sudo mv batlehub-cli /usr/local/bin/batlehub-cli
+
+# macOS Intel
+curl -fSL https://github.com/batleforc/batlehub/releases/latest/download/batlehub-cli-darwin-amd64.tar.gz | tar xz
+sudo mv batlehub-cli /usr/local/bin/batlehub-cli
+
+# Windows (PowerShell)
+Invoke-WebRequest https://github.com/batleforc/batlehub/releases/latest/download/batlehub-cli-windows-amd64.zip -OutFile batlehub-cli.zip
+Expand-Archive batlehub-cli.zip -DestinationPath .
+Move-Item batlehub-cli.exe "$env:LOCALAPPDATA\Microsoft\WindowsApps\batlehub-cli.exe"
+```
+
+Or run directly without installing (inside the repository):
+
+```bash
 task cli -- registry list
 task cli:tui
 task cli:help

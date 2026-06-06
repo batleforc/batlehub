@@ -311,9 +311,7 @@ fn http_publish_nuget(base_url: &str, registry: &str, name: &str, version: &str)
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
 
     let resp = reqwest::blocking::Client::new()
-        .put(format!(
-            "{base_url}/proxy/{registry}/nuget/api/v2/package"
-        ))
+        .put(format!("{base_url}/proxy/{registry}/nuget/api/v2/package"))
         .header("Authorization", format!("Bearer {AUTH_TOKEN}"))
         .header(
             "Content-Type",
@@ -381,8 +379,7 @@ fn registry_info_not_found() {
 #[test]
 fn auth_whoami_authenticated() {
     let srv = TestServer::start();
-    let (ok, stdout, _stderr) =
-        cli_cmd(&["auth", "whoami", "--json"], &srv.base_url(), AUTH_TOKEN);
+    let (ok, stdout, _stderr) = cli_cmd(&["auth", "whoami", "--json"], &srv.base_url(), AUTH_TOKEN);
     assert!(ok, "auth whoami should succeed with valid token");
     let val: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
     assert_eq!(val["user_id"], "test-user");
@@ -538,14 +535,7 @@ fn version_delete() {
     );
 
     let (ok, _stdout, stderr) = cli_cmd(
-        &[
-            "version",
-            "delete",
-            REGISTRY,
-            "DeleteLib",
-            "3.0.0",
-            "--yes",
-        ],
+        &["version", "delete", REGISTRY, "DeleteLib", "3.0.0", "--yes"],
         &srv.base_url(),
         AUTH_TOKEN,
     );
@@ -582,6 +572,503 @@ fn publish_nuget_via_cli() {
         stdout.contains("Published successfully"),
         "expected success message in stdout, got: {stdout}"
     );
+}
+
+// ── Tests: completion ─────────────────────────────────────────────────────────
+
+/// Shell completion output requires no running server; the binary exits early.
+#[test]
+fn completion_bash_produces_output() {
+    let (ok, stdout, stderr) = cli_cmd(&["completion", "bash"], "http://127.0.0.1:1", "");
+    assert!(ok, "completion bash failed; stderr: {stderr}");
+    assert!(!stdout.is_empty(), "bash completion should produce output");
+    assert!(
+        stdout.contains("batlehub-cli"),
+        "bash completion should mention the binary name; got: {stdout:.200}"
+    );
+}
+
+#[test]
+fn completion_zsh_produces_output() {
+    let (ok, stdout, stderr) = cli_cmd(&["completion", "zsh"], "http://127.0.0.1:1", "");
+    assert!(ok, "completion zsh failed; stderr: {stderr}");
+    assert!(!stdout.is_empty(), "zsh completion should produce output");
+}
+
+// ── Tests: auth login / refresh ───────────────────────────────────────────────
+
+/// `auth login --kubernetes-token-path` should save the path to the config and
+/// exit 0, without contacting any OIDC endpoint.
+#[test]
+fn auth_login_kubernetes_saves_config() {
+    // Create an isolated config directory so this test does not interfere with others.
+    let config_dir = tempfile::tempdir().unwrap();
+    let token_dir = tempfile::tempdir().unwrap();
+    let token_file = token_dir.path().join("sa-token");
+    std::fs::write(&token_file, "my-k8s-service-account-token").unwrap();
+
+    let token_path = token_file.to_str().unwrap();
+    let srv = TestServer::start();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
+        .args(["auth", "login", "--kubernetes-token-path", token_path])
+        .env("BATLEHUB_SERVER", &srv.base_url())
+        .env("BATLEHUB_TOKEN", AUTH_TOKEN)
+        .env("HOME", "/tmp")
+        .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run batlehub-cli");
+
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        out.status.success(),
+        "auth login kubernetes should succeed; stderr: {stderr}"
+    );
+
+    let config_path = config_dir.path().join("batlehub/config.toml");
+    assert!(
+        config_path.exists(),
+        "config file should be written at {config_path:?}"
+    );
+    let content = std::fs::read_to_string(&config_path).unwrap();
+    assert!(
+        content.contains(token_path),
+        "config should contain the kubernetes_token_path; content: {content}"
+    );
+}
+
+/// `auth refresh` with no stored refresh token should exit non-zero and print
+/// a helpful error message.
+#[test]
+fn auth_refresh_no_stored_token_fails() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let srv = TestServer::start();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
+        .args(["auth", "refresh"])
+        .env("BATLEHUB_SERVER", &srv.base_url())
+        .env("BATLEHUB_TOKEN", AUTH_TOKEN)
+        .env("HOME", "/tmp")
+        .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run batlehub-cli");
+
+    assert!(
+        !out.status.success(),
+        "auth refresh with no stored token should fail"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("refresh token") || stderr.contains("auth login"),
+        "error should guide the user; stderr: {stderr}"
+    );
+}
+
+// ── Tests: setup detect ───────────────────────────────────────────────────────
+//
+// These tests exercise `batlehub-cli setup detect --dir <path>` (and its JSON
+// variant) to verify that the TUI setup-wizard detection logic works end-to-end
+// when invoked from the compiled binary. No server connection is needed.
+
+/// Helper: run `setup detect --json --dir <dir>` and return the parsed JSON array.
+fn setup_detect_json(dir: &std::path::Path) -> (bool, Vec<serde_json::Value>, String) {
+    setup_detect_json_depth(dir, 0)
+}
+
+fn setup_detect_json_depth(
+    dir: &std::path::Path,
+    depth: usize,
+) -> (bool, Vec<serde_json::Value>, String) {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
+        .args([
+            "setup",
+            "detect",
+            "--json",
+            "--dir",
+            dir.to_str().unwrap(),
+            "--depth",
+            &depth.to_string(),
+        ])
+        .env("BATLEHUB_SERVER", "http://127.0.0.1:1") // no real server needed
+        .env("HOME", "/tmp")
+        .env("XDG_CONFIG_HOME", "/tmp/.xdg-batlehub-detect-test")
+        .output()
+        .expect("failed to run batlehub-cli");
+    let ok = out.status.success();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let items: Vec<serde_json::Value> = if ok {
+        serde_json::from_slice(&out.stdout).unwrap_or_default()
+    } else {
+        vec![]
+    };
+    (ok, items, stderr)
+}
+
+fn registry_types(items: &[serde_json::Value]) -> Vec<&str> {
+    items
+        .iter()
+        .filter_map(|v| v["registry_type"].as_str())
+        .collect()
+}
+
+#[test]
+fn setup_detect_empty_dir_returns_empty_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ok, items, stderr) = setup_detect_json(dir.path());
+    assert!(ok, "setup detect should succeed; stderr: {stderr}");
+    assert!(items.is_empty(), "empty dir should produce no detections; got: {items:?}");
+}
+
+#[test]
+fn setup_detect_cargo_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"my-crate\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    let (ok, items, stderr) = setup_detect_json(dir.path());
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    let types = registry_types(&items);
+    assert_eq!(types, ["cargo"], "expected cargo; got {types:?}");
+    assert_eq!(
+        items[0]["package_name"].as_str(),
+        Some("my-crate"),
+        "wrong package name"
+    );
+}
+
+#[test]
+fn setup_detect_go_mod() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("go.mod"),
+        "module github.com/example/myapp\n\ngo 1.21\n",
+    )
+    .unwrap();
+    let (ok, items, stderr) = setup_detect_json(dir.path());
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    let types = registry_types(&items);
+    assert_eq!(types, ["gomodules"], "expected gomodules; got {types:?}");
+    assert_eq!(items[0]["package_name"].as_str(), Some("myapp"));
+}
+
+#[test]
+fn setup_detect_package_json() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"name":"my-frontend","version":"1.0.0"}"#,
+    )
+    .unwrap();
+    let (ok, items, stderr) = setup_detect_json(dir.path());
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    let types = registry_types(&items);
+    assert_eq!(types, ["npm"], "expected npm; got {types:?}");
+    assert_eq!(items[0]["package_name"].as_str(), Some("my-frontend"));
+}
+
+#[test]
+fn setup_detect_pom_xml() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("pom.xml"),
+        "<project><artifactId>my-library</artifactId></project>",
+    )
+    .unwrap();
+    let (ok, items, stderr) = setup_detect_json(dir.path());
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    let types = registry_types(&items);
+    assert_eq!(types, ["maven"], "expected maven; got {types:?}");
+    assert_eq!(items[0]["package_name"].as_str(), Some("my-library"));
+}
+
+#[test]
+fn setup_detect_nuspec() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("MyLib.nuspec"), "<package/>").unwrap();
+    let (ok, items, stderr) = setup_detect_json(dir.path());
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    let types = registry_types(&items);
+    assert_eq!(types, ["nuget"], "expected nuget; got {types:?}");
+    assert_eq!(items[0]["package_name"].as_str(), Some("MyLib"));
+}
+
+#[test]
+fn setup_detect_terraform() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("main.tf"), "provider \"aws\" {}").unwrap();
+    let (ok, items, stderr) = setup_detect_json(dir.path());
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    let types = registry_types(&items);
+    assert_eq!(types, ["terraform"], "expected terraform; got {types:?}");
+}
+
+#[test]
+fn setup_detect_conda_environment_yml() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("environment.yml"),
+        "name: data-science-env\ndependencies:\n  - numpy\n  - pandas\n",
+    )
+    .unwrap();
+    let (ok, items, stderr) = setup_detect_json(dir.path());
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    let types = registry_types(&items);
+    assert_eq!(types, ["conda"], "expected conda; got {types:?}");
+    assert_eq!(items[0]["package_name"].as_str(), Some("data-science-env"));
+}
+
+#[test]
+fn setup_detect_multiple_manifests() {
+    // A monorepo-style directory with both Rust and Node projects.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"backend\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"name":"frontend"}"#,
+    )
+    .unwrap();
+    let (ok, items, stderr) = setup_detect_json(dir.path());
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    let mut types = registry_types(&items);
+    types.sort_unstable();
+    assert_eq!(types, ["cargo", "npm"], "expected cargo+npm; got {types:?}");
+    let cargo = items.iter().find(|v| v["registry_type"] == "cargo").unwrap();
+    let npm = items.iter().find(|v| v["registry_type"] == "npm").unwrap();
+    assert_eq!(cargo["package_name"].as_str(), Some("backend"));
+    assert_eq!(npm["package_name"].as_str(), Some("frontend"));
+}
+
+#[test]
+fn setup_detect_human_readable_output_contains_instructions() {
+    // Without --json the output should contain human-readable setup instructions.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"my-crate\"\n",
+    )
+    .unwrap();
+    let (ok, stdout, stderr) = cli_cmd(
+        &["setup", "detect", "--dir", dir.path().to_str().unwrap()],
+        "http://127.0.0.1:1",
+        "",
+    );
+    assert!(ok, "setup detect (human) failed; stderr: {stderr}");
+    assert!(stdout.contains("cargo"), "expected 'cargo' in output; got: {stdout}");
+    assert!(
+        stdout.contains("cargo publish"),
+        "expected publish instructions; got: {stdout}"
+    );
+    assert!(
+        stdout.contains("my-crate"),
+        "expected package name in output; got: {stdout}"
+    );
+}
+
+#[test]
+fn setup_detect_no_manifests_human_readable() {
+    // Empty dir with human-readable output should list supported manifest types.
+    let dir = tempfile::tempdir().unwrap();
+    let (ok, stdout, stderr) = cli_cmd(
+        &["setup", "detect", "--dir", dir.path().to_str().unwrap()],
+        "http://127.0.0.1:1",
+        "",
+    );
+    assert!(ok, "setup detect on empty dir failed; stderr: {stderr}");
+    assert!(
+        stdout.contains("No known project manifests"),
+        "expected 'no manifests' message; got: {stdout}"
+    );
+    assert!(stdout.contains("Cargo.toml"), "expected manifest list in output");
+}
+
+// ── Tests: setup detect — subfolder scanning ──────────────────────────────────
+
+/// depth=0 must NOT find a manifest that lives only in a subdirectory.
+#[test]
+fn setup_detect_depth0_ignores_subfolders() {
+    let root = tempfile::tempdir().unwrap();
+    let sub = root.path().join("crate-a");
+    std::fs::create_dir(&sub).unwrap();
+    std::fs::write(sub.join("Cargo.toml"), "[package]\nname = \"crate-a\"\n").unwrap();
+
+    let (ok, items, stderr) = setup_detect_json(root.path()); // depth=0
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    assert!(
+        items.is_empty(),
+        "depth=0 should not find subfolder manifests; got: {items:?}"
+    );
+}
+
+/// depth=1 finds a manifest one level deep and reports the correct relative path.
+#[test]
+fn setup_detect_depth1_finds_immediate_subdir() {
+    let root = tempfile::tempdir().unwrap();
+    let sub = root.path().join("crate-a");
+    std::fs::create_dir(&sub).unwrap();
+    std::fs::write(sub.join("Cargo.toml"), "[package]\nname = \"crate-a\"\n").unwrap();
+
+    let (ok, items, stderr) = setup_detect_json_depth(root.path(), 1);
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    let types = registry_types(&items);
+    assert_eq!(types, ["cargo"], "expected cargo; got {types:?}");
+    assert_eq!(items[0]["package_name"].as_str(), Some("crate-a"));
+    assert_eq!(
+        items[0]["relative_path"].as_str(),
+        Some("crate-a"),
+        "relative_path should be the subdirectory name"
+    );
+}
+
+/// depth=1 does NOT look two levels deep.
+#[test]
+fn setup_detect_depth1_ignores_deeply_nested() {
+    let root = tempfile::tempdir().unwrap();
+    let deep = root.path().join("packages").join("core");
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(deep.join("Cargo.toml"), "[package]\nname = \"core\"\n").unwrap();
+
+    let (ok, items, stderr) = setup_detect_json_depth(root.path(), 1);
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    assert!(
+        items.is_empty(),
+        "depth=1 should not reach two levels deep; got: {items:?}"
+    );
+}
+
+/// depth=2 finds a manifest two levels deep with the correct relative path.
+#[test]
+fn setup_detect_depth2_finds_nested_subdir() {
+    let root = tempfile::tempdir().unwrap();
+    let deep = root.path().join("packages").join("core");
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(deep.join("Cargo.toml"), "[package]\nname = \"core\"\n").unwrap();
+
+    let (ok, items, stderr) = setup_detect_json_depth(root.path(), 2);
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    let types = registry_types(&items);
+    assert_eq!(types, ["cargo"], "expected cargo; got {types:?}");
+    assert_eq!(items[0]["package_name"].as_str(), Some("core"));
+    assert_eq!(
+        items[0]["relative_path"].as_str(),
+        Some("packages/core"),
+        "relative_path should include both directory components"
+    );
+}
+
+/// Root manifest + subfolder manifest both appear; each has the correct
+/// relative_path (empty for root, subdirectory name for the child).
+#[test]
+fn setup_detect_root_and_subdir_both_detected() {
+    let root = tempfile::tempdir().unwrap();
+    // Root: a Node project
+    std::fs::write(root.path().join("package.json"), r#"{"name":"root-app"}"#).unwrap();
+    // Subfolder: a Rust crate
+    let sub = root.path().join("server");
+    std::fs::create_dir(&sub).unwrap();
+    std::fs::write(sub.join("Cargo.toml"), "[package]\nname = \"server\"\n").unwrap();
+
+    let (ok, items, stderr) = setup_detect_json_depth(root.path(), 1);
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    assert_eq!(items.len(), 2, "expected 2 detections; got: {items:?}");
+
+    let npm = items.iter().find(|v| v["registry_type"] == "npm").unwrap();
+    let cargo = items.iter().find(|v| v["registry_type"] == "cargo").unwrap();
+
+    assert_eq!(npm["package_name"].as_str(), Some("root-app"));
+    assert_eq!(npm["relative_path"].as_str(), Some(""), "root entry must have empty relative_path");
+
+    assert_eq!(cargo["package_name"].as_str(), Some("server"));
+    assert_eq!(cargo["relative_path"].as_str(), Some("server"));
+}
+
+/// Workspace-style monorepo: multiple crates at depth 1, each with its own name.
+#[test]
+fn setup_detect_monorepo_multiple_crates() {
+    let root = tempfile::tempdir().unwrap();
+    for (subdir, name) in [("api", "my-api"), ("cli", "my-cli"), ("lib", "my-lib")] {
+        let path = root.path().join(subdir);
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(
+            path.join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\n"),
+        )
+        .unwrap();
+    }
+
+    let (ok, items, stderr) = setup_detect_json_depth(root.path(), 1);
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    assert_eq!(items.len(), 3, "expected 3 crates; got: {items:?}");
+
+    let mut names: Vec<&str> = items
+        .iter()
+        .filter_map(|v| v["package_name"].as_str())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(names, ["my-api", "my-cli", "my-lib"]);
+
+    // All relative paths must be non-empty and match the subdirectory.
+    for item in &items {
+        let rp = item["relative_path"].as_str().unwrap_or("");
+        assert!(!rp.is_empty(), "relative_path must not be empty for subdir crates; item: {item}");
+    }
+}
+
+/// hidden directories (`.git`, `.github`) and well-known skip dirs
+/// (`node_modules`, `target`) are never entered.
+#[test]
+fn setup_detect_skips_hidden_and_ignored_dirs() {
+    let root = tempfile::tempdir().unwrap();
+    for skip in [".git", "node_modules", "target", ".github"] {
+        let path = root.path().join(skip);
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("Cargo.toml"), "[package]\nname = \"should-not-appear\"\n")
+            .unwrap();
+    }
+
+    let (ok, items, stderr) = setup_detect_json_depth(root.path(), 1);
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    assert!(
+        items.is_empty(),
+        "hidden/ignored dirs must not be scanned; got: {items:?}"
+    );
+}
+
+/// Mixed language monorepo: Rust at root + Go in one subdir + npm in another.
+#[test]
+fn setup_detect_mixed_language_monorepo() {
+    let root = tempfile::tempdir().unwrap();
+    // Root: Rust workspace stub
+    std::fs::write(root.path().join("Cargo.toml"), "[package]\nname = \"root\"\n").unwrap();
+    // Go service
+    let go_dir = root.path().join("gateway");
+    std::fs::create_dir(&go_dir).unwrap();
+    std::fs::write(go_dir.join("go.mod"), "module github.com/example/gateway\ngo 1.22\n").unwrap();
+    // Frontend
+    let ui_dir = root.path().join("ui");
+    std::fs::create_dir(&ui_dir).unwrap();
+    std::fs::write(ui_dir.join("package.json"), r#"{"name":"web-ui"}"#).unwrap();
+
+    let (ok, items, stderr) = setup_detect_json_depth(root.path(), 1);
+    assert!(ok, "setup detect failed; stderr: {stderr}");
+    assert_eq!(items.len(), 3, "expected cargo+gomodules+npm; got: {items:?}");
+
+    let mut types = registry_types(&items);
+    types.sort_unstable();
+    assert_eq!(types, ["cargo", "gomodules", "npm"]);
+
+    let go = items.iter().find(|v| v["registry_type"] == "gomodules").unwrap();
+    assert_eq!(go["package_name"].as_str(), Some("gateway"));
+    assert_eq!(go["relative_path"].as_str(), Some("gateway"));
+
+    let ui = items.iter().find(|v| v["registry_type"] == "npm").unwrap();
+    assert_eq!(ui["package_name"].as_str(), Some("web-ui"));
+    assert_eq!(ui["relative_path"].as_str(), Some("ui"));
 }
 
 /// Verify that the NuGet package uploaded via CLI is accessible via the proxy

@@ -146,7 +146,11 @@ pub async fn run(cmd: AdminCommand, client: &BatleHubClient, json: bool) -> Resu
                     let mut table = Table::new();
                     table.set_header(["IP", "Reason", "Blocked At"]);
                     for b in &blocks {
-                        table.add_row([b.ip.as_str(), b.reason.as_str(), &b.blocked_at.to_string()]);
+                        table.add_row([
+                            b.ip.as_str(),
+                            b.reason.as_str(),
+                            &b.blocked_at.to_string(),
+                        ]);
                     }
                     println!("{table}");
                     println!("{} block(s)", blocks.len());
@@ -242,9 +246,21 @@ pub async fn run(cmd: AdminCommand, client: &BatleHubClient, json: bool) -> Resu
                 let mut table = Table::new();
                 table.set_header(["Time", "Registry", "User", "Action", "Package", "Denied"]);
                 for e in &resp {
-                    let registry = e.package_id.as_ref().map(|p| p.registry.as_str()).unwrap_or("-");
-                    let package = e.package_id.as_ref().map(|p| p.name.as_str()).unwrap_or("-");
-                    let denied = e.result.as_ref().map(|r| r.outcome == "denied").unwrap_or(false);
+                    let registry = e
+                        .package_id
+                        .as_ref()
+                        .map(|p| p.registry.as_str())
+                        .unwrap_or("-");
+                    let package = e
+                        .package_id
+                        .as_ref()
+                        .map(|p| p.name.as_str())
+                        .unwrap_or("-");
+                    let denied = e
+                        .result
+                        .as_ref()
+                        .map(|r| r.outcome == "denied")
+                        .unwrap_or(false);
                     table.add_row([
                         e.timestamp.as_deref().unwrap_or("-"),
                         registry,

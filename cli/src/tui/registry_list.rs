@@ -108,7 +108,9 @@ pub fn render(f: &mut Frame, app: &App) {
 
     f.render_stateful_widget(list, main_area, &mut app.registry_list.state.clone());
 
-    let help = Paragraph::new(" q:quit  ↑↓:navigate  Enter:select  p:publish  ?:help")
-        .style(Style::default().fg(Color::DarkGray));
+    let help = Paragraph::new(
+        " q:quit  ↑↓:navigate  Enter:select  p:publish  s:setup wizard  L:login  ?:help",
+    )
+    .style(Style::default().fg(Color::DarkGray));
     f.render_widget(help, help_area);
 }

@@ -1,8 +1,10 @@
 mod help;
+mod login;
 mod package_detail;
 mod package_list;
 mod publish_form;
 mod registry_list;
+mod setup_wizard;
 
 use anyhow::Result;
 use crossterm::{
@@ -13,11 +15,14 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::api::{package::PackageQuery, BatleHubClient};
+use uuid::Uuid;
 
+use login::LoginWidget;
 use package_detail::PackageDetailWidget;
 use package_list::PackageListWidget;
 use publish_form::PublishFormWidget;
 use registry_list::RegistryListWidget;
+use setup_wizard::SetupWizardWidget;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Screen {
@@ -25,6 +30,8 @@ pub enum Screen {
     PackageList { registry: String },
     PackageDetail { registry: String, name: String },
     PublishWizard,
+    SetupWizard,
+    Login,
     Help,
 }
 
@@ -35,6 +42,8 @@ pub struct App {
     pub package_list: PackageListWidget,
     pub package_detail: PackageDetailWidget,
     pub publish_form: PublishFormWidget,
+    pub setup_wizard: SetupWizardWidget,
+    pub login: LoginWidget,
     pub client: BatleHubClient,
     pub status_msg: Option<String>,
     pub should_quit: bool,
@@ -49,6 +58,8 @@ impl App {
             package_list: PackageListWidget::new(),
             package_detail: PackageDetailWidget::new(),
             publish_form: PublishFormWidget::new(),
+            setup_wizard: SetupWizardWidget::new(),
+            login: LoginWidget::new(),
             client,
             status_msg: None,
             should_quit: false,
@@ -128,6 +139,8 @@ async fn handle_key(app: &mut App, key: event::KeyEvent) {
             handle_package_detail(app, key, registry.clone(), name.clone()).await
         }
         Screen::PublishWizard => handle_publish_form(app, key),
+        Screen::SetupWizard => handle_setup_wizard(app, key),
+        Screen::Login => handle_login(app, key).await,
         Screen::Help => {
             if matches!(
                 key.code,
@@ -173,6 +186,25 @@ async fn handle_registry_list(app: &mut App, key: event::KeyEvent) {
         KeyCode::Char('p') => {
             app.prev_screen = Some(Screen::RegistryList);
             app.screen = Screen::PublishWizard;
+        }
+        KeyCode::Char('s') => {
+            let server_url = app.client.base_url.clone();
+            let cwd = std::env::current_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| ".".to_string());
+            let items = crate::api::setup::scan_project_types(
+                std::path::Path::new(&cwd),
+                &server_url,
+                2,
+            );
+            app.setup_wizard.set_items(items, cwd);
+            app.prev_screen = Some(Screen::RegistryList);
+            app.screen = Screen::SetupWizard;
+        }
+        KeyCode::Char('L') => {
+            app.login = LoginWidget::new();
+            app.prev_screen = Some(Screen::RegistryList);
+            app.screen = Screen::Login;
         }
         KeyCode::Char('?') => {
             app.prev_screen = Some(Screen::RegistryList);
@@ -301,6 +333,41 @@ async fn refresh_detail(app: &mut App, registry: &str, name: &str) {
     }
 }
 
+fn handle_setup_wizard(app: &mut App, key: event::KeyEvent) {
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => app.setup_wizard.prev(),
+        KeyCode::Down | KeyCode::Char('j') => app.setup_wizard.next(),
+        KeyCode::Esc => app.go_back(),
+        KeyCode::Char('?') => {
+            app.prev_screen = Some(Screen::SetupWizard);
+            app.screen = Screen::Help;
+        }
+        _ => {}
+    }
+}
+
+async fn handle_login(app: &mut App, key: event::KeyEvent) {
+    // Switching to OIDC tab fetches the authorization URL asynchronously
+    if key.code == KeyCode::Char('2') {
+        app.login.method = login::LoginMethod::Oidc;
+        app.login.status = None;
+        if app.login.oidc_url.is_none() {
+            let csrf = Uuid::new_v4().to_string();
+            match crate::api::auth::get_oidc_login_url(&app.client.base_url, &csrf, None).await {
+                Ok(url) => app.login.oidc_url = Some(url),
+                Err(e) => app.login.status = Some(format!("OIDC unavailable: {e}")),
+            }
+        }
+        return;
+    }
+
+    if let Some(_back) = login::handle_key(app, key) {
+        app.go_back();
+        app.status_msg =
+            Some("Credentials saved. Restart TUI to connect with new credentials.".into());
+    }
+}
+
 fn handle_publish_form(app: &mut App, key: event::KeyEvent) {
     if key.code == KeyCode::Esc {
         app.go_back();
@@ -322,6 +389,12 @@ fn render(f: &mut ratatui::Frame, app: &App) {
         }
         Screen::PublishWizard => {
             publish_form::render(f, app);
+        }
+        Screen::SetupWizard => {
+            setup_wizard::render(f, app);
+        }
+        Screen::Login => {
+            login::render(f, app);
         }
         Screen::Help => {
             help::render(f, app);

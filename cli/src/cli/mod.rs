@@ -5,9 +5,11 @@ pub mod owner;
 pub mod package;
 pub mod publish;
 pub mod registry;
+pub mod setup;
 pub mod version;
 
 use clap::{Parser, Subcommand};
+use clap_complete::Shell;
 
 #[derive(Parser)]
 #[command(
@@ -79,6 +81,17 @@ pub enum Command {
         #[command(subcommand)]
         cmd: config_cmd::ConfigCommand,
     },
+    /// Detect project type and print registry setup instructions
+    Setup {
+        #[command(subcommand)]
+        cmd: setup::SetupCommand,
+    },
     /// Launch interactive TUI
     Tui,
+    /// Print shell completion script to stdout
+    Completion {
+        /// Target shell
+        #[arg(value_enum)]
+        shell: Shell,
+    },
 }

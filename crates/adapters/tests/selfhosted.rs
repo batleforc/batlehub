@@ -103,7 +103,10 @@ async fn proxy_forward(
         if line.is_empty() {
             break;
         }
-        if line.to_ascii_lowercase().starts_with("proxy-authorization:") {
+        if line
+            .to_ascii_lowercase()
+            .starts_with("proxy-authorization:")
+        {
             proxy_auth = Some(line.to_owned());
         } else {
             forwarded_headers.push(line.to_owned());
@@ -379,7 +382,10 @@ async fn goproxy_client_routes_through_http_proxy() {
     assert_eq!(result.unwrap().id.version, "v0.1.0");
 
     // The proxy must have seen exactly one request for our URL.
-    let recorded = proxy_rx.recv().await.expect("proxy should have received a request");
+    let recorded = proxy_rx
+        .recv()
+        .await
+        .expect("proxy should have received a request");
     assert_eq!(recorded.method, "GET");
     assert!(
         recorded.target_url.contains("/golang.org/x/text/@latest"),
@@ -418,7 +424,10 @@ async fn goproxy_client_sends_proxy_basic_auth() {
 
     let _ = client.resolve_metadata(&test_pkg()).await;
 
-    let recorded = proxy_rx.recv().await.expect("proxy should have received a request");
+    let recorded = proxy_rx
+        .recv()
+        .await
+        .expect("proxy should have received a request");
     let auth = recorded
         .proxy_authorization
         .expect("Proxy-Authorization header must be sent with credentials");

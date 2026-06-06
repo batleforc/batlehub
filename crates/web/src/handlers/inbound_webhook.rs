@@ -70,21 +70,20 @@ pub async fn receive_inbound_webhook(
 
     // Empty secrets provide no security (attacker can compute HMAC with empty key),
     // so treat them the same as no secret configured.
-    let signature_valid =
-        match inbound_cfg.secret.as_deref().filter(|s| !s.is_empty()) {
-            Some(secret) => {
-                let header_val = req
-                    .headers()
-                    .get("X-Hub-Signature-256")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("");
-                if !verify_inbound_hmac(secret, &body, header_val) {
-                    return Err(AppError::forbidden("HMAC signature mismatch"));
-                }
-                Some(true)
+    let signature_valid = match inbound_cfg.secret.as_deref().filter(|s| !s.is_empty()) {
+        Some(secret) => {
+            let header_val = req
+                .headers()
+                .get("X-Hub-Signature-256")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if !verify_inbound_hmac(secret, &body, header_val) {
+                return Err(AppError::forbidden("HMAC signature mismatch"));
             }
-            None => None,
-        };
+            Some(true)
+        }
+        None => None,
+    };
 
     let payload: serde_json::Value = serde_json::from_slice(&body)
         .map_err(|e| AppError::bad_request(format!("request body is not valid JSON: {e}")))?;

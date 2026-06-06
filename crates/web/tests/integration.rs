@@ -771,7 +771,9 @@ async fn make_rate_limited_app(
         ))
         .split_for_parts();
     let app = app
-        .app_data(actix_web::web::Data::new(batlehub_web::CargoIndexMap::default()))
+        .app_data(actix_web::web::Data::new(
+            batlehub_web::CargoIndexMap::default(),
+        ))
         .app_data(actix_web::web::Data::new(local_svc))
         .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
 
@@ -9125,7 +9127,9 @@ async fn make_banner_app() -> impl actix_web::dev::Service<
     let app = app
         .app_data(actix_web::web::Data::new(banner_svc))
         .app_data(actix_web::web::Data::new(reload_svc))
-        .app_data(actix_web::web::Data::new(batlehub_web::CargoIndexMap::default()))
+        .app_data(actix_web::web::Data::new(
+            batlehub_web::CargoIndexMap::default(),
+        ))
         .app_data(actix_web::web::Data::new(
             batlehub_web::RegistryModeMap::default(),
         ));
@@ -9285,7 +9289,9 @@ async fn reload_config_returns_503_when_disabled() {
         .split_for_parts();
     let app = app
         .app_data(actix_web::web::Data::new(reload_svc))
-        .app_data(actix_web::web::Data::new(batlehub_web::CargoIndexMap::default()))
+        .app_data(actix_web::web::Data::new(
+            batlehub_web::CargoIndexMap::default(),
+        ))
         .app_data(actix_web::web::Data::new(
             batlehub_web::RegistryModeMap::default(),
         ));
@@ -10805,7 +10811,9 @@ async fn cli_download_serves_binary_when_configured() {
     let app = init_service(
         raw.app_data(actix_web::web::Data::new(CliBinaryPath(path)))
             .app_data(actix_web::web::Data::new(local_svc))
-            .app_data(actix_web::web::Data::new(batlehub_web::RegistryModeMap::default()))
+            .app_data(actix_web::web::Data::new(
+                batlehub_web::RegistryModeMap::default(),
+            ))
             .wrap(AuthMiddlewareFactory::new(test_auth_providers())),
     )
     .await;

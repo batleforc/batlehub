@@ -69,10 +69,12 @@ pub async fn download_cli(
         .unwrap_or("batlehub-cli");
     let safe_name = sanitize_filename(raw_name);
 
-    Ok(file.set_content_disposition(actix_web::http::header::ContentDisposition {
-        disposition: actix_web::http::header::DispositionType::Attachment,
-        parameters: vec![actix_web::http::header::DispositionParam::Filename(
-            safe_name,
-        )],
-    }))
+    Ok(
+        file.set_content_disposition(actix_web::http::header::ContentDisposition {
+            disposition: actix_web::http::header::DispositionType::Attachment,
+            parameters: vec![actix_web::http::header::DispositionParam::Filename(
+                safe_name,
+            )],
+        }),
+    )
 }

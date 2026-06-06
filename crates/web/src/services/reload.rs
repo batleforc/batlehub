@@ -138,8 +138,14 @@ impl ConfigReloadService {
             anyhow::bail!("hot reload is disabled (BATLEHUB_DISABLE_HOT_RELOAD=1)");
         }
         let new_config = load_config(&self.config_path)?;
-        let (new_hot, new_access, new_registry_map, new_registry_mode_map, new_upstream_map, new_cargo_index_map) =
-            (self.builder)(&new_config)?;
+        let (
+            new_hot,
+            new_access,
+            new_registry_map,
+            new_registry_mode_map,
+            new_upstream_map,
+            new_cargo_index_map,
+        ) = (self.builder)(&new_config)?;
         let diff = self.compute_diff(&new_hot, &new_access).await;
         let now = Utc::now();
         let pending = PendingReload {

@@ -68,6 +68,12 @@ const serverUrl = computed(() => window.location.origin);
 const RELEASES_URL = "https://github.com/batleforc/batlehub/releases/latest/download";
 
 const installSnippets: Record<string, { label: string; lang: string; code: string }> = {
+  mise: {
+    label: "mise",
+    lang: "bash",
+    code: `# Install via mise — manages version automatically (https://mise.jdx.dev)
+mise use "github:batleforc/batlehub[asset_pattern=batlehub-cli-*]"`,
+  },
   server: {
     label: "From this server",
     lang: "bash",
@@ -82,40 +88,36 @@ chmod +x batlehub-cli
     label: "Linux x86_64",
     lang: "bash",
     code: `# Linux x86_64 (musl — statically linked, no runtime deps)
-curl -fSL "${RELEASES_URL}/batlehub-cli-linux-amd64" -o batlehub-cli
-chmod +x batlehub-cli
+curl -fSL "${RELEASES_URL}/batlehub-cli-linux-amd64.tar.gz" | tar xz
 sudo mv batlehub-cli /usr/local/bin/batlehub-cli`,
   },
   linux_arm64: {
     label: "Linux aarch64",
     lang: "bash",
     code: `# Linux aarch64 (musl — statically linked, no runtime deps)
-curl -fSL "${RELEASES_URL}/batlehub-cli-linux-arm64" -o batlehub-cli
-chmod +x batlehub-cli
+curl -fSL "${RELEASES_URL}/batlehub-cli-linux-arm64.tar.gz" | tar xz
 sudo mv batlehub-cli /usr/local/bin/batlehub-cli`,
   },
   macos_arm64: {
     label: "macOS Apple Silicon",
     lang: "bash",
     code: `# macOS aarch64 (Apple Silicon — M1/M2/M3)
-curl -fSL "${RELEASES_URL}/batlehub-cli-darwin-arm64" -o batlehub-cli
-chmod +x batlehub-cli
+curl -fSL "${RELEASES_URL}/batlehub-cli-darwin-arm64.tar.gz" | tar xz
 sudo mv batlehub-cli /usr/local/bin/batlehub-cli`,
   },
   macos_amd64: {
     label: "macOS Intel",
     lang: "bash",
     code: `# macOS x86_64 (Intel)
-curl -fSL "${RELEASES_URL}/batlehub-cli-darwin-amd64" -o batlehub-cli
-chmod +x batlehub-cli
+curl -fSL "${RELEASES_URL}/batlehub-cli-darwin-amd64.tar.gz" | tar xz
 sudo mv batlehub-cli /usr/local/bin/batlehub-cli`,
   },
   windows: {
     label: "Windows",
     lang: "powershell",
     code: `# Windows x86_64 — run in PowerShell
-Invoke-WebRequest "${RELEASES_URL}/batlehub-cli-windows-amd64.exe" -OutFile batlehub-cli.exe
-# Move to a directory on your PATH, e.g.:
+Invoke-WebRequest "${RELEASES_URL}/batlehub-cli-windows-amd64.zip" -OutFile batlehub-cli.zip
+Expand-Archive batlehub-cli.zip -DestinationPath .
 Move-Item batlehub-cli.exe "$env:LOCALAPPDATA\\Microsoft\\WindowsApps\\batlehub-cli.exe"`,
   },
   cargo: {

@@ -54,6 +54,8 @@ pub fn render(f: &mut Frame, _app: &App) {
         Line::from("  ↓ / j        Move down"),
         Line::from("  Enter        Open registry / browse packages"),
         Line::from("  p            Open publish wizard"),
+        Line::from("  s            Open setup wizard (scan current dir)"),
+        Line::from("  L            Open login screen (OIDC / Kubernetes / static token)"),
         Line::from(""),
         Line::from(Span::styled(
             "Package list",
@@ -77,6 +79,22 @@ pub fn render(f: &mut Frame, _app: &App) {
         Line::from("  Shift-Tab    Previous field"),
         Line::from("  Enter        Submit"),
         Line::from("  Esc          Cancel"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Setup wizard",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from("  ↑ / k        Move up"),
+        Line::from("  ↓ / j        Move down"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Login",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from("  1            Static token"),
+        Line::from("  2            OIDC (browser login)"),
+        Line::from("  3            Kubernetes service account"),
+        Line::from("  Enter        Save credentials"),
         Line::from(""),
         Line::from(Span::styled(
             "Press Esc or ? to close",

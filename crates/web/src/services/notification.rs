@@ -186,7 +186,11 @@ impl ChannelDispatcher for EmailDispatcher {
             }
         }
         if !errors.is_empty() {
-            anyhow::bail!("email delivery failed for {} recipient(s): {}", errors.len(), errors.join("; "));
+            anyhow::bail!(
+                "email delivery failed for {} recipient(s): {}",
+                errors.len(),
+                errors.join("; ")
+            );
         }
         Ok(())
     }
@@ -264,10 +268,7 @@ impl NotificationService {
         };
         // Lock BEFORE spawning so shutdown() cannot drain the vec in the gap
         // between tokio::spawn() returning a handle and the handle being pushed.
-        let mut guard = self
-            .pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         // Prune completed handles to prevent unbounded growth.
         guard.retain(|h| !h.is_finished());
         let svc = Arc::clone(self);
