@@ -192,6 +192,11 @@ tasks:
     cmds:
       - cargo fmt --all
 
+  release:prepare:
+    desc: "Prepare a release — bumps versions, cuts the changelog, commits and tags locally (does not push). Pass args after --, e.g. task release:prepare -- 0.2.0 or task release:prepare -- --minor --dry-run"
+    cmds:
+      - bash scripts/prepare-release.sh {{.CLI_ARGS}}
+
   run:
     desc: Start the server with the example config (requires postgres)
     cmds:
