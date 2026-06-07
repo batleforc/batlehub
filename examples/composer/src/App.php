@@ -9,6 +9,8 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
+require __DIR__ . '/../vendor/autoload.php';
+
 class HelloCommand extends Command
 {
     protected static string $defaultName = 'app:hello';
