@@ -168,7 +168,9 @@ async function copy(key: string, text: string) {
             <div class="flex items-start justify-between gap-4">
               <div class="flex-1 space-y-3">
                 <!-- Description (trusted HTML) -->
-                <CardDescription v-html="def.description" />
+                <CardDescription>
+                  <span v-html="def.description" />
+                </CardDescription>
                 <!-- Registry selector (shown when multiple registries of same type) -->
                 <div v-if="showSelector(def)" class="flex items-center gap-2">
                   <span class="text-xs text-muted-foreground shrink-0">Registry:</span>

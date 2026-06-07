@@ -70,6 +70,15 @@ const copied = ref<string | null>(null);
 
 // ── URL parser ─────────────────────────────────────────────────────────────────
 
+/**
+ * Whether `hostname` is `domain` itself or a proper subdomain of it.
+ * Unlike `hostname.includes(domain)`, this rejects look-alike hosts such as
+ * `evil-npmjs.org.attacker.com` or `notnpmjs.org`.
+ */
+function isHostOf(hostname: string, domain: string): boolean {
+  return hostname === domain || hostname.endsWith(`.${domain}`);
+}
+
 function parseUrl(raw: string) {
   const str = raw.trim();
   if (!str) return;
@@ -77,7 +86,7 @@ function parseUrl(raw: string) {
     const u = new URL(str);
     const parts = u.pathname.split("/").filter(Boolean);
 
-    if (u.hostname.includes("npmjs.org") || u.hostname.includes("registry.npmjs")) {
+    if (isHostOf(u.hostname, "npmjs.org") || isHostOf(u.hostname, "npmjs.com")) {
       registry.value = "npm";
       if (parts[0]) npmPackage.value = decodeURIComponent(parts[0]);
       if (parts[1] && parts[1] !== "-") {
@@ -86,7 +95,7 @@ function parseUrl(raw: string) {
         const m = parts[2].match(/-(\d[\w.\-+]*)\.tgz$/);
         if (m) npmVersion.value = m[1];
       }
-    } else if (u.hostname.includes("crates.io")) {
+    } else if (isHostOf(u.hostname, "crates.io")) {
       registry.value = "cargo";
       const idx = parts.indexOf("crates");
       if (idx >= 0) {

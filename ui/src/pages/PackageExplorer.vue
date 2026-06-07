@@ -32,7 +32,7 @@ import { Card, CardContent } from "@/components/ui/card";
 
 type CachedRow = ExploreEntryDto & { kind: "cached" };
 type UpstreamRow = UpstreamPackageDto & { kind: "upstream" };
-type TableRow = CachedRow | UpstreamRow;
+type ExploreRow = CachedRow | UpstreamRow;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -76,7 +76,7 @@ const totalPackages = computed(() =>
 const freshUpstream = computed(() => upstreamResults.value.filter((p) => !p.already_cached));
 
 // Unified rows: cached packages first, then upstream-only hits at the bottom
-const tableRows = computed<TableRow[]>(() => [
+const tableRows = computed<ExploreRow[]>(() => [
   ...packages.value.map((p) => ({ ...p, kind: "cached" as const })),
   ...freshUpstream.value.map((p) => ({ ...p, kind: "upstream" as const })),
 ]);
@@ -193,7 +193,7 @@ function onSortChange(val: string) {
   fetchPackages();
 }
 
-function goToDetail(row: TableRow) {
+function goToDetail(row: ExploreRow) {
   if (row.kind !== "cached") return;
   router.push({
     path: `/explore/packages/${encodeURIComponent(row.registry)}/${encodeURIComponent(row.name)}`,

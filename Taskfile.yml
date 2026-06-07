@@ -257,10 +257,11 @@ tasks:
       - npm run build
 
   ui:lint:
-    desc: Run the frontend oxlint and oxfmt checks locally
+    desc: Run the frontend oxlint, eslint and oxfmt checks locally
     dir: ui
     cmds:
       - npm run lint
+      - npm run lint:eslint
       - npm run format:check
 
   ui:fix:

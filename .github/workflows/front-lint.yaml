@@ -48,20 +48,34 @@ jobs:
         run: npm ci
 
       - name: Run oxlint
-        id: lint
+        id: oxlint
         continue-on-error: true
         run: npx oxlint -f sarif src > oxlint-results.sarif
 
-      - name: Upload SARIF results
+      - name: Upload oxlint SARIF results
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: ui/oxlint-results.sarif
+          category: oxlint
+          wait-for-processing: true
+
+      - name: Run eslint
+        id: eslint
+        continue-on-error: true
+        run: npx eslint src --ext .ts,.vue --format @microsoft/eslint-formatter-sarif -o eslint-results.sarif
+
+      - name: Upload eslint SARIF results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ui/eslint-results.sarif
+          category: eslint
           wait-for-processing: true
 
       - name: Check formatting (oxfmt)
         run: npx oxfmt --check src
 
       - name: Fail on lint errors
-        if: steps.lint.outcome == 'failure'
+        if: steps.oxlint.outcome == 'failure' || steps.eslint.outcome == 'failure'
         run: exit 1

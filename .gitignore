@@ -27,3 +27,4 @@ ui/.env
 
 lcov.info
 ui/oxlint-results.sarif
+ui/eslint-results.sarif
