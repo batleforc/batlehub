@@ -133,8 +133,9 @@ async function confirmRelease() {
 
     <!-- Registry selector -->
     <div class="space-y-1.5 max-w-xs">
-      <Label>Registry</Label>
+      <Label for="team-ns-registry">Registry</Label>
       <Select
+        id="team-ns-registry"
         v-model="selectedRegistry"
         placeholder="Select a registry…"
         :options="registryOptions"
@@ -229,8 +230,9 @@ async function confirmRelease() {
       </div>
       <div class="space-y-3">
         <div class="space-y-1.5">
-          <Label>Prefix <span class="text-destructive">*</span></Label>
+          <Label for="team-ns-prefix">Prefix <span class="text-destructive">*</span></Label>
           <Input
+            id="team-ns-prefix"
             v-model="claimForm.prefix"
             placeholder="e.g. frontend or frontend/ui"
             class="font-mono"
@@ -241,8 +243,9 @@ async function confirmRelease() {
           </p>
         </div>
         <div class="space-y-1.5">
-          <Label>Group ID <span class="text-destructive">*</span></Label>
+          <Label for="team-ns-group-id">Group ID <span class="text-destructive">*</span></Label>
           <Input
+            id="team-ns-group-id"
             v-model="claimForm.group_id"
             placeholder="e.g. oidc:frontend-team"
             class="font-mono"
@@ -252,8 +255,12 @@ async function confirmRelease() {
           </p>
         </div>
         <div class="space-y-1.5">
-          <Label>Claimed by</Label>
-          <Input v-model="claimForm.claimed_by" placeholder="Optional — your user ID" />
+          <Label for="team-ns-claimed-by">Claimed by</Label>
+          <Input
+            id="team-ns-claimed-by"
+            v-model="claimForm.claimed_by"
+            placeholder="Optional — your user ID"
+          />
         </div>
       </div>
       <p v-if="claimError" class="text-sm text-destructive">

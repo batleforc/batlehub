@@ -127,8 +127,9 @@ const principalTypeOptions = [
 
     <!-- Registry selector -->
     <div class="space-y-1.5 max-w-xs">
-      <Label>Registry</Label>
+      <Label for="beta-registry">Registry</Label>
       <Select
+        id="beta-registry"
         v-model="selectedRegistry"
         placeholder="Select a registry…"
         :options="registryOptions"
@@ -222,20 +223,29 @@ const principalTypeOptions = [
       </div>
       <div class="space-y-3">
         <div class="space-y-1.5">
-          <Label>Type</Label>
-          <Select v-model="addForm.principal_type" :options="principalTypeOptions" />
+          <Label for="beta-principal-type">Type</Label>
+          <Select
+            id="beta-principal-type"
+            v-model="addForm.principal_type"
+            :options="principalTypeOptions"
+          />
         </div>
         <div class="space-y-1.5">
-          <Label>Principal ID <span class="text-destructive">*</span></Label>
+          <Label for="beta-principal-id">Principal ID <span class="text-destructive">*</span></Label>
           <Input
+            id="beta-principal-id"
             v-model="addForm.principal_id"
             placeholder="e.g. alice or team-frontend"
             class="font-mono"
           />
         </div>
         <div class="space-y-1.5">
-          <Label>Granted by</Label>
-          <Input v-model="addForm.granted_by" placeholder="Optional — your user ID" />
+          <Label for="beta-granted-by">Granted by</Label>
+          <Input
+            id="beta-granted-by"
+            v-model="addForm.granted_by"
+            placeholder="Optional — your user ID"
+          />
         </div>
       </div>
       <p v-if="addError" class="text-sm text-destructive">

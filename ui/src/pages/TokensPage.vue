@@ -310,13 +310,16 @@ const lifetimePresets = [7, 30, 90];
           </div>
 
           <div class="space-y-1.5">
-            <Label>Role</Label>
-            <Select v-model="form.role" :options="roleOptions" placeholder="Select role" />
+            <Label for="token-role">Role</Label>
+            <Select id="token-role" v-model="form.role" :options="roleOptions" placeholder="Select role" />
           </div>
 
           <div class="space-y-2">
-            <Label>Lifetime</Label>
-            <div class="flex gap-2">
+            <span
+              class="font-mono text-xs font-semibold uppercase tracking-wide text-muted-foreground leading-none"
+              >Lifetime</span
+            >
+            <div class="flex gap-2" role="group" aria-label="Lifetime">
               <Button
                 v-for="days in lifetimePresets"
                 :key="days"

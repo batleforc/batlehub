@@ -186,3 +186,4 @@ Applies to registries running in `local` or `hybrid` mode.
 - [x] CLI test suite — 23 unit tests (`parse_oidc_paste`, `is_token_expiring_soon`, `detect_project_types` for all 9 manifest types) + 16 integration tests (registry, package, version yank/unyank/delete, publish, auth, shell completion, Kubernetes login); fixed `InMemoryLocalRegistry` case-sensitivity bug so yank/delete tests pass end-to-end
 - [ ] Integration tests against real upstream registries (gated, opt-in)
 - [ ] Broader fuzzing targets beyond the current four (RBAC, cache key, deny-latest, release age)
+- [ ] Cover code with [Sonarqube](https://sonarcloud.io/project/overview?id=batleforc_batlehub)

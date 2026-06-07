@@ -113,8 +113,11 @@ onMounted(fetchRegistries);
         <div class="flex gap-2 flex-wrap items-end">
           <!-- Populated select when health endpoint succeeds -->
           <div v-if="registries.length > 0" class="flex flex-col gap-1">
-            <label class="text-xs text-muted-foreground font-medium">Registry</label>
+            <label for="explore-cache-registry-select" class="text-xs text-muted-foreground font-medium"
+              >Registry</label
+            >
             <select
+              id="explore-cache-registry-select"
               v-model="selectedRegistry"
               class="border border-input rounded-sm px-2 py-2 font-mono text-sm bg-background min-w-[10rem] focus:outline-none focus:ring-2 focus:ring-ring"
             >
@@ -123,8 +126,11 @@ onMounted(fetchRegistries);
           </div>
           <!-- Fallback text input -->
           <div v-else class="flex flex-col gap-1">
-            <label class="text-xs text-muted-foreground font-medium">Registry name</label>
+            <label for="explore-cache-registry-input" class="text-xs text-muted-foreground font-medium"
+              >Registry name</label
+            >
             <input
+              id="explore-cache-registry-input"
               v-model="selectedRegistry"
               placeholder="e.g. npm"
               class="border border-input rounded-sm px-2 py-2 font-mono text-sm bg-background min-w-[10rem] focus:outline-none focus:ring-2 focus:ring-ring"

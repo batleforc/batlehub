@@ -181,16 +181,22 @@ function isExpired(unblock_at: number): boolean {
       </div>
       <div class="space-y-3">
         <div class="space-y-1.5">
-          <Label>IP address <span class="text-destructive">*</span></Label>
-          <Input v-model="blockForm.ip" placeholder="e.g. 203.0.113.42" class="font-mono" />
-        </div>
-        <div class="space-y-1.5">
-          <Label>Reason</Label>
-          <Input v-model="blockForm.reason" placeholder="Optional reason" />
-        </div>
-        <div class="space-y-1.5">
-          <Label>Duration (seconds)</Label>
+          <Label for="ipblock-ip">IP address <span class="text-destructive">*</span></Label>
           <Input
+            id="ipblock-ip"
+            v-model="blockForm.ip"
+            placeholder="e.g. 203.0.113.42"
+            class="font-mono"
+          />
+        </div>
+        <div class="space-y-1.5">
+          <Label for="ipblock-reason">Reason</Label>
+          <Input id="ipblock-reason" v-model="blockForm.reason" placeholder="Optional reason" />
+        </div>
+        <div class="space-y-1.5">
+          <Label for="ipblock-duration">Duration (seconds)</Label>
+          <Input
+            id="ipblock-duration"
             v-model.number="blockForm.duration_secs"
             type="number"
             min="60"

@@ -10,6 +10,11 @@ else
     GREEN=''; RED=''; YELLOW=''; BOLD=''; DIM=''; RESET=''
 fi
 
+# ── Repeated literals ─────────────────────────────────────────────────────────
+readonly OUTPUT_LABEL_FMT='%bOutput:%b\n%s\n'
+readonly ZIP_MAGIC_BYTES='504b0304'
+readonly CURL_HTTP_CODE_FMT='%{http_code}'
+
 # ── Usage ─────────────────────────────────────────────────────────────────────
 usage() {
     cat <<EOF
@@ -119,7 +124,7 @@ record() {
     esac
 }
 
-tool_present() { command -v "$1" &>/dev/null; }
+tool_present() { local cmd="$1"; command -v "$cmd" &>/dev/null; }
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
 
@@ -152,7 +157,7 @@ http_check() {
 
     http_code=$(curl -sS --max-time 30 "${CURL_AUTH[@]}" \
         -o "$body_file" \
-        -w '%{http_code}' "$url" 2>/dev/null) || rc=$?
+        -w "$CURL_HTTP_CODE_FMT" "$url" 2>/dev/null) || rc=$?
 
     if (( rc != 0 )); then
         print_fail "$label: curl failed"
@@ -201,7 +206,7 @@ http_check_not_5xx() {
     local label="$1" url="$2"
     local http_code
     http_code=$(curl -sS --max-time 30 "${CURL_AUTH[@]}" \
-        -o /dev/null -w '%{http_code}' "$url" 2>/dev/null) || {
+        -o /dev/null -w "$CURL_HTTP_CODE_FMT" "$url" 2>/dev/null) || {
         print_fail "$label: curl failed"
         return 1
     }
@@ -226,7 +231,7 @@ test_npm() {
     local npm_body="${TMPDIR_ROOT}/npm_http_${RANDOM}"
     local http_code rc=0
     http_code=$(curl -sS --max-time 30 "${CURL_AUTH[@]}" \
-        -o "$npm_body" -w '%{http_code}' \
+        -o "$npm_body" -w "$CURL_HTTP_CODE_FMT" \
         "${BASE_URL}/proxy/${name}/ms" 2>/dev/null) || rc=$?
 
     local http_ok=true
@@ -251,7 +256,7 @@ test_npm() {
     local tgz_file="${TMPDIR_ROOT}/npm_tool_${RANDOM}.tgz"
     rc=0
     http_code=$(curl -sS --max-time 60 "${CURL_AUTH[@]}" \
-        -o "$tgz_file" -w '%{http_code}' \
+        -o "$tgz_file" -w "$CURL_HTTP_CODE_FMT" \
         "${BASE_URL}/proxy/${name}/ms/2.1.3/tarball" 2>/dev/null) || rc=$?
 
     if (( rc != 0 )); then
@@ -271,7 +276,7 @@ test_npm() {
             record npm tool PASS
         else
             print_fail "npm:tool — ms@2.1.3 tarball failed tar validation"
-            printf '%bOutput:%b\n%s\n' "$DIM" "$RESET" "$(printf '%s' "$tar_out" | tail -5)"
+            printf "$OUTPUT_LABEL_FMT" "$DIM" "$RESET" "$(printf '%s' "$tar_out" | tail -5)"
             record npm tool FAIL
         fi
     else
@@ -296,7 +301,7 @@ test_npm() {
     audit_code=$(curl -sS --max-time 30 "${CURL_AUTH[@]}" \
         -X POST -H "Content-Type: application/json" \
         -d "$audit_payload" \
-        -o "$audit_body" -w '%{http_code}' \
+        -o "$audit_body" -w "$CURL_HTTP_CODE_FMT" \
         "${BASE_URL}/proxy/${name}/-/npm/v1/audit/quick" 2>/dev/null) || audit_rc=$?
     rm -f "$audit_body"
     if (( audit_rc != 0 )); then
@@ -341,7 +346,7 @@ LOCKJSON
             record npm audit-tool PASS
         else
             print_fail "npm:audit-tool — npm audit failed (exit $audit_exit)"
-            printf '%bOutput:%b\n%s\n' "$DIM" "$RESET" "$(printf '%s' "$audit_out" | tail -5)"
+            printf "$OUTPUT_LABEL_FMT" "$DIM" "$RESET" "$(printf '%s' "$audit_out" | tail -5)"
             record npm audit-tool FAIL
         fi
     fi
@@ -412,7 +417,7 @@ CARGOCONF
 
     if (( rc != 0 )); then
         print_fail "cargo:tool — cargo add serde (exit $rc)"
-        printf '%bOutput:%b\n%s\n' "$DIM" "$RESET" "$(printf '%s' "$out" | tail -10)"
+        printf "$OUTPUT_LABEL_FMT" "$DIM" "$RESET" "$(printf '%s' "$out" | tail -10)"
         record cargo tool FAIL
         return
     fi
@@ -432,7 +437,7 @@ CARGOCONF
         record cargo tool PASS
     else
         print_fail "cargo:tool — cargo fetch (exit $rc)"
-        printf '%bOutput:%b\n%s\n' "$DIM" "$RESET" "$(printf '%s' "$out" | tail -10)"
+        printf "$OUTPUT_LABEL_FMT" "$DIM" "$RESET" "$(printf '%s' "$out" | tail -10)"
         record cargo tool FAIL
     fi
 }
@@ -451,7 +456,7 @@ test_go() {
 
     http_code=$(curl -sS --max-time 30 "${CURL_AUTH[@]}" \
         -o "$go_body_file" \
-        -w '%{http_code}' "$version_url" 2>/dev/null) || { rc=$?; http_ok=false; }
+        -w "$CURL_HTTP_CODE_FMT" "$version_url" 2>/dev/null) || { rc=$?; http_ok=false; }
 
     if $http_ok; then
         decompress_if_gzip "$go_body_file"
@@ -532,7 +537,7 @@ test_go() {
         record go tool PASS
     else
         print_fail "go:tool — go get $go_target (exit $rc)"
-        printf '%bOutput:%b\n%s\n' "$DIM" "$RESET" "$(printf '%s' "$out" | tail -10)"
+        printf "$OUTPUT_LABEL_FMT" "$DIM" "$RESET" "$(printf '%s' "$out" | tail -10)"
         record go tool FAIL
     fi
 }
@@ -550,7 +555,7 @@ test_github() {
     # for unauthenticated callers), while the asset download path is cached.
     local http_code rc=0
     http_code=$(curl -sS --max-time 30 "${CURL_AUTH[@]}" \
-        -o /dev/null -w '%{http_code}' "$asset_url" 2>/dev/null) || rc=$?
+        -o /dev/null -w "$CURL_HTTP_CODE_FMT" "$asset_url" 2>/dev/null) || rc=$?
 
     local http_ok=true
     if (( rc != 0 )); then
@@ -566,7 +571,7 @@ test_github() {
     local asset_file="${TMPDIR_ROOT}/github_asset_${RANDOM}.tar.gz"
     rc=0
     http_code=$(curl -sS --max-time 60 "${CURL_AUTH[@]}" \
-        -o "$asset_file" -w '%{http_code}' "$asset_url" 2>/dev/null) || rc=$?
+        -o "$asset_file" -w "$CURL_HTTP_CODE_FMT" "$asset_url" 2>/dev/null) || rc=$?
 
     if (( rc != 0 )); then
         print_fail "github:tool — curl failed"
@@ -605,7 +610,7 @@ test_openvsx() {
     local vsix_file="${TMPDIR_ROOT}/openvsx-${name}.vsix"
     local http_code rc=0
     http_code=$(curl -sS --max-time 60 "${CURL_AUTH[@]}" \
-        -L -o "$vsix_file" -w '%{http_code}' \
+        -L -o "$vsix_file" -w "$CURL_HTTP_CODE_FMT" \
         "${BASE_URL}/proxy/${name}/redhat.java/1.26.0/vsix" 2>/dev/null) || rc=$?
 
     if (( rc != 0 )); then
@@ -622,7 +627,7 @@ test_openvsx() {
         local magic=""
         if tool_present xxd; then
             magic=$(xxd -l 4 "$vsix_file" 2>/dev/null | awk '{print $2$3}' | head -1) || true
-            if [[ "$magic" == "504b0304" ]]; then
+            if [[ "$magic" == "$ZIP_MAGIC_BYTES" ]]; then
                 print_pass "openvsx:tool — valid VSIX (ZIP magic bytes confirmed)"
                 record openvsx tool PASS
             else
@@ -631,7 +636,7 @@ test_openvsx() {
             fi
         elif tool_present od; then
             magic=$(od -A x -t x1 -N 4 "$vsix_file" 2>/dev/null | awk 'NR==1{print $2$3$4$5}') || true
-            if [[ "$magic" == "504b0304" ]]; then
+            if [[ "$magic" == "$ZIP_MAGIC_BYTES" ]]; then
                 print_pass "openvsx:tool — valid VSIX (ZIP magic bytes confirmed)"
                 record openvsx tool PASS
             else
@@ -668,7 +673,7 @@ test_vscode_marketplace() {
     local vsix_file="${TMPDIR_ROOT}/vscode-marketplace-${name}.vsix"
     local http_code rc=0
     http_code=$(curl -sS --max-time 60 "${CURL_AUTH[@]}" \
-        -L -o "$vsix_file" -w '%{http_code}' \
+        -L -o "$vsix_file" -w "$CURL_HTTP_CODE_FMT" \
         "${BASE_URL}/proxy/${name}/ms-python.python/2024.2.1/vsix" 2>/dev/null) || rc=$?
 
     if (( rc != 0 )); then
@@ -685,7 +690,7 @@ test_vscode_marketplace() {
         local magic=""
         if tool_present xxd; then
             magic=$(xxd -l 4 "$vsix_file" 2>/dev/null | awk '{print $2$3}' | head -1) || true
-            if [[ "$magic" == "504b0304" ]]; then
+            if [[ "$magic" == "$ZIP_MAGIC_BYTES" ]]; then
                 print_pass "vscode-marketplace:tool — valid VSIX (ZIP magic bytes confirmed)"
                 record vscode-marketplace tool PASS
             else
@@ -694,7 +699,7 @@ test_vscode_marketplace() {
             fi
         elif tool_present od; then
             magic=$(od -A x -t x1 -N 4 "$vsix_file" 2>/dev/null | awk 'NR==1{print $2$3$4$5}') || true
-            if [[ "$magic" == "504b0304" ]]; then
+            if [[ "$magic" == "$ZIP_MAGIC_BYTES" ]]; then
                 print_pass "vscode-marketplace:tool — valid VSIX (ZIP magic bytes confirmed)"
                 record vscode-marketplace tool PASS
             else
@@ -729,7 +734,7 @@ test_rubygems() {
     local rg_body="${TMPDIR_ROOT}/rg_http_${RANDOM}"
     local http_code rc=0
     http_code=$(curl -sS --max-time 30 "${CURL_AUTH[@]}" \
-        -o "$rg_body" -w '%{http_code}' \
+        -o "$rg_body" -w "$CURL_HTTP_CODE_FMT" \
         "${BASE_URL}/proxy/${name}/api/v1/gems/rake.json" 2>/dev/null) || rc=$?
 
     local http_ok=true
@@ -760,7 +765,7 @@ test_rubygems() {
     local gem_file="${TMPDIR_ROOT}/rg_gem_${RANDOM}.gem"
     rc=0
     http_code=$(curl -sS --max-time 60 "${CURL_AUTH[@]}" \
-        -o "$gem_file" -w '%{http_code}' \
+        -o "$gem_file" -w "$CURL_HTTP_CODE_FMT" \
         "${BASE_URL}/proxy/${name}/gems/rake-13.2.1.gem" 2>/dev/null) || rc=$?
 
     if (( rc != 0 )); then
@@ -808,7 +813,7 @@ test_maven() {
     local meta_file="${TMPDIR_ROOT}/maven_meta_${RANDOM}"
     local http_code rc=0
     http_code=$(curl -sS --max-time 30 "${CURL_AUTH[@]}" \
-        -o "$meta_file" -w '%{http_code}' \
+        -o "$meta_file" -w "$CURL_HTTP_CODE_FMT" \
         "${BASE_URL}/proxy/${name}/maven2/junit/junit/maven-metadata.xml" 2>/dev/null) || rc=$?
 
     local http_ok=true
@@ -828,7 +833,7 @@ test_maven() {
     local pom_file="${TMPDIR_ROOT}/maven_pom_${RANDOM}.pom"
     rc=0
     http_code=$(curl -sS --max-time 60 "${CURL_AUTH[@]}" \
-        -o "$pom_file" -w '%{http_code}' \
+        -o "$pom_file" -w "$CURL_HTTP_CODE_FMT" \
         "${BASE_URL}/proxy/${name}/maven2/junit/junit/4.13.2/junit-4.13.2.pom" 2>/dev/null) || rc=$?
 
     if (( rc != 0 )); then
@@ -859,7 +864,7 @@ test_terraform() {
     local tf_body="${TMPDIR_ROOT}/tf_http_${RANDOM}"
     local http_code rc=0
     http_code=$(curl -sS --max-time 30 "${CURL_AUTH[@]}" \
-        -o "$tf_body" -w '%{http_code}' \
+        -o "$tf_body" -w "$CURL_HTTP_CODE_FMT" \
         "${BASE_URL}/proxy/${name}/v1/providers/hashicorp/random/versions" 2>/dev/null) || rc=$?
 
     local http_ok=true
@@ -891,7 +896,7 @@ test_terraform() {
     local tf_dl="${TMPDIR_ROOT}/tf_dl_${RANDOM}"
     rc=0
     http_code=$(curl -sS --max-time 30 "${CURL_AUTH[@]}" \
-        -o "$tf_dl" -w '%{http_code}' \
+        -o "$tf_dl" -w "$CURL_HTTP_CODE_FMT" \
         "${BASE_URL}/proxy/${name}/v1/providers/hashicorp/random/3.6.0/download/linux/amd64" 2>/dev/null) || rc=$?
 
     if (( rc != 0 )); then

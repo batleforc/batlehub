@@ -297,12 +297,17 @@ onUnmounted(() => {
         <div v-else class="text-sm text-muted-foreground">No banner currently set.</div>
         <div class="flex gap-2 items-end flex-wrap">
           <div class="flex-1 min-w-[16rem] space-y-1">
-            <Label>Message</Label>
-            <Input v-model="bannerMessage" placeholder="Maintenance in progress…" />
+            <Label for="banner-message">Message</Label>
+            <Input
+              id="banner-message"
+              v-model="bannerMessage"
+              placeholder="Maintenance in progress…"
+            />
           </div>
           <div class="space-y-1">
-            <Label>Level</Label>
+            <Label for="banner-level">Level</Label>
             <select
+              id="banner-level"
               v-model="bannerLevel"
               class="border border-input rounded-sm px-2 py-2 font-mono text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
             >

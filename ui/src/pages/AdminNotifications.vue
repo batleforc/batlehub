@@ -457,22 +457,39 @@ function eventBadgeVariant(et: EventType): "default" | "secondary" | "destructiv
 
       <div class="space-y-3">
         <div class="space-y-1.5">
-          <Label
+          <Label for="notif-registry"
             >Registry
             <span class="text-muted-foreground text-xs">(leave blank for all)</span></Label
           >
-          <Input v-model="form.registry" placeholder="e.g. my-cargo" class="font-mono" />
+          <Input
+            id="notif-registry"
+            v-model="form.registry"
+            placeholder="e.g. my-cargo"
+            class="font-mono"
+          />
         </div>
         <div class="space-y-1.5">
-          <Label
+          <Label for="notif-package-name"
             >Package name
             <span class="text-muted-foreground text-xs">(leave blank for all)</span></Label
           >
-          <Input v-model="form.package_name" placeholder="e.g. serde" class="font-mono" />
+          <Input
+            id="notif-package-name"
+            v-model="form.package_name"
+            placeholder="e.g. serde"
+            class="font-mono"
+          />
         </div>
         <div class="space-y-1.5">
-          <Label>Event types <span class="text-destructive">*</span></Label>
-          <div class="flex flex-wrap gap-2">
+          <span
+            class="font-mono text-xs font-semibold uppercase tracking-wide text-muted-foreground leading-none"
+            >Event types <span class="text-destructive">*</span></span
+          >
+          <div
+            class="flex flex-wrap gap-2"
+            role="group"
+            aria-label="Event types"
+          >
             <button
               v-for="et in ALL_EVENT_TYPES"
               :key="et"
@@ -490,8 +507,9 @@ function eventBadgeVariant(et: EventType): "default" | "secondary" | "destructiv
           </div>
         </div>
         <div class="space-y-1.5">
-          <Label>Channel <span class="text-destructive">*</span></Label>
+          <Label for="notif-channel">Channel <span class="text-destructive">*</span></Label>
           <Input
+            id="notif-channel"
             v-model="form.channel_name"
             placeholder="e.g. my-slack"
             class="font-mono"
@@ -502,8 +520,8 @@ function eventBadgeVariant(et: EventType): "default" | "secondary" | "destructiv
           </datalist>
         </div>
         <div v-if="editingId" class="flex items-center gap-2">
-          <Switch v-model="form.enabled" />
-          <Label>Enabled</Label>
+          <Switch id="notif-enabled" v-model="form.enabled" />
+          <Label for="notif-enabled">Enabled</Label>
         </div>
       </div>
 

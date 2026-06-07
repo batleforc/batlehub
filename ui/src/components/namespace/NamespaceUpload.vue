@@ -114,8 +114,9 @@ const currentSnippet = computed(
   </div>
   <template v-else>
     <div class="space-y-1.5 w-60">
-      <Label>Registry</Label>
+      <Label for="upload-registry">Registry</Label>
       <Select
+        id="upload-registry"
         v-model="selectedRegistry"
         :options="registryOptions"
         placeholder="Select registry…"
@@ -132,47 +133,60 @@ const currentSnippet = computed(
         <template v-if="registryType === 'openvsx' || registryType === 'vscode-marketplace'">
           <div class="grid grid-cols-2 gap-3">
             <div class="space-y-1.5">
-              <Label
+              <Label for="upload-ext-id"
                 >Extension ID
                 <span class="text-muted-foreground text-xs">(publisher.name)</span></Label
               >
               <Input
+                id="upload-ext-id"
                 v-model="uploadExtId"
                 placeholder="ms-python.python"
                 class="font-mono text-sm"
               />
             </div>
             <div class="space-y-1.5">
-              <Label>Version</Label>
-              <Input v-model="uploadVersion" placeholder="1.0.0" class="font-mono text-sm" />
+              <Label for="upload-version-ext">Version</Label>
+              <Input
+                id="upload-version-ext"
+                v-model="uploadVersion"
+                placeholder="1.0.0"
+                class="font-mono text-sm"
+              />
             </div>
           </div>
         </template>
         <template v-else-if="registryType === 'goproxy'">
           <div class="grid grid-cols-2 gap-3">
             <div class="space-y-1.5">
-              <Label>Module path</Label>
+              <Label for="upload-module">Module path</Label>
               <Input
+                id="upload-module"
                 v-model="uploadModule"
                 placeholder="github.com/org/repo"
                 class="font-mono text-sm"
               />
             </div>
             <div class="space-y-1.5">
-              <Label>Version</Label>
-              <Input v-model="uploadVersion" placeholder="v1.0.0" class="font-mono text-sm" />
+              <Label for="upload-version-module">Version</Label>
+              <Input
+                id="upload-version-module"
+                v-model="uploadVersion"
+                placeholder="v1.0.0"
+                class="font-mono text-sm"
+              />
             </div>
           </div>
         </template>
 
         <div class="space-y-1.5">
-          <Label
+          <Label for="upload-file"
             >File
             <span class="text-muted-foreground text-xs ml-1">{{
               acceptFor(registryType)
             }}</span></Label
           >
           <input
+            id="upload-file"
             type="file"
             :accept="acceptFor(registryType)"
             class="block text-sm text-muted-foreground file:mr-3 file:py-1.5 file:px-3 file:rounded-sm file:border-0 file:text-xs file:font-medium file:bg-secondary file:text-secondary-foreground hover:file:bg-secondary/80 cursor-pointer"

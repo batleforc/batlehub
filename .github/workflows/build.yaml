@@ -48,7 +48,7 @@ jobs:
 
       - name: Build release binary
         shell: bash
-        run: cargo build --release -p batlehub-server
+        run: cargo build --release --locked -p batlehub-server
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

@@ -116,8 +116,9 @@ TAG="v${NEW_VERSION}"
 
 version_gt() {
     local -a a b
-    IFS='.' read -r -a a <<< "$1"
-    IFS='.' read -r -a b <<< "$2"
+    local v1="$1" v2="$2"
+    IFS='.' read -r -a a <<< "$v1"
+    IFS='.' read -r -a b <<< "$v2"
     for i in 0 1 2; do
         (( a[i] > b[i] )) && return 0
         (( a[i] < b[i] )) && return 1
