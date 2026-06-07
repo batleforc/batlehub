@@ -27,10 +27,10 @@ chrono = { workspace = true }
 # UUIDs
 uuid = { workspace = true }
 # TUI
-ratatui = "0.29"
-crossterm = { version = "0.28", features = ["event-stream"] }
+ratatui = "0.30"
+crossterm = { version = "0.29", features = ["event-stream"] }
 # Text input widget for TUI
-tui-input = "0.11"
+tui-input = "0.15"
 # Config dir resolution
 dirs = "6"
 # Pretty table output for plain CLI mode
