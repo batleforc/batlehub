@@ -1,15 +1,32 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { blockPackage, unblockPackage, listPackages2, listRegistries, packageDetail } from "@/client/sdk.gen";
-import type { RegistryInfo, PackageSummaryDto, PackageDetailResponse, PackageVersionDetail, PackageEventDto } from "@/client/types.gen";
+import {
+  blockPackage,
+  unblockPackage,
+  listPackages2,
+  listRegistries,
+  packageDetail,
+} from "@/client/sdk.gen";
+import type {
+  RegistryInfo,
+  PackageSummaryDto,
+  PackageDetailResponse,
+  PackageVersionDetail,
+  PackageEventDto,
+} from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import {
-  Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
 } from "@/components/ui/table";
 
 type BlockedStatus = Extract<PackageVersionDetail["status"], { status: "blocked" }>;
@@ -21,77 +38,94 @@ const { token, isAdmin } = useAuth();
 const registry = computed(() => String(route.query.registry ?? ""));
 const name = computed(() => String(route.query.name ?? ""));
 const version = computed(() => String(route.query.version ?? ""));
-const artifact = computed(() => route.query.artifact ? String(route.query.artifact) : null);
+const artifact = computed(() => (route.query.artifact ? String(route.query.artifact) : null));
 
 const { data: registriesList } = useApi<RegistryInfo[]>(
   () => listRegistries() as Promise<{ data?: unknown; error?: unknown }>,
   [token],
 );
 
-const registryType = computed(() =>
-  registriesList.value?.find(r => r.name === registry.value)?.type ?? null
+const registryType = computed(
+  () => registriesList.value?.find((r) => r.name === registry.value)?.type ?? null,
 );
 
 const upstreamUrl = computed(() => {
   if (!registry.value || !name.value) return null;
   switch (registryType.value) {
-    case "github": return `https://github.com/${name.value}`;
-    case "npm":    return `https://www.npmjs.com/package/${name.value}`;
-    case "cargo":  return `https://crates.io/crates/${name.value}`;
-    default:       return null;
+    case "github":
+      return `https://github.com/${name.value}`;
+    case "npm":
+      return `https://www.npmjs.com/package/${name.value}`;
+    case "cargo":
+      return `https://crates.io/crates/${name.value}`;
+    default:
+      return null;
   }
 });
 
-const { data: adminData, error: adminError, loading: adminLoading, reload: adminReload } = useApi<PackageDetailResponse>(
-  () => {
-    if (!isAdmin.value) return Promise.resolve({ data: null as unknown });
-    return packageDetail({ query: { registry: registry.value, name: name.value } }) as Promise<{ data?: unknown; error?: unknown }>;
-  },
-  [token, registry, name, isAdmin],
-);
+const {
+  data: adminData,
+  error: adminError,
+  loading: adminLoading,
+  reload: adminReload,
+} = useApi<PackageDetailResponse>(() => {
+  if (!isAdmin.value) return Promise.resolve({ data: null as unknown });
+  return packageDetail({ query: { registry: registry.value, name: name.value } }) as Promise<{
+    data?: unknown;
+    error?: unknown;
+  }>;
+}, [token, registry, name, isAdmin]);
 
-const { data: publicData, error: publicError, loading: publicLoading } = useApi<{ items: PackageSummaryDto[] }>(
-  () => {
-    if (isAdmin.value) return Promise.resolve({ data: null as unknown });
-    return listPackages2({ query: { registry: registry.value, name: name.value } }) as Promise<{ data?: unknown; error?: unknown }>;
-  },
-  [token, registry, name, isAdmin],
-);
+const {
+  data: publicData,
+  error: publicError,
+  loading: publicLoading,
+} = useApi<{ items: PackageSummaryDto[] }>(() => {
+  if (isAdmin.value) return Promise.resolve({ data: null as unknown });
+  return listPackages2({ query: { registry: registry.value, name: name.value } }) as Promise<{
+    data?: unknown;
+    error?: unknown;
+  }>;
+}, [token, registry, name, isAdmin]);
 
 const versionDetail = computed<PackageVersionDetail | null>(() => {
   if (!adminData.value) return null;
-  return adminData.value.versions.find(
-    v => v.version === version.value && (v.artifact ?? null) === artifact.value
-  ) ?? null;
+  return (
+    adminData.value.versions.find(
+      (v) => v.version === version.value && (v.artifact ?? null) === artifact.value,
+    ) ?? null
+  );
 });
 
 const publicSummary = computed<PackageSummaryDto | null>(() => {
   if (!publicData.value?.items) return null;
-  return publicData.value.items.find(
-    p => p.version === version.value && (p.artifact ?? null) === artifact.value
-  ) ?? null;
+  return (
+    publicData.value.items.find(
+      (p) => p.version === version.value && (p.artifact ?? null) === artifact.value,
+    ) ?? null
+  );
 });
 
 const filteredEvents = computed<PackageEventDto[]>(() => {
   if (!adminData.value?.recent_events) return [];
   return adminData.value.recent_events.filter(
-    e => e.version === version.value && (e.artifact ?? null) === artifact.value
+    (e) => e.version === version.value && (e.artifact ?? null) === artifact.value,
   );
 });
 
-const statusInfo = computed(() =>
-  versionDetail.value?.status ?? publicSummary.value?.status ?? null
+const statusInfo = computed(
+  () => versionDetail.value?.status ?? publicSummary.value?.status ?? null,
 );
 
-const accessCount = computed(() =>
-  versionDetail.value?.access_count ?? publicSummary.value?.access_count ?? 0
+const accessCount = computed(
+  () => versionDetail.value?.access_count ?? publicSummary.value?.access_count ?? 0,
 );
 
-const loading = computed(() => isAdmin.value ? adminLoading.value : publicLoading.value);
-const error = computed(() => isAdmin.value ? adminError.value : publicError.value);
-const notFound = computed(() =>
-  !loading.value && !error.value &&
-  (isAdmin.value ? !versionDetail.value : !publicSummary.value)
+const loading = computed(() => (isAdmin.value ? adminLoading.value : publicLoading.value));
+const error = computed(() => (isAdmin.value ? adminError.value : publicError.value));
+const notFound = computed(
+  () =>
+    !loading.value && !error.value && (isAdmin.value ? !versionDetail.value : !publicSummary.value),
 );
 
 function fmtDate(iso: string | null | undefined) {
@@ -100,7 +134,11 @@ function fmtDate(iso: string | null | undefined) {
 }
 
 function fmtAction(action: string) {
-  return { download: "Download", view_metadata: "View metadata", block: "Block", unblock: "Unblock" }[action] ?? action;
+  return (
+    { download: "Download", view_metadata: "View metadata", block: "Block", unblock: "Unblock" }[
+      action
+    ] ?? action
+  );
 }
 
 async function doBlock() {
@@ -135,37 +173,18 @@ async function doUnblock() {
   <div class="space-y-4">
     <!-- Breadcrumb -->
     <div class="flex items-center gap-3">
-      <Button
-        variant="ghost"
-        size="sm"
-        @click="router.back()"
-      >
-        ← Back
-      </Button>
+      <Button variant="ghost" size="sm" @click="router.back()"> ← Back </Button>
       <span class="text-muted-foreground text-sm">/</span>
       <span class="font-mono text-sm">
         {{ registry }}/{{ name }}/{{ version }}<template v-if="artifact">/{{ artifact }}</template>
       </span>
     </div>
 
-    <p
-      v-if="loading"
-      class="text-sm text-muted-foreground"
-    >
-      Loading…
-    </p>
-    <p
-      v-else-if="error"
-      class="text-sm text-destructive"
-    >
+    <p v-if="loading" class="text-sm text-muted-foreground">Loading…</p>
+    <p v-else-if="error" class="text-sm text-destructive">
       {{ error }}
     </p>
-    <p
-      v-else-if="notFound"
-      class="text-sm text-muted-foreground"
-    >
-      Artifact not found.
-    </p>
+    <p v-else-if="notFound" class="text-sm text-muted-foreground">Artifact not found.</p>
 
     <template v-else-if="statusInfo !== null">
       <!-- Header card -->
@@ -180,27 +199,17 @@ async function doUnblock() {
             <Badge variant="outline">
               {{ registry }}
             </Badge>
-            <Badge
-              variant="secondary"
-              class="font-mono"
-            >
+            <Badge variant="secondary" class="font-mono">
               {{ version }}
             </Badge>
-            <Badge
-              v-if="artifact"
-              variant="outline"
-              class="font-mono text-xs"
-            >
+            <Badge v-if="artifact" variant="outline" class="font-mono text-xs">
               {{ artifact }}
             </Badge>
             <Badge :variant="statusInfo.status === 'blocked' ? 'destructive' : 'secondary'">
-              {{ statusInfo.status === 'blocked' ? 'Blocked' : 'Available' }}
+              {{ statusInfo.status === "blocked" ? "Blocked" : "Available" }}
             </Badge>
           </div>
-          <p
-            v-if="statusInfo.status === 'blocked'"
-            class="text-xs text-destructive"
-          >
+          <p v-if="statusInfo.status === 'blocked'" class="text-xs text-destructive">
             {{ (statusInfo as BlockedStatus).reason }}
           </p>
           <div>
@@ -214,10 +223,7 @@ async function doUnblock() {
             >
               {{ upstreamUrl }}
             </a>
-            <span
-              v-else
-              class="text-muted-foreground"
-            >—</span>
+            <span v-else class="text-muted-foreground">—</span>
           </div>
           <div>
             <span class="text-muted-foreground w-28 inline-block">Downloads</span>
@@ -229,15 +235,13 @@ async function doUnblock() {
       <!-- Admin: Cache & storage -->
       <Card v-if="isAdmin && versionDetail">
         <CardHeader>
-          <CardTitle class="text-base">
-            Cache &amp; storage
-          </CardTitle>
+          <CardTitle class="text-base"> Cache &amp; storage </CardTitle>
         </CardHeader>
         <CardContent class="space-y-2 text-sm">
           <div>
             <span class="text-muted-foreground w-32 inline-block">Status</span>
             <Badge :variant="versionDetail.cached ? 'default' : 'outline'">
-              {{ versionDetail.cached ? 'Cached' : 'Not cached' }}
+              {{ versionDetail.cached ? "Cached" : "Not cached" }}
             </Badge>
           </div>
           <div v-if="versionDetail.cached_at">
@@ -246,21 +250,16 @@ async function doUnblock() {
           </div>
           <div>
             <span class="text-muted-foreground w-32 inline-block">Storage key</span>
-            <code class="font-mono text-xs bg-muted px-1 py-0.5 rounded">{{ versionDetail.storage_key }}</code>
+            <code class="font-mono text-xs bg-muted px-1 py-0.5 rounded">{{
+              versionDetail.storage_key
+            }}</code>
           </div>
           <div>
             <span class="text-muted-foreground w-32 inline-block">Backend</span>
-            <Badge
-              v-if="versionDetail.storage_backend"
-              variant="outline"
-              class="font-mono text-xs"
-            >
+            <Badge v-if="versionDetail.storage_backend" variant="outline" class="font-mono text-xs">
               {{ versionDetail.storage_backend }}
             </Badge>
-            <span
-              v-else
-              class="text-muted-foreground"
-            >—</span>
+            <span v-else class="text-muted-foreground">—</span>
           </div>
           <div>
             <span class="text-muted-foreground w-32 inline-block">Last accessed</span>
@@ -268,27 +267,19 @@ async function doUnblock() {
           </div>
           <div>
             <span class="text-muted-foreground w-32 inline-block">Last pulled by</span>
-            <span
-              v-if="versionDetail.last_accessed_by"
-              class="font-medium"
-            >{{ versionDetail.last_accessed_by }}</span>
-            <span
-              v-else-if="versionDetail.access_count > 0"
-              class="text-muted-foreground italic"
-            >anonymous</span>
-            <span
-              v-else
-              class="text-muted-foreground"
-            >—</span>
+            <span v-if="versionDetail.last_accessed_by" class="font-medium">{{
+              versionDetail.last_accessed_by
+            }}</span>
+            <span v-else-if="versionDetail.access_count > 0" class="text-muted-foreground italic"
+              >anonymous</span
+            >
+            <span v-else class="text-muted-foreground">—</span>
           </div>
         </CardContent>
       </Card>
 
       <!-- Admin: Block / Unblock -->
-      <div
-        v-if="isAdmin && versionDetail"
-        class="flex gap-2"
-      >
+      <div v-if="isAdmin && versionDetail" class="flex gap-2">
         <Button
           v-if="versionDetail.status.status === 'blocked'"
           variant="outline"
@@ -296,21 +287,13 @@ async function doUnblock() {
         >
           Unblock
         </Button>
-        <Button
-          v-else
-          variant="destructive"
-          @click="doBlock"
-        >
-          Block
-        </Button>
+        <Button v-else variant="destructive" @click="doBlock"> Block </Button>
       </div>
 
       <!-- Admin: Recent events -->
       <Card v-if="isAdmin && versionDetail">
         <CardHeader>
-          <CardTitle class="text-base">
-            Recent access events
-          </CardTitle>
+          <CardTitle class="text-base"> Recent access events </CardTitle>
         </CardHeader>
         <CardContent class="p-0">
           <Table>
@@ -325,25 +308,16 @@ async function doUnblock() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              <TableRow
-                v-for="ev in filteredEvents"
-                :key="ev.id"
-              >
+              <TableRow v-for="ev in filteredEvents" :key="ev.id">
                 <TableCell class="text-xs tabular-nums whitespace-nowrap">
                   {{ fmtDate(ev.timestamp) }}
                 </TableCell>
                 <TableCell class="text-sm">
                   <span v-if="ev.user_id">{{ ev.user_id }}</span>
-                  <span
-                    v-else
-                    class="text-muted-foreground italic"
-                  >anonymous</span>
+                  <span v-else class="text-muted-foreground italic">anonymous</span>
                 </TableCell>
                 <TableCell>
-                  <Badge
-                    variant="outline"
-                    class="text-xs capitalize"
-                  >
+                  <Badge variant="outline" class="text-xs capitalize">
                     {{ ev.user_role }}
                   </Badge>
                 </TableCell>

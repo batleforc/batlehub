@@ -24,4 +24,4 @@ ui/.env
 /tmp/
 
 lcov.info
-ui/eslint-results.sarif
+ui/oxlint-results.sarif

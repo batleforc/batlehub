@@ -2,9 +2,9 @@
 export type Visibility = "public" | "internal" | "team";
 
 export const VISIBILITY_OPTIONS = [
-  { value: "public" as Visibility,   label: "Public — anyone can download" },
+  { value: "public" as Visibility, label: "Public — anyone can download" },
   { value: "internal" as Visibility, label: "Internal — authenticated users only" },
-  { value: "team" as Visibility,     label: "Team — namespace group members only" },
+  { value: "team" as Visibility, label: "Team — namespace group members only" },
 ] as const;
 
 /** Beta-channel member (SDK response is untyped). */

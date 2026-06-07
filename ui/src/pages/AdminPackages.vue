@@ -2,7 +2,14 @@
 import { ref, computed, watch } from "vue";
 import { useRouter } from "vue-router";
 import { Package } from "@lucide/vue";
-import { listPackages, listRegistries, blockPackage, unblockPackage, bulkBlockPackages, bulkUnblockPackages } from "@/client/sdk.gen";
+import {
+  listPackages,
+  listRegistries,
+  blockPackage,
+  unblockPackage,
+  bulkBlockPackages,
+  bulkUnblockPackages,
+} from "@/client/sdk.gen";
 import type { RegistryInfo } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
@@ -12,7 +19,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import {
-  Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
 } from "@/components/ui/table";
 
 interface AdminPackageSummary {
@@ -23,7 +35,9 @@ interface AdminPackageSummary {
     version: string;
     artifact?: string | null;
   };
-  status: { status: "available" } | { status: "blocked"; reason: string; blocked_by: string; blocked_at: string };
+  status:
+    | { status: "available" }
+    | { status: "blocked"; reason: string; blocked_by: string; blocked_at: string };
   last_accessed: string | null;
   last_accessed_by: string | null;
   access_count: number;
@@ -32,7 +46,12 @@ interface AdminPackageSummary {
 const { token } = useAuth();
 const router = useRouter();
 
-const { data: packages, error, loading, reload } = useApi<AdminPackageSummary[]>(
+const {
+  data: packages,
+  error,
+  loading,
+  reload,
+} = useApi<AdminPackageSummary[]>(
   () => listPackages() as Promise<{ data?: unknown; error?: unknown }>,
   [token],
 );
@@ -50,10 +69,11 @@ const filteredPackages = computed(() => {
   if (!packages.value) return [];
   const q = search.value.toLowerCase().trim();
   if (!q) return packages.value;
-  return packages.value.filter((p) =>
-    p.package_id.name.toLowerCase().includes(q) ||
-    p.package_id.registry.toLowerCase().includes(q) ||
-    p.package_id.version.toLowerCase().includes(q),
+  return packages.value.filter(
+    (p) =>
+      p.package_id.name.toLowerCase().includes(q) ||
+      p.package_id.registry.toLowerCase().includes(q) ||
+      p.package_id.version.toLowerCase().includes(q),
   );
 });
 
@@ -112,7 +132,9 @@ function pkgKey(pkg: AdminPackageSummary) {
 }
 
 const allSelected = computed(
-  () => filteredPackages.value.length > 0 && filteredPackages.value.every((p) => selected.value.has(pkgKey(p))),
+  () =>
+    filteredPackages.value.length > 0 &&
+    filteredPackages.value.every((p) => selected.value.has(pkgKey(p))),
 );
 
 function toggleAll() {
@@ -153,7 +175,8 @@ async function bulkBlock() {
       },
     });
     const r = res.data;
-    if (r) bulkResultMsg.value = `Blocked ${r.succeeded_count} package(s)${r.failed_count ? `, ${r.failed_count} failed` : ""}.`;
+    if (r)
+      bulkResultMsg.value = `Blocked ${r.succeeded_count} package(s)${r.failed_count ? `, ${r.failed_count} failed` : ""}.`;
   } finally {
     bulkLoading.value = false;
     selected.value = new Set();
@@ -177,7 +200,8 @@ async function bulkUnblock() {
       },
     });
     const r = res.data;
-    if (r) bulkResultMsg.value = `Unblocked ${r.succeeded_count} package(s)${r.failed_count ? `, ${r.failed_count} failed` : ""}.`;
+    if (r)
+      bulkResultMsg.value = `Unblocked ${r.succeeded_count} package(s)${r.failed_count ? `, ${r.failed_count} failed` : ""}.`;
   } finally {
     bulkLoading.value = false;
     selected.value = new Set();
@@ -238,25 +262,16 @@ async function submitPreBlock() {
     <!-- Pre-block form -->
     <Card>
       <CardHeader class="flex flex-row items-center justify-between space-y-0 pb-3">
-        <CardTitle class="text-base">
-          Block a package
-        </CardTitle>
-        <Button
-          variant="outline"
-          size="sm"
-          @click="showPreBlock = !showPreBlock"
-        >
+        <CardTitle class="text-base"> Block a package </CardTitle>
+        <Button variant="outline" size="sm" @click="showPreBlock = !showPreBlock">
           {{ showPreBlock ? "Cancel" : "Block new package" }}
         </Button>
       </CardHeader>
 
-      <CardContent
-        v-if="showPreBlock"
-        class="space-y-4 pt-0"
-      >
+      <CardContent v-if="showPreBlock" class="space-y-4 pt-0">
         <p class="text-xs text-muted-foreground">
-          Pre-emptively block a package before it is downloaded. The block takes
-          effect immediately — any subsequent request for that package will be denied.
+          Pre-emptively block a package before it is downloaded. The block takes effect immediately
+          — any subsequent request for that package will be denied.
         </p>
 
         <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -267,14 +282,8 @@ async function submitPreBlock() {
               v-model="preBlock.registry"
               class="flex h-9 w-full rounded-sm border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring font-mono"
             >
-              <option
-                v-for="reg in registries"
-                :key="reg.name"
-                :value="reg.name"
-              >
-                {{ reg.name }} <template v-if="reg.type !== reg.name">
-                  ({{ reg.type }})
-                </template>
+              <option v-for="reg in registries" :key="reg.name" :value="reg.name">
+                {{ reg.name }} <template v-if="reg.type !== reg.name"> ({{ reg.type }}) </template>
               </option>
             </select>
           </div>
@@ -300,7 +309,9 @@ async function submitPreBlock() {
 
         <div class="grid grid-cols-2 gap-3">
           <div class="space-y-1">
-            <Label for="pb-artifact">Artifact <span class="text-muted-foreground">(optional)</span></Label>
+            <Label for="pb-artifact"
+              >Artifact <span class="text-muted-foreground">(optional)</span></Label
+            >
             <Input
               id="pb-artifact"
               v-model="preBlock.artifact"
@@ -318,17 +329,11 @@ async function submitPreBlock() {
           </div>
         </div>
 
-        <p
-          v-if="preBlockError"
-          class="text-xs text-destructive"
-        >
+        <p v-if="preBlockError" class="text-xs text-destructive">
           {{ preBlockError }}
         </p>
 
-        <Button
-          :disabled="preBlockLoading"
-          @click="submitPreBlock"
-        >
+        <Button :disabled="preBlockLoading" @click="submitPreBlock">
           {{ preBlockLoading ? "Blocking…" : "Block package" }}
         </Button>
       </CardContent>
@@ -340,33 +345,16 @@ async function submitPreBlock() {
       class="sticky top-16 z-30 flex items-center gap-3 rounded-sm border bg-card px-4 py-2.5 shadow-sm"
     >
       <span class="text-sm font-medium">{{ selected.size }} selected</span>
-      <Button
-        size="sm"
-        variant="destructive"
-        :disabled="bulkLoading"
-        @click="bulkBlock"
-      >
+      <Button size="sm" variant="destructive" :disabled="bulkLoading" @click="bulkBlock">
         Block selected
       </Button>
-      <Button
-        size="sm"
-        variant="outline"
-        :disabled="bulkLoading"
-        @click="bulkUnblock"
-      >
+      <Button size="sm" variant="outline" :disabled="bulkLoading" @click="bulkUnblock">
         Unblock selected
       </Button>
-      <Button
-        size="sm"
-        variant="ghost"
-        @click="selected = new Set()"
-      >
-        Clear
-      </Button>
-      <span
-        v-if="bulkResultMsg"
-        class="text-xs text-muted-foreground ml-auto"
-      >{{ bulkResultMsg }}</span>
+      <Button size="sm" variant="ghost" @click="selected = new Set()"> Clear </Button>
+      <span v-if="bulkResultMsg" class="text-xs text-muted-foreground ml-auto">{{
+        bulkResultMsg
+      }}</span>
     </div>
 
     <!-- Package list -->
@@ -375,18 +363,11 @@ async function submitPreBlock() {
         <div class="flex flex-row items-center justify-between space-y-0">
           <CardTitle class="text-lg">
             All packages
-            <span
-              v-if="packages?.length"
-              class="font-normal text-muted-foreground text-base ml-1"
-            >({{ packages.length }})</span>
+            <span v-if="packages?.length" class="font-normal text-muted-foreground text-base ml-1"
+              >({{ packages.length }})</span
+            >
           </CardTitle>
-          <Button
-            variant="outline"
-            size="sm"
-            @click="reload"
-          >
-            Refresh
-          </Button>
+          <Button variant="outline" size="sm" @click="reload"> Refresh </Button>
         </div>
         <Input
           v-model="search"
@@ -395,22 +376,11 @@ async function submitPreBlock() {
         />
       </CardHeader>
       <CardContent class="p-0">
-        <p
-          v-if="actionError"
-          class="px-6 pt-4 text-sm text-destructive"
-        >
+        <p v-if="actionError" class="px-6 pt-4 text-sm text-destructive">
           {{ actionError }}
         </p>
-        <p
-          v-if="loading"
-          class="p-6 text-sm text-muted-foreground"
-        >
-          Loading…
-        </p>
-        <p
-          v-else-if="error"
-          class="p-6 text-sm text-destructive"
-        >
+        <p v-if="loading" class="p-6 text-sm text-muted-foreground">Loading…</p>
+        <p v-else-if="error" class="p-6 text-sm text-destructive">
           {{ error }}
         </p>
 
@@ -423,7 +393,7 @@ async function submitPreBlock() {
                   :checked="allSelected"
                   class="cursor-pointer"
                   @change="toggleAll"
-                >
+                />
               </TableHead>
               <TableHead>Registry</TableHead>
               <TableHead>Name</TableHead>
@@ -432,13 +402,9 @@ async function submitPreBlock() {
               <TableHead>Status</TableHead>
               <TableHead>Last pulled</TableHead>
               <TableHead>Last pulled by</TableHead>
-              <TableHead class="text-right">
-                Downloads
-              </TableHead>
+              <TableHead class="text-right"> Downloads </TableHead>
               <TableHead />
-              <TableHead class="text-right">
-                Actions
-              </TableHead>
+              <TableHead class="text-right"> Actions </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -453,7 +419,7 @@ async function submitPreBlock() {
                   :checked="selected.has(pkgKey(pkg))"
                   class="cursor-pointer"
                   @change="toggleOne(pkg)"
-                >
+                />
               </TableCell>
               <TableCell class="font-mono text-xs">
                 {{ pkg.package_id.registry }}
@@ -472,10 +438,7 @@ async function submitPreBlock() {
                   <Badge :variant="pkg.status.status === 'blocked' ? 'destructive' : 'secondary'">
                     {{ pkg.status.status === "blocked" ? "Blocked" : "Available" }}
                   </Badge>
-                  <p
-                    v-if="pkg.status.status === 'blocked'"
-                    class="text-xs text-muted-foreground"
-                  >
+                  <p v-if="pkg.status.status === 'blocked'" class="text-xs text-muted-foreground">
                     {{ pkg.status.reason }}
                   </p>
                 </div>
@@ -484,18 +447,13 @@ async function submitPreBlock() {
                 {{ fmtDate(pkg.last_accessed) }}
               </TableCell>
               <TableCell class="text-sm">
-                <span
-                  v-if="pkg.last_accessed_by"
-                  class="font-medium"
-                >{{ pkg.last_accessed_by }}</span>
-                <span
-                  v-else-if="pkg.access_count > 0"
-                  class="text-muted-foreground italic"
-                >anonymous</span>
-                <span
-                  v-else
-                  class="text-muted-foreground"
-                >—</span>
+                <span v-if="pkg.last_accessed_by" class="font-medium">{{
+                  pkg.last_accessed_by
+                }}</span>
+                <span v-else-if="pkg.access_count > 0" class="text-muted-foreground italic"
+                  >anonymous</span
+                >
+                <span v-else class="text-muted-foreground">—</span>
               </TableCell>
               <TableCell class="text-right tabular-nums">
                 {{ pkg.access_count }}
@@ -505,14 +463,29 @@ async function submitPreBlock() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    @click="router.push({ path: '/admin/packages/detail', query: { registry: pkg.package_id.registry, name: pkg.package_id.name } })"
+                    @click="
+                      router.push({
+                        path: '/admin/packages/detail',
+                        query: { registry: pkg.package_id.registry, name: pkg.package_id.name },
+                      })
+                    "
                   >
                     Details
                   </Button>
                   <Button
                     variant="ghost"
                     size="sm"
-                    @click="router.push({ path: '/packages/detail', query: { registry: pkg.package_id.registry, name: pkg.package_id.name, version: pkg.package_id.version, ...(pkg.package_id.artifact ? { artifact: pkg.package_id.artifact } : {}) } })"
+                    @click="
+                      router.push({
+                        path: '/packages/detail',
+                        query: {
+                          registry: pkg.package_id.registry,
+                          name: pkg.package_id.name,
+                          version: pkg.package_id.version,
+                          ...(pkg.package_id.artifact ? { artifact: pkg.package_id.artifact } : {}),
+                        },
+                      })
+                    "
                   >
                     Artifact
                   </Button>
@@ -527,33 +500,18 @@ async function submitPreBlock() {
                 >
                   Unblock
                 </Button>
-                <Button
-                  v-else
-                  variant="destructive"
-                  size="sm"
-                  @click="block(pkg)"
-                >
-                  Block
-                </Button>
+                <Button v-else variant="destructive" size="sm" @click="block(pkg)"> Block </Button>
               </TableCell>
             </TableRow>
           </TableBody>
         </Table>
 
-        <div
-          v-else
-          class="py-12 text-center space-y-2"
-        >
+        <div v-else class="py-12 text-center space-y-2">
           <Package class="h-8 w-8 mx-auto text-muted-foreground/50" />
           <p class="text-sm text-muted-foreground">
             {{ search ? "No packages match your filter." : "No packages yet." }}
           </p>
-          <p
-            v-if="search"
-            class="text-xs text-muted-foreground"
-          >
-            Try clearing the filter.
-          </p>
+          <p v-if="search" class="text-xs text-muted-foreground">Try clearing the filter.</p>
         </div>
       </CardContent>
     </Card>

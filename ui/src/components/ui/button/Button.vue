@@ -10,16 +10,12 @@ const buttonVariants = cva(
       variant: {
         default:
           "bg-primary text-primary-foreground [box-shadow:var(--cyber-glow)] hover:bg-primary/85 hover:-translate-y-px active:translate-y-0 transition-[box-shadow,background-color,transform]",
-        destructive:
-          "bg-destructive text-destructive-foreground hover:bg-destructive/85",
+        destructive: "bg-destructive text-destructive-foreground hover:bg-destructive/85",
         outline:
           "border border-primary/40 bg-transparent text-primary hover:bg-accent hover:border-primary/70",
-        secondary:
-          "bg-secondary text-secondary-foreground hover:bg-secondary/70",
-        ghost:
-          "hover:bg-accent hover:text-accent-foreground",
-        link:
-          "text-primary underline-offset-4 hover:underline",
+        secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/70",
+        ghost: "hover:bg-accent hover:text-accent-foreground",
+        link: "text-primary underline-offset-4 hover:underline",
       },
       size: {
         default: "h-9 px-4 py-2",
@@ -54,10 +50,7 @@ const delegatedProps = computed(() => {
 </script>
 
 <template>
-  <button
-    v-bind="delegatedProps"
-    :class="cn(buttonVariants({ variant, size }), props.class)"
-  >
+  <button v-bind="delegatedProps" :class="cn(buttonVariants({ variant, size }), props.class)">
     <slot />
   </button>
 </template>

@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import {
-  discardPendingReload, applyPendingReload,
-  reloadConfig, listConfigChanges, setBanner, clearBanner,
+  discardPendingReload,
+  applyPendingReload,
+  reloadConfig,
+  listConfigChanges,
+  setBanner,
+  clearBanner,
 } from "@/client/sdk.gen";
 import type { PendingReloadSnapshot, ConfigChangeRow } from "@/client/types.gen";
 import { useAuthFetch } from "@/composables/useAuthFetch";
@@ -85,7 +89,8 @@ async function forceReload() {
   try {
     const { data, error: apiErr } = await reloadConfig();
     if (apiErr) throw new Error(sdkErrMsg(apiErr));
-    const diff = (data as { diff?: { added_registries: string[]; removed_registries: string[] } })?.diff;
+    const diff = (data as { diff?: { added_registries: string[]; removed_registries: string[] } })
+      ?.diff;
     successMsg.value = `Reloaded: +${diff?.added_registries.length ?? 0} -${diff?.removed_registries.length ?? 0} registries`;
     await fetchPending();
     await fetchHistory();
@@ -103,7 +108,8 @@ async function applyPending() {
   try {
     const { data, error: apiErr } = await applyPendingReload();
     if (apiErr) throw new Error(sdkErrMsg(apiErr));
-    const diff = (data as { diff?: { added_registries: string[]; removed_registries: string[] } })?.diff;
+    const diff = (data as { diff?: { added_registries: string[]; removed_registries: string[] } })
+      ?.diff;
     successMsg.value = `Applied: +${diff?.added_registries.length ?? 0} -${diff?.removed_registries.length ?? 0} registries`;
     pendingReload.value = null;
     await fetchHistory();
@@ -133,7 +139,9 @@ async function setBannerAction() {
   loadingSetBanner.value = true;
   errorMsg.value = null;
   try {
-    const { error: apiErr } = await setBanner({ body: { message: bannerMessage.value, level: bannerLevel.value } });
+    const { error: apiErr } = await setBanner({
+      body: { message: bannerMessage.value, level: bannerLevel.value },
+    });
     if (apiErr) throw new Error(sdkErrMsg(apiErr));
     successMsg.value = "Banner set";
     bannerMessage.value = "";
@@ -172,7 +180,9 @@ onMounted(async () => {
   await Promise.all([fetchPending(), fetchHistory()]);
   pollTimer = setInterval(() => void fetchPending(), 5_000);
 });
-onUnmounted(() => { if (pollTimer) clearInterval(pollTimer); });
+onUnmounted(() => {
+  if (pollTimer) clearInterval(pollTimer);
+});
 </script>
 
 <template>
@@ -190,10 +200,16 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer); });
     </Card>
 
     <!-- Feedback -->
-    <div v-if="successMsg" class="rounded-sm bg-primary/10 border border-primary/30 px-4 py-2 text-primary text-sm">
+    <div
+      v-if="successMsg"
+      class="rounded-sm bg-primary/10 border border-primary/30 px-4 py-2 text-primary text-sm"
+    >
       {{ successMsg }}
     </div>
-    <div v-if="errorMsg" class="rounded-sm bg-destructive/10 border border-destructive/30 px-4 py-2 text-destructive text-sm">
+    <div
+      v-if="errorMsg"
+      class="rounded-sm bg-destructive/10 border border-destructive/30 px-4 py-2 text-destructive text-sm"
+    >
       {{ errorMsg }}
     </div>
 
@@ -203,21 +219,43 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer); });
         <CardTitle>Pending Reload</CardTitle>
       </CardHeader>
       <CardContent>
-        <div v-if="loadingPending && !pendingReload" class="text-sm text-muted-foreground">Loading…</div>
+        <div v-if="loadingPending && !pendingReload" class="text-sm text-muted-foreground">
+          Loading…
+        </div>
         <div v-else-if="!pendingReload" class="text-sm text-muted-foreground">
           No pending reload. The file watcher will populate this when a config change is detected.
         </div>
         <div v-else class="space-y-3">
           <div class="flex gap-4 text-sm">
             <span><strong>Source:</strong> {{ pendingReload.source }}</span>
-            <span><strong>Created:</strong> {{ new Date(pendingReload.created_at).toLocaleString() }}</span>
+            <span
+              ><strong>Created:</strong>
+              {{ new Date(pendingReload.created_at).toLocaleString() }}</span
+            >
             <span><strong>Expires in:</strong> {{ expiresIn }}</span>
           </div>
           <div class="flex gap-2 flex-wrap">
-            <Badge v-for="r in pendingReload.diff.added_registries" :key="r" class="bg-primary/10 text-primary">+{{ r }}</Badge>
-            <Badge v-for="r in pendingReload.diff.removed_registries" :key="r" class="bg-destructive/10 text-destructive">-{{ r }}</Badge>
-            <Badge v-for="r in pendingReload.diff.changed_registries" :key="r.name" class="bg-copper/10 text-copper">~{{ r.name }}</Badge>
-            <Badge v-if="pendingReload.diff.limits_changed" class="bg-purple-100 text-purple-800">limits changed</Badge>
+            <Badge
+              v-for="r in pendingReload.diff.added_registries"
+              :key="r"
+              class="bg-primary/10 text-primary"
+              >+{{ r }}</Badge
+            >
+            <Badge
+              v-for="r in pendingReload.diff.removed_registries"
+              :key="r"
+              class="bg-destructive/10 text-destructive"
+              >-{{ r }}</Badge
+            >
+            <Badge
+              v-for="r in pendingReload.diff.changed_registries"
+              :key="r.name"
+              class="bg-copper/10 text-copper"
+              >~{{ r.name }}</Badge
+            >
+            <Badge v-if="pendingReload.diff.limits_changed" class="bg-purple-100 text-purple-800"
+              >limits changed</Badge
+            >
           </div>
           <div class="flex gap-2">
             <Button size="sm" :disabled="loadingApply" @click="applyPending">
@@ -264,7 +302,10 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer); });
           </div>
           <div class="space-y-1">
             <Label>Level</Label>
-            <select v-model="bannerLevel" class="border border-input rounded-sm px-2 py-2 font-mono text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring">
+            <select
+              v-model="bannerLevel"
+              class="border border-input rounded-sm px-2 py-2 font-mono text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+            >
               <option value="info">Info</option>
               <option value="warning">Warning</option>
               <option value="error">Error</option>
@@ -273,7 +314,11 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer); });
           <Button :disabled="loadingSetBanner || !bannerMessage.trim()" @click="setBannerAction">
             {{ loadingSetBanner ? "Setting…" : "Set Banner" }}
           </Button>
-          <Button variant="outline" :disabled="loadingClearBanner || !banner" @click="clearBannerAction">
+          <Button
+            variant="outline"
+            :disabled="loadingClearBanner || !banner"
+            @click="clearBannerAction"
+          >
             {{ loadingClearBanner ? "Clearing…" : "Clear Banner" }}
           </Button>
         </div>
@@ -287,7 +332,9 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer); });
       </CardHeader>
       <CardContent>
         <div v-if="loadingHistory" class="text-sm text-muted-foreground">Loading…</div>
-        <div v-else-if="changeHistory.length === 0" class="text-sm text-muted-foreground">No changes recorded yet.</div>
+        <div v-else-if="changeHistory.length === 0" class="text-sm text-muted-foreground">
+          No changes recorded yet.
+        </div>
         <table v-else class="w-full text-sm">
           <thead>
             <tr class="text-left border-b">
@@ -306,7 +353,13 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer); });
                 <td class="py-2 pr-4">{{ new Date(row.triggered_at).toLocaleString() }}</td>
                 <td class="py-2 pr-4">{{ row.triggered_by }}</td>
                 <td class="py-2 pr-4">
-                  <Badge :class="row.status === 'applied' ? 'bg-green-100 text-primary' : 'bg-destructive/10 text-destructive'">
+                  <Badge
+                    :class="
+                      row.status === 'applied'
+                        ? 'bg-green-100 text-primary'
+                        : 'bg-destructive/10 text-destructive'
+                    "
+                  >
                     {{ row.status }}
                   </Badge>
                 </td>
@@ -314,7 +367,9 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer); });
               </tr>
               <tr v-if="expandedRow === row.id">
                 <td colspan="4" class="pb-3">
-                  <pre class="bg-muted text-xs p-2 rounded overflow-x-auto">{{ JSON.stringify(row.diff, null, 2) }}</pre>
+                  <pre class="bg-muted text-xs p-2 rounded overflow-x-auto">{{
+                    JSON.stringify(row.diff, null, 2)
+                  }}</pre>
                 </td>
               </tr>
             </template>

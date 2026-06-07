@@ -1,7 +1,16 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { ArrowLeft, ShieldCheck, ShieldAlert, Lock, Unlock, Package, FileJson, FileCode } from "@lucide/vue";
+import {
+  ArrowLeft,
+  ShieldCheck,
+  ShieldAlert,
+  Lock,
+  Unlock,
+  Package,
+  FileJson,
+  FileCode,
+} from "@lucide/vue";
 import { explorePackageDetail } from "@/client/sdk.gen";
 import type { ExplorePackageDetailResponse, FirewallDto } from "@/client/types.gen";
 import { useAuth } from "@/composables/useAuth";
@@ -11,7 +20,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
-  Table, TableHeader, TableHead, TableBody, TableRow, TableCell,
+  Table,
+  TableHeader,
+  TableHead,
+  TableBody,
+  TableRow,
+  TableCell,
 } from "@/components/ui/table";
 
 const { token } = useAuth();
@@ -39,7 +53,10 @@ async function downloadSbom(version: string, fmt: "spdx" | "cyclonedx") {
     const url = `/api/v1/sbom/${encodeURIComponent(registry.value)}/${encodeURIComponent(name.value)}/${encodeURIComponent(version)}?format=${fmt}`;
     const resp = await authFetch(`${API_BASE_URL}${url}`);
     if (resp.status === 404) {
-      sbomMissing.value = new Set([...sbomMissing.value, `${registry.value}/${name.value}/${version}`]);
+      sbomMissing.value = new Set([
+        ...sbomMissing.value,
+        `${registry.value}/${name.value}/${version}`,
+      ]);
       return;
     }
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -83,7 +100,9 @@ function goBack() {
   });
 }
 
-function firewallVariant(fw: FirewallDto | undefined): "default" | "destructive" | "secondary" | "outline" {
+function firewallVariant(
+  fw: FirewallDto | undefined,
+): "default" | "destructive" | "secondary" | "outline" {
   if (!fw) return "outline";
   if (fw.status === "blocked") return "destructive";
   if (fw.status === "yanked") return "secondary";
@@ -99,7 +118,9 @@ function firewallLabel(fw: FirewallDto) {
 function formatDate(iso: string | null) {
   if (!iso) return "—";
   return new Date(iso).toLocaleDateString(undefined, {
-    year: "numeric", month: "short", day: "numeric",
+    year: "numeric",
+    month: "short",
+    day: "numeric",
   });
 }
 
@@ -138,9 +159,7 @@ onMounted(fetchDetail);
             {{ data.versions.length }} known version{{ data.versions.length !== 1 ? "s" : "" }}
           </p>
         </div>
-        <Button variant="outline" size="sm" @click="fetchDetail">
-          Refresh
-        </Button>
+        <Button variant="outline" size="sm" @click="fetchDetail"> Refresh </Button>
       </div>
 
       <!-- Gate summary card -->
@@ -158,7 +177,13 @@ onMounted(fetchDetail);
                 class="h-4 w-4 shrink-0"
               />
               <span class="text-muted-foreground">Registry access:</span>
-              <span :class="data.gate.registry_accessible ? 'text-primary font-medium' : 'text-destructive font-medium'">
+              <span
+                :class="
+                  data.gate.registry_accessible
+                    ? 'text-primary font-medium'
+                    : 'text-destructive font-medium'
+                "
+              >
                 {{ data.gate.registry_accessible ? "Allowed" : "Denied" }}
               </span>
             </div>
@@ -171,7 +196,11 @@ onMounted(fetchDetail);
                 class="h-4 w-4 shrink-0"
               />
               <span class="text-muted-foreground">Beta channel:</span>
-              <span :class="data.gate.beta_member ? 'text-primary font-medium' : 'text-muted-foreground'">
+              <span
+                :class="
+                  data.gate.beta_member ? 'text-primary font-medium' : 'text-muted-foreground'
+                "
+              >
                 {{ data.gate.beta_member ? "Member — pre-release versions visible" : "Non-member" }}
               </span>
             </div>
@@ -205,11 +234,7 @@ onMounted(fetchDetail);
               >
                 <TableCell class="font-mono text-sm">
                   {{ ver.version }}
-                  <Badge
-                    v-if="ver.is_prerelease"
-                    variant="outline"
-                    class="ml-1 text-xs"
-                  >
+                  <Badge v-if="ver.is_prerelease" variant="outline" class="ml-1 text-xs">
                     pre-release
                   </Badge>
                 </TableCell>
@@ -222,10 +247,7 @@ onMounted(fetchDetail);
                   </Badge>
                 </TableCell>
                 <TableCell>
-                  <span
-                    v-if="ver.firewall.status === 'blocked'"
-                    class="group relative"
-                  >
+                  <span v-if="ver.firewall.status === 'blocked'" class="group relative">
                     <Badge variant="destructive" class="text-xs cursor-help">Blocked</Badge>
                     <span
                       class="absolute bottom-full left-0 mb-1 hidden group-hover:block z-10 w-64 rounded-sm bg-popover border p-2 text-xs text-popover-foreground shadow-md"
@@ -235,11 +257,7 @@ onMounted(fetchDetail);
                       <strong>At:</strong> {{ formatDate((ver.firewall as any).blocked_at) }}
                     </span>
                   </span>
-                  <Badge
-                    v-else
-                    :variant="firewallVariant(ver.firewall)"
-                    class="text-xs"
-                  >
+                  <Badge v-else :variant="firewallVariant(ver.firewall)" class="text-xs">
                     {{ firewallLabel(ver.firewall) }}
                   </Badge>
                 </TableCell>

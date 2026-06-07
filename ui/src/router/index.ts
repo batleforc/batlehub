@@ -59,18 +59,18 @@ export const router = createRouter({
       component: AdminLayout,
       meta: { requiresAdmin: true },
       children: [
-        { path: "packages",        component: AdminPackages },
+        { path: "packages", component: AdminPackages },
         { path: "packages/detail", component: AdminPackageDetail },
-        { path: "bulk",            component: AdminBulk },
-        { path: "audit-log",       component: AuditLog },
-        { path: "health",          component: AdminHealth },
-        { path: "sbom",            component: () => import("@/pages/AdminSbom.vue") },
-        { path: "ip-blocks",       component: () => import("@/pages/AdminIpBlocks.vue") },
-        { path: "beta-channel",    component: () => import("@/pages/AdminBetaChannel.vue") },
+        { path: "bulk", component: AdminBulk },
+        { path: "audit-log", component: AuditLog },
+        { path: "health", component: AdminHealth },
+        { path: "sbom", component: () => import("@/pages/AdminSbom.vue") },
+        { path: "ip-blocks", component: () => import("@/pages/AdminIpBlocks.vue") },
+        { path: "beta-channel", component: () => import("@/pages/AdminBetaChannel.vue") },
         { path: "team-namespaces", component: () => import("@/pages/AdminTeamNamespaces.vue") },
-        { path: "config-reload",   component: () => import("@/pages/AdminConfigReload.vue") },
-        { path: "explore-cache",   component: () => import("@/pages/AdminExploreCache.vue") },
-        { path: "notifications",   component: () => import("@/pages/AdminNotifications.vue") },
+        { path: "config-reload", component: () => import("@/pages/AdminConfigReload.vue") },
+        { path: "explore-cache", component: () => import("@/pages/AdminExploreCache.vue") },
+        { path: "notifications", component: () => import("@/pages/AdminNotifications.vue") },
       ],
     },
   ],
@@ -120,7 +120,10 @@ router.beforeEach(async (to) => {
   if (!identityReady.value) {
     await new Promise<void>((resolve) => {
       const stop = watch(identityReady, (ready) => {
-        if (ready) { stop(); resolve(); }
+        if (ready) {
+          stop();
+          resolve();
+        }
       });
     });
   }

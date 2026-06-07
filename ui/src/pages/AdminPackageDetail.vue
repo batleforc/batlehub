@@ -26,21 +26,29 @@ const { data: registriesList } = useApi<RegistryInfo[]>(
 );
 
 const registryType = computed(
-  () => registriesList.value?.find(r => r.name === registry.value)?.type ?? null,
+  () => registriesList.value?.find((r) => r.name === registry.value)?.type ?? null,
 );
 
 const upstreamUrl = computed(() => {
   if (!registry.value || !name.value) return null;
   switch (registryType.value) {
-    case "github": return `https://github.com/${name.value}`;
-    case "npm":    return `https://www.npmjs.com/package/${name.value}`;
-    case "cargo":  return `https://crates.io/crates/${name.value}`;
-    default:       return null;
+    case "github":
+      return `https://github.com/${name.value}`;
+    case "npm":
+      return `https://www.npmjs.com/package/${name.value}`;
+    case "cargo":
+      return `https://crates.io/crates/${name.value}`;
+    default:
+      return null;
   }
 });
 
 const { data, error, loading, reload } = useApi<PackageDetailResponse>(
-  () => packageDetail({ query: { registry: registry.value, name: name.value } }) as Promise<{ data?: unknown; error?: unknown }>,
+  () =>
+    packageDetail({ query: { registry: registry.value, name: name.value } }) as Promise<{
+      data?: unknown;
+      error?: unknown;
+    }>,
   [token, registry, name],
 );
 </script>
@@ -76,11 +84,13 @@ const { data, error, loading, reload } = useApi<PackageDetailResponse>(
               target="_blank"
               rel="noopener noreferrer"
               class="text-primary underline-offset-2 hover:underline font-mono text-xs"
-            >{{ upstreamUrl }}</a>
+              >{{ upstreamUrl }}</a
+            >
             <span v-else class="text-muted-foreground">—</span>
           </div>
           <div>
-            <span class="text-muted-foreground w-28 inline-block">Versions</span>{{ data.versions.length }}
+            <span class="text-muted-foreground w-28 inline-block">Versions</span
+            >{{ data.versions.length }}
           </div>
         </CardContent>
       </Card>

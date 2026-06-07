@@ -1,7 +1,22 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { RouterView, RouterLink, useRoute, useRouter } from "vue-router";
-import { AlertTriangle, Info, Menu, X, XCircle, Package, ShieldCheck, BookOpen, FolderKey, User, KeyRound, LogOut, ChevronDown, Terminal } from "@lucide/vue";
+import {
+  AlertTriangle,
+  Info,
+  Menu,
+  X,
+  XCircle,
+  Package,
+  ShieldCheck,
+  BookOpen,
+  FolderKey,
+  User,
+  KeyRound,
+  LogOut,
+  ChevronDown,
+  Terminal,
+} from "@lucide/vue";
 import {
   DropdownMenuRoot,
   DropdownMenuTrigger,
@@ -23,9 +38,7 @@ const route = useRoute();
 const router = useRouter();
 const mobileOpen = ref(false);
 
-const isOidcUser = computed(
-  () => isAuthenticated.value && !!identity.value?.auth_provider
-);
+const isOidcUser = computed(() => isAuthenticated.value && !!identity.value?.auth_provider);
 
 const userLinks = [
   { to: "/packages", label: "Packages" },
@@ -55,7 +68,9 @@ function isActive(to: string) {
 <template>
   <div class="min-h-screen bg-background">
     <!-- Sticky header with circuit-grid background -->
-    <header class="sticky top-0 z-40 cyber-grid-bg border-b border-border/60 bg-background/90 backdrop-blur-md">
+    <header
+      class="sticky top-0 z-40 cyber-grid-bg border-b border-border/60 bg-background/90 backdrop-blur-md"
+    >
       <div class="container mx-auto flex h-14 items-center gap-4 px-4">
         <!-- Logo -->
         <RouterLink
@@ -123,7 +138,9 @@ function isActive(to: string) {
                 >
                   {{ userInitials }}
                 </div>
-                <span class="text-muted-foreground hidden lg:inline max-w-[10rem] truncate font-mono text-xs">
+                <span
+                  class="text-muted-foreground hidden lg:inline max-w-[10rem] truncate font-mono text-xs"
+                >
                   {{ identity?.user_id }}
                 </span>
                 <Badge v-if="isAdmin" variant="copper" class="text-xs">admin</Badge>
@@ -136,7 +153,9 @@ function isActive(to: string) {
                 align="end"
                 class="z-50 min-w-[11rem] rounded-sm border border-border bg-popover p-1 shadow-[var(--cyber-glow)]"
               >
-                <DropdownMenuLabel class="px-2 py-1.5 text-xs text-muted-foreground font-mono font-normal truncate">
+                <DropdownMenuLabel
+                  class="px-2 py-1.5 text-xs text-muted-foreground font-mono font-normal truncate"
+                >
                   {{ identity?.user_id }}
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator class="my-1 h-px bg-border" />
@@ -196,12 +215,7 @@ function isActive(to: string) {
           </RouterLink>
 
           <!-- Mobile menu toggle -->
-          <Button
-            variant="ghost"
-            size="icon"
-            class="md:hidden"
-            @click="mobileOpen = !mobileOpen"
-          >
+          <Button variant="ghost" size="icon" class="md:hidden" @click="mobileOpen = !mobileOpen">
             <X v-if="mobileOpen" class="h-4 w-4" />
             <Menu v-else class="h-4 w-4" />
           </Button>

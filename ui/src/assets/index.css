@@ -1,12 +1,12 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap");
 @import "tailwindcss";
 @import "tw-animate-css";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
-  --font-family-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
-  --font-family-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  --font-family-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-family-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
 
   --radius-lg: var(--radius);
   --radius-md: var(--radius);
@@ -37,13 +37,21 @@
   --animate-accordion-up: accordion-up 0.2s ease-out;
 
   @keyframes accordion-down {
-    from { height: 0; }
-    to { height: var(--radix-accordion-content-height); }
+    from {
+      height: 0;
+    }
+    to {
+      height: var(--radix-accordion-content-height);
+    }
   }
 
   @keyframes accordion-up {
-    from { height: var(--radix-accordion-content-height); }
-    to { height: 0; }
+    from {
+      height: var(--radix-accordion-content-height);
+    }
+    to {
+      height: 0;
+    }
   }
 }
 
@@ -67,27 +75,27 @@
   --secondary-foreground: oklch(0.52 0.24 25);
   --muted: oklch(0.92 0.01 18);
   --muted-foreground: oklch(0.44 0.04 25);
-  --accent: oklch(0.52 0.24 25 / 0.10);
+  --accent: oklch(0.52 0.24 25 / 0.1);
   --accent-foreground: oklch(0.52 0.24 25);
   --copper: oklch(0.58 0.12 52);
-  --destructive: oklch(0.50 0.26 25);
+  --destructive: oklch(0.5 0.26 25);
   --destructive-foreground: oklch(0.97 0.01 0);
-  --border: oklch(0.52 0.24 25 / 0.20);
-  --input: oklch(0.52 0.24 25 / 0.10);
-  --ring: oklch(0.52 0.24 25 / 0.40);
+  --border: oklch(0.52 0.24 25 / 0.2);
+  --input: oklch(0.52 0.24 25 / 0.1);
+  --ring: oklch(0.52 0.24 25 / 0.4);
   --radius: 0.125rem;
   --grid-line: oklch(0.52 0.24 25 / 0.06);
-  --cyber-glow: 0 0 6px oklch(0.52 0.24 25 / 0.50), 0 0 20px oklch(0.52 0.24 25 / 0.18);
-  --steam-glow: 0 0 6px oklch(0.58 0.12 52 / 0.50), 0 0 20px oklch(0.58 0.12 52 / 0.18);
+  --cyber-glow: 0 0 6px oklch(0.52 0.24 25 / 0.5), 0 0 20px oklch(0.52 0.24 25 / 0.18);
+  --steam-glow: 0 0 6px oklch(0.58 0.12 52 / 0.5), 0 0 20px oklch(0.58 0.12 52 / 0.18);
 }
 
 /* ── Dark mode (full Monofolio cyberpunk) ─────────────────────────────────── */
 .dark {
   --background: oklch(0.07 0.018 18);
   --foreground: oklch(0.93 0.018 25);
-  --card: oklch(0.10 0.018 18);
+  --card: oklch(0.1 0.018 18);
   --card-foreground: oklch(0.93 0.018 25);
-  --popover: oklch(0.10 0.018 18);
+  --popover: oklch(0.1 0.018 18);
   --popover-foreground: oklch(0.93 0.018 25);
   --primary: oklch(0.65 0.26 25);
   --primary-foreground: oklch(0.97 0.01 0);
@@ -105,8 +113,8 @@
   --ring: oklch(0.65 0.26 25 / 0.45);
   --radius: 0.125rem;
   --grid-line: oklch(0.65 0.26 25 / 0.06);
-  --cyber-glow: 0 0 6px oklch(0.65 0.26 25 / 0.65), 0 0 22px oklch(0.65 0.26 25 / 0.30);
-  --steam-glow: 0 0 6px oklch(0.72 0.14 52 / 0.60), 0 0 22px oklch(0.72 0.14 52 / 0.25);
+  --cyber-glow: 0 0 6px oklch(0.65 0.26 25 / 0.65), 0 0 22px oklch(0.65 0.26 25 / 0.3);
+  --steam-glow: 0 0 6px oklch(0.72 0.14 52 / 0.6), 0 0 22px oklch(0.72 0.14 52 / 0.25);
 }
 
 @layer base {
@@ -115,7 +123,9 @@
   }
   body {
     @apply bg-background text-foreground;
-    font-feature-settings: "rlig" 1, "calt" 1;
+    font-feature-settings:
+      "rlig" 1,
+      "calt" 1;
   }
 }
 
@@ -128,9 +138,15 @@
   background-size: 48px 48px;
 }
 
-.cyber-text-glow { text-shadow: var(--cyber-glow); }
-.cyber-glow { box-shadow: var(--cyber-glow); }
-.steam-glow { box-shadow: var(--steam-glow); }
+.cyber-text-glow {
+  text-shadow: var(--cyber-glow);
+}
+.cyber-glow {
+  box-shadow: var(--cyber-glow);
+}
+.steam-glow {
+  box-shadow: var(--steam-glow);
+}
 
 /* ── Shiki highlighted code blocks ───────────────────────────────────────── */
 .shiki-wrapper .shiki {
@@ -140,7 +156,7 @@
   line-height: 1.625;
   overflow-x: auto;
   margin: 0;
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
 }
 
 .shiki-wrapper .shiki,

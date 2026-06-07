@@ -2,13 +2,29 @@
 import { ref, computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { Search, Package, RefreshCw } from "@lucide/vue";
-import { listRegistries, exploreRegistryStats, explorePackages, exploreUpstreamSearch } from "@/client/sdk.gen";
-import type { RegistryInfo, RegistryStatDto, ExploreEntryDto, ExplorePackageListResponse, UpstreamPackageDto } from "@/client/types.gen";
+import {
+  listRegistries,
+  exploreRegistryStats,
+  explorePackages,
+  exploreUpstreamSearch,
+} from "@/client/sdk.gen";
+import type {
+  RegistryInfo,
+  RegistryStatDto,
+  ExploreEntryDto,
+  ExplorePackageListResponse,
+  UpstreamPackageDto,
+} from "@/client/types.gen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  Table, TableHeader, TableHead, TableBody, TableRow, TableCell,
+  Table,
+  TableHeader,
+  TableHead,
+  TableBody,
+  TableRow,
+  TableCell,
 } from "@/components/ui/table";
 import { Card, CardContent } from "@/components/ui/card";
 
@@ -46,25 +62,23 @@ const error = ref<string | null>(null);
 
 // Merged sidebar list: every registry with its package count (0 if not yet seen)
 const sidebarRegistries = computed(() =>
-  allRegistries.value.map(r => ({
+  allRegistries.value.map((r) => ({
     name: r.name,
     package_count: registryStats.value.get(r.name)?.package_count ?? 0,
-  }))
+  })),
 );
 
 const totalPackages = computed(() =>
-  sidebarRegistries.value.reduce((s, r) => s + r.package_count, 0)
+  sidebarRegistries.value.reduce((s, r) => s + r.package_count, 0),
 );
 
 // Upstream-only hits (not already cached)
-const freshUpstream = computed(() =>
-  upstreamResults.value.filter(p => !p.already_cached)
-);
+const freshUpstream = computed(() => upstreamResults.value.filter((p) => !p.already_cached));
 
 // Unified rows: cached packages first, then upstream-only hits at the bottom
 const tableRows = computed<TableRow[]>(() => [
-  ...packages.value.map(p => ({ ...p, kind: "cached" as const })),
-  ...freshUpstream.value.map(p => ({ ...p, kind: "upstream" as const })),
+  ...packages.value.map((p) => ({ ...p, kind: "cached" as const })),
+  ...freshUpstream.value.map((p) => ({ ...p, kind: "upstream" as const })),
 ]);
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / perPage)));
@@ -88,17 +102,15 @@ function sourceVariant(source: string): "default" | "secondary" | "outline" {
 async function fetchAllRegistries() {
   loadingRegs.value = true;
   try {
-    const [regsResult, statsResult] = await Promise.all([
-      listRegistries(),
-      exploreRegistryStats(),
-    ]);
+    const [regsResult, statsResult] = await Promise.all([listRegistries(), exploreRegistryStats()]);
     if (regsResult.data) {
-      allRegistries.value = (regsResult.data as RegistryInfo[])
-        .sort((a, b) => a.name.localeCompare(b.name));
+      allRegistries.value = (regsResult.data as RegistryInfo[]).sort((a, b) =>
+        a.name.localeCompare(b.name),
+      );
     }
     if (statsResult.data) {
       const body = statsResult.data as { registries?: RegistryStatDto[] };
-      registryStats.value = new Map((body.registries ?? []).map(s => [s.registry, s]));
+      registryStats.value = new Map((body.registries ?? []).map((s) => [s.registry, s]));
     }
   } catch {
     // non-fatal
@@ -189,10 +201,16 @@ function goToDetail(row: TableRow) {
 }
 
 function prevPage() {
-  if (page.value > 0) { page.value--; fetchPackages(); }
+  if (page.value > 0) {
+    page.value--;
+    fetchPackages();
+  }
 }
 function nextPage() {
-  if (page.value < totalPages.value - 1) { page.value++; fetchPackages(); }
+  if (page.value < totalPages.value - 1) {
+    page.value++;
+    fetchPackages();
+  }
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
@@ -251,11 +269,22 @@ onMounted(() => {
     <div class="flex-1 min-w-0 space-y-4">
       <!-- Header -->
       <div class="flex items-center justify-between gap-4 flex-wrap">
-        <h1 class="font-mono text-xl font-bold flex items-center gap-2 text-foreground cyber-text-glow">
+        <h1
+          class="font-mono text-xl font-bold flex items-center gap-2 text-foreground cyber-text-glow"
+        >
           <Package class="h-5 w-5 text-primary" />
           Package Explorer
         </h1>
-        <Button variant="outline" size="sm" @click="() => { fetchPackages(); if (search.trim().length >= 2) fetchUpstream(); }">
+        <Button
+          variant="outline"
+          size="sm"
+          @click="
+            () => {
+              fetchPackages();
+              if (search.trim().length >= 2) fetchUpstream();
+            }
+          "
+        >
           <RefreshCw class="h-4 w-4 mr-1" />
           Refresh
         </Button>
@@ -349,11 +378,7 @@ onMounted(() => {
                     <Badge :variant="sourceVariant(row.source)" class="text-xs">
                       {{ sourceLabel(row.source) }}
                     </Badge>
-                    <Badge
-                      v-if="row.has_blocked"
-                      variant="destructive"
-                      class="text-xs ml-1"
-                    >
+                    <Badge v-if="row.has_blocked" variant="destructive" class="text-xs ml-1">
                       Has blocked
                     </Badge>
                   </template>
@@ -383,7 +408,10 @@ onMounted(() => {
 
               <!-- Upstream loading indicator -->
               <TableRow v-if="loadingUpstream">
-                <TableCell colspan="6" class="text-center text-muted-foreground py-2 text-xs italic">
+                <TableCell
+                  colspan="6"
+                  class="text-center text-muted-foreground py-2 text-xs italic"
+                >
                   Searching upstream registries…
                 </TableCell>
               </TableRow>
@@ -403,12 +431,7 @@ onMounted(() => {
             Previous
           </Button>
           <span>Page {{ page + 1 }} / {{ totalPages }}</span>
-          <Button
-            variant="outline"
-            size="sm"
-            :disabled="page >= totalPages - 1"
-            @click="nextPage"
-          >
+          <Button variant="outline" size="sm" :disabled="page >= totalPages - 1" @click="nextPage">
             Next
           </Button>
         </div>

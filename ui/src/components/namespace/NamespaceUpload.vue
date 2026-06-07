@@ -15,14 +15,16 @@ const props = defineProps<{ registries: RegistryInfo[] }>();
 const { authFetch } = useAuthFetch();
 
 const uploadableRegistries = computed(() =>
-  props.registries.filter(r => r.mode === "local" || r.mode === "hybrid"),
+  props.registries.filter((r) => r.mode === "local" || r.mode === "hybrid"),
 );
 
 const selectedRegistry = ref("");
 const registryOptions = computed(() =>
-  uploadableRegistries.value.map(r => ({ value: r.name, label: r.name })),
+  uploadableRegistries.value.map((r) => ({ value: r.name, label: r.name })),
 );
-const registryType = computed(() => props.registries.find(r => r.name === selectedRegistry.value)?.type ?? "");
+const registryType = computed(
+  () => props.registries.find((r) => r.name === selectedRegistry.value)?.type ?? "",
+);
 
 const BINARY_TYPES = ["rubygems", "composer", "openvsx", "vscode-marketplace", "goproxy"];
 const isBinaryUpload = computed(() => BINARY_TYPES.includes(registryType.value));
@@ -61,23 +63,31 @@ async function doUpload() {
     } else if (registryType.value === "composer") {
       url = `${API_BASE_URL}/proxy/${reg}/api/upload`;
     } else if (registryType.value === "openvsx" || registryType.value === "vscode-marketplace") {
-      if (!uploadExtId.value.trim() || !uploadVersion.value.trim()) throw new Error("Extension ID and version are required");
+      if (!uploadExtId.value.trim() || !uploadVersion.value.trim())
+        throw new Error("Extension ID and version are required");
       url = `${API_BASE_URL}/proxy/${reg}/${encodeURIComponent(uploadExtId.value.trim())}/${encodeURIComponent(uploadVersion.value.trim())}/vsix`;
       method = "PUT";
     } else if (registryType.value === "goproxy") {
-      if (!uploadModule.value.trim() || !uploadVersion.value.trim()) throw new Error("Module path and version are required");
+      if (!uploadModule.value.trim() || !uploadVersion.value.trim())
+        throw new Error("Module path and version are required");
       url = `${API_BASE_URL}/proxy/${reg}/${encodeURIComponent(uploadModule.value.trim())}/@v/${encodeURIComponent(uploadVersion.value.trim())}.zip`;
       method = "PUT";
     }
     const body = await uploadFile.value.arrayBuffer();
-    const r = await authFetch(url, { method, headers: { "Content-Type": "application/octet-stream" }, body });
+    const r = await authFetch(url, {
+      method,
+      headers: { "Content-Type": "application/octet-stream" },
+      body,
+    });
     if (!r.ok) throw new Error(await r.text());
     success.value = true;
     uploadFile.value = null;
     uploadExtId.value = "";
     uploadVersion.value = "";
     uploadModule.value = "";
-    setTimeout(() => { success.value = false; }, 4000);
+    setTimeout(() => {
+      success.value = false;
+    }, 4000);
   } catch (e_) {
     error.value = e_ instanceof Error ? e_.message : "Unknown error";
   } finally {
@@ -93,7 +103,8 @@ const cliSnippets: Record<string, string> = {
   terraform: `terraform {\n  required_providers {\n    <provider> = {\n      source = "${window.location.hostname}/${cliRegistryName.value}/<namespace>/<provider>"\n    }\n  }\n}`,
 };
 const currentSnippet = computed(
-  () => cliSnippets[registryType.value] ?? "# No CLI instructions available for this registry type.",
+  () =>
+    cliSnippets[registryType.value] ?? "# No CLI instructions available for this registry type.",
 );
 </script>
 
@@ -104,7 +115,11 @@ const currentSnippet = computed(
   <template v-else>
     <div class="space-y-1.5 w-60">
       <Label>Registry</Label>
-      <Select v-model="selectedRegistry" :options="registryOptions" placeholder="Select registry…" />
+      <Select
+        v-model="selectedRegistry"
+        :options="registryOptions"
+        placeholder="Select registry…"
+      />
     </div>
 
     <Tabs :default-value="isBinaryUpload ? 'upload' : 'cli'" class="w-full">
@@ -117,8 +132,15 @@ const currentSnippet = computed(
         <template v-if="registryType === 'openvsx' || registryType === 'vscode-marketplace'">
           <div class="grid grid-cols-2 gap-3">
             <div class="space-y-1.5">
-              <Label>Extension ID <span class="text-muted-foreground text-xs">(publisher.name)</span></Label>
-              <Input v-model="uploadExtId" placeholder="ms-python.python" class="font-mono text-sm" />
+              <Label
+                >Extension ID
+                <span class="text-muted-foreground text-xs">(publisher.name)</span></Label
+              >
+              <Input
+                v-model="uploadExtId"
+                placeholder="ms-python.python"
+                class="font-mono text-sm"
+              />
             </div>
             <div class="space-y-1.5">
               <Label>Version</Label>
@@ -130,7 +152,11 @@ const currentSnippet = computed(
           <div class="grid grid-cols-2 gap-3">
             <div class="space-y-1.5">
               <Label>Module path</Label>
-              <Input v-model="uploadModule" placeholder="github.com/org/repo" class="font-mono text-sm" />
+              <Input
+                v-model="uploadModule"
+                placeholder="github.com/org/repo"
+                class="font-mono text-sm"
+              />
             </div>
             <div class="space-y-1.5">
               <Label>Version</Label>
@@ -140,13 +166,18 @@ const currentSnippet = computed(
         </template>
 
         <div class="space-y-1.5">
-          <Label>File <span class="text-muted-foreground text-xs ml-1">{{ acceptFor(registryType) }}</span></Label>
+          <Label
+            >File
+            <span class="text-muted-foreground text-xs ml-1">{{
+              acceptFor(registryType)
+            }}</span></Label
+          >
           <input
             type="file"
             :accept="acceptFor(registryType)"
             class="block text-sm text-muted-foreground file:mr-3 file:py-1.5 file:px-3 file:rounded-sm file:border-0 file:text-xs file:font-medium file:bg-secondary file:text-secondary-foreground hover:file:bg-secondary/80 cursor-pointer"
             @change="onFileChange"
-          >
+          />
         </div>
 
         <div class="flex items-center gap-3">

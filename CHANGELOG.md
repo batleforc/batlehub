@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-07
+
 ### Registry adapters
 
 - **npm** — proxy with scoped package support; local/hybrid publish
@@ -113,4 +115,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-[Unreleased]: https://git.batleforc.fr/batleforc/batlehub/compare/main...HEAD
+[Unreleased]: https://git.batleforc.fr/batleforc/batlehub/compare/v0.2.0...HEAD
+[0.2.0]: https://git.batleforc.fr/batleforc/batlehub/releases/tag/v0.2.0

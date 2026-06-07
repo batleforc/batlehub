@@ -7,9 +7,7 @@ import type { MeResponse, OidcProviderInfo } from "@/client/types.gen";
 import { useAuth, storeTokens } from "@/composables/useAuth";
 import { generateOidcState } from "@/router";
 import { API_BASE_URL } from "@/config";
-import {
-  Card, CardHeader, CardTitle, CardDescription, CardContent,
-} from "@/components/ui/card";
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -92,9 +90,7 @@ function continueAnonymously() {
 
 function providerLabel(name: string): string {
   // Capitalise and replace dashes/underscores with spaces for display.
-  return name
-    .replace(/[-_]/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
+  return name.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 </script>
 
@@ -102,12 +98,8 @@ function providerLabel(name: string): string {
   <div class="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4 cyber-grid-bg">
     <Card class="w-full max-w-sm [box-shadow:var(--cyber-glow)]">
       <CardHeader class="space-y-1">
-        <CardTitle class="font-mono text-2xl font-bold cyber-text-glow">
-          Sign in
-        </CardTitle>
-        <CardDescription>
-          Authenticate to access protected resources.
-        </CardDescription>
+        <CardTitle class="font-mono text-2xl font-bold cyber-text-glow"> Sign in </CardTitle>
+        <CardDescription> Authenticate to access protected resources. </CardDescription>
       </CardHeader>
 
       <CardContent class="space-y-4">
@@ -137,16 +129,15 @@ function providerLabel(name: string): string {
               <span class="w-full border-t border-border/60" />
             </div>
             <div class="relative flex justify-center text-xs uppercase">
-              <span class="bg-card px-2 font-mono text-muted-foreground tracking-widest">or use a token</span>
+              <span class="bg-card px-2 font-mono text-muted-foreground tracking-widest"
+                >or use a token</span
+              >
             </div>
           </div>
         </template>
 
         <!-- Static-token form -->
-        <form
-          class="space-y-4"
-          @submit.prevent="submit"
-        >
+        <form class="space-y-4" @submit.prevent="submit">
           <div class="space-y-2">
             <Label for="token">Bearer token</Label>
             <Input
@@ -158,28 +149,16 @@ function providerLabel(name: string): string {
             />
           </div>
 
-          <p
-            v-if="error"
-            class="text-sm text-destructive"
-          >
+          <p v-if="error" class="text-sm text-destructive">
             {{ error }}
           </p>
 
-          <Button
-            type="submit"
-            class="w-full"
-            :disabled="loading"
-          >
+          <Button type="submit" class="w-full" :disabled="loading">
             {{ loading ? "Signing in…" : "Sign in with token" }}
           </Button>
         </form>
 
-        <Button
-          type="button"
-          variant="ghost"
-          class="w-full"
-          @click="continueAnonymously"
-        >
+        <Button type="button" variant="ghost" class="w-full" @click="continueAnonymously">
           Continue without signing in
         </Button>
       </CardContent>

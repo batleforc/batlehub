@@ -9,7 +9,12 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import {
-  Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
 } from "@/components/ui/table";
 
 interface AccessEvent {
@@ -55,20 +60,11 @@ const actionOptions = computed(() => {
       <div class="flex flex-row items-center justify-between space-y-0">
         <CardTitle class="text-lg">
           Audit Log
-          <span
-            v-if="data?.length"
-            class="font-normal text-muted-foreground text-base ml-1"
-          >
+          <span v-if="data?.length" class="font-normal text-muted-foreground text-base ml-1">
             ({{ data.length }})
           </span>
         </CardTitle>
-        <Button
-          variant="outline"
-          size="sm"
-          @click="reload"
-        >
-          Refresh
-        </Button>
+        <Button variant="outline" size="sm" @click="reload"> Refresh </Button>
       </div>
       <div class="flex gap-2 flex-wrap">
         <Input
@@ -80,30 +76,16 @@ const actionOptions = computed(() => {
           v-model="actionFilter"
           class="h-8 rounded-sm border border-input bg-transparent px-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring text-foreground"
         >
-          <option value="">
-            All actions
-          </option>
-          <option
-            v-for="a in actionOptions"
-            :key="a"
-            :value="a"
-          >
+          <option value="">All actions</option>
+          <option v-for="a in actionOptions" :key="a" :value="a">
             {{ a }}
           </option>
         </select>
       </div>
     </CardHeader>
     <CardContent class="p-0">
-      <p
-        v-if="loading"
-        class="p-6 text-sm text-muted-foreground"
-      >
-        Loading…
-      </p>
-      <p
-        v-else-if="error"
-        class="p-6 text-sm text-destructive"
-      >
+      <p v-if="loading" class="p-6 text-sm text-muted-foreground">Loading…</p>
+      <p v-else-if="error" class="p-6 text-sm text-destructive">
         {{ error }}
       </p>
 
@@ -129,20 +111,16 @@ const actionOptions = computed(() => {
             </TableCell>
             <TableCell class="text-sm font-mono">
               <span v-if="ev.user_id">{{ ev.user_id }}</span>
-              <span
-                v-else
-                class="text-muted-foreground italic not-italic font-sans"
-              >anonymous</span>
+              <span v-else class="text-muted-foreground italic not-italic font-sans"
+                >anonymous</span
+              >
             </TableCell>
             <TableCell class="font-mono text-xs">
               {{ ev.package_id.registry }}
             </TableCell>
             <TableCell class="font-mono text-xs">
               {{ ev.package_id.name }}@{{ ev.package_id.version }}
-              <span
-                v-if="ev.package_id.artifact"
-                class="text-muted-foreground"
-              >
+              <span v-if="ev.package_id.artifact" class="text-muted-foreground">
                 ({{ ev.package_id.artifact }})
               </span>
             </TableCell>
@@ -165,11 +143,12 @@ const actionOptions = computed(() => {
         </TableBody>
       </Table>
 
-      <div
-        v-else-if="!loading"
-        class="p-6 text-sm text-muted-foreground text-center"
-      >
-        {{ userFilter || actionFilter ? "No events match the current filters." : "No events recorded yet." }}
+      <div v-else-if="!loading" class="p-6 text-sm text-muted-foreground text-center">
+        {{
+          userFilter || actionFilter
+            ? "No events match the current filters."
+            : "No events recorded yet."
+        }}
       </div>
     </CardContent>
   </Card>

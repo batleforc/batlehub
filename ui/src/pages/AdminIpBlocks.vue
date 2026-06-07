@@ -10,7 +10,12 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
 } from "@/components/ui/table";
 import Dialog from "@/components/ui/dialog/Dialog.vue";
 
@@ -83,49 +88,27 @@ function isExpired(unblock_at: number): boolean {
   <div class="space-y-6">
     <div class="flex items-center justify-between">
       <div>
-        <h1 class="text-2xl font-semibold">
-          IP Blocks
-        </h1>
+        <h1 class="text-2xl font-semibold">IP Blocks</h1>
         <p class="text-sm text-muted-foreground mt-0.5">
           Manage manually blocked IP addresses. Blocked IPs receive 403 responses on all requests.
         </p>
       </div>
       <div class="flex items-center gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          :disabled="loading"
-          @click="reload"
-        >
+        <Button variant="outline" size="sm" :disabled="loading" @click="reload">
           {{ loading ? "Refreshing…" : "Refresh" }}
         </Button>
-        <Button
-          size="sm"
-          @click="blockDialogOpen = true"
-        >
-          Block IP
-        </Button>
+        <Button size="sm" @click="blockDialogOpen = true"> Block IP </Button>
       </div>
     </div>
 
-    <p
-      v-if="loading && !data"
-      class="text-sm text-muted-foreground"
-    >
-      Loading…
-    </p>
-    <p
-      v-else-if="error"
-      class="text-sm text-destructive"
-    >
+    <p v-if="loading && !data" class="text-sm text-muted-foreground">Loading…</p>
+    <p v-else-if="error" class="text-sm text-destructive">
       {{ error }}
     </p>
 
     <Card v-else>
       <CardHeader>
-        <CardTitle class="text-base">
-          Currently blocked IPs
-        </CardTitle>
+        <CardTitle class="text-base"> Currently blocked IPs </CardTitle>
       </CardHeader>
       <CardContent class="p-0">
         <Table>
@@ -135,9 +118,7 @@ function isExpired(unblock_at: number): boolean {
               <TableHead>Reason</TableHead>
               <TableHead>Blocked at</TableHead>
               <TableHead>Unblocks at</TableHead>
-              <TableHead class="text-right">
-                Actions
-              </TableHead>
+              <TableHead class="text-right"> Actions </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -159,34 +140,20 @@ function isExpired(unblock_at: number): boolean {
                 {{ fmtTs(entry.blocked_at) }}
               </TableCell>
               <TableCell>
-                <Badge
-                  v-if="isExpired(entry.unblock_at)"
-                  variant="outline"
-                  class="text-xs"
-                >
+                <Badge v-if="isExpired(entry.unblock_at)" variant="outline" class="text-xs">
                   Expired
                 </Badge>
-                <span
-                  v-else
-                  class="text-xs"
-                >{{ fmtTs(entry.unblock_at) }}</span>
+                <span v-else class="text-xs">{{ fmtTs(entry.unblock_at) }}</span>
               </TableCell>
               <TableCell class="text-right">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  @click="unblockTarget = entry.ip"
-                >
+                <Button variant="outline" size="sm" @click="unblockTarget = entry.ip">
                   Unblock
                 </Button>
               </TableCell>
             </TableRow>
           </TableBody>
         </Table>
-        <p
-          v-if="!data || data.length === 0"
-          class="p-6 text-sm text-muted-foreground text-center"
-        >
+        <p v-if="!data || data.length === 0" class="p-6 text-sm text-muted-foreground text-center">
           No IPs are currently blocked.
         </p>
       </CardContent>
@@ -196,13 +163,18 @@ function isExpired(unblock_at: number): boolean {
   <!-- Block IP dialog -->
   <Dialog
     :open="blockDialogOpen"
-    @update:open="(v) => { if (!v) { blockDialogOpen = false; blockError = null; } }"
+    @update:open="
+      (v) => {
+        if (!v) {
+          blockDialogOpen = false;
+          blockError = null;
+        }
+      }
+    "
   >
     <div class="space-y-4">
       <div>
-        <h2 class="text-lg font-semibold">
-          Block IP address
-        </h2>
+        <h2 class="text-lg font-semibold">Block IP address</h2>
         <p class="text-sm text-muted-foreground mt-1">
           The IP will be blocked for the specified duration and receive 403 on all requests.
         </p>
@@ -210,18 +182,11 @@ function isExpired(unblock_at: number): boolean {
       <div class="space-y-3">
         <div class="space-y-1.5">
           <Label>IP address <span class="text-destructive">*</span></Label>
-          <Input
-            v-model="blockForm.ip"
-            placeholder="e.g. 203.0.113.42"
-            class="font-mono"
-          />
+          <Input v-model="blockForm.ip" placeholder="e.g. 203.0.113.42" class="font-mono" />
         </div>
         <div class="space-y-1.5">
           <Label>Reason</Label>
-          <Input
-            v-model="blockForm.reason"
-            placeholder="Optional reason"
-          />
+          <Input v-model="blockForm.reason" placeholder="Optional reason" />
         </div>
         <div class="space-y-1.5">
           <Label>Duration (seconds)</Label>
@@ -231,15 +196,10 @@ function isExpired(unblock_at: number): boolean {
             min="60"
             placeholder="3600"
           />
-          <p class="text-xs text-muted-foreground">
-            Default: 3600 s (1 hour)
-          </p>
+          <p class="text-xs text-muted-foreground">Default: 3600 s (1 hour)</p>
         </div>
       </div>
-      <p
-        v-if="blockError"
-        class="text-sm text-destructive"
-      >
+      <p v-if="blockError" class="text-sm text-destructive">
         {{ blockError }}
       </p>
       <div class="flex justify-end gap-2">
@@ -247,7 +207,10 @@ function isExpired(unblock_at: number): boolean {
           variant="outline"
           size="sm"
           :disabled="blockLoading"
-          @click="blockDialogOpen = false; blockError = null"
+          @click="
+            blockDialogOpen = false;
+            blockError = null;
+          "
         >
           Cancel
         </Button>
@@ -266,21 +229,26 @@ function isExpired(unblock_at: number): boolean {
   <!-- Unblock confirmation dialog -->
   <Dialog
     :open="unblockTarget !== null"
-    @update:open="(v) => { if (!v) { unblockTarget = null; unblockError = null; } }"
+    @update:open="
+      (v) => {
+        if (!v) {
+          unblockTarget = null;
+          unblockError = null;
+        }
+      }
+    "
   >
     <div class="space-y-4">
       <div>
         <h2 class="text-lg font-semibold">
-          Unblock <span class="font-mono">{{ unblockTarget }}</span>?
+          Unblock <span class="font-mono">{{ unblockTarget }}</span
+          >?
         </h2>
         <p class="text-sm text-muted-foreground mt-1">
           This IP will be immediately allowed to send requests again.
         </p>
       </div>
-      <p
-        v-if="unblockError"
-        class="text-sm text-destructive"
-      >
+      <p v-if="unblockError" class="text-sm text-destructive">
         {{ unblockError }}
       </p>
       <div class="flex justify-end gap-2">
@@ -288,15 +256,14 @@ function isExpired(unblock_at: number): boolean {
           variant="outline"
           size="sm"
           :disabled="unblockLoading"
-          @click="unblockTarget = null; unblockError = null"
+          @click="
+            unblockTarget = null;
+            unblockError = null;
+          "
         >
           Cancel
         </Button>
-        <Button
-          size="sm"
-          :disabled="unblockLoading"
-          @click="confirmUnblock"
-        >
+        <Button size="sm" :disabled="unblockLoading" @click="confirmUnblock">
           {{ unblockLoading ? "Unblocking…" : "Unblock" }}
         </Button>
       </div>

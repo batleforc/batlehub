@@ -10,7 +10,7 @@ export function useAuthFetch() {
   async function authFetch(url: string, init: RequestInit = {}): Promise<Response> {
     return fetch(url, {
       ...init,
-      headers: { ...authHeaders(), ...(init.headers as Record<string, string> | undefined ?? {}) },
+      headers: { ...authHeaders(), ...(init.headers as Record<string, string> | undefined) },
     });
   }
 

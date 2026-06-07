@@ -11,7 +11,12 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import {
-  Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
 } from "@/components/ui/table";
 
 const { token } = useAuth();
@@ -28,10 +33,11 @@ const filteredItems = computed(() => {
   if (!data.value?.items) return [];
   const q = search.value.toLowerCase().trim();
   if (!q) return data.value.items;
-  return data.value.items.filter((p) =>
-    p.name.toLowerCase().includes(q) ||
-    p.registry.toLowerCase().includes(q) ||
-    p.version.toLowerCase().includes(q),
+  return data.value.items.filter(
+    (p) =>
+      p.name.toLowerCase().includes(q) ||
+      p.registry.toLowerCase().includes(q) ||
+      p.version.toLowerCase().includes(q),
   );
 });
 
@@ -40,9 +46,7 @@ function statusVariant(pkg: PackageSummaryDto) {
 }
 
 function statusLabel(pkg: PackageSummaryDto) {
-  return pkg.status.status === "blocked"
-    ? `Blocked: ${pkg.status.reason}`
-    : "Available";
+  return pkg.status.status === "blocked" ? `Blocked: ${pkg.status.reason}` : "Available";
 }
 </script>
 
@@ -52,20 +56,11 @@ function statusLabel(pkg: PackageSummaryDto) {
       <div class="flex flex-row items-center justify-between space-y-0">
         <CardTitle class="font-mono text-lg cyber-text-glow">
           Packages
-          <span
-            v-if="data"
-            class="font-normal text-muted-foreground text-base ml-1"
-          >
+          <span v-if="data" class="font-normal text-muted-foreground text-base ml-1">
             ({{ data.total }})
           </span>
         </CardTitle>
-        <Button
-          variant="outline"
-          size="sm"
-          @click="reload"
-        >
-          Refresh
-        </Button>
+        <Button variant="outline" size="sm" @click="reload"> Refresh </Button>
       </div>
       <Input
         v-model="search"
@@ -74,16 +69,8 @@ function statusLabel(pkg: PackageSummaryDto) {
       />
     </CardHeader>
     <CardContent class="p-0">
-      <p
-        v-if="loading"
-        class="p-6 text-sm text-muted-foreground"
-      >
-        Loading…
-      </p>
-      <p
-        v-else-if="error"
-        class="p-6 text-sm text-destructive"
-      >
+      <p v-if="loading" class="p-6 text-sm text-muted-foreground">Loading…</p>
+      <p v-else-if="error" class="p-6 text-sm text-destructive">
         {{ error }}
       </p>
 
@@ -95,9 +82,7 @@ function statusLabel(pkg: PackageSummaryDto) {
             <TableHead>Version</TableHead>
             <TableHead>Artifact</TableHead>
             <TableHead>Status</TableHead>
-            <TableHead class="text-right">
-              Downloads
-            </TableHead>
+            <TableHead class="text-right"> Downloads </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -105,7 +90,17 @@ function statusLabel(pkg: PackageSummaryDto) {
             v-for="(pkg, i) in filteredItems"
             :key="i"
             class="cursor-pointer"
-            @click="router.push({ path: '/packages/detail', query: { registry: pkg.registry, name: pkg.name, version: pkg.version, ...(pkg.artifact ? { artifact: pkg.artifact } : {}) } })"
+            @click="
+              router.push({
+                path: '/packages/detail',
+                query: {
+                  registry: pkg.registry,
+                  name: pkg.name,
+                  version: pkg.version,
+                  ...(pkg.artifact ? { artifact: pkg.artifact } : {}),
+                },
+              })
+            "
           >
             <TableCell class="font-mono text-xs">
               {{ pkg.registry }}
@@ -131,18 +126,12 @@ function statusLabel(pkg: PackageSummaryDto) {
         </TableBody>
       </Table>
 
-      <div
-        v-else-if="!loading"
-        class="py-12 text-center space-y-2"
-      >
+      <div v-else-if="!loading" class="py-12 text-center space-y-2">
         <Package class="h-8 w-8 mx-auto text-muted-foreground/50" />
         <p class="text-sm text-muted-foreground">
           {{ search ? "No packages match your filter." : "No packages cached yet." }}
         </p>
-        <p
-          v-if="!search"
-          class="text-xs text-muted-foreground"
-        >
+        <p v-if="!search" class="text-xs text-muted-foreground">
           Packages appear here once they are downloaded through the proxy.
         </p>
       </div>

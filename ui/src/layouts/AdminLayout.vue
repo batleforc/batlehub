@@ -18,17 +18,17 @@ import {
 const route = useRoute();
 
 const adminLinks = [
-  { to: "/admin/packages",       label: "Packages",        icon: Package },
-  { to: "/admin/bulk",           label: "Bulk Import",     icon: Upload },
-  { to: "/admin/audit-log",      label: "Audit Log",       icon: ScrollText },
-  { to: "/admin/health",         label: "Health",          icon: HeartPulse },
-  { to: "/admin/sbom",           label: "SBOM Export",     icon: FileJson },
-  { to: "/admin/ip-blocks",      label: "IP Blocks",       icon: Shield },
-  { to: "/admin/beta-channel",   label: "Beta Channel",    icon: FlaskConical },
+  { to: "/admin/packages", label: "Packages", icon: Package },
+  { to: "/admin/bulk", label: "Bulk Import", icon: Upload },
+  { to: "/admin/audit-log", label: "Audit Log", icon: ScrollText },
+  { to: "/admin/health", label: "Health", icon: HeartPulse },
+  { to: "/admin/sbom", label: "SBOM Export", icon: FileJson },
+  { to: "/admin/ip-blocks", label: "IP Blocks", icon: Shield },
+  { to: "/admin/beta-channel", label: "Beta Channel", icon: FlaskConical },
   { to: "/admin/team-namespaces", label: "Team Namespaces", icon: FolderKey },
-  { to: "/admin/config-reload",  label: "Config Reload",   icon: RefreshCw },
-  { to: "/admin/explore-cache",  label: "Explore Cache",   icon: DatabaseZap },
-  { to: "/admin/notifications",  label: "Notifications",   icon: Bell },
+  { to: "/admin/config-reload", label: "Config Reload", icon: RefreshCw },
+  { to: "/admin/explore-cache", label: "Explore Cache", icon: DatabaseZap },
+  { to: "/admin/notifications", label: "Notifications", icon: Bell },
 ];
 
 function isActive(to: string) {
@@ -40,7 +40,9 @@ function isActive(to: string) {
   <div class="flex gap-6 min-h-[calc(100vh-3.5rem-1px)]">
     <!-- Sidebar (desktop) -->
     <aside class="hidden md:flex flex-col w-52 shrink-0 border-r border-border/60 pr-4 pt-2">
-      <div class="flex items-center gap-2 px-3 py-2 mb-2 font-mono text-xs font-semibold uppercase tracking-wider text-copper">
+      <div
+        class="flex items-center gap-2 px-3 py-2 mb-2 font-mono text-xs font-semibold uppercase tracking-wider text-copper"
+      >
         <ShieldCheck class="h-3.5 w-3.5" />
         Admin
       </div>

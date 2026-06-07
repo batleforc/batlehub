@@ -36,8 +36,7 @@ async function triggerDownload() {
     }
     const blob = await resp.blob();
     const filename =
-      resp.headers.get("Content-Disposition")?.match(/filename="?([^"]+)"?/)?.[1] ??
-      "batlehub-cli";
+      resp.headers.get("Content-Disposition")?.match(/filename="?([^"]+)"?/)?.[1] ?? "batlehub-cli";
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -58,7 +57,9 @@ const copied = ref<string | null>(null);
 async function copy(key: string, text: string) {
   await navigator.clipboard.writeText(text);
   copied.value = key;
-  setTimeout(() => { if (copied.value === key) copied.value = null; }, 2000);
+  setTimeout(() => {
+    if (copied.value === key) copied.value = null;
+  }, 2000);
 }
 
 // ── Snippet templates ─────────────────────────────────────────────────────────
@@ -132,16 +133,33 @@ cargo build -p batlehub-cli --release
   },
 };
 
-const configSnippet = computed(() => `[default]
+const configSnippet = computed(
+  () => `[default]
 server_url = "${serverUrl.value}"
-token      = "your-api-token"`);
+token      = "your-api-token"`,
+);
 
 const usageSnippets = [
   { key: "registry", label: "List registries", lang: "bash", code: "batlehub-cli registry list" },
-  { key: "whoami",   label: "Check identity",  lang: "bash", code: "batlehub-cli auth whoami" },
-  { key: "list",     label: "List packages",   lang: "bash", code: "batlehub-cli package list --registry <name>" },
-  { key: "publish",  label: "Publish",         lang: "bash", code: "batlehub-cli publish MyLib.1.0.0.nupkg --registry <name>" },
-  { key: "yank",     label: "Yank version",    lang: "bash", code: "batlehub-cli version yank <registry> <name> <version>" },
+  { key: "whoami", label: "Check identity", lang: "bash", code: "batlehub-cli auth whoami" },
+  {
+    key: "list",
+    label: "List packages",
+    lang: "bash",
+    code: "batlehub-cli package list --registry <name>",
+  },
+  {
+    key: "publish",
+    label: "Publish",
+    lang: "bash",
+    code: "batlehub-cli publish MyLib.1.0.0.nupkg --registry <name>",
+  },
+  {
+    key: "yank",
+    label: "Yank version",
+    lang: "bash",
+    code: "batlehub-cli version yank <registry> <name> <version>",
+  },
 ];
 </script>
 
@@ -178,11 +196,7 @@ const usageSnippets = [
 
         <!-- Download button -->
         <div class="flex flex-wrap gap-3 items-center">
-          <Button
-            class="font-mono gap-2"
-            :disabled="downloading"
-            @click="triggerDownload"
-          >
+          <Button class="font-mono gap-2" :disabled="downloading" @click="triggerDownload">
             <Download class="h-4 w-4" />
             {{ downloading ? "Downloading…" : "Download batlehub-cli" }}
           </Button>
@@ -191,7 +205,9 @@ const usageSnippets = [
 
         <!-- Install tabs -->
         <Tabs default-value="download" class="mt-4">
-          <TabsList class="flex flex-wrap h-auto gap-1 justify-start bg-transparent border-none p-0 mb-2">
+          <TabsList
+            class="flex flex-wrap h-auto gap-1 justify-start bg-transparent border-none p-0 mb-2"
+          >
             <TabsTrigger
               v-for="(s, key) in installSnippets"
               :key="key"
@@ -202,13 +218,12 @@ const usageSnippets = [
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent
-            v-for="(s, key) in installSnippets"
-            :key="key"
-            :value="key"
-          >
+          <TabsContent v-for="(s, key) in installSnippets" :key="key" :value="key">
             <div class="relative rounded-sm border border-border bg-muted/40 overflow-hidden">
-              <pre class="p-4 text-xs font-mono overflow-x-auto text-foreground/90 leading-relaxed">{{ s.code }}</pre>
+              <pre
+                class="p-4 text-xs font-mono overflow-x-auto text-foreground/90 leading-relaxed"
+                >{{ s.code }}</pre
+              >
               <Button
                 size="sm"
                 variant="ghost"
@@ -237,7 +252,9 @@ const usageSnippets = [
       </CardHeader>
       <CardContent class="space-y-4">
         <div class="relative rounded-sm border border-border bg-muted/40 overflow-hidden">
-          <pre class="p-4 text-xs font-mono overflow-x-auto text-foreground/90 leading-relaxed">{{ configSnippet }}</pre>
+          <pre class="p-4 text-xs font-mono overflow-x-auto text-foreground/90 leading-relaxed">{{
+            configSnippet
+          }}</pre>
           <Button
             size="sm"
             variant="ghost"
@@ -273,8 +290,12 @@ const usageSnippets = [
             :key="s.key"
             class="relative rounded-sm border border-border bg-muted/40 overflow-hidden"
           >
-            <div class="px-3 pt-2 pb-0.5 text-xs text-muted-foreground font-mono">{{ s.label }}</div>
-            <pre class="px-3 pb-3 pt-1 text-xs font-mono text-foreground/90 leading-relaxed">{{ s.code }}</pre>
+            <div class="px-3 pt-2 pb-0.5 text-xs text-muted-foreground font-mono">
+              {{ s.label }}
+            </div>
+            <pre class="px-3 pb-3 pt-1 text-xs font-mono text-foreground/90 leading-relaxed">{{
+              s.code
+            }}</pre>
             <Button
               size="sm"
               variant="ghost"

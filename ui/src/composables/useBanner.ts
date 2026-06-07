@@ -8,7 +8,8 @@ export interface GlobalBanner {
 }
 
 const POLL_INTERVAL_MS = 30_000;
-const API_BASE = (import.meta as unknown as { env: Record<string, string> }).env.VITE_API_BASE_URL ?? "";
+const API_BASE =
+  (import.meta as unknown as { env: Record<string, string> }).env.VITE_API_BASE_URL ?? "";
 
 export function useBanner(): { banner: Ref<GlobalBanner | null> } {
   const banner = ref<GlobalBanner | null>(null);

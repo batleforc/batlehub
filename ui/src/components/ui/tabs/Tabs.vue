@@ -7,10 +7,7 @@ const props = defineProps<TabsRootProps & { class?: HTMLAttributes["class"] }>()
 </script>
 
 <template>
-  <TabsRoot
-    v-bind="props"
-    :class="cn('', props.class)"
-  >
+  <TabsRoot v-bind="props" :class="cn('', props.class)">
     <slot />
   </TabsRoot>
 </template>

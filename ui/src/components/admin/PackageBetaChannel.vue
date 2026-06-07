@@ -7,20 +7,31 @@ import { useAuth } from "@/composables/useAuth";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
-import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
+import {
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
+} from "@/components/ui/table";
 
 const props = defineProps<{ registry: string }>();
 
 const { token } = useAuth();
 const expanded = ref(false);
 
-const { data: members, loading, reload } = useApi<BetaChannelMemberDto[]>(
-  () => {
-    if (!props.registry) return Promise.resolve({ data: [] });
-    return listBetaMembers({ path: { registry: props.registry } }) as Promise<{ data?: unknown; error?: unknown }>;
-  },
-  [token],
-);
+const {
+  data: members,
+  loading,
+  reload,
+} = useApi<BetaChannelMemberDto[]>(() => {
+  if (!props.registry) return Promise.resolve({ data: [] });
+  return listBetaMembers({ path: { registry: props.registry } }) as Promise<{
+    data?: unknown;
+    error?: unknown;
+  }>;
+}, [token]);
 </script>
 
 <template>
@@ -32,7 +43,9 @@ const { data: members, loading, reload } = useApi<BetaChannelMemberDto[]>(
           @click="expanded = !expanded"
         >
           Beta Channel Access
-          <span class="text-muted-foreground text-xs font-normal">{{ expanded ? "▲ hide" : "▼ show" }}</span>
+          <span class="text-muted-foreground text-xs font-normal">{{
+            expanded ? "▲ hide" : "▼ show"
+          }}</span>
           <Badge v-if="members && members.length > 0" variant="secondary" class="text-xs ml-1">
             {{ members.length }} member{{ members.length > 1 ? "s" : "" }}
           </Badge>
@@ -57,7 +70,10 @@ const { data: members, loading, reload } = useApi<BetaChannelMemberDto[]>(
         <TableBody>
           <TableRow v-for="m in members" :key="m.principal_type + ':' + m.principal_id">
             <TableCell>
-              <Badge :variant="m.principal_type === 'user' ? 'default' : 'secondary'" class="text-xs capitalize">
+              <Badge
+                :variant="m.principal_type === 'user' ? 'default' : 'secondary'"
+                class="text-xs capitalize"
+              >
                 {{ m.principal_type }}
               </Badge>
             </TableCell>
@@ -66,7 +82,10 @@ const { data: members, loading, reload } = useApi<BetaChannelMemberDto[]>(
           </TableRow>
         </TableBody>
       </Table>
-      <p v-if="!members || members.length === 0" class="p-6 text-sm text-muted-foreground text-center">
+      <p
+        v-if="!members || members.length === 0"
+        class="p-6 text-sm text-muted-foreground text-center"
+      >
         No beta channel members — pre-release versions are not accessible to anyone.
       </p>
     </CardContent>

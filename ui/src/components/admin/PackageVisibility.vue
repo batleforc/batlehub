@@ -14,16 +14,18 @@ const props = defineProps<{ registry: string; name: string }>();
 
 const { token } = useAuth();
 
-const { data: visibilityData, reload } = useApi<{ visibility: Visibility }>(
-  () => {
-    if (!props.registry || !props.name) return Promise.resolve({ data: undefined });
-    return getPackageVisibility({ path: { registry: props.registry, name: props.name } }) as Promise<{ data?: unknown; error?: unknown }>;
-  },
-  [token],
-);
+const { data: visibilityData, reload } = useApi<{ visibility: Visibility }>(() => {
+  if (!props.registry || !props.name) return Promise.resolve({ data: undefined });
+  return getPackageVisibility({ path: { registry: props.registry, name: props.name } }) as Promise<{
+    data?: unknown;
+    error?: unknown;
+  }>;
+}, [token]);
 
 const selected = ref<Visibility>("public");
-watch(visibilityData, v => { if (v) selected.value = v.visibility; });
+watch(visibilityData, (v) => {
+  if (v) selected.value = v.visibility;
+});
 
 const saving = ref(false);
 const error = ref<string | null>(null);
@@ -50,12 +52,17 @@ async function save() {
   <Card>
     <CardHeader>
       <CardTitle class="text-base">Package visibility</CardTitle>
-      <CardDescription>Controls who can download this package (all versions share the same setting).</CardDescription>
+      <CardDescription
+        >Controls who can download this package (all versions share the same
+        setting).</CardDescription
+      >
     </CardHeader>
     <CardContent>
       <div class="flex items-center gap-3 flex-wrap">
         <Badge
-          :variant="selected === 'public' ? 'default' : selected === 'internal' ? 'secondary' : 'outline'"
+          :variant="
+            selected === 'public' ? 'default' : selected === 'internal' ? 'secondary' : 'outline'
+          "
           :class="selected === 'team' ? 'border-primary text-primary' : ''"
           class="capitalize text-xs"
         >

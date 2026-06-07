@@ -34,8 +34,7 @@ export interface RegistryTypeDef {
   snippets: SnippetDef[];
 }
 
-const isPublishMode = (ctx: SnippetContext) =>
-  ctx.mode === "local" || ctx.mode === "hybrid";
+const isPublishMode = (ctx: SnippetContext) => ctx.mode === "local" || ctx.mode === "hybrid";
 
 export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
   // ── mise (composite: github + npm + cargo) ─────────────────────────────────
@@ -129,7 +128,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             try {
               const { host, pathname } = new URL(regUrl);
               lines.push(`//${host}${pathname}:_authToken=${ctx.token}`);
-            } catch { /* skip */ }
+            } catch {
+              /* skip */
+            }
           }
           return lines.join("\n");
         },
@@ -158,7 +159,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             try {
               const { host, pathname } = new URL(regUrl);
               lines.push(`//${host}${pathname}:_authToken=${ctx.token}`);
-            } catch { /* skip */ }
+            } catch {
+              /* skip */
+            }
           }
           return lines.join("\n");
         },
@@ -304,7 +307,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
               u.username = ctx.netrcLogin;
               u.password = ctx.token;
               proxyUrl = u.toString();
-            } catch { /* keep original */ }
+            } catch {
+              /* keep original */
+            }
           }
           return [
             `# Shell / CI environment — set before running go commands`,
@@ -430,7 +435,11 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         template: (ctx) => {
           const { base, registryName: reg, isAuthenticated, token } = ctx;
           let hostPart = base;
-          try { hostPart = new URL(base).hostname; } catch { /* keep */ }
+          try {
+            hostPart = new URL(base).hostname;
+          } catch {
+            /* keep */
+          }
           const lines = [
             `# ~/.terraformrc`,
             `provider_installation {`,
@@ -440,12 +449,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `}`,
           ];
           if (isAuthenticated) {
-            lines.push(
-              ``,
-              `credentials "${hostPart}" {`,
-              `  token = "${token}"`,
-              `}`,
-            );
+            lines.push(``, `credentials "${hostPart}" {`, `  token = "${token}"`, `}`);
           }
           return lines.join("\n");
         },
@@ -506,7 +510,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
               u.username = netrcLogin;
               u.password = token;
               proxyUrl = u.toString();
-            } catch { /* keep original */ }
+            } catch {
+              /* keep original */
+            }
           }
           return [
             `# Bundler — mirror rubygems.org through the proxy`,
@@ -595,7 +601,11 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "jsonc",
         template: (ctx) => {
           let hostPart = ctx.base;
-          try { hostPart = new URL(ctx.base).hostname; } catch { /* keep */ }
+          try {
+            hostPart = new URL(ctx.base).hostname;
+          } catch {
+            /* keep */
+          }
           return [
             `// auth.json — project root or ~/.config/composer/auth.json`,
             `// Never commit this file!`,

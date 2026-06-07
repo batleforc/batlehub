@@ -39,43 +39,29 @@ function roleVariant(role: string) {
           <User class="h-4 w-4" />
           Identity
         </CardTitle>
-        <CardDescription>
-          Your current session information.
-        </CardDescription>
+        <CardDescription> Your current session information. </CardDescription>
       </CardHeader>
       <CardContent>
         <dl class="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-sm">
-          <dt class="text-muted-foreground font-medium">
-            User ID
-          </dt>
+          <dt class="text-muted-foreground font-medium">User ID</dt>
           <dd class="font-mono">
             {{ identity?.user_id ?? "—" }}
           </dd>
 
-          <dt class="text-muted-foreground font-medium">
-            Role
-          </dt>
+          <dt class="text-muted-foreground font-medium">Role</dt>
           <dd>
             <Badge :variant="roleVariant(identity?.role ?? 'anonymous')">
               {{ identity?.role ?? "anonymous" }}
             </Badge>
           </dd>
 
-          <dt class="text-muted-foreground font-medium">
-            Auth provider
-          </dt>
+          <dt class="text-muted-foreground font-medium">Auth provider</dt>
           <dd>
-            <span
-              v-if="displayProvider"
-              class="flex items-center gap-1.5"
-            >
+            <span v-if="displayProvider" class="flex items-center gap-1.5">
               <KeyRound class="h-3.5 w-3.5 text-muted-foreground" />
               <span class="font-mono">{{ displayProvider }}</span>
             </span>
-            <span
-              v-else
-              class="text-muted-foreground"
-            >Token / anonymous</span>
+            <span v-else class="text-muted-foreground">Token / anonymous</span>
           </dd>
         </dl>
       </CardContent>
@@ -87,41 +73,30 @@ function roleVariant(role: string) {
         <CardTitle class="flex items-center gap-2 text-lg">
           <Users class="h-4 w-4" />
           Groups
-          <span
-            v-if="parsedGroups.length"
-            class="ml-1 text-muted-foreground font-normal text-base"
-          >
+          <span v-if="parsedGroups.length" class="ml-1 text-muted-foreground font-normal text-base">
             ({{ parsedGroups.length }})
           </span>
         </CardTitle>
         <CardDescription>
-          Dynamic groups assigned by your identity provider.
-          Groups with a provider prefix (e.g. <code class="font-mono text-xs">oidc:team-a</code>)
-          are scoped to that provider; unprefixed values were mapped directly to a role.
+          Dynamic groups assigned by your identity provider. Groups with a provider prefix (e.g.
+          <code class="font-mono text-xs">oidc:team-a</code>) are scoped to that provider;
+          unprefixed values were mapped directly to a role.
         </CardDescription>
       </CardHeader>
 
       <CardContent>
         <!-- No groups -->
-        <div
-          v-if="!parsedGroups.length"
-          class="py-8 text-center space-y-2"
-        >
+        <div v-if="!parsedGroups.length" class="py-8 text-center space-y-2">
           <Shield class="h-8 w-8 mx-auto text-muted-foreground/50" />
-          <p class="text-sm text-muted-foreground">
-            No groups assigned to this session.
-          </p>
+          <p class="text-sm text-muted-foreground">No groups assigned to this session.</p>
           <p class="text-xs text-muted-foreground">
-            Groups are populated when you authenticate via an OIDC or Kubernetes provider
-            that includes group claims.
+            Groups are populated when you authenticate via an OIDC or Kubernetes provider that
+            includes group claims.
           </p>
         </div>
 
         <!-- Group list -->
-        <ul
-          v-else
-          class="space-y-2"
-        >
+        <ul v-else class="space-y-2">
           <li
             v-for="g in parsedGroups"
             :key="g.raw"
@@ -129,10 +104,7 @@ function roleVariant(role: string) {
           >
             <!-- Provider prefix as a muted badge -->
             <template v-if="g.provider">
-              <Badge
-                variant="outline"
-                class="text-xs text-muted-foreground"
-              >
+              <Badge variant="outline" class="text-xs text-muted-foreground">
                 {{ g.provider }}
               </Badge>
               <span class="text-muted-foreground select-none">:</span>

@@ -14,13 +14,7 @@ const toggle = useToggle(isDark);
     :title="isDark ? 'Switch to light mode' : 'Switch to dark mode'"
     @click="toggle()"
   >
-    <Sun
-      v-if="isDark"
-      class="h-4 w-4"
-    />
-    <Moon
-      v-else
-      class="h-4 w-4"
-    />
+    <Sun v-if="isDark" class="h-4 w-4" />
+    <Moon v-else class="h-4 w-4" />
   </Button>
 </template>

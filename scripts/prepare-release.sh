@@ -155,7 +155,11 @@ else
     cargo clippy --workspace -- -D warnings
     info "cargo test --workspace"
     cargo test --workspace
-    ok "fmt, clippy, and tests passed"
+    info "ui: npm run lint"
+    (cd ui && npm run lint)
+    info "ui: npm run format:check"
+    (cd ui && npm run format:check)
+    ok "fmt, clippy, tests, and UI lint/format checks passed"
 fi
 
 # ── Bump version strings ──────────────────────────────────────────────────────

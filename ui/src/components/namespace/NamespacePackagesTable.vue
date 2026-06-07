@@ -7,7 +7,14 @@ import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
+import {
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
+} from "@/components/ui/table";
 import Select from "@/components/ui/select/Select.vue";
 
 const props = defineProps<{ namespace: TeamNamespaceDto }>();
@@ -18,18 +25,29 @@ const PAGE_SIZE = 50;
 
 const nsRef = toRef(props, "namespace");
 
-const { data: pkgsData, error, loading } = useApi<NamespacePackageDto[]>(
-  () => myNamespacePackages({
-    path: { registry: props.namespace.registry, prefix: props.namespace.prefix },
-    query: { page: page.value, per_page: PAGE_SIZE },
-  }) as Promise<{ data?: unknown; error?: unknown }>,
+const {
+  data: pkgsData,
+  error,
+  loading,
+} = useApi<NamespacePackageDto[]>(
+  () =>
+    myNamespacePackages({
+      path: { registry: props.namespace.registry, prefix: props.namespace.prefix },
+      query: { page: page.value, per_page: PAGE_SIZE },
+    }) as Promise<{ data?: unknown; error?: unknown }>,
   [token, nsRef, page],
 );
 
-watch(nsRef, () => { page.value = 0; });
+watch(nsRef, () => {
+  page.value = 0;
+});
 
-function prevPage() { if (page.value > 0) page.value--; }
-function nextPage() { if ((pkgsData.value?.length ?? 0) >= PAGE_SIZE) page.value++; }
+function prevPage() {
+  if (page.value > 0) page.value--;
+}
+function nextPage() {
+  if ((pkgsData.value?.length ?? 0) >= PAGE_SIZE) page.value++;
+}
 
 // ── Inline visibility editing ─────────────────────────────────────────────────
 
@@ -37,7 +55,10 @@ const editing = ref<Record<string, Visibility>>({});
 const saving = ref<Record<string, boolean>>({});
 const saveError = ref<Record<string, string>>({});
 
-const visibilityOptions = VISIBILITY_OPTIONS.map(o => ({ value: o.value, label: o.label.split(" —")[0] }));
+const visibilityOptions = VISIBILITY_OPTIONS.map((o) => ({
+  value: o.value,
+  label: o.label.split(" —")[0],
+}));
 
 function pkgKey(pkg: NamespacePackageDto) {
   return `${props.namespace.registry}|${pkg.name}|${pkg.version}`;
@@ -114,13 +135,27 @@ function formatDate(iso: string) {
           <TableCell>
             <template v-if="editing[pkgKey(pkg)] !== undefined">
               <div class="flex items-center gap-1">
-                <Select v-model="editing[pkgKey(pkg)]" :options="visibilityOptions" class="w-32 text-xs" />
-                <Button size="sm" variant="default" :disabled="saving[pkgKey(pkg)]" class="text-xs h-7 px-2" @click="saveVis(pkg)">
+                <Select
+                  v-model="editing[pkgKey(pkg)]"
+                  :options="visibilityOptions"
+                  class="w-32 text-xs"
+                />
+                <Button
+                  size="sm"
+                  variant="default"
+                  :disabled="saving[pkgKey(pkg)]"
+                  class="text-xs h-7 px-2"
+                  @click="saveVis(pkg)"
+                >
                   {{ saving[pkgKey(pkg)] ? "…" : "Save" }}
                 </Button>
-                <Button size="sm" variant="ghost" class="text-xs h-7 px-2" @click="cancelEdit(pkg)">Cancel</Button>
+                <Button size="sm" variant="ghost" class="text-xs h-7 px-2" @click="cancelEdit(pkg)"
+                  >Cancel</Button
+                >
               </div>
-              <p v-if="saveError[pkgKey(pkg)]" class="text-xs text-destructive mt-0.5">{{ saveError[pkgKey(pkg)] }}</p>
+              <p v-if="saveError[pkgKey(pkg)]" class="text-xs text-destructive mt-0.5">
+                {{ saveError[pkgKey(pkg)] }}
+              </p>
             </template>
             <Badge
               v-else
@@ -135,7 +170,13 @@ function formatDate(iso: string) {
           <TableCell class="text-xs">{{ pkg.published_by }}</TableCell>
           <TableCell class="text-xs">{{ formatDate(pkg.published_at) }}</TableCell>
           <TableCell>
-            <Button v-if="editing[pkgKey(pkg)] === undefined" size="sm" variant="ghost" class="text-xs h-7 px-2" @click="startEdit(pkg)">
+            <Button
+              v-if="editing[pkgKey(pkg)] === undefined"
+              size="sm"
+              variant="ghost"
+              class="text-xs h-7 px-2"
+              @click="startEdit(pkg)"
+            >
               Edit visibility
             </Button>
           </TableCell>
@@ -145,7 +186,13 @@ function formatDate(iso: string) {
     <div class="flex items-center justify-between mt-3">
       <Button variant="outline" size="sm" :disabled="page === 0" @click="prevPage">Previous</Button>
       <span class="text-xs text-muted-foreground">Page {{ page + 1 }}</span>
-      <Button variant="outline" size="sm" :disabled="(pkgsData?.length ?? 0) < PAGE_SIZE" @click="nextPage">Next</Button>
+      <Button
+        variant="outline"
+        size="sm"
+        :disabled="(pkgsData?.length ?? 0) < PAGE_SIZE"
+        @click="nextPage"
+        >Next</Button
+      >
     </div>
   </template>
 </template>

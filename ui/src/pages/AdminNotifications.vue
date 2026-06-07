@@ -9,7 +9,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import {
-  Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
 } from "@/components/ui/table";
 import Dialog from "@/components/ui/dialog/Dialog.vue";
 
@@ -54,8 +59,8 @@ async function apiFetch(path: string, init?: RequestInit) {
     ...init,
     headers: {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${token.value}`,
-      ...(init?.headers ?? {}),
+      Authorization: `Bearer ${token.value}`,
+      ...init?.headers,
     },
   });
   if (!res.ok) {
@@ -70,14 +75,25 @@ async function apiFetch(path: string, init?: RequestInit) {
 
 const activeTab = ref<Tab>("subscriptions");
 
-const { data: subscriptions, error: subsError, loading: subsLoading, reload: reloadSubs } =
-  useApi<Subscription[]>(() => apiFetch(`${BASE}/subscriptions`), [token]);
+const {
+  data: subscriptions,
+  error: subsError,
+  loading: subsLoading,
+  reload: reloadSubs,
+} = useApi<Subscription[]>(() => apiFetch(`${BASE}/subscriptions`), [token]);
 
-const { data: channelsResp, error: channelsError, loading: channelsLoading } =
-  useApi<{ channels: Channel[] }>(() => apiFetch(`${BASE}/channels`), [token]);
+const {
+  data: channelsResp,
+  error: channelsError,
+  loading: channelsLoading,
+} = useApi<{ channels: Channel[] }>(() => apiFetch(`${BASE}/channels`), [token]);
 
-const { data: inboundResp, error: inboundError, loading: inboundLoading, reload: reloadInbound } =
-  useApi<{ events: InboundEvent[] }>(() => apiFetch(`${BASE}/inbound`), [token]);
+const {
+  data: inboundResp,
+  error: inboundError,
+  loading: inboundLoading,
+  reload: reloadInbound,
+} = useApi<{ events: InboundEvent[] }>(() => apiFetch(`${BASE}/inbound`), [token]);
 
 const channels = computed(() => channelsResp.value?.channels ?? []);
 const inboundEvents = computed(() => inboundResp.value?.events ?? []);
@@ -85,7 +101,10 @@ const inboundEvents = computed(() => inboundResp.value?.events ?? []);
 // ── Create / edit dialog ──────────────────────────────────────────────────────
 
 const ALL_EVENT_TYPES: EventType[] = [
-  "package_published", "package_yanked", "package_unyanked", "package_deleted",
+  "package_published",
+  "package_yanked",
+  "package_unyanked",
+  "package_deleted",
 ];
 
 const dialogOpen = ref(false);
@@ -102,7 +121,13 @@ const formError = ref<string | null>(null);
 
 function openCreate() {
   editingId.value = null;
-  form.value = { registry: "", package_name: "", event_types: ["package_published"], channel_name: "", enabled: true };
+  form.value = {
+    registry: "",
+    package_name: "",
+    event_types: ["package_published"],
+    channel_name: "",
+    enabled: true,
+  };
   formError.value = null;
   dialogOpen.value = true;
 }
@@ -139,7 +164,10 @@ async function submitForm() {
       enabled: form.value.enabled,
     };
     if (editingId.value) {
-      await apiFetch(`${BASE}/subscriptions/${editingId.value}`, { method: "PUT", body: JSON.stringify(body) });
+      await apiFetch(`${BASE}/subscriptions/${editingId.value}`, {
+        method: "PUT",
+        body: JSON.stringify(body),
+      });
     } else {
       await apiFetch(`${BASE}/subscriptions`, { method: "POST", body: JSON.stringify(body) });
     }
@@ -179,7 +207,12 @@ async function toggleEnabled(sub: Subscription) {
   try {
     await apiFetch(`${BASE}/subscriptions/${sub.id}`, {
       method: "PUT",
-      body: JSON.stringify({ ...sub, registry: sub.registry, package_name: sub.package_name, enabled: !sub.enabled }),
+      body: JSON.stringify({
+        ...sub,
+        registry: sub.registry,
+        package_name: sub.package_name,
+        enabled: !sub.enabled,
+      }),
     });
     reloadSubs();
   } catch {
@@ -224,9 +257,7 @@ function eventBadgeVariant(et: EventType): "default" | "secondary" | "destructiv
   <div class="space-y-6">
     <div class="flex items-center justify-between">
       <div>
-        <h1 class="text-2xl font-semibold">
-          Webhooks &amp; Notifications
-        </h1>
+        <h1 class="text-2xl font-semibold">Webhooks &amp; Notifications</h1>
         <p class="text-sm text-muted-foreground mt-0.5">
           Manage outbound notification subscriptions and monitor inbound webhook events.
         </p>
@@ -236,24 +267,26 @@ function eventBadgeVariant(et: EventType): "default" | "secondary" | "destructiv
     <!-- Tab switcher -->
     <div class="flex gap-1 border-b">
       <button
-        v-for="tab in (['subscriptions', 'channels', 'inbound'] as Tab[])"
+        v-for="tab in ['subscriptions', 'channels', 'inbound'] as Tab[]"
         :key="tab"
         class="px-4 py-2 text-sm font-medium capitalize transition-colors"
-        :class="activeTab === tab
-          ? 'border-b-2 border-foreground text-foreground'
-          : 'text-muted-foreground hover:text-foreground'"
+        :class="
+          activeTab === tab
+            ? 'border-b-2 border-foreground text-foreground'
+            : 'text-muted-foreground hover:text-foreground'
+        "
         @click="activeTab = tab"
       >
-        {{ tab === 'inbound' ? 'Inbound Events' : tab === 'channels' ? 'Channels' : 'Subscriptions' }}
+        {{
+          tab === "inbound" ? "Inbound Events" : tab === "channels" ? "Channels" : "Subscriptions"
+        }}
       </button>
     </div>
 
     <!-- ── Subscriptions tab ── -->
     <div v-if="activeTab === 'subscriptions'" class="space-y-4">
       <div class="flex justify-end">
-        <Button size="sm" @click="openCreate">
-          New Subscription
-        </Button>
+        <Button size="sm" @click="openCreate"> New Subscription </Button>
       </div>
 
       <p v-if="subsLoading && !subscriptions" class="text-sm text-muted-foreground">Loading…</p>
@@ -303,19 +336,28 @@ function eventBadgeVariant(et: EventType): "default" | "secondary" | "destructiv
                       {{ testLoading === sub.id ? "…" : "Test" }}
                     </Button>
                     <Button variant="outline" size="sm" @click="openEdit(sub)">Edit</Button>
-                    <Button variant="destructive" size="sm" @click="deleteTarget = sub.id">Delete</Button>
+                    <Button variant="destructive" size="sm" @click="deleteTarget = sub.id"
+                      >Delete</Button
+                    >
                   </div>
                 </TableCell>
               </TableRow>
             </TableBody>
           </Table>
-          <p v-if="!subscriptions || subscriptions.length === 0" class="p-6 text-sm text-muted-foreground text-center">
+          <p
+            v-if="!subscriptions || subscriptions.length === 0"
+            class="p-6 text-sm text-muted-foreground text-center"
+          >
             No subscriptions configured.
           </p>
         </CardContent>
       </Card>
 
-      <p v-if="testMsg" class="text-sm" :class="testMsg.startsWith('Test failed') ? 'text-destructive' : 'text-green-600'">
+      <p
+        v-if="testMsg"
+        class="text-sm"
+        :class="testMsg.startsWith('Test failed') ? 'text-destructive' : 'text-green-600'"
+      >
         {{ testMsg }}
       </p>
     </div>
@@ -330,10 +372,14 @@ function eventBadgeVariant(et: EventType): "default" | "secondary" | "destructiv
         </CardHeader>
         <CardContent>
           <p class="text-xs text-muted-foreground mb-4">
-            Channels are defined in <code class="font-mono text-xs">config.toml</code> under <code class="font-mono text-xs">[[notifications.channels]]</code>. URLs and secrets are not displayed here.
+            Channels are defined in <code class="font-mono text-xs">config.toml</code> under
+            <code class="font-mono text-xs">[[notifications.channels]]</code>. URLs and secrets are
+            not displayed here.
           </p>
           <div v-if="channels.length === 0" class="text-sm text-muted-foreground">
-            No channels configured. Add <code class="font-mono text-xs">[[notifications.channels]]</code> entries to config.toml.
+            No channels configured. Add
+            <code class="font-mono text-xs">[[notifications.channels]]</code> entries to
+            config.toml.
           </div>
           <div v-else class="flex flex-wrap gap-2">
             <Badge v-for="ch in channels" :key="ch.name" variant="outline">{{ ch.name }}</Badge>
@@ -370,14 +416,24 @@ function eventBadgeVariant(et: EventType): "default" | "secondary" | "destructiv
                 <TableCell class="text-xs">{{ fmtTs(ev.received_at) }}</TableCell>
                 <TableCell class="font-mono text-xs">{{ ev.source_ip ?? "—" }}</TableCell>
                 <TableCell>
-                  <Badge v-if="ev.signature_valid === true" variant="default" class="text-xs">Valid</Badge>
-                  <Badge v-else-if="ev.signature_valid === false" variant="destructive" class="text-xs">Invalid</Badge>
+                  <Badge v-if="ev.signature_valid === true" variant="default" class="text-xs"
+                    >Valid</Badge
+                  >
+                  <Badge
+                    v-else-if="ev.signature_valid === false"
+                    variant="destructive"
+                    class="text-xs"
+                    >Invalid</Badge
+                  >
                   <span v-else class="text-xs text-muted-foreground">—</span>
                 </TableCell>
               </TableRow>
             </TableBody>
           </Table>
-          <p v-if="inboundEvents.length === 0" class="p-6 text-sm text-muted-foreground text-center">
+          <p
+            v-if="inboundEvents.length === 0"
+            class="p-6 text-sm text-muted-foreground text-center"
+          >
             No inbound events received yet.
           </p>
         </CardContent>
@@ -388,18 +444,30 @@ function eventBadgeVariant(et: EventType): "default" | "secondary" | "destructiv
   <!-- Create/Edit Subscription dialog -->
   <Dialog
     :open="dialogOpen"
-    @update:open="(v) => { if (!v) dialogOpen = false; }"
+    @update:open="
+      (v) => {
+        if (!v) dialogOpen = false;
+      }
+    "
   >
     <div class="space-y-4">
-      <h2 class="text-lg font-semibold">{{ editingId ? "Edit Subscription" : "New Subscription" }}</h2>
+      <h2 class="text-lg font-semibold">
+        {{ editingId ? "Edit Subscription" : "New Subscription" }}
+      </h2>
 
       <div class="space-y-3">
         <div class="space-y-1.5">
-          <Label>Registry <span class="text-muted-foreground text-xs">(leave blank for all)</span></Label>
+          <Label
+            >Registry
+            <span class="text-muted-foreground text-xs">(leave blank for all)</span></Label
+          >
           <Input v-model="form.registry" placeholder="e.g. my-cargo" class="font-mono" />
         </div>
         <div class="space-y-1.5">
-          <Label>Package name <span class="text-muted-foreground text-xs">(leave blank for all)</span></Label>
+          <Label
+            >Package name
+            <span class="text-muted-foreground text-xs">(leave blank for all)</span></Label
+          >
           <Input v-model="form.package_name" placeholder="e.g. serde" class="font-mono" />
         </div>
         <div class="space-y-1.5">
@@ -410,9 +478,11 @@ function eventBadgeVariant(et: EventType): "default" | "secondary" | "destructiv
               :key="et"
               type="button"
               class="px-2 py-1 rounded border text-xs font-mono transition-colors"
-              :class="form.event_types.includes(et)
-                ? 'bg-foreground text-background border-foreground'
-                : 'border-muted-foreground text-muted-foreground'"
+              :class="
+                form.event_types.includes(et)
+                  ? 'bg-foreground text-background border-foreground'
+                  : 'border-muted-foreground text-muted-foreground'
+              "
               @click="toggleEventType(et)"
             >
               {{ et.replace("package_", "") }}
@@ -421,7 +491,12 @@ function eventBadgeVariant(et: EventType): "default" | "secondary" | "destructiv
         </div>
         <div class="space-y-1.5">
           <Label>Channel <span class="text-destructive">*</span></Label>
-          <Input v-model="form.channel_name" placeholder="e.g. my-slack" class="font-mono" list="channel-list" />
+          <Input
+            v-model="form.channel_name"
+            placeholder="e.g. my-slack"
+            class="font-mono"
+            list="channel-list"
+          />
           <datalist id="channel-list">
             <option v-for="ch in channels" :key="ch.name" :value="ch.name" />
           </datalist>
@@ -434,13 +509,15 @@ function eventBadgeVariant(et: EventType): "default" | "secondary" | "destructiv
 
       <p v-if="formError" class="text-sm text-destructive">{{ formError }}</p>
       <div class="flex justify-end gap-2">
-        <Button variant="outline" size="sm" :disabled="formLoading" @click="dialogOpen = false">Cancel</Button>
+        <Button variant="outline" size="sm" :disabled="formLoading" @click="dialogOpen = false"
+          >Cancel</Button
+        >
         <Button
           size="sm"
           :disabled="formLoading || !form.channel_name.trim() || form.event_types.length === 0"
           @click="submitForm"
         >
-          {{ formLoading ? "Saving…" : (editingId ? "Update" : "Create") }}
+          {{ formLoading ? "Saving…" : editingId ? "Update" : "Create" }}
         </Button>
       </div>
     </div>
@@ -449,14 +526,23 @@ function eventBadgeVariant(et: EventType): "default" | "secondary" | "destructiv
   <!-- Delete confirmation -->
   <Dialog
     :open="deleteTarget !== null"
-    @update:open="(v) => { if (!v) { deleteTarget = null; deleteError = null; } }"
+    @update:open="
+      (v) => {
+        if (!v) {
+          deleteTarget = null;
+          deleteError = null;
+        }
+      }
+    "
   >
     <div class="space-y-4">
       <h2 class="text-lg font-semibold">Delete subscription?</h2>
       <p class="text-sm text-muted-foreground">This action cannot be undone.</p>
       <p v-if="deleteError" class="text-sm text-destructive">{{ deleteError }}</p>
       <div class="flex justify-end gap-2">
-        <Button variant="outline" size="sm" :disabled="deleteLoading" @click="deleteTarget = null">Cancel</Button>
+        <Button variant="outline" size="sm" :disabled="deleteLoading" @click="deleteTarget = null"
+          >Cancel</Button
+        >
         <Button variant="destructive" size="sm" :disabled="deleteLoading" @click="confirmDelete">
           {{ deleteLoading ? "Deleting…" : "Delete" }}
         </Button>

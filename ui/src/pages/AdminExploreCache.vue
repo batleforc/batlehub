@@ -59,7 +59,9 @@ async function invalidateRegistry() {
   successMsg.value = null;
   errorMsg.value = null;
   try {
-    const { error: apiErr } = await invalidateExploreCache({ body: { registry: selectedRegistry.value.trim() } });
+    const { error: apiErr } = await invalidateExploreCache({
+      body: { registry: selectedRegistry.value.trim() },
+    });
     if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? "API error");
     notify(`Explore cache cleared for registry "${selectedRegistry.value}".`);
   } catch (e) {
@@ -79,8 +81,8 @@ onMounted(fetchRegistries);
       <p class="text-sm text-muted-foreground mt-1">
         The package explorer caches database query results for
         <Badge variant="outline" class="font-mono text-xs">10 min</Badge>
-        to avoid expensive scans on large registries.
-        Stale entries are kept and served if the database becomes unreachable.
+        to avoid expensive scans on large registries. Stale entries are kept and served if the
+        database becomes unreachable.
       </p>
     </div>
 
@@ -148,8 +150,8 @@ onMounted(fetchRegistries);
       <CardHeader>
         <CardTitle>Invalidate Entire Cache</CardTitle>
         <CardDescription>
-          Forces every explore endpoint to re-query the database on the next request.
-          Use after bulk data imports or registry restructuring.
+          Forces every explore endpoint to re-query the database on the next request. Use after bulk
+          data imports or registry restructuring.
         </CardDescription>
       </CardHeader>
       <CardContent class="space-y-3">
@@ -170,13 +172,17 @@ onMounted(fetchRegistries);
       <CardContent>
         <ul class="text-sm space-y-1.5 text-muted-foreground list-disc list-inside">
           <li>Results are cached per query (registry filter, search term, sort, page).</li>
-          <li>TTL is 10 minutes. Expired entries are served stale if the database is unreachable.</li>
+          <li>
+            TTL is 10 minutes. Expired entries are served stale if the database is unreachable.
+          </li>
           <li>
             When the database is unreachable and no cached entry exists, the response includes
             <code class="text-xs bg-muted px-1 rounded">upstream_unavailable: true</code>
             so the UI can display a warning.
           </li>
-          <li>Publishing a package invalidates all cached entries for that registry automatically.</li>
+          <li>
+            Publishing a package invalidates all cached entries for that registry automatically.
+          </li>
           <li>
             The cache is in-memory and per-instance — a server restart or horizontal scale-out
             starts with an empty cache.

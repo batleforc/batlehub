@@ -7,17 +7,19 @@ const props = withDefaults(
     orientation?: "horizontal" | "vertical";
     class?: string;
   }>(),
-  { orientation: "horizontal" }
+  { orientation: "horizontal" },
 );
 </script>
 
 <template>
   <SeparatorRoot
     :orientation="orientation"
-    :class="cn(
-      'shrink-0 bg-border',
-      orientation === 'horizontal' ? 'h-[1px] w-full' : 'h-full w-[1px]',
-      props.class
-    )"
+    :class="
+      cn(
+        'shrink-0 bg-border',
+        orientation === 'horizontal' ? 'h-[1px] w-full' : 'h-full w-[1px]',
+        props.class,
+      )
+    "
   />
 </template>
