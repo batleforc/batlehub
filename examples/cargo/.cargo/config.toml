@@ -1,0 +1,10 @@
+# Redirect crates.io through the batlehub proxy.
+[source.crates-io]
+replace-with = "batlehub"
+
+[source.batlehub]
+registry = "sparse+http://localhost:8080/proxy/my-cargo/"
+
+# Authentication token for the proxy (matches the token in credentials.toml).
+[registry]
+token = "Bearer change-me-user-token"

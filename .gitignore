@@ -8,7 +8,7 @@ fuzz/artifacts/
 coverage/
 
 # Config (contains secrets)
-config.toml
+/config.toml
 
 # Frontend
 ui/node_modules/
