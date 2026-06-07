@@ -87,7 +87,11 @@ fn scan_recursive(
     out
 }
 
-fn detect_project_types_in(dir: &Path, server_url: &str, dir_names: &[String]) -> Vec<ProjectDetection> {
+fn detect_project_types_in(
+    dir: &Path,
+    server_url: &str,
+    dir_names: &[String],
+) -> Vec<ProjectDetection> {
     let mut out = Vec::new();
 
     // Cargo (Rust)
@@ -537,14 +541,20 @@ mod tests {
         let results = scan_project_types(dir.path(), "http://localhost:8080", 0);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].registry_type, "composer");
-        assert_eq!(results[0].package_name.as_deref(), Some("vendor/my-package"));
+        assert_eq!(
+            results[0].package_name.as_deref(),
+            Some("vendor/my-package")
+        );
     }
 
     #[test]
     fn detects_gemspec() {
         let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join("my_gem.gemspec"), "Gem::Specification.new do |s| end")
-            .unwrap();
+        fs::write(
+            dir.path().join("my_gem.gemspec"),
+            "Gem::Specification.new do |s| end",
+        )
+        .unwrap();
         let results = scan_project_types(dir.path(), "http://localhost:8080", 0);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].registry_type, "rubygems");

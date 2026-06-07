@@ -29,7 +29,12 @@ pub enum SetupCommand {
 
 pub fn run(cmd: SetupCommand, global_server: Option<&str>) -> Result<()> {
     match cmd {
-        SetupCommand::Detect { dir, depth, server, json } => {
+        SetupCommand::Detect {
+            dir,
+            depth,
+            server,
+            json,
+        } => {
             let dir = match dir {
                 Some(d) => d,
                 None => std::env::current_dir()?,
@@ -51,10 +56,7 @@ pub fn run(cmd: SetupCommand, global_server: Option<&str>) -> Result<()> {
                     .collect();
                 println!("{}", serde_json::to_string_pretty(&out)?);
             } else if detections.is_empty() {
-                println!(
-                    "No known project manifests found in: {}",
-                    dir.display()
-                );
+                println!("No known project manifests found in: {}", dir.display());
                 println!(
                     "Supported: Cargo.toml, go.mod, package.json, pyproject.toml, \
                      pom.xml, composer.json, *.gemspec, *.nuspec, *.csproj, *.tf, environment.yml"

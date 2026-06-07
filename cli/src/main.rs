@@ -6,7 +6,9 @@ mod tui;
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{admin, auth, config_cmd, owner, package, publish, registry, setup, version, Cli, Command};
+use cli::{
+    admin, auth, config_cmd, owner, package, publish, registry, setup, version, Cli, Command,
+};
 use config::ConfigFile;
 
 #[tokio::main]
@@ -27,11 +29,9 @@ async fn main() -> Result<()> {
     let mut cfg = ConfigFile::load()?;
 
     if let Command::Setup { cmd } = cli.command {
-        let resolved_server = cli.server.clone().or_else(|| {
-            match cli.profile.as_deref() {
-                Some(n) => cfg.profiles.get(n).and_then(|p| p.server_url.clone()),
-                None => cfg.default.server_url.clone(),
-            }
+        let resolved_server = cli.server.clone().or_else(|| match cli.profile.as_deref() {
+            Some(n) => cfg.profiles.get(n).and_then(|p| p.server_url.clone()),
+            None => cfg.default.server_url.clone(),
         });
         return setup::run(cmd, resolved_server.as_deref());
     }
@@ -77,7 +77,9 @@ async fn main() -> Result<()> {
         Command::Auth { cmd } => auth::run(cmd, &client, cli.json, cli.profile.as_deref()).await?,
         Command::Admin { cmd } => admin::run(cmd, &client, cli.json).await?,
         Command::Tui => tui::run(client).await?,
-        Command::Config { .. } | Command::Completion { .. } | Command::Setup { .. } => unreachable!(),
+        Command::Config { .. } | Command::Completion { .. } | Command::Setup { .. } => {
+            unreachable!()
+        }
     }
 
     Ok(())

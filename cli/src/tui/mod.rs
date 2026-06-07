@@ -192,11 +192,8 @@ async fn handle_registry_list(app: &mut App, key: event::KeyEvent) {
             let cwd = std::env::current_dir()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| ".".to_string());
-            let items = crate::api::setup::scan_project_types(
-                std::path::Path::new(&cwd),
-                &server_url,
-                2,
-            );
+            let items =
+                crate::api::setup::scan_project_types(std::path::Path::new(&cwd), &server_url, 2);
             app.setup_wizard.set_items(items, cwd);
             app.prev_screen = Some(Screen::RegistryList);
             app.screen = Screen::SetupWizard;

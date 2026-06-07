@@ -716,7 +716,10 @@ fn setup_detect_empty_dir_returns_empty_json() {
     let dir = tempfile::tempdir().unwrap();
     let (ok, items, stderr) = setup_detect_json(dir.path());
     assert!(ok, "setup detect should succeed; stderr: {stderr}");
-    assert!(items.is_empty(), "empty dir should produce no detections; got: {items:?}");
+    assert!(
+        items.is_empty(),
+        "empty dir should produce no detections; got: {items:?}"
+    );
 }
 
 #[test]
@@ -828,17 +831,16 @@ fn setup_detect_multiple_manifests() {
         "[package]\nname = \"backend\"\n",
     )
     .unwrap();
-    std::fs::write(
-        dir.path().join("package.json"),
-        r#"{"name":"frontend"}"#,
-    )
-    .unwrap();
+    std::fs::write(dir.path().join("package.json"), r#"{"name":"frontend"}"#).unwrap();
     let (ok, items, stderr) = setup_detect_json(dir.path());
     assert!(ok, "setup detect failed; stderr: {stderr}");
     let mut types = registry_types(&items);
     types.sort_unstable();
     assert_eq!(types, ["cargo", "npm"], "expected cargo+npm; got {types:?}");
-    let cargo = items.iter().find(|v| v["registry_type"] == "cargo").unwrap();
+    let cargo = items
+        .iter()
+        .find(|v| v["registry_type"] == "cargo")
+        .unwrap();
     let npm = items.iter().find(|v| v["registry_type"] == "npm").unwrap();
     assert_eq!(cargo["package_name"].as_str(), Some("backend"));
     assert_eq!(npm["package_name"].as_str(), Some("frontend"));
@@ -859,7 +861,10 @@ fn setup_detect_human_readable_output_contains_instructions() {
         "",
     );
     assert!(ok, "setup detect (human) failed; stderr: {stderr}");
-    assert!(stdout.contains("cargo"), "expected 'cargo' in output; got: {stdout}");
+    assert!(
+        stdout.contains("cargo"),
+        "expected 'cargo' in output; got: {stdout}"
+    );
     assert!(
         stdout.contains("cargo publish"),
         "expected publish instructions; got: {stdout}"
@@ -884,7 +889,10 @@ fn setup_detect_no_manifests_human_readable() {
         stdout.contains("No known project manifests"),
         "expected 'no manifests' message; got: {stdout}"
     );
-    assert!(stdout.contains("Cargo.toml"), "expected manifest list in output");
+    assert!(
+        stdout.contains("Cargo.toml"),
+        "expected manifest list in output"
+    );
 }
 
 // ── Tests: setup detect — subfolder scanning ──────────────────────────────────
@@ -978,10 +986,17 @@ fn setup_detect_root_and_subdir_both_detected() {
     assert_eq!(items.len(), 2, "expected 2 detections; got: {items:?}");
 
     let npm = items.iter().find(|v| v["registry_type"] == "npm").unwrap();
-    let cargo = items.iter().find(|v| v["registry_type"] == "cargo").unwrap();
+    let cargo = items
+        .iter()
+        .find(|v| v["registry_type"] == "cargo")
+        .unwrap();
 
     assert_eq!(npm["package_name"].as_str(), Some("root-app"));
-    assert_eq!(npm["relative_path"].as_str(), Some(""), "root entry must have empty relative_path");
+    assert_eq!(
+        npm["relative_path"].as_str(),
+        Some(""),
+        "root entry must have empty relative_path"
+    );
 
     assert_eq!(cargo["package_name"].as_str(), Some("server"));
     assert_eq!(cargo["relative_path"].as_str(), Some("server"));
@@ -1015,7 +1030,10 @@ fn setup_detect_monorepo_multiple_crates() {
     // All relative paths must be non-empty and match the subdirectory.
     for item in &items {
         let rp = item["relative_path"].as_str().unwrap_or("");
-        assert!(!rp.is_empty(), "relative_path must not be empty for subdir crates; item: {item}");
+        assert!(
+            !rp.is_empty(),
+            "relative_path must not be empty for subdir crates; item: {item}"
+        );
     }
 }
 
@@ -1027,8 +1045,11 @@ fn setup_detect_skips_hidden_and_ignored_dirs() {
     for skip in [".git", "node_modules", "target", ".github"] {
         let path = root.path().join(skip);
         std::fs::create_dir(&path).unwrap();
-        std::fs::write(path.join("Cargo.toml"), "[package]\nname = \"should-not-appear\"\n")
-            .unwrap();
+        std::fs::write(
+            path.join("Cargo.toml"),
+            "[package]\nname = \"should-not-appear\"\n",
+        )
+        .unwrap();
     }
 
     let (ok, items, stderr) = setup_detect_json_depth(root.path(), 1);
@@ -1044,11 +1065,19 @@ fn setup_detect_skips_hidden_and_ignored_dirs() {
 fn setup_detect_mixed_language_monorepo() {
     let root = tempfile::tempdir().unwrap();
     // Root: Rust workspace stub
-    std::fs::write(root.path().join("Cargo.toml"), "[package]\nname = \"root\"\n").unwrap();
+    std::fs::write(
+        root.path().join("Cargo.toml"),
+        "[package]\nname = \"root\"\n",
+    )
+    .unwrap();
     // Go service
     let go_dir = root.path().join("gateway");
     std::fs::create_dir(&go_dir).unwrap();
-    std::fs::write(go_dir.join("go.mod"), "module github.com/example/gateway\ngo 1.22\n").unwrap();
+    std::fs::write(
+        go_dir.join("go.mod"),
+        "module github.com/example/gateway\ngo 1.22\n",
+    )
+    .unwrap();
     // Frontend
     let ui_dir = root.path().join("ui");
     std::fs::create_dir(&ui_dir).unwrap();
@@ -1056,13 +1085,20 @@ fn setup_detect_mixed_language_monorepo() {
 
     let (ok, items, stderr) = setup_detect_json_depth(root.path(), 1);
     assert!(ok, "setup detect failed; stderr: {stderr}");
-    assert_eq!(items.len(), 3, "expected cargo+gomodules+npm; got: {items:?}");
+    assert_eq!(
+        items.len(),
+        3,
+        "expected cargo+gomodules+npm; got: {items:?}"
+    );
 
     let mut types = registry_types(&items);
     types.sort_unstable();
     assert_eq!(types, ["cargo", "gomodules", "npm"]);
 
-    let go = items.iter().find(|v| v["registry_type"] == "gomodules").unwrap();
+    let go = items
+        .iter()
+        .find(|v| v["registry_type"] == "gomodules")
+        .unwrap();
     assert_eq!(go["package_name"].as_str(), Some("gateway"));
     assert_eq!(go["relative_path"].as_str(), Some("gateway"));
 
