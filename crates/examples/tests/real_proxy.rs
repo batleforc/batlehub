@@ -80,7 +80,8 @@ fn example_src(name: &str) -> PathBuf {
 
 fn copy_dir_all(src: &Path, dst: &Path) {
     fs::create_dir_all(dst).unwrap();
-    for entry in fs::read_dir(src).unwrap().flatten() {
+    for entry in fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
         let target = dst.join(entry.file_name());
         if entry.file_type().unwrap().is_dir() {
             copy_dir_all(&entry.path(), &target);
