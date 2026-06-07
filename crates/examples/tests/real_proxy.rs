@@ -595,8 +595,8 @@ impl RealProxy {
 
 #[test]
 fn real_proxy_npm_api() {
-    if !tool_available("node") || !tool_available("npm") {
-        eprintln!("SKIP real_proxy_npm_api: node or npm not available");
+    if !tool_available("mise") {
+        eprintln!("SKIP real_proxy_npm_api: mise not available");
         return;
     }
 
@@ -624,6 +624,11 @@ fn real_proxy_npm_api() {
     let tmp = TempDir::new().unwrap();
     let dir = copy_example("npm", tmp.path());
 
+    if !mise_install(&dir) {
+        eprintln!("SKIP real_proxy_npm_api: mise install failed (Node unavailable)");
+        return;
+    }
+
     // Patch .npmrc to point at the real proxy.
     let npmrc = dir.join(".npmrc");
     let content = fs::read_to_string(&npmrc).unwrap();
@@ -633,11 +638,9 @@ fn real_proxy_npm_api() {
     )
     .unwrap();
 
-    let ok = Command::new("npm")
-        .args(["install", "--no-audit", "--no-fund"])
+    let ok = mise_exec(&dir, "npm", &["install", "--no-audit", "--no-fund"])
         .env("NPM_CONFIG_CACHE", tmp.path().join("npm-cache"))
         .env("NPM_CONFIG_USERCONFIG", &npmrc)
-        .current_dir(&dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -649,11 +652,9 @@ fn real_proxy_npm_api() {
     }
 
     let port = free_port();
-    let server = Command::new("node")
-        .arg("src/index.js")
+    let server = mise_exec(&dir, "node", &["src/index.js"])
         .env("PORT", port.to_string())
         .env("NPM_CONFIG_CACHE", tmp.path().join("npm-cache"))
-        .current_dir(&dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -676,8 +677,8 @@ fn real_proxy_npm_api() {
 
 #[test]
 fn real_proxy_cargo_fetch() {
-    if !tool_available("cargo") {
-        eprintln!("SKIP real_proxy_cargo_fetch: cargo not available");
+    if !tool_available("mise") {
+        eprintln!("SKIP real_proxy_cargo_fetch: mise not available");
         return;
     }
 
@@ -707,6 +708,11 @@ fn real_proxy_cargo_fetch() {
     let cargo_home = tmp.path().join("cargo-home");
     fs::create_dir_all(&cargo_home).unwrap();
 
+    if !mise_install(&dir) {
+        eprintln!("SKIP real_proxy_cargo_fetch: mise install failed (Rust unavailable)");
+        return;
+    }
+
     // Write credentials into the temporary CARGO_HOME.
     fs::write(
         cargo_home.join("credentials.toml"),
@@ -724,11 +730,9 @@ fn real_proxy_cargo_fetch() {
     .unwrap();
 
     // `cargo fetch` downloads all dependency crates from the proxy.
-    let ok = Command::new("cargo")
-        .args(["fetch"])
+    let ok = mise_exec(&dir, "cargo", &["fetch"])
         .env("CARGO_HOME", &cargo_home)
         .env("CARGO_NET_OFFLINE", "false")
-        .current_dir(&dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -748,8 +752,8 @@ fn real_proxy_cargo_fetch() {
 
 #[test]
 fn real_proxy_go_api() {
-    if !tool_available("go") {
-        eprintln!("SKIP real_proxy_go_api: go not available");
+    if !tool_available("mise") {
+        eprintln!("SKIP real_proxy_go_api: mise not available");
         return;
     }
 
@@ -776,18 +780,22 @@ fn real_proxy_go_api() {
 
     let tmp = TempDir::new().unwrap();
     let dir = copy_example("go", tmp.path());
+
+    if !mise_install(&dir) {
+        eprintln!("SKIP real_proxy_go_api: mise install failed (Go unavailable)");
+        return;
+    }
+
     let port = free_port();
     let proxy_url = format!("{}/proxy/my-go/", proxy.base_url());
 
-    let server = match Command::new("go")
-        .args(["run", "."])
+    let server = match mise_exec(&dir, "go", &["run", "."])
         .env("PORT", port.to_string())
         .env("GIN_MODE", "release")
         .env("GOPROXY", &proxy_url)
         .env("GONOSUMDB", "*")
         .env("GOPATH", tmp.path().join("gopath"))
         .env("GOFLAGS", "-mod=mod")
-        .current_dir(&dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -818,8 +826,8 @@ fn real_proxy_go_api() {
 
 #[test]
 fn real_proxy_pypi_api() {
-    if !tool_available("python3") {
-        eprintln!("SKIP real_proxy_pypi_api: python3 not available");
+    if !tool_available("mise") {
+        eprintln!("SKIP real_proxy_pypi_api: mise not available");
         return;
     }
 
@@ -848,8 +856,12 @@ fn real_proxy_pypi_api() {
     let dir = copy_example("pypi", tmp.path());
     let venv = tmp.path().join("venv");
 
-    let ok = Command::new("python3")
-        .args(["-m", "venv", venv.to_str().unwrap()])
+    if !mise_install(&dir) {
+        eprintln!("SKIP real_proxy_pypi_api: mise install failed (Python unavailable)");
+        return;
+    }
+
+    let ok = mise_exec(&dir, "python3", &["-m", "venv", venv.to_str().unwrap()])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -963,8 +975,8 @@ fn real_proxy_conda_repodata() {
 
 #[test]
 fn real_proxy_rubygems_api() {
-    if !tool_available("ruby") || !tool_available("bundle") {
-        eprintln!("SKIP real_proxy_rubygems_api: ruby or bundler not available");
+    if !tool_available("mise") {
+        eprintln!("SKIP real_proxy_rubygems_api: mise not available");
         return;
     }
 
@@ -993,6 +1005,11 @@ fn real_proxy_rubygems_api() {
     let dir = copy_example("rubygems", tmp.path());
     let bundle_path = tmp.path().join("bundle");
 
+    if !mise_install(&dir) {
+        eprintln!("SKIP real_proxy_rubygems_api: mise install failed (Ruby unavailable)");
+        return;
+    }
+
     // Patch .bundle/config: redirect the mirror to the real proxy.
     let bundle_cfg = dir.join(".bundle/config");
     let content = fs::read_to_string(&bundle_cfg).unwrap();
@@ -1002,11 +1019,9 @@ fn real_proxy_rubygems_api() {
     )
     .unwrap();
 
-    let ok = Command::new("bundle")
-        .arg("install")
+    let ok = mise_exec(&dir, "bundle", &["install"])
         .env("BUNDLE_PATH", &bundle_path)
         .env("BUNDLE_APP_CONFIG", dir.join(".bundle"))
-        .current_dir(&dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -1018,8 +1033,10 @@ fn real_proxy_rubygems_api() {
     }
 
     let port = free_port();
-    let server = Command::new("bundle")
-        .args([
+    let server = mise_exec(
+        &dir,
+        "bundle",
+        &[
             "exec",
             "rackup",
             "--host",
@@ -1027,14 +1044,14 @@ fn real_proxy_rubygems_api() {
             "--port",
             &port.to_string(),
             "config.ru",
-        ])
-        .env("BUNDLE_PATH", &bundle_path)
-        .env("BUNDLE_APP_CONFIG", dir.join(".bundle"))
-        .current_dir(&dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn rackup");
+        ],
+    )
+    .env("BUNDLE_PATH", &bundle_path)
+    .env("BUNDLE_APP_CONFIG", dir.join(".bundle"))
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn()
+    .expect("spawn rackup");
 
     if !wait_for_port(port, Duration::from_secs(20)) {
         kill_wait(server);
@@ -1054,8 +1071,8 @@ fn real_proxy_rubygems_api() {
 
 #[test]
 fn real_proxy_composer_console() {
-    if !tool_available("php") || !tool_available("composer") {
-        eprintln!("SKIP real_proxy_composer_console: php or composer not available");
+    if !tool_available("mise") {
+        eprintln!("SKIP real_proxy_composer_console: mise not available");
         return;
     }
 
@@ -1083,6 +1100,13 @@ fn real_proxy_composer_console() {
     let tmp = TempDir::new().unwrap();
     let dir = copy_example("composer", tmp.path());
 
+    if !mise_install(&dir) {
+        eprintln!(
+            "SKIP real_proxy_composer_console: mise install failed (PHP/Composer unavailable)"
+        );
+        return;
+    }
+
     // Patch composer.json: redirect repository URL to the real proxy.
     let cjson_path = dir.join("composer.json");
     let mut cjson: serde_json::Value =
@@ -1097,23 +1121,23 @@ fn real_proxy_composer_console() {
     }
     fs::write(&cjson_path, serde_json::to_string_pretty(&cjson).unwrap()).unwrap();
 
-    let ok = Command::new("composer")
-        .args(["install", "--no-interaction", "--no-dev"])
-        .env("COMPOSER_HOME", tmp.path().join("composer-home"))
-        .current_dir(&dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let ok = mise_exec(
+        &dir,
+        "composer",
+        &["install", "--no-interaction", "--no-dev"],
+    )
+    .env("COMPOSER_HOME", tmp.path().join("composer-home"))
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .map(|s| s.success())
+    .unwrap_or(false);
     if !ok {
         eprintln!("SKIP real_proxy_composer_console: composer install through proxy failed");
         return;
     }
 
-    let out = Command::new("php")
-        .args(["src/App.php", "app:hello"])
-        .current_dir(&dir)
+    let out = mise_exec(&dir, "php", &["src/App.php", "app:hello"])
         .output()
         .expect("run php console app");
 
@@ -1284,8 +1308,8 @@ fn real_proxy_maven_quarkus_api() {
 
 #[test]
 fn real_proxy_terraform_init() {
-    if !tool_available("terraform") {
-        eprintln!("SKIP real_proxy_terraform_init: terraform not available");
+    if !tool_available("mise") {
+        eprintln!("SKIP real_proxy_terraform_init: mise not available");
         return;
     }
 
@@ -1313,14 +1337,17 @@ fn real_proxy_terraform_init() {
     let tmp = TempDir::new().unwrap();
     let dir = copy_example("terraform", tmp.path());
 
+    if !mise_install(&dir) {
+        eprintln!("SKIP real_proxy_terraform_init: mise install failed (Terraform unavailable)");
+        return;
+    }
+
     // Write a .terraformrc pointing the network mirror at the real proxy.
     let rcfile = write_terraform_rc(&tmp.path().join(".terraformrc"), proxy.port);
 
-    let ok = Command::new("terraform")
-        .args(["init", "-no-color", "-upgrade"])
+    let ok = mise_exec(&dir, "terraform", &["init", "-no-color", "-upgrade"])
         .env("TF_CLI_CONFIG_FILE", &rcfile)
         .env("TF_DATA_DIR", tmp.path().join(".terraform"))
-        .current_dir(&dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -1469,8 +1496,8 @@ fn real_proxy_vscode_marketplace_download() {
 
 #[test]
 fn real_proxy_npm_publish() {
-    if !tool_available("npm") {
-        eprintln!("SKIP real_proxy_npm_publish: npm not available");
+    if !tool_available("mise") {
+        eprintln!("SKIP real_proxy_npm_publish: mise not available");
         return;
     }
 
@@ -1487,6 +1514,12 @@ fn real_proxy_npm_publish() {
         r#"{"name":"test-publish-pkg","version":"1.0.0","description":"test"}"#,
     )
     .unwrap();
+    fs::write(pkg_dir.join(".mise.toml"), "[tools]\nnode = \"22\"\n").unwrap();
+
+    if !mise_install(&pkg_dir) {
+        eprintln!("SKIP real_proxy_npm_publish: mise install failed (Node unavailable)");
+        return;
+    }
 
     let registry_url = format!("http://127.0.0.1:{}/proxy/my-npm/", proxy.port);
     let npmrc = tmp.path().join(".npmrc");
@@ -1500,11 +1533,9 @@ fn real_proxy_npm_publish() {
     )
     .unwrap();
 
-    let ok = Command::new("npm")
-        .args(["publish", "--registry", &registry_url])
+    let ok = mise_exec(&pkg_dir, "npm", &["publish", "--registry", &registry_url])
         .env("NPM_CONFIG_CACHE", tmp.path().join("npm-cache"))
         .env("NPM_CONFIG_USERCONFIG", &npmrc)
-        .current_dir(&pkg_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -1527,8 +1558,8 @@ fn real_proxy_npm_publish() {
 
 #[test]
 fn real_proxy_cargo_publish() {
-    if !tool_available("cargo") {
-        eprintln!("SKIP real_proxy_cargo_publish: cargo not available");
+    if !tool_available("mise") {
+        eprintln!("SKIP real_proxy_cargo_publish: mise not available");
         return;
     }
 
@@ -1549,6 +1580,7 @@ fn real_proxy_cargo_publish() {
     )
     .unwrap();
     fs::write(pkg_dir.join("src/lib.rs"), "").unwrap();
+    fs::write(pkg_dir.join(".mise.toml"), "[tools]\nrust = \"stable\"\n").unwrap();
 
     fs::write(
         cargo_home.join("credentials.toml"),
@@ -1565,21 +1597,28 @@ fn real_proxy_cargo_publish() {
         ),
     ).unwrap();
 
-    let ok = Command::new("cargo")
-        .args([
+    if !mise_install(&pkg_dir) {
+        eprintln!("SKIP real_proxy_cargo_publish: mise install failed (Rust unavailable)");
+        return;
+    }
+
+    let ok = mise_exec(
+        &pkg_dir,
+        "cargo",
+        &[
             "publish",
             "--registry",
             "batlehub",
             "--no-verify",
             "--allow-dirty",
-        ])
-        .env("CARGO_HOME", &cargo_home)
-        .current_dir(&pkg_dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        ],
+    )
+    .env("CARGO_HOME", &cargo_home)
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .map(|s| s.success())
+    .unwrap_or(false);
 
     if !ok {
         eprintln!("SKIP real_proxy_cargo_publish: cargo publish failed (proxy or tool issue)");
@@ -1601,8 +1640,8 @@ fn real_proxy_cargo_publish() {
 
 #[test]
 fn real_proxy_rubygems_publish() {
-    if !tool_available("gem") {
-        eprintln!("SKIP real_proxy_rubygems_publish: gem not available");
+    if !tool_available("mise") {
+        eprintln!("SKIP real_proxy_rubygems_publish: mise not available");
         return;
     }
 
@@ -1626,10 +1665,14 @@ end
 "#,
     )
     .unwrap();
+    fs::write(gem_dir.join(".mise.toml"), "[tools]\nruby = \"3.3\"\n").unwrap();
 
-    let ok = Command::new("gem")
-        .args(["build", "test-publish-gem.gemspec"])
-        .current_dir(&gem_dir)
+    if !mise_install(&gem_dir) {
+        eprintln!("SKIP real_proxy_rubygems_publish: mise install failed (Ruby unavailable)");
+        return;
+    }
+
+    let ok = mise_exec(&gem_dir, "gem", &["build", "test-publish-gem.gemspec"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -1643,21 +1686,23 @@ end
     // GEM_HOST_API_KEY is sent verbatim as the Authorization header value.
     // Setting it to "Bearer {token}" makes gem push send the correct Bearer auth.
     let registry_url = format!("http://127.0.0.1:{}/proxy/my-gems/", proxy.port);
-    let ok = Command::new("gem")
-        .args([
+    let ok = mise_exec(
+        &gem_dir,
+        "gem",
+        &[
             "push",
             "test-publish-gem-1.0.0.gem",
             "--host",
             &registry_url,
-        ])
-        .env("GEM_HOST_API_KEY", format!("Bearer {PROXY_AUTH_TOKEN}"))
-        .env("HOME", tmp.path())
-        .current_dir(&gem_dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        ],
+    )
+    .env("GEM_HOST_API_KEY", format!("Bearer {PROXY_AUTH_TOKEN}"))
+    .env("HOME", tmp.path())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .map(|s| s.success())
+    .unwrap_or(false);
 
     if !ok {
         eprintln!("SKIP real_proxy_rubygems_publish: gem push failed (proxy or tool issue)");
