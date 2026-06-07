@@ -1,5 +1,7 @@
 # Rust
 target/
+/rust
+/ui-db
 
 # Rust - Fuzzing
 fuzz/target/

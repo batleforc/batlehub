@@ -1,16 +1,28 @@
 import { ref } from "vue";
-import type { Highlighter } from "shiki";
-import { createHighlighter } from "shiki";
+import type { HighlighterCore } from "shiki/core";
+import { createHighlighterCore } from "shiki/core";
+import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 
-let _highlighter: Highlighter | null = null;
-let _promise: Promise<Highlighter> | null = null;
+let _highlighter: HighlighterCore | null = null;
+let _promise: Promise<HighlighterCore> | null = null;
 const _ready = ref(false);
 
-function init(): Promise<Highlighter> {
+// Import only the languages/themes we actually use, via the fine-grained
+// core API. The full `shiki` bundle pulls in every language and theme as
+// separate chunks (~6 MB), even when only a handful are requested at runtime.
+function init(): Promise<HighlighterCore> {
   if (!_promise) {
-    _promise = createHighlighter({
-      themes: ["github-light", "github-dark"],
-      langs: ["toml", "yaml", "bash", "ini", "json", "jsonc", "text"],
+    _promise = createHighlighterCore({
+      themes: [import("@shikijs/themes/github-light"), import("@shikijs/themes/github-dark")],
+      langs: [
+        import("@shikijs/langs/toml"),
+        import("@shikijs/langs/yaml"),
+        import("@shikijs/langs/bash"),
+        import("@shikijs/langs/ini"),
+        import("@shikijs/langs/json"),
+        import("@shikijs/langs/jsonc"),
+      ],
+      engine: createJavaScriptRegexEngine(),
     }).then((h) => {
       _highlighter = h;
       _ready.value = true;

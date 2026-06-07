@@ -1,24 +1,6 @@
 import { watch } from "vue";
 import { createRouter, createWebHistory } from "vue-router";
 import { useAuth, storeTokens } from "@/composables/useAuth";
-import PackageList from "@/pages/PackageList.vue";
-import PackageDetail from "@/pages/PackageDetail.vue";
-import PackageExplorer from "@/pages/PackageExplorer.vue";
-import ExplorePackageDetail from "@/pages/ExplorePackageDetail.vue";
-import AccessCheck from "@/pages/AccessCheck.vue";
-import AdminPackages from "@/pages/AdminPackages.vue";
-import AdminPackageDetail from "@/pages/AdminPackageDetail.vue";
-import AdminBulk from "@/pages/AdminBulk.vue";
-import AdminHealth from "@/pages/AdminHealth.vue";
-import AuditLog from "@/pages/AuditLog.vue";
-import LoginPage from "@/pages/LoginPage.vue";
-import PathMapper from "@/pages/PathMapper.vue";
-import SetupGuide from "@/pages/SetupGuide.vue";
-import TokensPage from "@/pages/TokensPage.vue";
-import MyProfile from "@/pages/MyProfile.vue";
-import AdminLayout from "@/layouts/AdminLayout.vue";
-import MyNamespace from "@/pages/MyNamespace.vue";
-import CliDownload from "@/pages/CliDownload.vue";
 
 const OIDC_STATE_KEY = "oidc_state";
 
@@ -26,44 +8,47 @@ export const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: "/", redirect: "/packages" },
-    { path: "/login", component: LoginPage },
-    { path: "/packages", component: PackageList },
-    { path: "/packages/detail", component: PackageDetail },
-    { path: "/explore", component: PackageExplorer },
-    { path: "/explore/packages/:registry/:name", component: ExplorePackageDetail },
-    { path: "/access-check", component: AccessCheck },
-    { path: "/path-mapper", component: PathMapper },
-    { path: "/setup", component: SetupGuide },
+    { path: "/login", component: () => import("@/pages/LoginPage.vue") },
+    { path: "/packages", component: () => import("@/pages/PackageList.vue") },
+    { path: "/packages/detail", component: () => import("@/pages/PackageDetail.vue") },
+    { path: "/explore", component: () => import("@/pages/PackageExplorer.vue") },
+    {
+      path: "/explore/packages/:registry/:name",
+      component: () => import("@/pages/ExplorePackageDetail.vue"),
+    },
+    { path: "/access-check", component: () => import("@/pages/AccessCheck.vue") },
+    { path: "/path-mapper", component: () => import("@/pages/PathMapper.vue") },
+    { path: "/setup", component: () => import("@/pages/SetupGuide.vue") },
     {
       path: "/tokens",
-      component: TokensPage,
+      component: () => import("@/pages/TokensPage.vue"),
       meta: { requiresOidcAuth: true },
     },
     {
       path: "/profile",
-      component: MyProfile,
+      component: () => import("@/pages/MyProfile.vue"),
       meta: { requiresAuth: true },
     },
     {
       path: "/my-namespace",
-      component: MyNamespace,
+      component: () => import("@/pages/MyNamespace.vue"),
       meta: { requiresAuth: true },
     },
     {
       path: "/cli",
-      component: CliDownload,
+      component: () => import("@/pages/CliDownload.vue"),
       meta: { requiresAuth: true },
     },
     {
       path: "/admin",
-      component: AdminLayout,
+      component: () => import("@/layouts/AdminLayout.vue"),
       meta: { requiresAdmin: true },
       children: [
-        { path: "packages", component: AdminPackages },
-        { path: "packages/detail", component: AdminPackageDetail },
-        { path: "bulk", component: AdminBulk },
-        { path: "audit-log", component: AuditLog },
-        { path: "health", component: AdminHealth },
+        { path: "packages", component: () => import("@/pages/AdminPackages.vue") },
+        { path: "packages/detail", component: () => import("@/pages/AdminPackageDetail.vue") },
+        { path: "bulk", component: () => import("@/pages/AdminBulk.vue") },
+        { path: "audit-log", component: () => import("@/pages/AuditLog.vue") },
+        { path: "health", component: () => import("@/pages/AdminHealth.vue") },
         { path: "sbom", component: () => import("@/pages/AdminSbom.vue") },
         { path: "ip-blocks", component: () => import("@/pages/AdminIpBlocks.vue") },
         { path: "beta-channel", component: () => import("@/pages/AdminBetaChannel.vue") },
