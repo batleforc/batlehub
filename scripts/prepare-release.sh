@@ -109,6 +109,7 @@ else
         major) NEW_VERSION="$((cur_major + 1)).0.0" ;;
         minor) NEW_VERSION="${cur_major}.$((cur_minor + 1)).0" ;;
         patch) NEW_VERSION="${cur_major}.${cur_minor}.$((cur_patch + 1))" ;;
+        *) die "Invalid bump mode: ${BUMP_MODE}" ;;
     esac
 fi
 TAG="v${NEW_VERSION}"

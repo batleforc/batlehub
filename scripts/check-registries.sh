@@ -115,6 +115,7 @@ record() {
         PASS) PASS_COUNT=$(( PASS_COUNT + 1 )) ;;
         FAIL) FAIL_COUNT=$(( FAIL_COUNT + 1 )) ;;
         SKIP) SKIP_COUNT=$(( SKIP_COUNT + 1 )) ;;
+        *) printf "Unknown status: %s\n" "$status" >&2 ;;
     esac
 }
 

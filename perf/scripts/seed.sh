@@ -27,7 +27,7 @@ for i in $(seq 1 30); do
     break
   fi
   sleep 1
-  if [ "$i" -eq 30 ]; then
+  if [[ "$i" -eq 30 ]]; then
     echo " TIMEOUT — is 'task perf:server' running?"
     exit 1
   fi
@@ -36,7 +36,7 @@ done
 # ── 2. Verify auth ────────────────────────────────────────────────────────────
 echo -n "    verifying token..."
 STATUS=$(curl -sf -o /dev/null -w "%{http_code}" -H "$AUTH" "$BASE/api/v1/me" || echo "000")
-if [ "$STATUS" != "200" ]; then
+if [[ "$STATUS" != "200" ]]; then
   echo " FAILED (HTTP $STATUS)"
   echo "    Check that perf/config.perf.toml has [[auth.tokens]] value=\"$TOKEN\""
   exit 1
@@ -46,7 +46,7 @@ echo " ok"
 # ── 3. Verify mock upstream ───────────────────────────────────────────────────
 echo -n "    checking mock upstream..."
 STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "http://localhost:9999/health" || echo "000")
-if [ "$STATUS" != "200" ]; then
+if [[ "$STATUS" != "200" ]]; then
   echo " NOT RUNNING (HTTP $STATUS)"
   echo "    Start it with: task perf:upstream"
   exit 1
@@ -61,7 +61,7 @@ for i in $(seq 1 "$WARM_N"); do
     -H "$AUTH" \
     "$TARBALL_URL" || echo "000")
   printf "      attempt %d: HTTP %s\n" "$i" "$HTTP_CODE"
-  if [ "$HTTP_CODE" != "200" ]; then
+  if [[ "$HTTP_CODE" != "200" ]]; then
     echo "    WARN: unexpected status $HTTP_CODE — check mock upstream logs"
   fi
 done

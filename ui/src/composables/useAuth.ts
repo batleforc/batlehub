@@ -12,7 +12,9 @@ const OIDC_PROVIDER_KEY = "batlehub_oidc_provider";
 
 const token = ref<string>(localStorage.getItem(ACCESS_TOKEN_KEY) ?? "");
 const refreshToken = ref<string>(localStorage.getItem(REFRESH_TOKEN_KEY) ?? "");
-const expiresAt = ref<number>(Number(localStorage.getItem(EXPIRES_AT_KEY) ?? "0"));
+const expiresAt = ref<number>(
+  Number(localStorage.getItem(EXPIRES_AT_KEY) ?? "0"),
+);
 const oidcProvider = ref<string>(localStorage.getItem(OIDC_PROVIDER_KEY) ?? "");
 const identity = ref<MeResponse | null>(null);
 const identityReady = ref(false);
@@ -46,7 +48,7 @@ async function refreshIdentity() {
   identityReady.value = false;
   try {
     const result = await me();
-    identity.value = (result.data as MeResponse | undefined) ?? null;
+    identity.value = result.data ?? null;
   } catch {
     identity.value = null;
   }
@@ -139,7 +141,9 @@ function logout() {
 // ── Computed ───────────────────────────────────────────────────────────────────
 
 const isAdmin = computed(() => identity.value?.role === "admin");
-const isAuthenticated = computed(() => !!token.value && identity.value?.role !== "anonymous");
+const isAuthenticated = computed(
+  () => !!token.value && identity.value?.role !== "anonymous",
+);
 
 export function useAuth() {
   return {

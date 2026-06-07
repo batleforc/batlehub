@@ -48,7 +48,7 @@ pub fn raw_auth_from_request(req: &HttpRequest) -> batlehub_core::ports::RawAuth
         .collect::<HashMap<_, _>>();
 
     // NuGet clients send X-NuGet-ApiKey instead of Authorization: Bearer.
-    // Normalise so all auth providers see a standard Bearer token.
+    // Normalize so all auth providers see a standard Bearer token.
     if !headers.contains_key("authorization") {
         if let Some(key) = headers.get("x-nuget-apikey").cloned() {
             headers.insert("authorization".to_owned(), format!("Bearer {key}"));

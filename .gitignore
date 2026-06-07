@@ -2,7 +2,7 @@
 target/
 /rust
 /ui-db
-
+.scannerwork
 # Rust - Fuzzing
 fuzz/target/
 fuzz/corpus/

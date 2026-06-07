@@ -12,7 +12,7 @@ set -euo pipefail
 
 # ── Locate the server process ─────────────────────────────────────────────────
 # Accept an explicit PID via env var to bypass auto-detection.
-if [ -n "${BATLEHUB_PID:-}" ]; then
+if [[ -n "${BATLEHUB_PID:-}" ]]; then
   PID="$BATLEHUB_PID"
 else
   # 1. Exact binary name match (works for both `cargo run` and direct invocation).
@@ -22,7 +22,7 @@ else
         pgrep -f "target/release/batlehub" 2>/dev/null | head -1 || true)
 fi
 
-if [ -z "$PID" ]; then
+if [[ -z "$PID" ]]; then
   echo "  [resource-monitor] batlehub process not found — run 'task perf:server' first"
   echo "  [resource-monitor] tip: set BATLEHUB_PID=<pid> to pin the process manually"
   echo "  [resource-monitor] skipping resource metrics, running k6 only"
@@ -49,7 +49,7 @@ echo "  [resource-monitor] tracking PID $PID  CLK_TCK=$CLK_TCK"
     curr_ticks=$(awk '{print $14+$15}' "/proc/$PID/stat" 2>/dev/null || echo 0)
     curr_ms=$(date +%s%3N)
 
-    if [ "$prev_ms" -gt 0 ] && [ -n "$rss" ]; then
+    if [[ "$prev_ms" -gt 0 ]] && [[ -n "$rss" ]]; then
       tick_delta=$(( curr_ticks - prev_ticks ))
       ms_delta=$(( curr_ms - prev_ms ))
       cpu=$(awk -v td="$tick_delta" -v ms="$ms_delta" -v clk="$CLK_TCK" \
@@ -83,7 +83,7 @@ echo "┌─ Resource usage — PID $PID — $N samples @ 1 s ──────
 
 awk_stats() {
   local file="$1" label="$2" divisor="$3" unit="$4"
-  if [ ! -s "$file" ]; then
+  if [[ ! -s "$file" ]]; then
     printf "│  %-14s no data\n" "$label"
     return
   fi

@@ -4,6 +4,7 @@
   "words": [
     "actix",
     "akadmin",
+    "apikey",
     "Authentik",
     "batlehub",
     "CARGOCONF",
@@ -32,6 +33,8 @@
     "rustfsadmin",
     "sarif",
     "serde",
+    "SonarQube",
+    "splitn",
     "testpass",
     "TMPDIR",
     "utoipa",

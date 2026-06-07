@@ -45,12 +45,12 @@ jobs:
           cache-dependency-path: ui/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Run oxlint
         id: oxlint
         continue-on-error: true
-        run: npx oxlint -f sarif src > oxlint-results.sarif
+        run: npm run lint -- -f sarif src > oxlint-results.sarif
 
       - name: Upload oxlint SARIF results
         if: always()
@@ -63,7 +63,7 @@ jobs:
       - name: Run eslint
         id: eslint
         continue-on-error: true
-        run: npx eslint src --ext .ts,.vue --format @microsoft/eslint-formatter-sarif -o eslint-results.sarif
+        run: npm run lint:eslint -- --format @microsoft/eslint-formatter-sarif -o eslint-results.sarif
 
       - name: Upload eslint SARIF results
         if: always()
@@ -74,7 +74,7 @@ jobs:
           wait-for-processing: true
 
       - name: Check formatting (oxfmt)
-        run: npx oxfmt --check src
+        run: npm run lint -- --check src
 
       - name: Fail on lint errors
         if: steps.oxlint.outcome == 'failure' || steps.eslint.outcome == 'failure'

@@ -8,5 +8,6 @@ lazydocker = "latest"
 mc = "latest"
 node = "24"
 rust = "latest"
+sonar-scanner-cli = "latest"
 task = "latest"
 #"github:batleforc/batlehub" = { version = "latest", asset_pattern = "batlehub-cli-*" }

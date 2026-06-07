@@ -1,3 +1,7 @@
 {
-  "robotcode.disableExtension": true
+  "robotcode.disableExtension": true,
+  "sonarlint.connectedMode.project": {
+    "connectionId": "batleforc",
+    "projectKey": "batleforc_batlehub"
+  }
 }

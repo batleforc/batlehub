@@ -378,7 +378,8 @@ cargo test -p batlehub-examples --test real_proxy
 The project enforces a minimum of **80% line coverage** measured by `cargo-llvm-cov`. Both tasks require PostgreSQL and MinIO (started automatically from the `Taskfile`):
 
 ```bash
-# Generate an HTML report (opens at target/llvm-cov/html/index.html)
+# Generate an HTML report (opens at target/llvm-cov/html/index.html) and an
+# lcov.info at the repo root for SonarQube/SonarLint (sonar.rust.lcov.reportPaths)
 task coverage
 
 # Enforce the 80% threshold — fails the build if coverage drops below it

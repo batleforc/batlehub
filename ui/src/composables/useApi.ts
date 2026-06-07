@@ -50,7 +50,6 @@ export function useApi<T>(
   watchEffect(() => {
     // Track deps and tick so watchers fire on reload() too.
     deps.forEach((d) => d.value);
-    void tick.value;
     run();
   });
 

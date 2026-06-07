@@ -80,7 +80,7 @@ tasks:
       - cargo test -p batlehub-adapters --features storage-s3 --test s3_storage -- --nocapture
 
   coverage:
-    desc: Generate HTML coverage report — starts Postgres, MinIO and Redis to include all integration tests
+    desc: Generate an HTML coverage report and an lcov report for SonarQube — starts Postgres, MinIO and Redis to include all integration tests
     vars:
       PG_CONTAINER: batlehub-cov-pg
       PG_PORT: "25432"
@@ -119,6 +119,7 @@ tasks:
       - cargo llvm-cov --no-report -p batlehub-adapters --features cache-redis --test redis_cache
       - cargo llvm-cov --no-report -p batlehub-adapters --features cache-redis --test redis_rate_limit
       - cargo llvm-cov report --html --output-dir coverage/html --ignore-filename-regex "{{.COVERAGE_EXCLUDE}}"
+      - cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex "{{.COVERAGE_EXCLUDE}}"
 
   coverage-check:
     desc: Fail if line coverage is below 80% — starts Postgres, MinIO and Redis to include all integration tests
