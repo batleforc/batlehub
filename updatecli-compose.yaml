@@ -14,3 +14,8 @@ policies:
       - .updatecli/manifest/docker.yaml
     values:
       - .updatecli/vars.yaml
+  - name: githubaction
+    config:
+      - .updatecli/manifest/gh-action.yaml
+    values:
+      - .updatecli/vars.yaml

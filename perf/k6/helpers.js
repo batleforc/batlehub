@@ -1,4 +1,4 @@
-import { check, fail } from "k6";
+import { check } from "k6";
 import http from "k6/http";
 import { ADMIN_TOKEN, BASE_URL } from "./config.js";
 
@@ -25,7 +25,7 @@ export function npmPublishPayload(name, version, sizeKb) {
         description: "k6 perf test package",
         dist: {
           tarball: `${BASE_URL}/proxy/perf-npm/${name}/-/${name}-${version}.tgz`,
-          shasum: "aabbccdd112233445566778899aabbccdd112233",
+          shasum: "aabbccdd112233445566778899aabbccdd112233", // DevSkim: ignore DS173237
         },
       },
     },
