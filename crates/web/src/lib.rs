@@ -325,7 +325,7 @@ impl RegistryMap {
     }
 
     pub fn type_of(&self, name: &str) -> Option<String> {
-        self.0.read().unwrap().get(name).cloned()
+        self.0.read().expect("registry map lock poisoned").get(name).cloned()
     }
 
     pub fn is_type(&self, name: &str, expected: &str) -> bool {
@@ -333,18 +333,18 @@ impl RegistryMap {
     }
 
     pub fn contains(&self, name: &str) -> bool {
-        self.0.read().unwrap().contains_key(name)
+        self.0.read().expect("registry map lock poisoned").contains_key(name)
     }
 
     pub fn keys(&self) -> Vec<String> {
-        self.0.read().unwrap().keys().cloned().collect()
+        self.0.read().expect("registry map lock poisoned").keys().cloned().collect()
     }
 
     /// Registry names with the given type.
     pub fn names_of_type(&self, registry_type: &str) -> Vec<String> {
         self.0
             .read()
-            .unwrap()
+            .expect("registry map lock poisoned")
             .iter()
             .filter(|(_, t)| t.as_str() == registry_type)
             .map(|(n, _)| n.clone())
@@ -372,14 +372,14 @@ impl RegistryModeMap {
     pub fn get(&self, name: &str) -> RegistryMode {
         self.0
             .read()
-            .unwrap()
+            .expect("registry mode map lock poisoned")
             .get(name)
             .cloned()
             .unwrap_or_default()
     }
 
     pub fn insert(&self, name: String, mode: RegistryMode) {
-        self.0.write().unwrap().insert(name, mode);
+        self.0.write().expect("registry mode map lock poisoned").insert(name, mode);
     }
 }
 
@@ -407,7 +407,7 @@ impl UpstreamMap {
     }
 
     pub fn upstream_for(&self, name: &str) -> Option<String> {
-        self.0.read().unwrap().get(name).cloned()
+        self.0.read().expect("upstream map lock poisoned").get(name).cloned()
     }
 }
 
@@ -437,7 +437,7 @@ impl CargoIndexMap {
 
     /// Clone the proxy for the given registry name, if configured.
     pub fn get(&self, name: &str) -> Option<CargoIndexProxy> {
-        self.0.read().unwrap().get(name).cloned()
+        self.0.read().expect("cargo index map lock poisoned").get(name).cloned()
     }
 }
 

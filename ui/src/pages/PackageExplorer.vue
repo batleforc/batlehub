@@ -302,6 +302,7 @@ onMounted(() => {
           />
         </div>
         <select
+          aria-label="Sort packages"
           class="h-9 rounded-sm border border-input bg-background px-3 font-mono text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
           :value="sort"
           @change="onSortChange(($event.target as HTMLSelectElement).value)"

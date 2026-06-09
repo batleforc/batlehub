@@ -33,7 +33,7 @@ pub async fn list_registries(
     let mut registries: Vec<RegistryInfo> = map
         .0
         .read()
-        .unwrap()
+        .expect("registry map lock poisoned")
         .iter()
         .filter(|(name, _)| accessible.contains(name.as_str()))
         .map(|(name, registry_type)| RegistryInfo {

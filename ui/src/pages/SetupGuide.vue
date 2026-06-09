@@ -173,8 +173,9 @@ async function copy(key: string, text: string) {
                 </CardDescription>
                 <!-- Registry selector (shown when multiple registries of same type) -->
                 <div v-if="showSelector(def)" class="flex items-center gap-2">
-                  <span class="text-xs text-muted-foreground shrink-0">Registry:</span>
+                  <label :for="`setup-registry-${def.id}`" class="text-xs text-muted-foreground shrink-0">Registry:</label>
                   <Select
+                    :id="`setup-registry-${def.id}`"
                     :model-value="getSelected(primaryType(def)!)"
                     :options="selectorOptions(def)"
                     class="h-7 text-xs w-48"

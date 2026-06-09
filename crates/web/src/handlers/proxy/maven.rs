@@ -63,7 +63,7 @@ fn parse_maven_path(_registry: &str, maven_path: &str) -> Result<MavenPathKind, 
         return Err(AppError::not_found("invalid Maven path"));
     }
 
-    let filename = *segments.last().unwrap();
+    let filename = *segments.last().expect("segments checked non-empty above");
 
     if filename == "maven-metadata.xml" {
         if segments.len() < 2 {

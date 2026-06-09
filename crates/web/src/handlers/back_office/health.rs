@@ -88,7 +88,7 @@ pub async fn registry_health(
     let mut registries: Vec<(String, String)> = registry_map
         .0
         .read()
-        .unwrap()
+        .expect("registry map lock poisoned")
         .iter()
         .map(|(name, rtype)| (name.clone(), rtype.clone()))
         .collect();
