@@ -2,7 +2,10 @@ use anyhow::Result;
 use clap::Subcommand;
 use comfy_table::Table;
 
-use crate::api::{admin::AuditQuery, BatleHubClient};
+use crate::api::{
+    admin::{AuditEntry, AuditQuery},
+    BatleHubClient,
+};
 
 #[derive(Subcommand)]
 pub enum AdminCommand {
@@ -243,37 +246,41 @@ pub async fn run(cmd: AdminCommand, client: &BatleHubClient, json: bool) -> Resu
             if json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
-                let mut table = Table::new();
-                table.set_header(["Time", "Registry", "User", "Action", "Package", "Denied"]);
-                for e in &resp {
-                    let registry = e
-                        .package_id
-                        .as_ref()
-                        .map(|p| p.registry.as_str())
-                        .unwrap_or("-");
-                    let package = e
-                        .package_id
-                        .as_ref()
-                        .map(|p| p.name.as_str())
-                        .unwrap_or("-");
-                    let denied = e
-                        .result
-                        .as_ref()
-                        .map(|r| r.outcome == "denied")
-                        .unwrap_or(false);
-                    table.add_row([
-                        e.timestamp.as_deref().unwrap_or("-"),
-                        registry,
-                        e.user_id.as_deref().unwrap_or("(anon)"),
-                        e.action.as_deref().unwrap_or("-"),
-                        package,
-                        if denied { "yes" } else { "no" },
-                    ]);
-                }
-                println!("{table}");
-                println!("{} entry/entries", resp.len());
+                print_audit_log_table(&resp);
             }
         }
     }
     Ok(())
+}
+
+fn print_audit_log_table(entries: &[AuditEntry]) {
+    let mut table = Table::new();
+    table.set_header(["Time", "Registry", "User", "Action", "Package", "Denied"]);
+    for e in entries {
+        let registry = e
+            .package_id
+            .as_ref()
+            .map(|p| p.registry.as_str())
+            .unwrap_or("-");
+        let package = e
+            .package_id
+            .as_ref()
+            .map(|p| p.name.as_str())
+            .unwrap_or("-");
+        let denied = e
+            .result
+            .as_ref()
+            .map(|r| r.outcome == "denied")
+            .unwrap_or(false);
+        table.add_row([
+            e.timestamp.as_deref().unwrap_or("-"),
+            registry,
+            e.user_id.as_deref().unwrap_or("(anon)"),
+            e.action.as_deref().unwrap_or("-"),
+            package,
+            if denied { "yes" } else { "no" },
+        ]);
+    }
+    println!("{table}");
+    println!("{} entry/entries", entries.len());
 }

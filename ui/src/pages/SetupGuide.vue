@@ -45,7 +45,8 @@ const { data: registries, loading } = useApi<Array<RegistryInfo>>(
 const registriesByType = computed<Record<string, RegistryInfo[]>>(() => {
   const map: Record<string, RegistryInfo[]> = {};
   for (const r of registries.value ?? []) {
-    (map[r.type] ??= []).push(r);
+    map[r.type] ??= [];
+    map[r.type].push(r);
   }
   return map;
 });

@@ -4,6 +4,13 @@ use comfy_table::{Cell, Color, Table};
 
 use crate::api::{package::PackageQuery, package::PackageStatus, BatleHubClient};
 
+fn render_status_cell(status: &PackageStatus) -> Cell {
+    match status {
+        PackageStatus::Available => Cell::new("available").fg(Color::Green),
+        PackageStatus::Blocked { reason } => Cell::new(format!("blocked: {reason}")).fg(Color::Red),
+    }
+}
+
 #[derive(Subcommand)]
 pub enum PackageCommand {
     /// List packages (across all or a specific registry)
@@ -72,17 +79,11 @@ pub async fn run(
                 let mut table = Table::new();
                 table.set_header(["Registry", "Name", "Version", "Status", "Accesses"]);
                 for p in &items {
-                    let status_cell = match &p.status {
-                        PackageStatus::Available => Cell::new("available").fg(Color::Green),
-                        PackageStatus::Blocked { reason } => {
-                            Cell::new(format!("blocked: {reason}")).fg(Color::Red)
-                        }
-                    };
                     table.add_row(vec![
                         Cell::new(&p.registry),
                         Cell::new(&p.name),
                         Cell::new(&p.version),
-                        status_cell,
+                        render_status_cell(&p.status),
                         Cell::new(p.access_count),
                     ]);
                 }
@@ -112,15 +113,9 @@ pub async fn run(
                 let mut table = Table::new();
                 table.set_header(["Version", "Status", "Accesses"]);
                 for p in &items {
-                    let status_cell = match &p.status {
-                        PackageStatus::Available => Cell::new("available").fg(Color::Green),
-                        PackageStatus::Blocked { reason } => {
-                            Cell::new(format!("blocked: {reason}")).fg(Color::Red)
-                        }
-                    };
                     table.add_row(vec![
                         Cell::new(&p.version),
-                        status_cell,
+                        render_status_cell(&p.status),
                         Cell::new(p.access_count),
                     ]);
                 }

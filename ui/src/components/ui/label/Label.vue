@@ -10,7 +10,7 @@ const props = defineProps<{
 
 <template>
   <label
-    :for="props.for"
+    :for="props.for || undefined"
     :class="
       cn(
         'font-mono text-xs font-semibold uppercase tracking-wide text-muted-foreground leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70',

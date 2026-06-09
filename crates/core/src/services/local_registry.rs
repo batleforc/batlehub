@@ -44,6 +44,35 @@ fn validate_version(version: &str, policy: &VersioningPolicy) -> Result<(), Core
     Ok(())
 }
 
+async fn check_team_visibility(
+    ns_port: &dyn TeamNamespacePort,
+    registry: &str,
+    package: &str,
+    identity: &Identity,
+) -> Result<(), CoreError> {
+    match ns_port.find_namespace(registry, package).await? {
+        Some(ns)
+            if identity
+                .groups
+                .iter()
+                .any(|g| g.replace(' ', "") == ns.group_id.replace(' ', "")) =>
+        {
+            Ok(())
+        }
+        Some(ns) => Err(CoreError::AccessDenied(format!(
+            "package visibility is 'team'; must be a member of group '{}'",
+            ns.group_id
+        ))),
+        // No claim found: deny everyone. Falling back to "any authenticated user"
+        // would allow non-team members to read team-private packages whenever
+        // the namespace claim is missing or has been deleted.
+        None => Err(CoreError::AccessDenied(
+            "package visibility is 'team' but no namespace claim is configured; access denied"
+                .into(),
+        )),
+    }
+}
+
 /// Input to `LocalRegistryService::publish`.
 pub struct PublishRequest {
     pub registry: String,
@@ -128,7 +157,10 @@ impl LocalRegistryService {
         };
         let norm_id = ns.group_id.replace(' ', "");
         let ok = publisher.is_admin()
-            || publisher.groups.iter().any(|g| g.replace(' ', "") == norm_id);
+            || publisher
+                .groups
+                .iter()
+                .any(|g| g.replace(' ', "") == norm_id);
         if !ok {
             return Err(CoreError::AccessDenied(format!(
                 "namespace '{}' in registry '{}' is owned by group '{}'; \
@@ -302,11 +334,43 @@ impl LocalRegistryService {
         let storage_key = artifact_storage_key(&req.registry, &req.name, &req.version);
         let bytes = req.artifact.len() as u64;
 
+        // Steps 1-3: reserve → store → commit, with rollback on each failure.
+        self.execute_publish_transaction(pkg, &req, &storage_key, bytes)
+            .await?;
+
+        // Invalidate explore cache so the new version appears without waiting for TTL expiry.
+        if let Some(ref cache) = self.explore_cache {
+            cache.invalidate(Some(&req.registry)).await;
+        }
+
+        // Step 4: on first publish, register the publisher as the package admin.
+        self.register_initial_owner(is_new_package, &req.registry, &req.name, &req.publisher)
+            .await;
+
+        // Step 5: generate SBOM. When `required` is true and generation fails,
+        // roll back the publish and return the error.
+        self.run_publish_sbom(&req, &storage_key, bytes).await?;
+
+        Ok(quota_check)
+    }
+
+    /// Steps 1-3 of publish: reserve pending row → store artifact bytes → commit.
+    /// Rolls back cleanly on each failure so the caller gets a pristine error.
+    async fn execute_publish_transaction(
+        &self,
+        pkg: PublishedPackage,
+        req: &PublishRequest,
+        storage_key: &str,
+        bytes: u64,
+    ) -> Result<(), CoreError> {
+        let publisher = &req.publisher;
+        let registry = req.registry.as_str();
+        let name = req.name.as_str();
+        let version = req.version.as_str();
+
         // Step 1: reserve the version (inserted as 'pending', invisible to readers).
         if let Err(e) = self.backend.publish(pkg).await {
-            // Row was not inserted; only quota needs rollback.
-            self.revoke_quota(&req.publisher, &req.registry, bytes)
-                .await;
+            self.revoke_quota(publisher, registry, bytes).await;
             return Err(e);
         }
 
@@ -314,7 +378,7 @@ impl LocalRegistryService {
         if let Err(e) = self
             .storage
             .store(
-                &storage_key,
+                storage_key,
                 req.artifact.clone(),
                 StorageMeta {
                     content_type: Some("application/octet-stream".into()),
@@ -324,53 +388,41 @@ impl LocalRegistryService {
             )
             .await
         {
-            self.remove_pending(&req.registry, &req.name, &req.version)
-                .await;
-            self.revoke_quota(&req.publisher, &req.registry, bytes)
-                .await;
+            self.remove_pending(registry, name, version).await;
+            self.revoke_quota(publisher, registry, bytes).await;
             return Err(e);
         }
 
         // Step 3: promote the pending row to 'published'. On failure, undo both
         // the storage write and the pending row so the caller gets a clean error.
-        if let Err(e) = self
-            .backend
-            .commit_publish(&req.registry, &req.name, &req.version)
-            .await
-        {
-            self.remove_pending(&req.registry, &req.name, &req.version)
-                .await;
-            if let Err(err) = self.storage.delete(&storage_key).await {
+        if let Err(e) = self.backend.commit_publish(registry, name, version).await {
+            self.remove_pending(registry, name, version).await;
+            if let Err(err) = self.storage.delete(storage_key).await {
                 tracing::error!("storage cleanup after commit failure: {err}");
             }
-            self.revoke_quota(&req.publisher, &req.registry, bytes)
-                .await;
+            self.revoke_quota(publisher, registry, bytes).await;
             return Err(e);
         }
 
-        // Invalidate explore cache so the new version appears without waiting for TTL expiry.
-        if let Some(ref cache) = self.explore_cache {
-            cache.invalidate(Some(&req.registry)).await;
-        }
+        Ok(())
+    }
 
-        // Step 4: on first publish, register the publisher as the package admin.
-        if is_new_package {
-            if let (Some(ref ownership), Some(ref uid)) = (&self.ownership, &req.publisher.user_id)
-            {
-                if let Err(err) = ownership
-                    .initialize_owner(&req.registry, &req.name, uid)
-                    .await
-                {
-                    tracing::warn!("initialize_owner failed (non-fatal): {err}");
-                }
+    /// Step 4 of publish: register the publisher as package admin on first publish (non-fatal).
+    async fn register_initial_owner(
+        &self,
+        is_new_package: bool,
+        registry: &str,
+        name: &str,
+        publisher: &Identity,
+    ) {
+        if !is_new_package {
+            return;
+        }
+        if let (Some(ref ownership), Some(ref uid)) = (&self.ownership, &publisher.user_id) {
+            if let Err(err) = ownership.initialize_owner(registry, name, uid).await {
+                tracing::warn!("initialize_owner failed (non-fatal): {err}");
             }
         }
-
-        // Step 5: generate SBOM. When `required` is true and generation fails,
-        // roll back the publish and return the error.
-        self.run_publish_sbom(&req, &storage_key, bytes).await?;
-
-        Ok(quota_check)
     }
 
     pub async fn yank(
@@ -636,28 +688,7 @@ impl LocalRegistryService {
                 }
             }
             Visibility::Team => {
-                match ns_port.find_namespace(registry, package).await? {
-                    Some(ns)
-                        if identity
-                            .groups
-                            .iter()
-                            .any(|g| g.replace(' ', "") == ns.group_id.replace(' ', "")) =>
-                    {
-                        Ok(())
-                    }
-                    Some(ns) => Err(CoreError::AccessDenied(format!(
-                        "package visibility is 'team'; must be a member of group '{}'",
-                        ns.group_id
-                    ))),
-                    // No claim found: deny everyone. Falling back to "any authenticated user"
-                    // would allow non-team members to read team-private packages whenever
-                    // the namespace claim is missing or has been deleted.
-                    None => Err(CoreError::AccessDenied(
-                        "package visibility is 'team' but no namespace claim is configured; \
-                         access denied"
-                            .into(),
-                    )),
-                }
+                check_team_visibility(&**ns_port, registry, package, identity).await
             }
         }
     }

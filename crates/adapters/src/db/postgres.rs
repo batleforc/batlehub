@@ -1,6 +1,7 @@
 use crate::db::DbResultExt;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Row};
 
 use crate::migrations::embedded_migrator;
@@ -15,6 +16,79 @@ use batlehub_core::{
     error::CoreError,
     ports::PackageRepository,
 };
+
+fn prepare_registries_param(registries: &[String]) -> Option<Vec<String>> {
+    if registries.is_empty() {
+        None
+    } else {
+        Some(registries.to_vec())
+    }
+}
+
+fn map_package_status(r: &PgRow) -> PackageStatus {
+    let status: String = r.get("status");
+    if status == "blocked" {
+        PackageStatus::Blocked {
+            reason: r
+                .get::<Option<String>, _>("block_reason")
+                .unwrap_or_default(),
+            blocked_by: r.get::<Option<String>, _>("blocked_by").unwrap_or_default(),
+            blocked_at: r
+                .get::<Option<DateTime<Utc>>, _>("blocked_at")
+                .unwrap_or_else(Utc::now),
+        }
+    } else {
+        PackageStatus::Available
+    }
+}
+
+fn map_package_summary(r: PgRow) -> PackageSummary {
+    PackageSummary {
+        id: r.get("id"),
+        package_id: PackageId {
+            registry: r.get("registry"),
+            name: r.get("package_name"),
+            version: r.get("package_version"),
+            artifact: r.get("package_artifact"),
+        },
+        status: map_package_status(&r),
+        last_accessed: r.get("last_accessed"),
+        last_accessed_by: r.get("last_accessed_by"),
+        access_count: r.get::<i64, _>("access_count") as u64,
+    }
+}
+
+fn sort_order_for(sort_by: &ExploreSortBy) -> &'static str {
+    match sort_by {
+        ExploreSortBy::Name => "package_name ASC",
+        ExploreSortBy::Downloads => "total_downloads DESC NULLS LAST",
+        ExploreSortBy::Recent => "last_accessed DESC NULLS LAST",
+    }
+}
+
+fn determine_package_source(has_proxied: bool, has_local: bool) -> PackageSource {
+    match (has_proxied, has_local) {
+        (true, true) => PackageSource::Both,
+        (false, true) => PackageSource::Local,
+        _ => PackageSource::Proxied,
+    }
+}
+
+fn map_explore_entry(r: PgRow) -> ExploreEntry {
+    let has_proxied: bool = r.get("has_proxied");
+    let has_local: bool = r.get("has_local");
+    let source = determine_package_source(has_proxied, has_local);
+    let downloads: i64 = r.get("total_downloads");
+    ExploreEntry {
+        registry: r.get("registry"),
+        name: r.get("package_name"),
+        version_count: r.get::<i64, _>("version_count") as u64,
+        total_downloads: downloads as u64,
+        last_accessed: r.get("last_accessed"),
+        source,
+        has_blocked: r.get("has_blocked"),
+    }
+}
 
 pub struct PgPackageRepository {
     pub(super) pool: PgPool,
@@ -274,50 +348,12 @@ impl PackageRepository for PgPackageRepository {
         .bind(filter.limit as i64)
         .bind(filter.offset as i64)
         .bind(&filter.name_exact)
-        .bind(if filter.registries.is_empty() {
-            None
-        } else {
-            Some(filter.registries.clone())
-        })
+        .bind(prepare_registries_param(&filter.registries))
         .fetch_all(&self.pool)
         .await
         .db_err()?;
 
-        let summaries = rows
-            .into_iter()
-            .map(|r| {
-                let status: String = r.get("status");
-                let pkg_status = if status == "blocked" {
-                    PackageStatus::Blocked {
-                        reason: r
-                            .get::<Option<String>, _>("block_reason")
-                            .unwrap_or_default(),
-                        blocked_by: r.get::<Option<String>, _>("blocked_by").unwrap_or_default(),
-                        blocked_at: r
-                            .get::<Option<DateTime<Utc>>, _>("blocked_at")
-                            .unwrap_or_else(Utc::now),
-                    }
-                } else {
-                    PackageStatus::Available
-                };
-
-                PackageSummary {
-                    id: r.get("id"),
-                    package_id: PackageId {
-                        registry: r.get("registry"),
-                        name: r.get("package_name"),
-                        version: r.get("package_version"),
-                        artifact: r.get("package_artifact"),
-                    },
-                    status: pkg_status,
-                    last_accessed: r.get("last_accessed"),
-                    last_accessed_by: r.get("last_accessed_by"),
-                    access_count: r.get::<i64, _>("access_count") as u64,
-                }
-            })
-            .collect();
-
-        Ok(summaries)
+        Ok(rows.into_iter().map(map_package_summary).collect())
     }
 
     async fn count_packages(&self, filter: PackageFilter) -> Result<u64, CoreError> {
@@ -418,16 +454,8 @@ impl PackageRepository for PgPackageRepository {
         &self,
         filter: ExploreFilter,
     ) -> Result<Vec<ExploreEntry>, CoreError> {
-        let order = match filter.sort_by {
-            ExploreSortBy::Name => "package_name ASC",
-            ExploreSortBy::Downloads => "total_downloads DESC NULLS LAST",
-            ExploreSortBy::Recent => "last_accessed DESC NULLS LAST",
-        };
-        let registries = if filter.registries.is_empty() {
-            None
-        } else {
-            Some(filter.registries.clone())
-        };
+        let order = sort_order_for(&filter.sort_by);
+        let registries = prepare_registries_param(&filter.registries);
 
         let sql = format!(
             r#"
@@ -506,38 +534,11 @@ impl PackageRepository for PgPackageRepository {
             .await
             .db_err()?;
 
-        let entries = rows
-            .into_iter()
-            .map(|r| {
-                let has_proxied: bool = r.get("has_proxied");
-                let has_local: bool = r.get("has_local");
-                let source = match (has_proxied, has_local) {
-                    (true, true) => PackageSource::Both,
-                    (false, true) => PackageSource::Local,
-                    _ => PackageSource::Proxied,
-                };
-                let downloads: i64 = r.get("total_downloads");
-                ExploreEntry {
-                    registry: r.get("registry"),
-                    name: r.get("package_name"),
-                    version_count: r.get::<i64, _>("version_count") as u64,
-                    total_downloads: downloads as u64,
-                    last_accessed: r.get("last_accessed"),
-                    source,
-                    has_blocked: r.get("has_blocked"),
-                }
-            })
-            .collect();
-
-        Ok(entries)
+        Ok(rows.into_iter().map(map_explore_entry).collect())
     }
 
     async fn count_explore_packages(&self, filter: ExploreFilter) -> Result<u64, CoreError> {
-        let registries = if filter.registries.is_empty() {
-            None
-        } else {
-            Some(filter.registries.clone())
-        };
+        let registries = prepare_registries_param(&filter.registries);
 
         let row = sqlx::query(
             r#"

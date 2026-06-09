@@ -43,6 +43,7 @@ pub struct WarmingService {
 }
 
 /// Fetch and store one artifact version. Returns a single-field `WarmingReport`.
+#[allow(clippy::too_many_arguments)]
 async fn warm_one_version(
     client: Arc<dyn RegistryClient>,
     storage: Arc<dyn StorageBackend>,
@@ -57,11 +58,19 @@ async fn warm_one_version(
     let _permit = sem.acquire_owned().await;
 
     match storage.exists(&artifact_key).await {
-        Ok(true) => return WarmingReport { skipped: 1, ..Default::default() },
+        Ok(true) => {
+            return WarmingReport {
+                skipped: 1,
+                ..Default::default()
+            }
+        }
         Ok(false) => {}
         Err(e) => {
             tracing::warn!(error = %e, key = %artifact_key, "warming: exists check failed");
-            return WarmingReport { errors: 1, ..Default::default() };
+            return WarmingReport {
+                errors: 1,
+                ..Default::default()
+            };
         }
     }
 
@@ -73,7 +82,10 @@ async fn warm_one_version(
                 version = %version, error = %e,
                 "warming: fetch failed"
             );
-            return WarmingReport { errors: 1, ..Default::default() };
+            return WarmingReport {
+                errors: 1,
+                ..Default::default()
+            };
         }
     };
 
@@ -88,7 +100,10 @@ async fn warm_one_version(
                     version = %version, error = %e,
                     "warming: stream error"
                 );
-                return WarmingReport { errors: 1, ..Default::default() };
+                return WarmingReport {
+                    errors: 1,
+                    ..Default::default()
+                };
             }
         }
     }
@@ -96,11 +111,21 @@ async fn warm_one_version(
     let size = data.len() as u64;
 
     if let Err(e) = storage
-        .store(&artifact_key, data, StorageMeta { size: Some(size), ..Default::default() })
+        .store(
+            &artifact_key,
+            data,
+            StorageMeta {
+                size: Some(size),
+                ..Default::default()
+            },
+        )
         .await
     {
         tracing::warn!(error = %e, key = %artifact_key, "warming: store failed");
-        return WarmingReport { errors: 1, ..Default::default() };
+        return WarmingReport {
+            errors: 1,
+            ..Default::default()
+        };
     }
 
     if let Err(e) = artifact_meta
@@ -115,7 +140,10 @@ async fn warm_one_version(
         version = %version, bytes = size,
         "warming: artifact cached"
     );
-    WarmingReport { warmed: 1, ..Default::default() }
+    WarmingReport {
+        warmed: 1,
+        ..Default::default()
+    }
 }
 
 impl WarmingService {

@@ -156,6 +156,38 @@ fn parse_role(s: &str) -> Role {
     }
 }
 
+fn extract_ref_name(claims: &serde_json::Map<String, serde_json::Value>) -> String {
+    claims
+        .get("ref")
+        .and_then(|v| v.as_str())
+        .map(|r| {
+            r.strip_prefix("refs/heads/")
+                .or_else(|| r.strip_prefix("refs/tags/"))
+                .unwrap_or(r)
+                .replace('/', "-")
+        })
+        .unwrap_or_default()
+}
+
+fn substitute_placeholder(
+    key: &str,
+    provider_name: &str,
+    ref_name: &str,
+    claims: &serde_json::Map<String, serde_json::Value>,
+) -> String {
+    if key == "name" {
+        provider_name.replace('/', "-")
+    } else if key == "ref_name" {
+        ref_name.to_owned()
+    } else {
+        claims
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.replace('/', "-"))
+            .unwrap_or_else(|| format!("{{{key}}}"))
+    }
+}
+
 /// Render a group name template by substituting `{placeholders}` with claim values.
 ///
 /// Special variables:
@@ -170,17 +202,7 @@ fn render_group_template(
     provider_name: &str,
     claims: &serde_json::Map<String, serde_json::Value>,
 ) -> String {
-    let ref_name: String = claims
-        .get("ref")
-        .and_then(|v| v.as_str())
-        .map(|r| {
-            r.strip_prefix("refs/heads/")
-                .or_else(|| r.strip_prefix("refs/tags/"))
-                .unwrap_or(r)
-                .replace('/', "-")
-        })
-        .unwrap_or_default();
-
+    let ref_name = extract_ref_name(claims);
     let mut result = String::with_capacity(template.len() + 16);
     let mut chars = template.chars().peekable();
 
@@ -196,18 +218,12 @@ fn render_group_template(
                 key.push(c);
             }
             if closed {
-                let substituted = if key == "name" {
-                    provider_name.replace('/', "-")
-                } else if key == "ref_name" {
-                    ref_name.clone()
-                } else {
-                    claims
-                        .get(&key)
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.replace('/', "-"))
-                        .unwrap_or_else(|| format!("{{{key}}}"))
-                };
-                result.push_str(&substituted);
+                result.push_str(&substitute_placeholder(
+                    &key,
+                    provider_name,
+                    &ref_name,
+                    claims,
+                ));
             } else {
                 result.push('{');
                 result.push_str(&key);
@@ -310,6 +326,26 @@ async fn fetch_jwks(http: &reqwest::Client, uri: &str) -> Result<JwkSet, reqwest
     http.get(uri).send().await?.json().await
 }
 
+fn evaluate_auth_rules(
+    rules: &[CompiledRule],
+    claims: &serde_json::Map<String, serde_json::Value>,
+    provider_name: &str,
+) -> (Role, Vec<String>) {
+    let mut matched_role = Role::Anonymous;
+    let mut groups: Vec<String> = Vec::new();
+    for rule in rules {
+        if rule.evaluate(claims) {
+            if let Some(ref role) = rule.role {
+                if *role > matched_role {
+                    matched_role = role.clone();
+                }
+            }
+            groups.extend(rule.collect_groups(provider_name, claims));
+        }
+    }
+    (matched_role, groups)
+}
+
 #[async_trait]
 impl AuthProvider for ActionsOidcAuthProvider {
     fn name(&self) -> &str {
@@ -358,29 +394,16 @@ impl AuthProvider for ActionsOidcAuthProvider {
         };
 
         let claims = token_data.claims;
-
         let user_id = claims
             .get(&self.user_id_claim)
             .and_then(|v| v.as_str())
             .map(str::to_owned);
 
-        let mut matched_role = Role::Anonymous;
-        let mut groups: Vec<String> = Vec::new();
-
-        for rule in &self.rules {
-            if rule.evaluate(&claims) {
-                if let Some(ref role) = rule.role {
-                    if *role > matched_role {
-                        matched_role = role.clone();
-                    }
-                }
-                groups.extend(rule.collect_groups(&self.name, &claims));
-            }
-        }
+        let (role, groups) = evaluate_auth_rules(&self.rules, &claims, &self.name);
 
         Ok(Some(Identity {
             user_id,
-            role: matched_role,
+            role,
             auth_provider: Some(self.name.clone()),
             groups,
         }))

@@ -99,6 +99,11 @@ pub async fn run(client: BatleHubClient) -> Result<()> {
     result
 }
 
+fn is_quit_key(key: &event::KeyEvent) -> bool {
+    key.code == KeyCode::Char('q')
+        || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
+}
+
 async fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     app: &mut App,
@@ -108,11 +113,7 @@ async fn event_loop(
 
         if event::poll(std::time::Duration::from_millis(250))? {
             if let Event::Key(key) = event::read()? {
-                // Global quit
-                if key.code == KeyCode::Char('q')
-                    || (key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL))
-                {
+                if is_quit_key(&key) {
                     app.should_quit = true;
                 }
 

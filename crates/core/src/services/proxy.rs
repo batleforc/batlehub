@@ -76,8 +76,10 @@ impl ProxyService {
         let meta = match client.resolve_metadata(&req.package_id).await {
             Ok(m) => m,
             Err(e) => {
-                let serve_stale =
-                    policy.as_ref().map(|p| p.serve_stale_metadata).unwrap_or(false);
+                let serve_stale = policy
+                    .as_ref()
+                    .map(|p| p.serve_stale_metadata)
+                    .unwrap_or(false);
                 if serve_stale && matches!(e, CoreError::Registry(_)) {
                     if let Some(stale) = self.cache.get_stale(cache_key).await? {
                         tracing::warn!(key = %cache_key, error = %e, "upstream unavailable; serving stale metadata");
@@ -193,7 +195,6 @@ impl ProxyService {
             }
         });
     }
-
 
     pub async fn handle(&self, req: ProxyRequest) -> Result<ProxyResponse, CoreError> {
         let registry_name: &str = req.package_id.registry.as_str();

@@ -482,13 +482,14 @@ function eventBadgeVariant(et: EventType): "default" | "secondary" | "destructiv
         </div>
         <div class="space-y-1.5">
           <span
+            id="event-types-label"
             class="font-mono text-xs font-semibold uppercase tracking-wide text-muted-foreground leading-none"
             >Event types <span class="text-destructive">*</span></span
           >
           <div
             class="flex flex-wrap gap-2"
             role="group"
-            aria-label="Event types"
+            aria-labelledby="event-types-label"
           >
             <button
               v-for="et in ALL_EVENT_TYPES"

@@ -206,20 +206,56 @@ impl ConfigReloadService {
         // Swap the shared registry/mode/upstream maps in-place so all actix workers
         // immediately see the new registries without a process restart.
         {
-            let mut rm = self.registry_map.0.write().expect("registry map lock poisoned");
-            *rm = pending.new_registry_map.0.read().expect("registry map lock poisoned").clone();
+            let mut rm = self
+                .registry_map
+                .0
+                .write()
+                .expect("registry map lock poisoned");
+            *rm = pending
+                .new_registry_map
+                .0
+                .read()
+                .expect("registry map lock poisoned")
+                .clone();
         }
         {
-            let mut mm = self.registry_mode_map.0.write().expect("registry mode map lock poisoned");
-            *mm = pending.new_registry_mode_map.0.read().expect("registry mode map lock poisoned").clone();
+            let mut mm = self
+                .registry_mode_map
+                .0
+                .write()
+                .expect("registry mode map lock poisoned");
+            *mm = pending
+                .new_registry_mode_map
+                .0
+                .read()
+                .expect("registry mode map lock poisoned")
+                .clone();
         }
         {
-            let mut um = self.upstream_map.0.write().expect("upstream map lock poisoned");
-            *um = pending.new_upstream_map.0.read().expect("upstream map lock poisoned").clone();
+            let mut um = self
+                .upstream_map
+                .0
+                .write()
+                .expect("upstream map lock poisoned");
+            *um = pending
+                .new_upstream_map
+                .0
+                .read()
+                .expect("upstream map lock poisoned")
+                .clone();
         }
         {
-            let mut cm = self.cargo_index_map.0.write().expect("cargo index map lock poisoned");
-            *cm = pending.new_cargo_index_map.0.read().expect("cargo index map lock poisoned").clone();
+            let mut cm = self
+                .cargo_index_map
+                .0
+                .write()
+                .expect("cargo index map lock poisoned");
+            *cm = pending
+                .new_cargo_index_map
+                .0
+                .read()
+                .expect("cargo index map lock poisoned")
+                .clone();
         }
 
         // Clear the in-progress banner on success.
@@ -236,7 +272,11 @@ impl ConfigReloadService {
 
     /// Discards the pending reload without applying. Returns `true` if one existed.
     pub fn discard_pending(&self) -> bool {
-        self.pending.lock().expect("pending reload lock poisoned").take().is_some()
+        self.pending
+            .lock()
+            .expect("pending reload lock poisoned")
+            .take()
+            .is_some()
     }
 
     /// Returns a non-sensitive snapshot of the pending reload for the GET endpoint.

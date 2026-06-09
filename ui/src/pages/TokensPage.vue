@@ -316,10 +316,11 @@ const lifetimePresets = [7, 30, 90];
 
           <div class="space-y-2">
             <span
+              id="lifetime-label"
               class="font-mono text-xs font-semibold uppercase tracking-wide text-muted-foreground leading-none"
               >Lifetime</span
             >
-            <div class="flex gap-2" role="group" aria-label="Lifetime">
+            <div class="flex gap-2" role="group" aria-labelledby="lifetime-label">
               <Button
                 v-for="days in lifetimePresets"
                 :key="days"

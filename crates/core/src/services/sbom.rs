@@ -342,110 +342,123 @@ impl SbomService {
         to: Option<DateTime<Utc>>,
         format: &SbomFormat,
     ) -> Result<serde_json::Value, CoreError> {
-        let page_size: u64 = 100;
-        let mut offset: u64 = 0;
-
+        let sboms = collect_all_sbom_pages(&*self.repo, registry, from, to).await?;
         match format {
             SbomFormat::Spdx => {
-                let mut all_packages: Vec<serde_json::Value> = Vec::new();
-                let mut all_relationships: Vec<serde_json::Value> = Vec::new();
-                let mut seen: HashSet<String> = HashSet::new();
-
-                loop {
-                    let page = self
-                        .repo
-                        .list_sboms_for_export(registry, from, to, page_size, offset)
-                        .await?;
-                    let done = page.len() < page_size as usize;
-                    for sbom in page {
-                        if let Some(pkgs) = sbom.document.get("packages").and_then(|v| v.as_array())
-                        {
-                            for pkg in pkgs {
-                                let key = format!(
-                                    "{}@{}",
-                                    pkg.get("name").and_then(|v| v.as_str()).unwrap_or(""),
-                                    pkg.get("versionInfo")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or(""),
-                                );
-                                if seen.insert(key) {
-                                    all_packages.push(pkg.clone());
-                                }
-                            }
-                        }
-                        if let Some(rels) = sbom
-                            .document
-                            .get("relationships")
-                            .and_then(|v| v.as_array())
-                        {
-                            all_relationships.extend_from_slice(rels);
-                        }
-                    }
-                    offset += page_size;
-                    if done {
-                        break;
-                    }
-                }
-
-                Ok(serde_json::json!({
-                    "spdxVersion": "SPDX-2.3",
-                    "dataLicense": "CC0-1.0",
-                    "SPDXID": "SPDXRef-DOCUMENT",
-                    "name": format!("batlehub-org-export-{}", Utc::now().format("%Y%m%d")),
-                    "documentNamespace": format!(
-                        "https://batlehub/sbom/export/{}",
-                        Uuid::new_v4()
-                    ),
-                    "packages": all_packages,
-                    "relationships": all_relationships,
-                }))
+                let (packages, relationships) = collect_spdx_entries(&sboms);
+                Ok(build_spdx_document(packages, relationships))
             }
-
             SbomFormat::CycloneDx => {
-                let mut all_components: Vec<serde_json::Value> = Vec::new();
-                let mut seen: HashSet<String> = HashSet::new();
-
-                loop {
-                    let page = self
-                        .repo
-                        .list_sboms_for_export(registry, from, to, page_size, offset)
-                        .await?;
-                    let done = page.len() < page_size as usize;
-                    for sbom in page {
-                        if let Some(comps) =
-                            sbom.document.get("components").and_then(|v| v.as_array())
-                        {
-                            for comp in comps {
-                                let key = format!(
-                                    "{}@{}",
-                                    comp.get("name").and_then(|v| v.as_str()).unwrap_or(""),
-                                    comp.get("version").and_then(|v| v.as_str()).unwrap_or(""),
-                                );
-                                if seen.insert(key) {
-                                    all_components.push(comp.clone());
-                                }
-                            }
-                        }
-                    }
-                    offset += page_size;
-                    if done {
-                        break;
-                    }
-                }
-
-                Ok(serde_json::json!({
-                    "bomFormat": "CycloneDX",
-                    "specVersion": "1.4",
-                    "version": 1,
-                    "serialNumber": format!("urn:uuid:{}", Uuid::new_v4()),
-                    "metadata": {
-                        "timestamp": Utc::now().to_rfc3339(),
-                    },
-                    "components": all_components,
-                }))
+                let components = collect_cyclonedx_components(&sboms);
+                Ok(build_cyclonedx_document(components))
             }
         }
     }
+}
+
+// ── sbom export helpers ───────────────────────────────────────────────────────
+
+async fn collect_all_sbom_pages(
+    repo: &dyn SbomRepository,
+    registry: Option<&str>,
+    from: Option<DateTime<Utc>>,
+    to: Option<DateTime<Utc>>,
+) -> Result<Vec<ArtifactSbom>, CoreError> {
+    let page_size: u64 = 100;
+    let mut offset: u64 = 0;
+    let mut all = Vec::new();
+    loop {
+        let page = repo
+            .list_sboms_for_export(registry, from, to, page_size, offset)
+            .await?;
+        let done = page.len() < page_size as usize;
+        all.extend(page);
+        offset += page_size;
+        if done {
+            break;
+        }
+    }
+    Ok(all)
+}
+
+fn collect_spdx_entries(
+    sboms: &[ArtifactSbom],
+) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    let mut packages: Vec<serde_json::Value> = Vec::new();
+    let mut relationships: Vec<serde_json::Value> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for sbom in sboms {
+        if let Some(pkgs) = sbom.document.get("packages").and_then(|v| v.as_array()) {
+            for pkg in pkgs {
+                let key = format!(
+                    "{}@{}",
+                    pkg.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                    pkg.get("versionInfo")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(""),
+                );
+                if seen.insert(key) {
+                    packages.push(pkg.clone());
+                }
+            }
+        }
+        if let Some(rels) = sbom
+            .document
+            .get("relationships")
+            .and_then(|v| v.as_array())
+        {
+            relationships.extend_from_slice(rels);
+        }
+    }
+    (packages, relationships)
+}
+
+fn collect_cyclonedx_components(sboms: &[ArtifactSbom]) -> Vec<serde_json::Value> {
+    let mut components: Vec<serde_json::Value> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for sbom in sboms {
+        if let Some(comps) = sbom.document.get("components").and_then(|v| v.as_array()) {
+            for comp in comps {
+                let key = format!(
+                    "{}@{}",
+                    comp.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                    comp.get("version").and_then(|v| v.as_str()).unwrap_or(""),
+                );
+                if seen.insert(key) {
+                    components.push(comp.clone());
+                }
+            }
+        }
+    }
+    components
+}
+
+fn build_spdx_document(
+    packages: Vec<serde_json::Value>,
+    relationships: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "spdxVersion": "SPDX-2.3",
+        "dataLicense": "CC0-1.0",
+        "SPDXID": "SPDXRef-DOCUMENT",
+        "name": format!("batlehub-org-export-{}", Utc::now().format("%Y%m%d")),
+        "documentNamespace": format!("https://batlehub/sbom/export/{}", Uuid::new_v4()),
+        "packages": packages,
+        "relationships": relationships,
+    })
+}
+
+fn build_cyclonedx_document(components: Vec<serde_json::Value>) -> serde_json::Value {
+    serde_json::json!({
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.4",
+        "version": 1,
+        "serialNumber": format!("urn:uuid:{}", Uuid::new_v4()),
+        "metadata": {
+            "timestamp": Utc::now().to_rfc3339(),
+        },
+        "components": components,
+    })
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

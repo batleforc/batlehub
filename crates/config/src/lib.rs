@@ -24,6 +24,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<AppConfig> {
 /// - `$${VAR_NAME}` is an escape sequence that produces the literal string
 ///   `${VAR_NAME}` without any variable lookup.
 /// - Any other `$` character is left unchanged.
+///
 /// Read `${VAR_NAME}` from `chars` (the `$` and `{` have already been consumed),
 /// look up the variable in the environment, and return its value.
 fn expand_braced_var(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Result<String> {

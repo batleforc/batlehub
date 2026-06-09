@@ -147,111 +147,136 @@ pub async fn run(
             kubernetes_token_path,
             profile,
         } => {
-            let target_profile = profile.as_deref().or(global_profile);
-            let mut cfg = ConfigFile::load()?;
-            let entry = match target_profile {
-                Some(n) => cfg.profiles.entry(n.to_string()).or_default(),
-                None => &mut cfg.default,
-            };
-
-            if let Some(k8s_path) = kubernetes_token_path {
-                // Kubernetes service account token path
-                entry.kubernetes_token_path = Some(k8s_path.clone());
-                entry.token = None;
-                entry.oidc_refresh_token = None;
-                entry.oidc_expires_at = None;
-                cfg.save()?;
-                println!("Kubernetes token path saved: {k8s_path}");
-                println!("The token will be read fresh from this path on each request.");
-                return Ok(());
-            }
-
-            // OIDC browser flow
-            let providers = list_oidc_providers(client).await.unwrap_or_default();
-            if providers.is_empty() {
-                anyhow::bail!(
-                    "OIDC is not configured on this server. \
-                    Use `auth token create` for static tokens, or \
-                    `auth login --kubernetes-token-path <path>` for Kubernetes."
-                );
-            }
-
-            let csrf = uuid::Uuid::new_v4().to_string();
-            let login_url =
-                get_oidc_login_url(&client.base_url, &csrf, provider.as_deref()).await?;
-
-            println!("Open this URL in your browser:");
-            println!();
-            println!("  {login_url}");
-            println!();
-            println!("After login you will land on a URL containing oidc_access_token=…");
-            println!("Paste the full URL (or just the token value):");
-            print!("> ");
-            io::stdout().flush()?;
-
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-            let input = input.trim();
-            if input.is_empty() {
-                anyhow::bail!("No input provided — login cancelled.");
-            }
-
-            let (access_token, refresh_token, expires_at) = parse_oidc_paste(input);
-
-            let entry = match target_profile {
-                Some(n) => cfg.profiles.entry(n.to_string()).or_default(),
-                None => &mut cfg.default,
-            };
-            entry.token = Some(access_token.clone());
-            entry.oidc_refresh_token = refresh_token;
-            entry.oidc_expires_at = expires_at;
-            entry.kubernetes_token_path = None;
-            cfg.save()?;
-
-            println!(
-                "Logged in. Token saved to profile '{}'.",
-                target_profile.unwrap_or("default")
-            );
-            println!("  {}", mask_token(&access_token));
+            handle_auth_login(
+                client,
+                provider,
+                kubernetes_token_path,
+                profile,
+                global_profile,
+            )
+            .await?
         }
 
         AuthCommand::Refresh { provider, profile } => {
-            let target_profile = profile.as_deref().or(global_profile);
-            let mut cfg = ConfigFile::load()?;
-
-            let refresh_token = {
-                let entry = match target_profile {
-                    Some(n) => cfg.profiles.get(n),
-                    None => Some(&cfg.default),
-                };
-                entry
-                    .and_then(|p| p.oidc_refresh_token.clone())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "No OIDC refresh token stored for profile '{}'. \
-                            Run `auth login` first.",
-                            target_profile.unwrap_or("default")
-                        )
-                    })?
-            };
-
-            let (access_token, new_refresh, expires_in) =
-                oidc_refresh(&client.base_url, &refresh_token, provider.as_deref()).await?;
-
-            let entry = match target_profile {
-                Some(n) => cfg.profiles.entry(n.to_string()).or_default(),
-                None => &mut cfg.default,
-            };
-            entry.token = Some(access_token);
-            if let Some(rt) = new_refresh {
-                entry.oidc_refresh_token = Some(rt);
-            }
-            if let Some(exp) = expires_in {
-                entry.oidc_expires_at = Some(chrono::Utc::now().timestamp() + exp as i64);
-            }
-            cfg.save()?;
-            println!("Token refreshed successfully.");
+            handle_auth_refresh(client, provider, profile, global_profile).await?
         }
     }
+    Ok(())
+}
+
+async fn handle_auth_login(
+    client: &BatleHubClient,
+    provider: Option<String>,
+    kubernetes_token_path: Option<String>,
+    profile: Option<String>,
+    global_profile: Option<&str>,
+) -> Result<()> {
+    let target_profile = profile.as_deref().or(global_profile);
+    let mut cfg = ConfigFile::load()?;
+
+    if let Some(k8s_path) = kubernetes_token_path {
+        let entry = match target_profile {
+            Some(n) => cfg.profiles.entry(n.to_string()).or_default(),
+            None => &mut cfg.default,
+        };
+        entry.kubernetes_token_path = Some(k8s_path.clone());
+        entry.token = None;
+        entry.oidc_refresh_token = None;
+        entry.oidc_expires_at = None;
+        cfg.save()?;
+        println!("Kubernetes token path saved: {k8s_path}");
+        println!("The token will be read fresh from this path on each request.");
+        return Ok(());
+    }
+
+    let providers = list_oidc_providers(client).await.unwrap_or_default();
+    if providers.is_empty() {
+        anyhow::bail!(
+            "OIDC is not configured on this server. \
+            Use `auth token create` for static tokens, or \
+            `auth login --kubernetes-token-path <path>` for Kubernetes."
+        );
+    }
+
+    let csrf = uuid::Uuid::new_v4().to_string();
+    let login_url = get_oidc_login_url(&client.base_url, &csrf, provider.as_deref()).await?;
+
+    println!("Open this URL in your browser:");
+    println!();
+    println!("  {login_url}");
+    println!();
+    println!("After login you will land on a URL containing oidc_access_token=…");
+    println!("Paste the full URL (or just the token value):");
+    print!("> ");
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let input = input.trim();
+    if input.is_empty() {
+        anyhow::bail!("No input provided — login cancelled.");
+    }
+
+    let (access_token, refresh_token, expires_at) = parse_oidc_paste(input);
+
+    let entry = match target_profile {
+        Some(n) => cfg.profiles.entry(n.to_string()).or_default(),
+        None => &mut cfg.default,
+    };
+    entry.token = Some(access_token.clone());
+    entry.oidc_refresh_token = refresh_token;
+    entry.oidc_expires_at = expires_at;
+    entry.kubernetes_token_path = None;
+    cfg.save()?;
+
+    println!(
+        "Logged in. Token saved to profile '{}'.",
+        target_profile.unwrap_or("default")
+    );
+    println!("  {}", mask_token(&access_token));
+    Ok(())
+}
+
+async fn handle_auth_refresh(
+    client: &BatleHubClient,
+    provider: Option<String>,
+    profile: Option<String>,
+    global_profile: Option<&str>,
+) -> Result<()> {
+    let target_profile = profile.as_deref().or(global_profile);
+    let mut cfg = ConfigFile::load()?;
+
+    let refresh_token = {
+        let entry = match target_profile {
+            Some(n) => cfg.profiles.get(n),
+            None => Some(&cfg.default),
+        };
+        entry
+            .and_then(|p| p.oidc_refresh_token.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No OIDC refresh token stored for profile '{}'. \
+                    Run `auth login` first.",
+                    target_profile.unwrap_or("default")
+                )
+            })?
+    };
+
+    let (access_token, new_refresh, expires_in) =
+        oidc_refresh(&client.base_url, &refresh_token, provider.as_deref()).await?;
+
+    let entry = match target_profile {
+        Some(n) => cfg.profiles.entry(n.to_string()).or_default(),
+        None => &mut cfg.default,
+    };
+    entry.token = Some(access_token);
+    if let Some(rt) = new_refresh {
+        entry.oidc_refresh_token = Some(rt);
+    }
+    if let Some(exp) = expires_in {
+        entry.oidc_expires_at = Some(chrono::Utc::now().timestamp() + exp as i64);
+    }
+    cfg.save()?;
+    println!("Token refreshed successfully.");
     Ok(())
 }

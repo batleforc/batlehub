@@ -28,10 +28,11 @@ async function triggerDownload() {
     });
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
+      const detail = text ? ` — ${text}` : "";
       downloadError.value =
         resp.status === 404
           ? "The CLI binary has not been configured on this server. Ask your administrator to set `[server] cli_binary_path` in the server config."
-          : `Download failed: HTTP ${resp.status}${text ? " — " + text : ""}`;
+          : `Download failed: HTTP ${resp.status}${detail}`;
       return;
     }
     const blob = await resp.blob();
@@ -64,7 +65,7 @@ async function copy(key: string, text: string) {
 
 // ── Snippet templates ─────────────────────────────────────────────────────────
 
-const serverUrl = computed(() => window.location.origin);
+const serverUrl = computed(() => globalThis.location.origin);
 
 const RELEASES_URL = "https://github.com/batleforc/batlehub/releases/latest/download";
 
@@ -116,10 +117,10 @@ sudo mv batlehub-cli /usr/local/bin/batlehub-cli`,
   windows: {
     label: "Windows",
     lang: "powershell",
-    code: `# Windows x86_64 — run in PowerShell
+    code: String.raw`# Windows x86_64 — run in PowerShell
 Invoke-WebRequest "${RELEASES_URL}/batlehub-cli-windows-amd64.zip" -OutFile batlehub-cli.zip
 Expand-Archive batlehub-cli.zip -DestinationPath .
-Move-Item batlehub-cli.exe "$env:LOCALAPPDATA\\Microsoft\\WindowsApps\\batlehub-cli.exe"`,
+Move-Item batlehub-cli.exe "$env:LOCALAPPDATA\Microsoft\WindowsApps\batlehub-cli.exe"`,
   },
   cargo: {
     label: "Build from source",

@@ -57,7 +57,7 @@ function viewArtifact(v: PackageVersionDetail) {
 // ── Single-item actions ──────────────────────────────────────────────────────
 
 async function doBlock(v: PackageVersionDetail) {
-  const reason = window.prompt("Block reason:");
+  const reason = globalThis.prompt("Block reason:");
   if (!reason) return;
   await blockPackage({
     body: {
@@ -124,7 +124,7 @@ function toggle(v: PackageVersionDetail) {
 const selected = computed(() => props.versions.filter((v) => selectedIds.value.has(v.id)));
 
 async function bulkBlock() {
-  const reason = window.prompt(`Block reason for ${selectedIds.value.size} version(s):`);
+  const reason = globalThis.prompt(`Block reason for ${selectedIds.value.size} version(s):`);
   if (!reason) return;
   bulkLoading.value = true;
   bulkMsg.value = null;
@@ -141,8 +141,10 @@ async function bulkBlock() {
       },
     });
     const r = res.data;
-    if (r)
-      bulkMsg.value = `Blocked ${r.succeeded_count} version(s)${r.failed_count ? `, ${r.failed_count} failed` : ""}.`;
+    if (r) {
+      const failSuffix = r.failed_count ? `, ${r.failed_count} failed` : "";
+      bulkMsg.value = `Blocked ${r.succeeded_count} version(s)${failSuffix}.`;
+    }
   } finally {
     bulkLoading.value = false;
     selectedIds.value = new Set();
@@ -166,8 +168,10 @@ async function bulkUnblock() {
       },
     });
     const r = res.data;
-    if (r)
-      bulkMsg.value = `Unblocked ${r.succeeded_count} version(s)${r.failed_count ? `, ${r.failed_count} failed` : ""}.`;
+    if (r) {
+      const failSuffix = r.failed_count ? `, ${r.failed_count} failed` : "";
+      bulkMsg.value = `Unblocked ${r.succeeded_count} version(s)${failSuffix}.`;
+    }
   } finally {
     bulkLoading.value = false;
     selectedIds.value = new Set();

@@ -125,30 +125,12 @@ pub async fn tf_provider_download(
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
         let base_url = base_url_from_req(&req);
-        match local_svc
-            .get_tf_provider_download_response(
-                &registry,
-                &name,
-                &version,
-                TerraformPlatform {
-                    os: &os,
-                    arch: &arch,
-                },
-                &base_url,
-                &identity,
-            )
-            .await
+        if let Some(resp) = try_local_provider_download(
+            &local_svc, &registry, &name, &version, &os, &arch, &base_url, &identity, mode,
+        )
+        .await?
         {
-            Ok(json) => {
-                let mut resp = HttpResponse::Ok();
-                append_signature_headers(&mut resp, &local_svc, &registry, &name, &version).await;
-                return Ok(resp.json(json));
-            }
-            Err(batlehub_core::error::CoreError::NotFound(_)) if mode == RegistryMode::Hybrid => {}
-            Err(batlehub_core::error::CoreError::NotFound(msg)) => {
-                return Err(AppError::not_found(msg))
-            }
-            Err(e) => return Err(AppError::from(e)),
+            return Ok(resp);
         }
     }
 
@@ -161,6 +143,42 @@ pub async fn tf_provider_download(
         Some("application/json"),
     )
     .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn try_local_provider_download(
+    local_svc: &LocalRegistryService,
+    registry: &str,
+    name: &str,
+    version: &str,
+    os: &str,
+    arch: &str,
+    base_url: &str,
+    identity: &AuthIdentity,
+    mode: RegistryMode,
+) -> Result<Option<HttpResponse>, AppError> {
+    match local_svc
+        .get_tf_provider_download_response(
+            registry,
+            name,
+            version,
+            TerraformPlatform { os, arch },
+            base_url,
+            identity,
+        )
+        .await
+    {
+        Ok(json) => {
+            let mut resp = HttpResponse::Ok();
+            append_signature_headers(&mut resp, local_svc, registry, name, version).await;
+            Ok(Some(resp.json(json)))
+        }
+        Err(batlehub_core::error::CoreError::NotFound(_)) if mode == RegistryMode::Hybrid => {
+            Ok(None)
+        }
+        Err(batlehub_core::error::CoreError::NotFound(msg)) => Err(AppError::not_found(msg)),
+        Err(e) => Err(AppError::from(e)),
+    }
 }
 
 /// Upload a Terraform provider version manifest (JSON describing version + platforms).

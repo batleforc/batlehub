@@ -11,24 +11,22 @@ const _ready = ref(false);
 // core API. The full `shiki` bundle pulls in every language and theme as
 // separate chunks (~6 MB), even when only a handful are requested at runtime.
 function init(): Promise<HighlighterCore> {
-  if (!_promise) {
-    _promise = createHighlighterCore({
-      themes: [import("@shikijs/themes/github-light"), import("@shikijs/themes/github-dark")],
-      langs: [
-        import("@shikijs/langs/toml"),
-        import("@shikijs/langs/yaml"),
-        import("@shikijs/langs/bash"),
-        import("@shikijs/langs/ini"),
-        import("@shikijs/langs/json"),
-        import("@shikijs/langs/jsonc"),
-      ],
-      engine: createJavaScriptRegexEngine(),
-    }).then((h) => {
-      _highlighter = h;
-      _ready.value = true;
-      return h;
-    });
-  }
+  _promise ??= createHighlighterCore({
+    themes: [import("@shikijs/themes/github-light"), import("@shikijs/themes/github-dark")],
+    langs: [
+      import("@shikijs/langs/toml"),
+      import("@shikijs/langs/yaml"),
+      import("@shikijs/langs/bash"),
+      import("@shikijs/langs/ini"),
+      import("@shikijs/langs/json"),
+      import("@shikijs/langs/jsonc"),
+    ],
+    engine: createJavaScriptRegexEngine(),
+  }).then((h) => {
+    _highlighter = h;
+    _ready.value = true;
+    return h;
+  });
   return _promise;
 }
 

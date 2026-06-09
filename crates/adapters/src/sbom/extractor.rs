@@ -49,6 +49,20 @@ fn extract_cargo_deps(data: &Bytes) -> Vec<SbomDependency> {
     vec![]
 }
 
+fn parse_version_from_toml_rest(rest: &str) -> String {
+    if rest.starts_with('"') {
+        rest.trim_matches('"').to_owned()
+    } else if let Some(start) = rest.find("version = \"") {
+        let after = &rest[start + 11..];
+        after
+            .find('"')
+            .map(|end| after[..end].to_owned())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    }
+}
+
 fn parse_cargo_toml_deps(content: &str) -> Vec<SbomDependency> {
     let mut deps = Vec::new();
     let mut in_deps = false;
@@ -72,31 +86,17 @@ fn parse_cargo_toml_deps(content: &str) -> Vec<SbomDependency> {
             in_dev_deps = false;
             continue;
         }
-
         if !in_deps && !in_dev_deps {
             continue;
         }
 
-        // Simple `name = "version"` pattern
         if let Some((name, rest)) = trimmed.split_once('=') {
             let name = name.trim().trim_matches('"');
             let rest = rest.trim();
             if name.is_empty() || name.starts_with('#') {
                 continue;
             }
-            // version string: `"1.0"` or `{ version = "1.0", ... }`
-            let version = if rest.starts_with('"') {
-                rest.trim_matches('"').to_owned()
-            } else if let Some(start) = rest.find("version = \"") {
-                let after = &rest[start + 11..];
-                after
-                    .find('"')
-                    .map(|end| after[..end].to_owned())
-                    .unwrap_or_default()
-            } else {
-                String::new()
-            };
-
+            let version = parse_version_from_toml_rest(rest);
             if !name.is_empty() {
                 deps.push(SbomDependency {
                     name: name.to_owned(),
@@ -193,6 +193,35 @@ fn extract_maven_deps(data: &Bytes) -> Vec<SbomDependency> {
     vec![]
 }
 
+fn decode_xml_text(e: &quick_xml::events::BytesText) -> String {
+    match e.decode() {
+        Ok(raw) => quick_xml::escape::unescape(&raw)
+            .map(|s| s.into_owned())
+            .unwrap_or_else(|_| raw.into_owned()),
+        Err(_) => String::new(),
+    }
+}
+
+fn finalize_maven_dependency(group: &str, artifact: &str, version: &str) -> Option<SbomDependency> {
+    if artifact.is_empty() {
+        return None;
+    }
+    let name = if group.is_empty() {
+        artifact.to_owned()
+    } else {
+        format!("{group}:{artifact}")
+    };
+    Some(SbomDependency {
+        name,
+        version_req: if version.is_empty() {
+            None
+        } else {
+            Some(version.to_owned())
+        },
+        ecosystem: "maven".into(),
+    })
+}
+
 fn parse_maven_pom(content: &str) -> Vec<SbomDependency> {
     use quick_xml::{events::Event, Reader};
 
@@ -209,8 +238,8 @@ fn parse_maven_pom(content: &str) -> Vec<SbomDependency> {
     loop {
         match reader.read_event() {
             Ok(Event::Start(ref e)) => {
-                let local_bytes = e.local_name();
-                let local = std::str::from_utf8(local_bytes.as_ref()).unwrap_or("");
+                let ln = e.local_name();
+                let local = std::str::from_utf8(ln.as_ref()).unwrap_or("");
                 match local {
                     "dependency" => in_dependency += 1,
                     "groupId" if in_dependency > 0 => capture_field = Some("groupId"),
@@ -221,47 +250,33 @@ fn parse_maven_pom(content: &str) -> Vec<SbomDependency> {
             }
             Ok(Event::Text(ref e)) => {
                 if let Some(field) = capture_field.take() {
-                    if let Ok(raw) = e.decode() {
-                        let text = quick_xml::escape::unescape(&raw)
-                            .map(|s| s.into_owned())
-                            .unwrap_or_else(|_| raw.into_owned());
-                        match field {
-                            "groupId" => current_group = text,
-                            "artifactId" => current_artifact = text,
-                            "version" => current_version = text,
-                            _ => {}
-                        }
+                    let text = decode_xml_text(e);
+                    match field {
+                        "groupId" => current_group = text,
+                        "artifactId" => current_artifact = text,
+                        "version" => current_version = text,
+                        _ => {}
                     }
                 }
             }
             Ok(Event::End(ref e)) => {
-                let local_bytes = e.local_name();
-                let local = std::str::from_utf8(local_bytes.as_ref()).unwrap_or("");
+                let ln = e.local_name();
+                let local = std::str::from_utf8(ln.as_ref()).unwrap_or("");
                 if local == "dependency" && in_dependency > 0 {
                     in_dependency -= 1;
-                    if !current_artifact.is_empty() {
-                        let name = if current_group.is_empty() {
-                            current_artifact.clone()
-                        } else {
-                            format!("{}:{}", current_group, current_artifact)
-                        };
-                        deps.push(SbomDependency {
-                            name,
-                            version_req: if current_version.is_empty() {
-                                None
-                            } else {
-                                Some(current_version.clone())
-                            },
-                            ecosystem: "maven".into(),
-                        });
+                    if let Some(dep) = finalize_maven_dependency(
+                        &current_group,
+                        &current_artifact,
+                        &current_version,
+                    ) {
+                        deps.push(dep);
                     }
                     current_group.clear();
                     current_artifact.clear();
                     current_version.clear();
                 }
             }
-            Ok(Event::Eof) => break,
-            Err(_) => break,
+            Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }
     }
@@ -367,6 +382,39 @@ fn extract_nuget_deps(data: &Bytes) -> Vec<SbomDependency> {
     vec![]
 }
 
+fn parse_nuget_dep_from_empty<'a>(
+    e: &quick_xml::events::BytesStart<'a>,
+    decoder: quick_xml::Decoder,
+) -> Option<SbomDependency> {
+    let mut id = String::new();
+    let mut version = String::new();
+    for attr in e.attributes().flatten() {
+        let kn = attr.key.local_name();
+        let key = std::str::from_utf8(kn.as_ref()).unwrap_or("");
+        let val = attr
+            .decoded_and_normalized_value(quick_xml::XmlVersion::Implicit1_0, decoder)
+            .map(|v| v.into_owned())
+            .unwrap_or_default();
+        match key {
+            "id" => id = val,
+            "version" => version = val,
+            _ => {}
+        }
+    }
+    if id.is_empty() {
+        return None;
+    }
+    Some(SbomDependency {
+        name: id,
+        version_req: if version.is_empty() {
+            None
+        } else {
+            Some(version)
+        },
+        ecosystem: "nuget".into(),
+    })
+}
+
 fn parse_nuspec_deps(content: &str) -> Vec<SbomDependency> {
     use quick_xml::{events::Event, Reader};
 
@@ -381,37 +429,10 @@ fn parse_nuspec_deps(content: &str) -> Vec<SbomDependency> {
             Ok(Event::Empty(ref e)) => {
                 let ln = e.local_name();
                 let local = std::str::from_utf8(ln.as_ref()).unwrap_or("");
-                if local != "dependency" {
-                    continue;
-                }
-                let mut id = String::new();
-                let mut version = String::new();
-                for attr in e.attributes().flatten() {
-                    let kn = attr.key.local_name();
-                    let key = std::str::from_utf8(kn.as_ref()).unwrap_or("");
-                    let val = attr
-                        .decoded_and_normalized_value(
-                            quick_xml::XmlVersion::Implicit1_0,
-                            reader.decoder(),
-                        )
-                        .map(|v| v.into_owned())
-                        .unwrap_or_default();
-                    match key {
-                        "id" => id = val,
-                        "version" => version = val,
-                        _ => {}
+                if local == "dependency" {
+                    if let Some(dep) = parse_nuget_dep_from_empty(e, reader.decoder()) {
+                        deps.push(dep);
                     }
-                }
-                if !id.is_empty() {
-                    deps.push(SbomDependency {
-                        name: id,
-                        version_req: if version.is_empty() {
-                            None
-                        } else {
-                            Some(version)
-                        },
-                        ecosystem: "nuget".into(),
-                    });
                 }
             }
             Ok(Event::Eof) | Err(_) => break,

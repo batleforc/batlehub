@@ -175,8 +175,10 @@ async function bulkBlock() {
       },
     });
     const r = res.data;
-    if (r)
-      bulkResultMsg.value = `Blocked ${r.succeeded_count} package(s)${r.failed_count ? `, ${r.failed_count} failed` : ""}.`;
+    if (r) {
+      const failSuffix = r.failed_count ? `, ${r.failed_count} failed` : "";
+      bulkResultMsg.value = `Blocked ${r.succeeded_count} package(s)${failSuffix}.`;
+    }
   } finally {
     bulkLoading.value = false;
     selected.value = new Set();
@@ -200,8 +202,10 @@ async function bulkUnblock() {
       },
     });
     const r = res.data;
-    if (r)
-      bulkResultMsg.value = `Unblocked ${r.succeeded_count} package(s)${r.failed_count ? `, ${r.failed_count} failed` : ""}.`;
+    if (r) {
+      const failSuffix = r.failed_count ? `, ${r.failed_count} failed` : "";
+      bulkResultMsg.value = `Unblocked ${r.succeeded_count} package(s)${failSuffix}.`;
+    }
   } finally {
     bulkLoading.value = false;
     selected.value = new Set();

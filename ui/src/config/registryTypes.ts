@@ -72,34 +72,34 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
               ``,
               `# ── GitHub (registry: ${gh}) ─────────────────────────────────────────────────`,
               `# API (release listings, tag metadata, asset lists)`,
-              `"regex:^https://api\\.github\\.com/repos/(.+)" = "${base}/proxy/${gh}/$1"`,
+              String.raw`"regex:^https://api\.github\.com/repos/(.+)" = "${base}/proxy/${gh}/$1"`,
               ``,
               `# Release asset binaries (browser_download_url from API responses)`,
-              `"regex:^https://github\\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/(.+)" = "${base}/proxy/${gh}/$1/$2/releases/download/$3/$4"`,
+              String.raw`"regex:^https://github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/(.+)" = "${base}/proxy/${gh}/$1/$2/releases/download/$3/$4"`,
               ``,
               `# Source tarballs`,
-              `"regex:^https://github\\.com/([^/]+)/([^/]+)/archive/(?:refs/tags/)?(.+?)\\.tar\\.gz" = "${base}/proxy/${gh}/$1/$2/tarball/$3"`,
-              `"regex:^https://codeload\\.github\\.com/([^/]+)/([^/]+)/tar\\.gz/(?:refs/tags/)?(.+)" = "${base}/proxy/${gh}/$1/$2/tarball/$3"`,
+              String.raw`"regex:^https://github\.com/([^/]+)/([^/]+)/archive/(?:refs/tags/)?(.+?)\.tar\.gz" = "${base}/proxy/${gh}/$1/$2/tarball/$3"`,
+              String.raw`"regex:^https://codeload\.github\.com/([^/]+)/([^/]+)/tar\.gz/(?:refs/tags/)?(.+)" = "${base}/proxy/${gh}/$1/$2/tarball/$3"`,
               ``,
               `# Zip archives`,
-              `"regex:^https://github\\.com/([^/]+)/([^/]+)/archive/(?:refs/tags/)?(.+?)\\.zip" = "${base}/proxy/${gh}/$1/$2/zipball/$3"`,
+              String.raw`"regex:^https://github\.com/([^/]+)/([^/]+)/archive/(?:refs/tags/)?(.+?)\.zip" = "${base}/proxy/${gh}/$1/$2/zipball/$3"`,
               ``,
               `# Raw files (install scripts, manifests, …)`,
-              `"regex:^https://raw\\.githubusercontent\\.com/([^/]+)/([^/]+)/([^/]+)/(.+)" = "${base}/proxy/${gh}/$1/$2/raw/$3/$4"`,
+              String.raw`"regex:^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.+)" = "${base}/proxy/${gh}/$1/$2/raw/$3/$4"`,
             );
           }
           if (np) {
             lines.push(
               ``,
               `# ── npm (registry: ${np}) ───────────────────────────────────────────────────`,
-              `"regex:^https://registry\\.npmjs\\.org/(.+)" = "${base}/proxy/${np}/$1"`,
+              String.raw`"regex:^https://registry\.npmjs\.org/(.+)" = "${base}/proxy/${np}/$1"`,
             );
           }
           if (cg) {
             lines.push(
               ``,
               `# ── Cargo (registry: ${cg}) — downloads only, use .cargo/config.toml for full support`,
-              `"regex:^https://static\\.crates\\.io/crates/([^/]+)/([^/]+)/.+\\.crate" = "${base}/proxy/${cg}/$1/$2/download"`,
+              String.raw`"regex:^https://static\.crates\.io/crates/([^/]+)/([^/]+)/.+\.crate" = "${base}/proxy/${cg}/$1/$2/download"`,
             );
           }
           return lines.join("\n");
@@ -251,7 +251,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `# ── OpenVSX VSIX downloads ────────────────────────────────────────────────────`,
             `# Intercepts VSIX file downloads from open-vsx.org and routes them through the proxy.`,
             `# The extension ID is joined as publisher.name to match the proxy convention.`,
-            `"regex:^https://open-vsx\\.org/api/([^/]+)/([^/]+)/([^/]+)/file/.+\\.vsix$" = "${ctx.base}/proxy/${ctx.registryName}/$1.$2/$3/vsix"`,
+            String.raw`"regex:^https://open-vsx\.org/api/([^/]+)/([^/]+)/([^/]+)/file/.+\.vsix$" = "${ctx.base}/proxy/${ctx.registryName}/$1.$2/$3/vsix"`,
           );
           return lines.join("\n");
         },
@@ -541,8 +541,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `gem push name-version.gem --host ${base}/proxy/${reg}`,
           ];
           if (isAuthenticated) {
-            lines.push(``, `# Credentials: set GEM_HOST_API_KEY or pass --key`);
-            lines.push(`export GEM_HOST_API_KEY="${token}"`);
+            lines.push(``, `# Credentials: set GEM_HOST_API_KEY or pass --key`, `export GEM_HOST_API_KEY="${token}"`);
           }
           return lines.join("\n");
         },
@@ -683,7 +682,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           const { base, registryName: reg, isAuthenticated, token, netrcLogin, netrcHost } = ctx;
           const lines = [
             `# ~/.pip/pip.conf  (Linux/macOS)`,
-            `# %APPDATA%\\pip\\pip.ini  (Windows)`,
+            String.raw`# %APPDATA%\pip\pip.ini  (Windows)`,
             `[global]`,
             `index-url = ${base}/proxy/${reg}/simple/`,
           ];

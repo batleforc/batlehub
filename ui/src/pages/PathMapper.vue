@@ -256,15 +256,12 @@ const composerPaths = computed<ProxyPath[]>(() => {
   ];
 });
 
-const activePaths = computed(() =>
-  registry.value === "npm"
-    ? npmPaths.value
-    : registry.value === "cargo"
-      ? cargoPaths.value
-      : registry.value === "composer"
-        ? composerPaths.value
-        : githubPaths.value,
-);
+const activePaths = computed(() => {
+  if (registry.value === "npm") return npmPaths.value;
+  if (registry.value === "cargo") return cargoPaths.value;
+  if (registry.value === "composer") return composerPaths.value;
+  return githubPaths.value;
+});
 
 // ── Copy helper ────────────────────────────────────────────────────────────────
 

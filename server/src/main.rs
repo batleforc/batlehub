@@ -186,111 +186,11 @@ async fn main() -> Result<()> {
     repo.run_migrations().await.context("running migrations")?;
 
     // ── Storage ───────────────────────────────────────────────────────────────
-    let storage: Arc<dyn batlehub_core::ports::StorageBackend> = match &config.storage {
-        StoragesConfig::Single(backend_cfg) => {
-            // Wrap in StorageRouter so artifact_storage is always tracked in the DB,
-            // enabling the health endpoint to report accurate artifact counts and sizes.
-            let backend = build_single_backend(backend_cfg).await?;
-            let mut backends = HashMap::new();
-            backends.insert("default".to_string(), backend);
-            Arc::new(StorageRouter::new(
-                backends,
-                "default".to_string(),
-                HashMap::new(),
-                repo.pool(),
-            ))
-        }
-        StoragesConfig::Multi(multi) => {
-            let mut backends = HashMap::new();
-            for named in &multi.backends {
-                let backend = build_single_backend(&named.config).await?;
-                backends.insert(named.name.clone(), backend);
-            }
-            if !backends.contains_key(&multi.default) {
-                anyhow::bail!(
-                    "storage default '{}' does not match any backend name in [[storage.backends]]",
-                    multi.default
-                );
-            }
-            let registry_assignments: HashMap<String, String> = config
-                .registries
-                .iter()
-                .filter_map(|r| r.storage.as_ref().map(|s| (r.name.clone(), s.clone())))
-                .collect();
-            Arc::new(StorageRouter::new(
-                backends,
-                multi.default.clone(),
-                registry_assignments,
-                repo.pool(),
-            ))
-        }
-    };
+    let storage: Arc<dyn batlehub_core::ports::StorageBackend> =
+        initialize_storage(&config, repo.pool()).await?;
 
     // ── Auth providers ────────────────────────────────────────────────────────
-    let mut auth_providers: Vec<Arc<dyn AuthProvider>> = Vec::new();
-    let mut oidc_sso_flows: Vec<OidcSsoFlow> = Vec::new();
-
-    for auth_cfg in &config.auth {
-        match auth_cfg {
-            AuthConfig::Token(tok) => {
-                let entries = tok.tokens.iter().map(|t| {
-                    let role = parse_role(&t.role);
-                    (t.value.clone(), t.user_id.clone(), role)
-                });
-                auth_providers.push(Arc::new(StaticTokenAuthProvider::new(entries)));
-                info!("configured static token auth provider");
-            }
-            AuthConfig::Oidc(oidc_cfg) => {
-                match OidcAuthProvider::new(oidc_cfg).await {
-                    Ok(provider) => {
-                        if let Some(flow) = provider.sso_flow().cloned() {
-                            oidc_sso_flows.push(flow);
-                        }
-                        auth_providers.push(Arc::new(provider));
-                        tracing::info!(issuer = %oidc_cfg.issuer_url, "OIDC auth provider ready");
-                    }
-                    Err(e) => {
-                        // Non-fatal: server starts without this OIDC provider.
-                        // The /auth/oidc/login endpoint will return 503 for this
-                        // provider until the server is restarted with a reachable issuer.
-                        tracing::warn!(
-                            issuer = %oidc_cfg.issuer_url,
-                            error = %e,
-                            "OIDC provider unreachable at startup — continuing without it"
-                        );
-                    }
-                }
-            }
-            AuthConfig::Kubernetes(k8s_cfg) => {
-                let provider = KubernetesAuthProvider::new(k8s_cfg)
-                    .await
-                    .context("initialising Kubernetes auth provider")?;
-                auth_providers.push(Arc::new(provider));
-                info!(
-                    "configured Kubernetes auth provider for service account '{}'",
-                    k8s_cfg.audiences.join(", ")
-                );
-            }
-            AuthConfig::ActionsOidc(cfg) => match ActionsOidcAuthProvider::new(cfg).await {
-                Ok(provider) => {
-                    auth_providers.push(Arc::new(provider));
-                    tracing::info!(
-                        name = %cfg.name,
-                        issuer = %cfg.issuer_url,
-                        rules = cfg.rules.len(),
-                        "Actions OIDC auth provider ready"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        issuer = %cfg.issuer_url,
-                        error = %e,
-                        "Actions OIDC provider unreachable at startup — continuing without it"
-                    );
-                }
-            },
-        }
-    }
+    let (mut auth_providers, oidc_sso_flows) = initialize_auth_providers(&config).await?;
 
     // Add user-token provider (after OIDC so JWTs are validated first)
     let token_repo = repo.clone() as Arc<dyn UserTokenRepository>;
@@ -761,6 +661,117 @@ async fn main() -> Result<()> {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+async fn initialize_storage(
+    config: &batlehub_config::schema::AppConfig,
+    pool: sqlx::PgPool,
+) -> Result<Arc<dyn batlehub_core::ports::StorageBackend>> {
+    let storage: Arc<dyn batlehub_core::ports::StorageBackend> = match &config.storage {
+        StoragesConfig::Single(backend_cfg) => {
+            // Wrap in StorageRouter so artifact_storage is always tracked in the DB,
+            // enabling the health endpoint to report accurate artifact counts and sizes.
+            let backend = build_single_backend(backend_cfg).await?;
+            let mut backends = HashMap::new();
+            backends.insert("default".to_string(), backend);
+            Arc::new(StorageRouter::new(
+                backends,
+                "default".to_string(),
+                HashMap::new(),
+                pool,
+            ))
+        }
+        StoragesConfig::Multi(multi) => {
+            let mut backends = HashMap::new();
+            for named in &multi.backends {
+                let backend = build_single_backend(&named.config).await?;
+                backends.insert(named.name.clone(), backend);
+            }
+            if !backends.contains_key(&multi.default) {
+                anyhow::bail!(
+                    "storage default '{}' does not match any backend name in [[storage.backends]]",
+                    multi.default
+                );
+            }
+            let registry_assignments: HashMap<String, String> = config
+                .registries
+                .iter()
+                .filter_map(|r| r.storage.as_ref().map(|s| (r.name.clone(), s.clone())))
+                .collect();
+            Arc::new(StorageRouter::new(
+                backends,
+                multi.default.clone(),
+                registry_assignments,
+                pool,
+            ))
+        }
+    };
+    Ok(storage)
+}
+
+async fn initialize_auth_providers(
+    config: &batlehub_config::schema::AppConfig,
+) -> Result<(Vec<Arc<dyn AuthProvider>>, Vec<OidcSsoFlow>)> {
+    let mut auth_providers: Vec<Arc<dyn AuthProvider>> = Vec::new();
+    let mut oidc_sso_flows: Vec<OidcSsoFlow> = Vec::new();
+
+    for auth_cfg in &config.auth {
+        match auth_cfg {
+            AuthConfig::Token(tok) => {
+                let entries = tok.tokens.iter().map(|t| {
+                    let role = parse_role(&t.role);
+                    (t.value.clone(), t.user_id.clone(), role)
+                });
+                auth_providers.push(Arc::new(StaticTokenAuthProvider::new(entries)));
+                info!("configured static token auth provider");
+            }
+            AuthConfig::Oidc(oidc_cfg) => match OidcAuthProvider::new(oidc_cfg).await {
+                Ok(provider) => {
+                    if let Some(flow) = provider.sso_flow().cloned() {
+                        oidc_sso_flows.push(flow);
+                    }
+                    auth_providers.push(Arc::new(provider));
+                    tracing::info!(issuer = %oidc_cfg.issuer_url, "OIDC auth provider ready");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        issuer = %oidc_cfg.issuer_url,
+                        error = %e,
+                        "OIDC provider unreachable at startup — continuing without it"
+                    );
+                }
+            },
+            AuthConfig::Kubernetes(k8s_cfg) => {
+                let provider = KubernetesAuthProvider::new(k8s_cfg)
+                    .await
+                    .context("initialising Kubernetes auth provider")?;
+                auth_providers.push(Arc::new(provider));
+                info!(
+                    "configured Kubernetes auth provider for service account '{}'",
+                    k8s_cfg.audiences.join(", ")
+                );
+            }
+            AuthConfig::ActionsOidc(cfg) => match ActionsOidcAuthProvider::new(cfg).await {
+                Ok(provider) => {
+                    auth_providers.push(Arc::new(provider));
+                    tracing::info!(
+                        name = %cfg.name,
+                        issuer = %cfg.issuer_url,
+                        rules = cfg.rules.len(),
+                        "Actions OIDC auth provider ready"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        issuer = %cfg.issuer_url,
+                        error = %e,
+                        "Actions OIDC provider unreachable at startup — continuing without it"
+                    );
+                }
+            },
+        }
+    }
+    Ok((auth_providers, oidc_sso_flows))
+}
 
 async fn build_single_backend(
     cfg: &StorageBackendConfig,

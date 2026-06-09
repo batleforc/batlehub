@@ -49,57 +49,104 @@ struct NuspecMetadata {
     tags: Option<String>,
 }
 
+struct NuspecState {
+    id: Option<String>,
+    version: Option<String>,
+    description: Option<String>,
+    authors: Option<String>,
+    tags: Option<String>,
+    depth: u32,
+    current_tag: String,
+    in_metadata: bool,
+}
+
+impl NuspecState {
+    fn new() -> Self {
+        Self {
+            id: None,
+            version: None,
+            description: None,
+            authors: None,
+            tags: None,
+            depth: 0,
+            current_tag: String::new(),
+            in_metadata: false,
+        }
+    }
+
+    fn on_start(&mut self, local: String) {
+        self.depth += 1;
+        if local == "metadata" {
+            self.in_metadata = true;
+        }
+        if self.in_metadata && self.depth == 3 {
+            self.current_tag = local;
+        }
+    }
+
+    fn assign_field(&mut self, text: String) {
+        match self.current_tag.as_str() {
+            "id" => self.id = Some(text),
+            "version" => self.version = Some(text),
+            "description" => self.description = Some(text),
+            "authors" => self.authors = Some(text),
+            "tags" => self.tags = Some(text),
+            _ => {}
+        }
+    }
+
+    fn on_end(&mut self) {
+        if self.depth == 3 {
+            self.current_tag.clear();
+        }
+        self.depth = self.depth.saturating_sub(1);
+        if self.depth < 2 {
+            self.in_metadata = false;
+        }
+    }
+
+    fn into_metadata(self) -> Result<NuspecMetadata, AppError> {
+        let id = self
+            .id
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AppError::unprocessable("nuspec missing <id>"))?;
+        Ok(NuspecMetadata {
+            id,
+            version: self.version.unwrap_or_default(),
+            description: self.description,
+            authors: self.authors,
+            tags: self.tags,
+        })
+    }
+}
+
+fn decode_nuspec_text(e: &quick_xml::events::BytesText) -> Result<String, AppError> {
+    let raw = e
+        .decode()
+        .map_err(|e| AppError::unprocessable(format!("nuspec parse: {e}")))?;
+    Ok(quick_xml::escape::unescape(&raw)
+        .map_err(|e| AppError::unprocessable(format!("nuspec parse: {e}")))?
+        .into_owned())
+}
+
 fn parse_nuspec(bytes: &[u8]) -> Result<NuspecMetadata, AppError> {
     let mut reader = XmlReader::from_reader(bytes);
     reader.config_mut().trim_text(true);
 
-    let mut id = None::<String>;
-    let mut version = None::<String>;
-    let mut description = None::<String>;
-    let mut authors = None::<String>;
-    let mut tags = None::<String>;
-    let mut depth: u32 = 0;
-    let mut current_tag = String::new();
-    let mut in_metadata = false;
+    let mut state = NuspecState::new();
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(XmlEvent::Start(e)) => {
-                depth += 1;
                 let local = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
-                if local == "metadata" {
-                    in_metadata = true;
-                }
-                if in_metadata && depth == 3 {
-                    current_tag = local;
-                }
+                state.on_start(local);
             }
-            Ok(XmlEvent::Text(e)) if in_metadata && depth == 3 => {
-                let raw = e
-                    .decode()
-                    .map_err(|e| AppError::unprocessable(format!("nuspec parse: {e}")))?;
-                let text = quick_xml::escape::unescape(&raw)
-                    .map_err(|e| AppError::unprocessable(format!("nuspec parse: {e}")))?
-                    .into_owned();
-                match current_tag.as_str() {
-                    "id" => id = Some(text),
-                    "version" => version = Some(text),
-                    "description" => description = Some(text),
-                    "authors" => authors = Some(text),
-                    "tags" => tags = Some(text),
-                    _ => {}
-                }
+            Ok(XmlEvent::Text(e)) if state.in_metadata && state.depth == 3 => {
+                let text = decode_nuspec_text(&e)?;
+                state.assign_field(text);
             }
-            Ok(XmlEvent::End(_)) => {
-                if depth == 3 {
-                    current_tag.clear();
-                }
-                depth = depth.saturating_sub(1);
-                if depth < 2 {
-                    in_metadata = false;
-                }
-            }
+            Ok(XmlEvent::End(_)) => state.on_end(),
             Ok(XmlEvent::Eof) => break,
             Err(e) => return Err(AppError::unprocessable(format!("nuspec parse error: {e}"))),
             _ => {}
@@ -107,18 +154,7 @@ fn parse_nuspec(bytes: &[u8]) -> Result<NuspecMetadata, AppError> {
         buf.clear();
     }
 
-    let id = id
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| AppError::unprocessable("nuspec missing <id>"))?;
-    let version = version.unwrap_or_default();
-
-    Ok(NuspecMetadata {
-        id,
-        version,
-        description,
-        authors,
-        tags,
-    })
+    state.into_metadata()
 }
 
 /// Extract the `.nuspec` from a `.nupkg` ZIP archive.

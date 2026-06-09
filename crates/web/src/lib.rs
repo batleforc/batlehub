@@ -325,7 +325,11 @@ impl RegistryMap {
     }
 
     pub fn type_of(&self, name: &str) -> Option<String> {
-        self.0.read().expect("registry map lock poisoned").get(name).cloned()
+        self.0
+            .read()
+            .expect("registry map lock poisoned")
+            .get(name)
+            .cloned()
     }
 
     pub fn is_type(&self, name: &str, expected: &str) -> bool {
@@ -333,11 +337,19 @@ impl RegistryMap {
     }
 
     pub fn contains(&self, name: &str) -> bool {
-        self.0.read().expect("registry map lock poisoned").contains_key(name)
+        self.0
+            .read()
+            .expect("registry map lock poisoned")
+            .contains_key(name)
     }
 
     pub fn keys(&self) -> Vec<String> {
-        self.0.read().expect("registry map lock poisoned").keys().cloned().collect()
+        self.0
+            .read()
+            .expect("registry map lock poisoned")
+            .keys()
+            .cloned()
+            .collect()
     }
 
     /// Registry names with the given type.
@@ -379,7 +391,10 @@ impl RegistryModeMap {
     }
 
     pub fn insert(&self, name: String, mode: RegistryMode) {
-        self.0.write().expect("registry mode map lock poisoned").insert(name, mode);
+        self.0
+            .write()
+            .expect("registry mode map lock poisoned")
+            .insert(name, mode);
     }
 }
 
@@ -407,7 +422,11 @@ impl UpstreamMap {
     }
 
     pub fn upstream_for(&self, name: &str) -> Option<String> {
-        self.0.read().expect("upstream map lock poisoned").get(name).cloned()
+        self.0
+            .read()
+            .expect("upstream map lock poisoned")
+            .get(name)
+            .cloned()
     }
 }
 
@@ -437,7 +456,11 @@ impl CargoIndexMap {
 
     /// Clone the proxy for the given registry name, if configured.
     pub fn get(&self, name: &str) -> Option<CargoIndexProxy> {
-        self.0.read().expect("cargo index map lock poisoned").get(name).cloned()
+        self.0
+            .read()
+            .expect("cargo index map lock poisoned")
+            .get(name)
+            .cloned()
     }
 }
 

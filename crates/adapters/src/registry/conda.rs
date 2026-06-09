@@ -55,7 +55,12 @@ impl CondaRegistryClient {
 
     /// Fetch one platform's `repodata.json` and return all versions of `package` found in it.
     /// Returns an empty `Vec` on any network/parse error (fail-open for version listing).
-    async fn fetch_platform_versions(&self, base: &str, platform: &str, package: &str) -> Vec<String> {
+    async fn fetch_platform_versions(
+        &self,
+        base: &str,
+        platform: &str,
+        package: &str,
+    ) -> Vec<String> {
         let url = format!("{base}/{platform}/repodata.json");
         let resp = match self.get(&url).send().await {
             Ok(r) if r.status().is_success() => r,
@@ -87,9 +92,11 @@ impl CondaRegistryClient {
         pkg: &PackageId,
     ) -> Result<PackageMetadata, CoreError> {
         let repodata_url = format!("{base}/{platform}/repodata.json");
-        let resp = self.get(&repodata_url).send().await.map_err(|e| {
-            CoreError::Registry(format!("conda: repodata request failed: {e}"))
-        })?;
+        let resp = self
+            .get(&repodata_url)
+            .send()
+            .await
+            .map_err(|e| CoreError::Registry(format!("conda: repodata request failed: {e}")))?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(CoreError::NotFound(format!(
                 "conda repodata not found for platform '{platform}'"

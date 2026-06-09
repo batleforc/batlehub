@@ -122,7 +122,6 @@ impl AppConfig {
     pub fn apply_env_overrides(&mut self) {
         let env = |key: &str| std::env::var(key).ok();
 
-        // server
         if let Some(v) = env("PROXY_CACHE__SERVER__HOST") {
             self.server.host = v;
         }
@@ -134,8 +133,6 @@ impl AppConfig {
         if let Some(v) = env("PROXY_CACHE__SERVER__STATIC_DIR") {
             self.server.static_dir = Some(v);
         }
-
-        // database
         if let Some(v) = env("PROXY_CACHE__DATABASE__URL") {
             self.database.url = v;
         }
@@ -145,72 +142,82 @@ impl AppConfig {
             }
         }
 
-        // storage env overrides (only supported for legacy single-backend config)
-        if let StoragesConfig::Single(ref mut backend) = self.storage {
-            if let Some(v) = env("PROXY_CACHE__STORAGE__PATH") {
-                if let StorageBackendConfig::Filesystem(fs) = backend {
-                    fs.path = v;
-                }
-            }
-            if let Some(v) = env("PROXY_CACHE__STORAGE__BUCKET") {
-                if let StorageBackendConfig::S3(s3) = backend {
-                    s3.bucket = v;
-                }
-            }
-            if let Some(v) = env("PROXY_CACHE__STORAGE__REGION") {
-                if let StorageBackendConfig::S3(s3) = backend {
-                    s3.region = v;
-                }
-            }
-            if let Some(v) = env("PROXY_CACHE__STORAGE__ENDPOINT_URL") {
-                if let StorageBackendConfig::S3(s3) = backend {
-                    s3.endpoint_url = Some(v);
-                }
-            }
-        }
+        apply_storage_env_overrides(&mut self.storage, &env);
+        apply_otel_env_overrides(&mut self.otel, &env);
+        apply_proxy_env_overrides(&mut self.proxy, &env);
+    }
+}
 
-        // otel — creates the section if not present in the file
-        if let Some(v) = env("PROXY_CACHE__OTEL__ENDPOINT") {
-            match &mut self.otel {
-                Some(otel) => otel.endpoint = v,
-                None => {
-                    self.otel = Some(OtelConfig {
-                        endpoint: v,
-                        service_name: default_service_name(),
-                    })
-                }
+fn apply_storage_env_overrides(storage: &mut StoragesConfig, env: &dyn Fn(&str) -> Option<String>) {
+    if let StoragesConfig::Single(ref mut backend) = storage {
+        if let Some(v) = env("PROXY_CACHE__STORAGE__PATH") {
+            if let StorageBackendConfig::Filesystem(fs) = backend {
+                fs.path = v;
             }
         }
-        if let Some(v) = env("PROXY_CACHE__OTEL__SERVICE_NAME") {
-            if let Some(otel) = &mut self.otel {
-                otel.service_name = v;
+        if let Some(v) = env("PROXY_CACHE__STORAGE__BUCKET") {
+            if let StorageBackendConfig::S3(s3) = backend {
+                s3.bucket = v;
             }
         }
+        if let Some(v) = env("PROXY_CACHE__STORAGE__REGION") {
+            if let StorageBackendConfig::S3(s3) = backend {
+                s3.region = v;
+            }
+        }
+        if let Some(v) = env("PROXY_CACHE__STORAGE__ENDPOINT_URL") {
+            if let StorageBackendConfig::S3(s3) = backend {
+                s3.endpoint_url = Some(v);
+            }
+        }
+    }
+}
 
-        // global proxy — creates the section if not present in the file
-        if let Some(v) = env("PROXY_CACHE__PROXY__URL") {
-            match &mut self.proxy {
-                Some(proxy) => proxy.url = v,
-                None => {
-                    self.proxy = Some(UpstreamProxyConfig {
-                        url: v,
-                        username: env("PROXY_CACHE__PROXY__USERNAME"),
-                        password: env("PROXY_CACHE__PROXY__PASSWORD"),
-                        no_proxy: env("PROXY_CACHE__PROXY__NO_PROXY"),
-                    })
-                }
+fn apply_otel_env_overrides(otel: &mut Option<OtelConfig>, env: &dyn Fn(&str) -> Option<String>) {
+    if let Some(v) = env("PROXY_CACHE__OTEL__ENDPOINT") {
+        match otel {
+            Some(o) => o.endpoint = v,
+            None => {
+                *otel = Some(OtelConfig {
+                    endpoint: v,
+                    service_name: default_service_name(),
+                })
             }
         }
-        if let Some(proxy) = &mut self.proxy {
-            if let Some(v) = env("PROXY_CACHE__PROXY__USERNAME") {
-                proxy.username = Some(v);
+    }
+    if let Some(v) = env("PROXY_CACHE__OTEL__SERVICE_NAME") {
+        if let Some(o) = otel {
+            o.service_name = v;
+        }
+    }
+}
+
+fn apply_proxy_env_overrides(
+    proxy: &mut Option<UpstreamProxyConfig>,
+    env: &dyn Fn(&str) -> Option<String>,
+) {
+    if let Some(v) = env("PROXY_CACHE__PROXY__URL") {
+        match proxy {
+            Some(p) => p.url = v,
+            None => {
+                *proxy = Some(UpstreamProxyConfig {
+                    url: v,
+                    username: env("PROXY_CACHE__PROXY__USERNAME"),
+                    password: env("PROXY_CACHE__PROXY__PASSWORD"),
+                    no_proxy: env("PROXY_CACHE__PROXY__NO_PROXY"),
+                })
             }
-            if let Some(v) = env("PROXY_CACHE__PROXY__PASSWORD") {
-                proxy.password = Some(v);
-            }
-            if let Some(v) = env("PROXY_CACHE__PROXY__NO_PROXY") {
-                proxy.no_proxy = Some(v);
-            }
+        }
+    }
+    if let Some(p) = proxy {
+        if let Some(v) = env("PROXY_CACHE__PROXY__USERNAME") {
+            p.username = Some(v);
+        }
+        if let Some(v) = env("PROXY_CACHE__PROXY__PASSWORD") {
+            p.password = Some(v);
+        }
+        if let Some(v) = env("PROXY_CACHE__PROXY__NO_PROXY") {
+            p.no_proxy = Some(v);
         }
     }
 }

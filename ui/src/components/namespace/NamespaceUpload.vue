@@ -26,8 +26,8 @@ const registryType = computed(
   () => props.registries.find((r) => r.name === selectedRegistry.value)?.type ?? "",
 );
 
-const BINARY_TYPES = ["rubygems", "composer", "openvsx", "vscode-marketplace", "goproxy"];
-const isBinaryUpload = computed(() => BINARY_TYPES.includes(registryType.value));
+const BINARY_TYPES = new Set(["rubygems", "composer", "openvsx", "vscode-marketplace", "goproxy"]);
+const isBinaryUpload = computed(() => BINARY_TYPES.has(registryType.value));
 
 const uploadFile = ref<File | null>(null);
 const uploadExtId = ref("");
@@ -97,10 +97,10 @@ async function doUpload() {
 
 const cliRegistryName = computed(() => selectedRegistry.value || "<registry>");
 const cliSnippets: Record<string, string> = {
-  npm: `npm set registry ${window.location.origin}/proxy/${cliRegistryName.value}\nnpm publish`,
-  cargo: `# .cargo/config.toml:\n[registries.${cliRegistryName.value}]\nindex = "sparse+${window.location.origin}/proxy/${cliRegistryName.value}/registry/"\n\ncargo publish --registry ${cliRegistryName.value}`,
-  maven: `<!-- settings.xml -->\n<server>\n  <id>${cliRegistryName.value}</id>\n  <username>your-user</username>\n  <password>your-token</password>\n</server>\n\n<!-- pom.xml -->\n<distributionManagement>\n  <repository>\n    <id>${cliRegistryName.value}</id>\n    <url>${window.location.origin}/proxy/${cliRegistryName.value}/maven2</url>\n  </repository>\n</distributionManagement>\n\nmvn deploy`,
-  terraform: `terraform {\n  required_providers {\n    <provider> = {\n      source = "${window.location.hostname}/${cliRegistryName.value}/<namespace>/<provider>"\n    }\n  }\n}`,
+  npm: `npm set registry ${globalThis.location.origin}/proxy/${cliRegistryName.value}\nnpm publish`,
+  cargo: `# .cargo/config.toml:\n[registries.${cliRegistryName.value}]\nindex = "sparse+${globalThis.location.origin}/proxy/${cliRegistryName.value}/registry/"\n\ncargo publish --registry ${cliRegistryName.value}`,
+  maven: `<!-- settings.xml -->\n<server>\n  <id>${cliRegistryName.value}</id>\n  <username>your-user</username>\n  <password>your-token</password>\n</server>\n\n<!-- pom.xml -->\n<distributionManagement>\n  <repository>\n    <id>${cliRegistryName.value}</id>\n    <url>${globalThis.location.origin}/proxy/${cliRegistryName.value}/maven2</url>\n  </repository>\n</distributionManagement>\n\nmvn deploy`,
+  terraform: `terraform {\n  required_providers {\n    <provider> = {\n      source = "${globalThis.location.hostname}/${cliRegistryName.value}/<namespace>/<provider>"\n    }\n  }\n}`,
 };
 const currentSnippet = computed(
   () =>
