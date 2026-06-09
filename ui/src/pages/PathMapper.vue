@@ -79,73 +79,95 @@ function isHostOf(hostname: string, domain: string): boolean {
   return hostname === domain || hostname.endsWith(`.${domain}`);
 }
 
-function parseUrl(raw: string) {
+function parseNpmUrl(parts: string[]): void {
+  if (parts[0]) npmPackage.value = decodeURIComponent(parts[0]);
+  if (parts[1] && parts[1] !== "-") {
+    npmVersion.value = parts[1];
+  } else if (parts[1] === "-" && parts[2]) {
+    const m = parts[2].match(/-(\d[\w.\-+]*)\.tgz$/);
+    if (m) npmVersion.value = m[1];
+  }
+}
+
+function parseCargoUrl(parts: string[]): void {
+  const idx = parts.indexOf("crates");
+  if (idx >= 0) {
+    cargoName.value = parts[idx + 1] ?? "";
+    const maybeVer = parts[idx + 2];
+    cargoVersion.value = maybeVer && maybeVer !== "download" ? maybeVer : "";
+  }
+}
+
+function parseGithubComUrl(parts: string[]): void {
+  ghOwner.value = parts[0] ?? "";
+  ghRepo.value = parts[1] ?? "";
+  if (parts[2] === "releases") {
+    if (parts[3] === "tag" && parts[4]) ghRef.value = parts[4];
+    if (parts[3] === "download" && parts[4]) {
+      ghRef.value = parts[4];
+      ghFilename.value = parts[5] ?? "";
+    }
+  } else if (parts[2] === "archive") {
+    const last = parts[parts.length - 1];
+    ghRef.value = last.replace(/\.(tar\.gz|zip)$/, "").replace(/^refs\/tags\//, "");
+  } else if (parts[2] === "blob" && parts[3]) {
+    // github.com/{owner}/{repo}/blob/{ref}/{path} — file browser URL
+    ghRef.value = parts[3];
+    ghFilePath.value = parts.slice(4).join("/");
+  }
+}
+
+function parseRawGithubUrl(parts: string[]): void {
+  ghOwner.value = parts[0] ?? "";
+  ghRepo.value = parts[1] ?? "";
+  ghRef.value = parts[2] ?? "";
+  ghFilePath.value = parts.slice(3).join("/");
+}
+
+function parseApiGithubUrl(parts: string[]): void {
+  if (parts[0] !== "repos") return;
+  ghOwner.value = parts[1] ?? "";
+  ghRepo.value = parts[2] ?? "";
+  if (parts[3] === "releases" && parts[4] === "tags") ghRef.value = parts[5] ?? "";
+  if (parts[3] === "releases" && parts[4] === "assets") ghAssetId.value = parts[5] ?? "";
+}
+
+function parsePackagistUrl(parts: string[]): void {
+  if (parts[0] === "p2" && parts[1] && parts[2]) {
+    // repo.packagist.org/p2/vendor/package.json
+    composerVendor.value = parts[1];
+    composerPackage.value = parts[2].replace(/\.json$/, "").replace(/~dev$/, "");
+  } else if (parts[0] === "packages" && parts[1] && parts[2]) {
+    // packagist.org/packages/vendor/package
+    composerVendor.value = parts[1];
+    composerPackage.value = parts[2];
+  }
+}
+
+function parseUrl(raw: string): void {
   const str = raw.trim();
   if (!str) return;
   try {
     const u = new URL(str);
     const parts = u.pathname.split("/").filter(Boolean);
-
     if (isHostOf(u.hostname, "npmjs.org") || isHostOf(u.hostname, "npmjs.com")) {
       registry.value = "npm";
-      if (parts[0]) npmPackage.value = decodeURIComponent(parts[0]);
-      if (parts[1] && parts[1] !== "-") {
-        npmVersion.value = parts[1];
-      } else if (parts[1] === "-" && parts[2]) {
-        const m = parts[2].match(/-(\d[\w.\-+]*)\.tgz$/);
-        if (m) npmVersion.value = m[1];
-      }
+      parseNpmUrl(parts);
     } else if (isHostOf(u.hostname, "crates.io")) {
       registry.value = "cargo";
-      const idx = parts.indexOf("crates");
-      if (idx >= 0) {
-        cargoName.value = parts[idx + 1] ?? "";
-        const maybeVer = parts[idx + 2];
-        cargoVersion.value = maybeVer && maybeVer !== "download" ? maybeVer : "";
-      }
+      parseCargoUrl(parts);
     } else if (u.hostname === "github.com") {
       registry.value = "github";
-      ghOwner.value = parts[0] ?? "";
-      ghRepo.value = parts[1] ?? "";
-      if (parts[2] === "releases") {
-        if (parts[3] === "tag" && parts[4]) ghRef.value = parts[4];
-        if (parts[3] === "download" && parts[4]) {
-          ghRef.value = parts[4];
-          ghFilename.value = parts[5] ?? "";
-        }
-      } else if (parts[2] === "archive") {
-        const last = parts[parts.length - 1];
-        ghRef.value = last.replace(/\.(tar\.gz|zip)$/, "").replace(/^refs\/tags\//, "");
-      } else if (parts[2] === "blob" && parts[3]) {
-        // github.com/{owner}/{repo}/blob/{ref}/{path} — file browser URL
-        ghRef.value = parts[3];
-        ghFilePath.value = parts.slice(4).join("/");
-      }
+      parseGithubComUrl(parts);
     } else if (u.hostname === "raw.githubusercontent.com") {
       registry.value = "github";
-      ghOwner.value = parts[0] ?? "";
-      ghRepo.value = parts[1] ?? "";
-      ghRef.value = parts[2] ?? "";
-      ghFilePath.value = parts.slice(3).join("/");
+      parseRawGithubUrl(parts);
     } else if (u.hostname === "api.github.com") {
       registry.value = "github";
-      if (parts[0] === "repos") {
-        ghOwner.value = parts[1] ?? "";
-        ghRepo.value = parts[2] ?? "";
-        if (parts[3] === "releases" && parts[4] === "tags") ghRef.value = parts[5] ?? "";
-        if (parts[3] === "releases" && parts[4] === "assets") ghAssetId.value = parts[5] ?? "";
-      }
+      parseApiGithubUrl(parts);
     } else if (u.hostname === "repo.packagist.org" || u.hostname === "packagist.org") {
       registry.value = "composer";
-      if (parts[0] === "p2" && parts[1] && parts[2]) {
-        // repo.packagist.org/p2/vendor/package.json
-        composerVendor.value = parts[1];
-        composerPackage.value = parts[2].replace(/\.json$/, "").replace(/~dev$/, "");
-      } else if (parts[0] === "packages" && parts[1] && parts[2]) {
-        // packagist.org/packages/vendor/package
-        composerVendor.value = parts[1];
-        composerPackage.value = parts[2];
-      }
+      parsePackagistUrl(parts);
     }
   } catch {
     // not a valid URL — ignore silently

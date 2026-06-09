@@ -18,7 +18,7 @@ import {
   type SnippetContext,
 } from "@/config/registryTypes";
 
-const base = computed(() => API_BASE_URL || window.location.origin);
+const base = computed(() => API_BASE_URL || globalThis.location.origin);
 const copied = ref<string | null>(null);
 
 const { token, identity, isAuthenticated, expiresAt } = useAuth();
@@ -112,7 +112,10 @@ function ctxFor(def: RegistryTypeDef): SnippetContext {
 function selectorOptions(def: RegistryTypeDef) {
   const pt = primaryType(def);
   if (!pt) return [];
-  return (registriesByType.value[pt] ?? []).map((r) => ({ value: r.name, label: r.name }));
+  return (registriesByType.value[pt] ?? []).map((r) => ({
+    value: r.name,
+    label: r.name,
+  }));
 }
 
 function showSelector(def: RegistryTypeDef): boolean {
@@ -174,7 +177,11 @@ async function copy(key: string, text: string) {
                 </CardDescription>
                 <!-- Registry selector (shown when multiple registries of same type) -->
                 <div v-if="showSelector(def)" class="flex items-center gap-2">
-                  <label :for="`setup-registry-${def.id}`" class="text-xs text-muted-foreground shrink-0">Registry:</label>
+                  <label
+                    :for="`setup-registry-${def.id}`"
+                    class="text-xs text-muted-foreground shrink-0"
+                    >Registry:</label
+                  >
                   <Select
                     :id="`setup-registry-${def.id}`"
                     :model-value="getSelected(primaryType(def)!)"
@@ -238,7 +245,7 @@ async function copy(key: string, text: string) {
             </div>
           </CardHeader>
           <CardContent class="space-y-3">
-            <CodeBlock :code="netrcSnippet" lang="text">
+            <CodeBlock :code="netrcSnippet" lang="ini">
               <Button
                 size="sm"
                 variant="ghost"

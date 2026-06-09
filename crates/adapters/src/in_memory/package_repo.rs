@@ -83,30 +83,18 @@ impl PackageRepository for InMemoryPackageRepository {
         let mut result: Vec<PackageSummary> = sums
             .values()
             .filter(|s| {
-                if let Some(ref reg) = filter.registry {
-                    if s.package_id.registry != *reg {
-                        return false;
-                    }
-                }
-                if !filter.registries.is_empty()
-                    && !filter.registries.contains(&s.package_id.registry)
-                {
-                    return false;
-                }
-                if let Some(ref needle) = filter.name_contains {
-                    if !s.package_id.name.contains(needle.as_str()) {
-                        return false;
-                    }
-                }
-                if let Some(ref name) = filter.name_exact {
-                    if s.package_id.name != *name {
-                        return false;
-                    }
-                }
-                if filter.blocked_only && !s.status.is_blocked() {
-                    return false;
-                }
-                true
+                filter.registry.as_ref().is_none_or(|r| s.package_id.registry == *r)
+                    && (filter.registries.is_empty()
+                        || filter.registries.contains(&s.package_id.registry))
+                    && filter
+                        .name_contains
+                        .as_ref()
+                        .is_none_or(|n| s.package_id.name.contains(n.as_str()))
+                    && filter
+                        .name_exact
+                        .as_ref()
+                        .is_none_or(|n| s.package_id.name == *n)
+                    && (!filter.blocked_only || s.status.is_blocked())
             })
             .cloned()
             .collect();
@@ -142,35 +130,18 @@ impl PackageRepository for InMemoryPackageRepository {
         let mut result: Vec<AccessEvent> = events
             .iter()
             .filter(|e| {
-                if let Some(ref reg) = filter.registry {
-                    if e.package_id.registry != *reg {
-                        return false;
-                    }
-                }
-                if let Some(ref name) = filter.package_name {
-                    if e.package_id.name != *name {
-                        return false;
-                    }
-                }
-                if let Some(ref uid) = filter.user_id {
-                    if e.user_id.as_deref() != Some(uid.as_str()) {
-                        return false;
-                    }
-                }
-                if filter.denied_only && !e.result.is_denied() {
-                    return false;
-                }
-                if let Some(from) = filter.from {
-                    if e.timestamp < from {
-                        return false;
-                    }
-                }
-                if let Some(to) = filter.to {
-                    if e.timestamp > to {
-                        return false;
-                    }
-                }
-                true
+                filter.registry.as_ref().is_none_or(|r| e.package_id.registry == *r)
+                    && filter
+                        .package_name
+                        .as_ref()
+                        .is_none_or(|n| e.package_id.name == *n)
+                    && filter
+                        .user_id
+                        .as_ref()
+                        .is_none_or(|u| e.user_id.as_deref() == Some(u.as_str()))
+                    && (!filter.denied_only || e.result.is_denied())
+                    && filter.from.is_none_or(|from| e.timestamp >= from)
+                    && filter.to.is_none_or(|to| e.timestamp <= to)
             })
             .cloned()
             .collect();

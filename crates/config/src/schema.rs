@@ -149,27 +149,33 @@ impl AppConfig {
 }
 
 fn apply_storage_env_overrides(storage: &mut StoragesConfig, env: &dyn Fn(&str) -> Option<String>) {
-    if let StoragesConfig::Single(ref mut backend) = storage {
-        if let Some(v) = env("PROXY_CACHE__STORAGE__PATH") {
-            if let StorageBackendConfig::Filesystem(fs) = backend {
-                fs.path = v;
-            }
-        }
-        if let Some(v) = env("PROXY_CACHE__STORAGE__BUCKET") {
-            if let StorageBackendConfig::S3(s3) = backend {
-                s3.bucket = v;
-            }
-        }
-        if let Some(v) = env("PROXY_CACHE__STORAGE__REGION") {
-            if let StorageBackendConfig::S3(s3) = backend {
-                s3.region = v;
-            }
-        }
-        if let Some(v) = env("PROXY_CACHE__STORAGE__ENDPOINT_URL") {
-            if let StorageBackendConfig::S3(s3) = backend {
-                s3.endpoint_url = Some(v);
-            }
-        }
+    let StoragesConfig::Single(ref mut backend) = storage else {
+        return;
+    };
+    match backend {
+        StorageBackendConfig::Filesystem(fs) => apply_filesystem_env_overrides(fs, env),
+        StorageBackendConfig::S3(s3) => apply_s3_env_overrides(s3, env),
+    }
+}
+
+fn apply_filesystem_env_overrides(
+    fs: &mut FilesystemStorageConfig,
+    env: &dyn Fn(&str) -> Option<String>,
+) {
+    if let Some(v) = env("PROXY_CACHE__STORAGE__PATH") {
+        fs.path = v;
+    }
+}
+
+fn apply_s3_env_overrides(s3: &mut S3StorageConfig, env: &dyn Fn(&str) -> Option<String>) {
+    if let Some(v) = env("PROXY_CACHE__STORAGE__BUCKET") {
+        s3.bucket = v;
+    }
+    if let Some(v) = env("PROXY_CACHE__STORAGE__REGION") {
+        s3.region = v;
+    }
+    if let Some(v) = env("PROXY_CACHE__STORAGE__ENDPOINT_URL") {
+        s3.endpoint_url = Some(v);
     }
 }
 

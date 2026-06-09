@@ -181,31 +181,45 @@ pub async fn resolve_token(
     }
 
     if should_refresh {
-        if let Some(rt) = stored_refresh {
-            match oidc_refresh(base_url, &rt, stored_provider.as_deref()).await {
-                Ok((access_token, new_refresh, expires_in)) => {
-                    let profile = match profile_name {
-                        Some(n) => cfg.profiles.entry(n.to_string()).or_default(),
-                        None => &mut cfg.default,
-                    };
-                    profile.token = Some(access_token.clone());
-                    if let Some(nrt) = new_refresh {
-                        profile.oidc_refresh_token = Some(nrt);
-                    }
-                    if let Some(exp) = expires_in {
-                        profile.oidc_expires_at = Some(Utc::now().timestamp() + exp as i64);
-                    }
-                    cfg.save().ok();
-                    return Ok(Some(access_token));
-                }
-                Err(e) => {
-                    eprintln!("Warning: OIDC token refresh failed: {e}");
-                }
-            }
+        if let Some(refreshed) =
+            try_refresh_token(base_url, stored_refresh, stored_provider, cfg, profile_name).await
+        {
+            return Ok(Some(refreshed));
         }
     }
 
     Ok(stored_token)
+}
+
+async fn try_refresh_token(
+    base_url: &str,
+    stored_refresh: Option<String>,
+    stored_provider: Option<String>,
+    cfg: &mut ConfigFile,
+    profile_name: Option<&str>,
+) -> Option<String> {
+    let rt = stored_refresh?;
+    match oidc_refresh(base_url, &rt, stored_provider.as_deref()).await {
+        Ok((access_token, new_refresh, expires_in)) => {
+            let profile = match profile_name {
+                Some(n) => cfg.profiles.entry(n.to_string()).or_default(),
+                None => &mut cfg.default,
+            };
+            profile.token = Some(access_token.clone());
+            if let Some(nrt) = new_refresh {
+                profile.oidc_refresh_token = Some(nrt);
+            }
+            if let Some(exp) = expires_in {
+                profile.oidc_expires_at = Some(Utc::now().timestamp() + exp as i64);
+            }
+            cfg.save().ok();
+            Some(access_token)
+        }
+        Err(e) => {
+            eprintln!("Warning: OIDC token refresh failed: {e}");
+            None
+        }
+    }
 }
 
 /// Parse a token value or full SPA redirect URL pasted by the user after OIDC login.
@@ -236,17 +250,24 @@ fn url_decode(s: &str) -> String {
     let mut decoded: Vec<u8> = Vec::with_capacity(s.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
-                if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                    decoded.push(byte);
-                    i += 3;
-                    continue;
-                }
-            }
-        } else if bytes[i] == b'+' {
+        if bytes[i] == b'+' {
             decoded.push(b' ');
             i += 1;
+            continue;
+        }
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) else {
+                decoded.push(bytes[i]);
+                i += 1;
+                continue;
+            };
+            let Ok(byte) = u8::from_str_radix(hex, 16) else {
+                decoded.push(bytes[i]);
+                i += 1;
+                continue;
+            };
+            decoded.push(byte);
+            i += 3;
             continue;
         }
         decoded.push(bytes[i]);

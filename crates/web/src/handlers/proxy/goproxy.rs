@@ -17,6 +17,54 @@ use super::common::{
 };
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
+/// Dispatch a local/hybrid goproxy file request.
+///
+/// Returns `Ok(Some(response))` on success, `Ok(None)` when the module is not
+/// found and the caller should fall through to the upstream proxy (Hybrid mode
+/// only), or `Err` on any hard error.
+async fn local_goproxy_file(
+    local_svc: &LocalRegistryService,
+    registry: &str,
+    module: &str,
+    version: &str,
+    ext: &str,
+    identity: &batlehub_core::entities::Identity,
+) -> Result<Option<HttpResponse>, batlehub_core::error::CoreError> {
+    let resp = match ext {
+        "info" => local_svc
+            .get_go_info(registry, module, version, identity)
+            .await
+            .map(|info| {
+                HttpResponse::Ok()
+                    .content_type("application/json")
+                    .json(info)
+            })?,
+        "mod" => local_svc
+            .get_go_mod(registry, module, version, identity)
+            .await
+            .map(|content| HttpResponse::Ok().content_type("text/plain").body(content))?,
+        "zip" => {
+            local_svc
+                .check_prerelease_access(registry, version, identity)
+                .await?;
+            local_svc
+                .get_artifact(registry, module, version, identity)
+                .await
+                .map(|bytes| {
+                    HttpResponse::Ok()
+                        .content_type("application/zip")
+                        .body(bytes)
+                })?
+        }
+        _ => {
+            return Err(batlehub_core::error::CoreError::NotFound(format!(
+                "unknown goproxy file extension '.{ext}'"
+            )))
+        }
+    };
+    Ok(Some(resp))
+}
+
 /// Extract the go.mod content from a Go module zip archive.
 /// Go module zips contain entries named `{module}@{version}/{path}`.
 /// Returns a minimal go.mod if none is found.
@@ -184,45 +232,9 @@ pub async fn goproxy_file(
         .ok_or_else(|| AppError::not_found(format!("unknown goproxy file '{filename}'")))?;
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        let local_result = match ext {
-            "info" => local_svc
-                .get_go_info(&registry, module, version, &identity)
-                .await
-                .map(|info| {
-                    HttpResponse::Ok()
-                        .content_type("application/json")
-                        .json(info)
-                }),
-            "mod" => local_svc
-                .get_go_mod(&registry, module, version, &identity)
-                .await
-                .map(|content| HttpResponse::Ok().content_type("text/plain").body(content)),
-            "zip" => {
-                if let Err(e) = local_svc
-                    .check_prerelease_access(&registry, version, &identity)
-                    .await
-                {
-                    Err(e)
-                } else {
-                    local_svc
-                        .get_artifact(&registry, module, version, &identity)
-                        .await
-                        .map(|bytes| {
-                            HttpResponse::Ok()
-                                .content_type("application/zip")
-                                .body(bytes)
-                        })
-                }
-            }
-            _ => {
-                return Err(AppError::not_found(format!(
-                    "unknown goproxy file extension '.{ext}'"
-                )))
-            }
-        };
-
-        match local_result {
-            Ok(resp) => return Ok(resp),
+        match local_goproxy_file(&local_svc, &registry, module, version, ext, &identity).await {
+            Ok(Some(resp)) => return Ok(resp),
+            Ok(None) => {}
             Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}
             Err(CoreError::NotFound(msg)) => return Err(AppError::not_found(msg)),
             Err(e) => return Err(AppError::from(e)),

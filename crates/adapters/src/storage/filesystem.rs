@@ -106,15 +106,17 @@ impl StorageBackend for FilesystemStorageBackend {
             };
             while let Ok(Some(entry)) = rd.next_entry().await {
                 let path = entry.path();
-                if let Ok(ftype) = entry.file_type().await {
-                    if ftype.is_dir() {
-                        stack.push(path);
-                    } else if path.extension().and_then(|e| e.to_str()) == Some("dat") {
-                        count += 1;
-                        if let Ok(meta) = tokio::fs::metadata(&path).await {
-                            total_bytes += meta.len();
-                        }
-                    }
+                let Ok(ftype) = entry.file_type().await else { continue };
+                if ftype.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("dat") {
+                    continue;
+                }
+                count += 1;
+                if let Ok(meta) = tokio::fs::metadata(&path).await {
+                    total_bytes += meta.len();
                 }
             }
         }
@@ -134,21 +136,22 @@ impl StorageBackend for FilesystemStorageBackend {
             };
             while let Ok(Some(entry)) = rd.next_entry().await {
                 let path = entry.path();
-                if let Ok(ftype) = entry.file_type().await {
-                    if ftype.is_dir() {
-                        stack.push(path);
-                    } else if path.extension().and_then(|e| e.to_str()) == Some("dat") {
-                        // Reconstruct the logical key from the filesystem path.
-                        if let Ok(rel) = path.strip_prefix(&self.root) {
-                            let key = rel
-                                .to_string_lossy()
-                                .trim_end_matches(".dat")
-                                .replace("__", ":")
-                                .replace(std::path::MAIN_SEPARATOR, "/");
-                            keys.push(key);
-                        }
-                    }
+                let Ok(ftype) = entry.file_type().await else { continue };
+                if ftype.is_dir() {
+                    stack.push(path);
+                    continue;
                 }
+                if path.extension().and_then(|e| e.to_str()) != Some("dat") {
+                    continue;
+                }
+                // Reconstruct the logical key from the filesystem path.
+                let Ok(rel) = path.strip_prefix(&self.root) else { continue };
+                let key = rel
+                    .to_string_lossy()
+                    .trim_end_matches(".dat")
+                    .replace("__", ":")
+                    .replace(std::path::MAIN_SEPARATOR, "/");
+                keys.push(key);
             }
         }
         Ok(keys)
@@ -172,12 +175,14 @@ impl StorageBackend for FilesystemStorageBackend {
                 }
             };
             while let Ok(Some(entry)) = rd.next_entry().await {
-                if let Ok(ftype) = entry.file_type().await {
-                    if ftype.is_dir() {
-                        stack.push(entry.path());
-                    } else if entry.path().extension().and_then(|e| e.to_str()) == Some("dat") {
-                        count += 1;
-                    }
+                let path = entry.path();
+                let Ok(ftype) = entry.file_type().await else { continue };
+                if ftype.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) == Some("dat") {
+                    count += 1;
                 }
             }
         }

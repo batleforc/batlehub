@@ -23,8 +23,7 @@ const errorMsg = ref<string | null>(null);
 
 async function downloadBlob(url: string, defaultFilename: string) {
   const resp = await authFetch(`${API_BASE_URL}${url}`);
-  if (!resp.ok)
-    throw new Error(await resp.text().catch(() => `HTTP ${resp.status}`));
+  if (!resp.ok) throw new Error(await resp.text().catch(() => `HTTP ${resp.status}`));
   const disposition = resp.headers.get("Content-Disposition") ?? "";
   const match = disposition.match(/filename="([^"]+)"/);
   const filename = match?.[1] ?? defaultFilename;
@@ -82,24 +81,17 @@ async function exportSbom() {
       </CardHeader>
       <CardContent class="space-y-4">
         <p class="text-sm text-muted-foreground">
-          Generates a merged SBOM covering all artifacts served in the selected
-          time window. Leave filters empty to export everything.
+          Generates a merged SBOM covering all artifacts served in the selected time window. Leave
+          filters empty to export everything.
         </p>
 
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-xl">
           <!-- Registry filter -->
           <div class="space-y-1.5">
             <Label for="sbom-registry"
-              >Registry
-              <span class="text-muted-foreground font-normal"
-                >(optional)</span
-              ></Label
+              >Registry <span class="text-muted-foreground font-normal">(optional)</span></Label
             >
-            <Input
-              id="sbom-registry"
-              v-model="registry"
-              placeholder="e.g. crates-io"
-            />
+            <Input id="sbom-registry" v-model="registry" placeholder="e.g. crates-io" />
           </div>
 
           <!-- Format -->
@@ -118,10 +110,7 @@ async function exportSbom() {
           <!-- From date -->
           <div class="space-y-1.5">
             <Label for="sbom-from"
-              >From
-              <span class="text-muted-foreground font-normal"
-                >(optional)</span
-              ></Label
+              >From <span class="text-muted-foreground font-normal">(optional)</span></Label
             >
             <Input id="sbom-from" v-model="fromDate" type="date" />
           </div>
@@ -129,10 +118,7 @@ async function exportSbom() {
           <!-- To date -->
           <div class="space-y-1.5">
             <Label for="sbom-to"
-              >To
-              <span class="text-muted-foreground font-normal"
-                >(optional)</span
-              ></Label
+              >To <span class="text-muted-foreground font-normal">(optional)</span></Label
             >
             <Input id="sbom-to" v-model="toDate" type="date" />
           </div>
@@ -151,14 +137,14 @@ async function exportSbom() {
       </CardHeader>
       <CardContent class="text-sm text-muted-foreground space-y-2">
         <p>
-          <strong class="text-foreground">SPDX 2.3</strong> — ISO/IEC standard
-          widely used for compliance and license tracking. Preferred for legal
-          review and OpenChain-conformant workflows.
+          <strong class="text-foreground">SPDX 2.3</strong> — ISO/IEC standard widely used for
+          compliance and license tracking. Preferred for legal review and OpenChain-conformant
+          workflows.
         </p>
         <p>
-          <strong class="text-foreground">CycloneDX 1.4</strong> — OWASP
-          standard optimised for security tooling. Preferred for vulnerability
-          scanning and SBOM-driven dependency analysis.
+          <strong class="text-foreground">CycloneDX 1.4</strong> — OWASP standard optimised for
+          security tooling. Preferred for vulnerability scanning and SBOM-driven dependency
+          analysis.
         </p>
         <p>
           Per-artifact SBOMs (SPDX or CycloneDX) are also available from the

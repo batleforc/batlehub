@@ -83,15 +83,11 @@ function parseCSV() {
     });
 }
 
-function handleFileUpload(event: Event) {
+async function handleFileUpload(event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0];
   if (!file) return;
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    csvText.value = (e.target?.result as string) ?? "";
-    parseCSV();
-  };
-  reader.readAsText(file);
+  csvText.value = await file.text();
+  parseCSV();
 }
 
 async function submit() {

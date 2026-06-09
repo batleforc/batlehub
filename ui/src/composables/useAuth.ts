@@ -1,7 +1,7 @@
 import { ref, computed, watch } from "vue";
 import { client } from "@/client/client.gen";
 import { me, oidcRefresh } from "@/client/sdk.gen";
-import type { MeResponse, RefreshResponse } from "@/client/types.gen";
+import type { MeResponse } from "@/client/types.gen";
 
 const ACCESS_TOKEN_KEY = "batlehub_access_token";
 const REFRESH_TOKEN_KEY = "batlehub_refresh_token";
@@ -12,9 +12,7 @@ const OIDC_PROVIDER_KEY = "batlehub_oidc_provider";
 
 const token = ref<string>(localStorage.getItem(ACCESS_TOKEN_KEY) ?? "");
 const refreshToken = ref<string>(localStorage.getItem(REFRESH_TOKEN_KEY) ?? "");
-const expiresAt = ref<number>(
-  Number(localStorage.getItem(EXPIRES_AT_KEY) ?? "0"),
-);
+const expiresAt = ref<number>(Number(localStorage.getItem(EXPIRES_AT_KEY) ?? "0"));
 const oidcProvider = ref<string>(localStorage.getItem(OIDC_PROVIDER_KEY) ?? "");
 const identity = ref<MeResponse | null>(null);
 const identityReady = ref(false);
@@ -90,7 +88,7 @@ async function doRefresh() {
       },
     });
     if (!result.data) throw new Error("empty refresh response");
-    const data = result.data as RefreshResponse;
+    const data = result.data;
     storeTokens(
       data.access_token,
       data.refresh_token ?? refreshToken.value,
@@ -99,6 +97,7 @@ async function doRefresh() {
     );
   } catch (e) {
     // Don't force logout — let the next API call surface the 401.
+    console.error("Failed to refresh token:", e);
   }
 }
 
@@ -140,9 +139,7 @@ function logout() {
 // ── Computed ───────────────────────────────────────────────────────────────────
 
 const isAdmin = computed(() => identity.value?.role === "admin");
-const isAuthenticated = computed(
-  () => !!token.value && identity.value?.role !== "anonymous",
-);
+const isAuthenticated = computed(() => !!token.value && identity.value?.role !== "anonymous");
 
 export function useAuth() {
   return {

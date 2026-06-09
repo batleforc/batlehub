@@ -20,6 +20,8 @@ function init(): Promise<HighlighterCore> {
       import("@shikijs/langs/ini"),
       import("@shikijs/langs/json"),
       import("@shikijs/langs/jsonc"),
+      import("@shikijs/langs/xml"),
+      import("@shikijs/langs/terraform"),
     ],
     engine: createJavaScriptRegexEngine(),
   }).then((h) => {
@@ -31,20 +33,18 @@ function init(): Promise<HighlighterCore> {
 }
 
 void init();
-
-export function useShiki() {
-  function highlight(code: string, lang: string): string {
-    if (!_highlighter) return "";
-    try {
-      return _highlighter.codeToHtml(code, {
-        lang,
-        themes: { light: "github-light", dark: "github-dark" },
-        defaultColor: false,
-      });
-    } catch {
-      return "";
-    }
+function highlight(code: string, lang: string): string {
+  if (!_highlighter) return "";
+  try {
+    return _highlighter.codeToHtml(code, {
+      lang,
+      themes: { light: "github-light", dark: "github-dark" },
+      defaultColor: false,
+    });
+  } catch {
+    return "";
   }
-
+}
+export function useShiki() {
   return { highlight, ready: _ready };
 }

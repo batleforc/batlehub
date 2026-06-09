@@ -131,12 +131,6 @@ pub async fn create_subscription(
     if body.event_types.is_empty() {
         return Err(AppError::bad_request("event_types must not be empty"));
     }
-    if !svc.channel_names().contains(&body.channel_name) {
-        return Err(AppError::bad_request(format!(
-            "unknown channel_name '{}': not present in server configuration",
-            body.channel_name
-        )));
-    }
     let actor = identity
         .0
         .user_id
@@ -217,12 +211,6 @@ pub async fn update_subscription(
     let id = path.into_inner();
     if body.event_types.is_empty() {
         return Err(AppError::bad_request("event_types must not be empty"));
-    }
-    if !svc.channel_names().contains(&body.channel_name) {
-        return Err(AppError::bad_request(format!(
-            "unknown channel_name '{}': not present in server configuration",
-            body.channel_name
-        )));
     }
 
     // Fetch existing to preserve immutable fields.
@@ -314,7 +302,7 @@ pub async fn test_subscription(
             channel = %sub.channel_name,
             "test dispatch failed: {e}"
         );
-        AppError::bad_request("test dispatch failed; check server logs for details")
+        AppError::bad_request(format!("test dispatch failed: {e}"))
     })?;
     Ok(HttpResponse::Ok().finish())
 }

@@ -115,114 +115,11 @@ pub enum BannerCommand {
 
 pub async fn run(cmd: AdminCommand, client: &BatleHubClient, json: bool) -> Result<()> {
     match cmd {
-        AdminCommand::Quota { cmd } => match cmd {
-            QuotaCommand::List { registry } => {
-                let entries = client.list_quota(registry.as_deref()).await?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&entries)?);
-                } else {
-                    let mut table = Table::new();
-                    table.set_header(["Registry", "User", "Storage (bytes)", "Packages"]);
-                    for e in &entries {
-                        table.add_row([
-                            &e.registry,
-                            &e.user_id,
-                            &e.storage_bytes.to_string(),
-                            &e.package_count.to_string(),
-                        ]);
-                    }
-                    println!("{table}");
-                }
-            }
-            QuotaCommand::Reset { registry, user } => {
-                client.reset_quota(&registry, &user).await?;
-                println!("Reset quota for {user} in {registry}");
-            }
-        },
-
-        AdminCommand::IpBlock { cmd } => match cmd {
-            IpBlockCommand::List => {
-                let blocks = client.list_ip_blocks().await?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&blocks)?);
-                } else {
-                    let mut table = Table::new();
-                    table.set_header(["IP", "Reason", "Blocked At"]);
-                    for b in &blocks {
-                        table.add_row([
-                            b.ip.as_str(),
-                            b.reason.as_str(),
-                            &b.blocked_at.to_string(),
-                        ]);
-                    }
-                    println!("{table}");
-                    println!("{} block(s)", blocks.len());
-                }
-            }
-            IpBlockCommand::Add { ip, reason } => {
-                client.add_ip_block(&ip, reason.as_deref()).await?;
-                println!("Blocked {ip}");
-            }
-            IpBlockCommand::Remove { ip } => {
-                client.remove_ip_block(&ip).await?;
-                println!("Unblocked {ip}");
-            }
-        },
-
-        AdminCommand::Config { cmd } => match cmd {
-            ConfigAdminCommand::Reload => {
-                client.config_reload().await?;
-                println!("Config reload triggered.");
-            }
-            ConfigAdminCommand::Changes => {
-                let changes = client.config_changes().await?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&changes)?);
-                } else {
-                    let mut table = Table::new();
-                    table.set_header(["Applied At", "Status", "Triggered By", "Summary"]);
-                    for c in &changes {
-                        table.add_row([
-                            c.applied_at.as_deref().unwrap_or("-"),
-                            c.status.as_deref().unwrap_or("-"),
-                            c.triggered_by.as_deref().unwrap_or("-"),
-                            c.summary.as_deref().unwrap_or("-"),
-                        ]);
-                    }
-                    println!("{table}");
-                }
-            }
-        },
-
-        AdminCommand::Cache { cmd } => match cmd {
-            CacheCommand::Warm { registry, packages } => {
-                let pkgs = packages
-                    .unwrap_or_default()
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-                    .collect();
-                client.cache_warm(&registry, pkgs).await?;
-                println!("Cache warming started for {registry}");
-            }
-            CacheCommand::Clear { registry } => {
-                client.cache_clear(&registry).await?;
-                println!("Cache cleared for {registry}");
-            }
-        },
-
-        AdminCommand::Banner { cmd } => match cmd {
-            BannerCommand::Set { message, level } => {
-                client.set_banner(&message, &level).await?;
-                println!("Banner set ({level})");
-            }
-            BannerCommand::Clear => {
-                client.clear_banner().await?;
-                println!("Banner cleared");
-            }
-        },
-
+        AdminCommand::Quota { cmd } => handle_quota(cmd, client, json).await?,
+        AdminCommand::IpBlock { cmd } => handle_ip_block(cmd, client, json).await?,
+        AdminCommand::Config { cmd } => handle_config_admin(cmd, client, json).await?,
+        AdminCommand::Cache { cmd } => handle_cache(cmd, client).await?,
+        AdminCommand::Banner { cmd } => handle_banner(cmd, client).await?,
         AdminCommand::AuditLog {
             registry,
             user,
@@ -248,6 +145,129 @@ pub async fn run(cmd: AdminCommand, client: &BatleHubClient, json: bool) -> Resu
             } else {
                 print_audit_log_table(&resp);
             }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_quota(cmd: QuotaCommand, client: &BatleHubClient, json: bool) -> Result<()> {
+    match cmd {
+        QuotaCommand::List { registry } => {
+            let entries = client.list_quota(registry.as_deref()).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&entries)?);
+            } else {
+                let mut table = Table::new();
+                table.set_header(["Registry", "User", "Storage (bytes)", "Packages"]);
+                for e in &entries {
+                    table.add_row([
+                        &e.registry,
+                        &e.user_id,
+                        &e.storage_bytes.to_string(),
+                        &e.package_count.to_string(),
+                    ]);
+                }
+                println!("{table}");
+            }
+        }
+        QuotaCommand::Reset { registry, user } => {
+            client.reset_quota(&registry, &user).await?;
+            println!("Reset quota for {user} in {registry}");
+        }
+    }
+    Ok(())
+}
+
+async fn handle_ip_block(cmd: IpBlockCommand, client: &BatleHubClient, json: bool) -> Result<()> {
+    match cmd {
+        IpBlockCommand::List => {
+            let blocks = client.list_ip_blocks().await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&blocks)?);
+            } else {
+                let mut table = Table::new();
+                table.set_header(["IP", "Reason", "Blocked At"]);
+                for b in &blocks {
+                    table.add_row([b.ip.as_str(), b.reason.as_str(), &b.blocked_at.to_string()]);
+                }
+                println!("{table}");
+                println!("{} block(s)", blocks.len());
+            }
+        }
+        IpBlockCommand::Add { ip, reason } => {
+            client.add_ip_block(&ip, reason.as_deref()).await?;
+            println!("Blocked {ip}");
+        }
+        IpBlockCommand::Remove { ip } => {
+            client.remove_ip_block(&ip).await?;
+            println!("Unblocked {ip}");
+        }
+    }
+    Ok(())
+}
+
+async fn handle_config_admin(
+    cmd: ConfigAdminCommand,
+    client: &BatleHubClient,
+    json: bool,
+) -> Result<()> {
+    match cmd {
+        ConfigAdminCommand::Reload => {
+            client.config_reload().await?;
+            println!("Config reload triggered.");
+        }
+        ConfigAdminCommand::Changes => {
+            let changes = client.config_changes().await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&changes)?);
+            } else {
+                let mut table = Table::new();
+                table.set_header(["Applied At", "Status", "Triggered By", "Summary"]);
+                for c in &changes {
+                    table.add_row([
+                        c.applied_at.as_deref().unwrap_or("-"),
+                        c.status.as_deref().unwrap_or("-"),
+                        c.triggered_by.as_deref().unwrap_or("-"),
+                        c.summary.as_deref().unwrap_or("-"),
+                    ]);
+                }
+                println!("{table}");
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_cache(cmd: CacheCommand, client: &BatleHubClient) -> Result<()> {
+    match cmd {
+        CacheCommand::Warm { registry, packages } => {
+            let pkgs = packages
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+            client.cache_warm(&registry, pkgs).await?;
+            println!("Cache warming started for {registry}");
+        }
+        CacheCommand::Clear { registry } => {
+            client.cache_clear(&registry).await?;
+            println!("Cache cleared for {registry}");
+        }
+    }
+    Ok(())
+}
+
+async fn handle_banner(cmd: BannerCommand, client: &BatleHubClient) -> Result<()> {
+    match cmd {
+        BannerCommand::Set { message, level } => {
+            client.set_banner(&message, &level).await?;
+            println!("Banner set ({level})");
+        }
+        BannerCommand::Clear => {
+            client.clear_banner().await?;
+            println!("Banner cleared");
         }
     }
     Ok(())

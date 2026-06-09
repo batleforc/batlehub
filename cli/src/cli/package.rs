@@ -76,19 +76,7 @@ pub async fn run(
             if json {
                 println!("{}", serde_json::to_string_pretty(&items)?);
             } else {
-                let mut table = Table::new();
-                table.set_header(["Registry", "Name", "Version", "Status", "Accesses"]);
-                for p in &items {
-                    table.add_row(vec![
-                        Cell::new(&p.registry),
-                        Cell::new(&p.name),
-                        Cell::new(&p.version),
-                        render_status_cell(&p.status),
-                        Cell::new(p.access_count),
-                    ]);
-                }
-                println!("{table}");
-                println!("{} / {} package(s)", items.len(), resp.total);
+                print_packages_table(&items, resp.total);
             }
         }
         PackageCommand::Versions { registry, name } => {
@@ -110,19 +98,39 @@ pub async fn run(
             if json {
                 println!("{}", serde_json::to_string_pretty(&items)?);
             } else {
-                let mut table = Table::new();
-                table.set_header(["Version", "Status", "Accesses"]);
-                for p in &items {
-                    table.add_row(vec![
-                        Cell::new(&p.version),
-                        render_status_cell(&p.status),
-                        Cell::new(p.access_count),
-                    ]);
-                }
-                println!("{table}");
-                println!("{} version(s)", items.len());
+                print_versions_table(&items);
             }
         }
     }
     Ok(())
+}
+
+fn print_packages_table(items: &[crate::api::package::PackageSummary], total: usize) {
+    let mut table = Table::new();
+    table.set_header(["Registry", "Name", "Version", "Status", "Accesses"]);
+    for p in items {
+        table.add_row(vec![
+            Cell::new(&p.registry),
+            Cell::new(&p.name),
+            Cell::new(&p.version),
+            render_status_cell(&p.status),
+            Cell::new(p.access_count),
+        ]);
+    }
+    println!("{table}");
+    println!("{} / {} package(s)", items.len(), total);
+}
+
+fn print_versions_table(items: &[crate::api::package::PackageSummary]) {
+    let mut table = Table::new();
+    table.set_header(["Version", "Status", "Accesses"]);
+    for p in items {
+        table.add_row(vec![
+            Cell::new(&p.version),
+            render_status_cell(&p.status),
+            Cell::new(p.access_count),
+        ]);
+    }
+    println!("{table}");
+    println!("{} version(s)", items.len());
 }

@@ -37,7 +37,12 @@ interface AdminPackageSummary {
   };
   status:
     | { status: "available" }
-    | { status: "blocked"; reason: string; blocked_by: string; blocked_at: string };
+    | {
+        status: "blocked";
+        reason: string;
+        blocked_by: string;
+        blocked_at: string;
+      };
   last_accessed: string | null;
   last_accessed_by: string | null;
   access_count: number;
@@ -80,7 +85,7 @@ const filteredPackages = computed(() => {
 // ── Block existing package ────────────────────────────────────────────────────
 
 async function block(pkg: AdminPackageSummary) {
-  const reason = window.prompt("Block reason:");
+  const reason = globalThis.prompt("Block reason:");
   if (!reason) return;
   actionError.value = null;
   try {
@@ -158,7 +163,7 @@ const selectedPackages = computed(() =>
 );
 
 async function bulkBlock() {
-  const reason = window.prompt(`Block reason for ${selected.value.size} package(s):`);
+  const reason = globalThis.prompt(`Block reason for ${selected.value.size} package(s):`);
   if (!reason) return;
   bulkLoading.value = true;
   bulkResultMsg.value = null;
@@ -250,7 +255,13 @@ async function submitPreBlock() {
       },
     });
     const firstReg = registries.value?.[0]?.name ?? "";
-    preBlock.value = { registry: firstReg, name: "", version: "", artifact: "", reason: "" };
+    preBlock.value = {
+      registry: firstReg,
+      name: "",
+      version: "",
+      artifact: "",
+      reason: "",
+    };
     showPreBlock.value = false;
     reload();
   } catch (e: unknown) {
@@ -287,7 +298,8 @@ async function submitPreBlock() {
               class="flex h-9 w-full rounded-sm border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring font-mono"
             >
               <option v-for="reg in registries" :key="reg.name" :value="reg.name">
-                {{ reg.name }} <template v-if="reg.type !== reg.name"> ({{ reg.type }}) </template>
+                {{ reg.name }}
+                <template v-if="reg.type !== reg.name"> ({{ reg.type }}) </template>
               </option>
             </select>
           </div>
@@ -470,7 +482,10 @@ async function submitPreBlock() {
                     @click="
                       router.push({
                         path: '/admin/packages/detail',
-                        query: { registry: pkg.package_id.registry, name: pkg.package_id.name },
+                        query: {
+                          registry: pkg.package_id.registry,
+                          name: pkg.package_id.name,
+                        },
                       })
                     "
                   >

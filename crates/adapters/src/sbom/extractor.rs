@@ -63,6 +63,20 @@ fn parse_version_from_toml_rest(rest: &str) -> String {
     }
 }
 
+fn parse_dep_entry(trimmed: &str) -> Option<SbomDependency> {
+    let (name, rest) = trimmed.split_once('=')?;
+    let name = name.trim().trim_matches('"');
+    if name.is_empty() || name.starts_with('#') {
+        return None;
+    }
+    let version = parse_version_from_toml_rest(rest.trim());
+    Some(SbomDependency {
+        name: name.to_owned(),
+        version_req: if version.is_empty() { None } else { Some(version) },
+        ecosystem: "cargo".into(),
+    })
+}
+
 fn parse_cargo_toml_deps(content: &str) -> Vec<SbomDependency> {
     let mut deps = Vec::new();
     let mut in_deps = false;
@@ -89,25 +103,8 @@ fn parse_cargo_toml_deps(content: &str) -> Vec<SbomDependency> {
         if !in_deps && !in_dev_deps {
             continue;
         }
-
-        if let Some((name, rest)) = trimmed.split_once('=') {
-            let name = name.trim().trim_matches('"');
-            let rest = rest.trim();
-            if name.is_empty() || name.starts_with('#') {
-                continue;
-            }
-            let version = parse_version_from_toml_rest(rest);
-            if !name.is_empty() {
-                deps.push(SbomDependency {
-                    name: name.to_owned(),
-                    version_req: if version.is_empty() {
-                        None
-                    } else {
-                        Some(version)
-                    },
-                    ecosystem: "cargo".into(),
-                });
-            }
+        if let Some(dep) = parse_dep_entry(trimmed) {
+            deps.push(dep);
         }
     }
     deps

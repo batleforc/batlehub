@@ -115,7 +115,9 @@ onMounted(fetchRegistries);
         <div class="flex gap-2 flex-wrap items-end">
           <!-- Populated select when health endpoint succeeds -->
           <div v-if="registries.length > 0" class="flex flex-col gap-1">
-            <label for="explore-cache-registry-select" class="text-xs text-muted-foreground font-medium"
+            <label
+              for="explore-cache-registry-select"
+              class="text-xs text-muted-foreground font-medium"
               >Registry</label
             >
             <select
@@ -128,7 +130,9 @@ onMounted(fetchRegistries);
           </div>
           <!-- Fallback text input -->
           <div v-else class="flex flex-col gap-1">
-            <label for="explore-cache-registry-input" class="text-xs text-muted-foreground font-medium"
+            <label
+              for="explore-cache-registry-input"
+              class="text-xs text-muted-foreground font-medium"
               >Registry name</label
             >
             <input

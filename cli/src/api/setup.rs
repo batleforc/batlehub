@@ -162,28 +162,8 @@ fn detect_project_types_in(
     }
 
     // PyPI (pyproject.toml / setup.py)
-    let pyproject = dir.join("pyproject.toml");
-    let setup_py = dir.join("setup.py");
-    if pyproject.exists() || setup_py.exists() {
-        let name = read_toml_field(&pyproject, &["project", "name"])
-            .or_else(|| read_toml_field(&pyproject, &["tool", "poetry", "name"]));
-        let pkg = name.as_deref().unwrap_or("<package>").to_string();
-        out.push(ProjectDetection {
-            relative_path: String::new(),
-            registry_type: "pypi",
-            package_name: name,
-            instructions: format!(
-                "Registry type : pypi\n\
-                 Package       : {pkg}\n\
-                 \n\
-                 pip.conf / pip.ini:\n\
-                 [global]\n\
-                 index-url = {server_url}/proxy/<registry>/pypi/\n\
-                 \n\
-                 Publish:\n\
-                 twine upload dist/*"
-            ),
-        });
+    if let Some(det) = detect_pypi(dir, server_url) {
+        out.push(det);
     }
 
     // Maven (pom.xml)
@@ -262,39 +242,8 @@ fn detect_project_types_in(
     }
 
     // NuGet (.NET)
-    let has_nuspec = dir_names.iter().any(|n| n.ends_with(".nuspec"));
-    let has_csproj = dir_names.iter().any(|n| n.ends_with(".csproj"));
-    if has_nuspec || has_csproj {
-        let name = dir_names
-            .iter()
-            .find(|n| n.ends_with(".nuspec"))
-            .and_then(|n| n.strip_suffix(".nuspec"))
-            .map(str::to_string)
-            .or_else(|| {
-                dir_names
-                    .iter()
-                    .find(|n| n.ends_with(".csproj"))
-                    .and_then(|n| n.strip_suffix(".csproj"))
-                    .map(str::to_string)
-            });
-        let pkg = name.as_deref().unwrap_or("<package>").to_string();
-        out.push(ProjectDetection {
-            relative_path: String::new(),
-            registry_type: "nuget",
-            package_name: name,
-            instructions: format!(
-                "Registry type : nuget\n\
-                 Package       : {pkg}\n\
-                 \n\
-                 Add NuGet source:\n\
-                 dotnet nuget add source \\\n\
-                   {server_url}/proxy/<registry>/nuget/v3/index.json \\\n\
-                   --name batlehub\n\
-                 \n\
-                 Publish:\n\
-                 dotnet nuget push *.nupkg --source batlehub"
-            ),
-        });
+    if let Some(det) = detect_nuget(dir_names, server_url) {
+        out.push(det);
     }
 
     // Terraform
@@ -341,6 +290,71 @@ fn detect_project_types_in(
     }
 
     out
+}
+
+fn detect_pypi(dir: &Path, server_url: &str) -> Option<ProjectDetection> {
+    let pyproject = dir.join("pyproject.toml");
+    let setup_py = dir.join("setup.py");
+    if !pyproject.exists() && !setup_py.exists() {
+        return None;
+    }
+    let name = read_toml_field(&pyproject, &["project", "name"])
+        .or_else(|| read_toml_field(&pyproject, &["tool", "poetry", "name"]));
+    let pkg = name.as_deref().unwrap_or("<package>").to_string();
+    Some(ProjectDetection {
+        relative_path: String::new(),
+        registry_type: "pypi",
+        package_name: name,
+        instructions: format!(
+            "Registry type : pypi\n\
+             Package       : {pkg}\n\
+             \n\
+             pip.conf / pip.ini:\n\
+             [global]\n\
+             index-url = {server_url}/proxy/<registry>/pypi/\n\
+             \n\
+             Publish:\n\
+             twine upload dist/*"
+        ),
+    })
+}
+
+fn detect_nuget(dir_names: &[String], server_url: &str) -> Option<ProjectDetection> {
+    let has_nuspec = dir_names.iter().any(|n| n.ends_with(".nuspec"));
+    let has_csproj = dir_names.iter().any(|n| n.ends_with(".csproj"));
+    if !has_nuspec && !has_csproj {
+        return None;
+    }
+    let name = dir_names
+        .iter()
+        .find(|n| n.ends_with(".nuspec"))
+        .and_then(|n| n.strip_suffix(".nuspec"))
+        .map(str::to_string)
+        .or_else(|| {
+            dir_names
+                .iter()
+                .find(|n| n.ends_with(".csproj"))
+                .and_then(|n| n.strip_suffix(".csproj"))
+                .map(str::to_string)
+        });
+    let pkg = name.as_deref().unwrap_or("<package>").to_string();
+    Some(ProjectDetection {
+        relative_path: String::new(),
+        registry_type: "nuget",
+        package_name: name,
+        instructions: format!(
+            "Registry type : nuget\n\
+             Package       : {pkg}\n\
+             \n\
+             Add NuGet source:\n\
+             dotnet nuget add source \\\n\
+               {server_url}/proxy/<registry>/nuget/v3/index.json \\\n\
+               --name batlehub\n\
+             \n\
+             Publish:\n\
+             dotnet nuget push *.nupkg --source batlehub"
+        ),
+    })
 }
 
 // ── Manifest parsing helpers ───────────────────────────────────────────────

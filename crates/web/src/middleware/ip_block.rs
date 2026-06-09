@@ -15,6 +15,13 @@ use futures::future::LocalBoxFuture;
 use batlehub_config::schema::IpBlockingConfig;
 use batlehub_core::ports::IpBlockStore;
 
+/// Extract the first IP from the `X-Forwarded-For` header, or `None` if absent/empty.
+fn first_xff_ip(req: &ServiceRequest) -> Option<String> {
+    let xff = req.headers().get("x-forwarded-for")?.to_str().ok()?;
+    let first = xff.split(',').next()?.trim();
+    if first.is_empty() { None } else { Some(first.to_owned()) }
+}
+
 /// Extract the client IP. `X-Forwarded-For` is only trusted when the TCP peer
 /// address appears in `trusted_proxies`; otherwise the peer address is used
 /// directly to prevent spoofed-header bypass.
@@ -30,15 +37,8 @@ pub(crate) fn extract_client_ip(req: &ServiceRequest, trusted_proxies: &[String]
     });
 
     if !trusted_proxies.is_empty() && peer_is_trusted {
-        if let Some(xff) = req.headers().get("x-forwarded-for") {
-            if let Ok(s) = xff.to_str() {
-                if let Some(first) = s.split(',').next() {
-                    let trimmed = first.trim().to_owned();
-                    if !trimmed.is_empty() {
-                        return trimmed;
-                    }
-                }
-            }
+        if let Some(ip) = first_xff_ip(req) {
+            return ip;
         }
     }
 

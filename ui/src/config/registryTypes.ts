@@ -431,7 +431,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
       {
         key: "terraformrc",
         label: "~/.terraformrc — provider network mirror",
-        lang: "hcl",
+        lang: "terraform",
         template: (ctx) => {
           const { base, registryName: reg, isAuthenticated, token } = ctx;
           let hostPart = base;
@@ -541,7 +541,11 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `gem push name-version.gem --host ${base}/proxy/${reg}`,
           ];
           if (isAuthenticated) {
-            lines.push(``, `# Credentials: set GEM_HOST_API_KEY or pass --key`, `export GEM_HOST_API_KEY="${token}"`);
+            lines.push(
+              ``,
+              `# Credentials: set GEM_HOST_API_KEY or pass --key`,
+              `export GEM_HOST_API_KEY="${token}"`,
+            );
           }
           return lines.join("\n");
         },

@@ -198,43 +198,7 @@ async fn main() -> Result<()> {
     info!("configured user-token auth provider");
 
     // ── Cache ─────────────────────────────────────────────────────────────────
-    let cache: Arc<dyn CacheStore> = match config.cache.cache_type.as_str() {
-        "postgres" => {
-            tracing::info!("metadata cache: postgres");
-            Arc::new(PgCacheStore::new(repo.pool()))
-        }
-        "redis" => {
-            #[cfg(feature = "cache-redis")]
-            {
-                let url = config
-                    .cache
-                    .url
-                    .as_deref()
-                    .unwrap_or("redis://127.0.0.1:6379");
-                tracing::info!(url, "metadata cache: redis");
-                Arc::new(
-                    RedisCacheStore::new(url)
-                        .await
-                        .context("connecting to Redis cache")?,
-                )
-            }
-            #[cfg(not(feature = "cache-redis"))]
-            {
-                tracing::warn!(
-                    "compiled without cache-redis feature; falling back to in-memory cache"
-                );
-                Arc::new(InMemoryCacheStore::new())
-            }
-        }
-        other => {
-            if other != "memory" {
-                tracing::warn!(cache_type = %other, "unknown cache type, falling back to memory");
-            } else {
-                tracing::info!("metadata cache: memory");
-            }
-            Arc::new(InMemoryCacheStore::new())
-        }
-    };
+    let cache: Arc<dyn CacheStore> = create_cache_store(&config, repo.pool()).await?;
 
     // ── Cargo sparse indexes ──────────────────────────────────────────────────
     // Wrapped in CargoIndexMap (Arc<RwLock<...>>) so hot-reload can swap proxy
@@ -260,39 +224,8 @@ async fn main() -> Result<()> {
         .iter()
         .filter_map(|r| r.rate_limit.clone().map(|rl| (r.name.clone(), rl)))
         .collect();
-    let rate_limit_store: Arc<dyn RateLimitStore> = match config.cache.cache_type.as_str() {
-        "postgres" => {
-            tracing::info!("rate limit store: postgres");
-            Arc::new(PgRateLimitStore::new(repo.pool()))
-        }
-        "redis" => {
-            #[cfg(feature = "cache-redis")]
-            {
-                let url = config
-                    .cache
-                    .url
-                    .as_deref()
-                    .unwrap_or("redis://127.0.0.1:6379");
-                tracing::info!(url, "rate limit store: redis");
-                Arc::new(
-                    RedisRateLimitStore::new(url)
-                        .await
-                        .context("connecting to Redis rate limit store")?,
-                )
-            }
-            #[cfg(not(feature = "cache-redis"))]
-            {
-                tracing::warn!("compiled without cache-redis feature; falling back to in-memory rate limit store");
-                Arc::new(InMemoryRateLimitStore::new())
-            }
-        }
-        other => {
-            if other != "memory" {
-                tracing::warn!(cache_type = %other, "unknown cache type for rate limit store, falling back to memory");
-            }
-            Arc::new(InMemoryRateLimitStore::new())
-        }
-    };
+    let rate_limit_store: Arc<dyn RateLimitStore> =
+        create_rate_limit_store(&config, repo.pool()).await?;
     let rate_limit_svc = Arc::new(RateLimitService::new(&rate_limit_configs, rate_limit_store));
 
     // ── Services ──────────────────────────────────────────────────────────────
@@ -358,34 +291,8 @@ async fn main() -> Result<()> {
     });
 
     // ── IP blocking store ─────────────────────────────────────────────────────
-    let ip_block_store: Arc<dyn IpBlockStore> = match config.cache.cache_type.as_str() {
-        "postgres" => {
-            tracing::info!("ip block store: postgres");
-            Arc::new(PgIpBlockStore::new(repo.pool()))
-        }
-        "redis" => {
-            #[cfg(feature = "cache-redis")]
-            {
-                let url = config
-                    .cache
-                    .url
-                    .as_deref()
-                    .unwrap_or("redis://127.0.0.1:6379");
-                tracing::info!(url, "ip block store: redis");
-                Arc::new(
-                    RedisIpBlockStore::new(url)
-                        .await
-                        .context("connecting to Redis ip block store")?,
-                )
-            }
-            #[cfg(not(feature = "cache-redis"))]
-            {
-                tracing::warn!("compiled without cache-redis feature; falling back to in-memory ip block store");
-                Arc::new(InMemoryIpBlockStore::new())
-            }
-        }
-        _ => Arc::new(InMemoryIpBlockStore::new()),
-    };
+    let ip_block_store: Arc<dyn IpBlockStore> =
+        create_ip_block_store(&config, repo.pool()).await?;
     let ip_blocking_cfg = config.ip_blocking.clone();
     let local_svc = Arc::new(LocalRegistryService {
         backend: local_registry_backend,
@@ -423,27 +330,7 @@ async fn main() -> Result<()> {
         .map(|v| v != "1" && v.to_lowercase() != "true")
         .unwrap_or(true);
 
-    let banner_store: Arc<dyn BannerPort> = match config.cache.cache_type.as_str() {
-        "postgres" => Arc::new(PgBannerStore::new(repo.pool())),
-        "redis" => {
-            #[cfg(feature = "cache-redis")]
-            {
-                let url = config
-                    .cache
-                    .url
-                    .as_deref()
-                    .unwrap_or("redis://127.0.0.1:6379");
-                Arc::new(
-                    RedisBannerStore::new(url)
-                        .await
-                        .context("connecting to Redis banner store")?,
-                )
-            }
-            #[cfg(not(feature = "cache-redis"))]
-            Arc::new(InMemoryBannerStore::new())
-        }
-        _ => Arc::new(InMemoryBannerStore::new()),
-    };
+    let banner_store: Arc<dyn BannerPort> = create_banner_store(&config, repo.pool()).await?;
     let banner_svc = Arc::new(BannerService::new(banner_store));
 
     // ── Notifications ─────────────────────────────────────────────────────────
@@ -451,15 +338,26 @@ async fn main() -> Result<()> {
         Arc::new(PgNotificationStore::new(repo.pool()));
 
     let notifications_config = config.notifications.clone();
-    let notification_svc: Option<Arc<NotificationService>> = notifications_config
-        .as_ref()
-        .filter(|nc| nc.enabled)
-        .map(|nc| {
-            Arc::new(NotificationService::new(
+    // Always create the service so subscriptions CRUD works even without a
+    // [notifications] block. Disabled only when `enabled = false` is explicit.
+    let notification_svc: Option<Arc<NotificationService>> = {
+        let explicitly_disabled = notifications_config
+            .as_ref()
+            .map(|nc| !nc.enabled)
+            .unwrap_or(false);
+        if explicitly_disabled {
+            None
+        } else {
+            let effective = notifications_config
+                .as_ref()
+                .cloned()
+                .unwrap_or_default();
+            Some(Arc::new(NotificationService::new(
                 Arc::clone(&notification_store),
-                nc,
-            ))
-        });
+                &effective,
+            )))
+        }
+    };
 
     // Builder closure capturing the deps needed to rebuild HotConfig + AccessConfig + CargoIndexMap.
     let hot_builder: batlehub_web::services::HotConfigBuilder = {
@@ -1354,6 +1252,131 @@ fn init_tracing(otel_cfg: Option<&OtelConfig>) -> Option<sdktrace::SdkTracerProv
         .init();
 
     provider
+}
+
+async fn create_cache_store(
+    config: &batlehub_config::schema::AppConfig,
+    pool: sqlx::PgPool,
+) -> Result<Arc<dyn CacheStore>> {
+    let store: Arc<dyn CacheStore> = match config.cache.cache_type.as_str() {
+        "postgres" => {
+            tracing::info!("metadata cache: postgres");
+            Arc::new(PgCacheStore::new(pool))
+        }
+        "redis" => {
+            #[cfg(feature = "cache-redis")]
+            {
+                let url = config.cache.url.as_deref().unwrap_or("redis://127.0.0.1:6379");
+                tracing::info!(url, "metadata cache: redis");
+                Arc::new(RedisCacheStore::new(url).await.context("connecting to Redis cache")?)
+            }
+            #[cfg(not(feature = "cache-redis"))]
+            {
+                tracing::warn!("compiled without cache-redis feature; falling back to in-memory cache");
+                Arc::new(InMemoryCacheStore::new())
+            }
+        }
+        other => {
+            if other != "memory" {
+                tracing::warn!(cache_type = %other, "unknown cache type, falling back to memory");
+            } else {
+                tracing::info!("metadata cache: memory");
+            }
+            Arc::new(InMemoryCacheStore::new())
+        }
+    };
+    Ok(store)
+}
+
+async fn create_rate_limit_store(
+    config: &batlehub_config::schema::AppConfig,
+    pool: sqlx::PgPool,
+) -> Result<Arc<dyn RateLimitStore>> {
+    let store: Arc<dyn RateLimitStore> = match config.cache.cache_type.as_str() {
+        "postgres" => {
+            tracing::info!("rate limit store: postgres");
+            Arc::new(PgRateLimitStore::new(pool))
+        }
+        "redis" => {
+            #[cfg(feature = "cache-redis")]
+            {
+                let url = config.cache.url.as_deref().unwrap_or("redis://127.0.0.1:6379");
+                tracing::info!(url, "rate limit store: redis");
+                Arc::new(
+                    RedisRateLimitStore::new(url)
+                        .await
+                        .context("connecting to Redis rate limit store")?,
+                )
+            }
+            #[cfg(not(feature = "cache-redis"))]
+            {
+                tracing::warn!("compiled without cache-redis feature; falling back to in-memory rate limit store");
+                Arc::new(InMemoryRateLimitStore::new())
+            }
+        }
+        other => {
+            if other != "memory" {
+                tracing::warn!(cache_type = %other, "unknown cache type for rate limit store, falling back to memory");
+            }
+            Arc::new(InMemoryRateLimitStore::new())
+        }
+    };
+    Ok(store)
+}
+
+async fn create_ip_block_store(
+    config: &batlehub_config::schema::AppConfig,
+    pool: sqlx::PgPool,
+) -> Result<Arc<dyn IpBlockStore>> {
+    let store: Arc<dyn IpBlockStore> = match config.cache.cache_type.as_str() {
+        "postgres" => {
+            tracing::info!("ip block store: postgres");
+            Arc::new(PgIpBlockStore::new(pool))
+        }
+        "redis" => {
+            #[cfg(feature = "cache-redis")]
+            {
+                let url = config.cache.url.as_deref().unwrap_or("redis://127.0.0.1:6379");
+                tracing::info!(url, "ip block store: redis");
+                Arc::new(
+                    RedisIpBlockStore::new(url)
+                        .await
+                        .context("connecting to Redis ip block store")?,
+                )
+            }
+            #[cfg(not(feature = "cache-redis"))]
+            {
+                tracing::warn!("compiled without cache-redis feature; falling back to in-memory ip block store");
+                Arc::new(InMemoryIpBlockStore::new())
+            }
+        }
+        _ => Arc::new(InMemoryIpBlockStore::new()),
+    };
+    Ok(store)
+}
+
+async fn create_banner_store(
+    config: &batlehub_config::schema::AppConfig,
+    pool: sqlx::PgPool,
+) -> Result<Arc<dyn BannerPort>> {
+    let store: Arc<dyn BannerPort> = match config.cache.cache_type.as_str() {
+        "postgres" => Arc::new(PgBannerStore::new(pool)),
+        "redis" => {
+            #[cfg(feature = "cache-redis")]
+            {
+                let url = config.cache.url.as_deref().unwrap_or("redis://127.0.0.1:6379");
+                Arc::new(
+                    RedisBannerStore::new(url)
+                        .await
+                        .context("connecting to Redis banner store")?,
+                )
+            }
+            #[cfg(not(feature = "cache-redis"))]
+            Arc::new(InMemoryBannerStore::new())
+        }
+        _ => Arc::new(InMemoryBannerStore::new()),
+    };
+    Ok(store)
 }
 
 fn build_otlp_provider(cfg: &OtelConfig) -> anyhow::Result<sdktrace::SdkTracerProvider> {

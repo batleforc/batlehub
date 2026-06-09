@@ -108,34 +108,26 @@ impl QuotaService {
         let new_bytes = usage.bytes_published.saturating_add(bytes);
         let new_count = usage.packages_count.saturating_add(1);
 
-        // Check storage limit
-        if let Some(max_bytes) = config.max_storage_bytes_per_user {
-            if new_bytes > max_bytes {
-                let msg = format!(
-                    "storage quota exceeded for registry '{registry}': \
-                     {new_bytes} bytes used, limit is {max_bytes}"
-                );
-                if config.enforcement == QuotaEnforcement::Block {
-                    return Err(CoreError::QuotaExceeded(msg));
-                }
-                // Warn mode: log and continue
-                tracing::warn!("{msg}");
-            }
-        }
-
-        // Check package count limit
-        if let Some(max_pkgs) = config.max_packages_per_user {
-            if new_count > max_pkgs {
-                let msg = format!(
-                    "package quota exceeded for registry '{registry}': \
-                     {new_count} packages, limit is {max_pkgs}"
-                );
-                if config.enforcement == QuotaEnforcement::Block {
-                    return Err(CoreError::QuotaExceeded(msg));
-                }
-                tracing::warn!("{msg}");
-            }
-        }
+        enforce_limit(
+            new_bytes,
+            config.max_storage_bytes_per_user,
+            &config.enforcement,
+            || format!(
+                "storage quota exceeded for registry '{registry}': \
+                 {new_bytes} bytes used, limit is {}",
+                config.max_storage_bytes_per_user.unwrap_or(0)
+            ),
+        )?;
+        enforce_limit(
+            new_count as u64,
+            config.max_packages_per_user.map(|x| x as u64),
+            &config.enforcement,
+            || format!(
+                "package quota exceeded for registry '{registry}': \
+                 {new_count} packages, limit is {}",
+                config.max_packages_per_user.unwrap_or(0)
+            ),
+        )?;
 
         // Record the publish
         self.repo.record_publish(&user_id, registry, bytes).await?;
@@ -187,6 +179,24 @@ impl QuotaService {
     pub async fn reset(&self, user_id: &str, registry: &str) -> Result<(), CoreError> {
         self.repo.reset_usage(user_id, registry).await
     }
+}
+
+fn enforce_limit(
+    current: u64,
+    limit: Option<u64>,
+    enforcement: &QuotaEnforcement,
+    msg: impl Fn() -> String,
+) -> Result<(), CoreError> {
+    let Some(max) = limit else { return Ok(()) };
+    if current <= max {
+        return Ok(());
+    }
+    let msg = msg();
+    if *enforcement == QuotaEnforcement::Block {
+        return Err(CoreError::QuotaExceeded(msg));
+    }
+    tracing::warn!("{msg}");
+    Ok(())
 }
 
 fn is_warning(used: u64, limit: Option<u64>, threshold: f64) -> bool {

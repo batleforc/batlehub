@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import { type HTMLAttributes } from "vue";
+import { Label as LabelPrimitive, type LabelProps } from "radix-vue";
 import { cn } from "@/lib/utils";
 
-const props = defineProps<{
-  class?: HTMLAttributes["class"];
-  for?: string;
-}>();
+const props = defineProps<
+  LabelProps & {
+    class?: HTMLAttributes["class"];
+  }
+>();
 </script>
 
 <template>
-  <label
-    :for="props.for || undefined"
+  <LabelPrimitive
+    v-bind="props"
     :class="
       cn(
         'font-mono text-xs font-semibold uppercase tracking-wide text-muted-foreground leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70',
@@ -19,5 +21,5 @@ const props = defineProps<{
     "
   >
     <slot />
-  </label>
+  </LabelPrimitive>
 </template>

@@ -80,7 +80,7 @@ function signInWithOidc(providerName: string) {
   // then hand off to the backend which threads it through to the provider.
   const state = generateOidcState();
   const params = new URLSearchParams({ state, provider: providerName });
-  window.location.href = `${API_BASE_URL}/api/v1/auth/oidc/login?${params}`;
+  globalThis.location.href = `${API_BASE_URL}/api/v1/auth/oidc/login?${params}`;
 }
 
 function continueAnonymously() {

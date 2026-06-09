@@ -1,6 +1,6 @@
 import { ref, watchEffect, type Ref } from "vue";
 
-function extractMessage(err: unknown): string {
+export function extractMessage(err: unknown): string {
   if (err == null) return "Unknown error";
   if (typeof err === "string") return err;
   if (err instanceof Error) return err.message;
@@ -48,7 +48,6 @@ export function useApi<T>(
   }
 
   watchEffect(() => {
-    // Track deps and tick so watchers fire on reload() too.
     deps.forEach((d) => d.value);
     void run();
   });

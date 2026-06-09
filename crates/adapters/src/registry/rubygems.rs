@@ -372,42 +372,41 @@ fn strip_yaml_quotes(s: &str) -> &str {
     }
 }
 
+/// Extract the gem version from the nested Gem::Version YAML block:
+///   version: !ruby/object:Gem::Version
+///     version: '1.0.0'
+fn extract_gem_version(yaml: &str) -> Option<String> {
+    let mut after_version_key = false;
+    for line in yaml.lines() {
+        if line.starts_with("version:") {
+            after_version_key = true;
+            continue;
+        }
+        if !after_version_key {
+            continue;
+        }
+        let trimmed = line.trim_start_matches(' ');
+        if let Some(rest) = trimmed.strip_prefix("version: ") {
+            let v = rest.trim();
+            if !v.starts_with('!') {
+                return Some(strip_yaml_quotes(v).to_owned());
+            }
+        }
+        if !line.starts_with(' ') {
+            after_version_key = false;
+        }
+    }
+    None
+}
+
 fn parse_gem_yaml(yaml: &str) -> Result<GemMetadata, CoreError> {
     let name = extract_yaml_value(yaml, "name: ")
         .ok_or_else(|| CoreError::Registry("rubygems: gem name not found in metadata".to_owned()))?
         .to_owned();
 
-    // Version is inside a nested Gem::Version object:
-    //   version: !ruby/object:Gem::Version
-    //     version: '1.0.0'
-    // We look for a line with leading spaces that contains "version: " followed by a non-'!' value.
-    let version = {
-        let mut found: Option<String> = None;
-        let mut after_version_key = false;
-        for line in yaml.lines() {
-            if line.starts_with("version:") {
-                after_version_key = true;
-                continue;
-            }
-            if after_version_key {
-                let trimmed = line.trim_start_matches(' ');
-                if let Some(rest) = trimmed.strip_prefix("version: ") {
-                    let v = rest.trim();
-                    if !v.starts_with('!') {
-                        found = Some(strip_yaml_quotes(v).to_owned());
-                        break;
-                    }
-                }
-                // Stop looking once we've passed the indented block
-                if !line.starts_with(' ') {
-                    after_version_key = false;
-                }
-            }
-        }
-        found.ok_or_else(|| {
-            CoreError::Registry("rubygems: gem version not found in metadata".to_owned())
-        })?
-    };
+    let version = extract_gem_version(yaml).ok_or_else(|| {
+        CoreError::Registry("rubygems: gem version not found in metadata".to_owned())
+    })?;
 
     let platform = extract_yaml_value(yaml, "platform: ")
         .unwrap_or("ruby")

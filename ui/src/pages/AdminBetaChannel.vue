@@ -231,7 +231,9 @@ const principalTypeOptions = [
           />
         </div>
         <div class="space-y-1.5">
-          <Label for="beta-principal-id">Principal ID <span class="text-destructive">*</span></Label>
+          <Label for="beta-principal-id"
+            >Principal ID <span class="text-destructive">*</span></Label
+          >
           <Input
             id="beta-principal-id"
             v-model="addForm.principal_id"

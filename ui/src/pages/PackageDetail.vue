@@ -70,7 +70,9 @@ const {
   reload: adminReload,
 } = useApi<PackageDetailResponse>(() => {
   if (!isAdmin.value) return Promise.resolve({ data: null as unknown });
-  return packageDetail({ query: { registry: registry.value, name: name.value } }) as Promise<{
+  return packageDetail({
+    query: { registry: registry.value, name: name.value },
+  }) as Promise<{
     data?: unknown;
     error?: unknown;
   }>;
@@ -82,7 +84,9 @@ const {
   loading: publicLoading,
 } = useApi<{ items: PackageSummaryDto[] }>(() => {
   if (isAdmin.value) return Promise.resolve({ data: null as unknown });
-  return listPackages2({ query: { registry: registry.value, name: name.value } }) as Promise<{
+  return listPackages2({
+    query: { registry: registry.value, name: name.value },
+  }) as Promise<{
     data?: unknown;
     error?: unknown;
   }>;
@@ -135,14 +139,17 @@ function fmtDate(iso: string | null | undefined) {
 
 function fmtAction(action: string) {
   return (
-    { download: "Download", view_metadata: "View metadata", block: "Block", unblock: "Unblock" }[
-      action
-    ] ?? action
+    {
+      download: "Download",
+      view_metadata: "View metadata",
+      block: "Block",
+      unblock: "Unblock",
+    }[action] ?? action
   );
 }
 
 async function doBlock() {
-  const reason = window.prompt("Block reason:");
+  const reason = globalThis.prompt("Block reason:");
   if (!reason) return;
   await blockPackage({
     body: {

@@ -96,51 +96,7 @@ pub async fn run(
                 println!("{table}");
             }
         }
-        AuthCommand::Token { cmd } => match cmd {
-            TokenCommand::List => {
-                let tokens = client.list_tokens().await?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&tokens)?);
-                } else {
-                    let mut table = Table::new();
-                    table.set_header(["ID", "Name", "Role", "Expires"]);
-                    for t in &tokens {
-                        table.add_row([
-                            &t.id.to_string(),
-                            &t.name,
-                            &t.role,
-                            &t.expires_at.format("%Y-%m-%d").to_string(),
-                        ]);
-                    }
-                    println!("{table}");
-                    println!("{} token(s)", tokens.len());
-                }
-            }
-            TokenCommand::Create { name, days, role } => {
-                let resp = client
-                    .create_token(CreateTokenRequest {
-                        name: name.clone(),
-                        expires_in_days: days,
-                        role: role.clone(),
-                    })
-                    .await?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
-                } else {
-                    println!(
-                        "Created token '{name}' (role: {role}, expires: {})",
-                        resp.expires_at.format("%Y-%m-%d")
-                    );
-                    println!();
-                    println!("Token (store this — it will not be shown again):");
-                    println!("  {}", resp.token);
-                }
-            }
-            TokenCommand::Revoke { id } => {
-                client.revoke_token(id).await?;
-                println!("Revoked token {id}");
-            }
-        },
+        AuthCommand::Token { cmd } => handle_token_command(cmd, client, json).await?,
 
         AuthCommand::Login {
             provider,
@@ -159,6 +115,59 @@ pub async fn run(
 
         AuthCommand::Refresh { provider, profile } => {
             handle_auth_refresh(client, provider, profile, global_profile).await?
+        }
+    }
+    Ok(())
+}
+
+async fn handle_token_command(
+    cmd: TokenCommand,
+    client: &BatleHubClient,
+    json: bool,
+) -> Result<()> {
+    match cmd {
+        TokenCommand::List => {
+            let tokens = client.list_tokens().await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&tokens)?);
+            } else {
+                let mut table = Table::new();
+                table.set_header(["ID", "Name", "Role", "Expires"]);
+                for t in &tokens {
+                    table.add_row([
+                        &t.id.to_string(),
+                        &t.name,
+                        &t.role,
+                        &t.expires_at.format("%Y-%m-%d").to_string(),
+                    ]);
+                }
+                println!("{table}");
+                println!("{} token(s)", tokens.len());
+            }
+        }
+        TokenCommand::Create { name, days, role } => {
+            let resp = client
+                .create_token(CreateTokenRequest {
+                    name: name.clone(),
+                    expires_in_days: days,
+                    role: role.clone(),
+                })
+                .await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&resp)?);
+            } else {
+                println!(
+                    "Created token '{name}' (role: {role}, expires: {})",
+                    resp.expires_at.format("%Y-%m-%d")
+                );
+                println!();
+                println!("Token (store this — it will not be shown again):");
+                println!("  {}", resp.token);
+            }
+        }
+        TokenCommand::Revoke { id } => {
+            client.revoke_token(id).await?;
+            println!("Revoked token {id}");
         }
     }
     Ok(())

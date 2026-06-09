@@ -153,6 +153,26 @@ async fn handle_key(app: &mut App, key: event::KeyEvent) {
     }
 }
 
+async fn open_registry(app: &mut App, registry: String) {
+    match app
+        .client
+        .list_packages(PackageQuery {
+            registry: Some(registry.clone()),
+            name: None,
+            page: 0,
+            per_page: 100,
+        })
+        .await
+    {
+        Ok(resp) => {
+            app.package_list.set_items(resp.items, resp.total);
+            app.prev_screen = Some(Screen::RegistryList);
+            app.screen = Screen::PackageList { registry };
+        }
+        Err(e) => app.status_msg = Some(format!("Error: {e}")),
+    }
+}
+
 async fn handle_registry_list(app: &mut App, key: event::KeyEvent) {
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => app.registry_list.prev(),
@@ -160,28 +180,7 @@ async fn handle_registry_list(app: &mut App, key: event::KeyEvent) {
         KeyCode::Enter => {
             if let Some(reg) = app.registry_list.selected() {
                 let registry = reg.name.clone();
-                // Load packages for this registry
-                match app
-                    .client
-                    .list_packages(PackageQuery {
-                        registry: Some(registry.clone()),
-                        name: None,
-                        page: 0,
-                        per_page: 100,
-                    })
-                    .await
-                {
-                    Ok(resp) => {
-                        app.package_list.set_items(resp.items, resp.total);
-                        app.prev_screen = Some(Screen::RegistryList);
-                        app.screen = Screen::PackageList {
-                            registry: registry.clone(),
-                        };
-                    }
-                    Err(e) => {
-                        app.status_msg = Some(format!("Error: {e}"));
-                    }
-                }
+                open_registry(app, registry).await;
             }
         }
         KeyCode::Char('p') => {
@@ -212,6 +211,33 @@ async fn handle_registry_list(app: &mut App, key: event::KeyEvent) {
     }
 }
 
+async fn open_package_detail(app: &mut App, registry: String, name: String) {
+    match app
+        .client
+        .list_packages(PackageQuery {
+            registry: Some(registry.clone()),
+            name: Some(name.clone()),
+            page: 0,
+            per_page: 200,
+        })
+        .await
+    {
+        Ok(resp) => {
+            let versions: Vec<_> = resp
+                .items
+                .into_iter()
+                .filter(|p| p.name == name && p.registry == registry)
+                .collect();
+            app.package_detail.set_items(versions);
+            app.prev_screen = Some(Screen::PackageList {
+                registry: registry.clone(),
+            });
+            app.screen = Screen::PackageDetail { registry, name };
+        }
+        Err(e) => app.status_msg = Some(format!("Error: {e}")),
+    }
+}
+
 async fn handle_package_list(app: &mut App, key: event::KeyEvent, registry: String) {
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => app.package_list.prev(),
@@ -220,36 +246,7 @@ async fn handle_package_list(app: &mut App, key: event::KeyEvent, registry: Stri
         KeyCode::Enter => {
             if let Some(pkg) = app.package_list.selected() {
                 let name = pkg.name.clone();
-                // Load versions
-                match app
-                    .client
-                    .list_packages(PackageQuery {
-                        registry: Some(registry.clone()),
-                        name: Some(name.clone()),
-                        page: 0,
-                        per_page: 200,
-                    })
-                    .await
-                {
-                    Ok(resp) => {
-                        let versions: Vec<_> = resp
-                            .items
-                            .into_iter()
-                            .filter(|p| p.name == name && p.registry == registry)
-                            .collect();
-                        app.package_detail.set_items(versions);
-                        app.prev_screen = Some(Screen::PackageList {
-                            registry: registry.clone(),
-                        });
-                        app.screen = Screen::PackageDetail {
-                            registry: registry.clone(),
-                            name: name.clone(),
-                        };
-                    }
-                    Err(e) => {
-                        app.status_msg = Some(format!("Error: {e}"));
-                    }
-                }
+                open_package_detail(app, registry, name).await;
             }
         }
         KeyCode::Char('/') => {

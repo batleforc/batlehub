@@ -1,8 +1,88 @@
-import { watch } from "vue";
-import { createRouter, createWebHistory } from "vue-router";
+import { watch, type Ref } from "vue";
+import {
+  createRouter,
+  createWebHistory,
+  type RouteLocationNormalized,
+  type RouteLocationRaw,
+} from "vue-router";
 import { useAuth, storeTokens } from "@/composables/useAuth";
 
 const OIDC_STATE_KEY = "oidc_state";
+
+type AuthState = ReturnType<typeof useAuth>;
+
+function handleOidcCallback(to: RouteLocationNormalized): RouteLocationRaw | null {
+  if (!to.query.oidc_access_token) return null;
+
+  const incomingState = String(to.query.oidc_state ?? "");
+  const expectedState = sessionStorage.getItem(OIDC_STATE_KEY) ?? "";
+  sessionStorage.removeItem(OIDC_STATE_KEY);
+
+  if (!incomingState || incomingState !== expectedState) {
+    return {
+      path: "/login",
+      query: { error: "State mismatch — possible CSRF attack. Please try again." },
+    };
+  }
+
+  const provider = to.query.oidc_provider ? String(to.query.oidc_provider) : null;
+  storeTokens(
+    String(to.query.oidc_access_token),
+    to.query.oidc_refresh_token ? String(to.query.oidc_refresh_token) : null,
+    to.query.oidc_expires_in ? Number(to.query.oidc_expires_in) : null,
+    provider,
+  );
+  return { path: "/packages" };
+}
+
+function handleOidcError(to: RouteLocationNormalized): RouteLocationRaw | null {
+  if (!to.query.oidc_error) return null;
+  sessionStorage.removeItem(OIDC_STATE_KEY);
+  return { path: "/login", query: { error: String(to.query.oidc_error) } };
+}
+
+function waitForIdentity(identityReady: Ref<boolean>): Promise<void> {
+  if (identityReady.value) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const stop = watch(identityReady, (ready) => {
+      if (ready) {
+        stop();
+        resolve();
+      }
+    });
+  });
+}
+
+function checkAnonymousAccess(
+  to: RouteLocationNormalized,
+  { identity }: Pick<AuthState, "identity">,
+): RouteLocationRaw | null {
+  if (
+    to.path !== "/login" &&
+    identity.value?.role === "anonymous" &&
+    identity.value?.has_registry_access === false
+  ) {
+    return { path: "/login" };
+  }
+  return null;
+}
+
+function checkMetaGuards(
+  to: RouteLocationNormalized,
+  { isAuthenticated, identity, isAdmin }: Pick<AuthState, "isAuthenticated" | "identity" | "isAdmin">,
+): RouteLocationRaw | undefined {
+  if (to.meta.requiresAuth) {
+    return isAuthenticated.value ? undefined : { path: "/login", query: { redirect: to.fullPath } };
+  }
+  if (to.meta.requiresOidcAuth) {
+    return identity.value?.auth_provider
+      ? undefined
+      : { path: "/login", query: { redirect: to.fullPath } };
+  }
+  if (to.meta.requiresAdmin && !isAdmin.value) {
+    return { path: "/login", query: { redirect: to.fullPath } };
+  }
+}
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -62,89 +142,20 @@ export const router = createRouter({
 });
 
 router.beforeEach(async (to) => {
-  const { isAdmin, isAuthenticated, identity, identityReady } = useAuth();
+  const auth = useAuth();
 
-  // ── OIDC callback: tokens arrive via query params on "/" ───────────────────
-  if (to.query.oidc_access_token) {
-    const incomingState = String(to.query.oidc_state ?? "");
-    const expectedState = sessionStorage.getItem(OIDC_STATE_KEY) ?? "";
+  const oidcResult = handleOidcCallback(to);
+  if (oidcResult !== null) return oidcResult;
 
-    // Validate state to prevent CSRF / open-redirect abuse.
-    if (!incomingState || incomingState !== expectedState) {
-      sessionStorage.removeItem(OIDC_STATE_KEY);
-      return {
-        path: "/login",
-        query: { error: "State mismatch — possible CSRF attack. Please try again." },
-      };
-    }
+  const oidcError = handleOidcError(to);
+  if (oidcError !== null) return oidcError;
 
-    sessionStorage.removeItem(OIDC_STATE_KEY);
+  await waitForIdentity(auth.identityReady);
 
-    const provider = to.query.oidc_provider ? String(to.query.oidc_provider) : null;
+  const anonResult = checkAnonymousAccess(to, auth);
+  if (anonResult !== null) return anonResult;
 
-    storeTokens(
-      String(to.query.oidc_access_token),
-      to.query.oidc_refresh_token ? String(to.query.oidc_refresh_token) : null,
-      to.query.oidc_expires_in ? Number(to.query.oidc_expires_in) : null,
-      provider,
-    );
-
-    return { path: "/packages" };
-  }
-
-  // ── OIDC error forwarded from backend ─────────────────────────────────────
-  if (to.query.oidc_error) {
-    sessionStorage.removeItem(OIDC_STATE_KEY);
-    return {
-      path: "/login",
-      query: { error: String(to.query.oidc_error) },
-    };
-  }
-
-  // ── Wait for identity (needed by all subsequent guards) ───────────────────
-  if (!identityReady.value) {
-    await new Promise<void>((resolve) => {
-      const stop = watch(identityReady, (ready) => {
-        if (ready) {
-          stop();
-          resolve();
-        }
-      });
-    });
-  }
-
-  // ── Force login when anonymous has no access to any registry ──────────────
-  if (
-    to.path !== "/login" &&
-    identity.value?.role === "anonymous" &&
-    identity.value?.has_registry_access === false
-  ) {
-    return { path: "/login" };
-  }
-
-  // ── Authenticated-user route guard ───────────────────────────────────────
-  if (to.meta.requiresAuth) {
-    if (!isAuthenticated.value) {
-      return { path: "/login", query: { redirect: to.fullPath } };
-    }
-    return;
-  }
-
-  // ── OIDC-only route guard (tokens page requires any OIDC provider) ────────
-  if (to.meta.requiresOidcAuth) {
-    // Any non-null auth_provider means the session came through OIDC or Kubernetes.
-    if (!identity.value?.auth_provider) {
-      return { path: "/login", query: { redirect: to.fullPath } };
-    }
-    return;
-  }
-
-  // ── Admin route guard ──────────────────────────────────────────────────────
-  if (!to.meta.requiresAdmin) return;
-
-  if (!isAdmin.value) {
-    return { path: "/login", query: { redirect: to.fullPath } };
-  }
+  return checkMetaGuards(to, auth);
 });
 
 /** Generate and store a fresh OIDC state value, then return it. */

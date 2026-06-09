@@ -1,6 +1,21 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
-import { useApi } from "@/composables/useApi";
+import {
+  listSubscriptions,
+  listNotificationChannels,
+  listInboundEvents,
+  createSubscription,
+  updateSubscription,
+  deleteSubscription,
+  testSubscription as testSubscriptionApi,
+} from "@/client/sdk.gen";
+import type {
+  NotificationSubscription,
+  NotificationEventType,
+  ChannelListResponse,
+  InboundEventsResponse,
+} from "@/client/types.gen";
+import { useApi, extractMessage } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,56 +35,7 @@ import Dialog from "@/components/ui/dialog/Dialog.vue";
 
 const { token } = useAuth();
 
-// ── Types ──────────────────────────────────────────────────────────────────────
-
-type EventType = "package_published" | "package_yanked" | "package_unyanked" | "package_deleted";
-
-interface Subscription {
-  id: string;
-  registry: string | null;
-  package_name: string | null;
-  event_types: EventType[];
-  channel_name: string;
-  created_by: string;
-  created_at: string;
-  enabled: boolean;
-}
-
-interface Channel {
-  name: string;
-}
-
-interface InboundEvent {
-  id: string;
-  webhook_name: string;
-  payload: unknown;
-  source_ip: string | null;
-  received_at: string;
-  signature_valid: boolean | null;
-}
-
 type Tab = "subscriptions" | "inbound" | "channels";
-
-// ── API calls ─────────────────────────────────────────────────────────────────
-
-const BASE = "/api/v1/admin/notifications";
-
-async function apiFetch(path: string, init?: RequestInit) {
-  const res = await fetch(path, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token.value}`,
-      ...init?.headers,
-    },
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status}: ${body}`);
-  }
-  if (res.status === 204) return null;
-  return res.json();
-}
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -80,27 +46,27 @@ const {
   error: subsError,
   loading: subsLoading,
   reload: reloadSubs,
-} = useApi<Subscription[]>(() => apiFetch(`${BASE}/subscriptions`), [token]);
+} = useApi<NotificationSubscription[]>(() => listSubscriptions(), [token]);
 
 const {
   data: channelsResp,
   error: channelsError,
   loading: channelsLoading,
-} = useApi<{ channels: Channel[] }>(() => apiFetch(`${BASE}/channels`), [token]);
+} = useApi<ChannelListResponse>(() => listNotificationChannels(), [token]);
 
 const {
   data: inboundResp,
   error: inboundError,
   loading: inboundLoading,
   reload: reloadInbound,
-} = useApi<{ events: InboundEvent[] }>(() => apiFetch(`${BASE}/inbound`), [token]);
+} = useApi<InboundEventsResponse>(() => listInboundEvents(), [token]);
 
 const channels = computed(() => channelsResp.value?.channels ?? []);
 const inboundEvents = computed(() => inboundResp.value?.events ?? []);
 
 // ── Create / edit dialog ──────────────────────────────────────────────────────
 
-const ALL_EVENT_TYPES: EventType[] = [
+const ALL_EVENT_TYPES: NotificationEventType[] = [
   "package_published",
   "package_yanked",
   "package_unyanked",
@@ -112,7 +78,7 @@ const editingId = ref<string | null>(null);
 const form = ref({
   registry: "",
   package_name: "",
-  event_types: ["package_published"] as EventType[],
+  event_types: ["package_published"] as NotificationEventType[],
   channel_name: "",
   enabled: true,
 });
@@ -132,7 +98,7 @@ function openCreate() {
   dialogOpen.value = true;
 }
 
-function openEdit(sub: Subscription) {
+function openEdit(sub: NotificationSubscription) {
   editingId.value = sub.id;
   form.value = {
     registry: sub.registry ?? "",
@@ -145,7 +111,7 @@ function openEdit(sub: Subscription) {
   dialogOpen.value = true;
 }
 
-function toggleEventType(et: EventType) {
+function toggleEventType(et: NotificationEventType) {
   const idx = form.value.event_types.indexOf(et);
   if (idx === -1) form.value.event_types.push(et);
   else form.value.event_types.splice(idx, 1);
@@ -155,21 +121,28 @@ async function submitForm() {
   if (!form.value.channel_name.trim() || form.value.event_types.length === 0) return;
   formLoading.value = true;
   formError.value = null;
+  const body = {
+    registry: form.value.registry.trim() || null,
+    package_name: form.value.package_name.trim() || null,
+    event_types: form.value.event_types,
+    channel_name: form.value.channel_name.trim(),
+  };
   try {
-    const body = {
-      registry: form.value.registry.trim() || null,
-      package_name: form.value.package_name.trim() || null,
-      event_types: form.value.event_types,
-      channel_name: form.value.channel_name.trim(),
-      enabled: form.value.enabled,
-    };
     if (editingId.value) {
-      await apiFetch(`${BASE}/subscriptions/${editingId.value}`, {
-        method: "PUT",
-        body: JSON.stringify(body),
+      const result = await updateSubscription({
+        path: { id: editingId.value },
+        body: { ...body, enabled: form.value.enabled },
       });
+      if (result.error) {
+        formError.value = String(result.error);
+        return;
+      }
     } else {
-      await apiFetch(`${BASE}/subscriptions`, { method: "POST", body: JSON.stringify(body) });
+      const result = await createSubscription({ body });
+      if (result.error) {
+        formError.value = String(result.error);
+        return;
+      }
     }
     dialogOpen.value = false;
     reloadSubs();
@@ -191,7 +164,11 @@ async function confirmDelete() {
   deleteLoading.value = true;
   deleteError.value = null;
   try {
-    await apiFetch(`${BASE}/subscriptions/${deleteTarget.value}`, { method: "DELETE" });
+    const result = await deleteSubscription({ path: { id: deleteTarget.value } });
+    if (result.error) {
+      deleteError.value = String(result.error);
+      return;
+    }
     deleteTarget.value = null;
     reloadSubs();
   } catch (e) {
@@ -203,22 +180,18 @@ async function confirmDelete() {
 
 // ── Toggle enabled ────────────────────────────────────────────────────────────
 
-async function toggleEnabled(sub: Subscription) {
-  try {
-    await apiFetch(`${BASE}/subscriptions/${sub.id}`, {
-      method: "PUT",
-      body: JSON.stringify({
-        ...sub,
-        registry: sub.registry,
-        package_name: sub.package_name,
-        enabled: !sub.enabled,
-      }),
-    });
-    reloadSubs();
-  } catch {
-    // ignore; reload will show correct state
-    reloadSubs();
-  }
+async function toggleEnabled(sub: NotificationSubscription) {
+  await updateSubscription({
+    path: { id: sub.id },
+    body: {
+      registry: sub.registry ?? null,
+      package_name: sub.package_name ?? null,
+      event_types: sub.event_types,
+      channel_name: sub.channel_name,
+      enabled: !sub.enabled,
+    },
+  });
+  reloadSubs();
 }
 
 // ── Test dispatch ─────────────────────────────────────────────────────────────
@@ -230,10 +203,14 @@ async function testSubscription(id: string) {
   testLoading.value = id;
   testMsg.value = null;
   try {
-    await apiFetch(`${BASE}/subscriptions/${id}/test`, { method: "POST" });
-    testMsg.value = "Test sent successfully.";
+    const result = await testSubscriptionApi({ path: { id } });
+    if (result.error) {
+      testMsg.value = `Test failed: ${extractMessage(result.error)}`;
+    } else {
+      testMsg.value = "Test sent successfully.";
+    }
   } catch (e) {
-    testMsg.value = `Test failed: ${e instanceof Error ? e.message : "Unknown error"}`;
+    testMsg.value = `Test failed: ${extractMessage(e)}`;
   } finally {
     testLoading.value = null;
   }
@@ -245,7 +222,9 @@ function fmtTs(ts: string) {
   return new Date(ts).toLocaleString();
 }
 
-function eventBadgeVariant(et: EventType): "default" | "secondary" | "destructive" | "outline" {
+function eventBadgeVariant(
+  et: NotificationEventType,
+): "default" | "secondary" | "destructive" | "outline" {
   if (et === "package_published") return "default";
   if (et === "package_yanked") return "destructive";
   if (et === "package_unyanked") return "secondary";
@@ -480,17 +459,12 @@ function eventBadgeVariant(et: EventType): "default" | "secondary" | "destructiv
             class="font-mono"
           />
         </div>
-        <div class="space-y-1.5">
-          <span
-            id="event-types-label"
+        <fieldset class="space-y-1.5 border-0 p-0 m-0">
+          <legend
             class="font-mono text-xs font-semibold uppercase tracking-wide text-muted-foreground leading-none"
-            >Event types <span class="text-destructive">*</span></span
+            >Event types <span class="text-destructive">*</span></legend
           >
-          <div
-            class="flex flex-wrap gap-2"
-            role="group"
-            aria-labelledby="event-types-label"
-          >
+          <div class="flex flex-wrap gap-2">
             <button
               v-for="et in ALL_EVENT_TYPES"
               :key="et"
@@ -506,7 +480,7 @@ function eventBadgeVariant(et: EventType): "default" | "secondary" | "destructiv
               {{ et.replace("package_", "") }}
             </button>
           </div>
-        </div>
+        </fieldset>
         <div class="space-y-1.5">
           <Label for="notif-channel">Channel <span class="text-destructive">*</span></Label>
           <Input
