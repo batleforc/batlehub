@@ -28,7 +28,9 @@ async function fetchRegistries() {
   try {
     const { data } = await registryHealth();
     if (data) {
-      registries.value = (data as { registry: string }[]).map((r) => r.registry).sort();
+      registries.value = (data as { registry: string }[])
+        .map((r) => r.registry)
+        .sort((a, b) => a.localeCompare(b));
       if (registries.value.length > 0) selectedRegistry.value = registries.value[0];
     }
   } catch {

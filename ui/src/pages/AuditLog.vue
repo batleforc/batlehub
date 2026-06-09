@@ -50,7 +50,7 @@ const filteredItems = computed(() => {
 
 const actionOptions = computed(() => {
   if (!data.value?.length) return [];
-  return [...new Set(data.value.map((e) => e.action))].sort();
+  return [...new Set(data.value.map((e) => e.action))].sort((a, b) => a.localeCompare(b));
 });
 </script>
 

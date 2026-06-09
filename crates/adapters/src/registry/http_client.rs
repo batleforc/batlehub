@@ -113,12 +113,12 @@ pub fn percent_encode(s: &str) -> String {
                 out.push('%');
                 out.push(
                     char::from_digit((byte >> 4) as u32, 16)
-                        .unwrap()
+                        .expect("nibble 0-15 always yields a hex digit")
                         .to_ascii_uppercase(),
                 );
                 out.push(
                     char::from_digit((byte & 0xf) as u32, 16)
-                        .unwrap()
+                        .expect("nibble 0-15 always yields a hex digit")
                         .to_ascii_uppercase(),
                 );
             }

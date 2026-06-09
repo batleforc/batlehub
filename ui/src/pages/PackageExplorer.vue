@@ -173,8 +173,8 @@ function onSearchInput(val: string) {
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
     page.value = 0;
-    fetchPackages();
-    if (val.trim().length >= 2) fetchUpstream();
+    void fetchPackages();
+    if (val.trim().length >= 2) void fetchUpstream();
     else upstreamResults.value = [];
   }, 300);
 }
@@ -183,14 +183,14 @@ function selectRegistry(reg: string | null) {
   selectedRegistry.value = reg;
   page.value = 0;
   upstreamResults.value = [];
-  fetchPackages();
-  if (search.value.trim().length >= 2) fetchUpstream();
+  void fetchPackages();
+  if (search.value.trim().length >= 2) void fetchUpstream();
 }
 
 function onSortChange(val: string) {
   sort.value = val as "downloads" | "name" | "recent";
   page.value = 0;
-  fetchPackages();
+  void fetchPackages();
 }
 
 function goToDetail(row: ExploreRow) {
@@ -203,21 +203,21 @@ function goToDetail(row: ExploreRow) {
 function prevPage() {
   if (page.value > 0) {
     page.value--;
-    fetchPackages();
+    void fetchPackages();
   }
 }
 function nextPage() {
   if (page.value < totalPages.value - 1) {
     page.value++;
-    fetchPackages();
+    void fetchPackages();
   }
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 onMounted(() => {
-  fetchAllRegistries();
-  fetchPackages();
+  void fetchAllRegistries();
+  void fetchPackages();
 });
 </script>
 
@@ -280,8 +280,8 @@ onMounted(() => {
           size="sm"
           @click="
             () => {
-              fetchPackages();
-              if (search.trim().length >= 2) fetchUpstream();
+              void fetchPackages();
+              if (search.trim().length >= 2) void fetchUpstream();
             }
           "
         >

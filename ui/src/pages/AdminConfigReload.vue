@@ -75,8 +75,8 @@ async function fetchHistory() {
   try {
     const { data } = await listConfigChanges({ query: { per_page: 20 } });
     changeHistory.value = (data as { items?: ConfigChangeRow[] })?.items ?? [];
-  } catch (e: unknown) {
-    console.warn("config history fetch failed:", e);
+  } catch {
+    // non-critical — history list will remain empty
   } finally {
     loadingHistory.value = false;
   }

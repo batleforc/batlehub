@@ -57,7 +57,7 @@ async function refreshIdentity() {
 
 // Run on startup.
 client.setConfig({ auth: token.value || undefined });
-refreshIdentity();
+void refreshIdentity();
 
 // Re-fetch identity whenever the access token changes.
 watch(token, () => refreshIdentity());
@@ -74,7 +74,7 @@ function scheduleRefresh() {
   const msUntilRefresh = expiresAt.value - Date.now() - 60_000;
   if (msUntilRefresh <= 0) {
     // Already expired or about to — refresh immediately.
-    doRefresh();
+    void doRefresh();
     return;
   }
   _refreshTimer = setTimeout(doRefresh, msUntilRefresh);
@@ -98,7 +98,6 @@ async function doRefresh() {
       oidcProvider.value || undefined,
     );
   } catch (e) {
-    console.warn("[auth] token refresh failed:", e);
     // Don't force logout — let the next API call surface the 401.
   }
 }

@@ -37,9 +37,16 @@ impl GithubRegistryClient {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             reqwest::header::ACCEPT,
-            "application/vnd.github+json".parse().unwrap(),
+            "application/vnd.github+json"
+                .parse()
+                .expect("static header value is valid ASCII"),
         );
-        headers.insert("X-GitHub-Api-Version", "2022-11-28".parse().unwrap());
+        headers.insert(
+            "X-GitHub-Api-Version",
+            "2022-11-28"
+                .parse()
+                .expect("static header value is valid ASCII"),
+        );
         let auth_headers = upstream_auth_headers(opts)?;
         headers.extend(auth_headers);
 

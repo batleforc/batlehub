@@ -32,7 +32,7 @@ function init(): Promise<HighlighterCore> {
   return _promise;
 }
 
-init();
+void init();
 
 export function useShiki() {
   function highlight(code: string, lang: string): string {
