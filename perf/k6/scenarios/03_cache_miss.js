@@ -28,7 +28,7 @@ export const options = {
 
 const HEADERS = { Authorization: `Bearer ${ADMIN_TOKEN}` };
 
-export default function () {
+export default function cache_miss() {
   // Each VU+iteration combo is a unique version → guaranteed cache miss.
   const version = `0.${__VU}.${__ITER}`;
   const pkg = `miss-pkg-${__VU}`;

@@ -20,7 +20,7 @@ export const options = {
   },
 };
 
-export default function () {
+export default function at_rest() {
   // Health check — no auth required.
   const health = http.get(`${BASE_URL}/healthz`);
   check(health, { "health 200": (r) => r.status === 200 });

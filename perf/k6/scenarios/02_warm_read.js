@@ -16,15 +16,21 @@
  */
 import http from "k6/http";
 import { check } from "k6";
-import { BASE_URL, ADMIN_TOKEN, NPM_REGISTRY, SEED_PKG, SEED_VER } from "../config.js";
+import {
+  BASE_URL,
+  ADMIN_TOKEN,
+  NPM_REGISTRY,
+  SEED_PKG,
+  SEED_VER,
+} from "../config.js";
 
 export const options = {
   stages: [
-    { duration: "30s", target: 10 },   // warm up
-    { duration: "60s", target: 50 },   // 500 req/s
-    { duration: "60s", target: 100 },  // 1k req/s
-    { duration: "60s", target: 200 },  // 2k req/s
-    { duration: "30s", target: 0 },    // cool down
+    { duration: "30s", target: 10 }, // warm up
+    { duration: "60s", target: 50 }, // 500 req/s
+    { duration: "60s", target: 100 }, // 1k req/s
+    { duration: "60s", target: 200 }, // 2k req/s
+    { duration: "30s", target: 0 }, // cool down
   ],
   thresholds: {
     // Error rate must stay below 1 % — hard requirement.
@@ -40,7 +46,7 @@ export const options = {
 const URL = `${BASE_URL}/proxy/${NPM_REGISTRY}/${SEED_PKG}/${SEED_VER}/tarball`;
 const HEADERS = { Authorization: `Bearer ${ADMIN_TOKEN}` };
 
-export default function () {
+export default function warm_read() {
   const res = http.get(URL, { headers: HEADERS });
   check(res, {
     "status 200": (r) => r.status === 200,

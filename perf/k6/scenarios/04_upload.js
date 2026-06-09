@@ -38,7 +38,7 @@ const HEADERS = {
   "Content-Type": "application/json",
 };
 
-export default function () {
+export default function upload() {
   const name = `perf-upload-${__VU}`;
   const version = `1.0.${__ITER}`;
 
