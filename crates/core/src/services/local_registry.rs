@@ -92,6 +92,126 @@ pub struct TerraformPlatform<'a> {
 }
 
 impl LocalRegistryService {
+    fn check_signing_policy(
+        signing: &crate::services::hot_config::SigningConfig,
+        sig_bytes: Option<&Vec<u8>>,
+        sig_type: Option<&String>,
+    ) -> Result<(), CoreError> {
+        if signing.required && sig_bytes.is_none() {
+            return Err(CoreError::AccessDenied(
+                "artifact signature required (X-Artifact-Signature header missing)".into(),
+            ));
+        }
+        if !signing.allowed_types.is_empty() {
+            if let Some(st) = sig_type {
+                if !signing.allowed_types.iter().any(|t| t == st) {
+                    return Err(CoreError::AccessDenied(format!(
+                        "signature type '{st}' is not in the allowed list"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn check_namespace_publish_access(
+        &self,
+        registry: &str,
+        name: &str,
+        publisher: &Identity,
+    ) -> Result<(), CoreError> {
+        let Some(ref ns_port) = self.team_namespace else {
+            return Ok(());
+        };
+        let Some(ns) = ns_port.find_namespace(registry, name).await? else {
+            return Ok(());
+        };
+        let norm_id = ns.group_id.replace(' ', "");
+        let ok = publisher.is_admin()
+            || publisher.groups.iter().any(|g| g.replace(' ', "") == norm_id);
+        if !ok {
+            return Err(CoreError::AccessDenied(format!(
+                "namespace '{}' in registry '{}' is owned by group '{}'; \
+                 you are not a member",
+                ns.prefix, registry, ns.group_id
+            )));
+        }
+        Ok(())
+    }
+
+    /// Returns `true` when the package is new (no existing version).
+    async fn check_ownership_publish_access(
+        &self,
+        registry: &str,
+        name: &str,
+        publisher: &Identity,
+    ) -> Result<bool, CoreError> {
+        let Some(ref ownership) = self.ownership else {
+            return Ok(false);
+        };
+        let package_exists = self.backend.exists(registry, name).await?;
+        if package_exists && !ownership.can_publish(registry, name, publisher).await? {
+            return Err(CoreError::AccessDenied(format!(
+                "you are not an owner of '{name}' in registry '{registry}'"
+            )));
+        }
+        Ok(!package_exists)
+    }
+
+    async fn run_publish_sbom(
+        &self,
+        req: &PublishRequest,
+        storage_key: &str,
+        bytes: u64,
+    ) -> Result<(), CoreError> {
+        let Some(ref sbom_svc) = self.sbom else {
+            return Ok(());
+        };
+        let sbom_cfg = {
+            let hot = self.hot.read().await;
+            hot.sbom.get(&req.registry).cloned()
+        };
+        let Some(cfg) = sbom_cfg.filter(|c| c.enabled) else {
+            return Ok(());
+        };
+        let formats: Vec<SbomFormat> = cfg
+            .formats
+            .iter()
+            .filter_map(|s| SbomFormat::parse(s))
+            .collect();
+        let result = sbom_svc
+            .record_for_published(
+                &req.registry,
+                &req.name,
+                &req.version,
+                storage_key,
+                &req.artifact,
+                SbomPublishOptions {
+                    registry_type: &cfg.registry_type,
+                    formats: &formats,
+                    required: cfg.required,
+                },
+            )
+            .await;
+        match result {
+            Err(e) if cfg.required => {
+                self.remove_pending(&req.registry, &req.name, &req.version)
+                    .await;
+                if let Err(err) = self.storage.delete(storage_key).await {
+                    tracing::error!("storage cleanup after sbom failure: {err}");
+                }
+                self.revoke_quota(&req.publisher, &req.registry, bytes)
+                    .await;
+                Err(e)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "sbom generation failed (non-fatal)");
+                Ok(())
+            }
+            Ok(()) => Ok(()),
+        }
+    }
+
     /// Validate and persist a published artifact.
     ///
     /// Returns a `QuotaCheck` describing the publisher's current quota state
@@ -120,61 +240,21 @@ impl LocalRegistryService {
 
         // Signing check.
         if let Some(ref signing) = signing {
-            if signing.required && req.signature_bytes.is_none() {
-                return Err(CoreError::AccessDenied(
-                    "artifact signature required (X-Artifact-Signature header missing)".into(),
-                ));
-            }
-            if !signing.allowed_types.is_empty() {
-                if let Some(ref sig_type) = req.signature_type {
-                    if !signing.allowed_types.iter().any(|t| t == sig_type) {
-                        return Err(CoreError::AccessDenied(format!(
-                            "signature type '{sig_type}' is not in the allowed list"
-                        )));
-                    }
-                }
-            }
+            Self::check_signing_policy(
+                signing,
+                req.signature_bytes.as_ref(),
+                req.signature_type.as_ref(),
+            )?;
         }
 
-        // Namespace enforcement: if the package prefix is claimed by a team group,
-        // only members of that group (or admins) may publish here.
-        if let Some(ref ns_port) = self.team_namespace {
-            if let Some(ns) = ns_port.find_namespace(&req.registry, &req.name).await? {
-                let norm_id = ns.group_id.replace(' ', "");
-                let ok = req.publisher.is_admin()
-                    || req
-                        .publisher
-                        .groups
-                        .iter()
-                        .any(|g| g.replace(' ', "") == norm_id);
-                if !ok {
-                    return Err(CoreError::AccessDenied(format!(
-                        "namespace '{}' in registry '{}' is owned by group '{}'; \
-                         you are not a member",
-                        ns.prefix, req.registry, ns.group_id
-                    )));
-                }
-            }
-        }
+        // Namespace enforcement.
+        self.check_namespace_publish_access(&req.registry, &req.name, &req.publisher)
+            .await?;
 
-        // Ownership check: if ownership is configured and the package already exists,
-        // verify the caller is a registered owner.
-        let is_new_package = if let Some(ref ownership) = self.ownership {
-            let package_exists = self.backend.exists(&req.registry, &req.name).await?;
-            if package_exists
-                && !ownership
-                    .can_publish(&req.registry, &req.name, &req.publisher)
-                    .await?
-            {
-                return Err(CoreError::AccessDenied(format!(
-                    "you are not an owner of '{}' in registry '{}'",
-                    req.name, req.registry
-                )));
-            }
-            !package_exists
-        } else {
-            false
-        };
+        // Ownership check.
+        let is_new_package = self
+            .check_ownership_publish_access(&req.registry, &req.name, &req.publisher)
+            .await?;
 
         // `limit` was extracted from hot config above.
         if req.artifact.len() as u64 > limit {
@@ -211,7 +291,7 @@ impl LocalRegistryService {
             version: req.version.clone(),
             checksum: req.checksum.clone(),
             yanked: false,
-            index_metadata: req.index_metadata,
+            index_metadata: req.index_metadata.clone(),
             published_at: chrono::Utc::now(),
             published_by: req.publisher.user_id.clone(),
             signature_bytes: req.signature_bytes.clone(),
@@ -288,49 +368,7 @@ impl LocalRegistryService {
 
         // Step 5: generate SBOM. When `required` is true and generation fails,
         // roll back the publish and return the error.
-        if let Some(ref sbom_svc) = self.sbom {
-            let sbom_cfg = {
-                let hot = self.hot.read().await;
-                hot.sbom.get(&req.registry).cloned()
-            };
-            if let Some(cfg) = sbom_cfg.filter(|c| c.enabled) {
-                let formats: Vec<SbomFormat> = cfg
-                    .formats
-                    .iter()
-                    .filter_map(|s| SbomFormat::parse(s))
-                    .collect();
-                let result = sbom_svc
-                    .record_for_published(
-                        &req.registry,
-                        &req.name,
-                        &req.version,
-                        &storage_key,
-                        &req.artifact,
-                        SbomPublishOptions {
-                            registry_type: &cfg.registry_type,
-                            formats: &formats,
-                            required: cfg.required,
-                        },
-                    )
-                    .await;
-                match result {
-                    Err(e) if cfg.required => {
-                        self.remove_pending(&req.registry, &req.name, &req.version)
-                            .await;
-                        if let Err(err) = self.storage.delete(&storage_key).await {
-                            tracing::error!("storage cleanup after sbom failure: {err}");
-                        }
-                        self.revoke_quota(&req.publisher, &req.registry, bytes)
-                            .await;
-                        return Err(e);
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "sbom generation failed (non-fatal)");
-                    }
-                    Ok(()) => {}
-                }
-            }
-        }
+        self.run_publish_sbom(&req, &storage_key, bytes).await?;
 
         Ok(quota_check)
     }
@@ -1247,6 +1285,36 @@ impl LocalRegistryService {
     ///
     /// Returns a JSON object with `"packages"` and `"packages.conda"` keys
     /// ready to be serialised and served to conda clients.
+    /// Returns `Some((filename, entry))` when `pkg` belongs to `platform`, or
+    /// `None` when it should be excluded (wrong subdir or yanked).
+    fn conda_repodata_entry(
+        pkg: &crate::entities::PublishedPackage,
+        platform: &str,
+    ) -> Option<(String, serde_json::Value)> {
+        let meta = &pkg.index_metadata;
+        let subdir = meta.get("subdir").and_then(|v| v.as_str()).unwrap_or("");
+        if !subdir.is_empty() && subdir != platform {
+            return None;
+        }
+        let filename = match meta.get("filename").and_then(|v| v.as_str()) {
+            Some(f) => f.to_owned(),
+            None => {
+                let build = meta.get("build").and_then(|v| v.as_str()).unwrap_or("0");
+                format!("{}-{}-{}.tar.bz2", pkg.name, pkg.version, build)
+            }
+        };
+        let mut entry = if meta.is_object() {
+            meta.clone()
+        } else {
+            serde_json::json!({"name": pkg.name, "version": pkg.version})
+        };
+        if let Some(obj) = entry.as_object_mut() {
+            obj.entry("sha256")
+                .or_insert_with(|| serde_json::json!(pkg.checksum));
+        }
+        Some((filename, entry))
+    }
+
     pub async fn get_conda_repodata(
         &self,
         registry: &str,
@@ -1260,36 +1328,9 @@ impl LocalRegistryService {
         for name in &names {
             let versions = self.backend.get_versions(registry, name).await?;
             for pkg in versions.into_iter().filter(|p| !p.yanked) {
-                let meta = &pkg.index_metadata;
-                // Filter by platform: accept packages whose subdir matches or where
-                // subdir is absent (treat as matching any platform query).
-                let subdir = meta.get("subdir").and_then(|v| v.as_str()).unwrap_or("");
-                if !subdir.is_empty() && subdir != platform {
+                let Some((filename, entry)) = Self::conda_repodata_entry(&pkg, platform) else {
                     continue;
-                }
-                let filename = match meta.get("filename").and_then(|v| v.as_str()) {
-                    Some(f) => f.to_owned(),
-                    None => {
-                        // Reconstruct filename from name/version/build
-                        let build = meta.get("build").and_then(|v| v.as_str()).unwrap_or("0");
-                        format!("{}-{}-{}.tar.bz2", pkg.name, pkg.version, build)
-                    }
                 };
-                // Build the repodata entry from index_metadata plus checksum.
-                let mut entry = if meta.is_object() {
-                    meta.clone()
-                } else {
-                    serde_json::json!({
-                        "name": pkg.name,
-                        "version": pkg.version,
-                    })
-                };
-                // Ensure sha256 is set from the stored checksum if not in metadata.
-                if let Some(obj) = entry.as_object_mut() {
-                    obj.entry("sha256")
-                        .or_insert_with(|| serde_json::json!(pkg.checksum));
-                }
-
                 if filename.ends_with(".conda") {
                     packages_conda.insert(filename, entry);
                 } else {

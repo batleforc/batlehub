@@ -53,6 +53,92 @@ impl CondaRegistryClient {
         }
     }
 
+    /// Fetch one platform's `repodata.json` and return all versions of `package` found in it.
+    /// Returns an empty `Vec` on any network/parse error (fail-open for version listing).
+    async fn fetch_platform_versions(&self, base: &str, platform: &str, package: &str) -> Vec<String> {
+        let url = format!("{base}/{platform}/repodata.json");
+        let resp = match self.get(&url).send().await {
+            Ok(r) if r.status().is_success() => r,
+            _ => return vec![],
+        };
+        let body = match resp.bytes().await {
+            Ok(b) => b,
+            Err(_) => return vec![],
+        };
+        let repodata: CondaRepodata = match serde_json::from_slice(&body) {
+            Ok(r) => r,
+            Err(_) => return vec![],
+        };
+        repodata
+            .packages
+            .values()
+            .chain(repodata.packages_conda.values())
+            .filter(|e| e.name.as_deref() == Some(package))
+            .filter_map(|e| e.version.clone())
+            .collect()
+    }
+
+    /// Look up a specific conda file in `{platform}/repodata.json`.
+    async fn lookup_file_in_repodata(
+        &self,
+        base: &str,
+        platform: &str,
+        filename: &str,
+        pkg: &PackageId,
+    ) -> Result<PackageMetadata, CoreError> {
+        let repodata_url = format!("{base}/{platform}/repodata.json");
+        let resp = self.get(&repodata_url).send().await.map_err(|e| {
+            CoreError::Registry(format!("conda: repodata request failed: {e}"))
+        })?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(CoreError::NotFound(format!(
+                "conda repodata not found for platform '{platform}'"
+            )));
+        }
+        if !resp.status().is_success() {
+            return Err(CoreError::Registry(format!(
+                "conda upstream returned {} fetching repodata",
+                resp.status()
+            )));
+        }
+        let cache_control = resp
+            .headers()
+            .get(reqwest::header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let body = resp
+            .bytes()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let repodata: CondaRepodata = serde_json::from_slice(&body)
+            .map_err(|e| CoreError::Registry(format!("conda: parse repodata: {e}")))?;
+        let entry = repodata
+            .packages
+            .get(filename)
+            .or_else(|| repodata.packages_conda.get(filename));
+        let entry = entry.ok_or_else(|| {
+            CoreError::NotFound(format!(
+                "conda: '{filename}' not found in {platform}/repodata.json"
+            ))
+        })?;
+        let published_at = entry.timestamp.and_then(|ms| {
+            chrono::DateTime::from_timestamp(ms / 1000, ((ms % 1000) * 1_000_000) as u32)
+        });
+        Ok(PackageMetadata {
+            id: pkg.clone(),
+            published_at,
+            download_url: Some(format!("{base}/{platform}/{filename}")),
+            checksum: entry.sha256.clone(),
+            is_signed: None,
+            extra: serde_json::json!({
+                "name": entry.name,
+                "version": entry.version,
+                "build": entry.build,
+            }),
+            cache_control,
+        })
+    }
+
     fn artifact_url(&self, pkg: &PackageId) -> String {
         let base = self.base_url.trim_end_matches('/');
         let platform = &pkg.version; // version = platform for conda
@@ -96,68 +182,9 @@ impl RegistryClient for CondaRegistryClient {
         // For specific package files, look them up in repodata.json.
         if pkg.name != "repodata" {
             if let Some(filename) = &pkg.artifact {
-                let repodata_url = format!("{base}/{platform}/repodata.json");
-                let resp = self.get(&repodata_url).send().await.map_err(|e| {
-                    CoreError::Registry(format!("conda: repodata request failed: {e}"))
-                })?;
-
-                if resp.status() == reqwest::StatusCode::NOT_FOUND {
-                    return Err(CoreError::NotFound(format!(
-                        "conda repodata not found for platform '{platform}'"
-                    )));
-                }
-                if !resp.status().is_success() {
-                    return Err(CoreError::Registry(format!(
-                        "conda upstream returned {} fetching repodata",
-                        resp.status()
-                    )));
-                }
-
-                let cache_control = resp
-                    .headers()
-                    .get(reqwest::header::CACHE_CONTROL)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_owned);
-
-                let body = resp
-                    .bytes()
-                    .await
-                    .map_err(|e| CoreError::Registry(e.to_string()))?;
-
-                let repodata: CondaRepodata = serde_json::from_slice(&body)
-                    .map_err(|e| CoreError::Registry(format!("conda: parse repodata: {e}")))?;
-
-                let entry = repodata
-                    .packages
-                    .get(filename.as_str())
-                    .or_else(|| repodata.packages_conda.get(filename.as_str()));
-
-                if let Some(entry) = entry {
-                    // repodata.json timestamps are milliseconds since epoch.
-                    let published_at = entry.timestamp.and_then(|ms| {
-                        chrono::DateTime::from_timestamp(
-                            ms / 1000,
-                            ((ms % 1000) * 1_000_000) as u32,
-                        )
-                    });
-                    return Ok(PackageMetadata {
-                        id: pkg.clone(),
-                        published_at,
-                        download_url: Some(format!("{base}/{platform}/{filename}")),
-                        checksum: entry.sha256.clone(),
-                        is_signed: None,
-                        extra: serde_json::json!({
-                            "name": entry.name,
-                            "version": entry.version,
-                            "build": entry.build,
-                        }),
-                        cache_control,
-                    });
-                }
-
-                return Err(CoreError::NotFound(format!(
-                    "conda: '{filename}' not found in {platform}/repodata.json"
-                )));
+                return self
+                    .lookup_file_in_repodata(base, platform, filename, pkg)
+                    .await;
             }
         }
 
@@ -250,34 +277,8 @@ impl RegistryClient for CondaRegistryClient {
         let mut versions: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
         for platform in &self.list_platforms {
-            let url = format!("{base}/{platform}/repodata.json");
-            let resp = match self.get(&url).send().await {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-            if !resp.status().is_success() {
-                continue;
-            }
-            let body = match resp.bytes().await {
-                Ok(b) => b,
-                Err(_) => continue,
-            };
-            let repodata: CondaRepodata = match serde_json::from_slice(&body) {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-
-            for entry in repodata
-                .packages
-                .values()
-                .chain(repodata.packages_conda.values())
-            {
-                if entry.name.as_deref() == Some(package) {
-                    if let Some(v) = &entry.version {
-                        versions.insert(v.clone());
-                    }
-                }
-            }
+            let platform_versions = self.fetch_platform_versions(base, platform, package).await;
+            versions.extend(platform_versions);
         }
 
         Ok(versions.into_iter().collect())

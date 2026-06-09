@@ -42,6 +42,82 @@ pub struct WarmingService {
     pub concurrency: usize,
 }
 
+/// Fetch and store one artifact version. Returns a single-field `WarmingReport`.
+async fn warm_one_version(
+    client: Arc<dyn RegistryClient>,
+    storage: Arc<dyn StorageBackend>,
+    artifact_meta: Arc<dyn ArtifactMetaRepository>,
+    artifact_key: String,
+    pkg: PackageId,
+    registry_name: String,
+    name: String,
+    version: String,
+    sem: Arc<Semaphore>,
+) -> WarmingReport {
+    let _permit = sem.acquire_owned().await;
+
+    match storage.exists(&artifact_key).await {
+        Ok(true) => return WarmingReport { skipped: 1, ..Default::default() },
+        Ok(false) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, key = %artifact_key, "warming: exists check failed");
+            return WarmingReport { errors: 1, ..Default::default() };
+        }
+    }
+
+    let fetched = match client.fetch_artifact(&pkg).await {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!(
+                registry = %registry_name, package = %name,
+                version = %version, error = %e,
+                "warming: fetch failed"
+            );
+            return WarmingReport { errors: 1, ..Default::default() };
+        }
+    };
+
+    let mut buf = Vec::new();
+    let mut stream = fetched.stream;
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(b) => buf.extend_from_slice(&b),
+            Err(e) => {
+                tracing::warn!(
+                    registry = %registry_name, package = %name,
+                    version = %version, error = %e,
+                    "warming: stream error"
+                );
+                return WarmingReport { errors: 1, ..Default::default() };
+            }
+        }
+    }
+    let data = Bytes::from(buf);
+    let size = data.len() as u64;
+
+    if let Err(e) = storage
+        .store(&artifact_key, data, StorageMeta { size: Some(size), ..Default::default() })
+        .await
+    {
+        tracing::warn!(error = %e, key = %artifact_key, "warming: store failed");
+        return WarmingReport { errors: 1, ..Default::default() };
+    }
+
+    if let Err(e) = artifact_meta
+        .record_artifact(&artifact_key, &registry_name, &name, &version, Some(size))
+        .await
+    {
+        tracing::warn!(error = %e, key = %artifact_key, "warming: record_artifact failed");
+    }
+
+    tracing::info!(
+        registry = %registry_name, package = %name,
+        version = %version, bytes = size,
+        "warming: artifact cached"
+    );
+    WarmingReport { warmed: 1, ..Default::default() }
+}
+
 impl WarmingService {
     /// Return a new `WarmingService` identical to `self` but with a different `latest_n`.
     /// Used by the admin API to honour a per-request version count override.
@@ -100,84 +176,18 @@ impl WarmingService {
 
         for version in versions {
             let artifact_key = format!("artifact:{}/{name}:{version}", self.registry_name);
-            let storage = Arc::clone(&self.storage);
-            let artifact_meta = Arc::clone(&self.artifact_meta);
-            let client = Arc::clone(&self.client);
-            let registry_name = self.registry_name.clone();
-            let name = name.to_owned();
-            let sem = Arc::clone(&sem);
-
-            handles.push(tokio::spawn(async move {
-                let _permit = sem.acquire_owned().await;
-
-                // Skip if already cached.
-                match storage.exists(&artifact_key).await {
-                    Ok(true) => return WarmingReport { skipped: 1, ..Default::default() },
-                    Ok(false) => {}
-                    Err(e) => {
-                        tracing::warn!(error = %e, key = %artifact_key, "warming: exists check failed");
-                        return WarmingReport { errors: 1, ..Default::default() };
-                    }
-                }
-
-                let pkg = PackageId::new(registry_name.clone(), name.clone(), version.clone());
-
-                // Fetch from upstream.
-                let fetched = match client.fetch_artifact(&pkg).await {
-                    Ok(f) => f,
-                    Err(e) => {
-                        tracing::warn!(
-                            registry = %registry_name, package = %name,
-                            version = %version, error = %e,
-                            "warming: fetch failed"
-                        );
-                        return WarmingReport { errors: 1, ..Default::default() };
-                    }
-                };
-
-                // Buffer the stream.
-                let mut buf = Vec::new();
-                let mut stream = fetched.stream;
-                while let Some(chunk) = stream.next().await {
-                    match chunk {
-                        Ok(b) => buf.extend_from_slice(&b),
-                        Err(e) => {
-                            tracing::warn!(
-                                registry = %registry_name, package = %name,
-                                version = %version, error = %e,
-                                "warming: stream error"
-                            );
-                            return WarmingReport { errors: 1, ..Default::default() };
-                        }
-                    }
-                }
-                let data = Bytes::from(buf);
-                let size = data.len() as u64;
-
-                // Store.
-                if let Err(e) = storage
-                    .store(&artifact_key, data, StorageMeta { size: Some(size), ..Default::default() })
-                    .await
-                {
-                    tracing::warn!(error = %e, key = %artifact_key, "warming: store failed");
-                    return WarmingReport { errors: 1, ..Default::default() };
-                }
-
-                // Record metadata for eviction tracking.
-                if let Err(e) = artifact_meta
-                    .record_artifact(&artifact_key, &registry_name, &name, &version, Some(size))
-                    .await
-                {
-                    tracing::warn!(error = %e, key = %artifact_key, "warming: record_artifact failed");
-                }
-
-                tracing::info!(
-                    registry = %registry_name, package = %name,
-                    version = %version, bytes = size,
-                    "warming: artifact cached"
-                );
-                WarmingReport { warmed: 1, ..Default::default() }
-            }));
+            let pkg = PackageId::new(self.registry_name.clone(), name.to_owned(), version.clone());
+            handles.push(tokio::spawn(warm_one_version(
+                Arc::clone(&self.client),
+                Arc::clone(&self.storage),
+                Arc::clone(&self.artifact_meta),
+                artifact_key,
+                pkg,
+                self.registry_name.clone(),
+                name.to_owned(),
+                version,
+                Arc::clone(&sem),
+            )));
         }
 
         let mut total = WarmingReport::default();

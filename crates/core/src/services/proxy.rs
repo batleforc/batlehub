@@ -56,6 +56,145 @@ fn warn_if_audit_failed(r: Result<(), CoreError>, ctx: &str) {
 }
 
 impl ProxyService {
+    /// Resolves metadata from cache (hit) or upstream (miss/stale).
+    async fn resolve_metadata_cached(
+        &self,
+        client: &Arc<dyn crate::ports::RegistryClient>,
+        policy: &Option<Arc<crate::services::hot_config::RegistryPolicy>>,
+        req: &ProxyRequest,
+        cache_key: &str,
+        ttl: Option<std::time::Duration>,
+        registry_label: &str,
+    ) -> Result<crate::entities::PackageMetadata, CoreError> {
+        if let Some(entry) = self.cache.get(cache_key).await? {
+            tracing::debug!(key = %cache_key, "metadata cache hit");
+            metrics::counter!("batlehub_metadata_cache_hits_total", "registry" => registry_label.to_owned()).increment(1);
+            return Ok(entry.metadata);
+        }
+        tracing::debug!(key = %cache_key, "metadata cache miss, fetching from upstream");
+        metrics::counter!("batlehub_metadata_cache_misses_total", "registry" => registry_label.to_owned()).increment(1);
+        let meta = match client.resolve_metadata(&req.package_id).await {
+            Ok(m) => m,
+            Err(e) => {
+                let serve_stale =
+                    policy.as_ref().map(|p| p.serve_stale_metadata).unwrap_or(false);
+                if serve_stale && matches!(e, CoreError::Registry(_)) {
+                    if let Some(stale) = self.cache.get_stale(cache_key).await? {
+                        tracing::warn!(key = %cache_key, error = %e, "upstream unavailable; serving stale metadata");
+                        return Ok(stale.metadata);
+                    }
+                }
+                metrics::counter!("batlehub_upstream_errors_total", "registry" => registry_label.to_owned()).increment(1);
+                warn_if_audit_failed(
+                    self.repo
+                        .record_access(AccessEvent::proxy_error(
+                            req.package_id.clone(),
+                            req.identity.user_id.clone(),
+                            req.identity.role.clone(),
+                            e.to_string(),
+                        ))
+                        .await,
+                    "proxy error",
+                );
+                return Err(e);
+            }
+        };
+        let skip = meta
+            .cache_control
+            .as_deref()
+            .map(|h| parse_cache_control(h).no_store)
+            .unwrap_or(false);
+        if !skip {
+            self.cache
+                .set(
+                    cache_key,
+                    CacheEntry {
+                        metadata: meta.clone(),
+                        cached_at: Utc::now(),
+                        expires_at: None,
+                    },
+                    ttl,
+                )
+                .await?;
+        }
+        Ok(meta)
+    }
+
+    /// Returns `true` if a cached artifact exists and has not yet exceeded its TTL.
+    async fn artifact_is_fresh(
+        &self,
+        artifact_key: &str,
+        artifact_ttl: Option<std::time::Duration>,
+        registry_name: &str,
+    ) -> Result<bool, CoreError> {
+        if !self.storage.exists(artifact_key).await? {
+            return Ok(false);
+        }
+        let Some(ttl) = artifact_ttl else {
+            return Ok(true);
+        };
+        match chrono::Duration::from_std(ttl) {
+            Ok(d) => {
+                let expired = self
+                    .artifact_meta
+                    .is_artifact_expired(artifact_key, Utc::now() - d)
+                    .await?;
+                Ok(!expired)
+            }
+            Err(e) => {
+                tracing::warn!(registry = %registry_name, error = %e, "artifact_ttl overflows chrono::Duration; treating artifact as fresh");
+                Ok(true)
+            }
+        }
+    }
+
+    /// Spawns SBOM generation for a freshly cached artifact (non-blocking, non-fatal).
+    async fn maybe_trigger_sbom(
+        &self,
+        registry_name: &str,
+        artifact_key: &str,
+        data: &Bytes,
+        metadata: &crate::entities::PackageMetadata,
+        registry_type: &str,
+    ) {
+        let Some(ref sbom_svc) = self.sbom else {
+            return;
+        };
+        let sbom_cfg = {
+            let hot = self.hot.read().await;
+            hot.sbom.get(registry_name).cloned()
+        };
+        let Some(cfg) = sbom_cfg.filter(|c| c.enabled) else {
+            return;
+        };
+        let sbom = Arc::clone(sbom_svc);
+        let meta_clone = metadata.clone();
+        let key_clone = artifact_key.to_owned();
+        let data_clone = data.clone();
+        let registry_type = registry_type.to_owned();
+        let formats: Vec<SbomFormat> = cfg
+            .formats
+            .iter()
+            .filter_map(|s| SbomFormat::parse(s))
+            .collect();
+        tokio::spawn(async move {
+            if let Err(e) = sbom
+                .record_for_proxied(
+                    &meta_clone,
+                    &key_clone,
+                    &data_clone,
+                    &formats,
+                    cfg.fetch_upstream,
+                    &registry_type,
+                )
+                .await
+            {
+                tracing::warn!(key = %key_clone, error = %e, "sbom generation failed (non-fatal)");
+            }
+        });
+    }
+
+
     pub async fn handle(&self, req: ProxyRequest) -> Result<ProxyResponse, CoreError> {
         let registry_name: &str = req.package_id.registry.as_str();
         let registry_label = registry_name.to_owned();
@@ -79,87 +218,9 @@ impl ProxyService {
         // ── 1. Resolve metadata (cache-first) ─────────────────────────────────
         let cache_key = format!("meta:{}", req.package_id.cache_key());
         let ttl = policy.as_ref().and_then(|p| p.metadata_ttl);
-
-        let metadata = if let Some(entry) = self.cache.get(&cache_key).await? {
-            tracing::debug!(key = %cache_key, "metadata cache hit");
-            metrics::counter!("batlehub_metadata_cache_hits_total", "registry" => registry_label.clone()).increment(1);
-            entry.metadata
-        } else {
-            tracing::debug!(key = %cache_key, "metadata cache miss, fetching from upstream");
-            metrics::counter!("batlehub_metadata_cache_misses_total", "registry" => registry_label.clone()).increment(1);
-            let meta = match client.resolve_metadata(&req.package_id).await {
-                Ok(m) => m,
-                Err(e) => {
-                    let serve_stale = policy
-                        .as_ref()
-                        .map(|p| p.serve_stale_metadata)
-                        .unwrap_or(false);
-
-                    if serve_stale && matches!(e, CoreError::Registry(_)) {
-                        match self.cache.get_stale(&cache_key).await? {
-                            Some(stale) => {
-                                tracing::warn!(
-                                    key = %cache_key,
-                                    error = %e,
-                                    "upstream unavailable; serving stale metadata"
-                                );
-                                stale.metadata
-                            }
-                            None => {
-                                metrics::counter!("batlehub_upstream_errors_total", "registry" => registry_label.clone()).increment(1);
-                                warn_if_audit_failed(
-                                    self.repo
-                                        .record_access(AccessEvent::proxy_error(
-                                            req.package_id.clone(),
-                                            req.identity.user_id.clone(),
-                                            req.identity.role.clone(),
-                                            e.to_string(),
-                                        ))
-                                        .await,
-                                    "proxy error",
-                                );
-                                return Err(e);
-                            }
-                        }
-                    } else {
-                        metrics::counter!("batlehub_upstream_errors_total", "registry" => registry_label.clone()).increment(1);
-                        warn_if_audit_failed(
-                            self.repo
-                                .record_access(AccessEvent::proxy_error(
-                                    req.package_id.clone(),
-                                    req.identity.user_id.clone(),
-                                    req.identity.role.clone(),
-                                    e.to_string(),
-                                ))
-                                .await,
-                            "proxy error",
-                        );
-                        return Err(e);
-                    }
-                }
-            };
-            // Honour upstream Cache-Control: skip metadata caching on no-store.
-            let skip_meta_cache = meta
-                .cache_control
-                .as_deref()
-                .map(|h| parse_cache_control(h).no_store)
-                .unwrap_or(false);
-
-            if !skip_meta_cache {
-                self.cache
-                    .set(
-                        &cache_key,
-                        CacheEntry {
-                            metadata: meta.clone(),
-                            cached_at: Utc::now(),
-                            expires_at: None,
-                        },
-                        ttl,
-                    )
-                    .await?;
-            }
-            meta
-        };
+        let metadata = self
+            .resolve_metadata_cached(&client, &policy, &req, &cache_key, ttl, &registry_label)
+            .await?;
 
         // ── 2. Evaluate rules ──────────────────────────────────────────────────
         let empty: Vec<Box<dyn crate::rules::Rule>> = vec![];
@@ -232,31 +293,10 @@ impl ProxyService {
 
         // ── 4. Check artifact cache ────────────────────────────────────────────
         let artifact_key = format!("artifact:{}", req.package_id.cache_key());
-
         let artifact_ttl = policy.as_ref().and_then(|p| p.artifact_ttl);
-        let cached_artifact_is_fresh = if self.storage.exists(&artifact_key).await? {
-            // When an artifact TTL is set, do a point-lookup for this specific key.
-            if let Some(ttl) = artifact_ttl {
-                match chrono::Duration::from_std(ttl) {
-                    Ok(d) => {
-                        let expired = self
-                            .artifact_meta
-                            .is_artifact_expired(&artifact_key, Utc::now() - d)
-                            .await?;
-                        !expired
-                    }
-                    Err(e) => {
-                        // TTL is larger than chrono's range (≥292 years); treat as "never expire".
-                        tracing::warn!(registry = %registry_name, error = %e, "artifact_ttl overflows chrono::Duration; treating artifact as fresh");
-                        true
-                    }
-                }
-            } else {
-                true
-            }
-        } else {
-            false
-        };
+        let cached_artifact_is_fresh = self
+            .artifact_is_fresh(&artifact_key, artifact_ttl, registry_name)
+            .await?;
 
         if cached_artifact_is_fresh {
             tracing::debug!(key = %artifact_key, "artifact cache hit");
@@ -364,43 +404,14 @@ impl ProxyService {
             }
 
             // Trigger SBOM generation asynchronously (non-fatal).
-            if let Some(ref sbom_svc) = self.sbom {
-                let sbom_cfg = {
-                    let hot = self.hot.read().await;
-                    hot.sbom.get(registry_name).cloned()
-                };
-                if let Some(cfg) = sbom_cfg.filter(|c| c.enabled) {
-                    let sbom = Arc::clone(sbom_svc);
-                    let meta_clone = metadata.clone();
-                    let key_clone = artifact_key.clone();
-                    let data_clone = data.clone();
-                    let registry_type = client.registry_type().to_owned();
-                    let formats: Vec<SbomFormat> = cfg
-                        .formats
-                        .iter()
-                        .filter_map(|s| SbomFormat::parse(s))
-                        .collect();
-                    tokio::spawn(async move {
-                        if let Err(e) = sbom
-                            .record_for_proxied(
-                                &meta_clone,
-                                &key_clone,
-                                &data_clone,
-                                &formats,
-                                cfg.fetch_upstream,
-                                &registry_type,
-                            )
-                            .await
-                        {
-                            tracing::warn!(
-                                key = %key_clone,
-                                error = %e,
-                                "sbom generation failed (non-fatal)"
-                            );
-                        }
-                    });
-                }
-            }
+            self.maybe_trigger_sbom(
+                registry_name,
+                &artifact_key,
+                &data,
+                &metadata,
+                client.registry_type(),
+            )
+            .await;
         } else {
             tracing::debug!(key = %artifact_key, "upstream Cache-Control: no-store; skipping artifact cache");
         }

@@ -67,6 +67,34 @@ impl TerraformRegistryClient {
         })
     }
 
+    /// Fetch `url` and decode the JSON body as `T`. Returns `None` on network
+    /// error, non-2xx status, or deserialization failure, logging a warning.
+    async fn fetch_json<T: serde::de::DeserializeOwned>(
+        &self,
+        url: &str,
+        label: &str,
+    ) -> Option<T> {
+        let res = match self.get(url).send().await {
+            Err(e) => {
+                log::warn!(%url, error = %e, "{label}: send failed");
+                return None;
+            }
+            Ok(r) => r,
+        };
+        let status = res.status();
+        if !status.is_success() {
+            log::warn!(%url, %status, "{label}: bad status");
+            return None;
+        }
+        match res.json::<T>().await {
+            Ok(body) => Some(body),
+            Err(e) => {
+                log::warn!(error = %e, "{label}: json parse failed");
+                None
+            }
+        }
+    }
+
     fn get(&self, url: &str) -> reqwest::RequestBuilder {
         let rb = self.http.get(url);
         match &self.basic_auth {
@@ -392,86 +420,47 @@ impl RegistryClient for TerraformRegistryClient {
         let mut results: Vec<UpstreamPackage> = Vec::new();
 
         // Module search
-        match self.get(&module_url).send().await {
-            Err(e) => log::warn!(url = %module_url, error = %e, "tf module search: send failed"),
-            Ok(res) => {
-                let status = res.status();
-                if !status.is_success() {
-                    log::warn!(url = %module_url, %status, "tf module search: bad status");
-                } else {
-                    match res.json::<ModuleSearch>().await {
-                        Err(e) => log::warn!(error = %e, "tf module search: json parse failed"),
-                        Ok(body) => {
-                            log::debug!(count = body.modules.len(), "tf module search: ok");
-                            for m in body.modules.into_iter().take(per) {
-                                results.push(UpstreamPackage {
-                                    name: format!(
-                                        "modules/{}/{}/{}",
-                                        m.namespace, m.name, m.provider
-                                    ),
-                                    latest_version: m.version,
-                                    description: m.description,
-                                });
-                            }
-                        }
-                    }
-                }
+        if let Some(body) = self
+            .fetch_json::<ModuleSearch>(&module_url, "tf module search")
+            .await
+        {
+            log::debug!(count = body.modules.len(), "tf module search: ok");
+            for m in body.modules.into_iter().take(per) {
+                results.push(UpstreamPackage {
+                    name: format!("modules/{}/{}/{}", m.namespace, m.name, m.provider),
+                    latest_version: m.version,
+                    description: m.description,
+                });
             }
         }
 
         // Provider namespace listing
-        match self.get(&namespace_url).send().await {
-            Err(e) => log::warn!(url = %namespace_url, error = %e, "tf provider ns: send failed"),
-            Ok(res) => {
-                let status = res.status();
-                if !status.is_success() {
-                    log::warn!(url = %namespace_url, %status, "tf provider ns: bad status");
-                } else {
-                    match res.json::<ProviderList>().await {
-                        Err(e) => log::warn!(error = %e, "tf provider ns: json parse failed"),
-                        Ok(body) => {
-                            log::debug!(count = body.providers.len(), "tf provider ns: ok");
-                            for p in body.providers.into_iter().take(per) {
-                                results.push(UpstreamPackage {
-                                    name: format!("providers/{}/{}", p.namespace, p.name),
-                                    latest_version: p
-                                        .version
-                                        .unwrap_or_else(|| "latest".to_string()),
-                                    description: p.description,
-                                });
-                            }
-                        }
-                    }
-                }
+        if let Some(body) = self
+            .fetch_json::<ProviderList>(&namespace_url, "tf provider ns")
+            .await
+        {
+            log::debug!(count = body.providers.len(), "tf provider ns: ok");
+            for p in body.providers.into_iter().take(per) {
+                results.push(UpstreamPackage {
+                    name: format!("providers/{}/{}", p.namespace, p.name),
+                    latest_version: p.version.unwrap_or_else(|| "latest".to_string()),
+                    description: p.description,
+                });
             }
         }
 
         // Exact namespace/type provider lookup
         if let Some(url) = exact_url {
-            match self.get(&url).send().await {
-                Err(e) => log::warn!(%url, error = %e, "tf provider exact: send failed"),
-                Ok(res) => {
-                    let status = res.status();
-                    if !status.is_success() {
-                        log::warn!(%url, %status, "tf provider exact: bad status");
-                    } else {
-                        match res.json::<ProviderList>().await {
-                            Err(e) => {
-                                log::warn!(error = %e, "tf provider exact: json parse failed")
-                            }
-                            Ok(body) => {
-                                for p in body.providers.into_iter().take(per) {
-                                    results.push(UpstreamPackage {
-                                        name: format!("providers/{}/{}", p.namespace, p.name),
-                                        latest_version: p
-                                            .version
-                                            .unwrap_or_else(|| "latest".to_string()),
-                                        description: p.description,
-                                    });
-                                }
-                            }
-                        }
-                    }
+            if let Some(body) = self
+                .fetch_json::<ProviderList>(&url, "tf provider exact")
+                .await
+            {
+                for p in body.providers.into_iter().take(per) {
+                    results.push(UpstreamPackage {
+                        name: format!("providers/{}/{}", p.namespace, p.name),
+                        latest_version: p.version.unwrap_or_else(|| "latest".to_string()),
+                        description: p.description,
+                    });
                 }
             }
         }

@@ -179,6 +179,36 @@ impl EvictionService {
         Ok(count)
     }
 
+    /// Evict one batch of LRU candidates. Returns `(evicted_count, new_total)`.
+    async fn evict_lru_batch(
+        &self,
+        candidates: Vec<crate::ports::ArtifactMeta>,
+        mut total: u64,
+        cap: u64,
+    ) -> (usize, u64) {
+        let mut count = 0;
+        for meta in candidates {
+            if total <= cap {
+                break;
+            }
+            let size = meta.size_bytes.unwrap_or(0);
+            if let Err(e) = self.storage.delete(&meta.artifact_key).await {
+                tracing::warn!(key = %meta.artifact_key, error = %e, "eviction(lru): storage delete failed");
+                continue;
+            }
+            if let Err(e) = self
+                .artifact_meta
+                .delete_artifact_meta(&meta.artifact_key)
+                .await
+            {
+                tracing::warn!(key = %meta.artifact_key, error = %e, "eviction(lru): meta delete failed");
+            }
+            total = total.saturating_sub(size);
+            count += 1;
+        }
+        (count, total)
+    }
+
     /// Evict the LRU artifacts until total storage for the registry is under `max_size_bytes`.
     pub async fn run_lru_size_cap(&self) -> Result<usize, CoreError> {
         let cap = match self.config.max_size_bytes {
@@ -194,10 +224,9 @@ impl EvictionService {
         }
 
         let mut count = 0;
-        // Fetch up to 1000 LRU candidates at a time to avoid huge result sets.
+        // Fetch up to 256 LRU candidates at a time to avoid huge result sets.
         loop {
-            let excess = total.saturating_sub(cap);
-            if excess == 0 {
+            if total.saturating_sub(cap) == 0 {
                 break;
             }
             let candidates = self
@@ -207,25 +236,9 @@ impl EvictionService {
             if candidates.is_empty() {
                 break;
             }
-            for meta in candidates {
-                if total <= cap {
-                    break;
-                }
-                let size = meta.size_bytes.unwrap_or(0);
-                if let Err(e) = self.storage.delete(&meta.artifact_key).await {
-                    tracing::warn!(key = %meta.artifact_key, error = %e, "eviction(lru): storage delete failed");
-                    continue;
-                }
-                if let Err(e) = self
-                    .artifact_meta
-                    .delete_artifact_meta(&meta.artifact_key)
-                    .await
-                {
-                    tracing::warn!(key = %meta.artifact_key, error = %e, "eviction(lru): meta delete failed");
-                }
-                total = total.saturating_sub(size);
-                count += 1;
-            }
+            let (batch, new_total) = self.evict_lru_batch(candidates, total, cap).await;
+            count += batch;
+            total = new_total;
             // If we didn't reduce below cap and ran out of candidates, stop.
             if total > cap {
                 break;

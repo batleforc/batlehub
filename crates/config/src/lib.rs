@@ -24,6 +24,24 @@ pub fn load(path: impl AsRef<Path>) -> Result<AppConfig> {
 /// - `$${VAR_NAME}` is an escape sequence that produces the literal string
 ///   `${VAR_NAME}` without any variable lookup.
 /// - Any other `$` character is left unchanged.
+/// Read `${VAR_NAME}` from `chars` (the `$` and `{` have already been consumed),
+/// look up the variable in the environment, and return its value.
+fn expand_braced_var(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Result<String> {
+    let mut var_name = String::new();
+    loop {
+        match chars.next() {
+            Some('}') => break,
+            Some(c) => var_name.push(c),
+            None => bail!("unclosed '${{...}}' placeholder in config file"),
+        }
+    }
+    if var_name.is_empty() {
+        bail!("empty variable name in '${{}}' placeholder in config file");
+    }
+    std::env::var(&var_name)
+        .with_context(|| format!("config references env var '${{{var_name}}}' but it is not set"))
+}
+
 fn expand_env_vars(raw: &str) -> Result<String> {
     let mut out = String::with_capacity(raw.len());
     let mut chars = raw.chars().peekable();
@@ -46,21 +64,7 @@ fn expand_env_vars(raw: &str) -> Result<String> {
             }
             Some('{') => {
                 chars.next(); // consume '{'
-                let mut var_name = String::new();
-                loop {
-                    match chars.next() {
-                        Some('}') => break,
-                        Some(c) => var_name.push(c),
-                        None => bail!("unclosed '${{...}}' placeholder in config file"),
-                    }
-                }
-                if var_name.is_empty() {
-                    bail!("empty variable name in '${{}}' placeholder in config file");
-                }
-                let value = std::env::var(&var_name).with_context(|| {
-                    format!("config references env var '${{{var_name}}}' but it is not set")
-                })?;
-                out.push_str(&value);
+                out.push_str(&expand_braced_var(&mut chars)?);
             }
             _ => out.push('$'),
         }

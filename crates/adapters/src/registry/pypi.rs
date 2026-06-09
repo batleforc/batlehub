@@ -416,15 +416,33 @@ pub fn rewrite_simple_page(
     }
 }
 
+/// Rewrite one `href` value if it is an absolute HTTP URL pointing to a PyPI
+/// CDN file. Returns `Some(rewritten)` when rewriting is applicable, `None`
+/// when the original value should be kept unchanged.
+fn rewrite_abs_href(href_value: &str, proxy_packages: &str) -> Option<String> {
+    if !href_value.starts_with("https://") && !href_value.starts_with("http://") {
+        return None;
+    }
+    if let Some(fragment_pos) = href_value.rfind('#') {
+        let path_part = &href_value[..fragment_pos];
+        let fragment = &href_value[fragment_pos..];
+        if let Some(slash_pos) = path_part.rfind('/') {
+            let filename = &path_part[slash_pos + 1..];
+            return Some(format!("{proxy_packages}/{filename}{fragment}"));
+        }
+    } else if let Some(slash_pos) = href_value.rfind('/') {
+        let filename = &href_value[slash_pos + 1..];
+        return Some(format!("{proxy_packages}/{filename}"));
+    }
+    None
+}
+
 fn rewrite_simple_html(body: &[u8], registry: &str, proxy_base: &str) -> Vec<u8> {
     let text = match std::str::from_utf8(body) {
         Ok(s) => s,
         Err(_) => return body.to_vec(),
     };
 
-    // Replace href="https://files.pythonhosted.org/packages/.../filename.ext#sha=..."
-    // with href="/proxy/{registry}/packages/filename.ext#sha=..."
-    // We need to keep the fragment (#sha256=...) but rewrite the base URL.
     let proxy_packages = format!("{proxy_base}/proxy/{registry}/packages");
     let mut result = String::with_capacity(text.len());
     let mut remaining = text;
@@ -436,25 +454,9 @@ fn rewrite_simple_html(body: &[u8], registry: &str, proxy_base: &str) -> Vec<u8>
         if let Some(end_quote) = after_quote.find('"') {
             let href_value = &after_quote[..end_quote];
             remaining = &after_quote[end_quote..];
-
-            // Check if this looks like a PyPI CDN URL or any absolute URL to a file
-            if href_value.starts_with("https://") || href_value.starts_with("http://") {
-                // Extract just the filename (last path segment) and fragment
-                if let Some(fragment_pos) = href_value.rfind('#') {
-                    let path_part = &href_value[..fragment_pos];
-                    let fragment = &href_value[fragment_pos..];
-                    if let Some(slash_pos) = path_part.rfind('/') {
-                        let filename = &path_part[slash_pos + 1..];
-                        result.push_str(&format!("{proxy_packages}/{filename}{fragment}"));
-                        continue;
-                    }
-                } else if let Some(slash_pos) = href_value.rfind('/') {
-                    let filename = &href_value[slash_pos + 1..];
-                    result.push_str(&format!("{proxy_packages}/{filename}"));
-                    continue;
-                }
-            }
-            result.push_str(href_value);
+            let rewritten = rewrite_abs_href(href_value, &proxy_packages)
+                .unwrap_or_else(|| href_value.to_owned());
+            result.push_str(&rewritten);
         } else {
             remaining = after_quote;
         }
