@@ -51,7 +51,7 @@ jobs:
         run: cargo build --release --locked -p batlehub-server
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.meta.outputs.tag }}
           name: ${{ needs.meta.outputs.tag }}
@@ -149,7 +149,7 @@ jobs:
           Compress-Archive -Path batlehub-cli.exe -DestinationPath "${{ matrix.archive }}"
 
       - name: Upload to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.meta.outputs.tag }}
           name: ${{ needs.meta.outputs.tag }}
