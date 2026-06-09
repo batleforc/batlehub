@@ -83,7 +83,10 @@ impl PackageRepository for InMemoryPackageRepository {
         let mut result: Vec<PackageSummary> = sums
             .values()
             .filter(|s| {
-                filter.registry.as_ref().is_none_or(|r| s.package_id.registry == *r)
+                filter
+                    .registry
+                    .as_ref()
+                    .is_none_or(|r| s.package_id.registry == *r)
                     && (filter.registries.is_empty()
                         || filter.registries.contains(&s.package_id.registry))
                     && filter
@@ -130,7 +133,10 @@ impl PackageRepository for InMemoryPackageRepository {
         let mut result: Vec<AccessEvent> = events
             .iter()
             .filter(|e| {
-                filter.registry.as_ref().is_none_or(|r| e.package_id.registry == *r)
+                filter
+                    .registry
+                    .as_ref()
+                    .is_none_or(|r| e.package_id.registry == *r)
                     && filter
                         .package_name
                         .as_ref()

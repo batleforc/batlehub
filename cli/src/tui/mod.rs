@@ -114,13 +114,8 @@ async fn event_loop(
         if event::poll(std::time::Duration::from_millis(250))? {
             if let Event::Key(key) = event::read()? {
                 if is_quit_key(&key) {
-                    app.should_quit = true;
-                }
-
-                if app.should_quit {
                     break;
                 }
-
                 handle_key(app, key).await;
             }
         }

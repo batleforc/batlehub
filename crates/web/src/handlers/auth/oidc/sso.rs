@@ -1,0 +1,254 @@
+use actix_web::{get, post, web, HttpResponse, Responder};
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+
+use batlehub_adapters::auth::OidcSsoFlow;
+
+use super::{spa_error_redirect, split_combined_state, url_encode, CallbackQuery, LoginQuery};
+
+// ── Provider list ──────────────────────────────────────────────────────────────
+
+#[derive(Serialize, ToSchema)]
+pub struct OidcProviderInfo {
+    /// Configured provider name (e.g. `"oidc"`, `"oidc2"`).
+    pub name: String,
+}
+
+/// List OIDC providers that have SSO (browser login) enabled.
+///
+/// Returns an empty array when no OIDC provider has `redirect_uri` configured.
+/// Use this endpoint instead of probing `/api/v1/auth/oidc/login` to decide
+/// whether and how many OIDC login buttons to show.
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/oidc/providers",
+    tag = "front-office",
+    responses(
+        (status = 200, description = "OIDC providers with browser SSO configured", body = Vec<OidcProviderInfo>),
+    ),
+)]
+#[get("/api/v1/auth/oidc/providers")]
+pub async fn list_oidc_providers(flows: web::Data<Vec<OidcSsoFlow>>) -> impl Responder {
+    let providers: Vec<OidcProviderInfo> = flows
+        .iter()
+        .map(|sso| OidcProviderInfo {
+            name: sso.name.clone(),
+        })
+        .collect();
+    HttpResponse::Ok().json(providers)
+}
+
+// ── Login ──────────────────────────────────────────────────────────────────────
+
+/// Redirect the browser to the OIDC provider's authorization endpoint.
+///
+/// The caller must supply a `state` query parameter containing a random value
+/// it has stored in `sessionStorage`; the same value is threaded through the
+/// provider and returned to the SPA so it can verify the flow wasn't hijacked.
+///
+/// Omitting `state` (e.g. a HEAD probe) returns 200 when OIDC is configured,
+/// 503 when it is not — useful for the frontend to decide whether to show the
+/// "Sign in with OIDC" button.
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/oidc/login",
+    tag = "front-office",
+    params(
+        ("state" = Option<String>, Query, description = "CSRF state (frontend-generated); omit to probe availability"),
+        ("provider" = Option<String>, Query, description = "Provider name to log in with; defaults to the first configured provider"),
+    ),
+    responses(
+        (status = 200, description = "OIDC is configured (probe response when state is absent)"),
+        (status = 302, description = "Redirect to OIDC authorization endpoint"),
+        (status = 404, description = "Named provider not found"),
+        (status = 503, description = "OIDC not configured"),
+    ),
+)]
+#[get("/api/v1/auth/oidc/login")]
+pub async fn oidc_login(
+    flows: web::Data<Vec<OidcSsoFlow>>,
+    query: web::Query<LoginQuery>,
+) -> impl Responder {
+    if flows.is_empty() {
+        return HttpResponse::ServiceUnavailable()
+            .json(serde_json::json!({ "error": "OIDC SSO is not configured on this server" }));
+    }
+
+    let Some(ref state) = query.state else {
+        // Probe request — confirm the endpoint exists and OIDC is configured.
+        return HttpResponse::Ok().finish();
+    };
+
+    let sso = if let Some(ref name) = query.provider {
+        flows.iter().find(|f| &f.name == name)
+    } else {
+        flows.first()
+    };
+
+    let Some(sso) = sso else {
+        return HttpResponse::NotFound()
+            .json(serde_json::json!({ "error": "OIDC provider not found" }));
+    };
+
+    // Embed the provider name in the state so the callback can look up the right flow.
+    let combined_state = format!("{}:{}", sso.name, state);
+    let location = sso.authorization_url(&combined_state);
+    HttpResponse::Found()
+        .insert_header(("Location", location))
+        .finish()
+}
+
+// ── Callback ───────────────────────────────────────────────────────────────────
+
+/// Handle the OIDC provider's redirect back; exchange the code for tokens and
+/// redirect the browser to the SPA with tokens in query parameters.
+///
+/// The SPA is responsible for validating `oidc_state` against its stored value
+/// and immediately removing the parameters from the address bar.
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/oidc/callback",
+    tag = "front-office",
+    responses(
+        (status = 302, description = "Redirect to SPA with tokens or error"),
+        (status = 503, description = "OIDC not configured"),
+    ),
+)]
+#[get("/api/v1/auth/oidc/callback")]
+pub async fn oidc_callback(
+    flows: web::Data<Vec<OidcSsoFlow>>,
+    query: web::Query<CallbackQuery>,
+) -> impl Responder {
+    if flows.is_empty() {
+        return HttpResponse::ServiceUnavailable()
+            .json(serde_json::json!({ "error": "OIDC SSO is not configured on this server" }));
+    }
+
+    // Use the first provider's frontend_url as fallback for error redirects.
+    let fallback_base = flows[0].frontend_url.trim_end_matches('/').to_owned();
+
+    // Provider-side error (e.g. user denied access).
+    if let Some(ref err) = query.error {
+        let desc = query.error_description.as_deref().unwrap_or(err.as_str());
+        return spa_error_redirect(&fallback_base, desc);
+    }
+
+    let code = match query.code.as_deref() {
+        Some(c) => c.to_owned(),
+        None => {
+            return spa_error_redirect(&fallback_base, "Authorization code missing from callback.")
+        }
+    };
+
+    // The state is encoded as "<provider>:<user-csrf>" by oidc_login.
+    let raw_state = query.state.as_deref().unwrap_or("");
+    let (provider_name, user_state) = split_combined_state(raw_state);
+
+    let sso = flows
+        .iter()
+        .find(|f| f.name == provider_name)
+        .or_else(|| flows.first());
+
+    let Some(sso) = sso else {
+        return spa_error_redirect(&fallback_base, "OIDC provider not found.");
+    };
+
+    let base = sso.frontend_url.trim_end_matches('/').to_owned();
+
+    match sso.exchange_code(&code).await {
+        Ok(tokens) => {
+            // SECURITY: tokens are passed as URL query params, which are visible in
+            // browser history and server logs. Mitigations in place:
+            //   1. The frontend (router/index.ts) immediately removes them from the
+            //      address bar and moves them to localStorage before any navigation.
+            //   2. CSRF is prevented by the `state` parameter validated above.
+            // A proper fix would use a server-side one-time code exchange instead of
+            // query params, but that requires a stateful session layer.
+            let mut location = format!(
+                "{base}/?oidc_access_token={}&oidc_state={}&oidc_provider={}",
+                url_encode(&tokens.access_token),
+                url_encode(user_state),
+                url_encode(&sso.name),
+            );
+            if let Some(ref rt) = tokens.refresh_token {
+                location.push_str(&format!("&oidc_refresh_token={}", url_encode(rt)));
+            }
+            if let Some(exp) = tokens.expires_in {
+                location.push_str(&format!("&oidc_expires_in={exp}"));
+            }
+            HttpResponse::Found()
+                .insert_header(("Location", location))
+                .finish()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "OIDC token exchange failed");
+            spa_error_redirect(&base, &e.to_string())
+        }
+    }
+}
+
+// ── Refresh ────────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, ToSchema)]
+pub struct RefreshRequest {
+    pub refresh_token: String,
+    /// Provider name that issued the refresh token. Defaults to the first configured provider.
+    pub provider: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct RefreshResponse {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    pub expires_in: Option<u64>,
+}
+
+/// Exchange a refresh token for a new access token.
+///
+/// The backend performs the confidential token refresh grant so the
+/// `client_secret` never needs to be exposed to the browser.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/oidc/refresh",
+    tag = "front-office",
+    request_body = RefreshRequest,
+    responses(
+        (status = 200, description = "New tokens", body = RefreshResponse),
+        (status = 400, description = "Refresh failed"),
+        (status = 404, description = "Named provider not found"),
+        (status = 503, description = "OIDC not configured"),
+    ),
+)]
+#[post("/api/v1/auth/oidc/refresh")]
+pub async fn oidc_refresh(
+    flows: web::Data<Vec<OidcSsoFlow>>,
+    body: web::Json<RefreshRequest>,
+) -> impl Responder {
+    if flows.is_empty() {
+        return HttpResponse::ServiceUnavailable()
+            .json(serde_json::json!({ "error": "OIDC SSO is not configured on this server" }));
+    }
+
+    let sso = if let Some(ref name) = body.provider {
+        flows.iter().find(|f| &f.name == name)
+    } else {
+        flows.first()
+    };
+
+    let Some(sso) = sso else {
+        return HttpResponse::NotFound()
+            .json(serde_json::json!({ "error": "OIDC provider not found" }));
+    };
+
+    match sso.refresh(&body.refresh_token).await {
+        Ok(tokens) => HttpResponse::Ok().json(RefreshResponse {
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token,
+            expires_in: tokens.expires_in,
+        }),
+        Err(e) => {
+            tracing::warn!(error = %e, "OIDC token refresh failed");
+            HttpResponse::BadRequest().json(serde_json::json!({ "error": e.to_string() }))
+        }
+    }
+}

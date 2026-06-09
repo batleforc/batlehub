@@ -106,7 +106,9 @@ impl StorageBackend for FilesystemStorageBackend {
             };
             while let Ok(Some(entry)) = rd.next_entry().await {
                 let path = entry.path();
-                let Ok(ftype) = entry.file_type().await else { continue };
+                let Ok(ftype) = entry.file_type().await else {
+                    continue;
+                };
                 if ftype.is_dir() {
                     stack.push(path);
                     continue;
@@ -136,7 +138,9 @@ impl StorageBackend for FilesystemStorageBackend {
             };
             while let Ok(Some(entry)) = rd.next_entry().await {
                 let path = entry.path();
-                let Ok(ftype) = entry.file_type().await else { continue };
+                let Ok(ftype) = entry.file_type().await else {
+                    continue;
+                };
                 if ftype.is_dir() {
                     stack.push(path);
                     continue;
@@ -145,7 +149,9 @@ impl StorageBackend for FilesystemStorageBackend {
                     continue;
                 }
                 // Reconstruct the logical key from the filesystem path.
-                let Ok(rel) = path.strip_prefix(&self.root) else { continue };
+                let Ok(rel) = path.strip_prefix(&self.root) else {
+                    continue;
+                };
                 let key = rel
                     .to_string_lossy()
                     .trim_end_matches(".dat")
@@ -176,7 +182,9 @@ impl StorageBackend for FilesystemStorageBackend {
             };
             while let Ok(Some(entry)) = rd.next_entry().await {
                 let path = entry.path();
-                let Ok(ftype) = entry.file_type().await else { continue };
+                let Ok(ftype) = entry.file_type().await else {
+                    continue;
+                };
                 if ftype.is_dir() {
                     stack.push(path);
                     continue;

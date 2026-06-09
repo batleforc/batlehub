@@ -37,20 +37,10 @@ pub fn scan_project_types(
     scan_recursive(root, root, server_url, max_depth)
 }
 
-fn scan_recursive(
-    root: &Path,
-    dir: &Path,
-    server_url: &str,
-    remaining_depth: usize,
-) -> Vec<ProjectDetection> {
-    let rel = dir
-        .strip_prefix(root)
-        .unwrap_or(Path::new(""))
-        .to_string_lossy()
-        .replace('\\', "/");
-
-    // Read the directory once: collect file names (for manifest detection) and
-    // subdir paths (for recursion) in a single pass, filtering by entry type.
+/// Enumerate one directory level: returns (file_names, sorted_subdirs).
+/// Subdirs are filtered by SKIP_DIRS and hidden-directory heuristic; only
+/// included when `remaining_depth > 0`.
+fn read_dir_entries(dir: &Path, remaining_depth: usize) -> (Vec<String>, Vec<PathBuf>) {
     let mut file_names: Vec<String> = Vec::new();
     let mut subdirs: Vec<PathBuf> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
@@ -71,6 +61,22 @@ fn scan_recursive(
         }
         subdirs.sort();
     }
+    (file_names, subdirs)
+}
+
+fn scan_recursive(
+    root: &Path,
+    dir: &Path,
+    server_url: &str,
+    remaining_depth: usize,
+) -> Vec<ProjectDetection> {
+    let rel = dir
+        .strip_prefix(root)
+        .unwrap_or(Path::new(""))
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    let (file_names, subdirs) = read_dir_entries(dir, remaining_depth);
 
     let mut out: Vec<ProjectDetection> = detect_project_types_in(dir, server_url, &file_names)
         .into_iter()

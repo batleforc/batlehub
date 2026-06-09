@@ -71,13 +71,11 @@ function checkMetaGuards(
   to: RouteLocationNormalized,
   { isAuthenticated, identity, isAdmin }: Pick<AuthState, "isAuthenticated" | "identity" | "isAdmin">,
 ): RouteLocationRaw | undefined {
-  if (to.meta.requiresAuth) {
-    return isAuthenticated.value ? undefined : { path: "/login", query: { redirect: to.fullPath } };
+  if (to.meta.requiresAuth && !isAuthenticated.value) {
+    return { path: "/login", query: { redirect: to.fullPath } };
   }
-  if (to.meta.requiresOidcAuth) {
-    return identity.value?.auth_provider
-      ? undefined
-      : { path: "/login", query: { redirect: to.fullPath } };
+  if (to.meta.requiresOidcAuth && !identity.value?.auth_provider) {
+    return { path: "/login", query: { redirect: to.fullPath } };
   }
   if (to.meta.requiresAdmin && !isAdmin.value) {
     return { path: "/login", query: { redirect: to.fullPath } };

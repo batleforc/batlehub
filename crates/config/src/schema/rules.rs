@@ -1,0 +1,100 @@
+use std::collections::HashMap;
+
+use serde::Deserialize;
+
+use super::registry::default_true;
+
+// ── RBAC ──────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, Default)]
+pub struct RbacConfig {
+    #[serde(default)]
+    pub anonymous: Vec<String>,
+    #[serde(default)]
+    pub user: Vec<String>,
+    #[serde(default)]
+    pub admin: Vec<String>,
+    /// Dynamic groups from external identity providers (e.g. Authentik).
+    /// Maps group name → list of permitted resource types for this registry.
+    #[serde(default)]
+    pub groups: HashMap<String, Vec<String>>,
+    /// Controls which roles can search/browse this registry in the package explorer.
+    /// When absent, defaults to allowing explore for any role that has proxy access.
+    #[serde(default)]
+    pub explore: ExploreRbacConfig,
+}
+
+/// Per-registry explore/search permissions.
+///
+/// Example TOML:
+/// ```toml
+/// [registries.rbac.explore]
+/// anonymous = false   # anonymous users cannot search
+/// user = false        # regular users cannot search (proxy-only)
+/// admin = true        # admins can browse
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct ExploreRbacConfig {
+    #[serde(default = "default_true")]
+    pub anonymous: bool,
+    #[serde(default = "default_true")]
+    pub user: bool,
+    #[serde(default = "default_true")]
+    pub admin: bool,
+}
+
+impl Default for ExploreRbacConfig {
+    fn default() -> Self {
+        Self {
+            anonymous: true,
+            user: true,
+            admin: true,
+        }
+    }
+}
+
+// ── Rules ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RuleConfig {
+    ReleaseAgeGate(ReleaseAgeGateConfig),
+    RequireSignedRelease(RequireSignedReleaseConfig),
+    DenyLatest(DenyLatestConfig),
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReleaseAgeGateConfig {
+    /// Minimum age in seconds before a release is downloadable.
+    #[serde(default = "default_min_age")]
+    pub min_age_secs: u64,
+    /// Roles that may bypass the age gate (e.g. `["admin"]`).
+    #[serde(default)]
+    pub bypass_roles: Vec<String>,
+    /// When `true`, deny requests for packages whose upstream does not provide
+    /// a publish timestamp (instead of the default behaviour of skipping the
+    /// check and allowing the download).
+    ///
+    /// Useful for registries — such as conda — where the timestamp field is
+    /// optional: setting this to `true` forces every package to carry a
+    /// verifiable age before it can be downloaded.
+    #[serde(default)]
+    pub deny_missing_timestamp: bool,
+}
+
+fn default_min_age() -> u64 {
+    3600
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RequireSignedReleaseConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DenyLatestConfig {
+    /// Roles that may bypass the restriction (e.g. `["admin"]`).
+    #[serde(default)]
+    pub bypass_roles: Vec<String>,
+}
