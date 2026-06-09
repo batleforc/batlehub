@@ -54,7 +54,7 @@ jobs:
 
       - name: Upload oxlint SARIF results
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: ui/oxlint-results.sarif
           category: oxlint
@@ -67,7 +67,7 @@ jobs:
 
       - name: Upload eslint SARIF results
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: ui/eslint-results.sarif
           category: eslint
