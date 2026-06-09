@@ -20,7 +20,7 @@ import { check } from "k6";
 import { BASE_URL, ADMIN_TOKEN } from "../config.js";
 import { npmPublishPayload } from "../helpers.js";
 
-const ARTIFACT_KB = parseInt(__ENV.ARTIFACT_KB || "64");
+const ARTIFACT_KB = Number.parseInt(__ENV.ARTIFACT_KB || "64");
 const REGISTRY = "perf-local-npm";
 
 export const options = {
@@ -44,11 +44,9 @@ export default function () {
 
   const payload = npmPublishPayload(name, version, ARTIFACT_KB);
 
-  const res = http.put(
-    `${BASE_URL}/proxy/${REGISTRY}/${name}`,
-    payload,
-    { headers: HEADERS }
-  );
+  const res = http.put(`${BASE_URL}/proxy/${REGISTRY}/${name}`, payload, {
+    headers: HEADERS,
+  });
 
   check(res, {
     "published 200": (r) => r.status === 200,
