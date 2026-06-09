@@ -1,5 +1,4 @@
 name: Container Build
-
 on:
   push:
     branches: ["main"]
@@ -18,18 +17,14 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "50 23 * * *"
-
 permissions:
   contents: read
-
 env:
   REGISTRY: registry.batleforc.fr
-
 concurrency:
   # only run one build at a time
   group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
   cancel-in-progress: true
-
 jobs:
   build:
     name: Build container images
@@ -50,13 +45,12 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: https://git.batleforc.fr/action/checkout@v6
+      - uses: https://git.batleforc.fr/action/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Create env var with vault CA certificate
         id: cert
-        run: echo "VAULT_CA_CERTIFICATE=$(cat "$VAULT_CA_CERT" | base64 -w 0)">>
-          "$GITHUB_OUTPUT"
+        run: echo "VAULT_CA_CERTIFICATE=$(cat "$VAULT_CA_CERT" | base64 -w 0)">> "$GITHUB_OUTPUT"
       - name: Get env variables from vault
-        uses: https://git.batleforc.fr/action/hashicorp_vault-action@v3
+        uses: https://git.batleforc.fr/action/hashicorp_vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
         id: vault
         with:
           url: https://vault.vault:8200
@@ -69,10 +63,7 @@ jobs:
             git-vault/data/batleforc/batlehub/registry username | REGISTRY_USER ;
             git-vault/data/batleforc/batlehub/registry password | REGISTRY_PAT ;
             git-vault/data/batleforc/batlehub/registry url | REGISTRY ;
-
-      - run: buildah login --username ${{ steps.vault.outputs.REGISTRY_USER }}
-          --password ${{ steps.vault.outputs.REGISTRY_PAT }} ${{
-          steps.vault.outputs.REGISTRY }}
+      - run: buildah login --username ${{ steps.vault.outputs.REGISTRY_USER }} --password ${{ steps.vault.outputs.REGISTRY_PAT }} ${{ steps.vault.outputs.REGISTRY }}
       - name: Build Image
         run: |
           IMAGE_TAG="${{ env.REGISTRY }}/${{ matrix.image_name }}:${GITHUB_SHA}"

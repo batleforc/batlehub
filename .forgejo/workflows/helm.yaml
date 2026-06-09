@@ -1,5 +1,4 @@
 name: Helm Chart Publish
-
 on:
   push:
     branches: ["main"]
@@ -7,17 +6,13 @@ on:
       - "helm/**"
       - ".forgejo/workflows/helm.yaml"
   workflow_dispatch:
-
 permissions:
   contents: read
-
 env:
   REGISTRY: registry.batleforc.fr
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
   cancel-in-progress: true
-
 jobs:
   publish:
     name: Package and push Helm chart
@@ -27,14 +22,12 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: https://git.batleforc.fr/action/checkout@v6
-
+      - uses: https://git.batleforc.fr/action/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Create env var with vault CA certificate
         id: cert
         run: echo "VAULT_CA_CERTIFICATE=$(cat "$VAULT_CA_CERT" | base64 -w 0)" >> "$GITHUB_OUTPUT"
-
       - name: Get credentials from Vault
-        uses: https://git.batleforc.fr/action/hashicorp_vault-action@v3
+        uses: https://git.batleforc.fr/action/hashicorp_vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
         id: vault
         with:
           url: https://vault.vault:8200
@@ -47,16 +40,13 @@ jobs:
             git-vault/data/batleforc/batlehub/registry username | REGISTRY_USER ;
             git-vault/data/batleforc/batlehub/registry password | REGISTRY_PAT ;
             git-vault/data/batleforc/batlehub/registry url | REGISTRY ;
-
       - name: Install Helm
-        uses: https://github.com/Azure/setup-helm@v4
-
+        uses: https://github.com/Azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
       - name: Login to OCI registry
         run: |
           helm registry login ${{ steps.vault.outputs.REGISTRY }} \
             --username ${{ steps.vault.outputs.REGISTRY_USER }} \
             --password ${{ steps.vault.outputs.REGISTRY_PAT }}
-
       - name: Package chart
         id: package
         run: |
@@ -66,7 +56,6 @@ jobs:
           helm package helm/batlehub --destination /tmp/helm-output
           echo "chart_version=${CHART_VERSION}" >> "$GITHUB_OUTPUT"
           echo "chart_path=/tmp/helm-output/batlehub-${CHART_VERSION}.tgz" >> "$GITHUB_OUTPUT"
-
       - name: Push chart to Harbor
         run: |
           helm push ${{ steps.package.outputs.chart_path }} \

@@ -1,5 +1,4 @@
 name: Frontend Lint
-
 on:
   push:
     branches: ["main"]
@@ -24,11 +23,9 @@ on:
   schedule:
     - cron: "50 23 * * *"
   workflow_dispatch:
-
 permissions:
   contents: read
   security-events: write
-
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -36,46 +33,38 @@ jobs:
       run:
         working-directory: ui
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: ui/package-lock.json
-
       - name: Install dependencies
         run: npm ci --ignore-scripts
-
       - name: Run oxlint
         id: oxlint
         continue-on-error: true
         run: npm run lint -- -f sarif src > oxlint-results.sarif
-
       - name: Upload oxlint SARIF results
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
         with:
           sarif_file: ui/oxlint-results.sarif
           category: oxlint
           wait-for-processing: true
-
       - name: Run eslint
         id: eslint
         continue-on-error: true
         run: npm run lint:eslint -- --format @microsoft/eslint-formatter-sarif -o eslint-results.sarif
-
       - name: Upload eslint SARIF results
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
         with:
           sarif_file: ui/eslint-results.sarif
           category: eslint
           wait-for-processing: true
-
       - name: Check formatting (oxfmt)
         run: npm run lint -- --check src
-
       - name: Fail on lint errors
         if: steps.oxlint.outcome == 'failure' || steps.eslint.outcome == 'failure'
         run: exit 1
