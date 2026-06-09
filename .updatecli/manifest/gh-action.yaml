@@ -30,4 +30,7 @@ autodiscovery:
   scmid: default
   actionid: default
   crawlers:
-    githubaction:
+    github/action:
+      spec:
+        digest: true
+        rootdir: ".github"
