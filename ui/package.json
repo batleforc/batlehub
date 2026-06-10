@@ -13,7 +13,10 @@
     "lint:eslint": "eslint src --ext .ts,.vue",
     "lint:eslint:fix": "eslint src --ext .ts,.vue --fix",
     "format": "oxfmt --write src",
-    "format:check": "oxfmt --check src"
+    "format:check": "oxfmt --check src",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@hey-api/client-fetch": "^0.13.1",
@@ -41,15 +44,19 @@
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
     "@vitejs/plugin-vue": "^6.0.7",
+    "@vitest/coverage-v8": "^4.1.8",
+    "@vue/test-utils": "^2.4.11",
     "autoprefixer": "^10.5.0",
     "eslint": "^9.0.0",
     "eslint-plugin-vue": "^9.0.0",
+    "jsdom": "^29.1.1",
     "oxfmt": "^0.53.0",
     "oxlint": "^1.68.0",
     "postcss": "^8.5.15",
     "tailwindcss": "^4.3.0",
     "typescript": "^6.0.3",
     "vite": "^8.0.14",
+    "vitest": "^4.1.8",
     "vue-eslint-parser": "^10.0.0",
     "vue-tsc": "^3.3.3"
   }

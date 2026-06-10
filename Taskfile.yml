@@ -265,6 +265,18 @@ tasks:
       - npm run lint:eslint
       - npm run format:check
 
+  ui:test:
+    desc: Run the frontend test suite
+    dir: ui
+    cmds:
+      - npm run test
+
+  ui:coverage:
+    desc: Run the frontend test suite with coverage (enforces threshold)
+    dir: ui
+    cmds:
+      - npm run coverage
+
   ui:fix:
     desc: Auto-fix oxlint issues and format the frontend source with oxfmt
     dir: ui
