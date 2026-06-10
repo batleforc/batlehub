@@ -8,7 +8,9 @@ use batlehub_core::{
     ports::{FetchedArtifact, RegistryClient},
 };
 
-use super::http_client::{apply_upstream_options, UpstreamHttpOptions};
+use super::http_client::{
+    apply_upstream_options, basic_auth_get, cache_control, UpstreamHttpOptions,
+};
 
 mod client;
 mod models;
@@ -53,11 +55,7 @@ impl CondaRegistryClient {
     }
 
     pub(super) fn get(&self, url: &str) -> reqwest::RequestBuilder {
-        let rb = self.http.get(url);
-        match &self.basic_auth {
-            Some((u, p)) => rb.basic_auth(u, Some(p)),
-            None => rb,
-        }
+        basic_auth_get(&self.http, &self.basic_auth, url)
     }
 
     fn artifact_url(&self, pkg: &PackageId) -> String {
@@ -131,11 +129,7 @@ impl RegistryClient for CondaRegistryClient {
             )));
         }
 
-        let cache_control = resp
-            .headers()
-            .get(reqwest::header::CACHE_CONTROL)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+        let cache_control = cache_control(&resp);
 
         Ok(PackageMetadata {
             id: pkg.clone(),
@@ -173,11 +167,7 @@ impl RegistryClient for CondaRegistryClient {
             )));
         }
 
-        let cache_control = resp
-            .headers()
-            .get(reqwest::header::CACHE_CONTROL)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+        let cache_control = cache_control(&resp);
 
         let stream = resp
             .bytes_stream()

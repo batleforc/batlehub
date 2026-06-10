@@ -286,3 +286,237 @@ pub(super) fn hmac_sha256_hex(key: &[u8], data: &[u8]) -> String {
     mac.update(data);
     hex::encode(mac.finalize().into_bytes())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_event(version: Option<&str>) -> NotificationEvent {
+        NotificationEvent::new(
+            NotificationEventType::PackagePublished,
+            "npm-proxy",
+            "left-pad",
+            version.map(str::to_owned),
+            "alice",
+        )
+    }
+
+    #[test]
+    fn format_event_text_includes_version_when_present() {
+        let event = sample_event(Some("1.2.3"));
+        let text = format_event_text(&event);
+        assert!(text.contains("v1.2.3"));
+        assert!(text.contains("npm-proxy/left-pad"));
+        assert!(text.contains("actor: alice"));
+    }
+
+    #[test]
+    fn format_event_text_omits_version_when_absent() {
+        let event = sample_event(None);
+        let text = format_event_text(&event);
+        assert!(!text.contains(" v"));
+        assert!(text.contains("npm-proxy/left-pad"));
+    }
+
+    #[test]
+    fn hmac_sha256_hex_matches_known_vector() {
+        let mac = hmac_sha256_hex(b"key", b"The quick brown fox jumps over the lazy dog");
+        assert_eq!(
+            mac,
+            "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
+        );
+    }
+
+    #[tokio::test]
+    async fn webhook_dispatch_success_includes_signature_header() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/hook")
+            .match_header("x-batlehub-event", "package_published")
+            .match_header(
+                "x-batlehub-signature-256",
+                mockito::Matcher::Regex("^sha256=[0-9a-f]{64}$".to_owned()),
+            )
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let dispatcher = WebhookDispatcher {
+            url: format!("{}/hook", server.url()),
+            secret: Some("s3cret".to_owned()),
+            client: Arc::new(reqwest::Client::new()),
+            timeout: Duration::from_secs(5),
+        };
+
+        dispatcher
+            .dispatch(&sample_event(Some("1.0.0")))
+            .await
+            .unwrap();
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn webhook_dispatch_5xx_returns_err() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/hook")
+            .with_status(500)
+            .create_async()
+            .await;
+
+        let dispatcher = WebhookDispatcher {
+            url: format!("{}/hook", server.url()),
+            secret: None,
+            client: Arc::new(reqwest::Client::new()),
+            timeout: Duration::from_secs(5),
+        };
+
+        let err = dispatcher.dispatch(&sample_event(None)).await.unwrap_err();
+        assert!(err.to_string().contains("500"));
+    }
+
+    #[tokio::test]
+    async fn slack_dispatch_success() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/slack")
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let dispatcher = SlackDispatcher {
+            url: format!("{}/slack", server.url()),
+            client: Arc::new(reqwest::Client::new()),
+            timeout: Duration::from_secs(5),
+        };
+        dispatcher.send_test().await.unwrap();
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn slack_dispatch_5xx_returns_err() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/slack")
+            .with_status(503)
+            .create_async()
+            .await;
+
+        let dispatcher = SlackDispatcher {
+            url: format!("{}/slack", server.url()),
+            client: Arc::new(reqwest::Client::new()),
+            timeout: Duration::from_secs(5),
+        };
+        let err = dispatcher.dispatch(&sample_event(None)).await.unwrap_err();
+        assert!(err.to_string().contains("503"));
+    }
+
+    #[tokio::test]
+    async fn teams_dispatch_success() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/teams")
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let dispatcher = TeamsDispatcher {
+            url: format!("{}/teams", server.url()),
+            client: Arc::new(reqwest::Client::new()),
+            timeout: Duration::from_secs(5),
+        };
+        dispatcher.send_test().await.unwrap();
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn teams_dispatch_5xx_returns_err() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/teams")
+            .with_status(502)
+            .create_async()
+            .await;
+
+        let dispatcher = TeamsDispatcher {
+            url: format!("{}/teams", server.url()),
+            client: Arc::new(reqwest::Client::new()),
+            timeout: Duration::from_secs(5),
+        };
+        let err = dispatcher.dispatch(&sample_event(None)).await.unwrap_err();
+        assert!(err.to_string().contains("502"));
+    }
+
+    #[test]
+    fn build_webhook_copies_config_fields() {
+        let cfg = WebhookChannelConfig {
+            name: "wh".to_owned(),
+            url: "https://example.com/hook".to_owned(),
+            secret: Some("sec".to_owned()),
+            timeout_secs: 30,
+        };
+        let client = Arc::new(reqwest::Client::new());
+        let d = build_webhook(&cfg, &client);
+        assert_eq!(d.url, "https://example.com/hook");
+        assert_eq!(d.secret.as_deref(), Some("sec"));
+        assert_eq!(d.timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn build_slack_and_teams_copy_config_fields() {
+        let client = Arc::new(reqwest::Client::new());
+        let slack_cfg = SlackChannelConfig {
+            name: "slack".to_owned(),
+            url: "https://hooks.slack.com/x".to_owned(),
+            timeout_secs: 15,
+        };
+        let slack = build_slack(&slack_cfg, &client);
+        assert_eq!(slack.url, "https://hooks.slack.com/x");
+        assert_eq!(slack.timeout, Duration::from_secs(15));
+
+        let teams_cfg = TeamsChannelConfig {
+            name: "teams".to_owned(),
+            url: "https://outlook.office.com/x".to_owned(),
+            timeout_secs: 20,
+        };
+        let teams = build_teams(&teams_cfg, &client);
+        assert_eq!(teams.url, "https://outlook.office.com/x");
+        assert_eq!(teams.timeout, Duration::from_secs(20));
+    }
+
+    fn email_cfg(tls: bool, creds: bool) -> EmailChannelConfig {
+        EmailChannelConfig {
+            name: "email".to_owned(),
+            smtp_host: "localhost".to_owned(),
+            smtp_port: 2525,
+            smtp_user: creds.then(|| "user".to_owned()),
+            smtp_password: creds.then(|| "pass".to_owned()),
+            from: "noreply@example.com".to_owned(),
+            to: vec!["dev@example.com".to_owned()],
+            tls,
+            timeout_secs: 1,
+        }
+    }
+
+    #[test]
+    fn build_email_with_tls_disabled_succeeds() {
+        let dispatcher = build_email(&email_cfg(false, false)).unwrap();
+        assert_eq!(dispatcher.from, "noreply@example.com");
+        assert_eq!(dispatcher.to, vec!["dev@example.com".to_owned()]);
+    }
+
+    #[test]
+    fn build_email_with_tls_and_credentials_succeeds() {
+        let dispatcher = build_email(&email_cfg(true, true)).unwrap();
+        assert_eq!(dispatcher.from, "noreply@example.com");
+    }
+
+    #[tokio::test]
+    async fn email_dispatch_with_invalid_recipient_reports_error() {
+        let mut cfg = email_cfg(false, false);
+        cfg.to = vec!["not-an-email".to_owned()];
+        let dispatcher = build_email(&cfg).unwrap();
+        let err = dispatcher.dispatch(&sample_event(None)).await.unwrap_err();
+        assert!(err.to_string().contains("not-an-email"));
+    }
+}

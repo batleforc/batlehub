@@ -407,3 +407,56 @@ fn render(f: &mut ratatui::Frame, app: &App) {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_app() -> App {
+        let client = BatleHubClient::new("http://localhost:8080", None).expect("client");
+        App::new(client)
+    }
+
+    #[test]
+    fn go_back_returns_to_prev_screen_when_set() {
+        let mut app = make_app();
+        app.screen = Screen::PackageList {
+            registry: "npm".to_owned(),
+        };
+        app.prev_screen = Some(Screen::RegistryList);
+
+        app.go_back();
+        assert_eq!(app.screen, Screen::RegistryList);
+        assert!(app.prev_screen.is_none());
+    }
+
+    #[test]
+    fn go_back_defaults_to_registry_list_when_no_prev() {
+        let mut app = make_app();
+        app.screen = Screen::Help;
+        app.prev_screen = None;
+
+        app.go_back();
+        assert_eq!(app.screen, Screen::RegistryList);
+    }
+
+    #[test]
+    fn is_quit_key_detects_q_and_ctrl_c() {
+        assert!(is_quit_key(&event::KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::NONE
+        )));
+        assert!(is_quit_key(&event::KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL
+        )));
+        assert!(!is_quit_key(&event::KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::NONE
+        )));
+        assert!(!is_quit_key(&event::KeyEvent::new(
+            KeyCode::Char('x'),
+            KeyModifiers::NONE
+        )));
+    }
+}

@@ -1,4 +1,4 @@
-use super::http_client::{apply_upstream_options, UpstreamHttpOptions};
+use super::http_client::{apply_upstream_options, basic_auth_get, UpstreamHttpOptions};
 use super::models::PackagistV2Response;
 use batlehub_core::error::CoreError;
 
@@ -57,11 +57,7 @@ impl ComposerRegistryClient {
     }
 
     pub(super) fn get(&self, url: &str) -> reqwest::RequestBuilder {
-        let rb = self.http.get(url);
-        match &self.basic_auth {
-            Some((u, p)) => rb.basic_auth(u, Some(p)),
-            None => rb,
-        }
+        basic_auth_get(&self.http, &self.basic_auth, url)
     }
 
     /// Send a GET to the given p2 URL and check the status code.

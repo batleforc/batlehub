@@ -393,6 +393,8 @@ mod tests {
         versions: Vec<String>,
         fail_fetch: bool,
         fail_list: bool,
+        fail_stream: bool,
+        panic_fetch: bool,
     }
 
     impl StubClient {
@@ -401,6 +403,8 @@ mod tests {
                 versions: versions.into_iter().map(str::to_owned).collect(),
                 fail_fetch: false,
                 fail_list: false,
+                fail_stream: false,
+                panic_fetch: false,
             })
         }
         fn failing_list() -> Arc<Self> {
@@ -408,6 +412,8 @@ mod tests {
                 versions: vec![],
                 fail_fetch: false,
                 fail_list: true,
+                fail_stream: false,
+                panic_fetch: false,
             })
         }
         fn failing_fetch() -> Arc<Self> {
@@ -415,6 +421,26 @@ mod tests {
                 versions: vec!["1.0.0".into()],
                 fail_fetch: true,
                 fail_list: false,
+                fail_stream: false,
+                panic_fetch: false,
+            })
+        }
+        fn failing_stream() -> Arc<Self> {
+            Arc::new(Self {
+                versions: vec!["1.0.0".into()],
+                fail_fetch: false,
+                fail_list: false,
+                fail_stream: true,
+                panic_fetch: false,
+            })
+        }
+        fn panicking_fetch() -> Arc<Self> {
+            Arc::new(Self {
+                versions: vec!["1.0.0".into()],
+                fail_fetch: false,
+                fail_list: false,
+                fail_stream: false,
+                panic_fetch: true,
             })
         }
     }
@@ -436,8 +462,21 @@ mod tests {
             })
         }
         async fn fetch_artifact(&self, _: &PackageId) -> Result<FetchedArtifact, CoreError> {
+            if self.panic_fetch {
+                panic!("simulated task panic");
+            }
             if self.fail_fetch {
                 return Err(CoreError::Registry("fetch failed".into()));
+            }
+            if self.fail_stream {
+                let chunks = vec![
+                    Ok::<Bytes, CoreError>(Bytes::from("partial-")),
+                    Err(CoreError::Registry("stream failed".into())),
+                ];
+                return Ok(FetchedArtifact {
+                    stream: Box::pin(stream::iter(chunks)),
+                    cache_control: None,
+                });
             }
             let data = Bytes::from("stub-artifact-data");
             Ok(FetchedArtifact {
@@ -456,6 +495,7 @@ mod tests {
     struct StubStorage {
         data: Arc<TokioMutex<HashMap<String, Bytes>>>,
         fail_store: bool,
+        fail_exists: bool,
     }
 
     impl StubStorage {
@@ -463,12 +503,21 @@ mod tests {
             Arc::new(Self {
                 data: Arc::new(TokioMutex::new(HashMap::new())),
                 fail_store: false,
+                fail_exists: false,
             })
         }
         fn failing_store() -> Arc<Self> {
             Arc::new(Self {
                 data: Arc::new(TokioMutex::new(HashMap::new())),
                 fail_store: true,
+                fail_exists: false,
+            })
+        }
+        fn failing_exists() -> Arc<Self> {
+            Arc::new(Self {
+                data: Arc::new(TokioMutex::new(HashMap::new())),
+                fail_store: false,
+                fail_exists: true,
             })
         }
     }
@@ -492,6 +541,9 @@ mod tests {
             }))
         }
         async fn exists(&self, key: &str) -> Result<bool, CoreError> {
+            if self.fail_exists {
+                return Err(CoreError::Storage("exists failed".into()));
+            }
             Ok(self.data.lock().await.contains_key(key))
         }
         async fn delete(&self, key: &str) -> Result<(), CoreError> {
@@ -536,6 +588,60 @@ mod tests {
             _: Option<u64>,
         ) -> Result<(), CoreError> {
             Ok(())
+        }
+        async fn touch_artifact(&self, _: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn list_artifacts(&self, _: &str) -> Result<Vec<ArtifactMeta>, CoreError> {
+            Ok(vec![])
+        }
+        async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> {
+            Ok(vec![])
+        }
+        async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn is_artifact_expired(
+            &self,
+            _: &str,
+            _: chrono::DateTime<Utc>,
+        ) -> Result<bool, CoreError> {
+            Ok(false)
+        }
+        async fn list_expired_by_ttl(
+            &self,
+            _: &str,
+            _: chrono::DateTime<Utc>,
+        ) -> Result<Vec<ArtifactMeta>, CoreError> {
+            Ok(vec![])
+        }
+        async fn list_idle(
+            &self,
+            _: &str,
+            _: chrono::DateTime<Utc>,
+        ) -> Result<Vec<ArtifactMeta>, CoreError> {
+            Ok(vec![])
+        }
+        async fn total_size_bytes(&self, _: &str) -> Result<u64, CoreError> {
+            Ok(0)
+        }
+        async fn list_lru(&self, _: &str, _: i64) -> Result<Vec<ArtifactMeta>, CoreError> {
+            Ok(vec![])
+        }
+    }
+
+    struct FailingRecordMeta;
+    #[async_trait]
+    impl ArtifactMetaRepository for FailingRecordMeta {
+        async fn record_artifact(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: Option<u64>,
+        ) -> Result<(), CoreError> {
+            Err(CoreError::Storage("record_artifact failed".into()))
         }
         async fn touch_artifact(&self, _: &str) -> Result<(), CoreError> {
             Ok(())
@@ -684,6 +790,68 @@ mod tests {
         let svc2 = svc.with_latest_n(10);
         assert_eq!(svc2.latest_n, 10);
         assert_eq!(svc2.registry_name, "test-reg");
+    }
+
+    #[tokio::test]
+    async fn warm_package_records_error_when_exists_check_fails() {
+        let svc = active_svc(
+            StubClient::with_versions(vec!["1.0.0"]),
+            StubStorage::failing_exists(),
+        );
+        let report = svc.warm_package("mylib@1.0.0").await;
+        assert_eq!(report.errors, 1);
+        assert_eq!(report.warmed, 0);
+        assert_eq!(report.skipped, 0);
+    }
+
+    #[tokio::test]
+    async fn warm_package_records_error_on_mid_stream_failure() {
+        let svc = active_svc(StubClient::failing_stream(), StubStorage::new());
+        let report = svc.warm_package("mylib@1.0.0").await;
+        assert_eq!(report.errors, 1);
+        assert_eq!(report.warmed, 0);
+    }
+
+    #[tokio::test]
+    async fn warm_package_succeeds_despite_record_artifact_failure() {
+        let storage = StubStorage::new();
+        let svc = WarmingService {
+            client: StubClient::with_versions(vec!["1.0.0"]),
+            storage: storage.clone(),
+            artifact_meta: Arc::new(FailingRecordMeta),
+            registry_name: "test-reg".into(),
+            latest_n: 3,
+            concurrency: 4,
+        };
+        let report = svc.warm_package("mylib@1.0.0").await;
+        // record_artifact failure is logged but non-fatal: the artifact is
+        // still considered warmed.
+        assert_eq!(report.warmed, 1);
+        assert_eq!(report.errors, 0);
+    }
+
+    #[tokio::test]
+    async fn warm_package_latest_n_larger_than_available_versions() {
+        let storage = StubStorage::new();
+        let svc = WarmingService {
+            client: StubClient::with_versions(vec!["1.0.0", "1.1.0"]),
+            storage: storage.clone(),
+            artifact_meta: Arc::new(NoopMeta),
+            registry_name: "test-reg".into(),
+            latest_n: 10,
+            concurrency: 4,
+        };
+        let report = svc.warm_package("mylib").await;
+        assert_eq!(report.warmed, 2);
+        assert_eq!(report.errors, 0);
+    }
+
+    #[tokio::test]
+    async fn warm_package_records_error_when_task_panics() {
+        let svc = active_svc(StubClient::panicking_fetch(), StubStorage::new());
+        let report = svc.warm_package("mylib@1.0.0").await;
+        assert_eq!(report.errors, 1);
+        assert_eq!(report.warmed, 0);
     }
 
     #[tokio::test]

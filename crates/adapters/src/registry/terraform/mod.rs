@@ -9,7 +9,9 @@ use batlehub_core::{
     ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
 };
 
-use super::http_client::{apply_upstream_options, percent_encode, UpstreamHttpOptions};
+use super::http_client::{
+    apply_upstream_options, basic_auth_get, cache_control, percent_encode, UpstreamHttpOptions,
+};
 
 mod models;
 mod modules;
@@ -92,11 +94,7 @@ impl TerraformRegistryClient {
     }
 
     pub(super) fn get(&self, url: &str) -> reqwest::RequestBuilder {
-        let rb = self.http.get(url);
-        match &self.basic_auth {
-            Some((u, p)) => rb.basic_auth(u, Some(p)),
-            None => rb,
-        }
+        basic_auth_get(&self.http, &self.basic_auth, url)
     }
 
     /// Build the upstream URL for the given `PackageId`.
@@ -177,11 +175,7 @@ impl RegistryClient for TerraformRegistryClient {
             )));
         }
 
-        let cache_control = resp
-            .headers()
-            .get(reqwest::header::CACHE_CONTROL)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+        let cache_control = cache_control(&resp);
 
         // Fetch per-version publish timestamp for specific-version requests.
         // Version listings ("versions") have no meaningful single timestamp.
@@ -227,11 +221,7 @@ impl RegistryClient for TerraformRegistryClient {
             )));
         }
 
-        let cache_control = response
-            .headers()
-            .get(reqwest::header::CACHE_CONTROL)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+        let cache_control = cache_control(&response);
 
         let stream = response
             .bytes_stream()

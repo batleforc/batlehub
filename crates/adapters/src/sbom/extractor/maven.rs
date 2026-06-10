@@ -110,7 +110,8 @@ fn parse_maven_pom(content: &str) -> Vec<SbomDependency> {
                     match field {
                         "groupId" => current_group = text,
                         "artifactId" => current_artifact = text,
-                        _ => current_version = text,
+                        "version" => current_version = text,
+                        _ => {}
                     }
                 }
             }
@@ -131,4 +132,124 @@ fn parse_maven_pom(content: &str) -> Vec<SbomDependency> {
         }
     }
     deps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pom(deps_xml: &str) -> String {
+        format!(
+            r#"<project>
+                <groupId>com.example</groupId>
+                <artifactId>app</artifactId>
+                <version>9.9.9</version>
+                <dependencies>{deps_xml}</dependencies>
+            </project>"#
+        )
+    }
+
+    #[test]
+    fn parse_maven_pom_basic() {
+        let xml = pom(r#"<dependency>
+                <groupId>com.fasterxml.jackson.core</groupId>
+                <artifactId>jackson-databind</artifactId>
+                <version>2.15.0</version>
+            </dependency>"#);
+        let deps = parse_maven_pom(&xml);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "com.fasterxml.jackson.core:jackson-databind");
+        assert_eq!(deps[0].version_req.as_deref(), Some("2.15.0"));
+        assert_eq!(deps[0].ecosystem, "maven");
+    }
+
+    #[test]
+    fn parse_maven_pom_no_group_id() {
+        let xml = pom(r#"<dependency>
+                <artifactId>standalone</artifactId>
+                <version>1.0</version>
+            </dependency>"#);
+        let deps = parse_maven_pom(&xml);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "standalone");
+    }
+
+    #[test]
+    fn parse_maven_pom_empty_artifact_id_skipped() {
+        let xml = pom(r#"<dependency>
+                <groupId>com.example</groupId>
+                <version>1.0</version>
+            </dependency>"#);
+        let deps = parse_maven_pom(&xml);
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn parse_maven_pom_multiple_dependencies() {
+        let xml = pom(r#"<dependency>
+                <groupId>g1</groupId>
+                <artifactId>a1</artifactId>
+                <version>1.0</version>
+            </dependency>
+            <dependency>
+                <groupId>g2</groupId>
+                <artifactId>a2</artifactId>
+                <version>2.0</version>
+            </dependency>"#);
+        let deps = parse_maven_pom(&xml);
+        assert_eq!(deps.len(), 2);
+        assert_eq!(deps[0].name, "g1:a1");
+        assert_eq!(deps[0].version_req.as_deref(), Some("1.0"));
+        assert_eq!(deps[1].name, "g2:a2");
+        assert_eq!(deps[1].version_req.as_deref(), Some("2.0"));
+    }
+
+    #[test]
+    fn parse_maven_pom_ignores_project_level_version() {
+        // The project-level <version> (9.9.9, outside <dependencies>) must not
+        // leak into the dependency's version.
+        let xml = pom(r#"<dependency>
+                <groupId>g1</groupId>
+                <artifactId>a1</artifactId>
+            </dependency>"#);
+        let deps = parse_maven_pom(&xml);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].version_req, None);
+    }
+
+    #[test]
+    fn extract_maven_deps_non_zip_returns_empty() {
+        let data = Bytes::from_static(b"not a zip archive");
+        assert!(extract_maven_deps(&data).is_empty());
+    }
+
+    #[test]
+    fn extract_maven_deps_from_jar_with_pom() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+
+        let xml = pom(r#"<dependency>
+                <groupId>g</groupId>
+                <artifactId>a</artifactId>
+                <version>1.2.3</version>
+            </dependency>"#);
+
+        let mut buf = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            writer
+                .start_file(
+                    "META-INF/maven/com.example/app/pom.xml",
+                    SimpleFileOptions::default(),
+                )
+                .unwrap();
+            writer.write_all(xml.as_bytes()).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let deps = extract_maven_deps(&Bytes::from(buf));
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "g:a");
+        assert_eq!(deps[0].version_req.as_deref(), Some("1.2.3"));
+    }
 }

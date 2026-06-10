@@ -164,3 +164,68 @@ pub fn render(f: &mut Frame, app: &App) {
         .style(Style::default().fg(Color::DarkGray));
     f.render_widget(footer, footer_area);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn detection(registry_type: &'static str, name: Option<&str>) -> ProjectDetection {
+        ProjectDetection {
+            registry_type,
+            package_name: name.map(|s| s.to_owned()),
+            instructions: format!("setup {registry_type}"),
+            relative_path: String::new(),
+        }
+    }
+
+    #[test]
+    fn set_items_selects_first_and_stores_cwd() {
+        let mut w = SetupWizardWidget::new();
+        w.set_items(
+            vec![detection("npm", Some("left-pad")), detection("cargo", None)],
+            "/home/user/project".to_owned(),
+        );
+        assert_eq!(w.state.selected(), Some(0));
+        assert_eq!(w.cwd, "/home/user/project");
+        assert_eq!(w.selected().unwrap().registry_type, "npm");
+    }
+
+    #[test]
+    fn set_items_empty_leaves_selection_unset() {
+        let mut w = SetupWizardWidget::new();
+        w.set_items(vec![], "/tmp".to_owned());
+        assert_eq!(w.state.selected(), None);
+        assert!(w.selected().is_none());
+    }
+
+    #[test]
+    fn next_and_prev_wrap_around() {
+        let mut w = SetupWizardWidget::new();
+        w.set_items(
+            vec![
+                detection("npm", None),
+                detection("cargo", None),
+                detection("maven", None),
+            ],
+            "/tmp".to_owned(),
+        );
+
+        w.next();
+        assert_eq!(w.state.selected(), Some(1));
+        w.next();
+        assert_eq!(w.state.selected(), Some(2));
+        w.next();
+        assert_eq!(w.state.selected(), Some(0));
+
+        w.prev();
+        assert_eq!(w.state.selected(), Some(2));
+    }
+
+    #[test]
+    fn next_and_prev_on_empty_list_are_noops() {
+        let mut w = SetupWizardWidget::new();
+        w.next();
+        w.prev();
+        assert_eq!(w.state.selected(), None);
+    }
+}

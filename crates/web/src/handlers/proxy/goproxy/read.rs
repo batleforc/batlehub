@@ -66,12 +66,13 @@ fn scan_zip_for_go_mod(zip_bytes: &[u8], mod_suffix: &str) -> Option<String> {
     let cursor = std::io::Cursor::new(zip_bytes);
     let mut archive = zip::ZipArchive::new(cursor).ok()?;
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i).ok()?;
-        let name = file.name().to_owned();
-        if name == mod_suffix || name.ends_with("/go.mod") {
-            let mut contents = String::new();
-            if file.read_to_string(&mut contents).is_ok() {
-                return Some(contents);
+        if let Ok(mut file) = archive.by_index(i) {
+            let name = file.name().to_owned();
+            if name == mod_suffix || name.ends_with("/go.mod") {
+                let mut contents = String::new();
+                if file.read_to_string(&mut contents).is_ok() {
+                    return Some(contents);
+                }
             }
         }
     }

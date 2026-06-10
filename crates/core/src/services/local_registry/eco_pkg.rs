@@ -115,13 +115,8 @@ impl LocalRegistryService {
         identity: &Identity,
     ) -> Result<String, CoreError> {
         let versions = self
-            .load_visible_versions(registry, package_name, identity)
+            .load_visible_versions_or_not_found(registry, package_name, identity, "pypi package")
             .await?;
-        if versions.is_empty() {
-            return Err(CoreError::NotFound(format!(
-                "pypi package '{package_name}' not found in local registry '{registry}'"
-            )));
-        }
         let base = base_url.trim_end_matches('/');
         let mut links = String::new();
         for pkg in &versions {

@@ -1,6 +1,8 @@
 use batlehub_core::{entities::PackageId, error::CoreError};
 
-use super::super::http_client::{apply_upstream_options, UpstreamHttpOptions};
+use super::super::http_client::{
+    apply_upstream_options, basic_auth_get, cache_control, parse_http_date, UpstreamHttpOptions,
+};
 use super::models::decode_name;
 
 /// Maven Central-compatible registry client.
@@ -53,11 +55,7 @@ impl MavenRegistryClient {
     }
 
     pub(super) fn get(&self, url: &str) -> reqwest::RequestBuilder {
-        let rb = self.http.get(url);
-        match &self.basic_auth {
-            Some((u, p)) => rb.basic_auth(u, Some(p)),
-            None => rb,
-        }
+        basic_auth_get(&self.http, &self.basic_auth, url)
     }
 
     pub(super) fn head(&self, url: &str) -> reqwest::RequestBuilder {
@@ -95,7 +93,6 @@ impl MavenRegistryClient {
         &self,
         pkg: &PackageId,
     ) -> Option<chrono::DateTime<chrono::Utc>> {
-        use super::models::parse_http_date;
         let (group_id, artifact_id) = decode_name(&pkg.name).ok()?;
         let group_path = group_id.replace('.', "/");
         let base = self.base_url.trim_end_matches('/');
@@ -141,11 +138,7 @@ impl MavenRegistryClient {
             )));
         }
 
-        let cache_control = resp
-            .headers()
-            .get(reqwest::header::CACHE_CONTROL)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+        let cache_control = cache_control(&resp);
 
         let body = resp
             .text()

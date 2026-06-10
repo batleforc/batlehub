@@ -8,7 +8,9 @@ use batlehub_core::{
     ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
 };
 
-use super::http_client::{apply_upstream_options, percent_encode, UpstreamHttpOptions};
+use super::http_client::{
+    apply_upstream_options, basic_auth_get, cache_control, percent_encode, UpstreamHttpOptions,
+};
 
 mod client;
 mod models;
@@ -58,11 +60,7 @@ impl RubyGemsRegistryClient {
     }
 
     fn get(&self, url: &str) -> reqwest::RequestBuilder {
-        let rb = self.http.get(url);
-        match &self.basic_auth {
-            Some((u, p)) => rb.basic_auth(u, Some(p)),
-            None => rb,
-        }
+        basic_auth_get(&self.http, &self.basic_auth, url)
     }
 
     fn artifact_url(&self, pkg: &PackageId) -> Result<String, CoreError> {
@@ -127,11 +125,7 @@ impl RegistryClient for RubyGemsRegistryClient {
             )));
         }
 
-        let cache_control = resp
-            .headers()
-            .get(reqwest::header::CACHE_CONTROL)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+        let cache_control = cache_control(&resp);
 
         // Parse published_at and checksum from the gem info JSON when available.
         if pkg.artifact.is_none() && pkg.name != "_index" {
@@ -193,11 +187,7 @@ impl RegistryClient for RubyGemsRegistryClient {
             )));
         }
 
-        let cache_control = response
-            .headers()
-            .get(reqwest::header::CACHE_CONTROL)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+        let cache_control = cache_control(&response);
 
         let stream = response
             .bytes_stream()

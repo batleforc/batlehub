@@ -44,6 +44,7 @@ actix-http = "3"
 flate2 = "1"
 tar = "0.4"
 tempfile.workspace = true
+mockito = "1"
 
 [lints]
 workspace = true

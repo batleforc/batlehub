@@ -1,6 +1,8 @@
 use serde::Deserialize;
 
-use super::super::http_client::{apply_upstream_options, UpstreamHttpOptions};
+use super::super::http_client::{
+    apply_upstream_options, cache_control, parse_http_date, UpstreamHttpOptions,
+};
 use batlehub_core::error::CoreError;
 
 /// NuGet v3 protocol registry client.
@@ -109,11 +111,7 @@ impl NugetRegistryClient {
             )));
         }
 
-        let cache_control = resp
-            .headers()
-            .get(reqwest::header::CACHE_CONTROL)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+        let cache_control = cache_control(&resp);
 
         let body: FlatIndex = resp
             .json()
@@ -147,11 +145,7 @@ impl NugetRegistryClient {
             )));
         }
 
-        Ok(resp
-            .headers()
-            .get(reqwest::header::CACHE_CONTROL)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned))
+        Ok(cache_control(&resp))
     }
 
     /// HEAD the `.nupkg` artifact URL to get its `Last-Modified` timestamp.
@@ -171,7 +165,7 @@ impl NugetRegistryClient {
         resp.headers()
             .get(reqwest::header::LAST_MODIFIED)
             .and_then(|v| v.to_str().ok())
-            .and_then(super::models::parse_http_date)
+            .and_then(parse_http_date)
     }
 }
 
@@ -179,7 +173,7 @@ impl NugetRegistryClient {
 
 #[cfg(test)]
 mod tests {
-    use super::super::models::{normalize_id, parse_http_date};
+    use super::super::models::normalize_id;
     use super::*;
     use batlehub_core::{entities::PackageId, ports::RegistryClient};
     use mockito::Server;
@@ -387,11 +381,5 @@ mod tests {
     fn normalize_id_lowercases() {
         assert_eq!(normalize_id("Newtonsoft.Json"), "newtonsoft.json");
         assert_eq!(normalize_id("MYLIB"), "mylib");
-    }
-
-    #[test]
-    fn parse_http_date_valid() {
-        let dt = parse_http_date("Fri, 15 Mar 2024 12:34:56 GMT").unwrap();
-        assert_eq!(dt.format("%Y-%m-%d").to_string(), "2024-03-15");
     }
 }

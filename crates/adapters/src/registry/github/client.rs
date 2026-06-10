@@ -1,4 +1,6 @@
-use super::super::http_client::{apply_upstream_tls, upstream_auth_headers, UpstreamHttpOptions};
+use super::super::http_client::{
+    apply_upstream_tls, basic_auth_get, upstream_auth_headers, UpstreamHttpOptions,
+};
 use super::models::{GhAsset, GhRelease};
 use batlehub_core::error::CoreError;
 
@@ -72,11 +74,7 @@ impl GithubRegistryClient {
     }
 
     pub(super) fn get(&self, url: &str) -> reqwest::RequestBuilder {
-        let rb = self.http.get(url);
-        match &self.basic_auth {
-            Some((u, p)) => rb.basic_auth(u, Some(p)),
-            None => rb,
-        }
+        basic_auth_get(&self.http, &self.basic_auth, url)
     }
 
     pub(super) async fn fetch_release_by_tag(

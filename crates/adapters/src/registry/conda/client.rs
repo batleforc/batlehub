@@ -1,4 +1,4 @@
-use super::{models, CondaRegistryClient, CoreError, PackageId, PackageMetadata};
+use super::{cache_control, models, CondaRegistryClient, CoreError, PackageId, PackageMetadata};
 use models::{CondaIndexJson, CondaPackageInfo, CondaRepodata};
 
 impl CondaRegistryClient {
@@ -57,11 +57,7 @@ impl CondaRegistryClient {
                 resp.status()
             )));
         }
-        let cache_control = resp
-            .headers()
-            .get(reqwest::header::CACHE_CONTROL)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+        let cache_control = cache_control(&resp);
         let body = resp
             .bytes()
             .await

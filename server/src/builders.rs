@@ -226,3 +226,251 @@ pub(super) fn build_quota_service(
         .collect();
     QuotaService::new(repo, configs)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use batlehub_adapters::in_memory::InMemoryPackageRepository;
+    use batlehub_config::schema::UpstreamProxyConfig;
+
+    fn make_registry(reg_type: &str, name: &str, extra: &str) -> RegistryConfig {
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            registries: Vec<RegistryConfig>,
+        }
+        let toml_str = format!(
+            r#"
+            [[registries]]
+            type = "{reg_type}"
+            name = "{name}"
+            {extra}
+            "#
+        );
+        let w: Wrapper = toml::from_str(&toml_str).expect("valid registry toml");
+        w.registries.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn parse_role_variants() {
+        assert_eq!(parse_role("admin"), Role::Admin);
+        assert_eq!(parse_role("user"), Role::User);
+        assert_eq!(parse_role("anonymous"), Role::Anonymous);
+        assert_eq!(parse_role("anything-else"), Role::Anonymous);
+    }
+
+    #[test]
+    fn upstream_options_bearer_auth() {
+        let r = make_registry(
+            "npm",
+            "reg",
+            r#"
+            [registries.upstream_auth]
+            type = "bearer"
+            token = "tok123"
+            "#,
+        );
+        let opts = upstream_options(&r, None);
+        assert_eq!(opts.bearer_token.as_deref(), Some("tok123"));
+        assert!(opts.basic_auth.is_none());
+        assert!(opts.custom_header.is_none());
+    }
+
+    #[test]
+    fn upstream_options_basic_auth() {
+        let r = make_registry(
+            "npm",
+            "reg",
+            r#"
+            [registries.upstream_auth]
+            type = "basic"
+            username = "u"
+            password = "p"
+            "#,
+        );
+        let opts = upstream_options(&r, None);
+        assert_eq!(opts.basic_auth, Some(("u".to_owned(), "p".to_owned())));
+        assert!(opts.bearer_token.is_none());
+    }
+
+    #[test]
+    fn upstream_options_header_auth() {
+        let r = make_registry(
+            "npm",
+            "reg",
+            r#"
+            [registries.upstream_auth]
+            type = "header"
+            name = "X-Api-Key"
+            value = "secret"
+            "#,
+        );
+        let opts = upstream_options(&r, None);
+        assert_eq!(
+            opts.custom_header,
+            Some(("X-Api-Key".to_owned(), "secret".to_owned()))
+        );
+    }
+
+    #[test]
+    fn upstream_options_proxy_from_registry_overrides_global() {
+        let r = make_registry(
+            "npm",
+            "reg",
+            r#"
+            [registries.proxy]
+            url = "http://reg-proxy:3128"
+            "#,
+        );
+        let global = UpstreamProxyConfig {
+            url: "http://global-proxy:3128".into(),
+            username: None,
+            password: None,
+            no_proxy: None,
+        };
+        let opts = upstream_options(&r, Some(&global));
+        assert_eq!(opts.proxy_url.as_deref(), Some("http://reg-proxy:3128"));
+    }
+
+    #[test]
+    fn upstream_options_proxy_falls_back_to_global() {
+        let r = make_registry("npm", "reg", "");
+        let global = UpstreamProxyConfig {
+            url: "http://global-proxy:3128".into(),
+            username: Some("u".into()),
+            password: Some("p".into()),
+            no_proxy: Some("localhost".into()),
+        };
+        let opts = upstream_options(&r, Some(&global));
+        assert_eq!(opts.proxy_url.as_deref(), Some("http://global-proxy:3128"));
+        assert_eq!(opts.proxy_username.as_deref(), Some("u"));
+        assert_eq!(opts.proxy_password.as_deref(), Some("p"));
+        assert_eq!(opts.no_proxy.as_deref(), Some("localhost"));
+    }
+
+    #[test]
+    fn upstream_options_search_url_and_ca_cert() {
+        let r = make_registry(
+            "maven",
+            "reg",
+            r#"
+            search_url = "https://search.example.com"
+            [registries.tls]
+            ca_cert_path = "/etc/ssl/ca.pem"
+            "#,
+        );
+        let opts = upstream_options(&r, None);
+        assert_eq!(
+            opts.search_url.as_deref(),
+            Some("https://search.example.com")
+        );
+        assert_eq!(opts.ca_cert_path.as_deref(), Some("/etc/ssl/ca.pem"));
+    }
+
+    #[test]
+    fn build_cargo_index_uses_explicit_index_url() {
+        let r = make_registry(
+            "cargo",
+            "reg",
+            r#"index_url = "https://my-index.example.com""#,
+        );
+        let proxy = build_cargo_index(&r, None).unwrap();
+        assert_eq!(proxy.index_url, "https://my-index.example.com");
+    }
+
+    #[test]
+    fn build_cargo_index_defaults_crates_io_to_index_crates_io() {
+        let r = make_registry("cargo", "reg", "");
+        let proxy = build_cargo_index(&r, None).unwrap();
+        assert_eq!(proxy.index_url, "https://index.crates.io");
+    }
+
+    #[test]
+    fn build_cargo_index_non_crates_upstream_used_directly() {
+        let r = make_registry(
+            "cargo",
+            "reg",
+            r#"upstreams = ["https://my-mirror.example.com"]"#,
+        );
+        let proxy = build_cargo_index(&r, None).unwrap();
+        assert_eq!(proxy.index_url, "https://my-mirror.example.com");
+    }
+
+    #[test]
+    fn build_registry_client_unknown_type_errors() {
+        let r = make_registry("not-a-real-type", "reg", "");
+        assert!(build_registry_client(&r, None).is_err());
+    }
+
+    #[test]
+    fn build_registry_client_single_upstream() {
+        let r = make_registry("npm", "reg", "");
+        let client = build_registry_client(&r, None).unwrap();
+        assert_eq!(client.registry_type(), "npm");
+    }
+
+    #[test]
+    fn build_registry_client_multi_upstream_uses_fanout() {
+        let r = make_registry(
+            "npm",
+            "reg",
+            r#"upstreams = ["https://a.example.com", "https://b.example.com"]"#,
+        );
+        let client = build_registry_client(&r, None).unwrap();
+        assert_eq!(client.registry_type(), "npm");
+    }
+
+    #[test]
+    fn build_policy_default_has_rbac_and_block_list_rules() {
+        let r = make_registry("npm", "reg", "");
+        let repo: Arc<dyn batlehub_core::ports::PackageRepository> =
+            InMemoryPackageRepository::new();
+        let policy = build_policy(&r, repo);
+        let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
+        assert_eq!(names, vec!["rbac", "block_list"]);
+        assert!(!policy.firewall_only);
+        assert!(policy.serve_stale_metadata);
+        assert_eq!(policy.metadata_ttl, Some(Duration::from_secs(300)));
+        assert!(policy.artifact_ttl.is_none());
+    }
+
+    #[test]
+    fn build_policy_with_release_age_gate_and_deny_latest_rules() {
+        let r = make_registry(
+            "npm",
+            "reg",
+            r#"
+            firewall_only = true
+
+            [registries.cache]
+            metadata_ttl_secs = 60
+            serve_stale = false
+            artifact_ttl_secs = 3600
+
+            [[registries.rules]]
+            kind = "release_age_gate"
+            min_age_secs = 7200
+            bypass_roles = ["admin"]
+
+            [[registries.rules]]
+            kind = "deny_latest"
+            bypass_roles = ["user"]
+
+            [[registries.rules]]
+            kind = "require_signed_release"
+            enabled = true
+            "#,
+        );
+        let repo: Arc<dyn batlehub_core::ports::PackageRepository> =
+            InMemoryPackageRepository::new();
+        let policy = build_policy(&r, repo);
+        let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
+        assert_eq!(
+            names,
+            vec!["rbac", "block_list", "release_age_gate", "deny_latest"]
+        );
+        assert!(policy.firewall_only);
+        assert!(!policy.serve_stale_metadata);
+        assert_eq!(policy.metadata_ttl, Some(Duration::from_secs(60)));
+        assert_eq!(policy.artifact_ttl, Some(Duration::from_secs(3600)));
+    }
+}

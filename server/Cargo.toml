@@ -42,5 +42,9 @@ metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 regex.workspace = true
 
+[dev-dependencies]
+toml.workspace = true
+serde.workspace = true
+
 [lints]
 workspace = true

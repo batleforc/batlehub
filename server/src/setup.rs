@@ -79,7 +79,7 @@ pub(super) async fn build_single_backend(
                 let backend = S3StorageBackend::new(_s3).await.with_context(|| {
                     format!("initialising S3 storage for bucket '{}'", _s3.bucket)
                 })?;
-                return Ok(Arc::new(backend));
+                Ok(Arc::new(backend))
             }
             #[cfg(not(feature = "storage-s3"))]
             anyhow::bail!("S3 storage requires the 'storage-s3' feature flag at compile time");

@@ -8,7 +8,9 @@ use batlehub_core::{
     ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
 };
 
-use super::http_client::{apply_upstream_options, UpstreamHttpOptions};
+use super::http_client::{
+    apply_upstream_options, basic_auth_get, cache_control, UpstreamHttpOptions,
+};
 // percent_encode not needed for PyPI (uses normalize_name for exact lookup)
 
 mod client;
@@ -48,11 +50,7 @@ impl PypiRegistryClient {
     }
 
     pub(super) fn get(&self, url: &str) -> reqwest::RequestBuilder {
-        let rb = self.http.get(url);
-        match &self.basic_auth {
-            Some((u, p)) => rb.basic_auth(u, Some(p)),
-            None => rb,
-        }
+        basic_auth_get(&self.http, &self.basic_auth, url)
     }
 }
 
@@ -89,11 +87,7 @@ impl RegistryClient for PypiRegistryClient {
             )));
         }
 
-        let cache_control = resp
-            .headers()
-            .get(reqwest::header::CACHE_CONTROL)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+        let cache_control = cache_control(&resp);
 
         let body = resp
             .bytes()
@@ -199,11 +193,7 @@ impl RegistryClient for PypiRegistryClient {
             )));
         }
 
-        let cache_control = dl_resp
-            .headers()
-            .get(reqwest::header::CACHE_CONTROL)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+        let cache_control = cache_control(&dl_resp);
 
         let stream = dl_resp
             .bytes_stream()

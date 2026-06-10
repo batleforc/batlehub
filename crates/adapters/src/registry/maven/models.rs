@@ -7,7 +7,7 @@ use batlehub_core::{
     ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
 };
 
-use super::super::http_client::percent_encode;
+use super::super::http_client::{cache_control, percent_encode};
 use super::client::MavenRegistryClient;
 
 // ── XML / HTTP helpers ────────────────────────────────────────────────────────
@@ -53,13 +53,6 @@ pub(super) fn parse_last_updated(s: &str) -> Option<chrono::DateTime<chrono::Utc
     chrono::NaiveDateTime::parse_from_str(s.trim(), "%Y%m%d%H%M%S")
         .ok()
         .map(|dt| dt.and_utc())
-}
-
-/// Parse an HTTP `Last-Modified` header value (RFC 7231 / RFC 2822) into a `DateTime<Utc>`.
-pub(super) fn parse_http_date(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-    chrono::DateTime::parse_from_rfc2822(s.trim())
-        .ok()
-        .map(|dt| dt.with_timezone(&chrono::Utc))
 }
 
 // ── RegistryClient impl ───────────────────────────────────────────────────────
@@ -123,11 +116,7 @@ impl RegistryClient for MavenRegistryClient {
             )));
         }
 
-        let cache_control = resp
-            .headers()
-            .get(reqwest::header::CACHE_CONTROL)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+        let cache_control = cache_control(&resp);
 
         let stream = resp
             .bytes_stream()
@@ -335,19 +324,5 @@ mod tests {
         let pkg = PackageId::new("maven", "com.example:mylib", "1.0.0");
         let meta = c.resolve_metadata(&pkg).await.unwrap();
         assert!(meta.published_at.is_some());
-    }
-
-    #[test]
-    fn parse_http_date_valid() {
-        let dt = parse_http_date("Fri, 15 Mar 2024 12:34:56 GMT").unwrap();
-        assert_eq!(
-            dt.format("%Y-%m-%d %H:%M:%S").to_string(),
-            "2024-03-15 12:34:56"
-        );
-    }
-
-    #[test]
-    fn parse_http_date_invalid_returns_none() {
-        assert!(parse_http_date("not-a-date").is_none());
     }
 }

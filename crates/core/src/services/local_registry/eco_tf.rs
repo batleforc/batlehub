@@ -8,12 +8,9 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
-        let versions = self.load_visible_versions(registry, name, identity).await?;
-        if versions.is_empty() {
-            return Err(CoreError::NotFound(format!(
-                "module '{name}' not found in local registry '{registry}'"
-            )));
-        }
+        let versions = self
+            .load_visible_versions_or_not_found(registry, name, identity, "module")
+            .await?;
         let version_list: Vec<serde_json::Value> = versions
             .iter()
             .filter(|v| !v.yanked)
@@ -29,12 +26,9 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
-        let versions = self.load_visible_versions(registry, name, identity).await?;
-        if versions.is_empty() {
-            return Err(CoreError::NotFound(format!(
-                "provider '{name}' not found in local registry '{registry}'"
-            )));
-        }
+        let versions = self
+            .load_visible_versions_or_not_found(registry, name, identity, "provider")
+            .await?;
         let version_list: Vec<serde_json::Value> = versions
             .iter()
             .filter(|v| !v.yanked)

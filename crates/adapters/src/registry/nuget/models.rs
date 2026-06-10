@@ -8,16 +8,10 @@ use batlehub_core::{
     ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
 };
 
-use super::super::http_client::percent_encode;
+use super::super::http_client::{cache_control, percent_encode};
 use super::client::NugetRegistryClient;
 
 // ── Pure helper functions ─────────────────────────────────────────────────────
-
-pub fn parse_http_date(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-    chrono::DateTime::parse_from_rfc2822(s.trim())
-        .ok()
-        .map(|dt| dt.with_timezone(&chrono::Utc))
-}
 
 /// Normalise a NuGet package ID to lower-case (IDs are case-insensitive in the protocol).
 pub fn normalize_id(id: &str) -> String {
@@ -133,11 +127,7 @@ impl RegistryClient for NugetRegistryClient {
             )));
         }
 
-        let cache_control = resp
-            .headers()
-            .get(reqwest::header::CACHE_CONTROL)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+        let cache_control = cache_control(&resp);
 
         let stream = resp
             .bytes_stream()

@@ -12,13 +12,9 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<String, CoreError> {
-        let versions = self.load_visible_versions(registry, name, identity).await?;
-        if versions.is_empty() {
-            return Err(CoreError::NotFound(format!(
-                "crate '{}' not found in local registry '{}'",
-                name, registry
-            )));
-        }
+        let versions = self
+            .load_visible_versions_or_not_found(registry, name, identity, "crate")
+            .await?;
         let lines = versions
             .iter()
             .map(|v| serde_json::to_string(&v.index_metadata))
@@ -36,13 +32,9 @@ impl LocalRegistryService {
         base_url: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
-        let versions = self.load_visible_versions(registry, name, identity).await?;
-        if versions.is_empty() {
-            return Err(CoreError::NotFound(format!(
-                "package '{}' not found in local registry '{}'",
-                name, registry
-            )));
-        }
+        let versions = self
+            .load_visible_versions_or_not_found(registry, name, identity, "package")
+            .await?;
 
         let base = base_url.trim_end_matches('/');
         let mut versions_map = serde_json::Map::new();
@@ -244,6 +236,39 @@ impl LocalRegistryService {
         self.check_visibility(registry, name, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
         self.filter_for_identity(registry, versions, identity).await
+    }
+
+    /// `load_visible_versions`, returning `CoreError::NotFound` if the result is empty.
+    ///
+    /// `entity_label` is used in the error message, e.g. `"crate"`, `"gem"`, `"module"`.
+    pub(super) async fn load_visible_versions_or_not_found(
+        &self,
+        registry: &str,
+        name: &str,
+        identity: &Identity,
+        entity_label: &str,
+    ) -> Result<Vec<PublishedPackage>, CoreError> {
+        let versions = self.load_visible_versions(registry, name, identity).await?;
+        if versions.is_empty() {
+            return Err(CoreError::NotFound(format!(
+                "{entity_label} '{name}' not found in local registry '{registry}'"
+            )));
+        }
+        Ok(versions)
+    }
+
+    /// Picks the newest non-prerelease version, falling back to the overall newest
+    /// version if every entry is a pre-release. `versions` must be sorted ascending
+    /// (oldest first), as returned by `load_visible_versions`.
+    pub(super) fn latest_stable_or_newest(
+        versions: &[PublishedPackage],
+    ) -> Option<PublishedPackage> {
+        versions
+            .iter()
+            .rev()
+            .find(|v| !Self::is_prerelease(&v.version))
+            .or_else(|| versions.last())
+            .cloned()
     }
 
     /// Returns `CoreError::NotFound` if `version` is a pre-release and the caller

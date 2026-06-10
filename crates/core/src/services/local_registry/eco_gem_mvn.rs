@@ -9,17 +9,11 @@ impl LocalRegistryService {
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
         let versions = self.load_visible_versions(registry, name, identity).await?;
-        let latest = versions
-            .iter()
-            .rev()
-            .find(|v| !Self::is_prerelease(&v.version))
-            .or_else(|| versions.last())
-            .cloned()
-            .ok_or_else(|| {
-                CoreError::NotFound(format!(
-                    "gem '{name}' not found in local registry '{registry}'"
-                ))
-            })?;
+        let latest = Self::latest_stable_or_newest(&versions).ok_or_else(|| {
+            CoreError::NotFound(format!(
+                "gem '{name}' not found in local registry '{registry}'"
+            ))
+        })?;
         let meta = &latest.index_metadata;
         Ok(serde_json::json!({
             "name": name,
@@ -42,12 +36,9 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<Vec<serde_json::Value>, CoreError> {
-        let versions = self.load_visible_versions(registry, name, identity).await?;
-        if versions.is_empty() {
-            return Err(CoreError::NotFound(format!(
-                "gem '{name}' not found in local registry '{registry}'"
-            )));
-        }
+        let versions = self
+            .load_visible_versions_or_not_found(registry, name, identity, "gem")
+            .await?;
         let result = versions
             .into_iter()
             .rev() // newest-first to match rubygems.org API
@@ -78,13 +69,8 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<Vec<PublishedPackage>, CoreError> {
-        let versions = self.load_visible_versions(registry, name, identity).await?;
-        if versions.is_empty() {
-            return Err(CoreError::NotFound(format!(
-                "artifact '{name}' not found in local registry '{registry}'"
-            )));
-        }
-        Ok(versions)
+        self.load_visible_versions_or_not_found(registry, name, identity, "artifact")
+            .await
     }
 
     /// Return all locally published versions of a NuGet package.
@@ -94,12 +80,7 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<Vec<PublishedPackage>, CoreError> {
-        let versions = self.load_visible_versions(registry, name, identity).await?;
-        if versions.is_empty() {
-            return Err(CoreError::NotFound(format!(
-                "NuGet package '{name}' not found in local registry '{registry}'"
-            )));
-        }
-        Ok(versions)
+        self.load_visible_versions_or_not_found(registry, name, identity, "NuGet package")
+            .await
     }
 }

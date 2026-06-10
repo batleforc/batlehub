@@ -114,3 +114,59 @@ pub fn render(f: &mut Frame, app: &App) {
     .style(Style::default().fg(Color::DarkGray));
     f.render_widget(help, help_area);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn registry(name: &str) -> RegistryInfo {
+        RegistryInfo {
+            name: name.to_owned(),
+            registry_type: "npm".to_owned(),
+            mode: "proxy".to_owned(),
+        }
+    }
+
+    #[test]
+    fn set_items_selects_first_when_non_empty() {
+        let mut w = RegistryListWidget::new();
+        w.set_items(vec![registry("a"), registry("b")]);
+        assert_eq!(w.state.selected(), Some(0));
+        assert_eq!(w.selected().unwrap().name, "a");
+    }
+
+    #[test]
+    fn set_items_empty_leaves_selection_unset() {
+        let mut w = RegistryListWidget::new();
+        w.set_items(vec![]);
+        assert_eq!(w.state.selected(), None);
+        assert!(w.selected().is_none());
+    }
+
+    #[test]
+    fn next_and_prev_wrap_around() {
+        let mut w = RegistryListWidget::new();
+        w.set_items(vec![registry("a"), registry("b"), registry("c")]);
+        assert_eq!(w.state.selected(), Some(0));
+
+        w.next();
+        assert_eq!(w.state.selected(), Some(1));
+        w.next();
+        assert_eq!(w.state.selected(), Some(2));
+        w.next();
+        assert_eq!(w.state.selected(), Some(0));
+
+        w.prev();
+        assert_eq!(w.state.selected(), Some(2));
+        w.prev();
+        assert_eq!(w.state.selected(), Some(1));
+    }
+
+    #[test]
+    fn next_and_prev_on_empty_list_are_noops() {
+        let mut w = RegistryListWidget::new();
+        w.next();
+        w.prev();
+        assert_eq!(w.state.selected(), None);
+    }
+}

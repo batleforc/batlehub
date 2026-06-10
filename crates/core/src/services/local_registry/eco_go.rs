@@ -10,14 +10,8 @@ impl LocalRegistryService {
         identity: &Identity,
     ) -> Result<String, CoreError> {
         let versions = self
-            .load_visible_versions(registry, module, identity)
+            .load_visible_versions_or_not_found(registry, module, identity, "module")
             .await?;
-        if versions.is_empty() {
-            return Err(CoreError::NotFound(format!(
-                "module '{}' not found in local registry '{}'",
-                module, registry
-            )));
-        }
         let list = versions
             .iter()
             .filter_map(|v| {
@@ -112,18 +106,12 @@ impl LocalRegistryService {
         let versions = self
             .load_visible_versions(registry, module, identity)
             .await?;
-        let pkg = versions
-            .iter()
-            .rev()
-            .find(|v| !Self::is_prerelease(&v.version))
-            .or_else(|| versions.last())
-            .cloned()
-            .ok_or_else(|| {
-                CoreError::NotFound(format!(
-                    "module '{}' not found in local registry '{}'",
-                    module, registry
-                ))
-            })?;
+        let pkg = Self::latest_stable_or_newest(&versions).ok_or_else(|| {
+            CoreError::NotFound(format!(
+                "module '{}' not found in local registry '{}'",
+                module, registry
+            ))
+        })?;
         let v = pkg
             .index_metadata
             .get("Version")

@@ -238,3 +238,259 @@ pub(super) fn make_hot_builder(
         Ok((hot, access, rm, rmm, um, CargoIndexMap::new(cargo_map)))
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use batlehub_adapters::in_memory::InMemoryBetaChannelStore;
+
+    fn make_registry(reg_type: &str, name: &str, extra: &str) -> RegistryConfig {
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            registries: Vec<RegistryConfig>,
+        }
+        let toml_str = format!(
+            r#"
+            [[registries]]
+            type = "{reg_type}"
+            name = "{name}"
+            {extra}
+            "#
+        );
+        let w: Wrapper = toml::from_str(&toml_str).expect("valid registry toml");
+        w.registries.into_iter().next().unwrap()
+    }
+
+    fn make_app_config(registries_toml: &str) -> AppConfig {
+        let toml_str = format!(
+            r#"
+            [server]
+            host = "127.0.0.1"
+            port = 8080
+
+            [database]
+            type = "postgresql"
+            url = "postgresql://user:pass@localhost/db"
+
+            [storage]
+            type = "filesystem"
+            path = "./tmp"
+
+            {registries_toml}
+            "#
+        );
+        toml::from_str(&toml_str).expect("valid app config toml")
+    }
+
+    #[test]
+    fn build_versioning_map_valid_pattern() {
+        let r = make_registry(
+            "npm",
+            "test-reg",
+            r#"
+            [registries.versioning]
+            enforce_semver = true
+            allow_prerelease = false
+            version_pattern = "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+            "#,
+        );
+        let map = build_versioning_map(&[r]);
+        let policy = map.get("test-reg").expect("entry present");
+        assert!(policy.enforce_semver);
+        assert!(!policy.allow_prerelease);
+        assert!(policy.version_pattern.is_some());
+    }
+
+    #[test]
+    fn build_versioning_map_invalid_pattern_becomes_none() {
+        let r = make_registry(
+            "npm",
+            "test-reg",
+            r#"
+            [registries.versioning]
+            version_pattern = "[invalid("
+            "#,
+        );
+        let map = build_versioning_map(&[r]);
+        let policy = map.get("test-reg").expect("entry present");
+        assert!(policy.version_pattern.is_none());
+    }
+
+    #[test]
+    fn build_versioning_map_absent_for_unconfigured_registry() {
+        let r = make_registry("npm", "test-reg", "");
+        assert!(build_versioning_map(&[r]).is_empty());
+    }
+
+    #[test]
+    fn build_signing_map_present() {
+        let r = make_registry(
+            "npm",
+            "test-reg",
+            r#"
+            [registries.signing]
+            required = true
+            allowed_types = ["pgp", "ed25519"]
+            "#,
+        );
+        let map = build_signing_map(&[r]);
+        let cfg = map.get("test-reg").expect("entry present");
+        assert!(cfg.required);
+        assert_eq!(
+            cfg.allowed_types,
+            vec!["pgp".to_owned(), "ed25519".to_owned()]
+        );
+    }
+
+    #[test]
+    fn build_signing_map_absent_for_unconfigured_registry() {
+        let r = make_registry("npm", "test-reg", "");
+        assert!(build_signing_map(&[r]).is_empty());
+    }
+
+    #[test]
+    fn build_sbom_map_present_carries_registry_type() {
+        let r = make_registry(
+            "maven",
+            "test-reg",
+            r#"
+            [registries.sbom]
+            enabled = true
+            formats = ["spdx"]
+            required = true
+            fetch_upstream = false
+            "#,
+        );
+        let map = build_sbom_map(&[r]);
+        let cfg = map.get("test-reg").expect("entry present");
+        assert!(cfg.enabled);
+        assert_eq!(cfg.formats, vec!["spdx".to_owned()]);
+        assert!(cfg.required);
+        assert!(!cfg.fetch_upstream);
+        assert_eq!(cfg.registry_type, "maven");
+    }
+
+    #[test]
+    fn build_sbom_map_absent_for_unconfigured_registry() {
+        let r = make_registry("npm", "test-reg", "");
+        assert!(build_sbom_map(&[r]).is_empty());
+    }
+
+    #[test]
+    fn build_beta_channel_map_only_includes_enabled_registries() {
+        let store: Arc<dyn BetaChannelPort> = InMemoryBetaChannelStore::new();
+        let enabled = make_registry(
+            "npm",
+            "enabled-reg",
+            "[registries.beta_channel]\nenabled = true",
+        );
+        let disabled = make_registry(
+            "npm",
+            "disabled-reg",
+            "[registries.beta_channel]\nenabled = false",
+        );
+        let absent = make_registry("npm", "absent-reg", "");
+
+        let map = build_beta_channel_map(store, &[enabled, disabled, absent]);
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key("enabled-reg"));
+    }
+
+    #[test]
+    fn upstream_url_for_known_type_default() {
+        let r = make_registry("npm", "npm-reg", "");
+        assert_eq!(
+            upstream_url_for(&r),
+            Some("https://registry.npmjs.org".to_owned())
+        );
+    }
+
+    #[test]
+    fn upstream_url_for_configured_override() {
+        let r = make_registry(
+            "npm",
+            "npm-reg",
+            r#"upstreams = ["https://npm.example.com"]"#,
+        );
+        assert_eq!(
+            upstream_url_for(&r),
+            Some("https://npm.example.com".to_owned())
+        );
+    }
+
+    #[test]
+    fn upstream_url_for_unknown_type_returns_none() {
+        let r = make_registry("github", "gh-reg", "");
+        assert_eq!(upstream_url_for(&r), None);
+    }
+
+    #[test]
+    fn build_access_config_table_driven() {
+        let cfg = make_app_config(
+            r#"
+            [[registries]]
+            type = "npm"
+            name = "anon-reg"
+            [registries.rbac]
+            anonymous = ["read"]
+
+            [[registries]]
+            type = "npm"
+            name = "user-reg"
+            [registries.rbac]
+            user = ["read"]
+
+            [[registries]]
+            type = "npm"
+            name = "admin-reg"
+            [registries.rbac]
+            admin = ["read"]
+
+            [[registries]]
+            type = "npm"
+            name = "no-access-reg"
+
+            [[registries]]
+            type = "npm"
+            name = "group-reg"
+            [registries.rbac.groups]
+            ci-bots = ["read"]
+
+            [[registries]]
+            type = "npm"
+            name = "explore-reg"
+            [registries.rbac]
+            anonymous = ["read"]
+            user = ["read"]
+            admin = ["read"]
+            [registries.rbac.explore]
+            anonymous = false
+            user = true
+            admin = false
+            "#,
+        );
+
+        let access = build_access_config(&cfg);
+
+        assert!(access.anonymous.contains("anon-reg"));
+        assert!(!access.anonymous.contains("user-reg"));
+
+        assert!(access.user.contains("anon-reg"));
+        assert!(access.user.contains("user-reg"));
+        assert!(!access.user.contains("admin-reg"));
+
+        assert!(access.admin.contains("anon-reg"));
+        assert!(access.admin.contains("user-reg"));
+        assert!(access.admin.contains("admin-reg"));
+        assert!(!access.admin.contains("no-access-reg"));
+
+        assert_eq!(
+            access.groups.get("ci-bots"),
+            Some(&HashSet::from(["group-reg".to_owned()]))
+        );
+
+        assert!(!access.explore_anonymous.contains("explore-reg"));
+        assert!(access.explore_user.contains("explore-reg"));
+        assert!(!access.explore_admin.contains("explore-reg"));
+    }
+}
