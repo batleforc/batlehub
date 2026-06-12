@@ -6,7 +6,7 @@ use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
     entities::PackageId,
     error::CoreError,
-    services::{artifact_storage_key, LocalRegistryService, ProxyService},
+    services::{artifact_storage_key, validate_coordinate, LocalRegistryService, ProxyService},
 };
 
 use super::super::common::{
@@ -117,6 +117,9 @@ pub async fn nuget_flat_download(
     require_registry_type(&registry, "nuget", &map)?;
 
     let id = id_raw.to_lowercase();
+    // Edge chokepoint for the local branch, which builds a storage key directly
+    // (the proxy branch is guarded inside `ProxyService::handle`).
+    validate_coordinate(&id, &version, Some(&filename)).map_err(AppError::from)?;
     let mode = mode_map.get(&registry);
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {

@@ -483,6 +483,51 @@ async fn unknown_registry_returns_error() {
 }
 
 #[tokio::test]
+async fn rejects_path_traversal_in_coordinate() {
+    let svc = proxy("npm", Arc::new(FixedRegistry), SpyRepo::new(), vec![]);
+
+    // `..` in the name escapes the storage root once interpolated into the cache
+    // key — the edge chokepoint must reject it before any cache/storage access.
+    let bad_name = ProxyRequest {
+        package_id: PackageId::new("npm", "../../../../etc/passwd", "1.0.0"),
+        identity: Identity::anonymous(),
+        resource_type: "releases:read".to_owned(),
+    };
+    assert!(
+        matches!(svc.handle(bad_name).await, Err(CoreError::InvalidInput(_))),
+        "traversal in name must be rejected"
+    );
+
+    // ...and in the version segment...
+    let bad_version = ProxyRequest {
+        package_id: PackageId::new("npm", "test-pkg", "../../etc"),
+        identity: Identity::anonymous(),
+        resource_type: "releases:read".to_owned(),
+    };
+    assert!(
+        matches!(
+            svc.handle(bad_version).await,
+            Err(CoreError::InvalidInput(_))
+        ),
+        "traversal in version must be rejected"
+    );
+
+    // ...and in the sub-artifact.
+    let bad_artifact = ProxyRequest {
+        package_id: PackageId::new("npm", "test-pkg", "1.0.0").with_artifact("../evil"),
+        identity: Identity::anonymous(),
+        resource_type: "source:read".to_owned(),
+    };
+    assert!(
+        matches!(
+            svc.handle(bad_artifact).await,
+            Err(CoreError::InvalidInput(_))
+        ),
+        "traversal in artifact must be rejected"
+    );
+}
+
+#[tokio::test]
 async fn metadata_cache_miss_then_hit() {
     let repo = SpyRepo::new();
     let cache = TestCacheStore::new();

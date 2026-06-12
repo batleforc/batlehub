@@ -1,0 +1,53 @@
+name: Semgrep
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "**/*.rs"
+      - "**/*.ts"
+      - "**/*.vue"
+      - ".github/workflows/semgrep.yaml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "**/*.rs"
+      - "**/*.ts"
+      - "**/*.vue"
+      - ".github/workflows/semgrep.yaml"
+  schedule:
+    - cron: "50 23 * * 1"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  semgrep:
+    name: Semgrep SAST
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # upload SARIF to the Security tab
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      # pipx is preinstalled on GitHub-hosted runners.
+      - name: Install Semgrep
+        run: pipx install semgrep
+      # Produce SARIF for the Security tab (writes the file even when it fails).
+      - name: Semgrep scan (SARIF)
+        run: |
+          semgrep scan \
+            --config p/rust --config p/typescript --config p/secrets \
+            --severity ERROR \
+            --sarif --output semgrep.sarif
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+      # The gate — non-zero exit on any ERROR-severity finding.
+      - name: Semgrep scan (gate)
+        run: |
+          semgrep scan \
+            --config p/rust --config p/typescript --config p/secrets \
+            --severity ERROR \
+            --error

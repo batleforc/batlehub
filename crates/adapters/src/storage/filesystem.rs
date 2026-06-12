@@ -28,16 +28,17 @@ impl FilesystemStorageBackend {
         Ok(Self { root })
     }
 
-    fn key_to_path(&self, key: &str) -> PathBuf {
+    fn key_to_path(&self, key: &str) -> Result<PathBuf, CoreError> {
+        crate::storage::ensure_safe_key(key)?;
         let rel = key.replace(':', "__");
-        self.root.join(format!("{rel}.dat"))
+        Ok(self.root.join(format!("{rel}.dat")))
     }
 }
 
 #[async_trait]
 impl StorageBackend for FilesystemStorageBackend {
     async fn store(&self, key: &str, data: Bytes, _meta: StorageMeta) -> Result<(), CoreError> {
-        let path = self.key_to_path(key);
+        let path = self.key_to_path(key)?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.map_err(|e| {
                 CoreError::Storage(format!("create dirs for {}: {e}", path.display()))
@@ -54,7 +55,7 @@ impl StorageBackend for FilesystemStorageBackend {
     }
 
     async fn retrieve(&self, key: &str) -> Result<Option<StoredArtifact>, CoreError> {
-        let path = self.key_to_path(key);
+        let path = self.key_to_path(key)?;
         match tokio::fs::read(&path).await {
             Ok(bytes) => {
                 let size = bytes.len() as u64;
@@ -77,11 +78,11 @@ impl StorageBackend for FilesystemStorageBackend {
     }
 
     async fn exists(&self, key: &str) -> Result<bool, CoreError> {
-        Ok(self.key_to_path(key).exists())
+        Ok(self.key_to_path(key)?.exists())
     }
 
     async fn delete(&self, key: &str) -> Result<(), CoreError> {
-        let path = self.key_to_path(key);
+        let path = self.key_to_path(key)?;
         match tokio::fs::remove_file(&path).await {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -93,6 +94,7 @@ impl StorageBackend for FilesystemStorageBackend {
     }
 
     async fn stat_by_prefix(&self, prefix: &str) -> Result<(u64, u64), CoreError> {
+        crate::storage::ensure_safe_key(prefix)?;
         let fs_rel = prefix.replace(':', "__");
         let dir = self.root.join(fs_rel.trim_end_matches('/'));
 
@@ -126,6 +128,7 @@ impl StorageBackend for FilesystemStorageBackend {
     }
 
     async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, CoreError> {
+        crate::storage::ensure_safe_key(prefix)?;
         let fs_rel = prefix.replace(':', "__");
         let dir = self.root.join(fs_rel.trim_end_matches('/'));
 
@@ -164,6 +167,7 @@ impl StorageBackend for FilesystemStorageBackend {
     }
 
     async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError> {
+        crate::storage::ensure_safe_key(prefix)?;
         let fs_rel = prefix.replace(':', "__");
         let dir = self.root.join(fs_rel.trim_end_matches('/'));
 
@@ -373,5 +377,40 @@ mod tests {
         let b = make_backend().await;
         let deleted = b.delete_by_prefix("artifact:nonexistent/").await.unwrap();
         assert_eq!(deleted, 0);
+    }
+
+    #[tokio::test]
+    async fn rejects_path_traversal_keys() {
+        let b = make_backend().await;
+        // A key whose `..` segments would escape the storage root.
+        let evil = "local:npm/../../../../tmp/batlehub-traversal-probe/1.0";
+
+        let store_err = b
+            .store(evil, Bytes::from_static(b"x"), StorageMeta::default())
+            .await;
+        assert!(matches!(store_err, Err(CoreError::InvalidInput(_))));
+
+        assert!(matches!(
+            b.retrieve(evil).await,
+            Err(CoreError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            b.delete(evil).await,
+            Err(CoreError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            b.exists(evil).await,
+            Err(CoreError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            b.delete_by_prefix("local:npm/../../../../tmp").await,
+            Err(CoreError::InvalidInput(_))
+        ));
+
+        // Nothing was written outside the root.
+        assert!(
+            !std::path::Path::new("/tmp/batlehub-traversal-probe").exists(),
+            "traversal must not create files outside the storage root"
+        );
     }
 }

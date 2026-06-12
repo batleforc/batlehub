@@ -127,6 +127,7 @@ impl LocalRegistryService {
         version: &str,
         identity: &Identity,
     ) -> Result<Bytes, CoreError> {
+        super::validate_coordinate(name, version, None)?;
         self.check_visibility(registry, name, identity).await?;
         let key = artifact_storage_key(registry, name, version);
         let artifact = self.storage.retrieve(&key).await?.ok_or_else(|| {

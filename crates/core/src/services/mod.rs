@@ -20,7 +20,8 @@ pub use hot_config::{
 };
 pub use local_registry::{
     artifact_storage_key, maven_artifact_storage_key, tf_provider_binary_storage_key,
-    LocalRegistryService, PublishRequest, TerraformPlatform,
+    validate_coordinate, validate_package_name, validate_path_safe, LocalRegistryService,
+    PublishRequest, TerraformPlatform,
 };
 pub use metrics::ProxyMetrics;
 pub use proxy::{ProxyRequest, ProxyResponse, ProxyService};

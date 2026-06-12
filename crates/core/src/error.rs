@@ -38,6 +38,9 @@ pub enum CoreError {
     #[error("Invalid version: {0}")]
     InvalidVersion(String),
 
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
     #[error("Invalid configuration: {0}")]
     Config(String),
 

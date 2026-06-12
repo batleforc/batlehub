@@ -110,6 +110,7 @@ impl From<CoreError> for AppError {
                 message: msg,
             },
             CoreError::InvalidVersion(msg) => Self::unprocessable(msg),
+            CoreError::InvalidInput(msg) => Self::bad_request(msg),
             CoreError::Registry(msg) => Self {
                 status: StatusCode::BAD_GATEWAY,
                 message: msg,

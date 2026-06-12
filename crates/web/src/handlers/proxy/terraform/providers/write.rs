@@ -133,6 +133,18 @@ pub async fn tf_provider_binary_upload(
     require_local_mode(&registry, &mode_map)?;
     let _ = &identity; // auth presence validated by middleware
 
+    // Edge chokepoint: this handler builds a storage key directly from the path
+    // components, so reject any traversal attempt with a clean 400 first.
+    for (kind, value) in [
+        ("namespace", &namespace),
+        ("provider type", &ptype),
+        ("version", &version),
+        ("os", &os),
+        ("arch", &arch),
+    ] {
+        batlehub_core::services::validate_path_safe(kind, value).map_err(AppError::from)?;
+    }
+
     let bytes = collect_payload(payload).await?;
     let key = tf_provider_binary_storage_key(&registry, &namespace, &ptype, &version, &os, &arch);
     local_svc

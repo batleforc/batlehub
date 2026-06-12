@@ -10,4 +10,13 @@ node = "24"
 rust = "latest"
 sonar-scanner-cli = "latest"
 task = "latest"
+# ── Security scanners (see `task security` and .github/workflows) ──────────────
+"aqua:EmbarkStudios/cargo-deny" = "latest" # advisories + banned crates + licenses + sources
+trivy = "latest"                    # container image / filesystem / SBOM CVE scanner
+syft = "latest"                     # SBOM generation for built images
+gitleaks = "latest"                 # secret scanning
+semgrep = "latest"                  # static analysis (Rust / TS / secrets rulesets)
+"cargo:cargo-cyclonedx" = "latest"  # CycloneDX SBOM of the Rust workspace
+uv = "latest"
+"cargo:cargo-audit" = "latest"
 #"github:batleforc/batlehub" = { version = "latest", asset_pattern = "batlehub-cli-*" }

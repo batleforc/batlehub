@@ -188,11 +188,40 @@ tasks:
     cmds:
       - cargo audit
 
+  deny:
+    desc: "Supply-chain gate — advisories, banned crates (rsa/legacy-rustls), licenses and sources (see deny.toml)"
+    cmds:
+      - cargo deny check
+
   ui:audit:
     desc: Check frontend npm dependencies for security vulnerabilities
     dir: ui
     cmds:
-      - npm audit
+      - npm audit --audit-level=high
+
+  website:audit:
+    desc: Check docs-website npm dependencies for security vulnerabilities
+    dir: website
+    cmds:
+      - npm audit --audit-level=high
+
+  sbom:rust:
+    desc: "Generate a CycloneDX SBOM of the shipped server (sbom-rust.cdx.json) — feed to `trivy sbom` / `grype sbom:` to match future CVEs against a shipped build"
+    cmds:
+      # cargo-cyclonedx writes <crate>.cdx.json next to the package manifest;
+      # copy it to a stable repo-root path consumers and CI can reference.
+      - cargo cyclonedx -p batlehub-server --format json
+      - cp "$(find server -name '*.cdx.json' | head -1)" sbom-rust.cdx.json
+
+  security:
+    desc: "Run the full local security gate — Rust advisories + bans, frontend audits, and Rust SBOM. Trivy/gitleaks/semgrep run in CI (see .github/workflows)"
+    cmds:
+      - task: audit
+      - task: deny
+      - task: ui:audit
+      - task: website:audit
+      - task: sbom:rust
+      - echo "Local gate passed. Image scanning (Trivy) and secret/SAST (gitleaks, semgrep) run in CI."
 
   fmt:
     desc: Format all Rust source files

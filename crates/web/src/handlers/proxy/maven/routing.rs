@@ -1,5 +1,13 @@
 use super::{AppError, BytesDecl, BytesEnd, BytesStart, BytesText, Event, Writer};
 
+/// Reject a resolved Maven coordinate component that would escape the storage root
+/// once interpolated into a storage key. The Maven path splitter only filters empty
+/// segments, so a lone `..` can survive as the version segment — this is the edge
+/// `400` that stops it before it reaches the storage backend.
+fn ensure_maven_component(kind: &str, value: &str) -> Result<(), AppError> {
+    batlehub_core::services::validate_path_safe(kind, value).map_err(AppError::from)
+}
+
 pub fn content_type_for(filename: &str) -> &'static str {
     if filename.ends_with(".jar") {
         "application/java-archive"
@@ -52,9 +60,9 @@ pub fn parse_maven_path(_registry: &str, maven_path: &str) -> Result<MavenPathKi
             ));
         }
         let group_id = group_segs.join(".");
-        Ok(MavenPathKind::Metadata {
-            name: format!("{group_id}:{artifact_id}"),
-        })
+        let name = format!("{group_id}:{artifact_id}");
+        ensure_maven_component("package name", &name)?;
+        Ok(MavenPathKind::Metadata { name })
     } else {
         if segments.len() < 4 {
             return Err(AppError::bad_request(format!(
@@ -65,8 +73,12 @@ pub fn parse_maven_path(_registry: &str, maven_path: &str) -> Result<MavenPathKi
         let artifact_id = segments[segments.len() - 3];
         let group_segs = &segments[..segments.len() - 3];
         let group_id = group_segs.join(".");
+        let name = format!("{group_id}:{artifact_id}");
+        ensure_maven_component("package name", &name)?;
+        ensure_maven_component("version", version)?;
+        ensure_maven_component("filename", filename)?;
         Ok(MavenPathKind::Artifact {
-            name: format!("{group_id}:{artifact_id}"),
+            name,
             version: version.to_owned(),
             filename: filename.to_owned(),
         })
@@ -297,6 +309,16 @@ mod tests {
     #[test]
     fn parse_maven_path_metadata_missing_group_returns_error() {
         assert!(parse_maven_path("r", "maven-metadata.xml").is_err());
+    }
+
+    #[test]
+    fn parse_maven_path_traversal_version_rejected() {
+        // A lone `..` survives the empty-segment filter as the version segment;
+        // the edge guard must reject it before it reaches the storage key.
+        match parse_maven_path("r", "com/example/mylib/../mylib-1.0.0.jar") {
+            Err(e) => assert_eq!(e.status, actix_web::http::StatusCode::BAD_REQUEST),
+            Ok(_) => panic!("traversal version must be rejected"),
+        }
     }
 
     // ── parse_pom ─────────────────────────────────────────────────────────────

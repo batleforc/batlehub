@@ -85,7 +85,7 @@ The dependency direction is strict: `core` ← `adapters` ← `web` ← `server`
 
 1. **`crates/adapters/src/registry/<name>.rs`** — implement `RegistryClient` (`registry_type`, `resolve_metadata`, `fetch_artifact`; optionally `list_versions`, `search_packages`). Use `NugetRegistryClient` as a reference.
 2. **`crates/adapters/src/registry/mod.rs`** — add `#[cfg(feature = "registry-<name>")] pub mod <name>` entry.
-3. **`crates/web/src/handlers/proxy/<name>.rs`** — actix-web handlers; use `proxy_stream`, `require_registry_type`, `require_local_mode`, `content_type_for` helpers from `common.rs`.
+3. **`crates/web/src/handlers/proxy/<name>.rs`** — actix-web handlers; use `proxy_stream`, `require_registry_type`, `require_local_mode`, `content_type_for` helpers from `common.rs`. **Validate any package name/version taken from the request** with `batlehub_core::services::validate_package_name` (and reject `..`/separators in version) before it reaches a storage key — see the PyPI/Composer handlers. Two funnels enforce this in depth — `ProxyService::handle` (every proxy read) and `LocalRegistryService::get_artifact` (every local read) call `validate_coordinate` on the `PackageId`, and `ensure_safe_key` guards the storage backends as the last line of defense — but a handler that builds a storage key directly (e.g. the Maven, NuGet flat, and Terraform-provider paths) must still validate at the edge for a clean `400`, not rely on the deeper guards.
 4. **`crates/web/src/lib.rs`** — register routes with `cfg.service(...)` and add the `utoipa` tag.
 5. **`crates/config/src/schema.rs`** — allow `"<name>"` in the `RegistryConfig` type field.
 6. **`server/src/main.rs`** — instantiate the client and wire it into `HotConfig`.
@@ -122,6 +122,20 @@ SQL migrations live in `crates/adapters/migrations/`. They are embedded via `cra
 `sqlx-macros` and `sqlx-mysql` are patched to empty stubs in `[patch.crates-io]` (Cargo.toml) to remove the `rsa` crate (RUSTSEC-2023-0071) from the dependency tree. Do not add `features = ["macros"]` to the `sqlx` dependency or re-enable `sqlx-macros`/`sqlx-mysql`.
 
 `aws-sdk-s3` and `aws-config` use `default-features = false` to avoid `legacy-rustls-ring` (RUSTSEC-2026-0098/0099/0104). Do not enable default features on these crates.
+
+The two invariants above are now also enforced by `cargo-deny`: `rsa`, `sqlx-mysql`, `sqlx-macros-core` and the legacy `rustls 0.21` / `rustls-webpki 0.101` line are in the `[bans].deny` list in `deny.toml`. If a dependency bump silently drags one back into the tree, `cargo deny check` (and CI) fails.
+
+### Vulnerability scanning
+
+CVE detection runs continuously across every layer; see `docs/security-scanning.md` for the full matrix and the SBOM re-scan workflow. Reproduce the dependency/SBOM gate locally with `task security` (runs `cargo audit`, `cargo deny`, `npm audit` for `ui/` + `website/`, and the Rust SBOM). Scanner tooling is provisioned by `mise install`.
+
+- **Rust deps**: `cargo audit` (RUSTSEC) + `cargo deny` (advisories/bans/licenses/sources) — `.github/workflows/back-dep-audit.yaml`.
+- **JS deps**: `npm audit --audit-level=high` — `.github/workflows/dep-audit-frontend.yaml`.
+- **Container/OS**: Trivy on the built images, blocking on fixable HIGH/CRITICAL — `.github/workflows/image-scan.yaml` (GitHub, daily rebuild+rescan) and `.forgejo/workflows/build.yaml` (both images).
+- **SBOM**: CycloneDX for the Rust workspace and the image, attached/attested on release (`.github/workflows/build.yaml`).
+- **SAST / secrets / lint**: CodeQL, Semgrep (`semgrep.yaml`), gitleaks (`secret-scan.yaml`, config `gitleaks.toml`), and the clippy/fmt `lint` job in `test.yaml`.
+
+Stance is **no suppressions**: keep `advisories.ignore = []` in `deny.toml` and `.cargo/audit.toml` empty; fix or patch rather than ignore.
 
 ### Frontend
 

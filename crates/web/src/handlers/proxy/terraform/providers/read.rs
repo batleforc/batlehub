@@ -184,6 +184,17 @@ pub async fn tf_provider_artifact(
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, ptype, version, os, arch) = path.into_inner();
     require_registry_type(&registry, "terraform", &map)?;
+    // Edge chokepoint: this handler builds a storage key directly from the path
+    // components, so reject any traversal attempt with a clean 400 first.
+    for (kind, value) in [
+        ("namespace", &namespace),
+        ("provider type", &ptype),
+        ("version", &version),
+        ("os", &os),
+        ("arch", &arch),
+    ] {
+        batlehub_core::services::validate_path_safe(kind, value).map_err(AppError::from)?;
+    }
 
     local_svc
         .check_prerelease_access(&registry, &version, &identity)

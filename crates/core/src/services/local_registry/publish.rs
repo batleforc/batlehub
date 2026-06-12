@@ -1,6 +1,7 @@
 use super::{
-    artifact_storage_key, validate_version, CoreError, Identity, LocalRegistryService,
-    PublishRequest, PublishedPackage, QuotaCheck, Role, StorageMeta, Visibility,
+    artifact_storage_key, validate_package_name, validate_path_safe, validate_version, CoreError,
+    Identity, LocalRegistryService, PublishRequest, PublishedPackage, QuotaCheck, Role,
+    StorageMeta, Visibility,
 };
 
 impl LocalRegistryService {
@@ -84,6 +85,12 @@ impl LocalRegistryService {
                 "publishing requires at least User role".into(),
             ));
         }
+
+        // Reject names/versions that could escape the storage root via path
+        // traversal once interpolated into the storage key. Runs unconditionally,
+        // independent of the optional versioning policy below.
+        validate_package_name(&req.name)?;
+        validate_path_safe("version", &req.version)?;
 
         // Snapshot hot-swappable policy (versioning, signing, size limit).
         let (versioning, signing, limit) = {

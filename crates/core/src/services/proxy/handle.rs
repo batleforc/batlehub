@@ -14,6 +14,16 @@ use super::{ProxyRequest, ProxyResponse, ProxyService};
 
 impl ProxyService {
     pub async fn handle(&self, req: ProxyRequest) -> Result<ProxyResponse, CoreError> {
+        // Edge chokepoint: reject any package coordinate that would escape the
+        // storage root once interpolated into the cache key, before it reaches the
+        // metadata cache or the storage backend. Covers every registry that proxies
+        // through here, regardless of per-adapter input validation.
+        crate::services::validate_coordinate(
+            &req.package_id.name,
+            &req.package_id.version,
+            req.package_id.artifact.as_deref(),
+        )?;
+
         let registry_name: &str = req.package_id.registry.as_str();
         let registry_label = registry_name.to_owned();
         let start = Instant::now();

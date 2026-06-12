@@ -59,12 +59,13 @@ impl S3StorageBackend {
         })
     }
 
-    pub(super) fn object_key(&self, key: &str) -> String {
-        if self.prefix.is_empty() {
+    pub(super) fn object_key(&self, key: &str) -> Result<String, batlehub_core::error::CoreError> {
+        crate::storage::ensure_safe_key(key)?;
+        Ok(if self.prefix.is_empty() {
             key.to_owned()
         } else {
             format!("{}{}", self.prefix, key)
-        }
+        })
     }
 
     pub(super) fn is_not_found(err: &aws_sdk_s3::Error) -> bool {

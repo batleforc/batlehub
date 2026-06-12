@@ -52,6 +52,65 @@ pub(super) fn validate_version(version: &str, policy: &VersioningPolicy) -> Resu
     Ok(())
 }
 
+/// Reject a package coordinate component (name or version) that would let a
+/// publish escape the storage root once interpolated into a storage key
+/// (`{registry}/{name}/{version}`).
+///
+/// Package names legitimately contain `/` (npm scopes like `@scope/name`,
+/// GitHub `owner/repo`), so interior `/` is allowed — but a `..` path segment,
+/// an absolute path, a backslash, or a NUL byte are rejected. This runs
+/// unconditionally at publish time, independent of the (optional) versioning
+/// policy, and complements the storage-backend chokepoint that guards reads.
+pub fn validate_path_safe(kind: &str, value: &str) -> Result<(), CoreError> {
+    if value.is_empty() {
+        return Err(CoreError::InvalidInput(format!("{kind} must not be empty")));
+    }
+    if value.contains('\0') || value.contains('\\') {
+        return Err(CoreError::InvalidInput(format!(
+            "{kind} '{value}' contains an illegal character"
+        )));
+    }
+    if value.starts_with('/') || value.ends_with('/') {
+        return Err(CoreError::InvalidInput(format!(
+            "{kind} '{value}' must not start or end with '/'"
+        )));
+    }
+    if value.split('/').any(|segment| segment == "..") {
+        return Err(CoreError::InvalidInput(format!(
+            "{kind} '{value}' contains a path-traversal segment"
+        )));
+    }
+    Ok(())
+}
+
+/// Validate a package name is safe to use as a storage-key component.
+/// Reusable by registry adapters that accept a package name from the request.
+pub fn validate_package_name(name: &str) -> Result<(), CoreError> {
+    validate_path_safe("package name", name)
+}
+
+/// Validate every user-controlled component of a package coordinate (`name`,
+/// `version`, and optional sub-`artifact`) before it is interpolated into a
+/// storage/cache key.
+///
+/// This is the edge counterpart to the storage-backend `ensure_safe_key`
+/// chokepoint: the proxy read funnel (`ProxyService::handle`) and the local read
+/// funnel (`LocalRegistryService::get_artifact`) call it so a traversal attempt is
+/// rejected with a clean `400` for every registry — present and future —
+/// regardless of whether the individual adapter validated its own input.
+pub fn validate_coordinate(
+    name: &str,
+    version: &str,
+    artifact: Option<&str>,
+) -> Result<(), CoreError> {
+    validate_path_safe("package name", name)?;
+    validate_path_safe("version", version)?;
+    if let Some(artifact) = artifact {
+        validate_path_safe("artifact", artifact)?;
+    }
+    Ok(())
+}
+
 pub(super) async fn check_team_visibility(
     ns_port: &dyn TeamNamespacePort,
     registry: &str,

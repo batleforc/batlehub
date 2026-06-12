@@ -168,6 +168,48 @@ async fn publish_rejects_oversized_artifact() {
     assert!(matches!(err, CoreError::PayloadTooLarge(_)));
 }
 
+#[tokio::test]
+async fn publish_rejects_path_traversal_in_name() {
+    let s = svc(InMemBackend::arc(), None);
+    let req = PublishRequest {
+        registry: "npm".into(),
+        name: "../../../../etc/cron.d/evil".into(),
+        version: "1.0.0".into(),
+        artifact: Bytes::from_static(b"payload"),
+        checksum: "abc".into(),
+        index_metadata: serde_json::json!({}),
+        publisher: user(),
+        signature_bytes: None,
+        signature_type: None,
+    };
+    let err = s.publish(req).await.unwrap_err();
+    assert!(
+        matches!(err, CoreError::InvalidInput(_)),
+        "traversal name must be rejected, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn publish_rejects_path_traversal_in_version() {
+    let s = svc(InMemBackend::arc(), None);
+    let req = PublishRequest {
+        registry: "npm".into(),
+        name: "pkg".into(),
+        version: "../../../../tmp/evil".into(),
+        artifact: Bytes::from_static(b"payload"),
+        checksum: "abc".into(),
+        index_metadata: serde_json::json!({}),
+        publisher: user(),
+        signature_bytes: None,
+        signature_type: None,
+    };
+    let err = s.publish(req).await.unwrap_err();
+    assert!(
+        matches!(err, CoreError::InvalidInput(_)),
+        "traversal version must be rejected, got {err:?}"
+    );
+}
+
 // ── yank / unyank role checks ─────────────────────────────────────────────
 
 #[tokio::test]

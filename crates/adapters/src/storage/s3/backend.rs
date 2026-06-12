@@ -12,7 +12,7 @@ use super::S3StorageBackend;
 #[async_trait]
 impl StorageBackend for S3StorageBackend {
     async fn store(&self, key: &str, data: Bytes, meta: StorageMeta) -> Result<(), CoreError> {
-        let obj_key = self.object_key(key);
+        let obj_key = self.object_key(key)?;
         let len = data.len() as i64;
 
         let mut req = self
@@ -36,7 +36,7 @@ impl StorageBackend for S3StorageBackend {
     }
 
     async fn retrieve(&self, key: &str) -> Result<Option<StoredArtifact>, CoreError> {
-        let obj_key = self.object_key(key);
+        let obj_key = self.object_key(key)?;
 
         let resp = match self
             .client
@@ -82,7 +82,7 @@ impl StorageBackend for S3StorageBackend {
     }
 
     async fn exists(&self, key: &str) -> Result<bool, CoreError> {
-        let obj_key = self.object_key(key);
+        let obj_key = self.object_key(key)?;
 
         match self
             .client
@@ -107,7 +107,7 @@ impl StorageBackend for S3StorageBackend {
     }
 
     async fn delete(&self, key: &str) -> Result<(), CoreError> {
-        let obj_key = self.object_key(key);
+        let obj_key = self.object_key(key)?;
 
         match self
             .client
@@ -133,7 +133,7 @@ impl StorageBackend for S3StorageBackend {
     }
 
     async fn stat_by_prefix(&self, prefix: &str) -> Result<(u64, u64), CoreError> {
-        let s3_prefix = self.object_key(prefix);
+        let s3_prefix = self.object_key(prefix)?;
         let mut count = 0u64;
         let mut total_bytes = 0u64;
         let mut continuation_token: Option<String> = None;
@@ -168,7 +168,7 @@ impl StorageBackend for S3StorageBackend {
     }
 
     async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, CoreError> {
-        let s3_prefix = self.object_key(prefix);
+        let s3_prefix = self.object_key(prefix)?;
         let prefix_strip_len = self.prefix.len();
         let mut keys = Vec::new();
         let mut continuation_token: Option<String> = None;
@@ -206,7 +206,7 @@ impl StorageBackend for S3StorageBackend {
     async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError> {
         use aws_sdk_s3::types::{Delete, ObjectIdentifier};
 
-        let s3_prefix = self.object_key(prefix);
+        let s3_prefix = self.object_key(prefix)?;
         let configured_prefix_len = self.prefix.len();
         let mut total = 0usize;
         let mut continuation_token: Option<String> = None;
