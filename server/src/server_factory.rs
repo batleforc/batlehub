@@ -17,6 +17,7 @@ use batlehub_core::ports::{
 use batlehub_core::services::{
     AdminService, LocalRegistryService, ProxyMetrics, ProxyService, QuotaService, SbomService,
 };
+use batlehub_web::handlers::back_office::eviction::EvictionServiceMap;
 use batlehub_web::handlers::back_office::warming::WarmingServiceMap;
 use batlehub_web::services::{BannerService, ConfigReloadService, NotificationService};
 use batlehub_web::{
@@ -70,6 +71,7 @@ pub(super) struct ServerParams {
     pub upstream_map: UpstreamMap,
     pub oidc_sso_flows: Vec<OidcSsoFlow>,
     pub warming_map: WarmingServiceMap,
+    pub eviction_map: EvictionServiceMap,
     pub proxy_metrics: Arc<ProxyMetrics>,
     pub prometheus_handle: PrometheusHandle,
     pub sbom_svc: Arc<SbomService>,
@@ -107,6 +109,7 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
         upstream_map,
         oidc_sso_flows,
         warming_map,
+        eviction_map,
         proxy_metrics,
         prometheus_handle,
         sbom_svc,
@@ -140,6 +143,7 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
             upstream_map.clone(),
             oidc_sso_flows.clone(),
             warming_map.clone(),
+            eviction_map.clone(),
             Arc::clone(&proxy_metrics),
             Some(prometheus_handle.clone()),
             Some(sbom_svc.clone()),

@@ -27,6 +27,12 @@ tasks:
     cmds:
       - cargo test --workspace
 
+  test:all:
+    desc: Run backend and frontend test suites in parallel
+    deps:
+      - task: test
+      - task: ui:test
+
   test:pg-cache:
     desc: Run PgCacheStore integration tests (starts a temporary Postgres container via Podman)
     vars:
@@ -460,14 +466,26 @@ tasks:
     cmds:
       - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/05_mixed.js
 
+  perf:run:sbom:
+    desc: "k6 scenario 06 — SBOM read + org export load (60 s) + RAM/CPU summary"
+    cmds:
+      - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/06_sbom.js
+
+  perf:run:eviction:
+    desc: "k6 scenario 07 — cache eviction sweep under concurrent cache growth (60 s) + RAM/CPU summary"
+    cmds:
+      - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/07_eviction.js
+
   perf:run:all:
-    desc: Run the full perf suite in sequence (scenarios 01-05); threshold violations are reported but do not stop the suite
+    desc: Run the full perf suite in sequence (scenarios 01-07); threshold violations are reported but do not stop the suite
     cmds:
       - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/01_at_rest.js
       - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/02_warm_read.js
       - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/03_cache_miss.js
       - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/04_upload.js
       - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/05_mixed.js
+      - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/06_sbom.js
+      - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/07_eviction.js
 
   # ── Performance testing — S3 + Redis backends ─────────────────────────────────
   # Same k6 scenarios as the filesystem/memory suite; only the server config
@@ -521,6 +539,16 @@ tasks:
     cmds:
       - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/05_mixed.js
 
+  perf:s3:run:sbom:
+    desc: "k6 scenario 06 — SBOM read + org export load against S3+Redis server + RAM/CPU summary"
+    cmds:
+      - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/06_sbom.js
+
+  perf:s3:run:eviction:
+    desc: "k6 scenario 07 — cache eviction sweep against S3+Redis server + RAM/CPU summary"
+    cmds:
+      - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/07_eviction.js
+
   perf:s3:run:all:
     desc: Run the full S3+Redis perf suite in sequence; threshold violations are reported but do not stop the suite
     cmds:
@@ -529,3 +557,5 @@ tasks:
       - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/03_cache_miss.js
       - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/04_upload.js
       - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/05_mixed.js
+      - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/06_sbom.js
+      - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/07_eviction.js

@@ -169,7 +169,8 @@ impl TestServer {
             registry_map,
             UpstreamMap::default(),
             vec![],
-            HashMap::new(),
+            HashMap::new(), // warming_map
+            HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,

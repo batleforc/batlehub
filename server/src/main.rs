@@ -163,6 +163,7 @@ async fn main() -> Result<()> {
 
     let warming_map =
         setup::build_warming_map(&config, &warming_clients, storage.clone(), repo.pool());
+    let eviction_map = setup::build_eviction_map(&config, storage.clone(), repo.pool());
     let access_config = new_access_lock(init_access);
 
     let hot_reload_enabled = std::env::var("BATLEHUB_DISABLE_HOT_RELOAD")
@@ -227,6 +228,7 @@ async fn main() -> Result<()> {
         upstream_map,
         oidc_sso_flows,
         warming_map,
+        eviction_map,
         proxy_metrics,
         prometheus_handle,
         sbom_svc,

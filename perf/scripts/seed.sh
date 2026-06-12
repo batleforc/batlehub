@@ -66,7 +66,19 @@ for i in $(seq 1 "$WARM_N"); do
   fi
 done
 
-# ── 5. Summary ────────────────────────────────────────────────────────────────
+# ── 5. Verify SBOM recording (cache-miss above should have recorded one) ─────
+echo -n "    checking SBOM was recorded for $NPM_REG/$SEED_PKG@$SEED_VER..."
+SBOM_URL="$BASE/api/v1/sbom/$NPM_REG/$SEED_PKG/$SEED_VER?format=spdx"
+STATUS=$(curl -sf -o /dev/null -w "%{http_code}" -H "$AUTH" "$SBOM_URL" || echo "000")
+if [[ "$STATUS" != "200" ]]; then
+  echo " WARN (HTTP $STATUS)"
+  echo "    Check that [registries.sbom] enabled = true for $NPM_REG in the server config"
+  echo "    (scenario 06 will fail without it)"
+else
+  echo " ok"
+fi
+
+# ── 6. Summary ────────────────────────────────────────────────────────────────
 cat <<EOF
 
 ==> Seed complete. Run k6 scenarios:
@@ -79,6 +91,8 @@ cat <<EOF
     k6 run perf/k6/scenarios/03_cache_miss.js # proxy-through
     k6 run perf/k6/scenarios/04_upload.js     # uploads
     k6 run perf/k6/scenarios/05_mixed.js      # 10-min mixed
+    k6 run perf/k6/scenarios/06_sbom.js       # SBOM read + export
+    k6 run perf/k6/scenarios/07_eviction.js   # cache eviction sweep
 
     Grafana: http://localhost:3000  (admin/admin)
 

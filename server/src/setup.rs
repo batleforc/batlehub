@@ -201,6 +201,45 @@ pub(super) fn build_warming_map(
     warming_map
 }
 
+// ── Eviction map ──────────────────────────────────────────────────────────────
+
+pub(super) fn build_eviction_map(
+    config: &batlehub_config::schema::AppConfig,
+    storage: Arc<dyn StorageBackend>,
+    pool: sqlx::PgPool,
+) -> batlehub_web::handlers::back_office::eviction::EvictionServiceMap {
+    use batlehub_adapters::db::PgArtifactMetaRepository;
+    use batlehub_core::services::{EvictionConfig, EvictionService};
+    use std::collections::HashMap as HM;
+
+    let mut eviction_map: batlehub_web::handlers::back_office::eviction::EvictionServiceMap =
+        HM::new();
+    for reg in &config.registries {
+        let cache = &reg.cache;
+        let configured = cache.artifact_ttl_secs.is_some()
+            || cache.idle_days.is_some()
+            || cache.max_size_bytes.is_some()
+            || cache.keep_latest_n.is_some();
+        if !configured {
+            continue;
+        }
+        let eviction_svc = Arc::new(EvictionService::new(
+            Arc::new(PgArtifactMetaRepository::new(pool.clone()))
+                as Arc<dyn batlehub_core::ports::ArtifactMetaRepository>,
+            storage.clone(),
+            EvictionConfig {
+                artifact_ttl_secs: cache.artifact_ttl_secs,
+                idle_days: cache.idle_days,
+                max_size_bytes: cache.max_size_bytes,
+                keep_latest_n: cache.keep_latest_n,
+                registry: reg.name.clone(),
+            },
+        ));
+        eviction_map.insert(reg.name.clone(), eviction_svc);
+    }
+    eviction_map
+}
+
 // ── User token provider ───────────────────────────────────────────────────────
 
 pub(super) fn add_user_token_provider(

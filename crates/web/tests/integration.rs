@@ -291,7 +291,8 @@ async fn make_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -427,7 +428,8 @@ async fn make_app_ext(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             proxy_metrics,
             None,
             None,                                       // sbom_svc
@@ -564,7 +566,8 @@ async fn make_app_with_ip_store(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -640,7 +643,8 @@ async fn make_app_with_notifications(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None, // sbom_svc
@@ -713,7 +717,8 @@ async fn make_app_with_beta_store(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -840,7 +845,8 @@ async fn make_rate_limited_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -1929,7 +1935,8 @@ async fn make_group_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -2382,7 +2389,8 @@ async fn make_app_with_tokens(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -2779,7 +2787,8 @@ async fn make_app_with_cargo_index(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -3458,7 +3467,8 @@ async fn make_unavailable_npm_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -3901,7 +3911,8 @@ async fn audit_quick_forwards_to_upstream_and_returns_response() {
             registry_map,
             upstream_map,
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -4124,7 +4135,8 @@ async fn cargo_registry_index_fetches_from_upstream_and_returns_content() {
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -4282,7 +4294,8 @@ async fn make_local_registry_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -4706,7 +4719,8 @@ async fn make_local_npm_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -4973,7 +4987,8 @@ async fn make_local_vsx_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -5187,7 +5202,8 @@ async fn make_local_go_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -5677,7 +5693,8 @@ async fn make_local_maven_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -5900,7 +5917,8 @@ async fn make_local_terraform_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -6461,7 +6479,8 @@ async fn make_local_composer_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -7383,7 +7402,8 @@ async fn make_app_with_ns_store(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -7499,7 +7519,8 @@ async fn make_ns_cargo_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -7637,7 +7658,8 @@ async fn make_ns_cargo_app_with_backend(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -8566,7 +8588,8 @@ async fn make_ns_upload_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -9195,6 +9218,7 @@ async fn make_banner_app() -> impl actix_web::dev::Service<
             batlehub_web::UpstreamMap::default(),
             vec![],
             HashMap::new(),
+            HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -9358,6 +9382,7 @@ async fn reload_config_returns_503_when_disabled() {
             batlehub_web::UpstreamMap::default(),
             vec![],
             HashMap::new(),
+            HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -9774,6 +9799,40 @@ async fn warm_registry_requires_admin() {
     assert_eq!(call_service(&app, req).await.status(), 403);
 }
 
+// ── Cache eviction ────────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn evict_registry_returns_404_when_not_configured() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/npm/evict")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    // Eviction map is empty in make_app → 404
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn evict_registry_returns_404_for_unknown_registry() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/does-not-exist/evict")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 404);
+}
+
+#[actix_web::test]
+async fn evict_registry_requires_admin() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/npm/evict")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
 // ── Audit log ─────────────────────────────────────────────────────────────────
 
 #[actix_web::test]
@@ -9886,6 +9945,7 @@ async fn make_explore_app(
             batlehub_web::UpstreamMap::default(),
             vec![],
             HashMap::new(),
+            HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -10253,6 +10313,7 @@ async fn make_rubygems_proxy_app() -> impl actix_web::dev::Service<
             batlehub_web::UpstreamMap::default(),
             vec![],
             HashMap::new(),
+            HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -10512,6 +10573,7 @@ async fn make_local_nuget_app(
             batlehub_web::UpstreamMap::default(),
             vec![],
             std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,
@@ -10877,6 +10939,7 @@ async fn cli_download_serves_binary_when_configured() {
             batlehub_web::UpstreamMap::default(),
             vec![],
             HashMap::new(),
+            HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,
