@@ -1,0 +1,90 @@
+use uuid::Uuid;
+
+use super::{ConfigReloadService, ReloadDiff};
+use crate::AccessConfig;
+use batlehub_core::services::HotConfig;
+
+impl ConfigReloadService {
+    pub(super) async fn compute_diff(
+        &self,
+        new_hot: &HotConfig,
+        new_access: &AccessConfig,
+    ) -> ReloadDiff {
+        let old_hot = self.hot.read().await;
+        let old_names: std::collections::HashSet<&str> =
+            old_hot.registries.keys().map(String::as_str).collect();
+        let new_names: std::collections::HashSet<&str> =
+            new_hot.registries.keys().map(String::as_str).collect();
+
+        let added: Vec<String> = new_names
+            .difference(&old_names)
+            .map(|s| s.to_string())
+            .collect();
+        let removed: Vec<String> = old_names
+            .difference(&new_names)
+            .map(|s| s.to_string())
+            .collect();
+        let limits_changed = old_hot.max_artifact_size_bytes != new_hot.max_artifact_size_bytes;
+
+        // AccessConfig doesn't implement PartialEq (HashSet comparison is cheap but
+        // we don't want to derive it on a potentially large struct). Mark as changed
+        // conservatively whenever the registry set differs or limits change.
+        let access_config_changed = !added.is_empty() || !removed.is_empty() || limits_changed || {
+            let old_access = self.access.read().await;
+            old_access.anonymous != new_access.anonymous
+                || old_access.user != new_access.user
+                || old_access.admin != new_access.admin
+        };
+
+        ReloadDiff {
+            added_registries: added,
+            removed_registries: removed,
+            changed_registries: vec![],
+            access_config_changed,
+            limits_changed,
+        }
+    }
+
+    pub(super) async fn persist_audit(
+        &self,
+        diff: &ReloadDiff,
+        triggered_by: &str,
+        status: &str,
+        error_msg: Option<&str>,
+    ) {
+        let pool = match self.pool.as_ref() {
+            Some(p) => p,
+            None => return,
+        };
+        let diff_json = match serde_json::to_value(diff) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to serialize diff for audit");
+                return;
+            }
+        };
+        let added = diff.added_registries.len();
+        let removed = diff.removed_registries.len();
+        let summary = format!(
+            "{} registr{} added, {} removed",
+            added,
+            if added == 1 { "y" } else { "ies" },
+            removed
+        );
+        let result = sqlx::query(
+            "INSERT INTO config_changes (id, triggered_by, triggered_at, status, diff, summary, error_msg)
+             VALUES ($1, $2, NOW(), $3, $4, $5, $6)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(triggered_by)
+        .bind(status)
+        .bind(diff_json)
+        .bind(&summary)
+        .bind(error_msg)
+        .execute(pool)
+        .await;
+        if let Err(e) = result {
+            tracing::warn!(error = %e, "failed to persist config change audit row");
+        }
+    }
+}

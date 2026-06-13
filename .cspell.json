@@ -16,6 +16,7 @@
     "GONOSUMDB",
     "goproxy",
     "GOPROXY",
+    "healthz",
     "isready",
     "linux",
     "loglevel",

@@ -330,6 +330,7 @@ impl RealProxy {
                 versioning: HashMap::new(),
                 signing: HashMap::new(),
                 sbom: HashMap::new(),
+                feature_flags: HashMap::new(),
                 beta_channel: HashMap::new(),
                 max_artifact_size_bytes: None,
             }),
@@ -342,16 +343,17 @@ impl RealProxy {
 
         let proxy_svc = Arc::new(ProxyService {
             hot: new_hot_lock(HotConfig {
-                registries: registries,
-                policies: policies,
+                registries,
+                policies,
                 versioning: HashMap::new(),
                 signing: HashMap::new(),
                 sbom: HashMap::new(),
+                feature_flags: HashMap::new(),
                 beta_channel: HashMap::new(),
                 max_artifact_size_bytes: None,
             }),
-            storage: storage,
-            cache: cache,
+            storage,
+            cache,
             repo: repo.clone(),
             artifact_meta: NoopArtifactMetaRepository::arc(),
             metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -388,7 +390,8 @@ impl RealProxy {
             registry_map,
             UpstreamMap::default(),
             vec![],
-            HashMap::new(),
+            HashMap::new(), // warming_map
+            HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -473,6 +476,7 @@ impl RealProxy {
                 versioning: HashMap::new(),
                 signing: HashMap::new(),
                 sbom: HashMap::new(),
+                feature_flags: HashMap::new(),
                 beta_channel: HashMap::new(),
                 max_artifact_size_bytes: None,
             }),
@@ -486,15 +490,16 @@ impl RealProxy {
         let proxy_svc = Arc::new(ProxyService {
             hot: new_hot_lock(HotConfig {
                 registries: HashMap::new(),
-                policies: policies,
+                policies,
                 versioning: HashMap::new(),
                 signing: HashMap::new(),
                 sbom: HashMap::new(),
+                feature_flags: HashMap::new(),
                 beta_channel: HashMap::new(),
                 max_artifact_size_bytes: None,
             }),
-            storage: storage,
-            cache: cache,
+            storage,
+            cache,
             repo: repo.clone(),
             artifact_meta: NoopArtifactMetaRepository::arc(),
             metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -536,7 +541,8 @@ impl RealProxy {
             registry_map,
             UpstreamMap::default(),
             vec![],
-            HashMap::new(),
+            HashMap::new(), // warming_map
+            HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc

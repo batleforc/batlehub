@@ -59,6 +59,16 @@ anonymous = []
 user = ["releases:read", "source:read"]
 admin = ["*"]
 
+# Eviction config for scenario 07 (POST /api/v1/admin/registries/perf-npm/evict).
+[registries.cache]
+artifact_ttl_secs = 3600
+keep_latest_n = 3
+
+[registries.sbom]
+enabled = true
+formats = ["spdx", "cyclonedx"]
+fetch_upstream = false
+
 # ── Local npm registry ────────────────────────────────────────────────────────
 
 [[registries]]
@@ -75,3 +85,8 @@ admin = ["*"]
 max_storage_bytes_per_user = 10_737_418_240
 max_packages_per_user = 100_000
 enforcement = "warn"
+
+[registries.sbom]
+enabled = true
+formats = ["spdx", "cyclonedx"]
+fetch_upstream = false

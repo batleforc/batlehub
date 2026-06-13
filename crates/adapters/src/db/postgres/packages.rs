@@ -1,0 +1,249 @@
+use super::{
+    action_to_str, map_package_summary, prepare_registries_param, role_to_str, AccessEvent,
+    AccessResult, CoreError, DateTime, DbResultExt, PackageFilter, PackageId, PackageStatus,
+    PackageSummary, PgPool, Row, Utc, Uuid,
+};
+
+pub(super) async fn record_access_impl(pool: &PgPool, event: AccessEvent) -> Result<(), CoreError> {
+    let (outcome, deny_reason): (&str, Option<String>) = match &event.result {
+        AccessResult::Allowed => ("allowed", None),
+        AccessResult::Denied { reason } => ("denied", Some(reason.clone())),
+        AccessResult::ProxyError { reason } => ("error", Some(reason.clone())),
+    };
+
+    sqlx::query(
+        r#"
+        INSERT INTO access_events
+            (id, user_id, user_role, registry, package_name, package_version,
+             package_artifact, action, outcome, deny_reason, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        "#,
+    )
+    .bind(event.id)
+    .bind(&event.user_id)
+    .bind(role_to_str(&event.user_role))
+    .bind(&event.package_id.registry)
+    .bind(&event.package_id.name)
+    .bind(&event.package_id.version)
+    .bind(&event.package_id.artifact)
+    .bind(action_to_str(&event.action))
+    .bind(outcome)
+    .bind(deny_reason)
+    .bind(event.timestamp)
+    .execute(pool)
+    .await
+    .db_err()?;
+
+    // Ensure the package appears in list_packages by creating an 'available' status
+    // row on first access. DO NOTHING preserves any existing blocked status.
+    if matches!(event.result, AccessResult::Allowed) {
+        sqlx::query(
+            r#"
+            INSERT INTO package_statuses
+                (id, registry, package_name, package_version, package_artifact,
+                 status, updated_at)
+            VALUES ($1, $2, $3, $4, $5, 'available', NOW())
+            ON CONFLICT (registry, package_name, package_version, COALESCE(package_artifact, ''))
+            DO NOTHING
+            "#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(&event.package_id.registry)
+        .bind(&event.package_id.name)
+        .bind(&event.package_id.version)
+        .bind(&event.package_id.artifact)
+        .execute(pool)
+        .await
+        .db_err()?;
+    }
+
+    Ok(())
+}
+
+pub(super) async fn get_status_impl(
+    pool: &PgPool,
+    pkg: &PackageId,
+) -> Result<PackageStatus, CoreError> {
+    let row = sqlx::query(
+        r#"
+        SELECT status, block_reason, blocked_by, blocked_at
+        FROM package_statuses
+        WHERE registry = $1 AND package_name = $2 AND package_version = $3
+          AND (package_artifact IS NOT DISTINCT FROM $4)
+        "#,
+    )
+    .bind(&pkg.registry)
+    .bind(&pkg.name)
+    .bind(&pkg.version)
+    .bind(&pkg.artifact)
+    .fetch_optional(pool)
+    .await
+    .db_err()?;
+
+    match row {
+        None => Ok(PackageStatus::Available),
+        Some(r) => {
+            let status: String = r.get("status");
+            if status == "blocked" {
+                Ok(PackageStatus::Blocked {
+                    reason: r
+                        .get::<Option<String>, _>("block_reason")
+                        .unwrap_or_default(),
+                    blocked_by: r.get::<Option<String>, _>("blocked_by").unwrap_or_default(),
+                    blocked_at: r
+                        .get::<Option<DateTime<Utc>>, _>("blocked_at")
+                        .unwrap_or_else(Utc::now),
+                })
+            } else {
+                Ok(PackageStatus::Available)
+            }
+        }
+    }
+}
+
+pub(super) async fn set_status_impl(
+    pool: &PgPool,
+    pkg: &PackageId,
+    status: PackageStatus,
+) -> Result<(), CoreError> {
+    let (status_str, reason, blocked_by, blocked_at): (
+        &str,
+        Option<String>,
+        Option<String>,
+        Option<DateTime<Utc>>,
+    ) = match &status {
+        PackageStatus::Available => ("available", None, None, None),
+        PackageStatus::Blocked {
+            reason,
+            blocked_by,
+            blocked_at,
+        } => (
+            "blocked",
+            Some(reason.clone()),
+            Some(blocked_by.clone()),
+            Some(*blocked_at),
+        ),
+    };
+
+    sqlx::query(
+        r#"
+        INSERT INTO package_statuses
+            (id, registry, package_name, package_version, package_artifact,
+             status, block_reason, blocked_by, blocked_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+        ON CONFLICT (registry, package_name, package_version, COALESCE(package_artifact, ''))
+        DO UPDATE SET
+            status = EXCLUDED.status,
+            block_reason = EXCLUDED.block_reason,
+            blocked_by = EXCLUDED.blocked_by,
+            blocked_at = EXCLUDED.blocked_at,
+            updated_at = NOW()
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(&pkg.registry)
+    .bind(&pkg.name)
+    .bind(&pkg.version)
+    .bind(&pkg.artifact)
+    .bind(status_str)
+    .bind(reason)
+    .bind(blocked_by)
+    .bind(blocked_at)
+    .execute(pool)
+    .await
+    .db_err()?;
+
+    Ok(())
+}
+
+pub(super) async fn list_packages_impl(
+    pool: &PgPool,
+    filter: PackageFilter,
+) -> Result<Vec<PackageSummary>, CoreError> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            ps.id,
+            ps.registry,
+            ps.package_name,
+            ps.package_version,
+            ps.package_artifact,
+            ps.status,
+            ps.block_reason,
+            ps.blocked_by,
+            ps.blocked_at,
+            COALESCE(ae_counts.access_count, 0) AS access_count,
+            ae_counts.last_accessed,
+            ae_user.last_accessed_by
+        FROM package_statuses ps
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS access_count, MAX(ae.created_at) AS last_accessed
+            FROM access_events ae
+            WHERE ae.registry       = ps.registry
+              AND ae.package_name   = ps.package_name
+              AND ae.package_version = ps.package_version
+        ) ae_counts ON true
+        LEFT JOIN LATERAL (
+            SELECT ae2.user_id AS last_accessed_by
+            FROM access_events ae2
+            WHERE ae2.registry       = ps.registry
+              AND ae2.package_name   = ps.package_name
+              AND ae2.package_version = ps.package_version
+              AND ae2.outcome = 'allowed'
+            ORDER BY ae2.created_at DESC
+            LIMIT 1
+        ) ae_user ON true
+        WHERE ($1::text IS NULL OR ps.registry = $1)
+          AND ($2::text IS NULL OR ps.package_name ILIKE '%' || $2 || '%')
+          AND ($3::boolean = false OR ps.status = 'blocked')
+          AND ($6::text IS NULL OR ps.package_name = $6)
+          AND ($7::text[] IS NULL OR ps.registry = ANY($7::text[]))
+        ORDER BY ps.registry, ps.package_name, ps.package_version
+        LIMIT $4 OFFSET $5
+        "#,
+    )
+    .bind(&filter.registry)
+    .bind(&filter.name_contains)
+    .bind(filter.blocked_only)
+    .bind(filter.limit as i64)
+    .bind(filter.offset as i64)
+    .bind(&filter.name_exact)
+    .bind(prepare_registries_param(&filter.registries))
+    .fetch_all(pool)
+    .await
+    .db_err()?;
+
+    Ok(rows.into_iter().map(map_package_summary).collect())
+}
+
+pub(super) async fn count_packages_impl(
+    pool: &PgPool,
+    filter: PackageFilter,
+) -> Result<u64, CoreError> {
+    let row = sqlx::query(
+        r#"
+        SELECT COUNT(*) AS total
+        FROM package_statuses ps
+        WHERE ($1::text IS NULL OR ps.registry = $1)
+          AND ($2::text IS NULL OR ps.package_name ILIKE '%' || $2 || '%')
+          AND ($3::boolean = false OR ps.status = 'blocked')
+          AND ($4::text IS NULL OR ps.package_name = $4)
+          AND ($5::text[] IS NULL OR ps.registry = ANY($5::text[]))
+        "#,
+    )
+    .bind(&filter.registry)
+    .bind(&filter.name_contains)
+    .bind(filter.blocked_only)
+    .bind(&filter.name_exact)
+    .bind(if filter.registries.is_empty() {
+        None
+    } else {
+        Some(filter.registries)
+    })
+    .fetch_one(pool)
+    .await
+    .db_err()?;
+
+    let count: i64 = row.try_get("total").unwrap_or(0);
+    Ok(count as u64)
+}

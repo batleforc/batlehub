@@ -41,6 +41,9 @@ pub mod team_namespace;
 pub mod user_tokens;
 
 #[cfg(feature = "db-postgres")]
+pub mod vulnerability;
+
+#[cfg(feature = "db-postgres")]
 pub use artifact_meta::PgArtifactMetaRepository;
 
 #[cfg(feature = "db-postgres")]
@@ -63,3 +66,6 @@ pub use sbom::PgSbomRepository;
 
 #[cfg(feature = "db-postgres")]
 pub use team_namespace::PgTeamNamespaceStore;
+
+#[cfg(feature = "db-postgres")]
+pub use vulnerability::PgVulnerabilityRepository;

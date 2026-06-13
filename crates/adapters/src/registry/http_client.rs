@@ -100,6 +100,34 @@ pub fn apply_upstream_options(
     Ok(builder.build()?)
 }
 
+/// Builds a GET request, applying HTTP Basic auth credentials if configured.
+pub fn basic_auth_get(
+    http: &reqwest::Client,
+    basic_auth: &Option<(String, String)>,
+    url: &str,
+) -> reqwest::RequestBuilder {
+    let rb = http.get(url);
+    match basic_auth {
+        Some((u, p)) => rb.basic_auth(u, Some(p)),
+        None => rb,
+    }
+}
+
+/// Extracts the `Cache-Control` response header as an owned string, if present.
+pub fn cache_control(resp: &reqwest::Response) -> Option<String> {
+    resp.headers()
+        .get(reqwest::header::CACHE_CONTROL)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+}
+
+/// Parse an HTTP `Last-Modified` header value (RFC 7231 / RFC 2822) into a `DateTime<Utc>`.
+pub fn parse_http_date(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc2822(s.trim())
+        .ok()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+}
+
 /// Percent-encode a query string value, encoding all characters except
 /// unreserved ones (letters, digits, `-`, `_`, `.`, `~`).
 pub fn percent_encode(s: &str) -> String {
@@ -130,6 +158,20 @@ pub fn percent_encode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_http_date_valid() {
+        let dt = parse_http_date("Fri, 15 Mar 2024 12:34:56 GMT").unwrap();
+        assert_eq!(
+            dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+            "2024-03-15 12:34:56"
+        );
+    }
+
+    #[test]
+    fn parse_http_date_invalid_returns_none() {
+        assert!(parse_http_date("not-a-date").is_none());
+    }
 
     fn empty_opts() -> UpstreamHttpOptions {
         UpstreamHttpOptions::default()

@@ -52,7 +52,7 @@ Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules, 
 - [ ] Detect and optionally require signed releases for GitHub, OpenVSX, and VS Code Marketplace
 - [ ] Allowlist of trusted publishers (GitHub users / orgs, npm scopes, Cargo crate owners)
 - [ ] Allowlist of approved versions; blocklist of specific versions with known issues
-- [ ] Vulnerability scanning via the [OSV API](https://osv.dev) to block or warn about packages with known CVEs
+- [x] Vulnerability scanning via the [OSV API](https://osv.dev) to block or warn about packages with known CVEs — periodic SBOM re-scan plus a per-registry `cve_gate` rule (`min_severity`, `block`/warn-only, `bypass_roles`)
 - [ ] YARA rule evaluation for custom malware or policy patterns
 - [ ] Antivirus scanning for binary artifacts (VSIX, Go module zips) via a configurable external REST API
 - [ ] Warn when an upstream registry is returning high error rates or slow responses and cached data may be stale
@@ -165,7 +165,7 @@ Applies to registries running in `local` or `hybrid` mode.
 - [x] Generate SBOMs at upload time for private registries, extracting dependency manifests from the archive (`go.mod`, `Cargo.toml`, `package.json`, `pom.xml`, `requirements.txt`)
 - [x] Policy option: deny publishing a private package if no manifest is found in the archive (`required = true` in `[registries.sbom]`)
 - [x] Per-artifact SBOM accessible from the Package Explorer version detail view (SPDX and CycloneDX download buttons per version)
-- [ ] Periodically re-check cached SBOMs against vulnerability databases (see [Artifact integrity](#artifact-integrity--security)) and update block / warn metadata automatically
+- [x] Periodically re-check cached SBOMs against vulnerability databases (see [Artifact integrity](#artifact-integrity--security)) and update block / warn metadata automatically — `[vulnerability_scan]` background task queries OSV and records findings, surfaced per-version in the Package Explorer and admin views
 
 ---
 

@@ -143,6 +143,11 @@ interface Registry {
   rule_age_gate_enabled: boolean;
   rule_age_gate_min_age: number;
   rule_deny_latest_enabled: boolean;
+  rule_cve_gate_enabled: boolean;
+  rule_cve_gate_min_severity: string;
+  rule_cve_gate_block: boolean;
+  // feature flags
+  feature_flags_socket_badge: boolean;
 }
 
 // ── State ───────────────────────────────────────────────────────────────────
@@ -161,6 +166,12 @@ const ipBlocking = ref({
   ban_duration_secs: 3600,
   trigger_on_status: "429, 401",
   trusted_proxies: "",
+});
+
+const vulnerabilityScan = ref({
+  enabled: false,
+  interval_secs: 86400,
+  osv_api_url: "",
 });
 
 // Storage
@@ -386,6 +397,10 @@ function defaultRegistry(type: RegistryType = "npm"): Registry {
     rule_age_gate_enabled: false,
     rule_age_gate_min_age: 3600,
     rule_deny_latest_enabled: false,
+    rule_cve_gate_enabled: false,
+    rule_cve_gate_min_severity: "high",
+    rule_cve_gate_block: false,
+    feature_flags_socket_badge: true,
   };
 }
 
@@ -698,6 +713,20 @@ const toml = computed(() => {
       lines.push("[[registries.rules]]");
       lines.push(`kind = "deny_latest"`);
     }
+    if (reg.rule_cve_gate_enabled) {
+      lines.push("");
+      lines.push("[[registries.rules]]");
+      lines.push(`kind = "cve_gate"`);
+      lines.push(`min_severity = ${q(reg.rule_cve_gate_min_severity)}`);
+      if (reg.rule_cve_gate_block) lines.push(`block = true`);
+    }
+
+    // [registries.feature_flags]
+    if (!reg.feature_flags_socket_badge) {
+      lines.push("");
+      lines.push("[registries.feature_flags]");
+      lines.push(`socket_badge = false`);
+    }
 
     // [registries.upstream_auth]
     if (reg.upstream_auth_type) {
@@ -742,6 +771,17 @@ const toml = computed(() => {
     );
     if (ipBlocking.value.trusted_proxies) {
       lines.push(`trusted_proxies = ${listToToml(ipBlocking.value.trusted_proxies)}`);
+    }
+  }
+
+  // [vulnerability_scan]
+  if (vulnerabilityScan.value.enabled) {
+    lines.push("");
+    lines.push("[vulnerability_scan]");
+    lines.push(`enabled = true`);
+    lines.push(`interval_secs = ${vulnerabilityScan.value.interval_secs}`);
+    if (vulnerabilityScan.value.osv_api_url) {
+      lines.push(`osv_api_url = ${q(vulnerabilityScan.value.osv_api_url)}`);
     }
   }
 
@@ -1879,6 +1919,32 @@ curl -X POST \
               <input type="checkbox" v-model="reg.rule_deny_latest_enabled" />
               Deny <code>@latest</code> / unpinned version requests
             </label>
+            <label class="cg-check">
+              <input type="checkbox" v-model="reg.rule_cve_gate_enabled" />
+              CVE gate (uses <code>[vulnerability_scan]</code> findings)
+            </label>
+            <template v-if="reg.rule_cve_gate_enabled">
+              <label
+                >Minimum severity<select v-model="reg.rule_cve_gate_min_severity">
+                  <option value="unknown">Unknown</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="critical">Critical</option>
+                </select></label
+              >
+              <label class="cg-check cg-mb">
+                <input type="checkbox" v-model="reg.rule_cve_gate_block" />
+                Block downloads (otherwise warn-only, surfaced in the UI)
+              </label>
+            </template>
+
+            <!-- Feature flags -->
+            <p class="cg-subsection-label">Feature flags</p>
+            <label class="cg-check cg-mb">
+              <input type="checkbox" v-model="reg.feature_flags_socket_badge" />
+              Show socket.dev supply-chain badge per version
+            </label>
 
             <!-- Upstream auth -->
             <p class="cg-subsection-label">Upstream authentication</p>
@@ -1987,6 +2053,34 @@ curl -X POST \
               >IPs of reverse proxies trusted to forward
               <code>X-Forwarded-For</code>. Leave blank to always use the TCP
               peer address.</span
+            ></label
+          >
+        </template>
+      </section>
+
+      <!-- Vulnerability scan -->
+      <section class="cg-section">
+        <h3>Vulnerability scan</h3>
+        <label class="cg-check cg-mb">
+          <input type="checkbox" v-model="vulnerabilityScan.enabled" /> Periodically
+          re-check cached SBOMs against the OSV database
+        </label>
+        <template v-if="vulnerabilityScan.enabled">
+          <label
+            >Interval (s)<input
+              v-model.number="vulnerabilityScan.interval_secs"
+              type="number"
+              min="60"
+            /><span class="cg-field-hint"
+              >How often to re-scan. Default 86400 (daily).</span
+            ></label
+          >
+          <label
+            >OSV API URL (optional)<input
+              v-model="vulnerabilityScan.osv_api_url"
+              placeholder="https://api.osv.dev"
+            /><span class="cg-field-hint"
+              >Leave blank to use the public OSV API.</span
             ></label
           >
         </template>

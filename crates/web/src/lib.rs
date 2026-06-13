@@ -1,3 +1,4 @@
+pub mod badges;
 pub mod error;
 pub mod extractors;
 pub mod handlers;
@@ -471,6 +472,7 @@ impl From<HashMap<String, CargoIndexProxy>> for CargoIndexMap {
 }
 
 use actix_web::web;
+use handlers::back_office::eviction::EvictionServiceMap;
 use handlers::back_office::warming::WarmingServiceMap;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::OpenApi;
@@ -548,6 +550,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                 apply_pending_reload, clear_banner, discard_pending_reload, get_pending_reload,
                 list_config_changes, reload_config, set_banner,
             },
+            eviction::evict_registry,
             explore::invalidate_explore_cache,
             health::{clear_registry_cache, registry_health},
             ip_blocks::{block_ip, list_blocked_ips, unblock_ip},
@@ -750,6 +753,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(clear_registry_cache);
     cfg.service(audit_log);
     cfg.service(warm_registry);
+    cfg.service(evict_registry);
     cfg.service(admin_stats);
     // Quota admin (specific user route before registry-level route)
     cfg.service(reset_quota_for_user);
@@ -840,6 +844,7 @@ pub fn configure_app(
     upstream_map: UpstreamMap,
     oidc_sso_flows: Vec<OidcSsoFlow>,
     warming_map: WarmingServiceMap,
+    eviction_map: EvictionServiceMap,
     proxy_metrics: Arc<ProxyMetrics>,
     prometheus_handle: Option<PrometheusHandle>,
     sbom_svc: Option<Arc<SbomService>>,
@@ -861,6 +866,7 @@ pub fn configure_app(
         cfg.app_data(web::Data::new(audit_client.clone()));
         cfg.app_data(web::Data::new(oidc_sso_flows.clone()));
         cfg.app_data(web::Data::new(warming_map.clone()));
+        cfg.app_data(web::Data::new(eviction_map.clone()));
         cfg.app_data(web::Data::new(proxy_metrics.clone()));
         if let Some(ref h) = prometheus_handle {
             cfg.app_data(web::Data::new(h.clone()));

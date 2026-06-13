@@ -104,6 +104,7 @@ impl TestServer {
                 versioning: HashMap::new(),
                 signing: HashMap::new(),
                 sbom: HashMap::new(),
+                feature_flags: HashMap::new(),
                 beta_channel: HashMap::new(),
                 max_artifact_size_bytes: None,
             }),
@@ -122,6 +123,7 @@ impl TestServer {
                 versioning: HashMap::new(),
                 signing: HashMap::new(),
                 sbom: HashMap::new(),
+                feature_flags: HashMap::new(),
                 beta_channel: HashMap::new(),
                 max_artifact_size_bytes: None,
             }),
@@ -169,7 +171,8 @@ impl TestServer {
             registry_map,
             UpstreamMap::default(),
             vec![],
-            HashMap::new(),
+            HashMap::new(), // warming_map
+            HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,
@@ -612,7 +615,7 @@ fn auth_login_kubernetes_saves_config() {
 
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
         .args(["auth", "login", "--kubernetes-token-path", token_path])
-        .env("BATLEHUB_SERVER", &srv.base_url())
+        .env("BATLEHUB_SERVER", srv.base_url())
         .env("BATLEHUB_TOKEN", AUTH_TOKEN)
         .env("HOME", "/tmp")
         .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())
@@ -646,7 +649,7 @@ fn auth_refresh_no_stored_token_fails() {
 
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
         .args(["auth", "refresh"])
-        .env("BATLEHUB_SERVER", &srv.base_url())
+        .env("BATLEHUB_SERVER", srv.base_url())
         .env("BATLEHUB_TOKEN", AUTH_TOKEN)
         .env("HOME", "/tmp")
         .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())

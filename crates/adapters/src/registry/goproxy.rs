@@ -9,7 +9,9 @@ use batlehub_core::{
     ports::{FetchedArtifact, RegistryClient},
 };
 
-use super::http_client::{apply_upstream_options, UpstreamHttpOptions};
+use super::http_client::{
+    apply_upstream_options, basic_auth_get, cache_control, UpstreamHttpOptions,
+};
 
 /// Go module proxy client (proxy.golang.org or compatible).
 ///
@@ -50,11 +52,7 @@ impl GoProxyRegistryClient {
     }
 
     fn get(&self, url: &str) -> reqwest::RequestBuilder {
-        let rb = self.http.get(url);
-        match &self.basic_auth {
-            Some((u, p)) => rb.basic_auth(u, Some(p)),
-            None => rb,
-        }
+        basic_auth_get(&self.http, &self.basic_auth, url)
     }
 }
 
@@ -176,11 +174,7 @@ impl RegistryClient for GoProxyRegistryClient {
             .error_for_status()
             .map_err(|e| CoreError::Registry(e.to_string()))?;
 
-        let cache_control = response
-            .headers()
-            .get("cache-control")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+        let cache_control = cache_control(&response);
 
         let stream = response
             .bytes_stream()

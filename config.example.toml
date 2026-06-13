@@ -269,6 +269,21 @@ bypass_roles = ["admin"]
 # kind = "deny_latest"
 # bypass_roles = ["admin"]
 
+# CVE gate: block (or warn about) downloads of versions with known
+# vulnerabilities recorded by the [vulnerability_scan] background task.
+# With block = false (the default) findings are surfaced in the UI but
+# never block; set block = true to deny affected versions.
+# [[registries.rules]]
+# kind = "cve_gate"
+# min_severity = "high"        # unknown | low | medium | high | critical
+# block = true
+# bypass_roles = ["admin"]
+
+# Feature flags: optional per-registry UI/integration toggles.
+# socket_badge is on by default; set false to hide the socket.dev badge.
+# [registries.feature_flags]
+# socket_badge = false
+
 [[registries]]
 type = "goproxy"
 name = "go"
@@ -486,6 +501,19 @@ upstreams = ["https://repo1.maven.org/maven2/"]
 # violation_window_secs = 300      # counting window in seconds (default: 300)
 # ban_duration_secs     = 3600     # how long to block the IP (default: 3600)
 # trigger_on_status     = [429, 401]   # HTTP status codes that count as violations
+
+# ── Vulnerability scanning ────────────────────────────────────────────────────
+#
+# Periodically re-check every cached SBOM against the OSV vulnerability database
+# (https://osv.dev) and record findings. Findings are surfaced per-version in the
+# Package Explorer and admin views, and can gate downloads via a per-registry
+# `cve_gate` rule (see [[registries.rules]] above).
+#
+# [vulnerability_scan]
+# enabled       = true
+# interval_secs = 86400                  # re-scan cadence in seconds (default: daily)
+# osv_api_url   = "https://api.osv.dev"  # optional; defaults to the public OSV API
+# batch_size    = 100                    # SBOMs processed per page
 
 # ── Self-hosted / private registry auth + TLS ────────────────────────────────
 #

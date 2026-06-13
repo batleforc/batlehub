@@ -124,6 +124,20 @@ function formatDate(iso: string | null) {
   });
 }
 
+function severityVariant(
+  severity: string,
+): "default" | "destructive" | "secondary" | "outline" {
+  switch (severity) {
+    case "critical":
+    case "high":
+      return "destructive";
+    case "medium":
+      return "default";
+    default:
+      return "secondary";
+  }
+}
+
 onMounted(fetchDetail);
 </script>
 
@@ -223,6 +237,7 @@ onMounted(fetchDetail);
                 <TableHead class="text-right">Downloads</TableHead>
                 <TableHead>Last Accessed</TableHead>
                 <TableHead>Published</TableHead>
+                <TableHead>Security</TableHead>
                 <TableHead v-if="token">SBOM</TableHead>
               </TableRow>
             </TableHeader>
@@ -270,6 +285,43 @@ onMounted(fetchDetail);
                 <TableCell class="text-sm text-muted-foreground">
                   {{ formatDate(ver.published_at ?? null) }}
                 </TableCell>
+                <TableCell class="text-sm">
+                  <div class="flex flex-wrap items-center gap-1">
+                    <span
+                      v-for="vuln in ver.vulnerabilities"
+                      :key="vuln.osv_id"
+                      class="group relative"
+                    >
+                      <Badge :variant="severityVariant(vuln.severity)" class="text-xs cursor-help">
+                        {{ vuln.severity }}
+                      </Badge>
+                      <span
+                        class="absolute bottom-full left-0 mb-1 hidden group-hover:block z-10 w-64 rounded-sm bg-popover border p-2 text-xs text-popover-foreground shadow-md"
+                      >
+                        <strong>{{ vuln.osv_id }}</strong><br />
+                        {{ vuln.summary }}
+                        <template v-if="vuln.fixed_version">
+                          <br /><strong>Fixed in:</strong> {{ vuln.fixed_version }}
+                        </template>
+                      </span>
+                    </span>
+                    <a
+                      v-if="ver.socket_badge_url"
+                      :href="ver.socket_badge_url"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Supply-chain report on socket.dev"
+                    >
+                      <img :src="ver.socket_badge_url" alt="socket.dev" class="h-4" />
+                    </a>
+                    <span
+                      v-if="ver.vulnerabilities.length === 0 && !ver.socket_badge_url"
+                      class="text-muted-foreground text-xs"
+                    >
+                      —
+                    </span>
+                  </div>
+                </TableCell>
                 <TableCell v-if="token" class="text-sm">
                   <span
                     v-if="sbomMissing.has(`${registry}/${name}/${ver.version}`)"
@@ -300,7 +352,7 @@ onMounted(fetchDetail);
                 </TableCell>
               </TableRow>
               <TableRow v-if="data.versions.length === 0">
-                <TableCell :colspan="token ? 7 : 6" class="text-center text-muted-foreground py-6">
+                <TableCell :colspan="token ? 8 : 7" class="text-center text-muted-foreground py-6">
                   No versions found
                 </TableCell>
               </TableRow>

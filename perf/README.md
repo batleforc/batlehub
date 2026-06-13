@@ -51,8 +51,12 @@ This directory contains everything needed to measure throughput, latency, and re
 
 | Name | Mode | Purpose |
 |------|------|---------|
-| `perf-npm` | proxy → mock upstream | scenarios 02 (warm read) and 03 (cache miss) |
+| `perf-npm` | proxy → mock upstream | scenarios 02 (warm read), 03 (cache miss), 06 (SBOM), 07 (eviction) |
 | `perf-local-npm` | local (no upstream) | scenarios 04 (upload) and 05 (mixed) |
+
+Both registries have `[registries.sbom]` enabled (`formats = ["spdx", "cyclonedx"]`, `fetch_upstream = false`), so every cache miss (proxy) or publish (local) records an SBOM document — this is what scenario 06 reads back.
+
+`perf-npm` also has `[registries.cache]` set with `artifact_ttl_secs = 3600` and `keep_latest_n = 3`, which enables `POST /api/v1/admin/registries/perf-npm/evict` (404s otherwise) — this is what scenario 07 exercises.
 
 ---
 
@@ -84,6 +88,8 @@ task perf:run:read     # warm-cache ramp test
 task perf:run:miss     # cache-miss / proxy-through
 task perf:run:upload   # publish / upload
 task perf:run:mixed    # 10-minute realistic mix
+task perf:run:sbom     # SBOM read + org export
+task perf:run:eviction # cache eviction sweep
 ```
 
 To run the full suite in one shot (all scenarios run even when thresholds are crossed):
@@ -129,6 +135,8 @@ task perf:s3:run:read
 task perf:s3:run:miss
 task perf:s3:run:upload
 task perf:s3:run:mixed
+task perf:s3:run:sbom
+task perf:s3:run:eviction
 ```
 
 The MinIO bucket (`perf-artifacts`) is created automatically by the `perf-minio-init` container on first `perf:s3:infra:up`.
@@ -245,6 +253,46 @@ This is the most realistic run. The mixed write pressure on the DB (access_event
 
 ---
 
+### 06 — SBOM retrieval & export (`perf:run:sbom`)
+
+**Goal:** measure the cost of the SBOM read path and the org-level export under load.  
+**Profile (two named k6 scenarios running simultaneously, 60 s):**
+
+| Scenario | VUs | Type |
+|----------|-----|------|
+| `sbom_read` | ramp 0→30 | `GET /api/v1/sbom/{registry}/{name}/{version}` (alternating `spdx`/`cyclonedx`) |
+| `sbom_export` | 2 constant | `GET /api/v1/sbom/export?registry=...` (admin, alternating formats) |
+
+`sbom_read` is a single keyed lookup in the `sbom` table (Postgres) — it should behave like a metadata read, similar in cost to scenario 02's DB query without the filesystem stream.
+
+`sbom_export` merges **every** SBOM document recorded for the registry into one response (`SbomService::export_org_sbom`). Its cost grows with how many artifacts have been cached/published, so run scenarios 03-05 first to build up a realistic dataset before measuring export latency — a fresh seed only has one artifact.
+
+**Expected thresholds:** `sbom_read` P95 < 300 ms; `sbom_export` P95 < 5 s; error rate < 1%.
+
+**What to watch:** `sbom_export` latency vs. dataset size (number of cached/published artifact versions). If it grows linearly without bound, the export query/merge in `crates/core/src/services/sbom/mod.rs` has no pagination — this is the path to profile first if export becomes slow on a production-sized cache.
+
+---
+
+### 07 — Cache eviction sweep (`perf:run:eviction`)
+
+**Goal:** measure the cost of `EvictionService::run_all()` while the cache is actively growing.  
+**Profile (two named k6 scenarios running simultaneously, 60 s):**
+
+| Scenario | VUs | Type |
+|----------|-----|------|
+| `cache_growth` | 10 constant | `GET /proxy/perf-npm/evict-pkg-{VU}/0.0.{ITER}/tarball` — new version every iteration (cache miss) |
+| `eviction_sweep` | 1 req / 5s | `POST /api/v1/admin/registries/perf-npm/evict` (admin) |
+
+Each `cache_growth` VU repeatedly fetches new versions of its own package (`evict-pkg-{VU}`), so `artifact_meta` accumulates several versions per package. `eviction_sweep` then calls the admin endpoint added in `crates/web/src/handlers/back_office/eviction.rs`, which runs every configured strategy (`run_ttl`, `run_idle`, `run_keep_latest_n`, `run_lru_size_cap`) and returns an `EvictResponse` with per-strategy counts. With `keep_latest_n = 3` (see `perf/config.perf.toml`), each sweep should report `evicted_old_versions > 0` once `cache_growth` has produced more than 3 versions per package.
+
+**Expected thresholds:** `cache_growth` P95 < 3 s (same as scenario 03); `eviction_sweep` P95 < 5 s; error rate < 5%.
+
+**What to watch:** `eviction_sweep` latency as the artifact_meta table grows — `run_keep_latest_n` loads `list_artifacts_by_package()` (all rows, ordered) on every call, so its cost is proportional to total cached versions across *all* registries, not just `perf-npm`. If this scales linearly without bound on a production-sized cache, that query is the first place to add pagination or a per-registry filter.
+
+If `/evict` returns 404, check that `[registries.cache]` for `perf-npm` sets at least one of `artifact_ttl_secs` / `idle_days` / `max_size_bytes` / `keep_latest_n`.
+
+---
+
 ## Tuning the mock upstream
 
 `task perf:upstream` accepts two variables:
@@ -333,7 +381,7 @@ To observe the default-10 behaviour, edit `config.perf.toml` and set `max_connec
 
 **Trigger:** scenario 04 with large `ARTIFACT_KB`.  
 **Signal:** server RSS grows proportionally to VU × artifact size.  
-**Location:** `crates/core/src/services/local_registry.rs` — the entire request body is collected into a `Bytes` before the storage write begins.
+**Location:** `crates/web/src/handlers/proxy/npm/write.rs` — the entire publish payload (JSON + base64 tarball) is collected into a `Bytes` before `LocalRegistryService::publish` writes it to storage.
 
 Run scenario 04 with 50 MiB payloads and watch RSS in `ps` or Grafana (node-exporter if added).
 
@@ -353,7 +401,7 @@ This manifests as higher P99 without a corresponding P95 increase.
 
 **Trigger:** scenario 02 at high sustained RPS.  
 **Signal:** DB write rate equals request rate even with 100% cache hits.  
-**Location:** `crates/core/src/services/proxy.rs` — `touch_artifact()` is spawned async on every served hit.
+**Location:** `crates/core/src/services/proxy/handle.rs` — `touch_artifact()` is spawned async on every served hit.
 
 Disable artifact TTL in `config.perf.toml` to measure the difference:
 
@@ -370,6 +418,18 @@ Disable artifact TTL in `config.perf.toml` to measure the difference:
 **Location:** `crates/adapters/src/rate_limit/in_memory.rs` — single Mutex/RwLock protecting the token-bucket map.
 
 To disable rate limiting for a clean baseline, remove the `[registries.rate_limit]` blocks from `perf/config.perf.toml`.
+
+---
+
+### 6. Eviction sweep cost (`run_keep_latest_n` / `run_lru_size_cap`)
+
+`crates/core/src/services/eviction` implements TTL, idle-day, keep-latest-N, and LRU size-cap eviction, exposed via `POST /api/v1/admin/registries/{registry}/evict` (`crates/web/src/handlers/back_office/eviction.rs`). Scenario 07 exercises this endpoint while scenario-03-style cache-miss traffic grows `artifact_meta` concurrently.
+
+**Trigger:** scenario 07, or any registry with `[registries.cache] keep_latest_n` / `max_size_bytes` set under sustained cache-miss load.  
+**Signal:** `eviction_sweep` P95 latency climbing as the total number of cached artifact versions (across *all* registries) grows.  
+**Location:** `run_keep_latest_n` calls `list_artifacts_by_package()`, which has no registry filter or pagination — its cost is proportional to the entire `artifact_meta` table, not just the registry being swept.
+
+If this becomes the dominant cost on a production-sized cache, the fix is to add a `registry` filter (and/or pagination) to `list_artifacts_by_package()`.
 
 ---
 

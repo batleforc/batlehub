@@ -7,6 +7,7 @@ pub mod notification;
 pub mod package;
 pub mod sbom;
 pub mod team_namespace;
+pub mod vulnerability;
 
 pub use access_log::*;
 pub use banner::{BannerLevel, GlobalBanner};
@@ -19,3 +20,4 @@ pub use notification::{
 pub use package::*;
 pub use sbom::{ArtifactSbom, SbomFormat, SbomSource};
 pub use team_namespace::*;
+pub use vulnerability::{ArtifactVulnerability, Severity};

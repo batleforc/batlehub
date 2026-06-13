@@ -112,21 +112,25 @@ impl QuotaService {
             new_bytes,
             config.max_storage_bytes_per_user,
             &config.enforcement,
-            || format!(
-                "storage quota exceeded for registry '{registry}': \
+            || {
+                format!(
+                    "storage quota exceeded for registry '{registry}': \
                  {new_bytes} bytes used, limit is {}",
-                config.max_storage_bytes_per_user.unwrap_or(0)
-            ),
+                    config.max_storage_bytes_per_user.unwrap_or(0)
+                )
+            },
         )?;
         enforce_limit(
             new_count as u64,
             config.max_packages_per_user.map(|x| x as u64),
             &config.enforcement,
-            || format!(
-                "package quota exceeded for registry '{registry}': \
+            || {
+                format!(
+                    "package quota exceeded for registry '{registry}': \
                  {new_count} packages, limit is {}",
-                config.max_packages_per_user.unwrap_or(0)
-            ),
+                    config.max_packages_per_user.unwrap_or(0)
+                )
+            },
         )?;
 
         // Record the publish

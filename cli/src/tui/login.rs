@@ -285,3 +285,106 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Option<ShouldGoBack> {
 
 /// Marker returned when the login screen wants to navigate back.
 pub struct ShouldGoBack;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::BatleHubClient;
+    use crossterm::event::KeyModifiers;
+
+    fn make_app() -> App {
+        let client = BatleHubClient::new("http://localhost:8080", None).expect("client");
+        App::new(client)
+    }
+
+    #[test]
+    fn handle_key_static_token_routes_to_token_input() {
+        let mut w = LoginWidget::new();
+        w.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(w.token_input.value(), "a");
+        assert_eq!(w.path_input.value(), "");
+    }
+
+    #[test]
+    fn handle_key_kubernetes_routes_to_path_input() {
+        let mut w = LoginWidget::new();
+        w.method = LoginMethod::Kubernetes;
+        w.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(w.path_input.value(), "a");
+        assert_eq!(w.token_input.value(), "");
+    }
+
+    #[test]
+    fn save_to_config_empty_static_token_fails_with_message() {
+        let mut w = LoginWidget::new();
+        assert!(!w.save_to_config());
+        assert_eq!(w.status.as_deref(), Some("Token cannot be empty."));
+    }
+
+    #[test]
+    fn save_to_config_empty_oidc_paste_fails_with_message() {
+        let mut w = LoginWidget::new();
+        w.method = LoginMethod::Oidc;
+        assert!(!w.save_to_config());
+        assert_eq!(
+            w.status.as_deref(),
+            Some("Paste the token or the full redirect URL.")
+        );
+    }
+
+    #[test]
+    fn save_to_config_empty_kubernetes_path_fails_with_message() {
+        let mut w = LoginWidget::new();
+        w.method = LoginMethod::Kubernetes;
+        assert!(!w.save_to_config());
+        assert_eq!(w.status.as_deref(), Some("Token path cannot be empty."));
+    }
+
+    #[test]
+    fn module_handle_key_esc_returns_should_go_back() {
+        let mut app = make_app();
+        let result = handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn module_handle_key_switches_method_and_clears_status() {
+        let mut app = make_app();
+        app.login.status = Some("err".to_owned());
+        app.login.method = LoginMethod::Oidc;
+
+        let result = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE),
+        );
+        assert!(result.is_none());
+        assert_eq!(app.login.method, LoginMethod::StaticToken);
+        assert!(app.login.status.is_none());
+
+        let result = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE),
+        );
+        assert!(result.is_none());
+        assert_eq!(app.login.method, LoginMethod::Kubernetes);
+    }
+
+    #[test]
+    fn module_handle_key_enter_with_empty_token_does_not_go_back() {
+        let mut app = make_app();
+        let result = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(result.is_none());
+        assert_eq!(app.login.status.as_deref(), Some("Token cannot be empty."));
+    }
+
+    #[test]
+    fn module_handle_key_default_forwards_to_input() {
+        let mut app = make_app();
+        let result = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE),
+        );
+        assert!(result.is_none());
+        assert_eq!(app.login.token_input.value(), "z");
+    }
+}

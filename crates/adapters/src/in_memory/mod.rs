@@ -14,6 +14,7 @@ pub mod sbom;
 pub mod storage;
 pub mod team_namespace;
 pub mod user_tokens;
+pub mod vulnerability;
 
 pub use artifact_meta::NoopArtifactMetaRepository;
 pub use beta_channel::InMemoryBetaChannelStore;
@@ -24,3 +25,4 @@ pub use sbom::NoopSbomRepository;
 pub use storage::InMemoryStorageBackend;
 pub use team_namespace::InMemoryTeamNamespaceStore;
 pub use user_tokens::NullUserTokenRepository;
+pub use vulnerability::InMemoryVulnerabilityRepository;

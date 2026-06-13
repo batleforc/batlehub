@@ -42,6 +42,20 @@ function fmtDate(iso: string | null | undefined) {
   return new Date(iso).toLocaleString();
 }
 
+function severityVariant(
+  severity: string,
+): "default" | "destructive" | "secondary" | "outline" {
+  switch (severity) {
+    case "critical":
+    case "high":
+      return "destructive";
+    case "medium":
+      return "default";
+    default:
+      return "secondary";
+  }
+}
+
 function viewArtifact(v: PackageVersionDetail) {
   router.push({
     path: "/packages/detail",
@@ -217,6 +231,7 @@ async function bulkUnblock() {
             <TableHead>Version</TableHead>
             <TableHead>Artifact</TableHead>
             <TableHead>Status</TableHead>
+            <TableHead>Security</TableHead>
             <TableHead>Cached</TableHead>
             <TableHead>Downloads</TableHead>
             <TableHead>Storage</TableHead>
@@ -263,6 +278,33 @@ async function bulkUnblock() {
                 >
                   {{ (v.status as BlockedStatus).reason }}
                 </p>
+              </div>
+            </TableCell>
+            <TableCell class="text-sm">
+              <div class="flex flex-wrap items-center gap-1">
+                <span
+                  v-for="vuln in v.vulnerabilities"
+                  :key="vuln.osv_id"
+                  :title="`${vuln.osv_id}: ${vuln.summary}${vuln.fixed_version ? ` (fixed in ${vuln.fixed_version})` : ''}`"
+                >
+                  <Badge :variant="severityVariant(vuln.severity)" class="text-xs cursor-help">
+                    {{ vuln.severity }}
+                  </Badge>
+                </span>
+                <a
+                  v-if="v.socket_badge_url"
+                  :href="v.socket_badge_url"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="Supply-chain report on socket.dev"
+                >
+                  <img :src="v.socket_badge_url" alt="socket.dev" class="h-4" />
+                </a>
+                <span
+                  v-if="v.vulnerabilities.length === 0 && !v.socket_badge_url"
+                  class="text-muted-foreground"
+                  >—</span
+                >
               </div>
             </TableCell>
             <TableCell>

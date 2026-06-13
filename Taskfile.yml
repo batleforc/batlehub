@@ -27,6 +27,12 @@ tasks:
     cmds:
       - cargo test --workspace
 
+  test:all:
+    desc: Run backend and frontend test suites in parallel
+    deps:
+      - task: test
+      - task: ui:test
+
   test:pg-cache:
     desc: Run PgCacheStore integration tests (starts a temporary Postgres container via Podman)
     vars:
@@ -43,6 +49,23 @@ tasks:
       - podman run -d --name {{.PG_CONTAINER}} -p {{.PG_PORT}}:5432 -e POSTGRES_PASSWORD={{.PG_PASSWORD}} postgres:17-alpine
       - until podman exec {{.PG_CONTAINER}} pg_isready -U postgres; do sleep 1; done
       - cargo test -p batlehub-adapters --test pg_cache -- --nocapture
+
+  test:pg-vulnerability:
+    desc: Run PgVulnerabilityRepository integration tests (starts a temporary Postgres container via Podman)
+    vars:
+      PG_CONTAINER: batlehub-test-pg
+      PG_PORT: "15432"
+      PG_PASSWORD: testpass
+      CONF_OVERRIDE: /tmp/batlehub-containers.conf
+    env:
+      CONTAINERS_CONF_OVERRIDE: "{{.CONF_OVERRIDE}}"
+      DATABASE_URL: "postgresql://postgres:{{.PG_PASSWORD}}@127.0.0.1:{{.PG_PORT}}/postgres"
+    cmds:
+      - printf '[network]\ndefault_rootless_network_cmd = "pasta"\n' > {{.CONF_OVERRIDE}}
+      - defer: podman rm -f {{.PG_CONTAINER}} 2>/dev/null || true
+      - podman run -d --name {{.PG_CONTAINER}} -p {{.PG_PORT}}:5432 -e POSTGRES_PASSWORD={{.PG_PASSWORD}} postgres:17-alpine
+      - until podman exec {{.PG_CONTAINER}} pg_isready -U postgres; do sleep 1; done
+      - cargo test -p batlehub-adapters --test pg_vulnerability -- --nocapture
 
   test:pg-local-registry:
     desc: Run PostgresLocalRegistry integration tests (starts a temporary Postgres container via Podman)
@@ -90,7 +113,7 @@ tasks:
       REDIS_CONTAINER: batlehub-cov-redis
       REDIS_PORT: "26379"
       CONF_OVERRIDE: /tmp/batlehub-cov-containers.conf
-      COVERAGE_EXCLUDE: "server/src/main\\.rs|crates/web/src/handlers/auth/oidc\\.rs|crates/web/src/handlers/back_office/health\\.rs|crates/adapters/src/db/|crates/adapters/src/registry/(cargo|github|npm)\\.rs|crates/adapters/src/cache/(postgres|banner_redis)\\.rs|crates/adapters/src/local_registry/postgres\\.rs|crates/adapters/src/rate_limit/(postgres|ip_block_postgres)\\.rs|crates/adapters/src/storage/router\\.rs"
+      COVERAGE_EXCLUDE: "server/src/main\\.rs|server/src/server_factory\\.rs|crates/web/src/handlers/auth/oidc\\.rs|crates/web/src/handlers/auth/oidc/sso\\.rs|crates/web/src/handlers/back_office/health/system\\.rs|crates/adapters/src/db/|crates/adapters/src/registry/(cargo|github|npm)\\.rs|crates/adapters/src/cache/(postgres|banner_redis)\\.rs|crates/adapters/src/local_registry/postgres\\.rs|crates/adapters/src/rate_limit/(postgres|ip_block_postgres)\\.rs|crates/adapters/src/storage/router\\.rs"
     env:
       CONTAINERS_CONF_OVERRIDE: "{{.CONF_OVERRIDE}}"
       DATABASE_URL: "postgresql://postgres:{{.PG_PASSWORD}}@127.0.0.1:{{.PG_PORT}}/postgres"
@@ -110,6 +133,7 @@ tasks:
       - cargo llvm-cov clean --workspace
       - cargo llvm-cov --no-report --workspace --ignore-filename-regex "{{.COVERAGE_EXCLUDE}}"
       - cargo llvm-cov --no-report -p batlehub-adapters --test pg_cache
+      - cargo llvm-cov --no-report -p batlehub-adapters --test pg_vulnerability
       - cargo llvm-cov --no-report -p batlehub-adapters --test local_registry
       - cargo llvm-cov --no-report -p batlehub-adapters --test artifact_meta
       - cargo llvm-cov --no-report -p batlehub-adapters --test pg_rate_limit
@@ -132,7 +156,7 @@ tasks:
       REDIS_CONTAINER: batlehub-cov-redis
       REDIS_PORT: "26379"
       CONF_OVERRIDE: /tmp/batlehub-cov-containers.conf
-      COVERAGE_EXCLUDE: "server/src/main\\.rs|crates/web/src/handlers/auth/oidc\\.rs|crates/web/src/handlers/back_office/health\\.rs|crates/adapters/src/db/|crates/adapters/src/registry/(cargo|github|npm)\\.rs|crates/adapters/src/cache/(postgres|banner_redis)\\.rs|crates/adapters/src/local_registry/postgres\\.rs|crates/adapters/src/rate_limit/(postgres|ip_block_postgres)\\.rs|crates/adapters/src/storage/router\\.rs"
+      COVERAGE_EXCLUDE: "server/src/main\\.rs|server/src/server_factory\\.rs|crates/web/src/handlers/auth/oidc\\.rs|crates/web/src/handlers/auth/oidc/sso\\.rs|crates/web/src/handlers/back_office/health/system\\.rs|crates/adapters/src/db/|crates/adapters/src/registry/(cargo|github|npm)\\.rs|crates/adapters/src/cache/(postgres|banner_redis)\\.rs|crates/adapters/src/local_registry/postgres\\.rs|crates/adapters/src/rate_limit/(postgres|ip_block_postgres)\\.rs|crates/adapters/src/storage/router\\.rs"
     env:
       CONTAINERS_CONF_OVERRIDE: "{{.CONF_OVERRIDE}}"
       DATABASE_URL: "postgresql://postgres:{{.PG_PASSWORD}}@127.0.0.1:{{.PG_PORT}}/postgres"
@@ -152,6 +176,7 @@ tasks:
       - cargo llvm-cov clean --workspace
       - cargo llvm-cov --no-report --workspace --ignore-filename-regex "{{.COVERAGE_EXCLUDE}}"
       - cargo llvm-cov --no-report -p batlehub-adapters --test pg_cache
+      - cargo llvm-cov --no-report -p batlehub-adapters --test pg_vulnerability
       - cargo llvm-cov --no-report -p batlehub-adapters --test local_registry
       - cargo llvm-cov --no-report -p batlehub-adapters --test artifact_meta
       - cargo llvm-cov --no-report -p batlehub-adapters --test pg_rate_limit
@@ -182,11 +207,40 @@ tasks:
     cmds:
       - cargo audit
 
+  deny:
+    desc: "Supply-chain gate — advisories, banned crates (rsa/legacy-rustls), licenses and sources (see deny.toml)"
+    cmds:
+      - cargo deny check
+
   ui:audit:
     desc: Check frontend npm dependencies for security vulnerabilities
     dir: ui
     cmds:
-      - npm audit
+      - npm audit --audit-level=high
+
+  website:audit:
+    desc: Check docs-website npm dependencies for security vulnerabilities
+    dir: website
+    cmds:
+      - npm audit --audit-level=high
+
+  sbom:rust:
+    desc: "Generate a CycloneDX SBOM of the shipped server (sbom-rust.cdx.json) — feed to `trivy sbom` / `grype sbom:` to match future CVEs against a shipped build"
+    cmds:
+      # cargo-cyclonedx writes <crate>.cdx.json next to the package manifest;
+      # copy it to a stable repo-root path consumers and CI can reference.
+      - cargo cyclonedx -p batlehub-server --format json
+      - cp "$(find server -name '*.cdx.json' | head -1)" sbom-rust.cdx.json
+
+  security:
+    desc: "Run the full local security gate — Rust advisories + bans, frontend audits, and Rust SBOM. Trivy/gitleaks/semgrep run in CI (see .github/workflows)"
+    cmds:
+      - task: audit
+      - task: deny
+      - task: ui:audit
+      - task: website:audit
+      - task: sbom:rust
+      - echo "Local gate passed. Image scanning (Trivy) and secret/SAST (gitleaks, semgrep) run in CI."
 
   fmt:
     desc: Format all Rust source files
@@ -264,6 +318,18 @@ tasks:
       - npm run lint
       - npm run lint:eslint
       - npm run format:check
+
+  ui:test:
+    desc: Run the frontend test suite
+    dir: ui
+    cmds:
+      - npm run test
+
+  ui:coverage:
+    desc: Run the frontend test suite with coverage (enforces threshold)
+    dir: ui
+    cmds:
+      - npm run coverage
 
   ui:fix:
     desc: Auto-fix oxlint issues and format the frontend source with oxfmt
@@ -448,14 +514,26 @@ tasks:
     cmds:
       - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/05_mixed.js
 
+  perf:run:sbom:
+    desc: "k6 scenario 06 — SBOM read + org export load (60 s) + RAM/CPU summary"
+    cmds:
+      - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/06_sbom.js
+
+  perf:run:eviction:
+    desc: "k6 scenario 07 — cache eviction sweep under concurrent cache growth (60 s) + RAM/CPU summary"
+    cmds:
+      - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/07_eviction.js
+
   perf:run:all:
-    desc: Run the full perf suite in sequence (scenarios 01-05); threshold violations are reported but do not stop the suite
+    desc: Run the full perf suite in sequence (scenarios 01-07); threshold violations are reported but do not stop the suite
     cmds:
       - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/01_at_rest.js
       - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/02_warm_read.js
       - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/03_cache_miss.js
       - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/04_upload.js
       - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/05_mixed.js
+      - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/06_sbom.js
+      - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/07_eviction.js
 
   # ── Performance testing — S3 + Redis backends ─────────────────────────────────
   # Same k6 scenarios as the filesystem/memory suite; only the server config
@@ -509,6 +587,16 @@ tasks:
     cmds:
       - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/05_mixed.js
 
+  perf:s3:run:sbom:
+    desc: "k6 scenario 06 — SBOM read + org export load against S3+Redis server + RAM/CPU summary"
+    cmds:
+      - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/06_sbom.js
+
+  perf:s3:run:eviction:
+    desc: "k6 scenario 07 — cache eviction sweep against S3+Redis server + RAM/CPU summary"
+    cmds:
+      - bash perf/scripts/run_with_metrics.sh perf/k6/scenarios/07_eviction.js
+
   perf:s3:run:all:
     desc: Run the full S3+Redis perf suite in sequence; threshold violations are reported but do not stop the suite
     cmds:
@@ -517,3 +605,5 @@ tasks:
       - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/03_cache_miss.js
       - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/04_upload.js
       - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/05_mixed.js
+      - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/06_sbom.js
+      - bash perf/scripts/run_with_metrics.sh --no-thresholds perf/k6/scenarios/07_eviction.js

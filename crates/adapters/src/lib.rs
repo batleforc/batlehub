@@ -13,6 +13,9 @@ pub mod storage;
 
 pub mod registry;
 
+#[cfg(feature = "vuln-scan")]
+pub mod vulnerability;
+
 #[cfg(feature = "db-postgres")]
 pub mod db;
 

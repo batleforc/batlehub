@@ -47,58 +47,6 @@ fn parse_block_value(s: &str) -> (u64, u64, &str) {
     (blocked_at, unblock_at, reason)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn violation_key_format() {
-        assert_eq!(
-            RedisIpBlockStore::violation_key("1.2.3.4", 1_704_067_200),
-            "batlehub:ipviol:1.2.3.4:1704067200"
-        );
-    }
-
-    #[test]
-    fn block_key_format() {
-        assert_eq!(
-            RedisIpBlockStore::block_key("10.0.0.1"),
-            "batlehub:ipblock:10.0.0.1"
-        );
-    }
-
-    #[test]
-    fn parse_block_value_valid() {
-        let (blocked_at, unblock_at, reason) = parse_block_value("1000:2000:rate-limit");
-        assert_eq!(blocked_at, 1000);
-        assert_eq!(unblock_at, 2000);
-        assert_eq!(reason, "rate-limit");
-    }
-
-    #[test]
-    fn parse_block_value_reason_with_colon() {
-        let (_, _, reason) = parse_block_value("1000:2000:too many:requests");
-        assert_eq!(reason, "too many:requests");
-    }
-
-    #[test]
-    fn parse_block_value_malformed() {
-        let (blocked_at, unblock_at, reason) = parse_block_value("bad");
-        assert_eq!(blocked_at, 0);
-        assert_eq!(unblock_at, 0);
-        assert_eq!(reason, "");
-    }
-
-    #[test]
-    fn violation_window_aligns_to_boundary() {
-        // super = ip_block_redis module; super::super = rate_limit module (where violation_window lives)
-        let (start, reset) = super::super::violation_window(1000, 60);
-        assert_eq!(start, 960);
-        assert_eq!(reset, 1020);
-        assert!(reset > 1000);
-    }
-}
-
 #[async_trait]
 impl IpBlockStore for RedisIpBlockStore {
     async fn record_violation(&self, ip: &str, window_secs: u32) -> Result<(u64, u64), CoreError> {
@@ -224,5 +172,57 @@ impl IpBlockStore for RedisIpBlockStore {
             })
             .collect();
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn violation_key_format() {
+        assert_eq!(
+            RedisIpBlockStore::violation_key("1.2.3.4", 1_704_067_200),
+            "batlehub:ipviol:1.2.3.4:1704067200"
+        );
+    }
+
+    #[test]
+    fn block_key_format() {
+        assert_eq!(
+            RedisIpBlockStore::block_key("10.0.0.1"),
+            "batlehub:ipblock:10.0.0.1"
+        );
+    }
+
+    #[test]
+    fn parse_block_value_valid() {
+        let (blocked_at, unblock_at, reason) = parse_block_value("1000:2000:rate-limit");
+        assert_eq!(blocked_at, 1000);
+        assert_eq!(unblock_at, 2000);
+        assert_eq!(reason, "rate-limit");
+    }
+
+    #[test]
+    fn parse_block_value_reason_with_colon() {
+        let (_, _, reason) = parse_block_value("1000:2000:too many:requests");
+        assert_eq!(reason, "too many:requests");
+    }
+
+    #[test]
+    fn parse_block_value_malformed() {
+        let (blocked_at, unblock_at, reason) = parse_block_value("bad");
+        assert_eq!(blocked_at, 0);
+        assert_eq!(unblock_at, 0);
+        assert_eq!(reason, "");
+    }
+
+    #[test]
+    fn violation_window_aligns_to_boundary() {
+        // super = ip_block_redis module; super::super = rate_limit module (where violation_window lives)
+        let (start, reset) = super::super::violation_window(1000, 60);
+        assert_eq!(start, 960);
+        assert_eq!(reset, 1020);
+        assert!(reset > 1000);
     }
 }

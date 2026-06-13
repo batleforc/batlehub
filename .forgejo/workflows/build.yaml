@@ -64,10 +64,15 @@ jobs:
             git-vault/data/batleforc/batlehub/registry password | REGISTRY_PAT ;
             git-vault/data/batleforc/batlehub/registry url | REGISTRY ;
       - run: buildah login --username ${{ steps.vault.outputs.REGISTRY_USER }} --password ${{ steps.vault.outputs.REGISTRY_PAT }} ${{ steps.vault.outputs.REGISTRY }}
+      - name: Install Trivy & Syft
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.71.0
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh        | sh -s -- -b /usr/local/bin v1.45.1
       - name: Build Image
         run: |
           IMAGE_TAG="${{ env.REGISTRY }}/${{ matrix.image_name }}:${GITHUB_SHA}"
           IMAGE_TAG_BRANCH="${{ env.REGISTRY }}/${{ matrix.image_name }}:${GITHUB_REF_NAME}"
+          echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
           buildah bud  \
             --platform linux/amd64 \
             --layers \
@@ -79,3 +84,15 @@ jobs:
             ${{ matrix.context }}
           buildah push $IMAGE_TAG
           buildah push $IMAGE_TAG_BRANCH
+      # Generate a CycloneDX SBOM of the just-built image (from local
+      # containers-storage — no registry pull). Kept in the workspace; the GitHub
+      # release path publishes + attests the canonical SBOM.
+      - name: Generate image SBOM (Syft)
+        run: syft "containers-storage:$IMAGE_TAG" -o cyclonedx-json="sbom-${{ matrix.image_name }}.cdx.json"
+      # Gate: scan the local image and fail the build on any fixable HIGH/CRITICAL
+      # CVE. Forgejo has no Security tab, so the exit code IS the gate; a human
+      # readable table is printed first for triage.
+      - name: Trivy scan (report)
+        run: trivy image --image-src podman --severity HIGH,CRITICAL --ignore-unfixed --format table "$IMAGE_TAG"
+      - name: Trivy scan (gate)
+        run: trivy image --image-src podman --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "$IMAGE_TAG"

@@ -1,0 +1,138 @@
+use super::{
+    CoreError, Identity, LocalRegistryService, PublishRequest, Role, SbomFormat, SbomPublishOptions,
+};
+
+impl LocalRegistryService {
+    pub async fn yank(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        identity: &Identity,
+    ) -> Result<(), CoreError> {
+        if !identity.has_role_at_least(&Role::User) {
+            return Err(CoreError::AccessDenied(
+                "yank requires at least User role".into(),
+            ));
+        }
+        self.check_namespace_membership(registry, name, identity)
+            .await?;
+        self.backend.yank(registry, name, version).await
+    }
+
+    pub async fn unyank(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        identity: &Identity,
+    ) -> Result<(), CoreError> {
+        if !identity.has_role_at_least(&Role::User) {
+            return Err(CoreError::AccessDenied(
+                "unyank requires at least User role".into(),
+            ));
+        }
+        self.check_namespace_membership(registry, name, identity)
+            .await?;
+        self.backend.unyank(registry, name, version).await
+    }
+
+    /// If a namespace claim covers `package` in `registry`, verify `identity` is
+    /// a member of the owning group. Admins and unclaimed packages bypass this.
+    pub async fn check_namespace_membership(
+        &self,
+        registry: &str,
+        package: &str,
+        identity: &Identity,
+    ) -> Result<(), CoreError> {
+        if identity.is_admin() {
+            return Ok(());
+        }
+        let Some(ref ns_port) = self.team_namespace else {
+            return Ok(());
+        };
+        if let Some(ns) = ns_port.find_namespace(registry, package).await? {
+            let norm_id = ns.group_id.replace(' ', "");
+            let ok = identity
+                .groups
+                .iter()
+                .any(|g| g.replace(' ', "") == norm_id);
+            if !ok {
+                return Err(CoreError::AccessDenied(format!(
+                    "namespace '{}' in registry '{}' is owned by group '{}'; \
+                     you are not a member",
+                    ns.prefix, registry, ns.group_id
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) async fn remove_pending(&self, registry: &str, name: &str, version: &str) {
+        if let Err(err) = self.backend.remove_version(registry, name, version).await {
+            tracing::error!("pending row cleanup failed: {err}");
+        }
+    }
+
+    pub(super) async fn revoke_quota(&self, identity: &Identity, registry: &str, bytes: u64) {
+        if let Some(svc) = &self.quota {
+            if let Err(err) = svc.revoke_publish(identity, registry, bytes).await {
+                tracing::error!("quota revoke failed: {err}");
+            }
+        }
+    }
+
+    pub(super) async fn run_publish_sbom(
+        &self,
+        req: &PublishRequest,
+        storage_key: &str,
+        bytes: u64,
+    ) -> Result<(), CoreError> {
+        let Some(ref sbom_svc) = self.sbom else {
+            return Ok(());
+        };
+        let sbom_cfg = {
+            let hot = self.hot.read().await;
+            hot.sbom.get(&req.registry).cloned()
+        };
+        let Some(cfg) = sbom_cfg.filter(|c| c.enabled) else {
+            return Ok(());
+        };
+        let formats: Vec<SbomFormat> = cfg
+            .formats
+            .iter()
+            .filter_map(|s| SbomFormat::parse(s))
+            .collect();
+        let result = sbom_svc
+            .record_for_published(
+                &req.registry,
+                &req.name,
+                &req.version,
+                storage_key,
+                &req.artifact,
+                SbomPublishOptions {
+                    registry_type: &cfg.registry_type,
+                    formats: &formats,
+                    required: cfg.required,
+                },
+            )
+            .await;
+        match result {
+            Err(e) if cfg.required => {
+                self.remove_pending(&req.registry, &req.name, &req.version)
+                    .await;
+                if let Err(err) = self.storage.delete(storage_key).await {
+                    tracing::error!("storage cleanup after sbom failure: {err}");
+                }
+                self.revoke_quota(&req.publisher, &req.registry, bytes)
+                    .await;
+                Err(e)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "sbom generation failed (non-fatal)");
+                Ok(())
+            }
+            Ok(()) => Ok(()),
+        }
+    }
+}

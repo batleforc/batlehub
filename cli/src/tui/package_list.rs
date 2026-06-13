@@ -175,3 +175,123 @@ pub fn render(f: &mut Frame, app: &App, registry: &str) {
         .style(Style::default().fg(Color::DarkGray));
     f.render_widget(help, help_area);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyModifiers, MediaKeyCode};
+    use tui_input::backend::crossterm::EventHandler;
+
+    fn package(name: &str) -> PackageSummary {
+        PackageSummary {
+            registry: "npm-proxy".to_owned(),
+            name: name.to_owned(),
+            version: "1.0.0".to_owned(),
+            artifact: None,
+            status: PackageStatus::Available,
+            access_count: 0,
+        }
+    }
+
+    #[test]
+    fn set_items_selects_first_when_non_empty() {
+        let mut w = PackageListWidget::new();
+        w.set_items(vec![package("left-pad"), package("right-pad")], 2);
+        assert_eq!(w.state.selected(), Some(0));
+        assert_eq!(w.total, 2);
+        assert_eq!(w.selected().unwrap().name, "left-pad");
+    }
+
+    #[test]
+    fn set_items_empty_clears_selection() {
+        let mut w = PackageListWidget::new();
+        w.set_items(vec![package("left-pad")], 1);
+        assert_eq!(w.state.selected(), Some(0));
+
+        w.set_items(vec![], 0);
+        assert_eq!(w.state.selected(), None);
+        assert!(w.selected().is_none());
+    }
+
+    #[test]
+    fn next_and_prev_wrap_around() {
+        let mut w = PackageListWidget::new();
+        w.set_items(vec![package("left-pad"), package("right-pad")], 2);
+
+        w.next();
+        assert_eq!(w.state.selected(), Some(1));
+        w.next();
+        assert_eq!(w.state.selected(), Some(0));
+
+        w.prev();
+        assert_eq!(w.state.selected(), Some(1));
+    }
+
+    #[test]
+    fn next_and_prev_on_empty_list_are_noops() {
+        let mut w = PackageListWidget::new();
+        w.next();
+        w.prev();
+        assert_eq!(w.state.selected(), None);
+    }
+
+    #[test]
+    fn visible_items_filters_case_insensitively_by_name() {
+        let mut w = PackageListWidget::new();
+        w.set_items(vec![package("left-pad"), package("right-pad")], 2);
+
+        for c in "RIGHT".chars() {
+            w.search_input
+                .handle_event(&crossterm::event::Event::Key(KeyEvent::new(
+                    KeyCode::Char(c),
+                    KeyModifiers::NONE,
+                )));
+        }
+
+        let visible = w.visible_items();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].name, "right-pad");
+    }
+
+    #[test]
+    fn toggle_search_resets_input_when_deactivated() {
+        let mut w = PackageListWidget::new();
+        w.toggle_search();
+        assert!(w.search_active);
+
+        w.search_input
+            .handle_event(&crossterm::event::Event::Key(KeyEvent::new(
+                KeyCode::Char('x'),
+                KeyModifiers::NONE,
+            )));
+        assert_eq!(w.search_input.value(), "x");
+
+        w.toggle_search();
+        assert!(!w.search_active);
+        assert_eq!(w.search_input.value(), "");
+    }
+
+    #[test]
+    fn handle_search_key_esc_clears_and_deactivates() {
+        let mut w = PackageListWidget::new();
+        w.toggle_search();
+        w.handle_search_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(w.search_input.value(), "a");
+
+        w.handle_search_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!w.search_active);
+        assert_eq!(w.search_input.value(), "");
+    }
+
+    #[test]
+    fn handle_search_key_other_key_is_forwarded_to_input() {
+        let mut w = PackageListWidget::new();
+        w.toggle_search();
+        w.handle_search_key(KeyEvent::new(
+            KeyCode::Media(MediaKeyCode::Play),
+            KeyModifiers::NONE,
+        ));
+        assert!(w.search_active);
+        assert_eq!(w.search_input.value(), "");
+    }
+}

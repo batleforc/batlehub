@@ -79,7 +79,8 @@ default = [
   "registry-terraform",
   "registry-vscode-marketplace",
   "sbom",
-  "storage-fs"
+  "storage-fs",
+  "vuln-scan"
 ]
 auth-actions-oidc = ["dep:glob", "dep:jsonwebtoken", "dep:regex"]
 auth-kubernetes = []
@@ -104,6 +105,7 @@ registry-vscode-marketplace = []
 storage-fs = []
 storage-s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
 sbom = ["db-postgres", "dep:flate2", "dep:tar", "dep:zip", "dep:quick-xml"]
+vuln-scan = ["db-postgres"]
 
 [lints]
 workspace = true

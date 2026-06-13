@@ -126,6 +126,7 @@ async function submitForm() {
     package_name: form.value.package_name.trim() || null,
     event_types: form.value.event_types,
     channel_name: form.value.channel_name.trim(),
+    enabled: form.value.enabled,
   };
   try {
     if (editingId.value) {
@@ -134,13 +135,13 @@ async function submitForm() {
         body: { ...body, enabled: form.value.enabled },
       });
       if (result.error) {
-        formError.value = String(result.error);
+        formError.value = extractMessage(result.error);
         return;
       }
     } else {
       const result = await createSubscription({ body });
       if (result.error) {
-        formError.value = String(result.error);
+        formError.value = extractMessage(result.error);
         return;
       }
     }
@@ -166,7 +167,7 @@ async function confirmDelete() {
   try {
     const result = await deleteSubscription({ path: { id: deleteTarget.value } });
     if (result.error) {
-      deleteError.value = String(result.error);
+      deleteError.value = extractMessage(result.error);
       return;
     }
     deleteTarget.value = null;
@@ -180,8 +181,11 @@ async function confirmDelete() {
 
 // ── Toggle enabled ────────────────────────────────────────────────────────────
 
+const toggleError = ref<string | null>(null);
+
 async function toggleEnabled(sub: NotificationSubscription) {
-  await updateSubscription({
+  toggleError.value = null;
+  const result = await updateSubscription({
     path: { id: sub.id },
     body: {
       registry: sub.registry ?? null,
@@ -191,6 +195,9 @@ async function toggleEnabled(sub: NotificationSubscription) {
       enabled: !sub.enabled,
     },
   });
+  if (result.error) {
+    toggleError.value = extractMessage(result.error);
+  }
   reloadSubs();
 }
 
@@ -332,6 +339,7 @@ function eventBadgeVariant(
         </CardContent>
       </Card>
 
+      <p v-if="toggleError" class="text-sm text-destructive">{{ toggleError }}</p>
       <p
         v-if="testMsg"
         class="text-sm"
@@ -494,7 +502,7 @@ function eventBadgeVariant(
             <option v-for="ch in channels" :key="ch.name" :value="ch.name" />
           </datalist>
         </div>
-        <div v-if="editingId" class="flex items-center gap-2">
+        <div class="flex items-center gap-2">
           <Switch id="notif-enabled" v-model="form.enabled" />
           <Label for="notif-enabled">Enabled</Label>
         </div>

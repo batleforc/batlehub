@@ -147,3 +147,80 @@ pub fn render(f: &mut Frame, app: &App) {
     let hint = Paragraph::new(hint_text).style(hint_style);
     f.render_widget(hint, chunks[4]);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyModifiers;
+
+    #[test]
+    fn next_field_cycles_through_all_fields() {
+        let mut w = PublishFormWidget::new();
+        assert_eq!(w.active_field, PublishField::FilePath);
+
+        w.next_field();
+        assert_eq!(w.active_field, PublishField::Registry);
+        w.next_field();
+        assert_eq!(w.active_field, PublishField::Name);
+        w.next_field();
+        assert_eq!(w.active_field, PublishField::Version);
+        w.next_field();
+        assert_eq!(w.active_field, PublishField::FilePath);
+    }
+
+    #[test]
+    fn prev_field_cycles_backwards() {
+        let mut w = PublishFormWidget::new();
+        w.prev_field();
+        assert_eq!(w.active_field, PublishField::Version);
+        w.prev_field();
+        assert_eq!(w.active_field, PublishField::Name);
+        w.prev_field();
+        assert_eq!(w.active_field, PublishField::Registry);
+        w.prev_field();
+        assert_eq!(w.active_field, PublishField::FilePath);
+    }
+
+    #[test]
+    fn handle_key_tab_and_backtab_change_active_field() {
+        let mut w = PublishFormWidget::new();
+        w.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(w.active_field, PublishField::Registry);
+
+        w.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+        assert_eq!(w.active_field, PublishField::FilePath);
+    }
+
+    #[test]
+    fn handle_key_enter_advances_field_until_version_then_submits() {
+        let mut w = PublishFormWidget::new();
+        w.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(w.active_field, PublishField::Registry);
+        assert!(!w.submitted);
+
+        w.active_field = PublishField::Version;
+        w.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(w.submitted);
+    }
+
+    #[test]
+    fn handle_key_char_writes_to_active_field() {
+        let mut w = PublishFormWidget::new();
+        w.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        w.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        assert_eq!(w.value(PublishField::FilePath), "ab");
+
+        w.next_field();
+        w.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        assert_eq!(w.value(PublishField::Registry), "c");
+        assert_eq!(w.value(PublishField::FilePath), "ab");
+    }
+
+    #[test]
+    fn active_input_returns_field_for_active_variant() {
+        let mut w = PublishFormWidget::new();
+        w.next_field();
+        w.active_input().reset();
+        assert_eq!(w.value(PublishField::Registry), "");
+    }
+}

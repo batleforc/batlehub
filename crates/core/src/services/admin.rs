@@ -3,11 +3,11 @@ use std::sync::Arc;
 use chrono::Utc;
 
 use crate::entities::{
-    AccessEvent, AccessResult, EventFilter, ExploreEntry, ExploreFilter, Identity, PackageFilter,
-    PackageId, PackageStatus, PackageSummary, RegistryStat,
+    AccessEvent, AccessResult, ArtifactVulnerability, EventFilter, ExploreEntry, ExploreFilter,
+    Identity, PackageFilter, PackageId, PackageStatus, PackageSummary, RegistryStat,
 };
 use crate::error::CoreError;
-use crate::ports::PackageRepository;
+use crate::ports::{PackageRepository, VulnerabilityRepository};
 use crate::services::explore_cache::{
     packages_cache_key, packages_entry_registries, stats_cache_key, ExploreCache,
 };
@@ -25,6 +25,9 @@ pub struct BulkActionResult {
 pub struct AdminService {
     pub repo: Arc<dyn PackageRepository>,
     pub explore_cache: Arc<ExploreCache>,
+    /// Optional source of vulnerability findings (the periodic SBOM re-scan).
+    /// When absent, `list_vulnerabilities` returns an empty list.
+    pub vuln_repo: Option<Arc<dyn VulnerabilityRepository>>,
 }
 
 impl AdminService {
@@ -32,6 +35,29 @@ impl AdminService {
         Self {
             repo,
             explore_cache: Arc::new(ExploreCache::new()),
+            vuln_repo: None,
+        }
+    }
+
+    /// Attach a vulnerability repository so package detail views can surface
+    /// findings recorded by the periodic SBOM re-scan.
+    #[must_use]
+    pub fn with_vulnerability_repo(mut self, repo: Arc<dyn VulnerabilityRepository>) -> Self {
+        self.vuln_repo = Some(repo);
+        self
+    }
+
+    /// List recorded vulnerability findings for a package coordinate.
+    /// Returns an empty list when no vulnerability repository is attached.
+    pub async fn list_vulnerabilities(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+    ) -> Result<Vec<ArtifactVulnerability>, CoreError> {
+        match &self.vuln_repo {
+            Some(repo) => repo.list_for_coordinate(registry, name, version).await,
+            None => Ok(vec![]),
         }
     }
 
@@ -653,6 +679,7 @@ mod tests {
         AdminService {
             repo,
             explore_cache: cache,
+            vuln_repo: None,
         }
     }
 
@@ -844,5 +871,63 @@ mod tests {
         let svc = make_svc_with_cache(FailingExploreRepo::arc(), Arc::clone(&cache));
         let (_, unavailable) = svc.explore_packages(filter).await.unwrap();
         assert!(unavailable);
+    }
+
+    // ── list_vulnerabilities ──────────────────────────────────────────────────
+
+    struct OneFindingVulnRepo;
+
+    #[async_trait]
+    impl VulnerabilityRepository for OneFindingVulnRepo {
+        async fn replace_findings_for_artifact(
+            &self,
+            _artifact_key: &str,
+            _findings: Vec<crate::entities::ArtifactVulnerability>,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn list_for_coordinate(
+            &self,
+            registry: &str,
+            name: &str,
+            version: &str,
+        ) -> Result<Vec<crate::entities::ArtifactVulnerability>, CoreError> {
+            Ok(vec![crate::entities::ArtifactVulnerability {
+                id: uuid::Uuid::new_v4(),
+                artifact_key: format!("artifact:{registry}/{name}/{version}"),
+                registry: registry.to_owned(),
+                package_name: name.to_owned(),
+                version: version.to_owned(),
+                osv_id: "RUSTSEC-2021-0001".to_owned(),
+                severity: crate::entities::Severity::High,
+                summary: "boom".to_owned(),
+                fixed_version: Some("0.3.1".to_owned()),
+                purl: format!("pkg:cargo/{name}@{version}"),
+                detected_at: Utc::now(),
+            }])
+        }
+    }
+
+    #[tokio::test]
+    async fn list_vulnerabilities_empty_without_repo() {
+        let svc = AdminService::new(MemRepo::new());
+        let out = svc
+            .list_vulnerabilities("cargo", "yaml", "0.3.0")
+            .await
+            .unwrap();
+        assert!(out.is_empty(), "no vuln repo attached → empty");
+    }
+
+    #[tokio::test]
+    async fn list_vulnerabilities_delegates_to_repo() {
+        let svc =
+            AdminService::new(MemRepo::new()).with_vulnerability_repo(Arc::new(OneFindingVulnRepo));
+        let out = svc
+            .list_vulnerabilities("cargo", "yaml", "0.3.0")
+            .await
+            .unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].osv_id, "RUSTSEC-2021-0001");
+        assert_eq!(out[0].fixed_version.as_deref(), Some("0.3.1"));
     }
 }

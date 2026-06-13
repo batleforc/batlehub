@@ -1,0 +1,77 @@
+# cargo-deny configuration — supply-chain gate for the Rust workspace.
+#
+# Complements `cargo audit` (RUSTSEC advisories only) with:
+#   • advisories — vulnerabilities + unmaintained + yanked crates
+#   • bans       — assert deliberately-removed crates never re-enter the tree
+#   • licenses   — flag a future copyleft transitive dependency
+#   • sources    — only crates.io + the in-repo `patches/` are trusted
+#
+# Run locally with `task deny` (or `cargo deny check`). CI gates on it; see
+# `.github/workflows/back-dep-audit.yaml`.
+
+[graph]
+# Check every target we actually ship for. all-features keeps optional
+# adapters (storage-s3, cache-redis, registry-*) in the graph.
+all-features = true
+
+# ── Advisories ────────────────────────────────────────────────────────────────
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Yanked crates are treated as a failure — a yank usually means "do not use".
+yanked = "deny"
+# Mirror the "no suppressions" stance of .cargo/audit.toml: nothing ignored.
+ignore = []
+
+# ── Bans ──────────────────────────────────────────────────────────────────────
+# These crates were deliberately removed from the dependency tree for security
+# reasons (see the [patch.crates-io] block and the AWS/sqlx notes in Cargo.toml).
+# Denying them here turns "removed by patch" into an enforced, CI-failing
+# invariant: if a dependency bump silently drags one back in, the build breaks.
+[bans]
+multiple-versions = "allow"   # noisy in a large tree; revisit later
+# Wildcards left as "allow": the workspace crates depend on each other via
+# versionless `{ path = … }`, which cargo-deny counts as wildcards for public
+# crates. The security value here is the `deny` list below, not wildcard hygiene.
+wildcards = "allow"
+deny = [
+    # RUSTSEC-2023-0071 (Marvin attack) — pulled in via sqlx-mysql. Removed by
+    # the sqlx-macros / sqlx-mysql stub patches.
+    { name = "rsa" },
+    { name = "sqlx-mysql" },
+    { name = "sqlx-macros-core" },
+    # Legacy rustls stack — RUSTSEC-2026-0098/0099/0104. We use the
+    # rustls-aws-lc / hyper 1.x path instead (see aws-sdk notes in Cargo.toml).
+    { name = "rustls", version = "=0.21" },
+    { name = "rustls-webpki", version = "=0.101" },
+]
+
+# ── Licenses ──────────────────────────────────────────────────────────────────
+# Permissive allowlist. Anything NOT listed (notably GPL/AGPL/LGPL copyleft)
+# fails the check, so a future copyleft transitive dependency is surfaced.
+# Start broad to avoid a noisy first run; tighten in a follow-up.
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0", # webpki-roots trust store
+    "0BSD",                # quoted_printable (via lettre)
+    "bzip2-1.0.6",         # bzip2 (via zip)
+    "BSL-1.0",
+    "Unlicense",
+    "MIT-0",
+]
+confidence-threshold = 0.8
+
+# ── Sources ───────────────────────────────────────────────────────────────────
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

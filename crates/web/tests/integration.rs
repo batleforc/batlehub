@@ -28,32 +28,40 @@ use batlehub_adapters::cache::InMemoryBannerStore;
 use batlehub_adapters::cache::InMemoryCacheStore;
 use batlehub_adapters::in_memory::{
     InMemoryPackageRepository as InMemoryRepo, InMemoryStorageBackend as InMemoryStorage,
-    NoopArtifactMetaRepository as NoopArtifactMeta, NullUserTokenRepository as NullTokenRepository,
+    InMemoryVulnerabilityRepository, NoopArtifactMetaRepository as NoopArtifactMeta,
+    NullUserTokenRepository as NullTokenRepository,
 };
 use batlehub_adapters::local_registry::InMemoryLocalRegistry;
 use batlehub_adapters::notification::InMemoryNotificationStore;
 use batlehub_adapters::rate_limit::{InMemoryIpBlockStore, InMemoryRateLimitStore};
 use batlehub_config::schema::{
-    GroupRateLimitConfig, RateLimitConfig, RateLimitEnforcement, RegistryMode,
+    GroupRateLimitConfig, InboundWebhookConfig, NotificationChannelConfig, NotificationsConfig,
+    RateLimitConfig, RateLimitEnforcement, RegistryMode, WebhookChannelConfig,
 };
 use batlehub_core::entities::Identity;
 use batlehub_core::entities::{NamespacePackage, TeamNamespace, Visibility};
 use batlehub_core::ports::BannerPort;
+use batlehub_core::ports::NotificationPort;
 use batlehub_core::ports::{BetaChannelEntry, BetaChannelPort, IpBlockStore, TeamNamespacePort};
 use batlehub_core::{
-    entities::{AccessEvent, PackageId, PackageMetadata, PackageStatus, Role},
+    entities::{
+        AccessEvent, ArtifactVulnerability, PackageId, PackageMetadata, PackageStatus, Role,
+        Severity,
+    },
     error::CoreError,
     ports::{
         AuthProvider, CacheStore, FetchedArtifact, LocalRegistryBackend, PackageRepository,
-        RegistryClient, StorageBackend, UserToken, UserTokenRepository,
+        RegistryClient, StorageBackend, UserToken, UserTokenRepository, VulnerabilityRepository,
     },
     rules::{BlockListRule, RbacRule},
     services::{
-        new_hot_lock, AdminService, HotConfig, LocalRegistryService, ProxyMetrics, ProxyService,
-        RegistryPolicy,
+        new_hot_lock, AdminService, FeatureFlags, HotConfig, LocalRegistryService, ProxyMetrics,
+        ProxyService, RegistryPolicy,
     },
 };
-use batlehub_web::services::{BannerService, ConfigReloadService, HotConfigBuilder};
+use batlehub_web::services::{
+    BannerService, ConfigReloadService, HotConfigBuilder, NotificationService,
+};
 use batlehub_web::{
     configure_app, healthz, new_access_lock, prometheus_metrics, AuthMiddlewareFactory,
     RateLimitMiddlewareFactory, RateLimitService, RegistryModeMap,
@@ -137,6 +145,7 @@ fn make_local_svc(storage: Arc<dyn StorageBackend>) -> Arc<LocalRegistryService>
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -226,16 +235,17 @@ async fn make_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -287,7 +297,8 @@ async fn make_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -362,16 +373,17 @@ async fn make_app_ext(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: proxy_metrics.clone(),
@@ -423,7 +435,8 @@ async fn make_app_ext(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             proxy_metrics,
             None,
             None,                                       // sbom_svc
@@ -440,11 +453,267 @@ async fn make_app_ext(
     init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
 }
 
+/// Variant of `make_app` that attaches a (pre-seeded) vulnerability repository to
+/// the `AdminService` and a custom per-registry `feature_flags` map, so the
+/// vulnerability findings and socket.dev badge surfacing can be tested over HTTP.
+async fn make_vuln_app(
+    repo: Arc<InMemoryRepo>,
+    vuln_repo: Arc<dyn VulnerabilityRepository>,
+    feature_flags: HashMap<String, FeatureFlags>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [
+        (
+            "npm".to_owned(),
+            FixedRegistry::new("npm") as Arc<dyn RegistryClient>,
+        ),
+        (
+            "cargo".to_owned(),
+            FixedRegistry::new("cargo") as Arc<dyn RegistryClient>,
+        ),
+    ]
+    .into();
+    let policies: HashMap<String, Arc<RegistryPolicy>> = [
+        ("npm".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
+        ("cargo".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
+    ]
+    .into();
+
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        hot: new_hot_lock(HotConfig {
+            registries,
+            policies,
+            versioning: HashMap::new(),
+            signing: HashMap::new(),
+            sbom: HashMap::new(),
+            feature_flags,
+            beta_channel: HashMap::new(),
+            max_artifact_size_bytes: None,
+        }),
+        storage: storage.clone(),
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn).with_vulnerability_repo(vuln_repo));
+
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = new_access_lock(batlehub_web::AccessConfig {
+        anonymous: ["npm", "cargo"].iter().map(|s| s.to_string()).collect(),
+        user: ["npm", "cargo"].iter().map(|s| s.to_string()).collect(),
+        admin: ["npm", "cargo"].iter().map(|s| s.to_string()).collect(),
+        groups: std::collections::HashMap::new(),
+        explore_anonymous: ["npm", "cargo"].iter().map(|s| s.to_string()).collect(),
+        explore_user: ["npm", "cargo"].iter().map(|s| s.to_string()).collect(),
+        explore_admin: ["npm", "cargo"].iter().map(|s| s.to_string()).collect(),
+    });
+    let registry_map = batlehub_web::RegistryMap::from(
+        [("npm", "npm"), ("cargo", "cargo")]
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.to_string()))
+            .collect::<std::collections::HashMap<String, String>>(),
+    );
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+            None,
+            None,
+            Arc::new(InMemoryNotificationStore::new()),
+            None,
+        ))
+        .split_for_parts();
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+}
+
+/// Build a single vulnerability finding for a coordinate (helper for the tests below).
+fn vuln_finding(
+    reg: &str,
+    name: &str,
+    ver: &str,
+    osv_id: &str,
+    sev: Severity,
+) -> ArtifactVulnerability {
+    ArtifactVulnerability {
+        id: uuid::Uuid::new_v4(),
+        artifact_key: format!("artifact:{reg}/{name}/{ver}"),
+        registry: reg.to_owned(),
+        package_name: name.to_owned(),
+        version: ver.to_owned(),
+        osv_id: osv_id.to_owned(),
+        severity: sev,
+        summary: "remote code execution".to_owned(),
+        fixed_version: Some("9.9.9".to_owned()),
+        purl: format!("pkg:{reg}/{name}@{ver}"),
+        detected_at: Utc::now(),
+    }
+}
+
+#[actix_web::test]
+async fn package_detail_surfaces_vulnerability_findings() {
+    let repo = InMemoryRepo::new();
+    let pkg = PackageId::new("npm", "lodash", "4.17.21");
+    repo.record_access(AccessEvent::allowed_download(
+        pkg,
+        Some("u".to_owned()),
+        Role::User,
+    ))
+    .await
+    .unwrap();
+
+    let vuln_repo = Arc::new(InMemoryVulnerabilityRepository::new());
+    vuln_repo
+        .replace_findings_for_artifact(
+            "artifact:npm/lodash/4.17.21",
+            vec![vuln_finding(
+                "npm",
+                "lodash",
+                "4.17.21",
+                "GHSA-xyz",
+                Severity::Critical,
+            )],
+        )
+        .await
+        .unwrap();
+
+    let app = make_vuln_app(repo, vuln_repo, HashMap::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/packages/detail?registry=npm&name=lodash")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let v = &body["versions"][0];
+    let vulns = v["vulnerabilities"].as_array().unwrap();
+    assert_eq!(vulns.len(), 1);
+    assert_eq!(vulns[0]["osv_id"], "GHSA-xyz");
+    assert_eq!(vulns[0]["severity"], "critical");
+    assert_eq!(vulns[0]["fixed_version"], "9.9.9");
+    // Default feature flags → badge present for npm.
+    assert_eq!(
+        v["socket_badge_url"],
+        "https://badge.socket.dev/npm/package/lodash/4.17.21"
+    );
+}
+
+#[actix_web::test]
+async fn package_detail_socket_badge_hidden_when_flag_disabled() {
+    let repo = InMemoryRepo::new();
+    let pkg = PackageId::new("npm", "lodash", "4.17.21");
+    repo.record_access(AccessEvent::allowed_download(
+        pkg,
+        Some("u".to_owned()),
+        Role::User,
+    ))
+    .await
+    .unwrap();
+
+    // Disable the socket badge for npm.
+    let flags = HashMap::from([(
+        "npm".to_owned(),
+        FeatureFlags {
+            socket_badge: false,
+        },
+    )]);
+    let app = make_vuln_app(repo, InMemoryVulnerabilityRepository::arc(), flags).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/packages/detail?registry=npm&name=lodash")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert!(
+        body["versions"][0]["socket_badge_url"].is_null(),
+        "badge must be hidden when feature flag is disabled"
+    );
+}
+
+#[actix_web::test]
+async fn explore_detail_surfaces_vulnerabilities_and_badge() {
+    let repo = InMemoryRepo::new();
+    let pkg = PackageId::new("cargo", "yaml", "0.3.0");
+    repo.record_access(AccessEvent::allowed_download(
+        pkg,
+        Some("u".to_owned()),
+        Role::User,
+    ))
+    .await
+    .unwrap();
+
+    let vuln_repo = Arc::new(InMemoryVulnerabilityRepository::new());
+    vuln_repo
+        .replace_findings_for_artifact(
+            "artifact:cargo/yaml/0.3.0",
+            vec![vuln_finding(
+                "cargo",
+                "yaml",
+                "0.3.0",
+                "RUSTSEC-2021-1",
+                Severity::High,
+            )],
+        )
+        .await
+        .unwrap();
+
+    let app = make_vuln_app(repo, vuln_repo, HashMap::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/packages/cargo/yaml")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let ver = body["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["version"] == "0.3.0")
+        .expect("version present");
+    assert_eq!(ver["vulnerabilities"][0]["osv_id"], "RUSTSEC-2021-1");
+    assert_eq!(ver["vulnerabilities"][0]["severity"], "high");
+    assert_eq!(
+        ver["socket_badge_url"],
+        "https://badge.socket.dev/cargo/package/yaml/0.3.0"
+    );
+}
+
 // ── In-memory BetaChannelPort ─────────────────────────────────────────────────
+
+/// (registry, type, id, granted_by)
+type BetaChannelRow = (String, String, String, Option<String>);
 
 #[derive(Default)]
 struct InMemoryBetaChannelStore {
-    entries: Mutex<Vec<(String, String, String, Option<String>)>>, // (registry, type, id, granted_by)
+    entries: Mutex<Vec<BetaChannelRow>>,
 }
 
 impl InMemoryBetaChannelStore {
@@ -520,16 +789,17 @@ async fn make_app_with_ip_store(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -560,7 +830,8 @@ async fn make_app_with_ip_store(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -574,6 +845,83 @@ async fn make_app_with_ip_store(
         .app_data(actix_web::web::Data::new(local_svc))
         .app_data(actix_web::web::Data::new(RegistryModeMap::default()))
         .app_data(actix_web::web::Data::new(ip_store));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+}
+
+async fn make_app_with_notifications(
+    notification_svc: Option<Arc<NotificationService>>,
+    notification_store: Arc<dyn NotificationPort>,
+    notifications_config: Option<NotificationsConfig>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo = InMemoryRepo::new();
+    let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
+    let policies: HashMap<String, Arc<RegistryPolicy>> = HashMap::new();
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        hot: new_hot_lock(HotConfig {
+            registries,
+            policies,
+            versioning: HashMap::new(),
+            signing: HashMap::new(),
+            sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
+            beta_channel: HashMap::new(),
+            max_artifact_size_bytes: None,
+        }),
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = new_access_lock(batlehub_web::AccessConfig {
+        anonymous: std::collections::HashSet::new(),
+        user: std::collections::HashSet::new(),
+        admin: std::collections::HashSet::new(),
+        groups: std::collections::HashMap::new(),
+        explore_anonymous: std::collections::HashSet::new(),
+        explore_user: std::collections::HashSet::new(),
+        explore_admin: std::collections::HashSet::new(),
+    });
+    let registry_map = batlehub_web::RegistryMap::from(std::collections::HashMap::new());
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+            None, // sbom_svc
+            notification_svc,
+            notification_store,
+            notifications_config,
+        ))
+        .split_for_parts();
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
 
     init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
 }
@@ -594,16 +942,17 @@ async fn make_app_with_beta_store(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -634,7 +983,8 @@ async fn make_app_with_beta_store(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -716,16 +1066,17 @@ async fn make_rate_limited_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -761,7 +1112,8 @@ async fn make_rate_limited_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -1789,16 +2141,17 @@ async fn make_group_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -1850,7 +2203,8 @@ async fn make_group_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -2258,16 +2612,17 @@ async fn make_app_with_tokens(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -2303,7 +2658,8 @@ async fn make_app_with_tokens(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -2647,16 +3003,17 @@ async fn make_app_with_cargo_index(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -2700,7 +3057,8 @@ async fn make_app_with_cargo_index(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -3052,6 +3410,16 @@ async fn package_detail_shows_versions_and_events_after_access() {
     let versions = body["versions"].as_array().unwrap();
     assert!(!versions.is_empty(), "should list the recorded version");
     assert_eq!(versions[0]["version"], "4.17.21");
+    // socket.dev badge is enabled by default for a supported registry type (npm).
+    assert_eq!(
+        versions[0]["socket_badge_url"],
+        "https://badge.socket.dev/npm/package/lodash/4.17.21"
+    );
+    // No vulnerability repo attached in the test harness → empty findings.
+    assert!(versions[0]["vulnerabilities"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     let events = body["recent_events"].as_array().unwrap();
     assert!(!events.is_empty(), "should list the recent events");
     assert_eq!(events[0]["outcome"], "allowed");
@@ -3335,15 +3703,16 @@ async fn make_unavailable_npm_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
+        storage,
         cache: cache_dyn,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
@@ -3379,7 +3748,8 @@ async fn make_unavailable_npm_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -3775,16 +4145,17 @@ async fn audit_quick_forwards_to_upstream_and_returns_response() {
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -3822,7 +4193,8 @@ async fn audit_quick_forwards_to_upstream_and_returns_response() {
             registry_map,
             upstream_map,
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -3995,16 +4367,17 @@ async fn cargo_registry_index_fetches_from_upstream_and_returns_content() {
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -4045,7 +4418,8 @@ async fn cargo_registry_index_fetches_from_upstream_and_returns_content() {
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -4142,16 +4516,17 @@ async fn make_local_registry_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -4203,7 +4578,8 @@ async fn make_local_registry_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -4579,16 +4955,17 @@ async fn make_local_npm_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -4627,7 +5004,8 @@ async fn make_local_npm_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -4846,16 +5224,17 @@ async fn make_local_vsx_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -4894,7 +5273,8 @@ async fn make_local_vsx_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -5060,16 +5440,17 @@ async fn make_local_go_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -5108,7 +5489,8 @@ async fn make_local_go_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -5347,10 +5729,11 @@ async fn healthz_returns_ok_without_db() {
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
+        storage,
         cache: Arc::new(InMemoryCacheStore::new()),
         repo: InMemoryRepo::new(),
         artifact_meta: NoopArtifactMeta::arc(),
@@ -5384,10 +5767,11 @@ async fn healthz_is_unauthenticated() {
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
+        storage,
         cache: Arc::new(InMemoryCacheStore::new()),
         repo: InMemoryRepo::new(),
         artifact_meta: NoopArtifactMeta::arc(),
@@ -5551,16 +5935,17 @@ async fn make_local_maven_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -5598,7 +5983,8 @@ async fn make_local_maven_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -5774,16 +6160,17 @@ async fn make_local_terraform_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -5821,7 +6208,8 @@ async fn make_local_terraform_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -6335,16 +6723,17 @@ async fn make_local_composer_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -6382,7 +6771,8 @@ async fn make_local_composer_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -7048,9 +7438,12 @@ async fn beta_channel_requires_admin() {
 
 // ── In-memory TeamNamespacePort ───────────────────────────────────────────────
 
+/// (registry, prefix, group_id, claimed_by)
+type NamespaceRow = (String, String, String, Option<String>);
+
 #[derive(Default)]
 struct InMemoryTeamNamespaceStore {
-    namespaces: Mutex<Vec<(String, String, String, Option<String>)>>, // (registry, prefix, group_id, claimed_by)
+    namespaces: Mutex<Vec<NamespaceRow>>,
     visibility: Mutex<std::collections::HashMap<(String, String), String>>, // (registry, name) -> visibility
     backend: Option<Arc<dyn LocalRegistryBackend>>,
 }
@@ -7082,7 +7475,7 @@ impl TeamNamespacePort for InMemoryTeamNamespaceStore {
                 r == registry
                     && (package == prefix
                         || (package.len() > prefix.len()
-                            && &package[..prefix.len() + 1] == format!("{prefix}/")))
+                            && package[..prefix.len() + 1] == format!("{prefix}/")))
             })
             .max_by_key(|(_, prefix, _, _)| prefix.len())
             .map(|(reg, prefix, group, claimed_by)| TeamNamespace {
@@ -7264,16 +7657,17 @@ async fn make_app_with_ns_store(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -7304,7 +7698,8 @@ async fn make_app_with_ns_store(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -7361,6 +7756,7 @@ async fn make_ns_cargo_app(
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: std::collections::HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -7373,16 +7769,17 @@ async fn make_ns_cargo_app(
 
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -7420,7 +7817,8 @@ async fn make_ns_cargo_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -7499,6 +7897,7 @@ async fn make_ns_cargo_app_with_backend(
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: std::collections::HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -7511,16 +7910,17 @@ async fn make_ns_cargo_app_with_backend(
 
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -7558,7 +7958,8 @@ async fn make_ns_cargo_app_with_backend(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -8430,6 +8831,7 @@ async fn make_ns_upload_app(
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: std::collections::HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -8442,16 +8844,17 @@ async fn make_ns_upload_app(
 
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -8487,7 +8890,8 @@ async fn make_ns_upload_app(
             registry_map,
             batlehub_web::UpstreamMap::default(),
             vec![],
-            std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -9063,6 +9467,7 @@ async fn make_banner_app() -> impl actix_web::dev::Service<
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -9116,6 +9521,7 @@ async fn make_banner_app() -> impl actix_web::dev::Service<
             batlehub_web::UpstreamMap::default(),
             vec![],
             HashMap::new(),
+            HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -9229,6 +9635,7 @@ async fn reload_config_returns_503_when_disabled() {
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -9279,6 +9686,7 @@ async fn reload_config_returns_503_when_disabled() {
             batlehub_web::UpstreamMap::default(),
             vec![],
             HashMap::new(),
+            HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -9695,6 +10103,40 @@ async fn warm_registry_requires_admin() {
     assert_eq!(call_service(&app, req).await.status(), 403);
 }
 
+// ── Cache eviction ────────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn evict_registry_returns_404_when_not_configured() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/npm/evict")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    // Eviction map is empty in make_app → 404
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn evict_registry_returns_404_for_unknown_registry() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/does-not-exist/evict")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 404);
+}
+
+#[actix_web::test]
+async fn evict_registry_requires_admin() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/npm/evict")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
 // ── Audit log ─────────────────────────────────────────────────────────────────
 
 #[actix_web::test]
@@ -9758,6 +10200,7 @@ async fn make_explore_app(
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -9807,6 +10250,7 @@ async fn make_explore_app(
             batlehub_web::UpstreamMap::default(),
             vec![],
             HashMap::new(),
+            HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -10135,6 +10579,7 @@ async fn make_rubygems_proxy_app() -> impl actix_web::dev::Service<
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -10174,6 +10619,7 @@ async fn make_rubygems_proxy_app() -> impl actix_web::dev::Service<
             batlehub_web::UpstreamMap::default(),
             vec![],
             HashMap::new(),
+            HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,                                       // sbom_svc
@@ -10390,6 +10836,7 @@ async fn make_local_nuget_app(
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -10433,6 +10880,7 @@ async fn make_local_nuget_app(
             batlehub_web::UpstreamMap::default(),
             vec![],
             std::collections::HashMap::new(),
+            std::collections::HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,
@@ -10764,6 +11212,7 @@ async fn cli_download_serves_binary_when_configured() {
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -10798,6 +11247,7 @@ async fn cli_download_serves_binary_when_configured() {
             batlehub_web::UpstreamMap::default(),
             vec![],
             HashMap::new(),
+            HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,
@@ -10832,4 +11282,481 @@ async fn cli_download_serves_binary_when_configured() {
     assert_eq!(ct, "application/octet-stream");
     let body = read_body(resp).await;
     assert_eq!(&body[..], b"fake-cli-bytes");
+}
+
+// ── Inbound webhooks ─────────────────────────────────────────────────────────
+
+fn compute_hmac_sha256_hex(secret: &str, body: &[u8]) -> String {
+    use hmac::{Hmac, KeyInit, Mac};
+    use sha2::Sha256;
+    type HmacSha256 = Hmac<Sha256>;
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("any key length");
+    mac.update(body);
+    hex::encode(mac.finalize().into_bytes())
+}
+
+#[actix_web::test]
+async fn inbound_webhook_no_config_returns_400() {
+    let store: Arc<dyn NotificationPort> = Arc::new(InMemoryNotificationStore::new());
+    let app = make_app_with_notifications(None, store, None).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/webhooks/inbound/ci")
+        .set_json(serde_json::json!({"foo": "bar"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
+async fn inbound_webhook_unknown_name_returns_400() {
+    let notifications_config = NotificationsConfig {
+        enabled: true,
+        channels: vec![],
+        inbound: vec![InboundWebhookConfig {
+            name: "ci".to_owned(),
+            secret: None,
+        }],
+    };
+    let store: Arc<dyn NotificationPort> = Arc::new(InMemoryNotificationStore::new());
+    let app = make_app_with_notifications(None, store, Some(notifications_config)).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/webhooks/inbound/unknown")
+        .set_json(serde_json::json!({"foo": "bar"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
+async fn inbound_webhook_no_secret_accepts_and_records_event() {
+    let notifications_config = NotificationsConfig {
+        enabled: true,
+        channels: vec![],
+        inbound: vec![InboundWebhookConfig {
+            name: "ci".to_owned(),
+            secret: None,
+        }],
+    };
+    let store: Arc<dyn NotificationPort> = Arc::new(InMemoryNotificationStore::new());
+    let app = make_app_with_notifications(None, store, Some(notifications_config)).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/webhooks/inbound/ci")
+        .set_json(serde_json::json!({"foo": "bar"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/notifications/inbound")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let events = body["events"].as_array().expect("events array");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["webhook_name"], "ci");
+    assert_eq!(events[0]["signature_valid"], Value::Null);
+}
+
+#[actix_web::test]
+async fn inbound_webhook_missing_hmac_header_returns_403() {
+    let notifications_config = NotificationsConfig {
+        enabled: true,
+        channels: vec![],
+        inbound: vec![InboundWebhookConfig {
+            name: "ci".to_owned(),
+            secret: Some("s3cret".to_owned()),
+        }],
+    };
+    let store: Arc<dyn NotificationPort> = Arc::new(InMemoryNotificationStore::new());
+    let app = make_app_with_notifications(None, store, Some(notifications_config)).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/webhooks/inbound/ci")
+        .set_json(serde_json::json!({"foo": "bar"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn inbound_webhook_valid_hmac_returns_200() {
+    let secret = "s3cret";
+    let notifications_config = NotificationsConfig {
+        enabled: true,
+        channels: vec![],
+        inbound: vec![InboundWebhookConfig {
+            name: "ci".to_owned(),
+            secret: Some(secret.to_owned()),
+        }],
+    };
+    let store: Arc<dyn NotificationPort> = Arc::new(InMemoryNotificationStore::new());
+    let app = make_app_with_notifications(None, store, Some(notifications_config)).await;
+
+    let body_bytes = serde_json::to_vec(&serde_json::json!({"foo": "bar"})).unwrap();
+    let signature = format!("sha256={}", compute_hmac_sha256_hex(secret, &body_bytes));
+
+    let req = TestRequest::post()
+        .uri("/api/v1/webhooks/inbound/ci")
+        .insert_header(("X-Hub-Signature-256", signature))
+        .insert_header(("content-type", "application/json"))
+        .set_payload(body_bytes)
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn inbound_webhook_invalid_json_returns_400() {
+    let notifications_config = NotificationsConfig {
+        enabled: true,
+        channels: vec![],
+        inbound: vec![InboundWebhookConfig {
+            name: "ci".to_owned(),
+            secret: None,
+        }],
+    };
+    let store: Arc<dyn NotificationPort> = Arc::new(InMemoryNotificationStore::new());
+    let app = make_app_with_notifications(None, store, Some(notifications_config)).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/webhooks/inbound/ci")
+        .insert_header(("content-type", "application/octet-stream"))
+        .set_payload(Bytes::from_static(b"not json"))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
+async fn list_inbound_events_requires_admin() {
+    let notifications_config = NotificationsConfig {
+        enabled: true,
+        channels: vec![],
+        inbound: vec![],
+    };
+    let store: Arc<dyn NotificationPort> = Arc::new(InMemoryNotificationStore::new());
+    let app = make_app_with_notifications(None, store, Some(notifications_config)).await;
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/notifications/inbound")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/notifications/inbound")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+// ── Notification subscriptions admin CRUD ────────────────────────────────────
+
+fn make_notification_service_with_webhook(url: &str) -> Arc<NotificationService> {
+    let config = NotificationsConfig {
+        enabled: true,
+        channels: vec![NotificationChannelConfig::Webhook(WebhookChannelConfig {
+            name: "wh".to_owned(),
+            url: url.to_owned(),
+            secret: None,
+            timeout_secs: 5,
+        })],
+        inbound: vec![],
+    };
+    Arc::new(NotificationService::new(
+        Arc::new(InMemoryNotificationStore::new()),
+        &config,
+    ))
+}
+
+#[actix_web::test]
+async fn notification_admin_endpoints_503_when_not_configured() {
+    let store: Arc<dyn NotificationPort> = Arc::new(InMemoryNotificationStore::new());
+    let app = make_app_with_notifications(None, store, None).await;
+    let id = Uuid::new_v4();
+    let create_body = serde_json::json!({
+        "registry": null,
+        "package_name": null,
+        "event_types": ["package_published"],
+        "channel_name": "wh",
+    });
+    let update_body = serde_json::json!({
+        "registry": null,
+        "package_name": null,
+        "event_types": ["package_published"],
+        "channel_name": "wh",
+        "enabled": true,
+    });
+
+    let cases: Vec<(actix_http::Method, String, Option<Value>)> = vec![
+        (
+            actix_http::Method::GET,
+            "/api/v1/admin/notifications/channels".to_owned(),
+            None,
+        ),
+        (
+            actix_http::Method::GET,
+            "/api/v1/admin/notifications/subscriptions".to_owned(),
+            None,
+        ),
+        (
+            actix_http::Method::POST,
+            "/api/v1/admin/notifications/subscriptions".to_owned(),
+            Some(create_body),
+        ),
+        (
+            actix_http::Method::GET,
+            format!("/api/v1/admin/notifications/subscriptions/{id}"),
+            None,
+        ),
+        (
+            actix_http::Method::PUT,
+            format!("/api/v1/admin/notifications/subscriptions/{id}"),
+            Some(update_body),
+        ),
+        (
+            actix_http::Method::DELETE,
+            format!("/api/v1/admin/notifications/subscriptions/{id}"),
+            None,
+        ),
+        (
+            actix_http::Method::POST,
+            format!("/api/v1/admin/notifications/subscriptions/{id}/test"),
+            None,
+        ),
+    ];
+
+    for (method, uri, body) in cases {
+        let mut req = TestRequest::with_uri(&uri)
+            .method(method.clone())
+            .insert_header(("Authorization", bearer(ADMIN_TOKEN)));
+        if let Some(b) = &body {
+            req = req.set_json(b);
+        }
+        let resp = call_service(&app, req.to_request()).await;
+        assert_eq!(resp.status(), 503, "{method} {uri}");
+    }
+}
+
+#[actix_web::test]
+async fn list_notification_channels_returns_configured_channels() {
+    let svc = make_notification_service_with_webhook("http://example.invalid/hook");
+    let store = Arc::clone(svc.store());
+    let app = make_app_with_notifications(Some(svc), store, None).await;
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/notifications/channels")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let channels = body["channels"].as_array().expect("channels array");
+    assert_eq!(channels.len(), 1);
+    assert_eq!(channels[0]["name"], "wh");
+}
+
+#[actix_web::test]
+async fn create_subscription_validation_errors() {
+    let svc = make_notification_service_with_webhook("http://example.invalid/hook");
+    let store = Arc::clone(svc.store());
+    let app = make_app_with_notifications(Some(svc), store, None).await;
+
+    // Empty event_types -> 400.
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/notifications/subscriptions")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({
+            "registry": null,
+            "package_name": null,
+            "event_types": [],
+            "channel_name": "wh",
+        }))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+
+    // Unknown channel_name -> 400.
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/notifications/subscriptions")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({
+            "registry": null,
+            "package_name": null,
+            "event_types": ["package_published"],
+            "channel_name": "does-not-exist",
+        }))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
+async fn subscription_crud_round_trip() {
+    let svc = make_notification_service_with_webhook("http://example.invalid/hook");
+    let store = Arc::clone(svc.store());
+    let app = make_app_with_notifications(Some(svc), store, None).await;
+
+    // Create.
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/notifications/subscriptions")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({
+            "registry": "npm-proxy",
+            "package_name": null,
+            "event_types": ["package_published"],
+            "channel_name": "wh",
+        }))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 201);
+    let created: Value = read_body_json(resp).await;
+    let id = created["id"].as_str().expect("id").to_owned();
+    let created_at = created["created_at"].clone();
+    assert_eq!(created["created_by"], "admin");
+
+    // List.
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/notifications/subscriptions")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let listed: Value = read_body_json(resp).await;
+    assert_eq!(listed.as_array().expect("array").len(), 1);
+
+    // Get.
+    let req = TestRequest::get()
+        .uri(&format!("/api/v1/admin/notifications/subscriptions/{id}"))
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+
+    // Update — preserves id/created_by/created_at via `..existing`.
+    let req = TestRequest::put()
+        .uri(&format!("/api/v1/admin/notifications/subscriptions/{id}"))
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({
+            "registry": "npm-proxy",
+            "package_name": "left-pad",
+            "event_types": ["package_published", "package_yanked"],
+            "channel_name": "wh",
+            "enabled": false,
+        }))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let updated: Value = read_body_json(resp).await;
+    assert_eq!(updated["id"], id);
+    assert_eq!(updated["created_by"], "admin");
+    assert_eq!(updated["created_at"], created_at);
+    assert_eq!(updated["package_name"], "left-pad");
+    assert_eq!(updated["enabled"], false);
+
+    // Delete.
+    let req = TestRequest::delete()
+        .uri(&format!("/api/v1/admin/notifications/subscriptions/{id}"))
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 204);
+
+    // Get after delete -> 404.
+    let req = TestRequest::get()
+        .uri(&format!("/api/v1/admin/notifications/subscriptions/{id}"))
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn subscription_unknown_id_returns_404() {
+    let svc = make_notification_service_with_webhook("http://example.invalid/hook");
+    let store = Arc::clone(svc.store());
+    let app = make_app_with_notifications(Some(svc), store, None).await;
+    let id = Uuid::new_v4();
+
+    let req = TestRequest::get()
+        .uri(&format!("/api/v1/admin/notifications/subscriptions/{id}"))
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+
+    let req = TestRequest::put()
+        .uri(&format!("/api/v1/admin/notifications/subscriptions/{id}"))
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({
+            "registry": null,
+            "package_name": null,
+            "event_types": ["package_published"],
+            "channel_name": "wh",
+            "enabled": true,
+        }))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+
+    let req = TestRequest::delete()
+        .uri(&format!("/api/v1/admin/notifications/subscriptions/{id}"))
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+
+    let req = TestRequest::post()
+        .uri(&format!(
+            "/api/v1/admin/notifications/subscriptions/{id}/test"
+        ))
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn test_subscription_dispatch_failure_returns_400() {
+    let mut server = mockito::Server::new_async().await;
+    let _mock = server
+        .mock("POST", "/hook")
+        .with_status(500)
+        .create_async()
+        .await;
+    let svc = make_notification_service_with_webhook(&format!("{}/hook", server.url()));
+    let store = Arc::clone(svc.store());
+    let app = make_app_with_notifications(Some(svc), store, None).await;
+
+    // Create a subscription pointing at the failing webhook.
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/notifications/subscriptions")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({
+            "registry": null,
+            "package_name": null,
+            "event_types": ["package_published"],
+            "channel_name": "wh",
+        }))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 201);
+    let created: Value = read_body_json(resp).await;
+    let id = created["id"].as_str().expect("id").to_owned();
+
+    let req = TestRequest::post()
+        .uri(&format!(
+            "/api/v1/admin/notifications/subscriptions/{id}/test"
+        ))
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
 }

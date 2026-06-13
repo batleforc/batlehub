@@ -19,7 +19,11 @@ use batlehub_core::ports::IpBlockStore;
 fn first_xff_ip(req: &ServiceRequest) -> Option<String> {
     let xff = req.headers().get("x-forwarded-for")?.to_str().ok()?;
     let first = xff.split(',').next()?.trim();
-    if first.is_empty() { None } else { Some(first.to_owned()) }
+    if first.is_empty() {
+        None
+    } else {
+        Some(first.to_owned())
+    }
 }
 
 /// Extract the client IP. `X-Forwarded-For` is only trusted when the TCP peer

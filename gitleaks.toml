@@ -1,0 +1,23 @@
+# gitleaks configuration — secret scanning gate (see .github/workflows/secret-scan.yaml).
+#
+# Extends the full built-in ruleset; the allowlist below only exempts known
+# non-secrets (test key fixtures and documentation examples). Keep it tight — do
+# not allowlist whole directories where a real credential could later land.
+
+title = "batlehub gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures and documentation examples — no live secrets"
+paths = [
+    # RSA keys embedded for OIDC / GitHub Actions OIDC token-signing tests.
+    '''crates/adapters/src/auth/oidc\.rs''',
+    '''crates/adapters/src/auth/actions_oidc\.rs''',
+    '''crates/adapters/src/auth/actions_oidc/tests\.rs''',
+    '''crates/adapters/tests/actions_oidc\.rs''',
+    # `curl -H "Authorization: Bearer <token>"` usage examples in the docs.
+    '''website/guide/installation\.md''',
+    '''docs/configuration\.md''',
+]
