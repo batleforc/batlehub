@@ -92,6 +92,38 @@ pub struct RegistryConfig {
     /// Optional SBOM generation configuration. When absent, SBOM is disabled.
     #[serde(default)]
     pub sbom: Option<SbomConfig>,
+    /// Optional per-registry feature flags (opt-in/out toggles for cross-cutting
+    /// UI/integration features). When absent, every flag takes its default.
+    #[serde(default)]
+    pub feature_flags: Option<FeatureFlagsConfig>,
+}
+
+// ── Feature flags ─────────────────────────────────────────────────────────────
+
+/// Per-registry "feature flag" category: a set of named boolean toggles for
+/// optional, cross-cutting features that can be turned on or off for a whole
+/// registry. New opt-in features add a new field here.
+///
+/// ```toml
+/// [registries.feature_flags]
+/// socket_badge = false   # hide the socket.dev badge for this registry
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+pub struct FeatureFlagsConfig {
+    /// Show a [socket.dev](https://socket.dev) supply-chain badge/link for each
+    /// package version in the UI (for registry types socket.dev supports, e.g.
+    /// `cargo`, `npm`, `pypi`). Enabled by default; set to `false` to disable
+    /// the badge for the whole registry.
+    #[serde(default = "default_true")]
+    pub socket_badge: bool,
+}
+
+impl Default for FeatureFlagsConfig {
+    fn default() -> Self {
+        Self {
+            socket_badge: default_true(),
+        }
+    }
 }
 
 // ── Versioning policy ─────────────────────────────────────────────────────────

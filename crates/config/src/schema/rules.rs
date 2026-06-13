@@ -61,6 +61,7 @@ pub enum RuleConfig {
     ReleaseAgeGate(ReleaseAgeGateConfig),
     RequireSignedRelease(RequireSignedReleaseConfig),
     DenyLatest(DenyLatestConfig),
+    CveGate(CveGateConfig),
 }
 
 #[derive(Debug, Deserialize)]
@@ -97,4 +98,33 @@ pub struct DenyLatestConfig {
     /// Roles that may bypass the restriction (e.g. `["admin"]`).
     #[serde(default)]
     pub bypass_roles: Vec<String>,
+}
+
+/// Gate downloads of package versions with known vulnerabilities, as discovered
+/// by the periodic SBOM re-scan (`[vulnerability_scan]`).
+///
+/// ```toml
+/// [[registries.rules]]
+/// kind = "cve_gate"
+/// min_severity = "high"        # unknown | low | medium | high | critical
+/// block = true                 # false (default) = warn-only, surfaced in UI but never blocked
+/// bypass_roles = ["admin"]
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct CveGateConfig {
+    /// Lowest severity that triggers the gate. One of
+    /// `unknown | low | medium | high | critical`. Defaults to `high`.
+    #[serde(default = "default_cve_min_severity")]
+    pub min_severity: String,
+    /// When `true`, deny downloads of affected versions; when `false` (the
+    /// default) the finding is only surfaced in the UI and never blocks.
+    #[serde(default)]
+    pub block: bool,
+    /// Roles that may bypass the gate even when `block` is `true` (e.g. `["admin"]`).
+    #[serde(default)]
+    pub bypass_roles: Vec<String>,
+}
+
+fn default_cve_min_severity() -> String {
+    "high".to_owned()
 }

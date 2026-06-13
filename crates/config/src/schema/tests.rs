@@ -63,3 +63,90 @@ fn cache_policy_default_impl_matches_toml_defaults() {
     assert_eq!(from_default.max_size_bytes, from_toml.max_size_bytes);
     assert_eq!(from_default.keep_latest_n, from_toml.keep_latest_n);
 }
+
+// ── Feature flags ─────────────────────────────────────────────────────────────
+
+#[test]
+fn feature_flags_default_socket_badge_on() {
+    let f: FeatureFlagsConfig = toml::from_str("").unwrap();
+    assert!(f.socket_badge, "socket_badge defaults to true");
+    assert!(FeatureFlagsConfig::default().socket_badge);
+}
+
+#[test]
+fn feature_flags_can_disable_socket_badge() {
+    let f: FeatureFlagsConfig = toml::from_str("socket_badge = false").unwrap();
+    assert!(!f.socket_badge);
+}
+
+#[test]
+fn registry_parses_feature_flags_block() {
+    let raw = r#"
+        type = "cargo"
+        name = "crates"
+        [feature_flags]
+        socket_badge = false
+    "#;
+    let reg: RegistryConfig = toml::from_str(raw).unwrap();
+    assert!(!reg.feature_flags.unwrap().socket_badge);
+}
+
+// ── CVE gate rule ─────────────────────────────────────────────────────────────
+
+#[test]
+fn cve_gate_rule_parses_with_defaults() {
+    let raw = r#"kind = "cve_gate""#;
+    let rule: RuleConfig = toml::from_str(raw).unwrap();
+    match rule {
+        RuleConfig::CveGate(c) => {
+            assert_eq!(c.min_severity, "high");
+            assert!(!c.block);
+            assert!(c.bypass_roles.is_empty());
+        }
+        other => panic!("expected CveGate, got {other:?}"),
+    }
+}
+
+#[test]
+fn cve_gate_rule_parses_full() {
+    let raw = r#"
+        kind = "cve_gate"
+        min_severity = "critical"
+        block = true
+        bypass_roles = ["admin"]
+    "#;
+    let rule: RuleConfig = toml::from_str(raw).unwrap();
+    match rule {
+        RuleConfig::CveGate(c) => {
+            assert_eq!(c.min_severity, "critical");
+            assert!(c.block);
+            assert_eq!(c.bypass_roles, vec!["admin".to_owned()]);
+        }
+        other => panic!("expected CveGate, got {other:?}"),
+    }
+}
+
+// ── Vulnerability scan ────────────────────────────────────────────────────────
+
+#[test]
+fn vulnerability_scan_defaults() {
+    let v: VulnerabilityScanConfig = toml::from_str("enabled = true").unwrap();
+    assert!(v.enabled);
+    assert_eq!(v.interval_secs, 86_400);
+    assert_eq!(v.batch_size, 100);
+    assert!(v.osv_api_url.is_none());
+}
+
+#[test]
+fn vulnerability_scan_full() {
+    let raw = r#"
+        enabled = true
+        interval_secs = 3600
+        osv_api_url = "https://osv.local"
+        batch_size = 25
+    "#;
+    let v: VulnerabilityScanConfig = toml::from_str(raw).unwrap();
+    assert_eq!(v.interval_secs, 3600);
+    assert_eq!(v.osv_api_url.as_deref(), Some("https://osv.local"));
+    assert_eq!(v.batch_size, 25);
+}

@@ -15,6 +15,7 @@ pub(super) fn make_svc(enabled: bool) -> Arc<ConfigReloadService> {
         versioning: HashMap::new(),
         signing: HashMap::new(),
         sbom: HashMap::new(),
+        feature_flags: HashMap::new(),
         beta_channel: HashMap::new(),
         max_artifact_size_bytes: None,
     });
@@ -113,6 +114,7 @@ async fn apply_success_swaps_hot_config() {
         versioning: HashMap::new(),
         signing: HashMap::new(),
         sbom: HashMap::new(),
+        feature_flags: HashMap::new(),
         beta_channel: HashMap::new(),
         max_artifact_size_bytes: Some(42),
     };
@@ -166,6 +168,7 @@ async fn reload_immediate_applies_config() {
         versioning: HashMap::new(),
         signing: HashMap::new(),
         sbom: HashMap::new(),
+        feature_flags: HashMap::new(),
         beta_channel: HashMap::new(),
         max_artifact_size_bytes: None,
     });
@@ -186,6 +189,7 @@ async fn reload_immediate_applies_config() {
                 versioning: HashMap::new(),
                 signing: HashMap::new(),
                 sbom: HashMap::new(),
+                feature_flags: HashMap::new(),
                 beta_channel: HashMap::new(),
                 max_artifact_size_bytes: Some(999),
             },
@@ -253,6 +257,7 @@ fn make_pending(expires_offset_secs: i64, already_expired: bool) -> PendingReloa
         versioning: HashMap::new(),
         signing: HashMap::new(),
         sbom: HashMap::new(),
+        feature_flags: HashMap::new(),
         beta_channel: HashMap::new(),
         max_artifact_size_bytes: None,
     };

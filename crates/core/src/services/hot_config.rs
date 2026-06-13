@@ -52,6 +52,22 @@ pub struct SbomConfig {
     pub registry_type: String,
 }
 
+/// Per-registry feature flags (mirrors config-layer `FeatureFlagsConfig`).
+/// A "feature flag" category of optional, cross-cutting UI/integration toggles.
+#[derive(Debug, Clone)]
+pub struct FeatureFlags {
+    /// Show the socket.dev supply-chain badge for each package version in the UI.
+    pub socket_badge: bool,
+}
+
+impl Default for FeatureFlags {
+    fn default() -> Self {
+        // Flags default to "on" so a registry without a `[registries.feature_flags]`
+        // block still gets the badge; it is disabled explicitly per registry.
+        Self { socket_badge: true }
+    }
+}
+
 /// All registry state that can be hot-reloaded without restarting the process.
 ///
 /// Stored behind `Arc<RwLock<>>` inside `ProxyService` and `LocalRegistryService`.
@@ -68,6 +84,8 @@ pub struct HotConfig {
     pub signing: HashMap<String, SigningConfig>,
     /// Per-registry SBOM generation configs (Clone, cheap).
     pub sbom: HashMap<String, SbomConfig>,
+    /// Per-registry feature flags (Clone, cheap).
+    pub feature_flags: HashMap<String, FeatureFlags>,
     /// Per-registry beta-channel gate ports.
     pub beta_channel: HashMap<String, Arc<dyn BetaChannelPort>>,
     /// Maximum artifact size when buffering from upstream; None = 500 MiB default.
@@ -95,6 +113,7 @@ mod tests {
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }

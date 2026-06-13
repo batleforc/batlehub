@@ -28,7 +28,8 @@ use batlehub_adapters::cache::InMemoryBannerStore;
 use batlehub_adapters::cache::InMemoryCacheStore;
 use batlehub_adapters::in_memory::{
     InMemoryPackageRepository as InMemoryRepo, InMemoryStorageBackend as InMemoryStorage,
-    NoopArtifactMetaRepository as NoopArtifactMeta, NullUserTokenRepository as NullTokenRepository,
+    InMemoryVulnerabilityRepository, NoopArtifactMetaRepository as NoopArtifactMeta,
+    NullUserTokenRepository as NullTokenRepository,
 };
 use batlehub_adapters::local_registry::InMemoryLocalRegistry;
 use batlehub_adapters::notification::InMemoryNotificationStore;
@@ -43,16 +44,19 @@ use batlehub_core::ports::BannerPort;
 use batlehub_core::ports::NotificationPort;
 use batlehub_core::ports::{BetaChannelEntry, BetaChannelPort, IpBlockStore, TeamNamespacePort};
 use batlehub_core::{
-    entities::{AccessEvent, PackageId, PackageMetadata, PackageStatus, Role},
+    entities::{
+        AccessEvent, ArtifactVulnerability, PackageId, PackageMetadata, PackageStatus, Role,
+        Severity,
+    },
     error::CoreError,
     ports::{
         AuthProvider, CacheStore, FetchedArtifact, LocalRegistryBackend, PackageRepository,
-        RegistryClient, StorageBackend, UserToken, UserTokenRepository,
+        RegistryClient, StorageBackend, UserToken, UserTokenRepository, VulnerabilityRepository,
     },
     rules::{BlockListRule, RbacRule},
     services::{
-        new_hot_lock, AdminService, HotConfig, LocalRegistryService, ProxyMetrics, ProxyService,
-        RegistryPolicy,
+        new_hot_lock, AdminService, FeatureFlags, HotConfig, LocalRegistryService, ProxyMetrics,
+        ProxyService, RegistryPolicy,
     },
 };
 use batlehub_web::services::{
@@ -141,6 +145,7 @@ fn make_local_svc(storage: Arc<dyn StorageBackend>) -> Arc<LocalRegistryService>
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -230,16 +235,17 @@ async fn make_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -367,16 +373,17 @@ async fn make_app_ext(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: proxy_metrics.clone(),
@@ -446,11 +453,267 @@ async fn make_app_ext(
     init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
 }
 
+/// Variant of `make_app` that attaches a (pre-seeded) vulnerability repository to
+/// the `AdminService` and a custom per-registry `feature_flags` map, so the
+/// vulnerability findings and socket.dev badge surfacing can be tested over HTTP.
+async fn make_vuln_app(
+    repo: Arc<InMemoryRepo>,
+    vuln_repo: Arc<dyn VulnerabilityRepository>,
+    feature_flags: HashMap<String, FeatureFlags>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [
+        (
+            "npm".to_owned(),
+            FixedRegistry::new("npm") as Arc<dyn RegistryClient>,
+        ),
+        (
+            "cargo".to_owned(),
+            FixedRegistry::new("cargo") as Arc<dyn RegistryClient>,
+        ),
+    ]
+    .into();
+    let policies: HashMap<String, Arc<RegistryPolicy>> = [
+        ("npm".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
+        ("cargo".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
+    ]
+    .into();
+
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        hot: new_hot_lock(HotConfig {
+            registries,
+            policies,
+            versioning: HashMap::new(),
+            signing: HashMap::new(),
+            sbom: HashMap::new(),
+            feature_flags,
+            beta_channel: HashMap::new(),
+            max_artifact_size_bytes: None,
+        }),
+        storage: storage.clone(),
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn).with_vulnerability_repo(vuln_repo));
+
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = new_access_lock(batlehub_web::AccessConfig {
+        anonymous: ["npm", "cargo"].iter().map(|s| s.to_string()).collect(),
+        user: ["npm", "cargo"].iter().map(|s| s.to_string()).collect(),
+        admin: ["npm", "cargo"].iter().map(|s| s.to_string()).collect(),
+        groups: std::collections::HashMap::new(),
+        explore_anonymous: ["npm", "cargo"].iter().map(|s| s.to_string()).collect(),
+        explore_user: ["npm", "cargo"].iter().map(|s| s.to_string()).collect(),
+        explore_admin: ["npm", "cargo"].iter().map(|s| s.to_string()).collect(),
+    });
+    let registry_map = batlehub_web::RegistryMap::from(
+        [("npm", "npm"), ("cargo", "cargo")]
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.to_string()))
+            .collect::<std::collections::HashMap<String, String>>(),
+    );
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+            None,
+            None,
+            Arc::new(InMemoryNotificationStore::new()),
+            None,
+        ))
+        .split_for_parts();
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+}
+
+/// Build a single vulnerability finding for a coordinate (helper for the tests below).
+fn vuln_finding(
+    reg: &str,
+    name: &str,
+    ver: &str,
+    osv_id: &str,
+    sev: Severity,
+) -> ArtifactVulnerability {
+    ArtifactVulnerability {
+        id: uuid::Uuid::new_v4(),
+        artifact_key: format!("artifact:{reg}/{name}/{ver}"),
+        registry: reg.to_owned(),
+        package_name: name.to_owned(),
+        version: ver.to_owned(),
+        osv_id: osv_id.to_owned(),
+        severity: sev,
+        summary: "remote code execution".to_owned(),
+        fixed_version: Some("9.9.9".to_owned()),
+        purl: format!("pkg:{reg}/{name}@{ver}"),
+        detected_at: Utc::now(),
+    }
+}
+
+#[actix_web::test]
+async fn package_detail_surfaces_vulnerability_findings() {
+    let repo = InMemoryRepo::new();
+    let pkg = PackageId::new("npm", "lodash", "4.17.21");
+    repo.record_access(AccessEvent::allowed_download(
+        pkg,
+        Some("u".to_owned()),
+        Role::User,
+    ))
+    .await
+    .unwrap();
+
+    let vuln_repo = Arc::new(InMemoryVulnerabilityRepository::new());
+    vuln_repo
+        .replace_findings_for_artifact(
+            "artifact:npm/lodash/4.17.21",
+            vec![vuln_finding(
+                "npm",
+                "lodash",
+                "4.17.21",
+                "GHSA-xyz",
+                Severity::Critical,
+            )],
+        )
+        .await
+        .unwrap();
+
+    let app = make_vuln_app(repo, vuln_repo, HashMap::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/packages/detail?registry=npm&name=lodash")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let v = &body["versions"][0];
+    let vulns = v["vulnerabilities"].as_array().unwrap();
+    assert_eq!(vulns.len(), 1);
+    assert_eq!(vulns[0]["osv_id"], "GHSA-xyz");
+    assert_eq!(vulns[0]["severity"], "critical");
+    assert_eq!(vulns[0]["fixed_version"], "9.9.9");
+    // Default feature flags → badge present for npm.
+    assert_eq!(
+        v["socket_badge_url"],
+        "https://badge.socket.dev/npm/package/lodash/4.17.21"
+    );
+}
+
+#[actix_web::test]
+async fn package_detail_socket_badge_hidden_when_flag_disabled() {
+    let repo = InMemoryRepo::new();
+    let pkg = PackageId::new("npm", "lodash", "4.17.21");
+    repo.record_access(AccessEvent::allowed_download(
+        pkg,
+        Some("u".to_owned()),
+        Role::User,
+    ))
+    .await
+    .unwrap();
+
+    // Disable the socket badge for npm.
+    let flags = HashMap::from([(
+        "npm".to_owned(),
+        FeatureFlags {
+            socket_badge: false,
+        },
+    )]);
+    let app = make_vuln_app(repo, InMemoryVulnerabilityRepository::arc(), flags).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/packages/detail?registry=npm&name=lodash")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert!(
+        body["versions"][0]["socket_badge_url"].is_null(),
+        "badge must be hidden when feature flag is disabled"
+    );
+}
+
+#[actix_web::test]
+async fn explore_detail_surfaces_vulnerabilities_and_badge() {
+    let repo = InMemoryRepo::new();
+    let pkg = PackageId::new("cargo", "yaml", "0.3.0");
+    repo.record_access(AccessEvent::allowed_download(
+        pkg,
+        Some("u".to_owned()),
+        Role::User,
+    ))
+    .await
+    .unwrap();
+
+    let vuln_repo = Arc::new(InMemoryVulnerabilityRepository::new());
+    vuln_repo
+        .replace_findings_for_artifact(
+            "artifact:cargo/yaml/0.3.0",
+            vec![vuln_finding(
+                "cargo",
+                "yaml",
+                "0.3.0",
+                "RUSTSEC-2021-1",
+                Severity::High,
+            )],
+        )
+        .await
+        .unwrap();
+
+    let app = make_vuln_app(repo, vuln_repo, HashMap::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/packages/cargo/yaml")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    let ver = body["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["version"] == "0.3.0")
+        .expect("version present");
+    assert_eq!(ver["vulnerabilities"][0]["osv_id"], "RUSTSEC-2021-1");
+    assert_eq!(ver["vulnerabilities"][0]["severity"], "high");
+    assert_eq!(
+        ver["socket_badge_url"],
+        "https://badge.socket.dev/cargo/package/yaml/0.3.0"
+    );
+}
+
 // ── In-memory BetaChannelPort ─────────────────────────────────────────────────
+
+/// (registry, type, id, granted_by)
+type BetaChannelRow = (String, String, String, Option<String>);
 
 #[derive(Default)]
 struct InMemoryBetaChannelStore {
-    entries: Mutex<Vec<(String, String, String, Option<String>)>>, // (registry, type, id, granted_by)
+    entries: Mutex<Vec<BetaChannelRow>>,
 }
 
 impl InMemoryBetaChannelStore {
@@ -526,16 +789,17 @@ async fn make_app_with_ip_store(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -603,16 +867,17 @@ async fn make_app_with_notifications(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -677,16 +942,17 @@ async fn make_app_with_beta_store(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -800,16 +1066,17 @@ async fn make_rate_limited_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -1874,16 +2141,17 @@ async fn make_group_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -2344,16 +2612,17 @@ async fn make_app_with_tokens(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -2734,16 +3003,17 @@ async fn make_app_with_cargo_index(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -3140,6 +3410,16 @@ async fn package_detail_shows_versions_and_events_after_access() {
     let versions = body["versions"].as_array().unwrap();
     assert!(!versions.is_empty(), "should list the recorded version");
     assert_eq!(versions[0]["version"], "4.17.21");
+    // socket.dev badge is enabled by default for a supported registry type (npm).
+    assert_eq!(
+        versions[0]["socket_badge_url"],
+        "https://badge.socket.dev/npm/package/lodash/4.17.21"
+    );
+    // No vulnerability repo attached in the test harness → empty findings.
+    assert!(versions[0]["vulnerabilities"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     let events = body["recent_events"].as_array().unwrap();
     assert!(!events.is_empty(), "should list the recent events");
     assert_eq!(events[0]["outcome"], "allowed");
@@ -3423,15 +3703,16 @@ async fn make_unavailable_npm_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
+        storage,
         cache: cache_dyn,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
@@ -3864,16 +4145,17 @@ async fn audit_quick_forwards_to_upstream_and_returns_response() {
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -4085,16 +4367,17 @@ async fn cargo_registry_index_fetches_from_upstream_and_returns_content() {
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -4233,16 +4516,17 @@ async fn make_local_registry_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -4671,16 +4955,17 @@ async fn make_local_npm_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -4939,16 +5224,17 @@ async fn make_local_vsx_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -5154,16 +5440,17 @@ async fn make_local_go_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -5442,10 +5729,11 @@ async fn healthz_returns_ok_without_db() {
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
+        storage,
         cache: Arc::new(InMemoryCacheStore::new()),
         repo: InMemoryRepo::new(),
         artifact_meta: NoopArtifactMeta::arc(),
@@ -5479,10 +5767,11 @@ async fn healthz_is_unauthenticated() {
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
+        storage,
         cache: Arc::new(InMemoryCacheStore::new()),
         repo: InMemoryRepo::new(),
         artifact_meta: NoopArtifactMeta::arc(),
@@ -5646,16 +5935,17 @@ async fn make_local_maven_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -5870,16 +6160,17 @@ async fn make_local_terraform_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -6432,16 +6723,17 @@ async fn make_local_composer_app(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -7146,9 +7438,12 @@ async fn beta_channel_requires_admin() {
 
 // ── In-memory TeamNamespacePort ───────────────────────────────────────────────
 
+/// (registry, prefix, group_id, claimed_by)
+type NamespaceRow = (String, String, String, Option<String>);
+
 #[derive(Default)]
 struct InMemoryTeamNamespaceStore {
-    namespaces: Mutex<Vec<(String, String, String, Option<String>)>>, // (registry, prefix, group_id, claimed_by)
+    namespaces: Mutex<Vec<NamespaceRow>>,
     visibility: Mutex<std::collections::HashMap<(String, String), String>>, // (registry, name) -> visibility
     backend: Option<Arc<dyn LocalRegistryBackend>>,
 }
@@ -7180,7 +7475,7 @@ impl TeamNamespacePort for InMemoryTeamNamespaceStore {
                 r == registry
                     && (package == prefix
                         || (package.len() > prefix.len()
-                            && &package[..prefix.len() + 1] == format!("{prefix}/")))
+                            && package[..prefix.len() + 1] == format!("{prefix}/")))
             })
             .max_by_key(|(_, prefix, _, _)| prefix.len())
             .map(|(reg, prefix, group, claimed_by)| TeamNamespace {
@@ -7362,16 +7657,17 @@ async fn make_app_with_ns_store(
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -7460,6 +7756,7 @@ async fn make_ns_cargo_app(
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: std::collections::HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -7472,16 +7769,17 @@ async fn make_ns_cargo_app(
 
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -7599,6 +7897,7 @@ async fn make_ns_cargo_app_with_backend(
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: std::collections::HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -7611,16 +7910,17 @@ async fn make_ns_cargo_app_with_backend(
 
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -8531,6 +8831,7 @@ async fn make_ns_upload_app(
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: std::collections::HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -8543,16 +8844,17 @@ async fn make_ns_upload_app(
 
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
-            registries: registries,
-            policies: policies,
+            registries,
+            policies,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
-        storage: storage,
-        cache: cache,
+        storage,
+        cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
@@ -9165,6 +9467,7 @@ async fn make_banner_app() -> impl actix_web::dev::Service<
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -9332,6 +9635,7 @@ async fn reload_config_returns_503_when_disabled() {
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -9896,6 +10200,7 @@ async fn make_explore_app(
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -10274,6 +10579,7 @@ async fn make_rubygems_proxy_app() -> impl actix_web::dev::Service<
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -10530,6 +10836,7 @@ async fn make_local_nuget_app(
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),
@@ -10905,6 +11212,7 @@ async fn cli_download_serves_binary_when_configured() {
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }),

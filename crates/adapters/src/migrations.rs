@@ -94,6 +94,11 @@ pub fn embedded_migrator() -> Migrator {
                 "notification subscriptions gin index",
                 "../migrations/024_notification_subs_gin_index.sql"
             ),
+            mig!(
+                25,
+                "artifact vulnerabilities",
+                "../migrations/025_artifact_vulnerabilities.sql"
+            ),
         ]),
         ignore_missing: false,
         locking: true,
@@ -108,8 +113,8 @@ mod tests {
     #[test]
     fn embedded_migrator_has_all_migrations() {
         let m = embedded_migrator();
-        assert_eq!(m.migrations.len(), 24, "all 24 migrations must be embedded");
+        assert_eq!(m.migrations.len(), 25, "all 25 migrations must be embedded");
         assert_eq!(m.migrations[0].version, 1);
-        assert_eq!(m.migrations[23].version, 24);
+        assert_eq!(m.migrations[24].version, 25);
     }
 }

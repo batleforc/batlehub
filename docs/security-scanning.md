@@ -67,6 +67,39 @@ Verify the image SBOM/provenance attestation before trusting it:
 gh attestation verify oci://ghcr.io/<owner>/batlehub:<version> --owner <owner>
 ```
 
+## Scanning *proxied* artifacts at runtime
+
+The layers above scan **batlehub itself**. Separately, batlehub can continuously re-check the
+**packages it proxies/hosts** against newly disclosed CVEs, using the per-artifact SBOMs it already
+stores (see [SBOM support](./sbom.md)).
+
+Enable the background task globally:
+
+```toml
+[vulnerability_scan]
+enabled       = true
+interval_secs = 86400                  # re-scan cadence (default: daily)
+osv_api_url   = "https://api.osv.dev"  # optional; defaults to the public OSV API
+batch_size    = 100
+```
+
+Each run pages through every stored CycloneDX SBOM, queries the [OSV](https://osv.dev) database for
+the components' PURLs, and records findings. Findings appear per-version in the Package Explorer and
+the admin package detail view. Like the daily CI schedules, this turns a one-time cache into *future*
+CVE detection: a vulnerability disclosed against a cached package after it was proxied surfaces on the
+next scan.
+
+To act on findings, add a `cve_gate` rule to a registry. Warn-only (the default) surfaces the finding
+without blocking; `block = true` denies downloads of affected versions at or above `min_severity`:
+
+```toml
+[[registries.rules]]
+kind         = "cve_gate"
+min_severity = "high"        # unknown | low | medium | high | critical
+block        = true
+bypass_roles = ["admin"]
+```
+
 ## Suppressions
 
 The stance is **no suppressions**: `.cargo/audit.toml` and `deny.toml` (`advisories.ignore = []`)

@@ -14,12 +14,14 @@ use metrics_exporter_prometheus::PrometheusBuilder;
 
 use batlehub_adapters::db::{
     PgArtifactMetaRepository, PgBetaChannelStore, PgOwnershipStore, PgPackageRepository,
-    PgTeamNamespaceStore,
+    PgTeamNamespaceStore, PgVulnerabilityRepository,
 };
 use batlehub_adapters::local_registry::PostgresLocalRegistry;
-use batlehub_core::ports::{BetaChannelPort, UserTokenRepository};
+use batlehub_adapters::vulnerability::OsvScanner;
+use batlehub_core::ports::{BetaChannelPort, UserTokenRepository, VulnerabilityRepository};
 use batlehub_core::services::{
     new_hot_lock, AdminService, LocalRegistryService, ProxyMetrics, ProxyService,
+    VulnerabilityScanService,
 };
 use batlehub_web::services::{BannerService, ConfigReloadService};
 use batlehub_web::{new_access_lock, openapi_spec, RateLimitService};
@@ -109,9 +111,12 @@ async fn main() -> Result<()> {
     let registry_names: Vec<String> = config.registries.iter().map(|r| r.name.clone()).collect();
     let proxy_metrics = Arc::new(ProxyMetrics::new(&registry_names));
     let artifact_meta = Arc::new(PgArtifactMetaRepository::new(repo.pool()));
-    let admin_svc = Arc::new(AdminService::new(
-        repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>
-    ));
+    let vuln_repo: Arc<dyn VulnerabilityRepository> =
+        Arc::new(PgVulnerabilityRepository::new(repo.pool()));
+    let admin_svc = Arc::new(
+        AdminService::new(repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>)
+            .with_vulnerability_repo(Arc::clone(&vuln_repo)),
+    );
     let local_registry_backend = Arc::new(PostgresLocalRegistry::new(repo.pool()));
     let quota_svc = Arc::new(builders::build_quota_service(
         repo.pool(),
@@ -129,6 +134,7 @@ async fn main() -> Result<()> {
             &config,
             &beta_channel_store,
             &(repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>),
+            &vuln_repo,
         )?;
     let warming_clients: HashMap<String, Arc<dyn batlehub_core::ports::RegistryClient>> = init_hot
         .registries
@@ -178,6 +184,7 @@ async fn main() -> Result<()> {
     let hot_builder = hot_config::make_hot_builder(
         Arc::clone(&beta_channel_store),
         repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>,
+        Arc::clone(&vuln_repo),
     );
     let reload_svc = Arc::new(ConfigReloadService::new(
         Arc::clone(&hot),
@@ -205,6 +212,26 @@ async fn main() -> Result<()> {
         "listening"
     );
     watcher::spawn_startup_warming(&config, &warming_map);
+
+    // Periodic SBOM re-check against the OSV vulnerability database.
+    if let Some(vuln_cfg) = config.vulnerability_scan.as_ref().filter(|v| v.enabled) {
+        let osv_client = reqwest::Client::builder()
+            .user_agent("batlehub/0.1")
+            .build()
+            .context("building OSV HTTP client")?;
+        let scanner = Arc::new(OsvScanner::new(osv_client, vuln_cfg.osv_api_url.clone()));
+        let scan_svc = Arc::new(VulnerabilityScanService::new(
+            Arc::clone(&sbom_svc.repo),
+            scanner,
+            Arc::clone(&vuln_repo),
+            vuln_cfg.batch_size as u64,
+        ));
+        watcher::spawn_periodic_vuln_scan(vuln_cfg.interval_secs, scan_svc);
+        tracing::info!(
+            interval_secs = vuln_cfg.interval_secs,
+            "vuln-scan: periodic SBOM re-check enabled"
+        );
+    }
 
     server_factory::run_actix_server(server_factory::ServerParams {
         bind_addr: format!("{}:{}", config.server.host, config.server.port),

@@ -47,6 +47,45 @@ pub struct AppConfig {
     /// variables) without changing the config file.
     #[serde(default)]
     pub proxy: Option<UpstreamProxyConfig>,
+    /// Optional periodic re-check of cached SBOMs against the OSV vulnerability
+    /// database. When absent or `enabled = false`, no background scan runs.
+    #[serde(default)]
+    pub vulnerability_scan: Option<VulnerabilityScanConfig>,
+}
+
+// ── Vulnerability scan ──────────────────────────────────────────────────────────
+
+fn default_vuln_interval_secs() -> u64 {
+    86_400
+}
+
+fn default_vuln_batch_size() -> usize {
+    100
+}
+
+/// Periodic SBOM-vs-CVE re-check configuration.
+///
+/// ```toml
+/// [vulnerability_scan]
+/// enabled       = true
+/// interval_secs = 86400          # daily
+/// osv_api_url   = "https://api.osv.dev"
+/// batch_size    = 100
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct VulnerabilityScanConfig {
+    /// Enable the periodic background scan.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Seconds between scan runs. Defaults to one day.
+    #[serde(default = "default_vuln_interval_secs")]
+    pub interval_secs: u64,
+    /// Base URL of the OSV API. Defaults to `https://api.osv.dev` when absent.
+    #[serde(default)]
+    pub osv_api_url: Option<String>,
+    /// Number of SBOMs processed per page. Defaults to 100.
+    #[serde(default = "default_vuln_batch_size")]
+    pub batch_size: usize,
 }
 
 // ── Limits ────────────────────────────────────────────────────────────────────

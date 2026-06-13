@@ -50,6 +50,23 @@ tasks:
       - until podman exec {{.PG_CONTAINER}} pg_isready -U postgres; do sleep 1; done
       - cargo test -p batlehub-adapters --test pg_cache -- --nocapture
 
+  test:pg-vulnerability:
+    desc: Run PgVulnerabilityRepository integration tests (starts a temporary Postgres container via Podman)
+    vars:
+      PG_CONTAINER: batlehub-test-pg
+      PG_PORT: "15432"
+      PG_PASSWORD: testpass
+      CONF_OVERRIDE: /tmp/batlehub-containers.conf
+    env:
+      CONTAINERS_CONF_OVERRIDE: "{{.CONF_OVERRIDE}}"
+      DATABASE_URL: "postgresql://postgres:{{.PG_PASSWORD}}@127.0.0.1:{{.PG_PORT}}/postgres"
+    cmds:
+      - printf '[network]\ndefault_rootless_network_cmd = "pasta"\n' > {{.CONF_OVERRIDE}}
+      - defer: podman rm -f {{.PG_CONTAINER}} 2>/dev/null || true
+      - podman run -d --name {{.PG_CONTAINER}} -p {{.PG_PORT}}:5432 -e POSTGRES_PASSWORD={{.PG_PASSWORD}} postgres:17-alpine
+      - until podman exec {{.PG_CONTAINER}} pg_isready -U postgres; do sleep 1; done
+      - cargo test -p batlehub-adapters --test pg_vulnerability -- --nocapture
+
   test:pg-local-registry:
     desc: Run PostgresLocalRegistry integration tests (starts a temporary Postgres container via Podman)
     vars:
@@ -116,6 +133,7 @@ tasks:
       - cargo llvm-cov clean --workspace
       - cargo llvm-cov --no-report --workspace --ignore-filename-regex "{{.COVERAGE_EXCLUDE}}"
       - cargo llvm-cov --no-report -p batlehub-adapters --test pg_cache
+      - cargo llvm-cov --no-report -p batlehub-adapters --test pg_vulnerability
       - cargo llvm-cov --no-report -p batlehub-adapters --test local_registry
       - cargo llvm-cov --no-report -p batlehub-adapters --test artifact_meta
       - cargo llvm-cov --no-report -p batlehub-adapters --test pg_rate_limit
@@ -158,6 +176,7 @@ tasks:
       - cargo llvm-cov clean --workspace
       - cargo llvm-cov --no-report --workspace --ignore-filename-regex "{{.COVERAGE_EXCLUDE}}"
       - cargo llvm-cov --no-report -p batlehub-adapters --test pg_cache
+      - cargo llvm-cov --no-report -p batlehub-adapters --test pg_vulnerability
       - cargo llvm-cov --no-report -p batlehub-adapters --test local_registry
       - cargo llvm-cov --no-report -p batlehub-adapters --test artifact_meta
       - cargo llvm-cov --no-report -p batlehub-adapters --test pg_rate_limit

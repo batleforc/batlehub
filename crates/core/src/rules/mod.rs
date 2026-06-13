@@ -1,9 +1,11 @@
 pub mod block_list;
+pub mod cve_gate;
 pub mod deny_latest;
 pub mod rbac;
 pub mod release_age;
 
 pub use block_list::BlockListRule;
+pub use cve_gate::CveGateRule;
 pub use deny_latest::DenyLatestRule;
 pub use rbac::RbacRule;
 pub use release_age::ReleaseAgeGateRule;

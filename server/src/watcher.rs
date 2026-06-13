@@ -57,6 +57,35 @@ pub(super) fn spawn_startup_warming(config: &AppConfig, warming_map: &WarmingSer
     }
 }
 
+// ── Periodic vulnerability scan ─────────────────────────────────────────────────
+
+/// Spawn a background task that re-checks all cached SBOMs against the OSV
+/// vulnerability database: once shortly after startup, then every
+/// `interval_secs`. Mirrors `spawn_startup_warming` — a detached `tokio::spawn`
+/// that logs a summary per run.
+pub(super) fn spawn_periodic_vuln_scan(
+    interval_secs: u64,
+    scan_svc: Arc<batlehub_core::services::VulnerabilityScanService>,
+) {
+    let period = Duration::from_secs(interval_secs.max(1));
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(period);
+        loop {
+            ticker.tick().await;
+            tracing::info!("vuln-scan: starting periodic SBOM re-check");
+            match scan_svc.scan_all().await {
+                Ok(report) => tracing::info!(
+                    scanned = report.scanned,
+                    findings = report.findings,
+                    errors = report.errors,
+                    "vuln-scan: periodic re-check complete"
+                ),
+                Err(e) => tracing::warn!(error = %e, "vuln-scan: periodic re-check failed"),
+            }
+        }
+    });
+}
+
 // ── Config file watcher ───────────────────────────────────────────────────────
 
 /// OS-thread body: owns the blocking `notify` watcher and forwards change events

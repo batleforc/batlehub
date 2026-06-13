@@ -13,8 +13,9 @@ use batlehub_config::schema::{
     QuotaEnforcement as ConfigQuotaEnforcement, RegistryConfig, RuleConfig, UpstreamAuthConfig,
 };
 use batlehub_core::{
-    entities::Role,
-    rules::{BlockListRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule},
+    entities::{Role, Severity},
+    ports::VulnerabilityRepository,
+    rules::{BlockListRule, CveGateRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule},
     services::{QuotaEnforcement, QuotaService, RegistryPolicy, RegistryQuotaConfig},
 };
 use batlehub_web::CargoIndexProxy;
@@ -157,6 +158,7 @@ pub(super) fn build_registry_client(
 pub(super) fn build_policy(
     reg: &RegistryConfig,
     repo: Arc<dyn batlehub_core::ports::PackageRepository>,
+    vuln_repo: Arc<dyn VulnerabilityRepository>,
 ) -> RegistryPolicy {
     let mut rules: Vec<Box<dyn batlehub_core::rules::Rule>> = Vec::new();
     let rbac_perms = HashMap::from([
@@ -187,6 +189,16 @@ pub(super) fn build_policy(
             RuleConfig::DenyLatest(cfg) => {
                 let bypass: Vec<Role> = cfg.bypass_roles.iter().map(|r| parse_role(r)).collect();
                 rules.push(Box::new(DenyLatestRule::new(bypass)));
+            }
+            RuleConfig::CveGate(cfg) => {
+                let bypass: Vec<Role> = cfg.bypass_roles.iter().map(|r| parse_role(r)).collect();
+                let min_severity = Severity::parse(&cfg.min_severity).unwrap_or(Severity::High);
+                rules.push(Box::new(CveGateRule::new(
+                    Arc::clone(&vuln_repo),
+                    min_severity,
+                    bypass,
+                    cfg.block,
+                )));
             }
         }
     }
@@ -230,7 +242,9 @@ pub(super) fn build_quota_service(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use batlehub_adapters::in_memory::InMemoryPackageRepository;
+    use batlehub_adapters::in_memory::{
+        InMemoryPackageRepository, InMemoryVulnerabilityRepository,
+    };
     use batlehub_config::schema::UpstreamProxyConfig;
 
     fn make_registry(reg_type: &str, name: &str, extra: &str) -> RegistryConfig {
@@ -424,7 +438,7 @@ mod tests {
         let r = make_registry("npm", "reg", "");
         let repo: Arc<dyn batlehub_core::ports::PackageRepository> =
             InMemoryPackageRepository::new();
-        let policy = build_policy(&r, repo);
+        let policy = build_policy(&r, repo, InMemoryVulnerabilityRepository::arc());
         let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
         assert_eq!(names, vec!["rbac", "block_list"]);
         assert!(!policy.firewall_only);
@@ -462,7 +476,7 @@ mod tests {
         );
         let repo: Arc<dyn batlehub_core::ports::PackageRepository> =
             InMemoryPackageRepository::new();
-        let policy = build_policy(&r, repo);
+        let policy = build_policy(&r, repo, InMemoryVulnerabilityRepository::arc());
         let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
         assert_eq!(
             names,
@@ -472,5 +486,25 @@ mod tests {
         assert!(!policy.serve_stale_metadata);
         assert_eq!(policy.metadata_ttl, Some(Duration::from_secs(60)));
         assert_eq!(policy.artifact_ttl, Some(Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn build_policy_appends_cve_gate_rule() {
+        let r = make_registry(
+            "cargo",
+            "reg",
+            r#"
+            [[registries.rules]]
+            kind = "cve_gate"
+            min_severity = "critical"
+            block = true
+            bypass_roles = ["admin"]
+            "#,
+        );
+        let repo: Arc<dyn batlehub_core::ports::PackageRepository> =
+            InMemoryPackageRepository::new();
+        let policy = build_policy(&r, repo, InMemoryVulnerabilityRepository::arc());
+        let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
+        assert_eq!(names, vec!["rbac", "block_list", "cve_gate"]);
     }
 }

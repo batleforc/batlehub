@@ -8,12 +8,41 @@ use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use batlehub_core::{
-    entities::{AccessAction, AccessResult, EventFilter, PackageFilter, PackageStatus},
+    entities::{
+        AccessAction, AccessResult, ArtifactVulnerability, EventFilter, PackageFilter,
+        PackageStatus,
+    },
     services::{AdminService, ProxyService},
 };
 
 use super::require_admin;
-use crate::{error::AppError, extractors::AuthIdentity};
+use crate::{badges::socket_badge_url, error::AppError, extractors::AuthIdentity, RegistryMap};
+
+// ── Vulnerability finding ─────────────────────────────────────────────────────
+
+/// A known vulnerability affecting a package version, surfaced from the periodic
+/// SBOM re-scan. Shared by the admin and explore package-detail views.
+#[derive(Serialize, ToSchema, Clone)]
+pub struct VulnerabilityDto {
+    pub osv_id: String,
+    /// `unknown` | `low` | `medium` | `high` | `critical`
+    pub severity: String,
+    pub summary: String,
+    pub fixed_version: Option<String>,
+    pub purl: String,
+}
+
+impl From<ArtifactVulnerability> for VulnerabilityDto {
+    fn from(v: ArtifactVulnerability) -> Self {
+        Self {
+            osv_id: v.osv_id,
+            severity: v.severity.as_str().to_owned(),
+            summary: v.summary,
+            fixed_version: v.fixed_version,
+            purl: v.purl,
+        }
+    }
+}
 
 // ── Package detail ────────────────────────────────────────────────────────────
 
@@ -38,6 +67,11 @@ pub struct PackageVersionDetail {
     pub access_count: u64,
     pub last_accessed: Option<DateTime<Utc>>,
     pub last_accessed_by: Option<String>,
+    /// Known vulnerabilities for this version (from the periodic SBOM re-scan).
+    pub vulnerabilities: Vec<VulnerabilityDto>,
+    /// socket.dev badge URL when the `socket_badge` feature flag is enabled for
+    /// this registry and the registry type is covered by socket.dev; else null.
+    pub socket_badge_url: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -90,9 +124,20 @@ pub async fn package_detail(
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
     proxy_svc: web::Data<Arc<ProxyService>>,
+    registry_map: web::Data<RegistryMap>,
     pool: Option<web::Data<PgPool>>,
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
+
+    // socket.dev badge: enabled per registry via feature flag, mapped by type.
+    let socket_badge_enabled = proxy_svc
+        .hot
+        .read()
+        .await
+        .feature_flags
+        .get(&query.registry)
+        .is_none_or(|f| f.socket_badge);
+    let registry_type = registry_map.type_of(&query.registry);
 
     let filter = PackageFilter {
         registry: Some(query.registry.clone()),
@@ -145,6 +190,20 @@ pub async fn package_detail(
                 blocked_at,
             },
         };
+        let vulnerabilities = admin_svc
+            .list_vulnerabilities(&query.registry, &query.name, &s.package_id.version)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(VulnerabilityDto::from)
+            .collect();
+        let socket_badge_url = if socket_badge_enabled {
+            registry_type
+                .as_deref()
+                .and_then(|t| socket_badge_url(t, &query.name, &s.package_id.version))
+        } else {
+            None
+        };
         versions.push(PackageVersionDetail {
             id: s.id,
             version: s.package_id.version,
@@ -157,6 +216,8 @@ pub async fn package_detail(
             access_count: s.access_count,
             last_accessed: s.last_accessed,
             last_accessed_by: s.last_accessed_by,
+            vulnerabilities,
+            socket_badge_url,
         });
     }
 

@@ -2,6 +2,9 @@ use super::{
     format_dt, get, web, AdminService, AppError, Arc, AuthIdentity, Deserialize, IntoParams,
     LocalRegistryService, PackageFilter, PackageStatus, Responder, Serialize, ToSchema,
 };
+use crate::badges::socket_badge_url;
+use crate::handlers::back_office::packages::detail::VulnerabilityDto;
+use crate::RegistryMap;
 
 // ── Package detail ─────────────────────────────────────────────────────────────
 
@@ -39,6 +42,10 @@ pub struct ExploreVersionDto {
     pub last_accessed: Option<String>,
     pub published_at: Option<String>,
     pub is_prerelease: bool,
+    /// Known vulnerabilities for this version (from the periodic SBOM re-scan).
+    pub vulnerabilities: Vec<VulnerabilityDto>,
+    /// socket.dev badge URL when enabled for this registry; else null.
+    pub socket_badge_url: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -70,10 +77,29 @@ pub async fn explore_package_detail(
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
+    registry_map: web::Data<RegistryMap>,
     access: web::Data<crate::AccessConfigLock>,
 ) -> Result<impl Responder, AppError> {
     let registry = &path.registry;
     let name = &path.name;
+
+    // socket.dev badge: enabled per registry via feature flag, mapped by type.
+    let socket_badge_enabled = local_svc
+        .hot
+        .read()
+        .await
+        .feature_flags
+        .get(registry)
+        .is_none_or(|f| f.socket_badge);
+    let registry_type = registry_map.type_of(registry);
+    let badge_for = |version: &str| -> Option<String> {
+        if !socket_badge_enabled {
+            return None;
+        }
+        registry_type
+            .as_deref()
+            .and_then(|t| socket_badge_url(t, name, version))
+    };
 
     // Gate: registry-level proxy access
     let registry_accessible = access
@@ -146,6 +172,14 @@ pub async fn explore_package_detail(
             },
         };
         let is_prerelease = summary.package_id.version.contains('-');
+        let vulnerabilities = admin_svc
+            .list_vulnerabilities(registry, name, &summary.package_id.version)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(VulnerabilityDto::from)
+            .collect();
+        let socket_badge_url = badge_for(&summary.package_id.version);
         versions.push(ExploreVersionDto {
             version: summary.package_id.version,
             source: "proxied".to_string(),
@@ -154,6 +188,8 @@ pub async fn explore_package_detail(
             last_accessed: summary.last_accessed.map(format_dt),
             published_at: None,
             is_prerelease,
+            vulnerabilities,
+            socket_badge_url,
         });
     }
 
@@ -164,6 +200,14 @@ pub async fn explore_package_detail(
             FirewallDto::Clear
         };
         let is_prerelease = pkg.version.contains('-');
+        let vulnerabilities = admin_svc
+            .list_vulnerabilities(registry, name, &pkg.version)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(VulnerabilityDto::from)
+            .collect();
+        let socket_badge_url = badge_for(&pkg.version);
         versions.push(ExploreVersionDto {
             version: pkg.version,
             source: "local".to_string(),
@@ -172,6 +216,8 @@ pub async fn explore_package_detail(
             last_accessed: None,
             published_at: Some(pkg.published_at.to_rfc3339()),
             is_prerelease,
+            vulnerabilities,
+            socket_badge_url,
         });
     }
 

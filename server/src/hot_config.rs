@@ -4,9 +4,9 @@ use std::sync::Arc;
 use anyhow::Context;
 
 use batlehub_config::schema::{AppConfig, RegistryConfig, RegistryMode};
-use batlehub_core::ports::{BetaChannelPort, PackageRepository};
+use batlehub_core::ports::{BetaChannelPort, PackageRepository, VulnerabilityRepository};
 use batlehub_core::services::{
-    HotConfig, HotSbomConfig, SigningConfig as CoreSigningConfig, VersioningPolicy,
+    FeatureFlags, HotConfig, HotSbomConfig, SigningConfig as CoreSigningConfig, VersioningPolicy,
 };
 use batlehub_web::{
     AccessConfig, CargoIndexMap, CargoIndexProxy, RegistryMap, RegistryModeMap, UpstreamMap,
@@ -80,6 +80,23 @@ fn build_sbom_map(registries: &[RegistryConfig]) -> HashMap<String, HotSbomConfi
         .collect()
 }
 
+fn build_feature_flags_map(registries: &[RegistryConfig]) -> HashMap<String, FeatureFlags> {
+    // Populate every registry: flags default to "on", so a registry without a
+    // `[registries.feature_flags]` block still gets the default (badge shown).
+    registries
+        .iter()
+        .map(|reg| {
+            let flags = reg
+                .feature_flags
+                .as_ref()
+                .map_or_else(FeatureFlags::default, |f| FeatureFlags {
+                    socket_badge: f.socket_badge,
+                });
+            (reg.name.clone(), flags)
+        })
+        .collect()
+}
+
 fn build_beta_channel_map(
     store: Arc<dyn BetaChannelPort>,
     registries: &[RegistryConfig],
@@ -112,6 +129,7 @@ pub(super) fn build_hot_bundle(
     cfg: &AppConfig,
     beta_channel_store: &Arc<dyn BetaChannelPort>,
     repo: &Arc<dyn PackageRepository>,
+    vuln_repo: &Arc<dyn VulnerabilityRepository>,
 ) -> anyhow::Result<(
     HotConfig,
     AccessConfig,
@@ -133,7 +151,11 @@ pub(super) fn build_hot_bundle(
         reg_clients.insert(reg.name.clone(), client);
         reg_policies.insert(
             reg.name.clone(),
-            Arc::new(crate::builders::build_policy(reg, Arc::clone(repo))),
+            Arc::new(crate::builders::build_policy(
+                reg,
+                Arc::clone(repo),
+                Arc::clone(vuln_repo),
+            )),
         );
         reg_type_map.insert(reg.name.clone(), reg.registry_type.clone());
         reg_mode_map.insert(reg.name.clone(), reg.mode.clone());
@@ -148,6 +170,7 @@ pub(super) fn build_hot_bundle(
         versioning: build_versioning_map(&cfg.registries),
         signing: build_signing_map(&cfg.registries),
         sbom: build_sbom_map(&cfg.registries),
+        feature_flags: build_feature_flags_map(&cfg.registries),
         beta_channel: build_beta_channel_map(Arc::clone(beta_channel_store), &cfg.registries),
         max_artifact_size_bytes: cfg.limits.max_artifact_size_bytes,
     };
@@ -224,9 +247,11 @@ pub(super) fn build_access_config(config: &AppConfig) -> AccessConfig {
 pub(super) fn make_hot_builder(
     beta_channel_store: Arc<dyn BetaChannelPort>,
     repo: Arc<dyn PackageRepository>,
+    vuln_repo: Arc<dyn VulnerabilityRepository>,
 ) -> batlehub_web::services::HotConfigBuilder {
     Arc::new(move |cfg: &AppConfig| {
-        let (hot, access, rm, rmm, um) = build_hot_bundle(cfg, &beta_channel_store, &repo)?;
+        let (hot, access, rm, rmm, um) =
+            build_hot_bundle(cfg, &beta_channel_store, &repo, &vuln_repo)?;
         let mut cargo_map: HashMap<String, CargoIndexProxy> = HashMap::new();
         for reg in &cfg.registries {
             if reg.registry_type == "cargo" && !matches!(reg.mode, RegistryMode::Local) {
@@ -374,6 +399,21 @@ mod tests {
     fn build_sbom_map_absent_for_unconfigured_registry() {
         let r = make_registry("npm", "test-reg", "");
         assert!(build_sbom_map(&[r]).is_empty());
+    }
+
+    #[test]
+    fn build_feature_flags_map_defaults_on_and_respects_override() {
+        let default_reg = make_registry("npm", "default-reg", "");
+        let disabled_reg = make_registry(
+            "cargo",
+            "disabled-reg",
+            "[registries.feature_flags]\nsocket_badge = false",
+        );
+        let map = build_feature_flags_map(&[default_reg, disabled_reg]);
+        // Every registry gets an entry (default-on when the block is absent).
+        assert_eq!(map.len(), 2);
+        assert!(map["default-reg"].socket_badge);
+        assert!(!map["disabled-reg"].socket_badge);
     }
 
     #[test]
