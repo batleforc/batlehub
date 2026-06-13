@@ -221,6 +221,62 @@ fn rbac_policy(repo: Arc<dyn PackageRepository>) -> RegistryPolicy {
     }
 }
 
+/// The trailing `configure_app` parameters that almost every test app factory
+/// passes unchanged. Construct with `..Default::default()` and override only
+/// the fields a given factory needs to customize.
+struct ConfigureAppDefaults {
+    upstream_map: batlehub_web::UpstreamMap,
+    proxy_metrics: Arc<ProxyMetrics>,
+    sbom_svc: Option<Arc<SbomService>>,
+    notification_svc: Option<Arc<NotificationService>>,
+    notification_store: Arc<dyn NotificationPort + 'static>,
+    notifications_config: Option<NotificationsConfig>,
+}
+
+impl Default for ConfigureAppDefaults {
+    fn default() -> Self {
+        Self {
+            upstream_map: batlehub_web::UpstreamMap::default(),
+            proxy_metrics: Arc::new(ProxyMetrics::new(&[])),
+            sbom_svc: None,
+            notification_svc: None,
+            notification_store: Arc::new(InMemoryNotificationStore::new()),
+            notifications_config: None,
+        }
+    }
+}
+
+/// Thin wrapper around `configure_app` that supplies the parameters which are
+/// constant across (almost) every test app factory: no DB pool, no OIDC SSO
+/// flows, empty warming/eviction maps, and no Prometheus handle.
+fn configure_test_app(
+    proxy_svc: Arc<ProxyService>,
+    admin_svc: Arc<AdminService>,
+    token_repo: Arc<dyn UserTokenRepository>,
+    access_config: batlehub_web::AccessConfigLock,
+    registry_map: batlehub_web::RegistryMap,
+    defaults: ConfigureAppDefaults,
+) -> impl Fn(&mut utoipa_actix_web::service_config::ServiceConfig) + Clone + 'static {
+    configure_app(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        None,
+        access_config,
+        registry_map,
+        defaults.upstream_map,
+        vec![],
+        std::collections::HashMap::new(), // warming_map
+        std::collections::HashMap::new(), // eviction_map
+        defaults.proxy_metrics,
+        None,
+        defaults.sbom_svc,
+        defaults.notification_svc,
+        defaults.notification_store,
+        defaults.notifications_config,
+    )
+}
+
 /// Build a fully-wired test app. The caller keeps a reference to `repo`
 /// to pre-seed or inspect state during the test.
 async fn make_app(
@@ -317,23 +373,16 @@ async fn make_app_ext(
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(
+        .configure(configure_test_app(
             proxy_svc,
             admin_svc,
             token_repo,
-            None,
             access_config,
             registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            proxy_metrics,
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
+            ConfigureAppDefaults {
+                proxy_metrics,
+                ..Default::default()
+            },
         ))
         .split_for_parts();
     let app = app
@@ -400,23 +449,13 @@ async fn make_vuln_app(
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(
+        .configure(configure_test_app(
             proxy_svc,
             admin_svc,
             token_repo,
-            None,
             access_config,
             registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(),
-            std::collections::HashMap::new(),
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,
-            None,
-            Arc::new(InMemoryNotificationStore::new()),
-            None,
+            ConfigureAppDefaults::default(),
         ))
         .split_for_parts();
     let app = app
@@ -732,23 +771,16 @@ async fn build_local_registry_app(
 
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(
+        .configure(configure_test_app(
             proxy_svc,
             admin_svc,
             token_repo,
-            None,
             access_config,
             registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            sbom_svc,                                   // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
+            ConfigureAppDefaults {
+                sbom_svc,
+                ..Default::default()
+            },
         ))
         .split_for_parts();
     let app = app
@@ -815,23 +847,13 @@ async fn make_app_with_ip_store(
 
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(
+        .configure(configure_test_app(
             proxy_svc,
             admin_svc,
             token_repo,
-            None,
             access_config,
             registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
+            ConfigureAppDefaults::default(),
         ))
         .split_for_parts();
     let app = app
@@ -864,23 +886,18 @@ async fn make_app_with_notifications(
 
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(
+        .configure(configure_test_app(
             proxy_svc,
             admin_svc,
             token_repo,
-            None,
             access_config,
             registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None, // sbom_svc
-            notification_svc,
-            notification_store,
-            notifications_config,
+            ConfigureAppDefaults {
+                notification_svc,
+                notification_store,
+                notifications_config,
+                ..Default::default()
+            },
         ))
         .split_for_parts();
     let app = app
@@ -910,23 +927,13 @@ async fn make_app_with_beta_store(
 
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(
+        .configure(configure_test_app(
             proxy_svc,
             admin_svc,
             token_repo,
-            None,
             access_config,
             registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
+            ConfigureAppDefaults::default(),
         ))
         .split_for_parts();
     let app = app
@@ -1021,23 +1028,13 @@ async fn make_rate_limited_app(
 
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(
+        .configure(configure_test_app(
             proxy_svc,
             admin_svc,
             token_repo,
-            None,
             access_config,
             registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
+            ConfigureAppDefaults::default(),
         ))
         .split_for_parts();
     let app = app
@@ -2102,23 +2099,13 @@ async fn make_group_app(
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(
+        .configure(configure_test_app(
             proxy_svc,
             admin_svc,
             token_repo,
-            None,
             access_config,
             registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
+            ConfigureAppDefaults::default(),
         ))
         .split_for_parts();
     let app = app
@@ -2539,23 +2526,13 @@ async fn make_app_with_tokens(
 
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(
+        .configure(configure_test_app(
             proxy_svc,
             admin_svc,
             tok_repo,
-            None,
             access_config,
             registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
+            ConfigureAppDefaults::default(),
         ))
         .split_for_parts();
     let app = app
@@ -2920,23 +2897,13 @@ async fn make_app_with_cargo_index(
 
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(
+        .configure(configure_test_app(
             proxy_svc,
             admin_svc,
             token_repo,
-            None,
             access_config,
             registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
+            ConfigureAppDefaults::default(),
         ))
         .split_for_parts();
     let app = app
@@ -3593,23 +3560,13 @@ async fn make_unavailable_npm_app(
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(
+        .configure(configure_test_app(
             proxy_svc,
             admin_svc,
             token_repo,
-            None,
             access_config,
             registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
+            ConfigureAppDefaults::default(),
         ))
         .split_for_parts();
     let app = app
@@ -4020,23 +3977,16 @@ async fn audit_quick_forwards_to_upstream_and_returns_response() {
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(
+        .configure(configure_test_app(
             proxy_svc,
             admin_svc,
             token_repo,
-            None,
             access_config,
             registry_map,
-            upstream_map,
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
+            ConfigureAppDefaults {
+                upstream_map,
+                ..Default::default()
+            },
         ))
         .split_for_parts();
     let app = app
@@ -4227,23 +4177,13 @@ async fn cargo_registry_index_fetches_from_upstream_and_returns_content() {
     )]));
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(
+        .configure(configure_test_app(
             proxy_svc,
             admin_svc,
             token_repo,
-            None,
             access_config,
             registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
+            ConfigureAppDefaults::default(),
         ))
         .split_for_parts();
     let app = app
@@ -7156,23 +7096,13 @@ async fn make_app_with_ns_store(
 
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(
+        .configure(configure_test_app(
             proxy_svc,
             admin_svc,
             token_repo,
-            None,
             access_config,
             registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
+            ConfigureAppDefaults::default(),
         ))
         .split_for_parts();
 
@@ -7286,23 +7216,13 @@ async fn make_ns_cargo_app_with_backend(
 
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(
+        .configure(configure_test_app(
             proxy_svc,
             admin_svc,
             token_repo,
-            None,
             access_config,
             registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
+            ConfigureAppDefaults::default(),
         ))
         .split_for_parts();
 
@@ -8195,23 +8115,13 @@ async fn make_ns_upload_app(
 
     let (app, _) = App::new()
         .into_utoipa_app()
-        .configure(configure_app(
+        .configure(configure_test_app(
             proxy_svc,
             admin_svc,
             token_repo,
-            None,
             access_config,
             registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
+            ConfigureAppDefaults::default(),
         ))
         .split_for_parts();
 
@@ -8812,23 +8722,13 @@ async fn make_banner_app() -> impl actix_web::dev::Service<
 
     let (app, _) = actix_web::App::new()
         .into_utoipa_app()
-        .configure(configure_app(
+        .configure(configure_test_app(
             proxy_svc,
             admin_svc,
             token_repo,
-            None,
             access_config,
             batlehub_web::RegistryMap::new(HashMap::new()),
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            HashMap::new(),
-            HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
+            ConfigureAppDefaults::default(),
         ))
         .split_for_parts();
     let app = app
@@ -8964,23 +8864,13 @@ async fn reload_config_returns_503_when_disabled() {
 
     let (app, _) = actix_web::App::new()
         .into_utoipa_app()
-        .configure(configure_app(
+        .configure(configure_test_app(
             proxy_svc,
             admin_svc,
             token_repo,
-            None,
             access_config,
             batlehub_web::RegistryMap::new(HashMap::new()),
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            HashMap::new(),
-            HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
+            ConfigureAppDefaults::default(),
         ))
         .split_for_parts();
     let app = app
@@ -9518,23 +9408,13 @@ async fn make_explore_app(
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let (app, _) = actix_web::App::new()
         .into_utoipa_app()
-        .configure(configure_app(
+        .configure(configure_test_app(
             proxy_svc,
             admin_svc,
             token_repo,
-            None,
             access_config,
             registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            HashMap::new(),
-            HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
+            ConfigureAppDefaults::default(),
         ))
         .split_for_parts();
     let app = app
@@ -9871,23 +9751,13 @@ async fn make_rubygems_proxy_app() -> impl actix_web::dev::Service<
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let (app, _) = actix_web::App::new()
         .into_utoipa_app()
-        .configure(configure_app(
+        .configure(configure_test_app(
             proxy_svc,
             admin_svc,
             token_repo,
-            None,
             access_config,
             registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            HashMap::new(),
-            HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
+            ConfigureAppDefaults::default(),
         ))
         .split_for_parts();
     let app = app
@@ -10447,23 +10317,13 @@ async fn cli_download_serves_binary_when_configured() {
 
     let (raw, _) = actix_web::App::new()
         .into_utoipa_app()
-        .configure(configure_app(
+        .configure(configure_test_app(
             proxy_svc,
             admin_svc,
             token_repo,
-            None,
             access_config,
             registry_map_for(&[]),
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            HashMap::new(),
-            HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,
-            None,
-            Arc::new(batlehub_adapters::notification::InMemoryNotificationStore::new()),
-            None,
+            ConfigureAppDefaults::default(),
         ))
         .split_for_parts();
 
