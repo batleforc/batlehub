@@ -87,6 +87,31 @@ impl SbomRepository for PgSbomRepository {
         Ok(row.as_ref().map(row_to_sbom))
     }
 
+    async fn get_sbom_by_coordinates(
+        &self,
+        registry: &str,
+        package_name: &str,
+        version: &str,
+        format: &SbomFormat,
+    ) -> Result<Option<ArtifactSbom>, CoreError> {
+        let row = sqlx::query(
+            "SELECT id, artifact_key, registry, package_name, version, \
+             format, spec_version, document, source, created_at \
+             FROM artifact_sboms \
+             WHERE registry = $1 AND package_name = $2 AND version = $3 AND format = $4 \
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(registry)
+        .bind(package_name)
+        .bind(version)
+        .bind(format.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .db_err()?;
+
+        Ok(row.as_ref().map(row_to_sbom))
+    }
+
     async fn list_sboms_for_export(
         &self,
         registry: Option<&str>,

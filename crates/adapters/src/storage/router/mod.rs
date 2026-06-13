@@ -96,6 +96,40 @@ impl StorageBackend for StorageRouter {
             // Identical bytes re-stored under the same key — nothing to do in the DB.
             tx.rollback().await.ok();
         } else {
+            // Increment (or insert) ref count for the new hash.
+            let count: i32 = sqlx::query_scalar(
+                r#"
+                INSERT INTO artifact_dedup_index (content_hash, content_key, ref_count, size_bytes)
+                VALUES ($1, $2, 1, $3)
+                ON CONFLICT (content_hash) DO UPDATE
+                    SET ref_count = artifact_dedup_index.ref_count + 1
+                RETURNING ref_count
+                "#,
+            )
+            .bind(&content_hash)
+            .bind(&content_key)
+            .bind(size.map(|s| s as i64))
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| CoreError::Storage(format!("dedup index upsert failed: {e}")))?;
+
+            // Map logical key → content hash (propagate errors instead of silently dropping).
+            // This must happen before the old hash's row is touched below, so that the
+            // foreign key from artifact_dedup_refs no longer points at the old hash when
+            // we try to delete it.
+            sqlx::query(
+                r#"
+                INSERT INTO artifact_dedup_refs (logical_key, content_hash)
+                VALUES ($1, $2)
+                ON CONFLICT (logical_key) DO UPDATE SET content_hash = EXCLUDED.content_hash
+                "#,
+            )
+            .bind(key)
+            .bind(&content_hash)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| CoreError::Storage(format!("dedup refs insert failed: {e}")))?;
+
             // Decrement ref count for the previous hash if the key is being replaced.
             if let Some(old_hash) = &existing_hash {
                 let old_count: i32 = sqlx::query_scalar(
@@ -115,37 +149,6 @@ impl StorageBackend for StorageRouter {
                         .map_err(|e| CoreError::Storage(e.to_string()))?;
                 }
             }
-
-            // Increment (or insert) ref count for the new hash.
-            let count: i32 = sqlx::query_scalar(
-                r#"
-                INSERT INTO artifact_dedup_index (content_hash, content_key, ref_count, size_bytes)
-                VALUES ($1, $2, 1, $3)
-                ON CONFLICT (content_hash) DO UPDATE
-                    SET ref_count = artifact_dedup_index.ref_count + 1
-                RETURNING ref_count
-                "#,
-            )
-            .bind(&content_hash)
-            .bind(&content_key)
-            .bind(size.map(|s| s as i64))
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| CoreError::Storage(format!("dedup index upsert failed: {e}")))?;
-
-            // Map logical key → content hash (propagate errors instead of silently dropping).
-            sqlx::query(
-                r#"
-                INSERT INTO artifact_dedup_refs (logical_key, content_hash)
-                VALUES ($1, $2)
-                ON CONFLICT (logical_key) DO UPDATE SET content_hash = EXCLUDED.content_hash
-                "#,
-            )
-            .bind(key)
-            .bind(&content_hash)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| CoreError::Storage(format!("dedup refs insert failed: {e}")))?;
 
             // Write the physical blob while the transaction is still open.  Doing
             // this before commit ensures a backend failure causes a full rollback

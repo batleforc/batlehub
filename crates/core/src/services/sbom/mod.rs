@@ -193,6 +193,21 @@ impl SbomService {
         self.repo.get_sbom(artifact_key, format).await
     }
 
+    /// Fetch the SBOM for a registry/package/version regardless of the
+    /// per-registry artifact suffix (`/tarball`, `/dl`, …) baked into the
+    /// stored `artifact_key`.
+    pub async fn get_artifact_sbom_by_coordinates(
+        &self,
+        registry: &str,
+        package_name: &str,
+        version: &str,
+        format: &SbomFormat,
+    ) -> Result<Option<ArtifactSbom>, CoreError> {
+        self.repo
+            .get_sbom_by_coordinates(registry, package_name, version, format)
+            .await
+    }
+
     /// Merge all SBOMs in the given time range into a single org-level document.
     pub async fn export_org_sbom(
         &self,
@@ -256,6 +271,27 @@ mod tests {
                 .unwrap()
                 .iter()
                 .find(|s| s.artifact_key == artifact_key && &s.format == format)
+                .cloned())
+        }
+
+        async fn get_sbom_by_coordinates(
+            &self,
+            registry: &str,
+            package_name: &str,
+            version: &str,
+            format: &SbomFormat,
+        ) -> Result<Option<ArtifactSbom>, CoreError> {
+            Ok(self
+                .items
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|s| {
+                    s.registry == registry
+                        && s.package_name == package_name
+                        && s.version == version
+                        && &s.format == format
+                })
                 .cloned())
         }
 

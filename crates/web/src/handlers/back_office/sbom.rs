@@ -61,23 +61,12 @@ pub async fn get_artifact_sbom(
     let format = SbomFormat::parse(&query.format)
         .ok_or_else(|| AppError::bad_request(format!("unknown SBOM format '{}'", query.format)))?;
 
-    // Try proxy artifact key first, then local registry key.
-    let proxy_key = format!("artifact:{registry}/{name}/{version}");
-    let local_key = format!("local:{registry}/{name}/{version}");
-
+    // Proxy artifact keys carry a registry-specific suffix (`/tarball`, `/dl`, …)
+    // that we can't predict here, so look up by coordinates instead of key.
     let sbom = sbom_svc
-        .get_artifact_sbom(&proxy_key, &format)
+        .get_artifact_sbom_by_coordinates(&registry, &name, &version, &format)
         .await
         .map_err(AppError::from)?;
-
-    let sbom = if sbom.is_none() {
-        sbom_svc
-            .get_artifact_sbom(&local_key, &format)
-            .await
-            .map_err(AppError::from)?
-    } else {
-        sbom
-    };
 
     match sbom {
         Some(s) => Ok(HttpResponse::Ok()

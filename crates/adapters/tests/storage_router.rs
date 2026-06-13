@@ -97,6 +97,36 @@ async fn store_and_retrieve_round_trip() {
     assert_eq!(collect(artifact).await, data.as_ref());
 }
 
+// Re-storing different bytes under the same logical key must re-point
+// artifact_dedup_refs to the new content hash and drop the old
+// artifact_dedup_index row (when its ref_count reaches zero) without
+// tripping the artifact_dedup_refs_content_hash_fkey constraint.
+#[tokio::test]
+async fn store_overwrite_with_different_content_repoints_dedup_entry() {
+    let Some(url) = db_url() else { return };
+    let router = single_backend_router(make_fs("overwrite").await, pool(&url).await);
+    let key = ukey("npm", "test-pkg");
+
+    let first = upayload("first-version");
+    router
+        .store(&key, first.clone(), StorageMeta::default())
+        .await
+        .unwrap();
+
+    let second = upayload("second-version-with-different-bytes");
+    router
+        .store(&key, second.clone(), StorageMeta::default())
+        .await
+        .unwrap();
+
+    let artifact = router
+        .retrieve(&key)
+        .await
+        .unwrap()
+        .expect("should be found");
+    assert_eq!(collect(artifact).await, second.as_ref());
+}
+
 #[tokio::test]
 async fn retrieve_missing_key_returns_none() {
     let Some(url) = db_url() else { return };

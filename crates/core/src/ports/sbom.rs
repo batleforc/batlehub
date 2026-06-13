@@ -17,6 +17,17 @@ pub trait SbomRepository: Send + Sync {
         format: &SbomFormat,
     ) -> Result<Option<ArtifactSbom>, CoreError>;
 
+    /// Fetch the most recently recorded SBOM for a registry/package/version,
+    /// regardless of the exact `artifact_key` (proxy keys carry a per-registry
+    /// artifact suffix such as `/tarball` or `/dl` that callers cannot predict).
+    async fn get_sbom_by_coordinates(
+        &self,
+        registry: &str,
+        package_name: &str,
+        version: &str,
+        format: &SbomFormat,
+    ) -> Result<Option<ArtifactSbom>, CoreError>;
+
     /// List SBOMs for org-level export, optionally filtered by registry and time range.
     async fn list_sboms_for_export(
         &self,

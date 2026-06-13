@@ -32,6 +32,16 @@ impl SbomRepository for NoopSbomRepository {
         Ok(None)
     }
 
+    async fn get_sbom_by_coordinates(
+        &self,
+        _registry: &str,
+        _package_name: &str,
+        _version: &str,
+        _format: &SbomFormat,
+    ) -> Result<Option<ArtifactSbom>, CoreError> {
+        Ok(None)
+    }
+
     async fn list_sboms_for_export(
         &self,
         _registry: Option<&str>,
