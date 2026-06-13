@@ -100,6 +100,9 @@ block        = true
 bypass_roles = ["admin"]
 ```
 
+See [Adding a vulnerability scanner source](./adding-a-vulnerability-scanner.md) for the API
+requirements and checklist when integrating another CVE database alongside OSV.
+
 ## Suppressions
 
 The stance is **no suppressions**: `.cargo/audit.toml` and `deny.toml` (`advisories.ignore = []`)
