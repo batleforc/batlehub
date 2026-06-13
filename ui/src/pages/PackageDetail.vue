@@ -1,15 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import {
-  blockPackage,
-  unblockPackage,
-  listPackages2,
-  listRegistries,
-  packageDetail,
-} from "@/client/sdk.gen";
+import { blockPackage, unblockPackage, listPackages2, packageDetail } from "@/client/sdk.gen";
 import type {
-  RegistryInfo,
   PackageSummaryDto,
   PackageDetailResponse,
   PackageVersionDetail,
@@ -17,9 +10,11 @@ import type {
 } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
+import { useUpstreamUrl } from "@/composables/useUpstreamUrl";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import PackageHeaderCard from "@/components/PackageHeaderCard.vue";
 import {
   Table,
   TableHeader,
@@ -40,28 +35,7 @@ const name = computed(() => String(route.query.name ?? ""));
 const version = computed(() => String(route.query.version ?? ""));
 const artifact = computed(() => (route.query.artifact ? String(route.query.artifact) : null));
 
-const { data: registriesList } = useApi<RegistryInfo[]>(
-  () => listRegistries() as Promise<{ data?: unknown; error?: unknown }>,
-  [token],
-);
-
-const registryType = computed(
-  () => registriesList.value?.find((r) => r.name === registry.value)?.type ?? null,
-);
-
-const upstreamUrl = computed(() => {
-  if (!registry.value || !name.value) return null;
-  switch (registryType.value) {
-    case "github":
-      return `https://github.com/${name.value}`;
-    case "npm":
-      return `https://www.npmjs.com/package/${name.value}`;
-    case "cargo":
-      return `https://crates.io/crates/${name.value}`;
-    default:
-      return null;
-  }
-});
+const upstreamUrl = useUpstreamUrl(registry, name, token);
 
 const {
   data: adminData,
@@ -195,13 +169,8 @@ async function doUnblock() {
 
     <template v-else-if="statusInfo !== null">
       <!-- Header card -->
-      <Card>
-        <CardHeader>
-          <CardTitle class="text-xl font-mono">
-            {{ name }}
-          </CardTitle>
-        </CardHeader>
-        <CardContent class="space-y-2 text-sm">
+      <PackageHeaderCard :name="name" :upstream-url="upstreamUrl">
+        <template #badges>
           <div class="flex flex-wrap gap-2 items-center">
             <Badge variant="outline">
               {{ registry }}
@@ -216,28 +185,17 @@ async function doUnblock() {
               {{ statusInfo.status === "blocked" ? "Blocked" : "Available" }}
             </Badge>
           </div>
+        </template>
+        <template #before-upstream>
           <p v-if="statusInfo.status === 'blocked'" class="text-xs text-destructive">
             {{ (statusInfo as BlockedStatus).reason }}
           </p>
-          <div>
-            <span class="text-muted-foreground w-28 inline-block">Upstream</span>
-            <a
-              v-if="upstreamUrl"
-              :href="upstreamUrl"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="text-primary underline-offset-2 hover:underline font-mono text-xs"
-            >
-              {{ upstreamUrl }}
-            </a>
-            <span v-else class="text-muted-foreground">—</span>
-          </div>
-          <div>
-            <span class="text-muted-foreground w-28 inline-block">Downloads</span>
-            <span class="tabular-nums">{{ accessCount }}</span>
-          </div>
-        </CardContent>
-      </Card>
+        </template>
+        <div>
+          <span class="text-muted-foreground w-28 inline-block">Downloads</span>
+          <span class="tabular-nums">{{ accessCount }}</span>
+        </div>
+      </PackageHeaderCard>
 
       <!-- Admin: Cache & storage -->
       <Card v-if="isAdmin && versionDetail">

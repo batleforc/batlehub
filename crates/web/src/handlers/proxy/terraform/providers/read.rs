@@ -1,8 +1,8 @@
 use super::{
     append_signature_headers, base_url_from_req, collect_storage_stream, get, proxy_stream,
-    require_registry_type, tf_provider_binary_storage_key, web, AppError, Arc, AuthIdentity,
-    HttpRequest, HttpResponse, LocalRegistryService, PackageId, ProxyService, RegistryMap,
-    RegistryMode, RegistryModeMap, Responder, TerraformPlatform,
+    require_registry_type, terraform_versions_response, tf_provider_binary_storage_key, web,
+    AppError, Arc, AuthIdentity, HttpRequest, HttpResponse, LocalRegistryService, PackageId,
+    ProxyService, RegistryMap, RegistryMode, RegistryModeMap, Responder, TerraformPlatform,
 };
 
 /// List available versions for a Terraform provider.
@@ -37,29 +37,17 @@ pub async fn tf_provider_versions(
     let name = format!("providers/{namespace}/{ptype}");
     let mode = mode_map.get(&registry);
 
-    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        match local_svc
-            .get_tf_provider_versions_response(&registry, &name, &identity)
-            .await
-        {
-            Ok(json) => return Ok(HttpResponse::Ok().json(json)),
-            Err(batlehub_core::error::CoreError::NotFound(_)) if mode == RegistryMode::Hybrid => {}
-            Err(batlehub_core::error::CoreError::NotFound(msg)) => {
-                return Err(AppError::not_found(msg))
-            }
-            Err(e) => return Err(AppError::from(e)),
-        }
-    }
+    let local_result = if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        Some(
+            local_svc
+                .get_tf_provider_versions_response(&registry, &name, &identity)
+                .await,
+        )
+    } else {
+        None
+    };
 
-    let pkg = PackageId::new(&registry, name, "versions");
-    proxy_stream(
-        svc,
-        pkg,
-        identity,
-        "releases:read",
-        Some("application/json"),
-    )
-    .await
+    terraform_versions_response(&registry, name, identity, svc, mode, local_result).await
 }
 
 /// Get download information for a specific Terraform provider version and platform.

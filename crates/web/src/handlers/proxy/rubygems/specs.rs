@@ -1,6 +1,6 @@
 use super::{
-    get, proxy_stream, require_registry_type, web, AppError, Arc, AuthIdentity, PackageId,
-    ProxyService, RegistryMap, RegistryMode, RegistryModeMap, Responder,
+    get, proxy_gem_specs, web, AppError, Arc, AuthIdentity, ProxyService, RegistryMap,
+    RegistryModeMap, Responder,
 };
 
 /// Serve the full gem index (specs.4.8.gz).
@@ -24,23 +24,7 @@ pub async fn gem_specs_full(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_registry_type(&registry, "rubygems", &map)?;
-
-    if mode_map.get(&registry) == RegistryMode::Local {
-        return Err(AppError::not_found(
-            "binary specs index is not available for local-only registries; use /api/v1/versions/{name}.json".to_owned(),
-        ));
-    }
-
-    let pkg = PackageId::new(&registry, "_index", "specs");
-    proxy_stream(
-        svc,
-        pkg,
-        identity,
-        "releases:read",
-        Some("application/octet-stream"),
-    )
-    .await
+    proxy_gem_specs(&registry, "specs", svc, identity, &map, &mode_map).await
 }
 
 /// Serve the latest-versions gem index (latest_specs.4.8.gz).
@@ -64,23 +48,7 @@ pub async fn gem_specs_latest(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_registry_type(&registry, "rubygems", &map)?;
-
-    if mode_map.get(&registry) == RegistryMode::Local {
-        return Err(AppError::not_found(
-            "binary specs index is not available for local-only registries; use /api/v1/versions/{name}.json".to_owned(),
-        ));
-    }
-
-    let pkg = PackageId::new(&registry, "_index", "latest_specs");
-    proxy_stream(
-        svc,
-        pkg,
-        identity,
-        "releases:read",
-        Some("application/octet-stream"),
-    )
-    .await
+    proxy_gem_specs(&registry, "latest_specs", svc, identity, &map, &mode_map).await
 }
 
 /// Serve the prerelease gem index (prerelease_specs.4.8.gz).
@@ -104,21 +72,13 @@ pub async fn gem_specs_prerelease(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_registry_type(&registry, "rubygems", &map)?;
-
-    if mode_map.get(&registry) == RegistryMode::Local {
-        return Err(AppError::not_found(
-            "binary specs index is not available for local-only registries; use /api/v1/versions/{name}.json".to_owned(),
-        ));
-    }
-
-    let pkg = PackageId::new(&registry, "_index", "prerelease_specs");
-    proxy_stream(
+    proxy_gem_specs(
+        &registry,
+        "prerelease_specs",
         svc,
-        pkg,
         identity,
-        "releases:read",
-        Some("application/octet-stream"),
+        &map,
+        &mode_map,
     )
     .await
 }

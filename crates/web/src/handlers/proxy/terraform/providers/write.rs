@@ -1,9 +1,9 @@
 use super::{
     collect_payload, delete, extract_signature_headers, post, put, require_local_mode,
-    require_registry_type, tf_provider_binary_storage_key, web, AppError, Arc, AuthIdentity,
-    Digest, HttpRequest, HttpResponse, LocalRegistryService, NotificationEventType,
-    NotificationService, PublishRequest, RegistryMap, RegistryModeMap, Responder, Sha256,
-    StorageMeta,
+    require_registry_type, terraform_set_yanked, tf_provider_binary_storage_key, web, AppError,
+    Arc, AuthIdentity, Digest, HttpRequest, HttpResponse, LocalRegistryService,
+    NotificationEventType, NotificationService, PublishRequest, RegistryMap, RegistryModeMap,
+    Responder, Sha256, StorageMeta,
 };
 
 /// Upload a Terraform provider version manifest (JSON describing version + platforms).
@@ -195,28 +195,21 @@ pub async fn tf_provider_yank(
     notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, ptype, version) = path.into_inner();
-    require_registry_type(&registry, "terraform", &map)?;
-    require_local_mode(&registry, &mode_map)?;
-
-    let name = format!("providers/{namespace}/{ptype}");
-    let actor = identity.0.user_id.clone().unwrap_or_default();
-    local_svc
-        .yank(&registry, &name, &version, &identity.0)
-        .await
-        .map_err(AppError::from)?;
-
-    super::super::super::common::dispatch_notification(
-        &notification_svc,
-        NotificationEventType::PackageYanked,
+    let pkg_name = format!("providers/{namespace}/{ptype}");
+    let display_name = format!("provider {namespace}/{ptype}");
+    terraform_set_yanked(
         &registry,
-        &name,
-        Some(version.clone()),
-        &actor,
-    );
-
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "message": format!("yanked provider {namespace}/{ptype}@{version}")
-    })))
+        &map,
+        &mode_map,
+        &pkg_name,
+        &version,
+        &display_name,
+        &identity,
+        &local_svc,
+        &notification_svc,
+        true,
+    )
+    .await
 }
 
 /// Unyank a Terraform provider version (local/hybrid registries only).
@@ -248,26 +241,19 @@ pub async fn tf_provider_unyank(
     notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, ptype, version) = path.into_inner();
-    require_registry_type(&registry, "terraform", &map)?;
-    require_local_mode(&registry, &mode_map)?;
-
-    let name = format!("providers/{namespace}/{ptype}");
-    let actor = identity.0.user_id.clone().unwrap_or_default();
-    local_svc
-        .unyank(&registry, &name, &version, &identity.0)
-        .await
-        .map_err(AppError::from)?;
-
-    super::super::super::common::dispatch_notification(
-        &notification_svc,
-        NotificationEventType::PackageUnyanked,
+    let pkg_name = format!("providers/{namespace}/{ptype}");
+    let display_name = format!("provider {namespace}/{ptype}");
+    terraform_set_yanked(
         &registry,
-        &name,
-        Some(version.clone()),
-        &actor,
-    );
-
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "message": format!("unyanked provider {namespace}/{ptype}@{version}")
-    })))
+        &map,
+        &mode_map,
+        &pkg_name,
+        &version,
+        &display_name,
+        &identity,
+        &local_svc,
+        &notification_svc,
+        false,
+    )
+    .await
 }

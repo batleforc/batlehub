@@ -1,7 +1,8 @@
 use super::{
-    append_signature_headers, base_url_from_req, get, proxy_stream, require_registry_type, web,
-    AppError, Arc, AuthIdentity, HttpRequest, HttpResponse, LocalRegistryService, PackageId,
-    ProxyService, RegistryMap, RegistryMode, RegistryModeMap, Responder, UpstreamMap,
+    append_signature_headers, base_url_from_req, get, require_registry_type,
+    terraform_versions_response, web, AppError, Arc, AuthIdentity, HttpRequest, HttpResponse,
+    LocalRegistryService, ProxyService, RegistryMap, RegistryMode, RegistryModeMap, Responder,
+    UpstreamMap,
 };
 
 /// List available versions for a Terraform module.
@@ -37,29 +38,17 @@ pub async fn tf_module_versions(
     let pkg_name = format!("modules/{namespace}/{name}/{provider}");
     let mode = mode_map.get(&registry);
 
-    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        match local_svc
-            .get_tf_module_versions_response(&registry, &pkg_name, &identity)
-            .await
-        {
-            Ok(json) => return Ok(HttpResponse::Ok().json(json)),
-            Err(batlehub_core::error::CoreError::NotFound(_)) if mode == RegistryMode::Hybrid => {}
-            Err(batlehub_core::error::CoreError::NotFound(msg)) => {
-                return Err(AppError::not_found(msg))
-            }
-            Err(e) => return Err(AppError::from(e)),
-        }
-    }
+    let local_result = if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        Some(
+            local_svc
+                .get_tf_module_versions_response(&registry, &pkg_name, &identity)
+                .await,
+        )
+    } else {
+        None
+    };
 
-    let pkg = PackageId::new(&registry, pkg_name, "versions");
-    proxy_stream(
-        svc,
-        pkg,
-        identity,
-        "releases:read",
-        Some("application/json"),
-    )
-    .await
+    terraform_versions_response(&registry, pkg_name, identity, svc, mode, local_result).await
 }
 
 /// Get the download URL for a specific Terraform module version.

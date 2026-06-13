@@ -27,9 +27,9 @@ use batlehub_adapters::auth::StaticTokenAuthProvider;
 use batlehub_adapters::cache::InMemoryBannerStore;
 use batlehub_adapters::cache::InMemoryCacheStore;
 use batlehub_adapters::in_memory::{
-    InMemoryPackageRepository as InMemoryRepo, InMemoryStorageBackend as InMemoryStorage,
-    InMemoryVulnerabilityRepository, NoopArtifactMetaRepository as NoopArtifactMeta,
-    NullUserTokenRepository as NullTokenRepository,
+    InMemoryPackageRepository as InMemoryRepo, InMemorySbomRepository,
+    InMemoryStorageBackend as InMemoryStorage, InMemoryVulnerabilityRepository,
+    NoopArtifactMetaRepository as NoopArtifactMeta, NullUserTokenRepository as NullTokenRepository,
 };
 use batlehub_adapters::local_registry::InMemoryLocalRegistry;
 use batlehub_adapters::notification::InMemoryNotificationStore;
@@ -45,18 +45,19 @@ use batlehub_core::ports::NotificationPort;
 use batlehub_core::ports::{BetaChannelEntry, BetaChannelPort, IpBlockStore, TeamNamespacePort};
 use batlehub_core::{
     entities::{
-        AccessEvent, ArtifactVulnerability, PackageId, PackageMetadata, PackageStatus, Role,
-        Severity,
+        AccessEvent, ArtifactSbom, ArtifactVulnerability, PackageId, PackageMetadata,
+        PackageStatus, Role, SbomFormat, SbomSource, Severity,
     },
     error::CoreError,
     ports::{
         AuthProvider, CacheStore, FetchedArtifact, LocalRegistryBackend, PackageRepository,
-        RegistryClient, StorageBackend, UserToken, UserTokenRepository, VulnerabilityRepository,
+        RegistryClient, SbomRepository, StorageBackend, UserToken, UserTokenRepository,
+        VulnerabilityRepository,
     },
     rules::{BlockListRule, RbacRule},
     services::{
         new_hot_lock, AdminService, FeatureFlags, HotConfig, LocalRegistryService, ProxyMetrics,
-        ProxyService, RegistryPolicy,
+        ProxyService, RegistryPolicy, SbomService,
     },
 };
 use batlehub_web::services::{
@@ -124,6 +125,53 @@ fn bearer(token: &str) -> String {
     format!("Bearer {token}")
 }
 
+/// `AccessConfig` granting `anonymous` access to `anonymous` and `user`/`admin` access to
+/// `user_admin`, with empty groups and explore overrides.
+fn access_config(anonymous: &[&str], user_admin: &[&str]) -> batlehub_web::AccessConfigLock {
+    let to_set = |names: &[&str]| -> std::collections::HashSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    };
+    new_access_lock(batlehub_web::AccessConfig {
+        anonymous: to_set(anonymous),
+        user: to_set(user_admin),
+        admin: to_set(user_admin),
+        groups: std::collections::HashMap::new(),
+        explore_anonymous: std::collections::HashSet::new(),
+        explore_user: std::collections::HashSet::new(),
+        explore_admin: std::collections::HashSet::new(),
+    })
+}
+
+/// `AccessConfig` granting anonymous/user/admin access to exactly `names`,
+/// with empty groups and explore overrides.
+fn access_config_for(names: &[&str]) -> batlehub_web::AccessConfigLock {
+    access_config(names, names)
+}
+
+/// Like [`access_config_for`], but also grants explore access to `names` for every role.
+fn access_config_with_explore(names: &[&str]) -> batlehub_web::AccessConfigLock {
+    let set: std::collections::HashSet<String> = names.iter().map(|s| s.to_string()).collect();
+    new_access_lock(batlehub_web::AccessConfig {
+        anonymous: set.clone(),
+        user: set.clone(),
+        admin: set.clone(),
+        groups: std::collections::HashMap::new(),
+        explore_anonymous: set.clone(),
+        explore_user: set.clone(),
+        explore_admin: set,
+    })
+}
+
+/// `RegistryMap` mapping each `(name, type)` pair.
+fn registry_map_for(pairs: &[(&str, &str)]) -> batlehub_web::RegistryMap {
+    batlehub_web::RegistryMap::from(
+        pairs
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.to_string()))
+            .collect::<std::collections::HashMap<String, String>>(),
+    )
+}
+
 fn test_auth_providers() -> Vec<Arc<dyn AuthProvider>> {
     vec![Arc::new(StaticTokenAuthProvider::new([
         (
@@ -142,12 +190,7 @@ fn make_local_svc(storage: Arc<dyn StorageBackend>) -> Arc<LocalRegistryService>
         hot: new_hot_lock(HotConfig {
             registries: HashMap::new(),
             policies: HashMap::new(),
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         quota: None,
         ownership: None,
@@ -187,132 +230,7 @@ async fn make_app(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
-    let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
-    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
-    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = [
-        (
-            "github".to_owned(),
-            FixedRegistry::new("github") as Arc<dyn RegistryClient>,
-        ),
-        (
-            "npm".to_owned(),
-            FixedRegistry::new("npm") as Arc<dyn RegistryClient>,
-        ),
-        (
-            "cargo".to_owned(),
-            FixedRegistry::new("cargo") as Arc<dyn RegistryClient>,
-        ),
-        (
-            "openvsx".to_owned(),
-            FixedRegistry::new("openvsx") as Arc<dyn RegistryClient>,
-        ),
-        (
-            "go".to_owned(),
-            FixedRegistry::new("goproxy") as Arc<dyn RegistryClient>,
-        ),
-        (
-            "vscode".to_owned(),
-            FixedRegistry::new("vscode-marketplace") as Arc<dyn RegistryClient>,
-        ),
-    ]
-    .into();
-
-    let policies: HashMap<String, Arc<RegistryPolicy>> = [
-        ("github".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
-        ("npm".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
-        ("cargo".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
-        (
-            "openvsx".to_owned(),
-            Arc::new(rbac_policy(repo_dyn.clone())),
-        ),
-        ("go".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
-        ("vscode".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
-    ]
-    .into();
-
-    let local_svc = make_local_svc(storage.clone());
-    let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
-        }),
-        storage,
-        cache,
-        repo: repo_dyn.clone(),
-        artifact_meta: NoopArtifactMeta::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
-        sbom: None,
-    });
-    let admin_svc = Arc::new(AdminService::new(repo_dyn));
-
-    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: ["github", "npm", "cargo", "openvsx", "go", "vscode"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-        user: ["github", "npm", "cargo", "openvsx", "go", "vscode"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-        admin: ["github", "npm", "cargo", "openvsx", "go", "vscode"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(
-        [
-            ("github", "github"),
-            ("npm", "npm"),
-            ("cargo", "cargo"),
-            ("openvsx", "openvsx"),
-            ("go", "goproxy"),
-            ("vscode", "vscode-marketplace"),
-        ]
-        .iter()
-        .map(|(n, t)| (n.to_string(), t.to_string()))
-        .collect::<std::collections::HashMap<String, String>>(),
-    );
-    let cargo_indexes = batlehub_web::CargoIndexMap::default();
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            None,
-            access_config,
-            registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+    make_app_ext(repo, Arc::new(ProxyMetrics::new(&[]))).await
 }
 
 /// Variant of `make_app` that accepts a caller-supplied `proxy_metrics` so
@@ -375,12 +293,7 @@ async fn make_app_ext(
         hot: new_hot_lock(HotConfig {
             registries,
             policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage,
         cache,
@@ -392,37 +305,15 @@ async fn make_app_ext(
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
 
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: ["github", "npm", "cargo", "openvsx", "go", "vscode"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-        user: ["github", "npm", "cargo", "openvsx", "go", "vscode"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-        admin: ["github", "npm", "cargo", "openvsx", "go", "vscode"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(
-        [
-            ("github", "github"),
-            ("npm", "npm"),
-            ("cargo", "cargo"),
-            ("openvsx", "openvsx"),
-            ("go", "goproxy"),
-            ("vscode", "vscode-marketplace"),
-        ]
-        .iter()
-        .map(|(n, t)| (n.to_string(), t.to_string()))
-        .collect::<std::collections::HashMap<String, String>>(),
-    );
+    let access_config = access_config_for(&["github", "npm", "cargo", "openvsx", "go", "vscode"]);
+    let registry_map = registry_map_for(&[
+        ("github", "github"),
+        ("npm", "npm"),
+        ("cargo", "cargo"),
+        ("openvsx", "openvsx"),
+        ("go", "goproxy"),
+        ("vscode", "vscode-marketplace"),
+    ]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let (app, _) = App::new()
         .into_utoipa_app()
@@ -491,12 +382,8 @@ async fn make_vuln_app(
         hot: new_hot_lock(HotConfig {
             registries,
             policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
             feature_flags,
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage: storage.clone(),
         cache,
@@ -508,21 +395,8 @@ async fn make_vuln_app(
     let admin_svc = Arc::new(AdminService::new(repo_dyn).with_vulnerability_repo(vuln_repo));
 
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: ["npm", "cargo"].iter().map(|s| s.to_string()).collect(),
-        user: ["npm", "cargo"].iter().map(|s| s.to_string()).collect(),
-        admin: ["npm", "cargo"].iter().map(|s| s.to_string()).collect(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: ["npm", "cargo"].iter().map(|s| s.to_string()).collect(),
-        explore_user: ["npm", "cargo"].iter().map(|s| s.to_string()).collect(),
-        explore_admin: ["npm", "cargo"].iter().map(|s| s.to_string()).collect(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(
-        [("npm", "npm"), ("cargo", "cargo")]
-            .iter()
-            .map(|(n, t)| (n.to_string(), t.to_string()))
-            .collect::<std::collections::HashMap<String, String>>(),
-    );
+    let access_config = access_config_with_explore(&["npm", "cargo"]);
+    let registry_map = registry_map_for(&[("npm", "npm"), ("cargo", "cargo")]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let (app, _) = App::new()
         .into_utoipa_app()
@@ -773,31 +647,137 @@ impl BetaChannelPort for InMemoryBetaChannelStore {
 
 // ── App factories for back-office stores ──────────────────────────────────────
 
-async fn make_app_with_ip_store(
-    ip_store: Arc<dyn IpBlockStore>,
-) -> impl actix_web::dev::Service<
-    actix_http::Request,
-    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-    Error = actix_web::Error,
-> {
-    let repo = InMemoryRepo::new();
-    let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
+/// Common building blocks for a `make_local_<type>_app` factory: a single registry
+/// named `name` (of `registry_type`), backed by `FixedRegistry`, set to `mode` in the
+/// returned mode map, with `sbom_svc` wired into the `ProxyService`.
+struct LocalRegistryAppParts {
+    proxy_svc: Arc<ProxyService>,
+    admin_svc: Arc<AdminService>,
+    token_repo: Arc<dyn UserTokenRepository>,
+    access_config: batlehub_web::AccessConfigLock,
+    registry_map: batlehub_web::RegistryMap,
+    local_svc: Arc<LocalRegistryService>,
+    mode_map: RegistryModeMap,
+}
+
+fn local_registry_app_parts(
+    name: &str,
+    registry_type: &str,
+    mode: RegistryMode,
+    sbom_svc: Option<Arc<SbomService>>,
+) -> LocalRegistryAppParts {
+    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
-    let policies: HashMap<String, Arc<RegistryPolicy>> = HashMap::new();
+
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
+        name.to_owned(),
+        FixedRegistry::new(registry_type) as Arc<dyn RegistryClient>,
+    )]
+    .into();
+    let policies: HashMap<String, Arc<RegistryPolicy>> =
+        [(name.to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
+
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
             registries,
             policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: sbom_svc,
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+
+    let mode_map = RegistryModeMap::default();
+    mode_map.insert(name.to_owned(), mode);
+
+    LocalRegistryAppParts {
+        proxy_svc,
+        admin_svc,
+        token_repo: Arc::new(NullTokenRepository),
+        access_config: access_config(&[], &[name]),
+        registry_map: registry_map_for(&[(name, registry_type)]),
+        local_svc,
+        mode_map,
+    }
+}
+
+/// Finish wiring a `make_local_<type>_app` factory: configure the routes from `parts`
+/// (with the given `cargo_indexes` and optional `sbom_svc`), attach `local_svc`/`mode_map`,
+/// and wrap with the standard test auth providers.
+async fn build_local_registry_app(
+    parts: LocalRegistryAppParts,
+    cargo_indexes: batlehub_web::CargoIndexMap,
+    sbom_svc: Option<Arc<SbomService>>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let LocalRegistryAppParts {
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        mode_map,
+    } = parts;
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            None,
+            access_config,
+            registry_map,
+            batlehub_web::UpstreamMap::default(),
+            vec![],
+            std::collections::HashMap::new(), // warming_map
+            std::collections::HashMap::new(), // eviction_map
+            Arc::new(ProxyMetrics::new(&[])),
+            None,
+            sbom_svc,                                   // sbom_svc
+            None,                                       // notification_svc
+            Arc::new(InMemoryNotificationStore::new()), // notification_store
+            None,                                       // notifications_config
+        ))
+        .split_for_parts();
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(mode_map));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+}
+
+/// Common building blocks for a fully-wired test app with no configured registries.
+struct EmptyAppParts {
+    proxy_svc: Arc<ProxyService>,
+    admin_svc: Arc<AdminService>,
+    token_repo: Arc<dyn UserTokenRepository>,
+    access_config: batlehub_web::AccessConfigLock,
+    registry_map: batlehub_web::RegistryMap,
+    cargo_indexes: batlehub_web::CargoIndexMap,
+    local_svc: Arc<LocalRegistryService>,
+}
+
+fn empty_app_parts() -> EmptyAppParts {
+    let repo = InMemoryRepo::new();
+    let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        hot: new_hot_lock(HotConfig::default()),
         storage,
         cache,
         repo: repo_dyn.clone(),
@@ -805,19 +785,33 @@ async fn make_app_with_ip_store(
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
     });
-    let admin_svc = Arc::new(AdminService::new(repo_dyn));
-    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: std::collections::HashSet::new(),
-        user: std::collections::HashSet::new(),
-        admin: std::collections::HashSet::new(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(std::collections::HashMap::new());
-    let cargo_indexes = batlehub_web::CargoIndexMap::default();
+    EmptyAppParts {
+        proxy_svc,
+        admin_svc: Arc::new(AdminService::new(repo_dyn)),
+        token_repo: Arc::new(NullTokenRepository),
+        access_config: access_config_for(&[]),
+        registry_map: registry_map_for(&[]),
+        cargo_indexes: batlehub_web::CargoIndexMap::default(),
+        local_svc,
+    }
+}
+
+async fn make_app_with_ip_store(
+    ip_store: Arc<dyn IpBlockStore>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let EmptyAppParts {
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        cargo_indexes,
+        local_svc,
+    } = empty_app_parts();
 
     let (app, _) = App::new()
         .into_utoipa_app()
@@ -858,44 +852,15 @@ async fn make_app_with_notifications(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
-    let repo = InMemoryRepo::new();
-    let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
-    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
-    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
-    let policies: HashMap<String, Arc<RegistryPolicy>> = HashMap::new();
-    let local_svc = make_local_svc(storage.clone());
-    let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
-        }),
-        storage,
-        cache,
-        repo: repo_dyn.clone(),
-        artifact_meta: NoopArtifactMeta::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
-        sbom: None,
-    });
-    let admin_svc = Arc::new(AdminService::new(repo_dyn));
-    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: std::collections::HashSet::new(),
-        user: std::collections::HashSet::new(),
-        admin: std::collections::HashSet::new(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(std::collections::HashMap::new());
-    let cargo_indexes = batlehub_web::CargoIndexMap::default();
+    let EmptyAppParts {
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        cargo_indexes,
+        local_svc,
+    } = empty_app_parts();
 
     let (app, _) = App::new()
         .into_utoipa_app()
@@ -933,44 +898,15 @@ async fn make_app_with_beta_store(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
-    let repo = InMemoryRepo::new();
-    let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
-    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
-    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
-    let policies: HashMap<String, Arc<RegistryPolicy>> = HashMap::new();
-    let local_svc = make_local_svc(storage.clone());
-    let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
-        }),
-        storage,
-        cache,
-        repo: repo_dyn.clone(),
-        artifact_meta: NoopArtifactMeta::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
-        sbom: None,
-    });
-    let admin_svc = Arc::new(AdminService::new(repo_dyn));
-    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: std::collections::HashSet::new(),
-        user: std::collections::HashSet::new(),
-        admin: std::collections::HashSet::new(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(std::collections::HashMap::new());
-    let cargo_indexes = batlehub_web::CargoIndexMap::default();
+    let EmptyAppParts {
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        cargo_indexes,
+        local_svc,
+    } = empty_app_parts();
 
     let (app, _) = App::new()
         .into_utoipa_app()
@@ -1068,12 +1004,7 @@ async fn make_rate_limited_app(
         hot: new_hot_lock(HotConfig {
             registries,
             policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage,
         cache,
@@ -1085,21 +1016,8 @@ async fn make_rate_limited_app(
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
 
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: ["npm"].iter().map(|s| s.to_string()).collect(),
-        user: ["npm"].iter().map(|s| s.to_string()).collect(),
-        admin: ["npm"].iter().map(|s| s.to_string()).collect(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(
-        [("npm", "npm")]
-            .iter()
-            .map(|(n, t)| (n.to_string(), t.to_string()))
-            .collect::<std::collections::HashMap<String, String>>(),
-    );
+    let access_config = access_config_for(&["npm"]);
+    let registry_map = registry_map_for(&[("npm", "npm")]);
 
     let (app, _) = App::new()
         .into_utoipa_app()
@@ -2143,12 +2061,7 @@ async fn make_group_app(
         hot: new_hot_lock(HotConfig {
             registries,
             policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage,
         cache,
@@ -2185,12 +2098,7 @@ async fn make_group_app(
         explore_user: std::collections::HashSet::new(),
         explore_admin: std::collections::HashSet::new(),
     });
-    let registry_map = batlehub_web::RegistryMap::from(
-        [("github", "github"), ("github2", "github")]
-            .iter()
-            .map(|(n, t)| (n.to_string(), t.to_string()))
-            .collect::<std::collections::HashMap<String, String>>(),
-    );
+    let registry_map = registry_map_for(&[("github", "github"), ("github2", "github")]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let (app, _) = App::new()
         .into_utoipa_app()
@@ -2614,12 +2522,7 @@ async fn make_app_with_tokens(
         hot: new_hot_lock(HotConfig {
             registries,
             policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage,
         cache,
@@ -2630,21 +2533,8 @@ async fn make_app_with_tokens(
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let tok_repo: Arc<dyn UserTokenRepository> = token_repo;
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: ["npm"].iter().map(|s| s.to_string()).collect(),
-        user: ["npm"].iter().map(|s| s.to_string()).collect(),
-        admin: ["npm"].iter().map(|s| s.to_string()).collect(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(
-        [("npm", "npm")]
-            .iter()
-            .map(|(n, t)| (n.to_string(), t.to_string()))
-            .collect::<std::collections::HashMap<String, String>>(),
-    );
+    let access_config = access_config_for(&["npm"]);
+    let registry_map = registry_map_for(&[("npm", "npm")]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
 
     let (app, _) = App::new()
@@ -3005,12 +2895,7 @@ async fn make_app_with_cargo_index(
         hot: new_hot_lock(HotConfig {
             registries,
             policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage,
         cache,
@@ -3021,21 +2906,8 @@ async fn make_app_with_cargo_index(
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: ["cargo"].iter().map(|s| s.to_string()).collect(),
-        user: ["cargo"].iter().map(|s| s.to_string()).collect(),
-        admin: ["cargo"].iter().map(|s| s.to_string()).collect(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(
-        [("cargo", "cargo")]
-            .iter()
-            .map(|(n, t)| (n.to_string(), t.to_string()))
-            .collect::<std::collections::HashMap<String, String>>(),
-    );
+    let access_config = access_config_for(&["cargo"]);
+    let registry_map = registry_map_for(&[("cargo", "cargo")]);
 
     // Wire up a real CargoIndexProxy entry so cargo_registry_config can return a config
     let cargo_indexes = batlehub_web::CargoIndexMap::new(std::collections::HashMap::from([(
@@ -3705,12 +3577,7 @@ async fn make_unavailable_npm_app(
         hot: new_hot_lock(HotConfig {
             registries,
             policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage,
         cache: cache_dyn,
@@ -3721,21 +3588,8 @@ async fn make_unavailable_npm_app(
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: ["npm"].iter().map(|s| s.to_string()).collect(),
-        user: ["npm"].iter().map(|s| s.to_string()).collect(),
-        admin: ["npm"].iter().map(|s| s.to_string()).collect(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(
-        [("npm", "npm")]
-            .iter()
-            .map(|(n, t)| (n.to_string(), t.to_string()))
-            .collect::<std::collections::HashMap<String, String>>(),
-    );
+    let access_config = access_config_for(&["npm"]);
+    let registry_map = registry_map_for(&[("npm", "npm")]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let (app, _) = App::new()
         .into_utoipa_app()
@@ -4147,12 +4001,7 @@ async fn audit_quick_forwards_to_upstream_and_returns_response() {
         hot: new_hot_lock(HotConfig {
             registries,
             policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage,
         cache,
@@ -4163,21 +4012,8 @@ async fn audit_quick_forwards_to_upstream_and_returns_response() {
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: ["npm"].iter().map(|s| s.to_string()).collect(),
-        user: ["npm"].iter().map(|s| s.to_string()).collect(),
-        admin: ["npm"].iter().map(|s| s.to_string()).collect(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(
-        [("npm", "npm")]
-            .iter()
-            .map(|(n, t)| (n.to_string(), t.to_string()))
-            .collect::<std::collections::HashMap<String, String>>(),
-    );
+    let access_config = access_config_for(&["npm"]);
+    let registry_map = registry_map_for(&[("npm", "npm")]);
     let mut upstream_entries = std::collections::HashMap::new();
     upstream_entries.insert("npm".to_owned(), upstream_url);
     let upstream_map = batlehub_web::UpstreamMap::from(upstream_entries);
@@ -4369,12 +4205,7 @@ async fn cargo_registry_index_fetches_from_upstream_and_returns_content() {
         hot: new_hot_lock(HotConfig {
             registries,
             policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage,
         cache,
@@ -4385,21 +4216,8 @@ async fn cargo_registry_index_fetches_from_upstream_and_returns_content() {
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: ["cargo"].iter().map(|s| s.to_string()).collect(),
-        user: ["cargo"].iter().map(|s| s.to_string()).collect(),
-        admin: ["cargo"].iter().map(|s| s.to_string()).collect(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(
-        [("cargo", "cargo")]
-            .iter()
-            .map(|(n, t)| (n.to_string(), t.to_string()))
-            .collect::<std::collections::HashMap<String, String>>(),
-    );
+    let access_config = access_config_for(&["cargo"]);
+    let registry_map = registry_map_for(&[("cargo", "cargo")]);
     let cargo_indexes = batlehub_web::CargoIndexMap::new(std::collections::HashMap::from([(
         "cargo".to_owned(),
         batlehub_web::CargoIndexProxy {
@@ -4498,57 +4316,18 @@ async fn make_local_registry_app(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
-    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
-    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
-    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+    make_local_registry_app_with_sbom(mode, None).await
+}
 
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
-        "local-cargo".to_owned(),
-        FixedRegistry::new("cargo") as Arc<dyn RegistryClient>,
-    )]
-    .into();
-    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
-        "local-cargo".to_owned(),
-        Arc::new(rbac_policy(repo_dyn.clone())),
-    )]
-    .into();
-
-    let local_svc = make_local_svc(storage.clone());
-    let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
-        }),
-        storage,
-        cache,
-        repo: repo_dyn.clone(),
-        artifact_meta: NoopArtifactMeta::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
-        sbom: None,
-    });
-    let admin_svc = Arc::new(AdminService::new(repo_dyn));
-    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: [].iter().map(|s: &&str| s.to_string()).collect(),
-        user: ["local-cargo"].iter().map(|s| s.to_string()).collect(),
-        admin: ["local-cargo"].iter().map(|s| s.to_string()).collect(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(
-        [("local-cargo", "cargo")]
-            .iter()
-            .map(|(n, t)| (n.to_string(), t.to_string()))
-            .collect::<std::collections::HashMap<String, String>>(),
-    );
+async fn make_local_registry_app_with_sbom(
+    mode: RegistryMode,
+    sbom_svc: Option<Arc<SbomService>>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let parts = local_registry_app_parts("local-cargo", "cargo", mode.clone(), sbom_svc.clone());
     // Hybrid mode requires an upstream index for config.json to succeed.
     // A dummy URL is sufficient — upstream fetches only happen on actual index lookups.
     let mut cargo_map: std::collections::HashMap<String, batlehub_web::CargoIndexProxy> =
@@ -4564,36 +4343,7 @@ async fn make_local_registry_app(
     }
     let cargo_indexes = batlehub_web::CargoIndexMap::new(cargo_map);
 
-    let mode_map = RegistryModeMap::default();
-    mode_map.insert("local-cargo".to_owned(), mode);
-
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            None,
-            access_config,
-            registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(mode_map));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+    build_local_registry_app(parts, cargo_indexes, sbom_svc).await
 }
 
 // ── config.json ───────────────────────────────────────────────────────────────
@@ -4937,89 +4687,12 @@ async fn make_local_npm_app(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
-    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
-    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
-    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
-        "local-npm".to_owned(),
-        FixedRegistry::new("npm") as Arc<dyn RegistryClient>,
-    )]
-    .into();
-    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
-        "local-npm".to_owned(),
-        Arc::new(rbac_policy(repo_dyn.clone())),
-    )]
-    .into();
-
-    let local_svc = make_local_svc(storage.clone());
-    let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
-        }),
-        storage,
-        cache,
-        repo: repo_dyn.clone(),
-        artifact_meta: NoopArtifactMeta::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
-        sbom: None,
-    });
-    let admin_svc = Arc::new(AdminService::new(repo_dyn));
-    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: [].iter().map(|s: &&str| s.to_string()).collect(),
-        user: ["local-npm"].iter().map(|s| s.to_string()).collect(),
-        admin: ["local-npm"].iter().map(|s| s.to_string()).collect(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(
-        [("local-npm", "npm")]
-            .iter()
-            .map(|(n, t)| (n.to_string(), t.to_string()))
-            .collect::<std::collections::HashMap<String, String>>(),
-    );
-    let cargo_indexes = batlehub_web::CargoIndexMap::default();
-
-    let mode_map = RegistryModeMap::default();
-    mode_map.insert("local-npm".to_owned(), mode);
-
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            None,
-            access_config,
-            registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(mode_map));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+    build_local_registry_app(
+        local_registry_app_parts("local-npm", "npm", mode, None),
+        batlehub_web::CargoIndexMap::default(),
+        None,
+    )
+    .await
 }
 
 /// Build a standard npm publish payload (the wire format used by `npm publish`).
@@ -5206,89 +4879,12 @@ async fn make_local_vsx_app(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
-    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
-    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
-    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
-        "local-vsx".to_owned(),
-        FixedRegistry::new("openvsx") as Arc<dyn RegistryClient>,
-    )]
-    .into();
-    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
-        "local-vsx".to_owned(),
-        Arc::new(rbac_policy(repo_dyn.clone())),
-    )]
-    .into();
-
-    let local_svc = make_local_svc(storage.clone());
-    let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
-        }),
-        storage,
-        cache,
-        repo: repo_dyn.clone(),
-        artifact_meta: NoopArtifactMeta::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
-        sbom: None,
-    });
-    let admin_svc = Arc::new(AdminService::new(repo_dyn));
-    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: [].iter().map(|s: &&str| s.to_string()).collect(),
-        user: ["local-vsx"].iter().map(|s| s.to_string()).collect(),
-        admin: ["local-vsx"].iter().map(|s| s.to_string()).collect(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(
-        [("local-vsx", "openvsx")]
-            .iter()
-            .map(|(n, t)| (n.to_string(), t.to_string()))
-            .collect::<std::collections::HashMap<String, String>>(),
-    );
-    let cargo_indexes = batlehub_web::CargoIndexMap::default();
-
-    let mode_map = RegistryModeMap::default();
-    mode_map.insert("local-vsx".to_owned(), mode);
-
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            None,
-            access_config,
-            registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(mode_map));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+    build_local_registry_app(
+        local_registry_app_parts("local-vsx", "openvsx", mode, None),
+        batlehub_web::CargoIndexMap::default(),
+        None,
+    )
+    .await
 }
 
 #[actix_web::test]
@@ -5422,89 +5018,12 @@ async fn make_local_go_app(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
-    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
-    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
-    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
-        "local-go".to_owned(),
-        FixedRegistry::new("goproxy") as Arc<dyn RegistryClient>,
-    )]
-    .into();
-    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
-        "local-go".to_owned(),
-        Arc::new(rbac_policy(repo_dyn.clone())),
-    )]
-    .into();
-
-    let local_svc = make_local_svc(storage.clone());
-    let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
-        }),
-        storage,
-        cache,
-        repo: repo_dyn.clone(),
-        artifact_meta: NoopArtifactMeta::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
-        sbom: None,
-    });
-    let admin_svc = Arc::new(AdminService::new(repo_dyn));
-    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: [].iter().map(|s: &&str| s.to_string()).collect(),
-        user: ["local-go"].iter().map(|s| s.to_string()).collect(),
-        admin: ["local-go"].iter().map(|s| s.to_string()).collect(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(
-        [("local-go", "goproxy")]
-            .iter()
-            .map(|(n, t)| (n.to_string(), t.to_string()))
-            .collect::<std::collections::HashMap<String, String>>(),
-    );
-    let cargo_indexes = batlehub_web::CargoIndexMap::default();
-
-    let mode_map = RegistryModeMap::default();
-    mode_map.insert("local-go".to_owned(), mode);
-
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            None,
-            access_config,
-            registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(mode_map));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+    build_local_registry_app(
+        local_registry_app_parts("local-go", "goproxy", mode, None),
+        batlehub_web::CargoIndexMap::default(),
+        None,
+    )
+    .await
 }
 
 #[actix_web::test]
@@ -5726,12 +5245,7 @@ async fn healthz_returns_ok_without_db() {
         hot: new_hot_lock(HotConfig {
             registries: HashMap::new(),
             policies: HashMap::new(),
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage,
         cache: Arc::new(InMemoryCacheStore::new()),
@@ -5764,12 +5278,7 @@ async fn healthz_is_unauthenticated() {
         hot: new_hot_lock(HotConfig {
             registries: HashMap::new(),
             policies: HashMap::new(),
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage,
         cache: Arc::new(InMemoryCacheStore::new()),
@@ -5937,12 +5446,7 @@ async fn make_local_maven_app(
         hot: new_hot_lock(HotConfig {
             registries,
             policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage,
         cache,
@@ -5952,53 +5456,19 @@ async fn make_local_maven_app(
         sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
-    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: [].iter().map(|s: &&str| s.to_string()).collect(),
-        user: ["local-maven"].iter().map(|s| s.to_string()).collect(),
-        admin: ["local-maven"].iter().map(|s| s.to_string()).collect(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(
-        [("local-maven", "maven")]
-            .iter()
-            .map(|(n, t)| (n.to_string(), t.to_string()))
-            .collect::<std::collections::HashMap<String, String>>(),
-    );
-    let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let mode_map = RegistryModeMap::default();
     mode_map.insert("local-maven".to_owned(), mode);
 
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            None,
-            access_config,
-            registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(mode_map));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+    let parts = LocalRegistryAppParts {
+        proxy_svc,
+        admin_svc,
+        token_repo: Arc::new(NullTokenRepository),
+        access_config: access_config(&[], &["local-maven"]),
+        registry_map: registry_map_for(&[("local-maven", "maven")]),
+        local_svc,
+        mode_map,
+    };
+    build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await
 }
 
 const SAMPLE_POM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -6162,12 +5632,7 @@ async fn make_local_terraform_app(
         hot: new_hot_lock(HotConfig {
             registries,
             policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage,
         cache,
@@ -6177,53 +5642,19 @@ async fn make_local_terraform_app(
         sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
-    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: [].iter().map(|s: &&str| s.to_string()).collect(),
-        user: ["local-tf"].iter().map(|s| s.to_string()).collect(),
-        admin: ["local-tf"].iter().map(|s| s.to_string()).collect(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(
-        [("local-tf", "terraform")]
-            .iter()
-            .map(|(n, t)| (n.to_string(), t.to_string()))
-            .collect::<std::collections::HashMap<String, String>>(),
-    );
-    let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let mode_map = RegistryModeMap::default();
     mode_map.insert("local-tf".to_owned(), mode);
 
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            None,
-            access_config,
-            registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(mode_map));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+    let parts = LocalRegistryAppParts {
+        proxy_svc,
+        admin_svc,
+        token_repo: Arc::new(NullTokenRepository),
+        access_config: access_config(&[], &["local-tf"]),
+        registry_map: registry_map_for(&[("local-tf", "terraform")]),
+        local_svc,
+        mode_map,
+    };
+    build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await
 }
 
 // ── Terraform module tests ────────────────────────────────────────────────────
@@ -6696,6 +6127,131 @@ async fn terraform_provider_upload_returns_quota_headers() {
     assert_eq!(resp.status(), 201);
 }
 
+// ── Terraform provider read paths (versions/download/artifact) ──────────────
+
+#[actix_web::test]
+async fn tf_provider_versions_local_unknown_returns_404() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/unknown/versions")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn tf_provider_versions_hybrid_falls_through_to_proxy() {
+    let app = make_local_terraform_app(RegistryMode::Hybrid).await;
+
+    // No upload, and no RegistryClient configured for "local-tf" — the Hybrid
+    // fallthrough on local NotFound reaches proxy_stream, which then fails fast
+    // with "unknown registry" since the registries map is empty in this factory.
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/unknown/versions")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
+async fn tf_provider_versions_proxy_mode_goes_straight_to_proxy() {
+    let app = make_local_terraform_app(RegistryMode::Proxy).await;
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/versions")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
+async fn tf_provider_download_local_unknown_returns_404() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/unknown/9.9.9/download/linux/amd64")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn tf_provider_download_hybrid_falls_through_to_proxy() {
+    let app = make_local_terraform_app(RegistryMode::Hybrid).await;
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/unknown/9.9.9/download/linux/amd64")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
+async fn tf_provider_artifact_path_traversal_returns_400() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    // `%2F..` decodes to a path segment containing "/.." — caught by
+    // validate_path_safe before it ever becomes a storage key.
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/5.0.0/artifact/linux%2F../amd64")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
+async fn tf_provider_artifact_not_found_returns_404() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/5.0.0/artifact/linux/amd64")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn tf_provider_artifact_returns_uploaded_binary() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/versions")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("Content-Type", "application/json"))
+        .set_payload(PROVIDER_MANIFEST)
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/5.0.0/artifact/linux/amd64")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(b"fake-zip-bytes".as_slice())
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/5.0.0/artifact/linux/amd64")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers().get("content-type").unwrap(),
+        "application/zip"
+    );
+    let body = read_body(resp).await;
+    assert_eq!(&body[..], b"fake-zip-bytes");
+}
+
 // ── PHP Composer registry ─────────────────────────────────────────────────────
 
 async fn make_local_composer_app(
@@ -6705,88 +6261,12 @@ async fn make_local_composer_app(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
-    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
-    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
-    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
-        "local-composer".to_owned(),
-        FixedRegistry::new("composer") as Arc<dyn RegistryClient>,
-    )]
-    .into();
-    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
-        "local-composer".to_owned(),
-        Arc::new(rbac_policy(repo_dyn.clone())),
-    )]
-    .into();
-
-    let local_svc = make_local_svc(storage.clone());
-    let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
-        }),
-        storage,
-        cache,
-        repo: repo_dyn.clone(),
-        artifact_meta: NoopArtifactMeta::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
-        sbom: None,
-    });
-    let admin_svc = Arc::new(AdminService::new(repo_dyn));
-    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: [].iter().map(|s: &&str| s.to_string()).collect(),
-        user: ["local-composer"].iter().map(|s| s.to_string()).collect(),
-        admin: ["local-composer"].iter().map(|s| s.to_string()).collect(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(
-        [("local-composer", "composer")]
-            .iter()
-            .map(|(n, t)| (n.to_string(), t.to_string()))
-            .collect::<std::collections::HashMap<String, String>>(),
-    );
-    let cargo_indexes = batlehub_web::CargoIndexMap::default();
-    let mode_map = RegistryModeMap::default();
-    mode_map.insert("local-composer".to_owned(), mode);
-
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            None,
-            access_config,
-            registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(mode_map));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+    build_local_registry_app(
+        local_registry_app_parts("local-composer", "composer", mode, None),
+        batlehub_web::CargoIndexMap::default(),
+        None,
+    )
+    .await
 }
 
 fn make_composer_zip(name: &str, version: &str) -> Vec<u8> {
@@ -7659,12 +7139,7 @@ async fn make_app_with_ns_store(
         hot: new_hot_lock(HotConfig {
             registries,
             policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage,
         cache,
@@ -7675,16 +7150,8 @@ async fn make_app_with_ns_store(
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: std::collections::HashSet::new(),
-        user: std::collections::HashSet::new(),
-        admin: std::collections::HashSet::new(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(std::collections::HashMap::new());
+    let access_config = access_config_for(&[]);
+    let registry_map = registry_map_for(&[]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
 
     let (app, _) = App::new()
@@ -7730,112 +7197,7 @@ async fn make_ns_cargo_app(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
-    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
-    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
-    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
-        "local-cargo".to_owned(),
-        FixedRegistry::new("cargo") as Arc<dyn RegistryClient>,
-    )]
-    .into();
-    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
-        "local-cargo".to_owned(),
-        Arc::new(rbac_policy(repo_dyn.clone())),
-    )]
-    .into();
-
-    // Build the local registry service WITH the namespace store so enforcement fires.
-    let backend = Arc::new(InMemoryLocalRegistry::new());
-    let local_svc = Arc::new(LocalRegistryService {
-        backend: backend.clone(),
-        storage: storage.clone(),
-        hot: new_hot_lock(HotConfig {
-            registries: HashMap::new(),
-            policies: HashMap::new(),
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: std::collections::HashMap::new(),
-            max_artifact_size_bytes: None,
-        }),
-        quota: None,
-        ownership: None,
-        team_namespace: Some(Arc::clone(&ns_store)),
-        sbom: None,
-        explore_cache: None,
-    });
-
-    let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
-        }),
-        storage,
-        cache,
-        repo: repo_dyn.clone(),
-        artifact_meta: NoopArtifactMeta::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
-        sbom: None,
-    });
-    let admin_svc = Arc::new(AdminService::new(repo_dyn));
-    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: [].iter().cloned().collect(),
-        user: ["local-cargo"].iter().map(|s| s.to_string()).collect(),
-        admin: ["local-cargo"].iter().map(|s| s.to_string()).collect(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(
-        [("local-cargo", "cargo")]
-            .iter()
-            .map(|(n, t)| (n.to_string(), t.to_string()))
-            .collect::<std::collections::HashMap<String, String>>(),
-    );
-    let cargo_indexes = batlehub_web::CargoIndexMap::default();
-    let mode_map = RegistryModeMap::default();
-    mode_map.insert("local-cargo".to_owned(), RegistryMode::Local);
-
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            None,
-            access_config,
-            registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(), // warming_map
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,                                       // sbom_svc
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
-        ))
-        .split_for_parts();
-
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(mode_map))
-        // Register the store for back-office visibility endpoints.
-        .app_data(actix_web::web::Data::new(ns_store));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(team_ns_auth_providers()))).await
+    make_ns_cargo_app_with_backend(ns_store, Arc::new(InMemoryLocalRegistry::new())).await
 }
 
 /// Like `make_ns_cargo_app` but also returns the `InMemoryTeamNamespaceStore`
@@ -7892,14 +7254,7 @@ async fn make_ns_cargo_app_with_backend(
         backend: backend.clone(),
         storage: storage.clone(),
         hot: new_hot_lock(HotConfig {
-            registries: HashMap::new(),
-            policies: HashMap::new(),
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: std::collections::HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         quota: None,
         ownership: None,
@@ -7912,12 +7267,7 @@ async fn make_ns_cargo_app_with_backend(
         hot: new_hot_lock(HotConfig {
             registries,
             policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage,
         cache,
@@ -7928,21 +7278,8 @@ async fn make_ns_cargo_app_with_backend(
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: [].iter().cloned().collect(),
-        user: ["local-cargo"].iter().map(|s| s.to_string()).collect(),
-        admin: ["local-cargo"].iter().map(|s| s.to_string()).collect(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(
-        [("local-cargo", "cargo")]
-            .iter()
-            .map(|(n, t)| (n.to_string(), t.to_string()))
-            .collect::<std::collections::HashMap<String, String>>(),
-    );
+    let access_config = access_config(&[], &["local-cargo"]);
+    let registry_map = registry_map_for(&[("local-cargo", "cargo")]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let mode_map = RegistryModeMap::default();
     mode_map.insert("local-cargo".to_owned(), RegistryMode::Local);
@@ -8826,14 +8163,7 @@ async fn make_ns_upload_app(
         backend: backend.clone(),
         storage: storage.clone(),
         hot: new_hot_lock(HotConfig {
-            registries: HashMap::new(),
-            policies: HashMap::new(),
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: std::collections::HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         quota: None,
         ownership: None,
@@ -8846,12 +8176,7 @@ async fn make_ns_upload_app(
         hot: new_hot_lock(HotConfig {
             registries,
             policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage,
         cache,
@@ -8862,19 +8187,8 @@ async fn make_ns_upload_app(
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: [].iter().cloned().collect(),
-        user: [registry_name].iter().map(|s| s.to_string()).collect(),
-        admin: [registry_name].iter().map(|s| s.to_string()).collect(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(std::collections::HashMap::from([(
-        registry_name.to_string(),
-        registry_type.to_string(),
-    )]));
+    let access_config = access_config(&[], &[registry_name]);
+    let registry_map = registry_map_for(&[(registry_name, registry_type)]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let mode_map = RegistryModeMap::default();
     mode_map.insert(registry_name.to_owned(), RegistryMode::Local);
@@ -9464,12 +8778,7 @@ async fn make_banner_app() -> impl actix_web::dev::Service<
         hot: new_hot_lock(HotConfig {
             registries: HashMap::new(),
             policies: HashMap::new(),
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage,
         cache,
@@ -9480,15 +8789,7 @@ async fn make_banner_app() -> impl actix_web::dev::Service<
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: Default::default(),
-        user: Default::default(),
-        admin: Default::default(),
-        groups: Default::default(),
-        explore_anonymous: Default::default(),
-        explore_user: Default::default(),
-        explore_admin: Default::default(),
-    });
+    let access_config = access_config_for(&[]);
 
     let banner_store: Arc<dyn BannerPort> = Arc::new(InMemoryBannerStore::new());
     let banner_svc = Arc::new(BannerService::new(banner_store));
@@ -9632,12 +8933,7 @@ async fn reload_config_returns_503_when_disabled() {
         hot: new_hot_lock(HotConfig {
             registries: HashMap::new(),
             policies: HashMap::new(),
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage,
         cache,
@@ -9648,15 +8944,7 @@ async fn reload_config_returns_503_when_disabled() {
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: Default::default(),
-        user: Default::default(),
-        admin: Default::default(),
-        groups: Default::default(),
-        explore_anonymous: Default::default(),
-        explore_user: Default::default(),
-        explore_admin: Default::default(),
-    });
+    let access_config = access_config_for(&[]);
 
     let hot = proxy_svc.hot.clone();
     let builder: HotConfigBuilder = Arc::new(|_| anyhow::bail!("unused"));
@@ -10197,12 +9485,7 @@ async fn make_explore_app(
         hot: new_hot_lock(HotConfig {
             registries,
             policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage: storage.clone(),
         cache,
@@ -10224,19 +9507,14 @@ async fn make_explore_app(
         explore_user: regs.clone(),
         explore_admin: regs.clone(),
     });
-    let registry_map = batlehub_web::RegistryMap::from(
-        [
-            ("github", "github"),
-            ("npm", "npm"),
-            ("cargo", "cargo"),
-            ("openvsx", "openvsx"),
-            ("go", "goproxy"),
-            ("vscode", "vscode-marketplace"),
-        ]
-        .iter()
-        .map(|(n, t)| (n.to_string(), t.to_string()))
-        .collect::<HashMap<String, String>>(),
-    );
+    let registry_map = registry_map_for(&[
+        ("github", "github"),
+        ("npm", "npm"),
+        ("cargo", "cargo"),
+        ("openvsx", "openvsx"),
+        ("go", "goproxy"),
+        ("vscode", "vscode-marketplace"),
+    ]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let (app, _) = actix_web::App::new()
         .into_utoipa_app()
@@ -10576,12 +9854,7 @@ async fn make_rubygems_proxy_app() -> impl actix_web::dev::Service<
         hot: new_hot_lock(HotConfig {
             registries,
             policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage,
         cache,
@@ -10593,19 +9866,8 @@ async fn make_rubygems_proxy_app() -> impl actix_web::dev::Service<
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
 
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: ["gems"].iter().map(|s| s.to_string()).collect(),
-        user: ["gems"].iter().map(|s| s.to_string()).collect(),
-        admin: ["gems"].iter().map(|s| s.to_string()).collect(),
-        groups: HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(HashMap::from([(
-        "gems".to_string(),
-        "rubygems".to_string(),
-    )]));
+    let access_config = access_config_for(&["gems"]);
+    let registry_map = registry_map_for(&[("gems", "rubygems")]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let (app, _) = actix_web::App::new()
         .into_utoipa_app()
@@ -10833,12 +10095,7 @@ async fn make_local_nuget_app(
         hot: new_hot_lock(HotConfig {
             registries,
             policies,
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage,
         cache,
@@ -10848,53 +10105,19 @@ async fn make_local_nuget_app(
         sbom: None,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
-    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: [].iter().map(|s: &&str| s.to_string()).collect(),
-        user: ["local-nuget"].iter().map(|s| s.to_string()).collect(),
-        admin: ["local-nuget"].iter().map(|s| s.to_string()).collect(),
-        groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
-    });
-    let registry_map = batlehub_web::RegistryMap::from(
-        [("local-nuget", "nuget")]
-            .iter()
-            .map(|(n, t)| (n.to_string(), t.to_string()))
-            .collect::<std::collections::HashMap<String, String>>(),
-    );
-    let cargo_indexes = batlehub_web::CargoIndexMap::default();
     let mode_map = RegistryModeMap::default();
     mode_map.insert("local-nuget".to_owned(), mode);
 
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            None,
-            access_config,
-            registry_map,
-            batlehub_web::UpstreamMap::default(),
-            vec![],
-            std::collections::HashMap::new(),
-            std::collections::HashMap::new(), // eviction_map
-            Arc::new(ProxyMetrics::new(&[])),
-            None,
-            None,
-            None,                                       // notification_svc
-            Arc::new(InMemoryNotificationStore::new()), // notification_store
-            None,                                       // notifications_config
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(mode_map));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+    let parts = LocalRegistryAppParts {
+        proxy_svc,
+        admin_svc,
+        token_repo: Arc::new(NullTokenRepository),
+        access_config: access_config(&[], &["local-nuget"]),
+        registry_map: registry_map_for(&[("local-nuget", "nuget")]),
+        local_svc,
+        mode_map,
+    };
+    build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await
 }
 
 #[actix_web::test]
@@ -11209,12 +10432,7 @@ async fn cli_download_serves_binary_when_configured() {
         hot: new_hot_lock(HotConfig {
             registries: HashMap::new(),
             policies: HashMap::new(),
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         storage,
         cache,
@@ -11225,15 +10443,7 @@ async fn cli_download_serves_binary_when_configured() {
     });
     let admin_svc = Arc::new(AdminService::new(repo));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: Default::default(),
-        user: Default::default(),
-        admin: Default::default(),
-        groups: Default::default(),
-        explore_anonymous: Default::default(),
-        explore_user: Default::default(),
-        explore_admin: Default::default(),
-    });
+    let access_config = access_config_for(&[]);
 
     let (raw, _) = actix_web::App::new()
         .into_utoipa_app()
@@ -11243,7 +10453,7 @@ async fn cli_download_serves_binary_when_configured() {
             token_repo,
             None,
             access_config,
-            batlehub_web::RegistryMap::from(HashMap::new()),
+            registry_map_for(&[]),
             batlehub_web::UpstreamMap::default(),
             vec![],
             HashMap::new(),
@@ -11759,4 +10969,131 @@ async fn test_subscription_dispatch_failure_returns_400() {
         .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 400);
+}
+
+// ── SBOM endpoints ───────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn get_artifact_sbom_anonymous_returns_403() {
+    let repo = InMemorySbomRepository::new();
+    let sbom_svc = Arc::new(SbomService::new(repo, None, None));
+    let app = make_local_registry_app_with_sbom(RegistryMode::Local, Some(sbom_svc)).await;
+
+    let req = TestRequest::get()
+        .uri("/api/v1/sbom/local-cargo/my-crate/1.0.0")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn get_artifact_sbom_unknown_format_returns_400() {
+    let repo = InMemorySbomRepository::new();
+    let sbom_svc = Arc::new(SbomService::new(repo, None, None));
+    let app = make_local_registry_app_with_sbom(RegistryMode::Local, Some(sbom_svc)).await;
+
+    let req = TestRequest::get()
+        .uri("/api/v1/sbom/local-cargo/my-crate/1.0.0?format=bogus")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
+async fn get_artifact_sbom_not_found_returns_404() {
+    let repo = InMemorySbomRepository::new();
+    let sbom_svc = Arc::new(SbomService::new(repo, None, None));
+    let app = make_local_registry_app_with_sbom(RegistryMode::Local, Some(sbom_svc)).await;
+
+    let req = TestRequest::get()
+        .uri("/api/v1/sbom/local-cargo/my-crate/1.0.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn get_artifact_sbom_returns_document() {
+    let repo = InMemorySbomRepository::new();
+    repo.upsert_sbom(ArtifactSbom {
+        id: Uuid::new_v4(),
+        artifact_key: "cargo/my-crate/1.0.0".to_owned(),
+        registry: "local-cargo".to_owned(),
+        package_name: "my-crate".to_owned(),
+        version: "1.0.0".to_owned(),
+        format: SbomFormat::Spdx,
+        spec_version: "SPDX-2.3".to_owned(),
+        document: serde_json::json!({"spdxVersion": "SPDX-2.3", "name": "my-crate"}),
+        source: SbomSource::Generated,
+        created_at: Utc::now(),
+    })
+    .await
+    .unwrap();
+    let sbom_svc = Arc::new(SbomService::new(repo, None, None));
+    let app = make_local_registry_app_with_sbom(RegistryMode::Local, Some(sbom_svc)).await;
+
+    let req = TestRequest::get()
+        .uri("/api/v1/sbom/local-cargo/my-crate/1.0.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers().get("content-type").unwrap(),
+        "application/json"
+    );
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["spdxVersion"], "SPDX-2.3");
+}
+
+#[actix_web::test]
+async fn export_org_sbom_non_admin_returns_403() {
+    let repo = InMemorySbomRepository::new();
+    let sbom_svc = Arc::new(SbomService::new(repo, None, None));
+    let app = make_local_registry_app_with_sbom(RegistryMode::Local, Some(sbom_svc)).await;
+
+    let req = TestRequest::get()
+        .uri("/api/v1/sbom/export")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn export_org_sbom_unknown_format_returns_400() {
+    let repo = InMemorySbomRepository::new();
+    let sbom_svc = Arc::new(SbomService::new(repo, None, None));
+    let app = make_local_registry_app_with_sbom(RegistryMode::Local, Some(sbom_svc)).await;
+
+    let req = TestRequest::get()
+        .uri("/api/v1/sbom/export?format=bogus")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
+async fn export_org_sbom_returns_attachment() {
+    let repo = InMemorySbomRepository::new();
+    let sbom_svc = Arc::new(SbomService::new(repo, None, None));
+    let app = make_local_registry_app_with_sbom(RegistryMode::Local, Some(sbom_svc)).await;
+
+    let req = TestRequest::get()
+        .uri("/api/v1/sbom/export")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let disposition = resp
+        .headers()
+        .get("Content-Disposition")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(disposition.starts_with("attachment; filename=\"sbom-export-all-"));
+    assert!(disposition.ends_with("spdx.json\""));
 }

@@ -327,12 +327,7 @@ impl RealProxy {
             hot: new_hot_lock(HotConfig {
                 registries: HashMap::new(),
                 policies: HashMap::new(),
-                versioning: HashMap::new(),
-                signing: HashMap::new(),
-                sbom: HashMap::new(),
-                feature_flags: HashMap::new(),
-                beta_channel: HashMap::new(),
-                max_artifact_size_bytes: None,
+                ..Default::default()
             }),
             quota: None,
             ownership: None,
@@ -345,12 +340,7 @@ impl RealProxy {
             hot: new_hot_lock(HotConfig {
                 registries,
                 policies,
-                versioning: HashMap::new(),
-                signing: HashMap::new(),
-                sbom: HashMap::new(),
-                feature_flags: HashMap::new(),
-                beta_channel: HashMap::new(),
-                max_artifact_size_bytes: None,
+                ..Default::default()
             }),
             storage,
             cache,
@@ -473,12 +463,7 @@ impl RealProxy {
             hot: new_hot_lock(HotConfig {
                 registries: HashMap::new(),
                 policies: HashMap::new(),
-                versioning: HashMap::new(),
-                signing: HashMap::new(),
-                sbom: HashMap::new(),
-                feature_flags: HashMap::new(),
-                beta_channel: HashMap::new(),
-                max_artifact_size_bytes: None,
+                ..Default::default()
             }),
             quota: None,
             ownership: None,
@@ -491,12 +476,7 @@ impl RealProxy {
             hot: new_hot_lock(HotConfig {
                 registries: HashMap::new(),
                 policies,
-                versioning: HashMap::new(),
-                signing: HashMap::new(),
-                sbom: HashMap::new(),
-                feature_flags: HashMap::new(),
-                beta_channel: HashMap::new(),
-                max_artifact_size_bytes: None,
+                ..Default::default()
             }),
             storage,
             cache,

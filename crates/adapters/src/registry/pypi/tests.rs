@@ -118,3 +118,110 @@ async fn list_versions_parses_releases() {
     let versions = client.list_versions("requests").await.unwrap();
     assert_eq!(versions, vec!["2.27.0", "2.28.0", "2.28.1"]);
 }
+
+// ── fetch_simple_page ──────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn fetch_simple_page_returns_body_and_content_type() {
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("GET", "/simple/my-package/")
+        .with_status(200)
+        .with_header("content-type", "text/html")
+        .with_body("<html><body>index</body></html>")
+        .create_async()
+        .await;
+
+    let client = reqwest::Client::new();
+    let (body, content_type) = fetch_simple_page(&client, &server.url(), "My_Package", None, None)
+        .await
+        .unwrap();
+
+    assert_eq!(&body[..], b"<html><body>index</body></html>");
+    assert_eq!(content_type.as_deref(), Some("text/html"));
+    mock.assert_async().await;
+}
+
+#[tokio::test]
+async fn fetch_simple_page_404_returns_not_found() {
+    let mut server = mockito::Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/simple/nonexistent/")
+        .with_status(404)
+        .create_async()
+        .await;
+
+    let client = reqwest::Client::new();
+    let err = fetch_simple_page(&client, &server.url(), "nonexistent", None, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, CoreError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn fetch_simple_page_500_returns_registry_error() {
+    let mut server = mockito::Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/simple/broken/")
+        .with_status(500)
+        .create_async()
+        .await;
+
+    let client = reqwest::Client::new();
+    let err = fetch_simple_page(&client, &server.url(), "broken", None, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, CoreError::Registry(_)));
+}
+
+#[tokio::test]
+async fn fetch_simple_page_sends_basic_auth_and_accept_headers() {
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("GET", "/simple/private-pkg/")
+        .match_header("authorization", mockito::Matcher::Regex("^Basic .*".into()))
+        .match_header("accept", "application/vnd.pypi.simple.v1+json")
+        .with_status(200)
+        .with_header("content-type", "application/vnd.pypi.simple.v1+json")
+        .with_body("{}")
+        .create_async()
+        .await;
+
+    let client = reqwest::Client::new();
+    let auth = ("user".to_owned(), "pass".to_owned());
+    let (_body, content_type) = fetch_simple_page(
+        &client,
+        &server.url(),
+        "private-pkg",
+        Some(&auth),
+        Some("application/vnd.pypi.simple.v1+json"),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        content_type.as_deref(),
+        Some("application/vnd.pypi.simple.v1+json")
+    );
+    mock.assert_async().await;
+}
+
+// ── rewrite_file_url (via rewrite_simple_json) ────────────────────────────
+
+#[test]
+fn rewrite_simple_json_leaves_slashless_url_unchanged() {
+    let json = serde_json::json!({
+        "files": [
+            { "filename": "foo", "url": "no-slash-url" }
+        ]
+    });
+    let body = serde_json::to_vec(&json).unwrap();
+    let out = rewrite_simple_page(
+        &body,
+        Some("application/vnd.pypi.simple.v1+json"),
+        "my-pypi",
+        "http://localhost",
+    );
+    let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(parsed["files"][0]["url"].as_str().unwrap(), "no-slash-url");
+}

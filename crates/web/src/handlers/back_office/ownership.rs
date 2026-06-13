@@ -4,10 +4,22 @@ use actix_web::{delete, get, post, web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use batlehub_core::{ports::OwnerEntry, services::LocalRegistryService};
+use batlehub_core::{
+    ports::{OwnerEntry, OwnershipPort},
+    services::LocalRegistryService,
+};
 
 use super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity};
+
+fn require_ownership(
+    local_svc: &LocalRegistryService,
+) -> Result<&Arc<dyn OwnershipPort>, AppError> {
+    local_svc
+        .ownership
+        .as_ref()
+        .ok_or_else(|| AppError::service_unavailable("ownership not configured"))
+}
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct OwnerEntryDto {
@@ -127,10 +139,7 @@ pub async fn list_package_owners(
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
     let (registry, name) = path.into_inner();
-    let ownership = local_svc
-        .ownership
-        .as_ref()
-        .ok_or_else(|| AppError::service_unavailable("ownership not configured"))?;
+    let ownership = require_ownership(&local_svc)?;
     let owners: Vec<OwnerEntryDto> = ownership
         .list_owners(&registry, &name)
         .await
@@ -168,10 +177,7 @@ pub async fn add_package_owner(
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
     let (registry, name) = path.into_inner();
-    let ownership = local_svc
-        .ownership
-        .as_ref()
-        .ok_or_else(|| AppError::service_unavailable("ownership not configured"))?;
+    let ownership = require_ownership(&local_svc)?;
     ownership
         .add_owner(
             &registry,
@@ -216,10 +222,7 @@ pub async fn remove_package_owner(
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
     let (registry, name, principal_type, principal_id) = path.into_inner();
-    let ownership = local_svc
-        .ownership
-        .as_ref()
-        .ok_or_else(|| AppError::service_unavailable("ownership not configured"))?;
+    let ownership = require_ownership(&local_svc)?;
     ownership
         .remove_owner(&registry, &name, &principal_type, &principal_id)
         .await

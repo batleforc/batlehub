@@ -314,3 +314,119 @@ async fn fetch_version_published_at_returns_none_when_field_absent() {
     let ts = modules::fetch_version_published_at(&client, &pkg).await;
     assert!(ts.is_none(), "missing published_at field should yield None");
 }
+
+#[tokio::test]
+async fn search_providers_namespace_listing() {
+    let mut server = Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/v1/providers/hashicorp")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{"providers":[
+                {"namespace":"hashicorp","name":"aws","version":"5.0.0","description":"AWS provider"},
+                {"namespace":"hashicorp","name":"azurerm","description":null}
+            ]}"#,
+        )
+        .create_async()
+        .await;
+
+    let client = TerraformRegistryClient::new(server.url(), &Default::default()).unwrap();
+    let results = providers::search_providers(&client, &server.url(), "hashicorp", 10).await;
+
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].name, "providers/hashicorp/aws");
+    assert_eq!(results[0].latest_version, "5.0.0");
+    assert_eq!(results[0].description.as_deref(), Some("AWS provider"));
+    assert_eq!(results[1].name, "providers/hashicorp/azurerm");
+    // Missing `version` field falls back to "latest".
+    assert_eq!(results[1].latest_version, "latest");
+    assert_eq!(results[1].description, None);
+}
+
+#[tokio::test]
+async fn search_providers_namespace_listing_respects_limit() {
+    let mut server = Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/v1/providers/hashicorp")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{"providers":[
+                {"namespace":"hashicorp","name":"aws","version":"5.0.0"},
+                {"namespace":"hashicorp","name":"azurerm","version":"3.0.0"}
+            ]}"#,
+        )
+        .create_async()
+        .await;
+
+    let client = TerraformRegistryClient::new(server.url(), &Default::default()).unwrap();
+    let results = providers::search_providers(&client, &server.url(), "hashicorp", 1).await;
+
+    assert_eq!(results.len(), 1, "results should be capped by `per`");
+}
+
+#[tokio::test]
+async fn search_providers_exact_namespace_type_lookup() {
+    let mut server = Server::new_async().await;
+    // Namespace listing for a query containing '/' is unlikely to match anything real;
+    // leave it unmocked (mockito returns a non-2xx for unmatched requests, so
+    // `fetch_json` returns `None` and contributes no results).
+    let _exact_mock = server
+        .mock("GET", "/v1/providers/hashicorp/aws/versions")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"providers":[{"namespace":"hashicorp","name":"aws","version":"5.0.0"}]}"#)
+        .create_async()
+        .await;
+
+    let client = TerraformRegistryClient::new(server.url(), &Default::default()).unwrap();
+    let results = providers::search_providers(&client, &server.url(), "hashicorp/aws", 10).await;
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].name, "providers/hashicorp/aws");
+    assert_eq!(results[0].latest_version, "5.0.0");
+}
+
+#[tokio::test]
+async fn search_modules_returns_results() {
+    let mut server = Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/v1/modules/search")
+        .match_query(mockito::Matcher::Any)
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{"modules":[
+                {"namespace":"terraform-aws-modules","name":"vpc","provider":"aws","version":"5.0.0","description":"VPC module"}
+            ]}"#,
+        )
+        .create_async()
+        .await;
+
+    let client = TerraformRegistryClient::new(server.url(), &Default::default()).unwrap();
+    let results = providers::search_modules(&client, &server.url(), "vpc", 10).await;
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].name, "modules/terraform-aws-modules/vpc/aws");
+    assert_eq!(results[0].latest_version, "5.0.0");
+    assert_eq!(results[0].description.as_deref(), Some("VPC module"));
+}
+
+#[tokio::test]
+async fn search_modules_no_match_returns_empty() {
+    let mut server = Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/v1/modules/search")
+        .match_query(mockito::Matcher::Any)
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"modules":[]}"#)
+        .create_async()
+        .await;
+
+    let client = TerraformRegistryClient::new(server.url(), &Default::default()).unwrap();
+    let results = providers::search_modules(&client, &server.url(), "doesnotexist", 10).await;
+
+    assert!(results.is_empty());
+}

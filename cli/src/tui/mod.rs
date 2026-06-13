@@ -1,4 +1,5 @@
 mod help;
+mod list_nav;
 mod login;
 mod package_detail;
 mod package_list;

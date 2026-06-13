@@ -47,8 +47,10 @@ export function useApi<T>(
     }
   }
 
+  const watched = [...deps, tick];
+
   watchEffect(() => {
-    [...deps, tick].forEach((d) => d.value);
+    watched.forEach((d) => d.value);
     void run();
   });
 

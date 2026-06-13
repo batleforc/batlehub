@@ -19,6 +19,29 @@ fn require_github(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     }
 }
 
+/// Validate the registry, build the `PackageId` for a GitHub resource, and stream it
+/// from upstream/cache.
+///
+/// `artifact` is appended via `PackageId::with_artifact` when present.
+#[allow(clippy::too_many_arguments)]
+async fn github_proxy(
+    registry: &str,
+    repo: String,
+    pkg_ref: impl Into<String>,
+    artifact: Option<String>,
+    scope: &str,
+    svc: web::Data<Arc<ProxyService>>,
+    identity: AuthIdentity,
+    map: &RegistryMap,
+) -> Result<impl Responder, AppError> {
+    require_github(registry, map)?;
+    let mut pkg = PackageId::new(registry, repo, pkg_ref);
+    if let Some(artifact) = artifact {
+        pkg = pkg.with_artifact(artifact);
+    }
+    proxy_stream(svc, pkg, identity, scope, None).await
+}
+
 /// List GitHub releases for a repository.
 #[utoipa::path(
     get,
@@ -45,9 +68,17 @@ pub async fn list_releases(
     map: web::Data<RegistryMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, owner, repo) = path.into_inner();
-    require_github(&registry, &map)?;
-    let pkg = PackageId::new(&registry, format!("{owner}/{repo}"), "releases");
-    proxy_stream(svc, pkg, identity, "releases:read", None).await
+    github_proxy(
+        &registry,
+        format!("{owner}/{repo}"),
+        "releases",
+        None,
+        "releases:read",
+        svc,
+        identity,
+        &map,
+    )
+    .await
 }
 
 /// Get a specific GitHub release by tag.
@@ -76,9 +107,17 @@ pub async fn get_release(
     map: web::Data<RegistryMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, owner, repo, tag) = path.into_inner();
-    require_github(&registry, &map)?;
-    let pkg = PackageId::new(&registry, format!("{owner}/{repo}"), tag);
-    proxy_stream(svc, pkg, identity, "releases:read", None).await
+    github_proxy(
+        &registry,
+        format!("{owner}/{repo}"),
+        tag,
+        None,
+        "releases:read",
+        svc,
+        identity,
+        &map,
+    )
+    .await
 }
 
 /// Download a GitHub release asset by ID.
@@ -108,14 +147,22 @@ pub async fn download_asset(
     req: HttpRequest,
 ) -> Result<impl Responder, AppError> {
     let (registry, owner, repo, asset_id) = path.into_inner();
-    require_github(&registry, &map)?;
     let tag =
         web::Query::<std::collections::HashMap<String, String>>::from_query(req.query_string())
             .ok()
             .and_then(|q| q.into_inner().remove("tag"))
             .unwrap_or_else(|| "unknown".to_owned());
-    let pkg = PackageId::new(&registry, format!("{owner}/{repo}"), tag).with_artifact(&asset_id);
-    proxy_stream(svc, pkg, identity, "releases:read", None).await
+    github_proxy(
+        &registry,
+        format!("{owner}/{repo}"),
+        tag,
+        Some(asset_id),
+        "releases:read",
+        svc,
+        identity,
+        &map,
+    )
+    .await
 }
 
 /// Download a GitHub release asset by filename.
@@ -145,10 +192,17 @@ pub async fn download_asset_by_name(
     map: web::Data<RegistryMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, owner, repo, tag, filename) = path.into_inner();
-    require_github(&registry, &map)?;
-    let pkg = PackageId::new(&registry, format!("{owner}/{repo}"), tag)
-        .with_artifact(format!("filename/{filename}"));
-    proxy_stream(svc, pkg, identity, "releases:read", None).await
+    github_proxy(
+        &registry,
+        format!("{owner}/{repo}"),
+        tag,
+        Some(format!("filename/{filename}")),
+        "releases:read",
+        svc,
+        identity,
+        &map,
+    )
+    .await
 }
 
 /// Download a GitHub source tarball.
@@ -177,10 +231,18 @@ pub async fn download_tarball(
     map: web::Data<RegistryMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, owner, repo, tag) = path.into_inner();
-    require_github(&registry, &map)?;
-    let pkg = PackageId::new(&registry, format!("{owner}/{repo}"), &tag)
-        .with_artifact(format!("tarball/{tag}"));
-    proxy_stream(svc, pkg, identity, "source:read", None).await
+    let artifact = format!("tarball/{tag}");
+    github_proxy(
+        &registry,
+        format!("{owner}/{repo}"),
+        tag,
+        Some(artifact),
+        "source:read",
+        svc,
+        identity,
+        &map,
+    )
+    .await
 }
 
 /// Download a GitHub zip archive.
@@ -209,9 +271,17 @@ pub async fn download_zipball(
     map: web::Data<RegistryMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, owner, repo, tag) = path.into_inner();
-    require_github(&registry, &map)?;
-    let pkg = PackageId::new(&registry, format!("{owner}/{repo}"), &tag).with_artifact("zipball");
-    proxy_stream(svc, pkg, identity, "source:read", None).await
+    github_proxy(
+        &registry,
+        format!("{owner}/{repo}"),
+        tag,
+        Some("zipball".to_owned()),
+        "source:read",
+        svc,
+        identity,
+        &map,
+    )
+    .await
 }
 
 /// Download a raw file from a GitHub repository.
@@ -241,8 +311,16 @@ pub async fn download_raw(
     map: web::Data<RegistryMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, owner, repo, git_ref, file_path) = path.into_inner();
-    require_github(&registry, &map)?;
-    let pkg = PackageId::new(&registry, format!("{owner}/{repo}"), git_ref)
-        .with_artifact(format!("raw/{file_path}"));
-    proxy_stream(svc, pkg, identity, "source:read", None).await
+    let artifact = format!("raw/{file_path}");
+    github_proxy(
+        &registry,
+        format!("{owner}/{repo}"),
+        git_ref,
+        Some(artifact),
+        "source:read",
+        svc,
+        identity,
+        &map,
+    )
+    .await
 }

@@ -236,3 +236,166 @@ fn parse_conda_metadata_tar_bz2() {
     assert_eq!(info.build, "py311h0_0");
     assert_eq!(info.depends, vec!["python >=3.11"]);
 }
+
+#[cfg(feature = "local-registry")]
+#[test]
+fn parse_conda_metadata_conda_format() {
+    use std::io::Write;
+
+    let index_json = serde_json::json!({
+        "name": "test-pkg",
+        "version": "2.0.0",
+        "build": "py311h0_1",
+        "build_number": 1,
+        "depends": ["python >=3.11"],
+        "subdir": "linux-64"
+    });
+    let index_bytes = serde_json::to_vec(&index_json).unwrap();
+
+    // tar containing info/index.json
+    let mut tar_bytes = Vec::new();
+    {
+        let mut tar_builder = tar::Builder::new(&mut tar_bytes);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(index_bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar_builder
+            .append_data(&mut header, "info/index.json", index_bytes.as_slice())
+            .unwrap();
+        tar_builder.finish().unwrap();
+    }
+
+    // zstd-compress the tar
+    let mut encoder = zstd::Encoder::new(Vec::new(), 0).unwrap();
+    encoder.write_all(&tar_bytes).unwrap();
+    let zst_bytes = encoder.finish().unwrap();
+
+    // ZIP containing info-test.tar.zst
+    let mut zip_bytes = Vec::new();
+    {
+        let cursor = std::io::Cursor::new(&mut zip_bytes);
+        let mut zip = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("info-test.tar.zst", options).unwrap();
+        zip.write_all(&zst_bytes).unwrap();
+        zip.finish().unwrap();
+    }
+
+    let info = parse_conda_metadata(&zip_bytes).unwrap();
+    assert_eq!(info.name, "test-pkg");
+    assert_eq!(info.version, "2.0.0");
+    assert_eq!(info.build, "py311h0_1");
+    assert_eq!(info.build_number, 1);
+    assert_eq!(info.depends, vec!["python >=3.11"]);
+}
+
+#[cfg(feature = "local-registry")]
+#[test]
+fn parse_conda_metadata_conda_format_missing_info_entry() {
+    let mut zip_bytes = Vec::new();
+    {
+        let cursor = std::io::Cursor::new(&mut zip_bytes);
+        let mut zip = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("not-info.txt", options).unwrap();
+        zip.finish().unwrap();
+    }
+
+    let err = parse_conda_metadata(&zip_bytes).unwrap_err();
+    assert!(matches!(err, CoreError::Registry(_)));
+}
+
+// ── lookup_file_in_repodata (via resolve_metadata) ─────────────────────────
+
+#[tokio::test]
+async fn lookup_file_in_repodata_404_returns_not_found() {
+    let mut server = mockito::Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/linux-64/repodata.json")
+        .with_status(404)
+        .create_async()
+        .await;
+
+    let opts = UpstreamHttpOptions::default();
+    let client = CondaRegistryClient::new(server.url(), &opts).unwrap();
+    let pkg = PackageId::new("reg", "numpy-1.26.0-py311h0", "linux-64")
+        .with_artifact("numpy-1.26.0-py311h0.tar.bz2");
+    let err = client.resolve_metadata(&pkg).await.unwrap_err();
+    assert!(matches!(err, CoreError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn lookup_file_in_repodata_non_success_returns_registry_error() {
+    let mut server = mockito::Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/linux-64/repodata.json")
+        .with_status(500)
+        .create_async()
+        .await;
+
+    let opts = UpstreamHttpOptions::default();
+    let client = CondaRegistryClient::new(server.url(), &opts).unwrap();
+    let pkg = PackageId::new("reg", "numpy-1.26.0-py311h0", "linux-64")
+        .with_artifact("numpy-1.26.0-py311h0.tar.bz2");
+    let err = client.resolve_metadata(&pkg).await.unwrap_err();
+    assert!(matches!(err, CoreError::Registry(_)));
+}
+
+#[tokio::test]
+async fn lookup_file_in_repodata_invalid_json_returns_registry_error() {
+    let mut server = mockito::Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/linux-64/repodata.json")
+        .with_status(200)
+        .with_body("not json")
+        .create_async()
+        .await;
+
+    let opts = UpstreamHttpOptions::default();
+    let client = CondaRegistryClient::new(server.url(), &opts).unwrap();
+    let pkg = PackageId::new("reg", "numpy-1.26.0-py311h0", "linux-64")
+        .with_artifact("numpy-1.26.0-py311h0.tar.bz2");
+    let err = client.resolve_metadata(&pkg).await.unwrap_err();
+    assert!(matches!(err, CoreError::Registry(_)));
+}
+
+#[tokio::test]
+async fn lookup_file_in_repodata_filename_not_found_returns_not_found() {
+    let mut server = mockito::Server::new_async().await;
+    let repodata = serde_json::json!({ "packages": {}, "packages.conda": {} });
+    let _mock = server
+        .mock("GET", "/linux-64/repodata.json")
+        .with_status(200)
+        .with_body(repodata.to_string())
+        .create_async()
+        .await;
+
+    let opts = UpstreamHttpOptions::default();
+    let client = CondaRegistryClient::new(server.url(), &opts).unwrap();
+    let pkg = PackageId::new("reg", "numpy-1.26.0-py311h0", "linux-64")
+        .with_artifact("numpy-1.26.0-py311h0.tar.bz2");
+    let err = client.resolve_metadata(&pkg).await.unwrap_err();
+    assert!(matches!(err, CoreError::NotFound(_)));
+}
+
+// ── fetch_platform_versions ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn fetch_platform_versions_invalid_json_returns_empty() {
+    let mut server = mockito::Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/linux-64/repodata.json")
+        .with_status(200)
+        .with_body("not json")
+        .create_async()
+        .await;
+
+    let opts = UpstreamHttpOptions::default();
+    let client = CondaRegistryClient::new(server.url(), &opts).unwrap();
+    let base = server.url();
+    let versions = client
+        .fetch_platform_versions(&base, "linux-64", "numpy")
+        .await;
+    assert!(versions.is_empty());
+}

@@ -333,4 +333,198 @@ mod tests {
         assert!(refresh.is_none());
         assert!(expires.is_none());
     }
+
+    #[test]
+    fn url_decode_handles_plus_and_percent_escapes() {
+        assert_eq!(url_decode("a+b%20c"), "a b c");
+    }
+
+    #[test]
+    fn url_decode_passes_through_trailing_percent() {
+        assert_eq!(url_decode("100%"), "100%");
+    }
+
+    #[test]
+    fn percent_encode_escapes_reserved_chars() {
+        assert_eq!(percent_encode("a b/c"), "a%20b%2Fc");
+        assert_eq!(percent_encode("safe-_.~chars"), "safe-_.~chars");
+    }
+
+    // ── get_oidc_login_url ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_oidc_login_url_returns_location_header() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/api/v1/auth/oidc/login")
+            .match_query(mockito::Matcher::Any)
+            .with_status(302)
+            .with_header("Location", "https://idp.example.com/authorize?state=abc")
+            .create_async()
+            .await;
+
+        let url = get_oidc_login_url(&server.url(), "abc", Some("github"))
+            .await
+            .unwrap();
+        assert_eq!(url, "https://idp.example.com/authorize?state=abc");
+    }
+
+    #[tokio::test]
+    async fn get_oidc_login_url_service_unavailable_errors() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/api/v1/auth/oidc/login")
+            .match_query(mockito::Matcher::Any)
+            .with_status(503)
+            .create_async()
+            .await;
+
+        let err = get_oidc_login_url(&server.url(), "abc", None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not configured"));
+    }
+
+    #[tokio::test]
+    async fn get_oidc_login_url_non_redirect_status_errors() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/api/v1/auth/oidc/login")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let err = get_oidc_login_url(&server.url(), "abc", None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("unexpected status"));
+    }
+
+    #[tokio::test]
+    async fn get_oidc_login_url_missing_location_header_errors() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/api/v1/auth/oidc/login")
+            .match_query(mockito::Matcher::Any)
+            .with_status(302)
+            .create_async()
+            .await;
+
+        let err = get_oidc_login_url(&server.url(), "abc", None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("did not return a redirect"));
+    }
+
+    // ── oidc_refresh ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn oidc_refresh_success_returns_tokens() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/api/v1/auth/oidc/refresh")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "access_token": "new-access",
+                    "refresh_token": "new-refresh",
+                    "expires_in": 3600
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let (access, refresh, expires) = oidc_refresh(&server.url(), "old-refresh", Some("github"))
+            .await
+            .unwrap();
+        assert_eq!(access, "new-access");
+        assert_eq!(refresh.as_deref(), Some("new-refresh"));
+        assert_eq!(expires, Some(3600));
+    }
+
+    #[tokio::test]
+    async fn oidc_refresh_failure_includes_body() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/api/v1/auth/oidc/refresh")
+            .with_status(400)
+            .with_body("invalid_grant")
+            .create_async()
+            .await;
+
+        let err = oidc_refresh(&server.url(), "bad-refresh", None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("invalid_grant"));
+    }
+
+    // ── list_oidc_providers ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_oidc_providers_returns_names() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/api/v1/auth/oidc/providers")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(serde_json::json!([{"name": "google"}, {"name": "github"}]).to_string())
+            .create_async()
+            .await;
+
+        let client = BatleHubClient::new(&server.url(), None).unwrap();
+        let providers = list_oidc_providers(&client).await.unwrap();
+        assert_eq!(providers, vec!["google".to_string(), "github".to_string()]);
+    }
+
+    // ── resolve_token ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn resolve_token_returns_stored_token_when_not_expiring() {
+        let mut cfg = ConfigFile::default();
+        cfg.default.token = Some("stored-token".into());
+        cfg.default.oidc_expires_at = Some(Utc::now().timestamp() + 3600);
+        cfg.default.oidc_refresh_token = Some("refresh".into());
+
+        let token = resolve_token("http://localhost", None, &mut cfg)
+            .await
+            .unwrap();
+        assert_eq!(token.as_deref(), Some("stored-token"));
+    }
+
+    #[tokio::test]
+    async fn resolve_token_reads_kubernetes_token_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let token_file = dir.path().join("sa-token");
+        std::fs::write(&token_file, "  k8s-token-value\n").unwrap();
+
+        let mut cfg = ConfigFile::default();
+        cfg.default.kubernetes_token_path = Some(token_file.to_str().unwrap().to_string());
+
+        let token = resolve_token("http://localhost", None, &mut cfg)
+            .await
+            .unwrap();
+        assert_eq!(token.as_deref(), Some("k8s-token-value"));
+    }
+
+    #[tokio::test]
+    async fn resolve_token_refresh_failure_falls_back_to_stored_token() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/api/v1/auth/oidc/refresh")
+            .with_status(500)
+            .with_body("server error")
+            .create_async()
+            .await;
+
+        let mut cfg = ConfigFile::default();
+        cfg.default.token = Some("stale-token".into());
+        cfg.default.oidc_expires_at = Some(Utc::now().timestamp() - 10); // already expired
+        cfg.default.oidc_refresh_token = Some("refresh-token".into());
+
+        let token = resolve_token(&server.url(), None, &mut cfg).await.unwrap();
+        assert_eq!(token.as_deref(), Some("stale-token"));
+    }
 }

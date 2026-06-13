@@ -4,10 +4,37 @@ use actix_web::{post, web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use batlehub_core::services::LocalRegistryService;
+use batlehub_core::{ports::BulkResult, services::LocalRegistryService};
 
 use super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity};
+
+/// Flatten a `BulkPackageRequest` into the `(name, version)` pairs expected by
+/// `LocalRegistryBackend::bulk_*`.
+fn bulk_items(body: web::Json<BulkPackageRequest>) -> Vec<(String, String)> {
+    body.into_inner()
+        .packages
+        .into_iter()
+        .map(|p| (p.name, p.version))
+        .collect()
+}
+
+/// Convert a `BulkResult` into the API response DTO.
+fn bulk_response(result: BulkResult) -> BulkPackageResponse {
+    BulkPackageResponse {
+        processed: result.processed,
+        succeeded: result.succeeded,
+        failed: result
+            .failed
+            .into_iter()
+            .map(|(name, version, error)| BulkPackageFailureDto {
+                name,
+                version,
+                error,
+            })
+            .collect(),
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -87,30 +114,13 @@ pub async fn bulk_yank(
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
     let registry = path.into_inner();
-    let items: Vec<(String, String)> = body
-        .into_inner()
-        .packages
-        .into_iter()
-        .map(|p| (p.name, p.version))
-        .collect();
+    let items = bulk_items(body);
     let result = local_svc
         .backend
         .bulk_yank(&registry, &items)
         .await
         .map_err(AppError::from)?;
-    Ok(HttpResponse::Ok().json(BulkPackageResponse {
-        processed: result.processed,
-        succeeded: result.succeeded,
-        failed: result
-            .failed
-            .into_iter()
-            .map(|(name, version, error)| BulkPackageFailureDto {
-                name,
-                version,
-                error,
-            })
-            .collect(),
-    }))
+    Ok(HttpResponse::Ok().json(bulk_response(result)))
 }
 
 /// Bulk-unyank versions in a local/hybrid registry (admin).
@@ -135,30 +145,13 @@ pub async fn bulk_unyank(
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
     let registry = path.into_inner();
-    let items: Vec<(String, String)> = body
-        .into_inner()
-        .packages
-        .into_iter()
-        .map(|p| (p.name, p.version))
-        .collect();
+    let items = bulk_items(body);
     let result = local_svc
         .backend
         .bulk_unyank(&registry, &items)
         .await
         .map_err(AppError::from)?;
-    Ok(HttpResponse::Ok().json(BulkPackageResponse {
-        processed: result.processed,
-        succeeded: result.succeeded,
-        failed: result
-            .failed
-            .into_iter()
-            .map(|(name, version, error)| BulkPackageFailureDto {
-                name,
-                version,
-                error,
-            })
-            .collect(),
-    }))
+    Ok(HttpResponse::Ok().json(bulk_response(result)))
 }
 
 /// Bulk-delete versions from a local/hybrid registry (admin).
@@ -183,28 +176,11 @@ pub async fn bulk_delete(
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
     let registry = path.into_inner();
-    let items: Vec<(String, String)> = body
-        .into_inner()
-        .packages
-        .into_iter()
-        .map(|p| (p.name, p.version))
-        .collect();
+    let items = bulk_items(body);
     let result = local_svc
         .backend
         .bulk_remove_versions(&registry, &items)
         .await
         .map_err(AppError::from)?;
-    Ok(HttpResponse::Ok().json(BulkPackageResponse {
-        processed: result.processed,
-        succeeded: result.succeeded,
-        failed: result
-            .failed
-            .into_iter()
-            .map(|(name, version, error)| BulkPackageFailureDto {
-                name,
-                version,
-                error,
-            })
-            .collect(),
-    }))
+    Ok(HttpResponse::Ok().json(bulk_response(result)))
 }

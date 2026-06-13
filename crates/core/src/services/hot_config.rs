@@ -92,6 +92,24 @@ pub struct HotConfig {
     pub max_artifact_size_bytes: Option<u64>,
 }
 
+impl Default for HotConfig {
+    /// All maps empty, no size limit. Useful as a base for `..Default::default()`
+    /// when only `registries`/`policies` (and occasionally one or two other fields)
+    /// need to be set.
+    fn default() -> Self {
+        Self {
+            registries: HashMap::new(),
+            policies: HashMap::new(),
+            versioning: HashMap::new(),
+            signing: HashMap::new(),
+            sbom: HashMap::new(),
+            feature_flags: HashMap::new(),
+            beta_channel: HashMap::new(),
+            max_artifact_size_bytes: None,
+        }
+    }
+}
+
 /// Convenience alias: the shared hot-config lock used across services.
 pub type HotConfigLock = Arc<RwLock<HotConfig>>;
 
@@ -102,21 +120,10 @@ pub fn new_hot_lock(cfg: HotConfig) -> HotConfigLock {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::{new_hot_lock, HotConfig};
 
     fn empty_config() -> HotConfig {
-        HotConfig {
-            registries: HashMap::new(),
-            policies: HashMap::new(),
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
-        }
+        HotConfig::default()
     }
 
     #[test]

@@ -1017,6 +1017,7 @@ dependencies = [
  "comfy-table",
  "crossterm",
  "dirs",
+ "mockito",
  "ratatui",
  "reqwest",
  "serde",

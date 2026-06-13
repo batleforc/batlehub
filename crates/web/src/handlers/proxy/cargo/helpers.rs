@@ -125,3 +125,199 @@ pub(super) fn metadata_to_index_entry(
         v: None,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::{BufMut, BytesMut};
+
+    /// Build a valid Cargo publish wire-format body:
+    /// `[4B LE meta_len][meta JSON][4B LE crate_len][crate bytes]`.
+    fn build_body(meta: &serde_json::Value, crate_bytes: &[u8]) -> Bytes {
+        let meta_bytes = serde_json::to_vec(meta).unwrap();
+        let mut buf = BytesMut::new();
+        buf.put_u32_le(meta_bytes.len() as u32);
+        buf.put_slice(&meta_bytes);
+        buf.put_u32_le(crate_bytes.len() as u32);
+        buf.put_slice(crate_bytes);
+        buf.freeze()
+    }
+
+    // ── parse_publish_body ──────────────────────────────────────────────────
+
+    #[test]
+    fn parse_publish_body_too_short_for_meta_len() {
+        let body = Bytes::from_static(&[1, 2, 3]);
+        let err = parse_publish_body(body).unwrap_err();
+        assert!(err.contains("missing metadata length"), "{err}");
+    }
+
+    #[test]
+    fn parse_publish_body_meta_len_exceeds_remaining() {
+        let mut buf = BytesMut::new();
+        buf.put_u32_le(100); // claims 100 bytes of metadata, but body ends here
+        let err = parse_publish_body(buf.freeze()).unwrap_err();
+        assert!(
+            err.contains("metadata length 100 exceeds remaining body"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn parse_publish_body_invalid_meta_json() {
+        let mut buf = BytesMut::new();
+        let bad_json = b"not json";
+        buf.put_u32_le(bad_json.len() as u32);
+        buf.put_slice(bad_json);
+        let err = parse_publish_body(buf.freeze()).unwrap_err();
+        assert!(err.contains("invalid publish metadata JSON"), "{err}");
+    }
+
+    #[test]
+    fn parse_publish_body_missing_crate_len() {
+        let meta = serde_json::json!({"name": "foo", "vers": "1.0.0"});
+        let meta_bytes = serde_json::to_vec(&meta).unwrap();
+        let mut buf = BytesMut::new();
+        buf.put_u32_le(meta_bytes.len() as u32);
+        buf.put_slice(&meta_bytes);
+        // no crate_len bytes follow
+        let err = parse_publish_body(buf.freeze()).unwrap_err();
+        assert!(err.contains("missing crate length"), "{err}");
+    }
+
+    #[test]
+    fn parse_publish_body_crate_len_exceeds_remaining() {
+        let meta = serde_json::json!({"name": "foo", "vers": "1.0.0"});
+        let meta_bytes = serde_json::to_vec(&meta).unwrap();
+        let mut buf = BytesMut::new();
+        buf.put_u32_le(meta_bytes.len() as u32);
+        buf.put_slice(&meta_bytes);
+        buf.put_u32_le(50); // claims 50 bytes of crate data, but body ends here
+        let err = parse_publish_body(buf.freeze()).unwrap_err();
+        assert!(
+            err.contains("crate length 50 exceeds remaining body"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn parse_publish_body_valid_roundtrip() {
+        let meta = serde_json::json!({"name": "foo", "vers": "1.0.0"});
+        let crate_bytes = b"fake crate tarball";
+        let body = build_body(&meta, crate_bytes);
+
+        let (parsed_meta, parsed_crate) = parse_publish_body(body).unwrap();
+        assert_eq!(parsed_meta, meta);
+        assert_eq!(&parsed_crate[..], crate_bytes);
+    }
+
+    // ── metadata_to_index_entry ─────────────────────────────────────────────
+
+    #[test]
+    fn metadata_to_index_entry_missing_name() {
+        let meta = serde_json::json!({"vers": "1.0.0"});
+        let err = metadata_to_index_entry(&meta, "cksum").unwrap_err();
+        assert_eq!(err, "missing 'name'");
+    }
+
+    #[test]
+    fn metadata_to_index_entry_missing_vers() {
+        let meta = serde_json::json!({"name": "foo"});
+        let err = metadata_to_index_entry(&meta, "cksum").unwrap_err();
+        assert_eq!(err, "missing 'vers'");
+    }
+
+    #[test]
+    fn metadata_to_index_entry_dep_missing_name() {
+        let meta = serde_json::json!({
+            "name": "foo",
+            "vers": "1.0.0",
+            "deps": [{"version_req": "^1.0"}]
+        });
+        let err = metadata_to_index_entry(&meta, "cksum").unwrap_err();
+        assert_eq!(err, "dep missing 'name'");
+    }
+
+    #[test]
+    fn metadata_to_index_entry_dep_missing_version_req() {
+        let meta = serde_json::json!({
+            "name": "foo",
+            "vers": "1.0.0",
+            "deps": [{"name": "bar"}]
+        });
+        let err = metadata_to_index_entry(&meta, "cksum").unwrap_err();
+        assert_eq!(err, "dep missing 'version_req'");
+    }
+
+    #[test]
+    fn metadata_to_index_entry_dep_req_field_fallback() {
+        let meta = serde_json::json!({
+            "name": "foo",
+            "vers": "1.0.0",
+            "deps": [{"name": "bar", "req": "^2.0"}]
+        });
+        let entry = metadata_to_index_entry(&meta, "cksum").unwrap();
+        assert_eq!(entry.deps.len(), 1);
+        assert_eq!(entry.deps[0].req, "^2.0");
+    }
+
+    #[test]
+    fn metadata_to_index_entry_minimal() {
+        let meta = serde_json::json!({"name": "foo", "vers": "1.0.0"});
+        let entry = metadata_to_index_entry(&meta, "abc123").unwrap();
+
+        assert_eq!(entry.name, "foo");
+        assert_eq!(entry.vers, "1.0.0");
+        assert!(entry.deps.is_empty());
+        assert_eq!(entry.cksum, "abc123");
+        assert_eq!(entry.features, serde_json::json!({}));
+        assert_eq!(entry.features2, None);
+        assert!(!entry.yanked);
+        assert_eq!(entry.links, None);
+        assert_eq!(entry.rust_version, None);
+        assert_eq!(entry.v, None);
+    }
+
+    #[test]
+    fn metadata_to_index_entry_full() {
+        let meta = serde_json::json!({
+            "name": "foo",
+            "vers": "1.2.3",
+            "deps": [{
+                "name": "serde",
+                "version_req": "^1.0",
+                "features": ["derive", "rc"],
+                "optional": true,
+                "default_features": false,
+                "target": "cfg(unix)",
+                "kind": "dev",
+                "registry": "https://example.com/index",
+                "explicit_name_in_toml": "serde_renamed",
+            }],
+            "features": {"default": ["std"]},
+            "links": "libfoo",
+            "rust_version": "1.75",
+        });
+
+        let entry = metadata_to_index_entry(&meta, "deadbeef").unwrap();
+
+        assert_eq!(entry.name, "foo");
+        assert_eq!(entry.vers, "1.2.3");
+        assert_eq!(entry.cksum, "deadbeef");
+        assert_eq!(entry.features, serde_json::json!({"default": ["std"]}));
+        assert_eq!(entry.links.as_deref(), Some("libfoo"));
+        assert_eq!(entry.rust_version.as_deref(), Some("1.75"));
+
+        assert_eq!(entry.deps.len(), 1);
+        let dep = &entry.deps[0];
+        assert_eq!(dep.name, "serde");
+        assert_eq!(dep.req, "^1.0");
+        assert_eq!(dep.features, vec!["derive".to_string(), "rc".to_string()]);
+        assert!(dep.optional);
+        assert!(!dep.default_features);
+        assert_eq!(dep.target.as_deref(), Some("cfg(unix)"));
+        assert_eq!(dep.kind, "dev");
+        assert_eq!(dep.registry.as_deref(), Some("https://example.com/index"));
+        assert_eq!(dep.explicit_name_in_toml.as_deref(), Some("serde_renamed"));
+    }
+}

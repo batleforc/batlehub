@@ -8,6 +8,7 @@ use ratatui::{
 
 use crate::api::setup::ProjectDetection;
 
+use super::list_nav::{select_next, select_prev};
 use super::App;
 
 pub struct SetupWizardWidget {
@@ -34,25 +35,11 @@ impl SetupWizardWidget {
     }
 
     pub fn next(&mut self) {
-        let len = self.items.len();
-        if len == 0 {
-            return;
-        }
-        let i = self.state.selected().map(|i| (i + 1) % len).unwrap_or(0);
-        self.state.select(Some(i));
+        select_next(&mut self.state, self.items.len());
     }
 
     pub fn prev(&mut self) {
-        let len = self.items.len();
-        if len == 0 {
-            return;
-        }
-        let i = self
-            .state
-            .selected()
-            .map(|i| if i == 0 { len - 1 } else { i - 1 })
-            .unwrap_or(0);
-        self.state.select(Some(i));
+        select_prev(&mut self.state, self.items.len());
     }
 
     pub fn selected(&self) -> Option<&ProjectDetection> {

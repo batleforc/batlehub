@@ -9,8 +9,9 @@ use super::*;
 use crate::{
     entities::{Identity, Role},
     error::CoreError,
-    ports::{StorageBackend, StorageMeta, StoredArtifact},
+    ports::{QuotaRepository, QuotaUsage, StorageBackend, StorageMeta, StoredArtifact},
     services::hot_config::{new_hot_lock, HotConfig},
+    services::{QuotaEnforcement, RegistryQuotaConfig, SigningConfig},
 };
 
 // ── Minimal mock backend ──────────────────────────────────────────────────
@@ -92,19 +93,18 @@ impl StorageBackend for NoopStorage {
     }
 }
 
-fn svc(backend: Arc<InMemBackend>, max_bytes: Option<u64>) -> LocalRegistryService {
+fn svc(
+    backend: Arc<dyn crate::ports::LocalRegistryBackend>,
+    max_bytes: Option<u64>,
+) -> LocalRegistryService {
     LocalRegistryService {
         backend,
         storage: Arc::new(NoopStorage),
         hot: new_hot_lock(HotConfig {
             registries: HashMap::new(),
             policies: HashMap::new(),
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
             max_artifact_size_bytes: max_bytes,
+            ..Default::default()
         }),
         quota: None,
         ownership: None,
@@ -433,12 +433,8 @@ fn svc_with_beta(
         hot: new_hot_lock(HotConfig {
             registries: HashMap::new(),
             policies: HashMap::new(),
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
             beta_channel: bc,
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         quota: None,
         ownership: None,
@@ -766,12 +762,7 @@ fn svc_with_ns(backend: Arc<InMemBackend>, ns: Arc<dyn TeamNamespacePort>) -> Lo
         hot: new_hot_lock(HotConfig {
             registries: HashMap::new(),
             policies: HashMap::new(),
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         }),
         quota: None,
         ownership: None,
@@ -1101,4 +1092,370 @@ async fn unyank_allows_namespace_member() {
         .unyank("reg", "frontend/utils", "1.0.0", &member())
         .await
         .is_ok());
+}
+
+// ── signing policy ────────────────────────────────────────────────────────
+
+fn publish_req(registry: &str, name: &str, version: &str, publisher: Identity) -> PublishRequest {
+    PublishRequest {
+        registry: registry.into(),
+        name: name.into(),
+        version: version.into(),
+        artifact: Bytes::from_static(b"payload"),
+        checksum: "abc".into(),
+        index_metadata: serde_json::json!({}),
+        publisher,
+        signature_bytes: None,
+        signature_type: None,
+    }
+}
+
+#[tokio::test]
+async fn publish_rejects_missing_required_signature() {
+    let s = svc(InMemBackend::arc(), None);
+    s.hot.write().await.signing.insert(
+        "npm".into(),
+        SigningConfig {
+            required: true,
+            allowed_types: vec![],
+        },
+    );
+    let req = publish_req("npm", "pkg", "1.0.0", user());
+    let err = s.publish(req).await.unwrap_err();
+    assert!(
+        matches!(err, CoreError::AccessDenied(_)),
+        "missing required signature must be denied, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn publish_rejects_disallowed_signature_type() {
+    let s = svc(InMemBackend::arc(), None);
+    s.hot.write().await.signing.insert(
+        "npm".into(),
+        SigningConfig {
+            required: false,
+            allowed_types: vec!["ed25519".into()],
+        },
+    );
+    let mut req = publish_req("npm", "pkg", "1.0.0", user());
+    req.signature_bytes = Some(vec![1, 2, 3]);
+    req.signature_type = Some("rsa".into());
+    let err = s.publish(req).await.unwrap_err();
+    assert!(
+        matches!(err, CoreError::AccessDenied(_)),
+        "disallowed signature type must be denied, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn publish_allows_matching_signature_type() {
+    let s = svc(InMemBackend::arc(), None);
+    s.hot.write().await.signing.insert(
+        "npm".into(),
+        SigningConfig {
+            required: true,
+            allowed_types: vec!["ed25519".into()],
+        },
+    );
+    let mut req = publish_req("npm", "pkg", "1.0.0", user());
+    req.signature_bytes = Some(vec![1, 2, 3]);
+    req.signature_type = Some("ed25519".into());
+    assert!(s.publish(req).await.is_ok());
+}
+
+// ── ownership enforcement ─────────────────────────────────────────────────
+
+#[derive(Default)]
+struct MockOwnership {
+    /// (registry, package) -> owning user ids.
+    owners: Mutex<HashMap<(String, String), Vec<String>>>,
+}
+
+impl MockOwnership {
+    fn arc() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+    fn seed(&self, registry: &str, package: &str, user_id: &str) {
+        self.owners
+            .lock()
+            .unwrap()
+            .entry((registry.to_owned(), package.to_owned()))
+            .or_default()
+            .push(user_id.to_owned());
+    }
+}
+
+#[async_trait]
+impl OwnershipPort for MockOwnership {
+    async fn initialize_owner(
+        &self,
+        registry: &str,
+        package: &str,
+        user_id: &str,
+    ) -> Result<(), CoreError> {
+        self.seed(registry, package, user_id);
+        Ok(())
+    }
+
+    async fn can_publish(
+        &self,
+        registry: &str,
+        package: &str,
+        identity: &Identity,
+    ) -> Result<bool, CoreError> {
+        let owners = self.owners.lock().unwrap();
+        let Some(rows) = owners.get(&(registry.to_owned(), package.to_owned())) else {
+            return Ok(true);
+        };
+        Ok(identity
+            .user_id
+            .as_ref()
+            .is_some_and(|uid| rows.contains(uid)))
+    }
+
+    async fn add_owner(
+        &self,
+        _registry: &str,
+        _package: &str,
+        _entry: crate::ports::OwnerEntry,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    async fn remove_owner(
+        &self,
+        _registry: &str,
+        _package: &str,
+        _principal_type: &str,
+        _principal_id: &str,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    async fn list_owners(
+        &self,
+        _registry: &str,
+        _package: &str,
+    ) -> Result<Vec<crate::ports::OwnerEntry>, CoreError> {
+        Ok(vec![])
+    }
+}
+
+#[tokio::test]
+async fn publish_rejects_non_owner_of_existing_package() {
+    let backend = InMemBackend::arc();
+    backend.seed(pkg("npm", "pkg", "1.0.0"));
+    let mut s = svc(backend, None);
+    let ownership = MockOwnership::arc();
+    ownership.seed("npm", "pkg", "owner1");
+    s.ownership = Some(ownership);
+
+    let req = publish_req("npm", "pkg", "2.0.0", user()); // user() is "u1", not an owner
+    let err = s.publish(req).await.unwrap_err();
+    assert!(
+        matches!(err, CoreError::AccessDenied(_)),
+        "non-owner publish to existing package must be denied, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn publish_allows_owner_of_existing_package() {
+    let backend = InMemBackend::arc();
+    backend.seed(pkg("npm", "pkg", "1.0.0"));
+    let mut s = svc(backend, None);
+    let ownership = MockOwnership::arc();
+    ownership.seed("npm", "pkg", "u1");
+    s.ownership = Some(ownership);
+
+    let req = publish_req("npm", "pkg", "2.0.0", user());
+    assert!(s.publish(req).await.is_ok());
+}
+
+#[tokio::test]
+async fn publish_registers_initial_owner_for_new_package() {
+    let backend = InMemBackend::arc();
+    let mut s = svc(backend, None);
+    let ownership = MockOwnership::arc();
+    s.ownership = Some(ownership.clone());
+
+    let req = publish_req("npm", "pkg", "1.0.0", user());
+    assert!(s.publish(req).await.is_ok());
+    assert!(ownership
+        .owners
+        .lock()
+        .unwrap()
+        .get(&("npm".to_owned(), "pkg".to_owned()))
+        .unwrap()
+        .contains(&"u1".to_owned()));
+}
+
+// ── quota enforcement ─────────────────────────────────────────────────────
+
+#[derive(Default)]
+struct MockQuotaRepo {
+    usage: Mutex<(u64, u32)>,
+}
+
+impl MockQuotaRepo {
+    fn arc() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+}
+
+#[async_trait]
+impl QuotaRepository for MockQuotaRepo {
+    async fn get_usage(&self, user_id: &str, registry: &str) -> Result<QuotaUsage, CoreError> {
+        let (bytes, packages) = *self.usage.lock().unwrap();
+        Ok(QuotaUsage {
+            user_id: user_id.to_owned(),
+            registry: registry.to_owned(),
+            bytes_published: bytes,
+            packages_count: packages,
+        })
+    }
+
+    async fn record_publish(&self, _: &str, _: &str, bytes: u64) -> Result<(), CoreError> {
+        let mut g = self.usage.lock().unwrap();
+        g.0 += bytes;
+        g.1 += 1;
+        Ok(())
+    }
+
+    async fn revoke_publish(&self, _: &str, _: &str, bytes: u64) -> Result<(), CoreError> {
+        let mut g = self.usage.lock().unwrap();
+        g.0 = g.0.saturating_sub(bytes);
+        g.1 = g.1.saturating_sub(1);
+        Ok(())
+    }
+
+    async fn reset_usage(&self, _: &str, _: &str) -> Result<(), CoreError> {
+        *self.usage.lock().unwrap() = (0, 0);
+        Ok(())
+    }
+
+    async fn list_usage(&self, _: Option<&str>) -> Result<Vec<QuotaUsage>, CoreError> {
+        Ok(vec![])
+    }
+}
+
+#[tokio::test]
+async fn publish_rejects_when_storage_quota_exceeded() {
+    let mut s = svc(InMemBackend::arc(), None);
+    let mut configs = HashMap::new();
+    configs.insert(
+        "npm".to_owned(),
+        RegistryQuotaConfig {
+            max_storage_bytes_per_user: Some(0),
+            max_packages_per_user: None,
+            warn_threshold: 0.8,
+            enforcement: QuotaEnforcement::Block,
+        },
+    );
+    s.quota = Some(Arc::new(QuotaService::new(MockQuotaRepo::arc(), configs)));
+
+    let req = publish_req("npm", "pkg", "1.0.0", user());
+    let err = s.publish(req).await.unwrap_err();
+    assert!(
+        matches!(err, CoreError::QuotaExceeded(_)),
+        "publish over quota must be rejected, got {err:?}"
+    );
+}
+
+// ── publish transaction rollback ────────────────────────────────────────────
+
+struct FailingStorage;
+
+#[async_trait]
+impl StorageBackend for FailingStorage {
+    async fn store(&self, _: &str, _: Bytes, _: StorageMeta) -> Result<(), CoreError> {
+        Err(CoreError::Storage("simulated storage failure".into()))
+    }
+    async fn retrieve(&self, _: &str) -> Result<Option<StoredArtifact>, CoreError> {
+        Ok(None)
+    }
+    async fn exists(&self, _: &str) -> Result<bool, CoreError> {
+        Ok(false)
+    }
+    async fn delete(&self, _: &str) -> Result<(), CoreError> {
+        Ok(())
+    }
+    async fn delete_by_prefix(&self, _: &str) -> Result<usize, CoreError> {
+        Ok(0)
+    }
+    async fn stat_by_prefix(&self, _: &str) -> Result<(u64, u64), CoreError> {
+        Ok((0, 0))
+    }
+    async fn list_keys(&self, _: &str) -> Result<Vec<String>, CoreError> {
+        Ok(vec![])
+    }
+}
+
+#[tokio::test]
+async fn publish_propagates_storage_failure_and_rolls_back() {
+    let backend = InMemBackend::arc();
+    let mut s = svc(backend, None);
+    s.storage = Arc::new(FailingStorage);
+
+    let req = publish_req("npm", "pkg", "1.0.0", user());
+    let err = s.publish(req).await.unwrap_err();
+    assert!(
+        matches!(err, CoreError::Storage(_)),
+        "storage failure during publish must propagate, got {err:?}"
+    );
+}
+
+#[derive(Default)]
+struct CommitFailBackend {
+    inner: InMemBackend,
+}
+
+impl CommitFailBackend {
+    fn arc() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+}
+
+#[async_trait]
+impl crate::ports::LocalRegistryBackend for CommitFailBackend {
+    async fn publish(&self, pkg: PublishedPackage) -> Result<(), CoreError> {
+        self.inner.publish(pkg).await
+    }
+    async fn yank(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError> {
+        self.inner.yank(registry, name, version).await
+    }
+    async fn unyank(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError> {
+        self.inner.unyank(registry, name, version).await
+    }
+    async fn get_versions(
+        &self,
+        registry: &str,
+        name: &str,
+    ) -> Result<Vec<PublishedPackage>, CoreError> {
+        self.inner.get_versions(registry, name).await
+    }
+    async fn exists(&self, registry: &str, name: &str) -> Result<bool, CoreError> {
+        self.inner.exists(registry, name).await
+    }
+    async fn commit_publish(
+        &self,
+        _registry: &str,
+        _name: &str,
+        _version: &str,
+    ) -> Result<(), CoreError> {
+        Err(CoreError::Database("simulated commit failure".into()))
+    }
+}
+
+#[tokio::test]
+async fn publish_propagates_commit_failure_and_rolls_back() {
+    let backend = CommitFailBackend::arc();
+    let s = svc(backend, None);
+
+    let req = publish_req("npm", "pkg", "1.0.0", user());
+    let err = s.publish(req).await.unwrap_err();
+    assert!(
+        matches!(err, CoreError::Database(_)),
+        "commit failure during publish must propagate, got {err:?}"
+    );
 }

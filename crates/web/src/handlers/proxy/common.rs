@@ -130,6 +130,38 @@ pub fn require_local_mode(registry: &str, mode_map: &RegistryModeMap) -> Result<
     }
 }
 
+/// Serve a RubyGems binary specs index (`specs`, `latest_specs`, or `prerelease_specs`).
+///
+/// Returns `404` for local-only registries — these compact indexes are only
+/// meaningful in proxy/hybrid mode; local registries expose
+/// `/api/v1/versions/{name}.json` instead.
+pub async fn proxy_gem_specs(
+    registry: &str,
+    spec_type: &str,
+    svc: web::Data<Arc<ProxyService>>,
+    identity: AuthIdentity,
+    map: &RegistryMap,
+    mode_map: &RegistryModeMap,
+) -> Result<HttpResponse, AppError> {
+    require_registry_type(registry, "rubygems", map)?;
+
+    if mode_map.get(registry) == RegistryMode::Local {
+        return Err(AppError::not_found(
+            "binary specs index is not available for local-only registries; use /api/v1/versions/{name}.json".to_owned(),
+        ));
+    }
+
+    let pkg = PackageId::new(registry, "_index", spec_type);
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        "releases:read",
+        Some("application/octet-stream"),
+    )
+    .await
+}
+
 /// Send a proxy request and stream the result back to the HTTP client.
 ///
 /// Pass `content_type = Some("application/json")` to set an explicit `Content-Type`

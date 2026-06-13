@@ -1,10 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
-import { registryHealth, listBetaMembers, addBetaMember, removeBetaMember } from "@/client/sdk.gen";
-import type { RegistryHealthDto } from "@/client/types.gen";
+import { listBetaMembers, addBetaMember, removeBetaMember } from "@/client/sdk.gen";
 import type { BetaChannelMemberDto } from "@/lib/registry-types";
-import { useApi } from "@/composables/useApi";
-import { useAuth } from "@/composables/useAuth";
+import { useAdminCrudList } from "@/composables/useAdminCrudList";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -21,89 +18,47 @@ import {
 } from "@/components/ui/table";
 import Dialog from "@/components/ui/dialog/Dialog.vue";
 
-const { token } = useAuth();
-
-const { data: registriesData } = useApi<RegistryHealthDto[]>(
-  () => registryHealth() as Promise<{ data?: unknown; error?: unknown }>,
-  [token],
-);
-
-const registryOptions = computed(() =>
-  (registriesData.value ?? []).map((r) => ({ value: r.registry, label: r.registry })),
-);
-
-const selectedRegistry = ref<string>("");
-
-watch(registriesData, (list) => {
-  if (list && list.length > 0 && !selectedRegistry.value) {
-    selectedRegistry.value = list[0].registry;
-  }
-});
+interface AddMemberForm {
+  principal_type: string;
+  principal_id: string;
+  granted_by: string;
+}
 
 const {
-  data: members,
-  error: membersError,
-  loading: membersLoading,
-  reload: reloadMembers,
-} = useApi<BetaChannelMemberDto[]>(() => {
-  if (!selectedRegistry.value) return Promise.resolve({ data: [] });
-  return listBetaMembers({ path: { registry: selectedRegistry.value } }) as Promise<{
-    data?: unknown;
-    error?: unknown;
-  }>;
-}, [token, selectedRegistry]);
-
-const addDialogOpen = ref(false);
-const addForm = ref({ principal_type: "user", principal_id: "", granted_by: "" });
-const addLoading = ref(false);
-const addError = ref<string | null>(null);
-
-async function submitAdd() {
-  if (!addForm.value.principal_id.trim() || !selectedRegistry.value) return;
-  addLoading.value = true;
-  addError.value = null;
-  try {
-    const { error: apiErr } = await addBetaMember({
-      path: { registry: selectedRegistry.value },
+  registryOptions,
+  selectedRegistry,
+  items: members,
+  itemsError: membersError,
+  itemsLoading: membersLoading,
+  reloadItems: reloadMembers,
+  addDialogOpen,
+  addForm,
+  addLoading,
+  addError,
+  submitAdd,
+  removeTarget,
+  removeLoading,
+  removeError,
+  confirmRemove,
+} = useAdminCrudList<BetaChannelMemberDto, AddMemberForm>({
+  listFn: (registry) =>
+    listBetaMembers({ path: { registry } }) as Promise<{ data?: unknown; error?: unknown }>,
+  addFn: (registry, form) =>
+    addBetaMember({
+      path: { registry },
       body: {
-        principal_type: addForm.value.principal_type,
-        principal_id: addForm.value.principal_id.trim(),
-        granted_by: addForm.value.granted_by.trim() || undefined,
+        principal_type: form.principal_type,
+        principal_id: form.principal_id.trim(),
+        granted_by: form.granted_by.trim() || undefined,
       },
-    });
-    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? "API error");
-    addDialogOpen.value = false;
-    addForm.value = { principal_type: "user", principal_id: "", granted_by: "" };
-    reloadMembers();
-  } catch (e) {
-    addError.value = e instanceof Error ? e.message : "Unknown error";
-  } finally {
-    addLoading.value = false;
-  }
-}
-
-const removeTarget = ref<BetaChannelMemberDto | null>(null);
-const removeLoading = ref(false);
-const removeError = ref<string | null>(null);
-
-async function confirmRemove() {
-  if (!removeTarget.value || !selectedRegistry.value) return;
-  removeLoading.value = true;
-  removeError.value = null;
-  try {
-    const { principal_type, principal_id } = removeTarget.value;
-    const { error: apiErr } = await removeBetaMember({
-      path: { registry: selectedRegistry.value, principal_type, principal_id },
-    });
-    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? "API error");
-    removeTarget.value = null;
-    reloadMembers();
-  } catch (e) {
-    removeError.value = e instanceof Error ? e.message : "Unknown error";
-  } finally {
-    removeLoading.value = false;
-  }
-}
+    }) as Promise<{ data?: unknown; error?: unknown }>,
+  removeFn: (registry, item) =>
+    removeBetaMember({
+      path: { registry, principal_type: item.principal_type, principal_id: item.principal_id },
+    }) as Promise<{ data?: unknown; error?: unknown }>,
+  initialAddForm: () => ({ principal_type: "user", principal_id: "", granted_by: "" }),
+  canSubmitAdd: (form) => !!form.principal_id.trim(),
+});
 
 const principalTypeOptions = [
   { value: "user", label: "User" },

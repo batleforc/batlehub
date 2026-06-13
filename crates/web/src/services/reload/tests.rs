@@ -12,12 +12,7 @@ pub(super) fn make_svc(enabled: bool) -> Arc<ConfigReloadService> {
     let hot = new_hot_lock(batlehub_core::services::HotConfig {
         registries: HashMap::new(),
         policies: HashMap::new(),
-        versioning: HashMap::new(),
-        signing: HashMap::new(),
-        sbom: HashMap::new(),
-        feature_flags: HashMap::new(),
-        beta_channel: HashMap::new(),
-        max_artifact_size_bytes: None,
+        ..Default::default()
     });
     let access = crate::new_access_lock(crate::AccessConfig {
         anonymous: Default::default(),
@@ -111,12 +106,8 @@ async fn apply_success_swaps_hot_config() {
     let new_hot = batlehub_core::services::HotConfig {
         registries: HashMap::new(),
         policies: HashMap::new(),
-        versioning: HashMap::new(),
-        signing: HashMap::new(),
-        sbom: HashMap::new(),
-        feature_flags: HashMap::new(),
-        beta_channel: HashMap::new(),
         max_artifact_size_bytes: Some(42),
+        ..Default::default()
     };
     let new_access = crate::AccessConfig {
         anonymous: Default::default(),
@@ -165,12 +156,7 @@ async fn reload_immediate_applies_config() {
     let hot = new_hot_lock(batlehub_core::services::HotConfig {
         registries: HashMap::new(),
         policies: HashMap::new(),
-        versioning: HashMap::new(),
-        signing: HashMap::new(),
-        sbom: HashMap::new(),
-        feature_flags: HashMap::new(),
-        beta_channel: HashMap::new(),
-        max_artifact_size_bytes: None,
+        ..Default::default()
     });
     let access = crate::new_access_lock(crate::AccessConfig {
         anonymous: Default::default(),
@@ -186,12 +172,8 @@ async fn reload_immediate_applies_config() {
             batlehub_core::services::HotConfig {
                 registries: HashMap::new(),
                 policies: HashMap::new(),
-                versioning: HashMap::new(),
-                signing: HashMap::new(),
-                sbom: HashMap::new(),
-                feature_flags: HashMap::new(),
-                beta_channel: HashMap::new(),
                 max_artifact_size_bytes: Some(999),
+                ..Default::default()
             },
             crate::AccessConfig {
                 anonymous: Default::default(),
@@ -254,12 +236,7 @@ fn make_pending(expires_offset_secs: i64, already_expired: bool) -> PendingReloa
     let hot = batlehub_core::services::HotConfig {
         registries: HashMap::new(),
         policies: HashMap::new(),
-        versioning: HashMap::new(),
-        signing: HashMap::new(),
-        sbom: HashMap::new(),
-        feature_flags: HashMap::new(),
-        beta_channel: HashMap::new(),
-        max_artifact_size_bytes: None,
+        ..Default::default()
     };
     let access = crate::AccessConfig {
         anonymous: Default::default(),

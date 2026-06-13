@@ -297,12 +297,7 @@ mod tests {
         let hot = new_hot_lock(batlehub_core::services::HotConfig {
             registries: HashMap::new(),
             policies: HashMap::new(),
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         });
         let access = crate::new_access_lock(crate::AccessConfig {
             anonymous: Default::default(),
@@ -346,12 +341,7 @@ mod tests {
         let hot = new_hot_lock(batlehub_core::services::HotConfig {
             registries: HashMap::new(),
             policies: HashMap::new(),
-            versioning: HashMap::new(),
-            signing: HashMap::new(),
-            sbom: HashMap::new(),
-            feature_flags: HashMap::new(),
-            beta_channel: HashMap::new(),
-            max_artifact_size_bytes: None,
+            ..Default::default()
         });
         let access = crate::new_access_lock(crate::AccessConfig {
             anonymous: Default::default(),

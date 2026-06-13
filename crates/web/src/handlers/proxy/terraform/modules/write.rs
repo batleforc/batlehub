@@ -1,8 +1,8 @@
 use super::{
     collect_payload, delete, extract_signature_headers, post, require_local_mode,
-    require_registry_type, web, AppError, Arc, AuthIdentity, Digest, HttpRequest, HttpResponse,
-    LocalRegistryService, NotificationEventType, NotificationService, PublishRequest, RegistryMap,
-    RegistryModeMap, Responder, Sha256,
+    require_registry_type, terraform_set_yanked, web, AppError, Arc, AuthIdentity, Digest,
+    HttpRequest, HttpResponse, LocalRegistryService, NotificationEventType, NotificationService,
+    PublishRequest, RegistryMap, RegistryModeMap, Responder, Sha256,
 };
 
 /// Upload a Terraform module tarball to the local registry.
@@ -125,28 +125,21 @@ pub async fn tf_module_yank(
     notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, name, provider, version) = path.into_inner();
-    require_registry_type(&registry, "terraform", &map)?;
-    require_local_mode(&registry, &mode_map)?;
-
     let pkg_name = format!("modules/{namespace}/{name}/{provider}");
-    let actor = identity.0.user_id.clone().unwrap_or_default();
-    local_svc
-        .yank(&registry, &pkg_name, &version, &identity.0)
-        .await
-        .map_err(AppError::from)?;
-
-    super::super::super::common::dispatch_notification(
-        &notification_svc,
-        NotificationEventType::PackageYanked,
+    let display_name = format!("module {namespace}/{name}/{provider}");
+    terraform_set_yanked(
         &registry,
+        &map,
+        &mode_map,
         &pkg_name,
-        Some(version.clone()),
-        &actor,
-    );
-
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "message": format!("yanked module {namespace}/{name}/{provider}@{version}")
-    })))
+        &version,
+        &display_name,
+        &identity,
+        &local_svc,
+        &notification_svc,
+        true,
+    )
+    .await
 }
 
 /// Unyank a Terraform module version (local/hybrid registries only).
@@ -179,26 +172,19 @@ pub async fn tf_module_unyank(
     notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, name, provider, version) = path.into_inner();
-    require_registry_type(&registry, "terraform", &map)?;
-    require_local_mode(&registry, &mode_map)?;
-
     let pkg_name = format!("modules/{namespace}/{name}/{provider}");
-    let actor = identity.0.user_id.clone().unwrap_or_default();
-    local_svc
-        .unyank(&registry, &pkg_name, &version, &identity.0)
-        .await
-        .map_err(AppError::from)?;
-
-    super::super::super::common::dispatch_notification(
-        &notification_svc,
-        NotificationEventType::PackageUnyanked,
+    let display_name = format!("module {namespace}/{name}/{provider}");
+    terraform_set_yanked(
         &registry,
+        &map,
+        &mode_map,
         &pkg_name,
-        Some(version.clone()),
-        &actor,
-    );
-
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "message": format!("unyanked module {namespace}/{name}/{provider}@{version}")
-    })))
+        &version,
+        &display_name,
+        &identity,
+        &local_svc,
+        &notification_svc,
+        false,
+    )
+    .await
 }

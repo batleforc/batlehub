@@ -47,29 +47,34 @@ fn read_dir_entries(dir: &Path, remaining_depth: usize) -> (Vec<String>, Vec<Pat
         return (file_names, subdirs);
     };
     for entry in entries.flatten() {
-        classify_entry(&entry, remaining_depth, &mut file_names, &mut subdirs);
+        match classify_entry(&entry, remaining_depth) {
+            Some(DirEntryKind::File(name)) => file_names.push(name),
+            Some(DirEntryKind::Dir(path)) => subdirs.push(path),
+            None => {}
+        }
     }
     subdirs.sort();
     (file_names, subdirs)
 }
 
-/// Classify a single directory entry into `file_names` or `subdirs`,
-/// applying the `SKIP_DIRS` / hidden-directory filter to subdirectories.
-fn classify_entry(
-    entry: &std::fs::DirEntry,
-    remaining_depth: usize,
-    file_names: &mut Vec<String>,
-    subdirs: &mut Vec<PathBuf>,
-) {
-    let Ok(ft) = entry.file_type() else { return };
+/// Result of classifying a single directory entry.
+enum DirEntryKind {
+    File(String),
+    Dir(PathBuf),
+}
+
+/// Classify a single directory entry, applying the `SKIP_DIRS` /
+/// hidden-directory filter to subdirectories.
+fn classify_entry(entry: &std::fs::DirEntry, remaining_depth: usize) -> Option<DirEntryKind> {
+    let ft = entry.file_type().ok()?;
     let path = entry.path();
-    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-        return;
-    };
+    let name = path.file_name().and_then(|n| n.to_str())?;
     if ft.is_file() {
-        file_names.push(name.to_string());
+        Some(DirEntryKind::File(name.to_string()))
     } else if ft.is_dir() && remaining_depth > 0 && !is_skipped_dir(name) {
-        subdirs.push(path);
+        Some(DirEntryKind::Dir(path))
+    } else {
+        None
     }
 }
 

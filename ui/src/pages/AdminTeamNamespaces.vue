@@ -1,10 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
-import { registryHealth, listNamespaces, claimNamespace, releaseNamespace } from "@/client/sdk.gen";
-import type { RegistryHealthDto } from "@/client/types.gen";
+import { listNamespaces, claimNamespace, releaseNamespace } from "@/client/sdk.gen";
 import type { TeamNamespaceDto } from "@/lib/registry-types";
-import { useApi } from "@/composables/useApi";
-import { useAuth } from "@/composables/useAuth";
+import { useAdminCrudList } from "@/composables/useAdminCrudList";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -21,98 +18,48 @@ import {
 } from "@/components/ui/table";
 import Dialog from "@/components/ui/dialog/Dialog.vue";
 
-const { token } = useAuth();
-
-// ── Registry selector ─────────────────────────────────────────────────────────
-
-const { data: registriesData } = useApi<RegistryHealthDto[]>(
-  () => registryHealth() as Promise<{ data?: unknown; error?: unknown }>,
-  [token],
-);
-
-const registryOptions = computed(() =>
-  (registriesData.value ?? []).map((r) => ({ value: r.registry, label: r.registry })),
-);
-
-const selectedRegistry = ref<string>("");
-
-watch(registriesData, (list) => {
-  if (list && list.length > 0 && !selectedRegistry.value) {
-    selectedRegistry.value = list[0].registry;
-  }
-});
-
-// ── Namespace list ────────────────────────────────────────────────────────────
+interface ClaimForm {
+  prefix: string;
+  group_id: string;
+  claimed_by: string;
+}
 
 const {
-  data: namespaces,
-  error: namespacesError,
-  loading: namespacesLoading,
-  reload: reloadNamespaces,
-} = useApi<TeamNamespaceDto[]>(() => {
-  if (!selectedRegistry.value) return Promise.resolve({ data: [] });
-  return listNamespaces({ path: { registry: selectedRegistry.value } }) as Promise<{
-    data?: unknown;
-    error?: unknown;
-  }>;
-}, [token, selectedRegistry]);
-
-// ── Claim namespace dialog ────────────────────────────────────────────────────
-
-const claimDialogOpen = ref(false);
-const claimForm = ref({ prefix: "", group_id: "", claimed_by: "" });
-const claimLoading = ref(false);
-const claimError = ref<string | null>(null);
-
-async function submitClaim() {
-  if (!claimForm.value.prefix.trim() || !claimForm.value.group_id.trim() || !selectedRegistry.value)
-    return;
-  claimLoading.value = true;
-  claimError.value = null;
-  try {
-    const { error: apiErr } = await claimNamespace({
-      path: { registry: selectedRegistry.value },
+  registryOptions,
+  selectedRegistry,
+  items: namespaces,
+  itemsError: namespacesError,
+  itemsLoading: namespacesLoading,
+  reloadItems: reloadNamespaces,
+  addDialogOpen: claimDialogOpen,
+  addForm: claimForm,
+  addLoading: claimLoading,
+  addError: claimError,
+  submitAdd: submitClaim,
+  removeTarget: releaseTarget,
+  removeLoading: releaseLoading,
+  removeError: releaseError,
+  confirmRemove: confirmRelease,
+} = useAdminCrudList<TeamNamespaceDto, ClaimForm>({
+  listFn: (registry) =>
+    listNamespaces({ path: { registry } }) as Promise<{ data?: unknown; error?: unknown }>,
+  addFn: (registry, form) =>
+    claimNamespace({
+      path: { registry },
       body: {
-        prefix: claimForm.value.prefix.trim(),
-        group_id: claimForm.value.group_id.trim(),
-        claimed_by: claimForm.value.claimed_by.trim() || undefined,
+        prefix: form.prefix.trim(),
+        group_id: form.group_id.trim(),
+        claimed_by: form.claimed_by.trim() || undefined,
       },
-    });
-    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? "API error");
-    claimDialogOpen.value = false;
-    claimForm.value = { prefix: "", group_id: "", claimed_by: "" };
-    reloadNamespaces();
-  } catch (e) {
-    claimError.value = e instanceof Error ? e.message : "Unknown error";
-  } finally {
-    claimLoading.value = false;
-  }
-}
-
-// ── Release namespace dialog ──────────────────────────────────────────────────
-
-const releaseTarget = ref<TeamNamespaceDto | null>(null);
-const releaseLoading = ref(false);
-const releaseError = ref<string | null>(null);
-
-async function confirmRelease() {
-  if (!releaseTarget.value || !selectedRegistry.value) return;
-  releaseLoading.value = true;
-  releaseError.value = null;
-  try {
-    // The prefix may contain slashes — passed verbatim; the backend route uses {prefix:.*}
-    const { error: apiErr } = await releaseNamespace({
-      path: { registry: selectedRegistry.value, prefix: releaseTarget.value.prefix },
-    });
-    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? "API error");
-    releaseTarget.value = null;
-    reloadNamespaces();
-  } catch (e) {
-    releaseError.value = e instanceof Error ? e.message : "Unknown error";
-  } finally {
-    releaseLoading.value = false;
-  }
-}
+    }) as Promise<{ data?: unknown; error?: unknown }>,
+  // The prefix may contain slashes — passed verbatim; the backend route uses {prefix:.*}
+  removeFn: (registry, item) =>
+    releaseNamespace({
+      path: { registry, prefix: item.prefix },
+    }) as Promise<{ data?: unknown; error?: unknown }>,
+  initialAddForm: () => ({ prefix: "", group_id: "", claimed_by: "" }),
+  canSubmitAdd: (form) => !!form.prefix.trim() && !!form.group_id.trim(),
+});
 </script>
 
 <template>

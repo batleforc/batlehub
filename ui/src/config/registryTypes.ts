@@ -36,6 +36,38 @@ export interface RegistryTypeDef {
 
 const isPublishMode = (ctx: SnippetContext) => ctx.mode === "local" || ctx.mode === "hybrid";
 
+/** Returns the user's token when authenticated, or a placeholder for unauthenticated previews. */
+const authTokenOrPlaceholder = (ctx: SnippetContext) =>
+  ctx.isAuthenticated ? ctx.token : "<your-token>";
+
+/** Builds `registry=<url>` plus an optional `_authToken` line for npm-compatible `.npmrc` files. */
+function buildNpmAuthLines(ctx: SnippetContext): string[] {
+  const regUrl = `${ctx.base}/proxy/${ctx.registryName}/`;
+  const lines = [`registry=${regUrl}`];
+  if (ctx.isAuthenticated) {
+    try {
+      const { host, pathname } = new URL(regUrl);
+      lines.push(`//${host}${pathname}:_authToken=${ctx.token}`);
+    } catch {
+      /* skip */
+    }
+  }
+  return lines;
+}
+
+/** Embeds `netrcLogin`/`token` as HTTP Basic Auth credentials in `rawUrl`, when authenticated. */
+function withCredentials(rawUrl: string, ctx: SnippetContext): string {
+  if (!ctx.isAuthenticated) return rawUrl;
+  try {
+    const u = new URL(rawUrl);
+    u.username = ctx.netrcLogin;
+    u.password = ctx.token;
+    return u.toString();
+  } catch {
+    return rawUrl;
+  }
+}
+
 export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
   // ── mise (composite: github + npm + cargo) ─────────────────────────────────
   {
@@ -121,19 +153,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         key: "npmrc",
         label: "npm / npm workspaces",
         lang: "ini",
-        template: (ctx) => {
-          const regUrl = `${ctx.base}/proxy/${ctx.registryName}/`;
-          const lines = [`registry=${regUrl}`];
-          if (ctx.isAuthenticated) {
-            try {
-              const { host, pathname } = new URL(regUrl);
-              lines.push(`//${host}${pathname}:_authToken=${ctx.token}`);
-            } catch {
-              /* skip */
-            }
-          }
-          return lines.join("\n");
-        },
+        template: (ctx) => buildNpmAuthLines(ctx).join("\n"),
         note: (ctx) =>
           `To route only a specific scope through the proxy, use ` +
           `<code class="font-mono bg-muted px-1 rounded">@myorg:registry=${ctx.base}/proxy/${ctx.registryName}/</code> instead.`,
@@ -152,19 +172,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         key: "pnpm",
         label: "pnpm (.npmrc)",
         lang: "ini",
-        template: (ctx) => {
-          const regUrl = `${ctx.base}/proxy/${ctx.registryName}/`;
-          const lines = [`registry=${regUrl}`];
-          if (ctx.isAuthenticated) {
-            try {
-              const { host, pathname } = new URL(regUrl);
-              lines.push(`//${host}${pathname}:_authToken=${ctx.token}`);
-            } catch {
-              /* skip */
-            }
-          }
-          return lines.join("\n");
-        },
+        template: (ctx) => buildNpmAuthLines(ctx).join("\n"),
       },
     ],
   },
@@ -300,17 +308,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "Environment variables",
         lang: "bash",
         template: (ctx) => {
-          let proxyUrl = `${ctx.base}/proxy/${ctx.registryName}`;
-          if (ctx.isAuthenticated) {
-            try {
-              const u = new URL(`${ctx.base}/proxy/${ctx.registryName}`);
-              u.username = ctx.netrcLogin;
-              u.password = ctx.token;
-              proxyUrl = u.toString();
-            } catch {
-              /* keep original */
-            }
-          }
+          const proxyUrl = withCredentials(`${ctx.base}/proxy/${ctx.registryName}`, ctx);
           return [
             `# Shell / CI environment — set before running go commands`,
             `export GONOSUMCHECK="*"`,
@@ -464,11 +462,11 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "bash",
         showWhen: isPublishMode,
         template: (ctx) => {
-          const { base, registryName: reg, isAuthenticated, token } = ctx;
+          const { base, registryName: reg } = ctx;
           return [
             `# Upload a module (tar.gz archive)`,
             `curl -X POST \\`,
-            `  -H "Authorization: Bearer ${isAuthenticated ? token : "<your-token>"}" \\`,
+            `  -H "Authorization: Bearer ${authTokenOrPlaceholder(ctx)}" \\`,
             `  -H "Content-Type: application/gzip" \\`,
             `  --data-binary @module.tar.gz \\`,
             `  "${base}/proxy/${reg}/v1/modules/namespace/name/provider/1.0.0"`,
@@ -502,18 +500,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "Bundler mirror / gem CLI source",
         lang: "bash",
         template: (ctx) => {
-          const { base, registryName: reg, isAuthenticated, token, netrcLogin } = ctx;
-          let proxyUrl = `${base}/proxy/${reg}/`;
-          if (isAuthenticated) {
-            try {
-              const u = new URL(`${base}/proxy/${reg}/`);
-              u.username = netrcLogin;
-              u.password = token;
-              proxyUrl = u.toString();
-            } catch {
-              /* keep original */
-            }
-          }
+          const { base, registryName: reg } = ctx;
+          const proxyUrl = withCredentials(`${base}/proxy/${reg}/`, ctx);
           return [
             `# Bundler — mirror rubygems.org through the proxy`,
             `# Run once, or commit to .bundle/config`,
@@ -635,8 +623,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "bash",
         showWhen: isPublishMode,
         template: (ctx) => {
-          const { base, registryName: reg, isAuthenticated, token } = ctx;
-          const tok = isAuthenticated ? token : "<your-token>";
+          const { base, registryName: reg } = ctx;
+          const tok = authTokenOrPlaceholder(ctx);
           return [
             `# Publish a package (Local / Hybrid mode only)`,
             `# ZIP must contain composer.json with "name" (vendor/pkg) and "version"`,
@@ -735,8 +723,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "bash",
         showWhen: isPublishMode,
         template: (ctx) => {
-          const { base, registryName: reg, isAuthenticated, token } = ctx;
-          const tok = isAuthenticated ? token : "<your-token>";
+          const { base, registryName: reg } = ctx;
+          const tok = authTokenOrPlaceholder(ctx);
           return [
             `# Publish a wheel or sdist (Local / Hybrid mode only)`,
             `# Build first: python -m build`,
@@ -826,8 +814,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "bash",
         showWhen: isPublishMode,
         template: (ctx) => {
-          const { base, registryName: reg, isAuthenticated, token } = ctx;
-          const tok = isAuthenticated ? token : "<your-token>";
+          const { base, registryName: reg } = ctx;
+          const tok = authTokenOrPlaceholder(ctx);
           return [
             `# Publish a conda package (Local / Hybrid mode only)`,
             `# Build first: conda build my-recipe/`,
@@ -869,8 +857,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "Add NuGet source (CLI)",
         lang: "bash",
         template: (ctx) => {
-          const { base, registryName: reg, isAuthenticated, token } = ctx;
-          const tok = isAuthenticated ? token : "<your-token>";
+          const { base, registryName: reg, isAuthenticated } = ctx;
+          const tok = authTokenOrPlaceholder(ctx);
           const lines = [
             `# Register the proxy as a NuGet source`,
             `dotnet nuget add source \\`,
@@ -913,8 +901,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "bash",
         showWhen: isPublishMode,
         template: (ctx) => {
-          const { base, registryName: reg, isAuthenticated, token } = ctx;
-          const tok = isAuthenticated ? token : "<your-token>";
+          const { base, registryName: reg } = ctx;
+          const tok = authTokenOrPlaceholder(ctx);
           return [
             `# Publish a .nupkg (Local / Hybrid mode only)`,
             `dotnet nuget push MyLib.1.0.0.nupkg \\`,

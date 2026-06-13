@@ -34,12 +34,8 @@ fn make_hot(
     new_hot_lock(HotConfig {
         registries,
         policies,
-        versioning: HashMap::new(),
-        signing: HashMap::new(),
-        sbom: HashMap::new(),
-        feature_flags: HashMap::new(),
-        beta_channel: HashMap::new(),
         max_artifact_size_bytes: max_bytes,
+        ..Default::default()
     })
 }
 
@@ -52,12 +48,7 @@ fn empty_hot(
     new_hot_lock(HotConfig {
         registries,
         policies: HashMap::new(),
-        versioning: HashMap::new(),
-        signing: HashMap::new(),
-        sbom: HashMap::new(),
-        feature_flags: HashMap::new(),
-        beta_channel: HashMap::new(),
-        max_artifact_size_bytes: None,
+        ..Default::default()
     })
 }
 

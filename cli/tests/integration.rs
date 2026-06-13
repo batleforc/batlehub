@@ -21,27 +21,31 @@ use utoipa_actix_web::AppExt;
 
 use batlehub_adapters::{
     auth::StaticTokenAuthProvider,
-    cache::InMemoryCacheStore,
+    cache::{InMemoryBannerStore, InMemoryCacheStore},
     in_memory::{
-        InMemoryPackageRepository, InMemoryStorageBackend, NoopArtifactMetaRepository,
-        NullUserTokenRepository,
+        InMemoryPackageRepository, InMemoryQuotaRepository, InMemoryStorageBackend,
+        NoopArtifactMetaRepository, NullUserTokenRepository,
     },
     local_registry::InMemoryLocalRegistry,
     notification::InMemoryNotificationStore,
+    rate_limit::InMemoryIpBlockStore,
 };
 use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
     entities::{AccessEvent, PackageId, Role},
-    ports::{AuthProvider, CacheStore, PackageRepository, RegistryClient},
+    ports::{
+        AuthProvider, BannerPort, CacheStore, IpBlockStore, PackageRepository, RegistryClient,
+    },
     rules::{BlockListRule, RbacRule},
     services::{
         new_hot_lock, AdminService, HotConfig, LocalRegistryService, ProxyMetrics, ProxyService,
-        RegistryPolicy,
+        QuotaService, RegistryPolicy,
     },
 };
 use batlehub_web::{
-    configure_app, new_access_lock, AccessConfig, AuthMiddlewareFactory, RegistryMap,
-    RegistryModeMap, UpstreamMap,
+    configure_app, new_access_lock,
+    services::{BannerService, ConfigReloadService, HotConfigBuilder},
+    AccessConfig, AuthMiddlewareFactory, RegistryMap, RegistryModeMap, UpstreamMap,
 };
 
 const AUTH_TOKEN: &str = "test-cli-token";
@@ -101,12 +105,7 @@ impl TestServer {
             hot: new_hot_lock(HotConfig {
                 registries: HashMap::new(),
                 policies: HashMap::new(),
-                versioning: HashMap::new(),
-                signing: HashMap::new(),
-                sbom: HashMap::new(),
-                feature_flags: HashMap::new(),
-                beta_channel: HashMap::new(),
-                max_artifact_size_bytes: None,
+                ..Default::default()
             }),
             quota: None,
             ownership: None,
@@ -120,12 +119,7 @@ impl TestServer {
             hot: new_hot_lock(HotConfig {
                 registries,
                 policies,
-                versioning: HashMap::new(),
-                signing: HashMap::new(),
-                sbom: HashMap::new(),
-                feature_flags: HashMap::new(),
-                beta_channel: HashMap::new(),
-                max_artifact_size_bytes: None,
+                ..Default::default()
             }),
             storage,
             cache,
@@ -162,6 +156,28 @@ impl TestServer {
                 .collect::<HashMap<_, _>>(),
         );
 
+        let quota_svc = Arc::new(QuotaService::new(
+            InMemoryQuotaRepository::new(),
+            HashMap::new(),
+        ));
+        let ip_block_store: Arc<dyn IpBlockStore> = Arc::new(InMemoryIpBlockStore::new());
+        let banner_store: Arc<dyn BannerPort> = Arc::new(InMemoryBannerStore::new());
+        let banner_svc = Arc::new(BannerService::new(banner_store));
+        let reload_builder: HotConfigBuilder = Arc::new(|_| anyhow::bail!("not used in tests"));
+        let reload_svc = Arc::new(ConfigReloadService::new(
+            proxy_svc.hot.clone(),
+            access_config.clone(),
+            registry_map.clone(),
+            mode_map.clone(),
+            UpstreamMap::default(),
+            batlehub_web::CargoIndexMap::default(),
+            "config.toml".to_owned(),
+            None,
+            false, // hot reload disabled -> deterministic 503 for `admin config reload`
+            reload_builder,
+            Some(Arc::clone(&banner_svc)),
+        ));
+
         let configure = configure_app(
             proxy_svc,
             admin_svc,
@@ -188,6 +204,10 @@ impl TestServer {
             let configure = configure.clone();
             let auth_providers = auth_providers.clone();
             let cargo_indexes = batlehub_web::CargoIndexMap::default();
+            let quota_svc = quota_svc.clone();
+            let ip_block_store = ip_block_store.clone();
+            let banner_svc = banner_svc.clone();
+            let reload_svc = reload_svc.clone();
 
             let server = HttpServer::new(move || {
                 let (app, _) = App::new()
@@ -197,6 +217,10 @@ impl TestServer {
                 app.app_data(web::Data::new(cargo_indexes.clone()))
                     .app_data(web::Data::new(local_svc.clone()))
                     .app_data(web::Data::new(mode_map.clone()))
+                    .app_data(web::Data::new(quota_svc.clone()))
+                    .app_data(web::Data::new(ip_block_store.clone()))
+                    .app_data(web::Data::new(banner_svc.clone()))
+                    .app_data(web::Data::new(reload_svc.clone()))
                     .wrap(AuthMiddlewareFactory::new(auth_providers.clone()))
             })
             .bind("127.0.0.1:0")
@@ -397,6 +421,71 @@ fn auth_whoami_anonymous() {
     assert!(ok, "auth whoami without token should succeed (anonymous)");
     let val: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
     assert_eq!(val["role"], "anonymous");
+}
+
+#[test]
+fn auth_whoami_table_mode() {
+    let srv = TestServer::start();
+    let (ok, stdout, _stderr) = cli_cmd(&["auth", "whoami"], &srv.base_url(), AUTH_TOKEN);
+    assert!(ok, "auth whoami (table) should succeed with valid token");
+    assert!(stdout.contains("test-user"), "stdout: {stdout}");
+    assert!(stdout.contains("admin"), "stdout: {stdout}");
+    assert!(stdout.contains("static-token"), "stdout: {stdout}");
+}
+
+#[test]
+fn auth_token_list_empty_json() {
+    let srv = TestServer::start();
+    let (ok, stdout, stderr) = cli_cmd(
+        &["auth", "token", "list", "--json"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(
+        ok,
+        "auth token list --json should succeed; stderr: {stderr}"
+    );
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON array");
+    assert!(arr.is_empty(), "expected empty token list, got: {stdout}");
+}
+
+#[test]
+fn auth_token_list_empty_table() {
+    let srv = TestServer::start();
+    let (ok, stdout, stderr) = cli_cmd(&["auth", "token", "list"], &srv.base_url(), AUTH_TOKEN);
+    assert!(ok, "auth token list should succeed; stderr: {stderr}");
+    assert!(stdout.contains("0 token(s)"), "stdout: {stdout}");
+}
+
+#[test]
+fn auth_token_create_requires_oidc_fails() {
+    let srv = TestServer::start();
+    let (ok, _stdout, stderr) = cli_cmd(
+        &["auth", "token", "create", "--name", "ci-token"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(!ok, "token create with a static token session should fail");
+    assert!(
+        stderr.to_lowercase().contains("oidc"),
+        "stderr should mention OIDC, got: {stderr}"
+    );
+}
+
+#[test]
+fn auth_token_revoke_not_found_fails() {
+    let srv = TestServer::start();
+    let id = uuid::Uuid::new_v4().to_string();
+    let (ok, _stdout, stderr) = cli_cmd(
+        &["auth", "token", "revoke", &id],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(!ok, "revoking a non-existent token should fail");
+    assert!(
+        stderr.to_lowercase().contains("not found"),
+        "stderr should mention 'not found', got: {stderr}"
+    );
 }
 
 // ── Tests: package ────────────────────────────────────────────────────────────
@@ -665,6 +754,372 @@ fn auth_refresh_no_stored_token_fails() {
         stderr.contains("refresh token") || stderr.contains("auth login"),
         "error should guide the user; stderr: {stderr}"
     );
+}
+
+/// `auth login` without `--kubernetes-token-path` against a server with no OIDC
+/// providers configured should bail with a helpful message.
+#[test]
+fn auth_login_without_kubernetes_no_oidc_fails() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let srv = TestServer::start();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
+        .args(["auth", "login"])
+        .env("BATLEHUB_SERVER", srv.base_url())
+        .env("BATLEHUB_TOKEN", AUTH_TOKEN)
+        .env("HOME", "/tmp")
+        .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run batlehub-cli");
+
+    assert!(
+        !out.status.success(),
+        "auth login without OIDC configured should fail"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("OIDC is not configured"),
+        "error should mention OIDC is not configured; stderr: {stderr}"
+    );
+}
+
+/// `auth refresh` with a stored refresh token, but against a server with no OIDC
+/// SSO configured, should call the refresh endpoint and surface its error.
+#[test]
+fn auth_refresh_with_stored_token_but_oidc_unavailable_fails() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let srv = TestServer::start();
+
+    let batlehub_dir = config_dir.path().join("batlehub");
+    std::fs::create_dir_all(&batlehub_dir).unwrap();
+    std::fs::write(
+        batlehub_dir.join("config.toml"),
+        r#"
+[default]
+token = "stale-token"
+oidc_refresh_token = "stored-refresh-token"
+oidc_expires_at = 0
+"#,
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
+        .args(["auth", "refresh"])
+        .env("BATLEHUB_SERVER", srv.base_url())
+        .env("BATLEHUB_TOKEN", AUTH_TOKEN)
+        .env("HOME", "/tmp")
+        .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run batlehub-cli");
+
+    assert!(
+        !out.status.success(),
+        "auth refresh against a server without OIDC SSO should fail"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("OIDC SSO is not configured"),
+        "error should surface the server's response; stderr: {stderr}"
+    );
+}
+
+// ── Tests: admin ──────────────────────────────────────────────────────────────
+
+#[test]
+fn admin_quota_list_json_empty() {
+    let srv = TestServer::start();
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "quota", "list", "--json"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "admin quota list should succeed; stderr: {stderr}");
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON array");
+    assert!(arr.is_empty(), "expected empty quota list, got: {stdout}");
+}
+
+#[test]
+fn admin_quota_list_for_registry_table() {
+    let srv = TestServer::start();
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "quota", "list", "-r", REGISTRY],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "admin quota list -r should succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("Registry") && stdout.contains("Storage (bytes)"),
+        "table header expected; stdout: {stdout}"
+    );
+}
+
+#[test]
+fn admin_quota_reset() {
+    let srv = TestServer::start();
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "quota", "reset", REGISTRY, "some-user"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "admin quota reset should succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("Reset quota for some-user in test-nuget"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
+fn admin_ip_block_add_list_remove() {
+    let srv = TestServer::start();
+    let base = srv.base_url();
+
+    let (ok, stdout, stderr) = cli_cmd(&["admin", "ip-block", "list", "--json"], &base, AUTH_TOKEN);
+    assert!(ok, "ip-block list should succeed; stderr: {stderr}");
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON array");
+    assert!(arr.is_empty(), "expected no blocks yet, got: {stdout}");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "admin",
+            "ip-block",
+            "add",
+            "10.0.0.1",
+            "--reason",
+            "test block",
+        ],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "ip-block add should succeed; stderr: {stderr}");
+    assert!(stdout.contains("Blocked 10.0.0.1"), "stdout: {stdout}");
+
+    let (ok, stdout, stderr) = cli_cmd(&["admin", "ip-block", "list", "--json"], &base, AUTH_TOKEN);
+    assert!(ok, "ip-block list should succeed; stderr: {stderr}");
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON array");
+    assert_eq!(arr.len(), 1, "stdout: {stdout}");
+    assert_eq!(arr[0]["ip"], "10.0.0.1");
+    assert_eq!(arr[0]["reason"], "test block");
+
+    let (ok, stdout, stderr) = cli_cmd(&["admin", "ip-block", "list"], &base, AUTH_TOKEN);
+    assert!(ok, "ip-block list (table) should succeed; stderr: {stderr}");
+    assert!(stdout.contains("10.0.0.1"), "stdout: {stdout}");
+    assert!(stdout.contains("1 block(s)"), "stdout: {stdout}");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "ip-block", "remove", "10.0.0.1"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "ip-block remove should succeed; stderr: {stderr}");
+    assert!(stdout.contains("Unblocked 10.0.0.1"), "stdout: {stdout}");
+
+    let (ok, stdout, stderr) = cli_cmd(&["admin", "ip-block", "list", "--json"], &base, AUTH_TOKEN);
+    assert!(ok, "ip-block list should succeed; stderr: {stderr}");
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON array");
+    assert!(arr.is_empty(), "expected block removed, got: {stdout}");
+}
+
+#[test]
+fn admin_ip_block_add_invalid_ip_fails() {
+    let srv = TestServer::start();
+    let (ok, _stdout, stderr) = cli_cmd(
+        &["admin", "ip-block", "add", "not-an-ip"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(!ok, "ip-block add with invalid IP should fail");
+    assert!(
+        stderr.contains("400") || stderr.to_lowercase().contains("ip address"),
+        "stderr should mention the bad IP; got: {stderr}"
+    );
+}
+
+#[test]
+fn admin_banner_set_and_clear() {
+    let srv = TestServer::start();
+    let base = srv.base_url();
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "admin",
+            "banner",
+            "set",
+            "Maintenance tonight",
+            "--level",
+            "warning",
+        ],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "banner set should succeed; stderr: {stderr}");
+    assert!(stdout.contains("Banner set (warning)"), "stdout: {stdout}");
+
+    let (ok, stdout, stderr) = cli_cmd(&["admin", "banner", "clear"], &base, AUTH_TOKEN);
+    assert!(ok, "banner clear should succeed; stderr: {stderr}");
+    assert!(stdout.contains("Banner cleared"), "stdout: {stdout}");
+}
+
+#[test]
+fn admin_cache_clear() {
+    let srv = TestServer::start();
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "cache", "clear", REGISTRY],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "cache clear should succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("Cache cleared for test-nuget"),
+        "stdout: {stdout}"
+    );
+}
+
+/// `admin cache warm` always fails against a real server today: the CLI's
+/// `WarmRequest` sends `{"packages": [...]}` while the server's handler expects a
+/// required singular `"package"` field, so the JSON body extractor rejects the
+/// request with 400 before the handler runs. This test pins that error-handling
+/// path through `handle_cache`/`cache_warm`.
+#[test]
+fn admin_cache_warm_fails() {
+    let srv = TestServer::start();
+    let (ok, _stdout, stderr) = cli_cmd(
+        &["admin", "cache", "warm", REGISTRY, "--packages", "pkg1"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(
+        !ok,
+        "cache warm should fail given the current request shape"
+    );
+    assert!(stderr.contains("HTTP 400"), "stderr: {stderr}");
+}
+
+#[test]
+fn admin_config_reload_disabled() {
+    let srv = TestServer::start();
+    let (ok, _stdout, stderr) =
+        cli_cmd(&["admin", "config", "reload"], &srv.base_url(), AUTH_TOKEN);
+    assert!(!ok, "config reload should fail when hot reload is disabled");
+    assert!(
+        stderr.contains("HTTP 503") && stderr.contains("hot reload is disabled"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn admin_config_changes_errors_without_pool() {
+    let srv = TestServer::start();
+    let (ok, _stdout, stderr) =
+        cli_cmd(&["admin", "config", "changes"], &srv.base_url(), AUTH_TOKEN);
+    assert!(
+        !ok,
+        "config changes should fail without a database pool configured"
+    );
+    assert!(stderr.contains("HTTP 500"), "stderr: {stderr}");
+}
+
+#[test]
+fn admin_audit_log_json_empty() {
+    let srv = TestServer::start();
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "audit-log", "--json"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "audit-log --json should succeed; stderr: {stderr}");
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON array");
+    assert!(arr.is_empty(), "stdout: {stdout}");
+}
+
+#[test]
+fn admin_audit_log_table_empty() {
+    let srv = TestServer::start();
+    let (ok, stdout, stderr) = cli_cmd(&["admin", "audit-log"], &srv.base_url(), AUTH_TOKEN);
+    assert!(ok, "audit-log should succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("Time") && stdout.contains("Denied"),
+        "table header expected; stdout: {stdout}"
+    );
+    assert!(stdout.contains("0 entry/entries"), "stdout: {stdout}");
+}
+
+// ── Tests: config ─────────────────────────────────────────────────────────────
+
+#[test]
+fn config_show_defaults() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
+        .args(["config", "show"])
+        .env("HOME", "/tmp")
+        .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run batlehub-cli");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "config show should succeed; stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("server_url: http://localhost:8080"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("token:      (not set)"), "stdout: {stdout}");
+    assert!(stdout.contains("registry:   (not set)"), "stdout: {stdout}");
+}
+
+#[test]
+fn config_set_then_show_masks_token() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
+            .args(args)
+            .env("HOME", "/tmp")
+            .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())
+            .output()
+            .expect("failed to run batlehub-cli")
+    };
+
+    let out = run(&["config", "set", "server_url", "http://example.com"]);
+    assert!(out.status.success(), "set server_url should succeed");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("Set server_url = http://example.com"));
+
+    let out = run(&["config", "set", "token", "mysecrettoken1234"]);
+    assert!(out.status.success(), "set token should succeed");
+
+    let out = run(&["config", "set", "registry", "my-registry"]);
+    assert!(out.status.success(), "set registry should succeed");
+
+    let out = run(&["config", "show"]);
+    assert!(out.status.success(), "config show should succeed");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("server_url: http://example.com"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("token:      myse…1234"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("registry:   my-registry"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
+fn config_set_unknown_key_fails() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
+        .args(["config", "set", "bogus", "value"])
+        .env("HOME", "/tmp")
+        .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run batlehub-cli");
+
+    assert!(
+        !out.status.success(),
+        "config set with unknown key should fail"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unknown key"), "stderr: {stderr}");
 }
 
 // ── Tests: setup detect ───────────────────────────────────────────────────────
