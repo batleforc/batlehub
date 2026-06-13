@@ -48,8 +48,7 @@ export function useApi<T>(
   }
 
   watchEffect(() => {
-    deps.forEach((d) => d.value);
-    void tick.value;
+    [...deps, tick].forEach((d) => d.value);
     void run();
   });
 

@@ -3,11 +3,11 @@ import { vi } from "vitest";
 // Node's experimental global `localStorage`/`sessionStorage` (undefined unless
 // --localstorage-file is passed) and jsdom's own storage implementation are
 // both unreliable in this environment, so provide a minimal in-memory Storage
-// polyfill and install it on both `window` and `globalThis`. `useAuth.ts` reads
-// `localStorage` at module scope, so this must run before any test module
-// imports it.
+// polyfill and install it on `globalThis` (same object as `window` under
+// jsdom). `useAuth.ts` reads `localStorage` at module scope, so this must run
+// before any test module imports it.
 class MemoryStorage implements Storage {
-  #store = new Map<string, string>();
+  readonly #store = new Map<string, string>();
 
   get length(): number {
     return this.#store.size;
@@ -35,32 +35,35 @@ class MemoryStorage implements Storage {
 }
 
 for (const key of ["localStorage", "sessionStorage"] as const) {
-  const storage = new MemoryStorage();
-  for (const target of [window, globalThis]) {
-    Object.defineProperty(target, key, {
-      value: storage,
-      writable: true,
-      configurable: true,
-    });
-  }
+  Object.defineProperty(globalThis, key, {
+    value: new MemoryStorage(),
+    writable: true,
+    configurable: true,
+  });
 }
 
-window.matchMedia ??= (query: string) =>
-  ({
-    matches: false,
-    media: query,
-    onchange: null,
-    addListener: () => {},
-    removeListener: () => {},
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    dispatchEvent: () => false,
-  }) as unknown as MediaQueryList;
+globalThis.matchMedia ??= (query: string) => ({
+  matches: false,
+  media: query,
+  onchange: null,
+  addListener: () => {},
+  removeListener: () => {},
+  addEventListener: () => {},
+  removeEventListener: () => {},
+  dispatchEvent: () => false,
+});
 
+// jsdom has no layout engine, so these callbacks would never fire anyway.
 class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
+  observe() {
+    // no-op
+  }
+  unobserve() {
+    // no-op
+  }
+  disconnect() {
+    // no-op
+  }
 }
 globalThis.ResizeObserver ??=
   ResizeObserverStub as unknown as typeof ResizeObserver;

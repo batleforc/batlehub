@@ -103,7 +103,7 @@ describe("useAuth", () => {
 
     storeTokens("access1", "refresh1", 3600);
 
-    await vi.advanceTimersByTimeAsync(3600_000 - 60_000);
+    await vi.advanceTimersByTimeAsync(3_600_000 - 60_000);
 
     expect(oidcRefreshMock).toHaveBeenCalled();
   });

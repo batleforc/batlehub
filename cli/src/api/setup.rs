@@ -43,25 +43,40 @@ pub fn scan_project_types(
 fn read_dir_entries(dir: &Path, remaining_depth: usize) -> (Vec<String>, Vec<PathBuf>) {
     let mut file_names: Vec<String> = Vec::new();
     let mut subdirs: Vec<PathBuf> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let Ok(ft) = entry.file_type() else { continue };
-            let path = entry.path();
-            if ft.is_file() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    file_names.push(name.to_string());
-                }
-            } else if ft.is_dir() && remaining_depth > 0 {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if !name.starts_with('.') && !SKIP_DIRS.contains(&name) {
-                        subdirs.push(path);
-                    }
-                }
-            }
-        }
-        subdirs.sort();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (file_names, subdirs);
+    };
+    for entry in entries.flatten() {
+        classify_entry(&entry, remaining_depth, &mut file_names, &mut subdirs);
     }
+    subdirs.sort();
     (file_names, subdirs)
+}
+
+/// Classify a single directory entry into `file_names` or `subdirs`,
+/// applying the `SKIP_DIRS` / hidden-directory filter to subdirectories.
+fn classify_entry(
+    entry: &std::fs::DirEntry,
+    remaining_depth: usize,
+    file_names: &mut Vec<String>,
+    subdirs: &mut Vec<PathBuf>,
+) {
+    let Ok(ft) = entry.file_type() else { return };
+    let path = entry.path();
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    if ft.is_file() {
+        file_names.push(name.to_string());
+    } else if ft.is_dir() && remaining_depth > 0 && !is_skipped_dir(name) {
+        subdirs.push(path);
+    }
+}
+
+/// Hidden directories (dotfiles) and entries in [`SKIP_DIRS`] are never
+/// descended into during recursive scanning.
+fn is_skipped_dir(name: &str) -> bool {
+    name.starts_with('.') || SKIP_DIRS.contains(&name)
 }
 
 fn scan_recursive(
