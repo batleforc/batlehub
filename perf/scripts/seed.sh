@@ -16,6 +16,7 @@ NPM_REG="perf-npm"
 SEED_PKG="perf-pkg"
 SEED_VER="1.0.0"
 WARM_N="${WARM_N:-5}"   # how many times to fetch to ensure cache is hot
+HTTP_CODE_CONST="%{http_code}"
 
 echo "==> BatleHub perf seed  base=$BASE  registry=$NPM_REG"
 
@@ -35,7 +36,7 @@ done
 
 # ── 2. Verify auth ────────────────────────────────────────────────────────────
 echo -n "    verifying token..."
-STATUS=$(curl -sf -o /dev/null -w "%{http_code}" -H "$AUTH" "$BASE/api/v1/me" || echo "000")
+STATUS=$(curl -sf -o /dev/null -w $HTTP_CODE_CONST -H "$AUTH" "$BASE/api/v1/me" || echo "000")
 if [[ "$STATUS" != "200" ]]; then
   echo " FAILED (HTTP $STATUS)"
   echo "    Check that perf/config.perf.toml has [[auth.tokens]] value=\"$TOKEN\""
@@ -45,7 +46,7 @@ echo " ok"
 
 # ── 3. Verify mock upstream ───────────────────────────────────────────────────
 echo -n "    checking mock upstream..."
-STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "http://localhost:9999/health" || echo "000")
+STATUS=$(curl -sf -o /dev/null -w $HTTP_CODE_CONST "http://localhost:9999/health" || echo "000")
 if [[ "$STATUS" != "200" ]]; then
   echo " NOT RUNNING (HTTP $STATUS)"
   echo "    Start it with: task perf:upstream"
@@ -57,7 +58,7 @@ echo " ok"
 echo "    warming cache: $NPM_REG/$SEED_PKG@$SEED_VER (×$WARM_N)"
 TARBALL_URL="$BASE/proxy/$NPM_REG/$SEED_PKG/$SEED_VER/tarball"
 for i in $(seq 1 "$WARM_N"); do
-  HTTP_CODE=$(curl -sf -o /dev/null -w "%{http_code}" \
+  HTTP_CODE=$(curl -sf -o /dev/null -w $HTTP_CODE_CONST \
     -H "$AUTH" \
     "$TARBALL_URL" || echo "000")
   printf "      attempt %d: HTTP %s\n" "$i" "$HTTP_CODE"
@@ -69,7 +70,7 @@ done
 # ── 5. Verify SBOM recording (cache-miss above should have recorded one) ─────
 echo -n "    checking SBOM was recorded for $NPM_REG/$SEED_PKG@$SEED_VER..."
 SBOM_URL="$BASE/api/v1/sbom/$NPM_REG/$SEED_PKG/$SEED_VER?format=spdx"
-STATUS=$(curl -sf -o /dev/null -w "%{http_code}" -H "$AUTH" "$SBOM_URL" || echo "000")
+STATUS=$(curl -sf -o /dev/null -w $HTTP_CODE_CONST -H "$AUTH" "$SBOM_URL" || echo "000")
 if [[ "$STATUS" != "200" ]]; then
   echo " WARN (HTTP $STATUS)"
   echo "    Check that [registries.sbom] enabled = true for $NPM_REG in the server config"
