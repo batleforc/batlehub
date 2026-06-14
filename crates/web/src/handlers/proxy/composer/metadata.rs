@@ -9,7 +9,9 @@ use batlehub_core::{
     services::{LocalRegistryService, ProxyService},
 };
 
-use crate::handlers::proxy::common::{proxy_stream, require_registry_type};
+use crate::handlers::proxy::common::{
+    proxy_stream, require_registry_type, serve_local_or_proxy_artifact, LocalOrProxyArtifactOpts,
+};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 use super::build_base_url;
@@ -183,58 +185,25 @@ pub async fn composer_dist(
     require_registry_type(&registry, "composer", &map)?;
 
     let name = format!("{vendor}/{package}");
-    let mode = mode_map.get(&registry);
 
-    if matches!(mode, RegistryMode::Local) {
-        local_svc
-            .check_prerelease_access(&registry, &version, &identity.0)
-            .await
-            .map_err(AppError::from)?;
-        match local_svc
-            .get_artifact(&registry, &name, &version, &identity)
-            .await
-        {
-            Ok(bytes) => {
-                return Ok(HttpResponse::Ok()
-                    .content_type("application/zip")
-                    .body(bytes));
-            }
-            Err(CoreError::NotFound(_)) => {
-                return Err(AppError::not_found(format!(
-                    "composer package '{name}@{version}' not found in local registry '{registry}'"
-                )));
-            }
-            Err(e) => return Err(AppError::from(e)),
-        }
-    }
-
-    if matches!(mode, RegistryMode::Hybrid) {
-        // Check the pre-release gate first.  Any error here (including gated access)
-        // is a hard denial — we must NOT fall through to the upstream proxy, because
-        // the same version may exist there and would bypass the gate.
-        local_svc
-            .check_prerelease_access(&registry, &version, &identity.0)
-            .await
-            .map_err(AppError::from)?;
-
-        // Gate passed — try local artifact; fall through to proxy only when we truly
-        // don't have it locally (NotFound = "not published here, go upstream").
-        match local_svc
-            .get_artifact(&registry, &name, &version, &identity)
-            .await
-        {
-            Ok(bytes) => {
-                return Ok(HttpResponse::Ok()
-                    .content_type("application/zip")
-                    .body(bytes));
-            }
-            Err(CoreError::NotFound(_)) => {} // fall through to proxy
-            Err(e) => return Err(AppError::from(e)),
-        }
-    }
-
-    let pkg = PackageId::new(&registry, &name, &version).with_artifact("dist");
-    proxy_stream(svc, pkg, identity, "releases:read", Some("application/zip")).await
+    serve_local_or_proxy_artifact(
+        svc,
+        local_svc,
+        &mode_map,
+        &registry,
+        &name,
+        &version,
+        identity,
+        LocalOrProxyArtifactOpts {
+            artifact_suffix: "dist",
+            local_content_type: "application/zip",
+            proxy_content_type: Some("application/zip"),
+            resource_type: "releases:read",
+            check_prerelease: true,
+            append_signature: false,
+        },
+    )
+    .await
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

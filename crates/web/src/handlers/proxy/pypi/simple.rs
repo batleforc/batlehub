@@ -5,11 +5,12 @@ use actix_web::{get, web, HttpRequest, HttpResponse, Responder};
 use batlehub_config::schema::RegistryMode as Mode;
 use batlehub_core::{
     entities::PackageId,
-    error::CoreError,
     services::{LocalRegistryService, ProxyService},
 };
 
-use crate::handlers::proxy::common::{proxy_stream, require_registry_type};
+use crate::handlers::proxy::common::{
+    proxy_stream, require_registry_type, serve_local_or_proxy_artifact, LocalOrProxyArtifactOpts,
+};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
 
 use super::parse_pypi_filename;
@@ -169,49 +170,26 @@ pub async fn pypi_file_download(
     let (registry, filename) = path.into_inner();
     require_registry_type(&registry, "pypi", &map)?;
 
-    let mode = mode_map.get(&registry);
-
-    if mode == batlehub_config::schema::RegistryMode::Local {
-        let (name, version) = parse_pypi_filename(&filename).ok_or_else(|| {
-            AppError::unprocessable(format!("cannot parse PyPI filename: {filename}"))
-        })?;
-        let bytes = local_svc
-            .get_artifact(&registry, &name, &version, &identity)
-            .await
-            .map_err(AppError::from)?;
-        return Ok(HttpResponse::Ok()
-            .content_type("application/octet-stream")
-            .body(bytes));
-    }
-
-    if mode == batlehub_config::schema::RegistryMode::Hybrid {
-        if let Some((name, version)) = parse_pypi_filename(&filename) {
-            match local_svc
-                .get_artifact(&registry, &name, &version, &identity)
-                .await
-            {
-                Ok(bytes) => {
-                    return Ok(HttpResponse::Ok()
-                        .content_type("application/octet-stream")
-                        .body(bytes));
-                }
-                Err(CoreError::NotFound(_)) => {}
-                Err(e) => return Err(AppError::from(e)),
-            }
-        }
-    }
-
     let (name, version) = parse_pypi_filename(&filename).ok_or_else(|| {
         AppError::unprocessable(format!("cannot parse PyPI filename: {filename}"))
     })?;
 
-    let pkg = PackageId::new(&registry, &name, &version).with_artifact(filename);
-    proxy_stream(
+    serve_local_or_proxy_artifact(
         svc,
-        pkg,
+        local_svc,
+        &mode_map,
+        &registry,
+        &name,
+        &version,
         identity,
-        "releases:read",
-        Some("application/octet-stream"),
+        LocalOrProxyArtifactOpts {
+            artifact_suffix: &filename,
+            local_content_type: "application/octet-stream",
+            proxy_content_type: Some("application/octet-stream"),
+            resource_type: "releases:read",
+            check_prerelease: false,
+            append_signature: false,
+        },
     )
     .await
 }

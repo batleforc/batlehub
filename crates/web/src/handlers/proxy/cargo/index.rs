@@ -1,7 +1,7 @@
 use super::{
-    append_signature_headers, get, proxy_stream, require_cargo, web, AppError, Arc, AuthIdentity,
-    CargoIndexMap, CoreError, HttpRequest, HttpResponse, LocalRegistryService, PackageId,
-    ProxyService, RegistryMap, RegistryMode, RegistryModeMap, Responder,
+    get, require_cargo, serve_local_or_proxy_artifact, web, AppError, Arc, AuthIdentity,
+    CargoIndexMap, CoreError, HttpRequest, HttpResponse, LocalOrProxyArtifactOpts,
+    LocalRegistryService, ProxyService, RegistryMap, RegistryMode, RegistryModeMap, Responder,
 };
 
 /// Cargo sparse registry `config.json`.
@@ -185,45 +185,22 @@ pub async fn download_crate(
     let (registry, name, version) = path.into_inner();
     require_cargo(&registry, &map)?;
 
-    let mode = mode_map.get(&registry);
-
-    if matches!(mode, RegistryMode::Local) {
-        local_svc
-            .check_prerelease_access(&registry, &version, &identity)
-            .await
-            .map_err(AppError::from)?;
-        let bytes = local_svc
-            .get_artifact(&registry, &name, &version, &identity)
-            .await
-            .map_err(AppError::from)?;
-        let mut resp = HttpResponse::Ok();
-        resp.content_type("application/octet-stream");
-        append_signature_headers(&mut resp, &local_svc, &registry, &name, &version).await;
-        return Ok(resp.body(bytes));
-    }
-
-    if matches!(mode, RegistryMode::Hybrid) {
-        // Gate must be enforced before falling through to upstream: a non-member
-        // must not receive a pre-release artifact from the upstream registry.
-        local_svc
-            .check_prerelease_access(&registry, &version, &identity)
-            .await
-            .map_err(AppError::from)?;
-        match local_svc
-            .get_artifact(&registry, &name, &version, &identity)
-            .await
-        {
-            Ok(bytes) => {
-                let mut resp = HttpResponse::Ok();
-                resp.content_type("application/octet-stream");
-                append_signature_headers(&mut resp, &local_svc, &registry, &name, &version).await;
-                return Ok(resp.body(bytes));
-            }
-            Err(CoreError::NotFound(_)) => {} // not found locally; fall through to upstream
-            Err(e) => return Err(AppError::from(e)),
-        }
-    }
-
-    let pkg = PackageId::new(&registry, &name, &version).with_artifact("dl");
-    proxy_stream(svc, pkg, identity, "source:read", None).await
+    serve_local_or_proxy_artifact(
+        svc,
+        local_svc,
+        &mode_map,
+        &registry,
+        &name,
+        &version,
+        identity,
+        LocalOrProxyArtifactOpts {
+            artifact_suffix: "dl",
+            local_content_type: "application/octet-stream",
+            proxy_content_type: None,
+            resource_type: "source:read",
+            check_prerelease: true,
+            append_signature: true,
+        },
+    )
+    .await
 }

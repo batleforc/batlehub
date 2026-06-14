@@ -6,14 +6,14 @@ use sha2::{Digest, Sha256};
 
 use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
-    entities::{CargoDep, CargoIndexEntry, PackageId},
+    entities::{CargoDep, CargoIndexEntry},
     error::CoreError,
     services::{LocalRegistryService, ProxyService, PublishRequest},
 };
 
 use super::common::{
-    append_signature_headers, collect_payload, extract_signature_headers, proxy_stream,
-    require_local_mode,
+    collect_payload, extract_signature_headers, require_local_mode, serve_local_or_proxy_artifact,
+    LocalOrProxyArtifactOpts,
 };
 use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, CargoIndexMap,

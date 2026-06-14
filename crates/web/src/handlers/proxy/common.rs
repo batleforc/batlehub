@@ -192,6 +192,78 @@ pub async fn proxy_stream(
     }
 }
 
+/// Options controlling [`serve_local_or_proxy_artifact`]'s behaviour.
+pub struct LocalOrProxyArtifactOpts<'a> {
+    /// Suffix passed to `PackageId::with_artifact(...)` on the proxy fallback,
+    /// e.g. `"gem"`, `"dl"`, `"tarball"`, or a full filename.
+    pub artifact_suffix: &'a str,
+    /// `Content-Type` set on a local/hybrid hit.
+    pub local_content_type: &'static str,
+    /// `Content-Type` passed to [`proxy_stream`] on the proxy fallback.
+    pub proxy_content_type: Option<&'static str>,
+    /// `resource_type` passed to [`proxy_stream`], e.g. `"releases:read"`, `"source:read"`.
+    pub resource_type: &'a str,
+    /// Call `local_svc.check_prerelease_access(...)` before `get_artifact` in
+    /// the Local/Hybrid branches.
+    pub check_prerelease: bool,
+    /// Call [`append_signature_headers`] on a local/hybrid hit.
+    pub append_signature: bool,
+}
+
+/// Serve an artifact from local storage (Local/Hybrid mode) or fall back to
+/// streaming it from the upstream registry (Proxy mode, or a Hybrid miss).
+///
+/// This is the shared shape behind `gem_download`, `download_crate`,
+/// `download_tarball`, and similar registry-artifact download handlers.
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_local_or_proxy_artifact(
+    svc: web::Data<Arc<ProxyService>>,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
+    mode_map: &RegistryModeMap,
+    registry: &str,
+    name: &str,
+    version: &str,
+    identity: AuthIdentity,
+    opts: LocalOrProxyArtifactOpts<'_>,
+) -> Result<HttpResponse, AppError> {
+    let mode = mode_map.get(registry);
+
+    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        if opts.check_prerelease {
+            local_svc
+                .check_prerelease_access(registry, version, &identity)
+                .await
+                .map_err(AppError::from)?;
+        }
+        match local_svc
+            .get_artifact(registry, name, version, &identity)
+            .await
+        {
+            Ok(bytes) => {
+                let mut resp = HttpResponse::Ok();
+                resp.content_type(opts.local_content_type);
+                if opts.append_signature {
+                    append_signature_headers(&mut resp, &local_svc, registry, name, version).await;
+                }
+                return Ok(resp.body(bytes));
+            }
+            // Not found locally in hybrid mode; fall through to upstream.
+            Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}
+            Err(e) => return Err(AppError::from(e)),
+        }
+    }
+
+    let pkg = PackageId::new(registry, name, version).with_artifact(opts.artifact_suffix);
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        opts.resource_type,
+        opts.proxy_content_type,
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

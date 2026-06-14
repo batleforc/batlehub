@@ -277,6 +277,83 @@ fn configure_test_app(
     )
 }
 
+/// Finish wiring a test app: split the configured routes off `App::new()`, attach the
+/// `cargo_indexes`/`local_svc`/`mode_map` app_data shared by (almost) every factory, and
+/// wrap with the given auth providers.
+async fn finish_test_app(
+    proxy_svc: Arc<ProxyService>,
+    admin_svc: Arc<AdminService>,
+    token_repo: Arc<dyn UserTokenRepository>,
+    access_config: batlehub_web::AccessConfigLock,
+    registry_map: batlehub_web::RegistryMap,
+    local_svc: Arc<LocalRegistryService>,
+    mode_map: RegistryModeMap,
+    cargo_indexes: batlehub_web::CargoIndexMap,
+    defaults: ConfigureAppDefaults,
+    auth_providers: Vec<Arc<dyn AuthProvider>>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_test_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            access_config,
+            registry_map,
+            defaults,
+        ))
+        .split_for_parts();
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(mode_map));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(auth_providers))).await
+}
+
+/// Like `finish_test_app`, but attaches one extra `app_data` value (e.g. an
+/// `IpBlockStore` or `TeamNamespacePort`) needed by a handful of factories.
+async fn finish_test_app_with_extra<E: 'static>(
+    proxy_svc: Arc<ProxyService>,
+    admin_svc: Arc<AdminService>,
+    token_repo: Arc<dyn UserTokenRepository>,
+    access_config: batlehub_web::AccessConfigLock,
+    registry_map: batlehub_web::RegistryMap,
+    local_svc: Arc<LocalRegistryService>,
+    mode_map: RegistryModeMap,
+    cargo_indexes: batlehub_web::CargoIndexMap,
+    defaults: ConfigureAppDefaults,
+    extra: E,
+    auth_providers: Vec<Arc<dyn AuthProvider>>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_test_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            access_config,
+            registry_map,
+            defaults,
+        ))
+        .split_for_parts();
+    let app = app
+        .app_data(actix_web::web::Data::new(cargo_indexes))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(mode_map))
+        .app_data(actix_web::web::Data::new(extra));
+
+    init_service(app.wrap(AuthMiddlewareFactory::new(auth_providers))).await
+}
+
 /// Build a fully-wired test app. The caller keeps a reference to `repo`
 /// to pre-seed or inspect state during the test.
 async fn make_app(
@@ -371,26 +448,22 @@ async fn make_app_ext(
         ("vscode", "vscode-marketplace"),
     ]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_test_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            access_config,
-            registry_map,
-            ConfigureAppDefaults {
-                proxy_metrics,
-                ..Default::default()
-            },
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+    finish_test_app(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        RegistryModeMap::default(),
+        cargo_indexes,
+        ConfigureAppDefaults {
+            proxy_metrics,
+            ..Default::default()
+        },
+        test_auth_providers(),
+    )
+    .await
 }
 
 /// Variant of `make_app` that attaches a (pre-seeded) vulnerability repository to
@@ -447,23 +520,19 @@ async fn make_vuln_app(
     let access_config = access_config_with_explore(&["npm", "cargo"]);
     let registry_map = registry_map_for(&[("npm", "npm"), ("cargo", "cargo")]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_test_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            access_config,
-            registry_map,
-            ConfigureAppDefaults::default(),
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+    finish_test_app(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        RegistryModeMap::default(),
+        cargo_indexes,
+        ConfigureAppDefaults::default(),
+        test_auth_providers(),
+    )
+    .await
 }
 
 /// Build a single vulnerability finding for a coordinate (helper for the tests below).
@@ -769,26 +838,22 @@ async fn build_local_registry_app(
         mode_map,
     } = parts;
 
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_test_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            access_config,
-            registry_map,
-            ConfigureAppDefaults {
-                sbom_svc,
-                ..Default::default()
-            },
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(mode_map));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+    finish_test_app(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        mode_map,
+        cargo_indexes,
+        ConfigureAppDefaults {
+            sbom_svc,
+            ..Default::default()
+        },
+        test_auth_providers(),
+    )
+    .await
 }
 
 /// Common building blocks for a fully-wired test app with no configured registries.
@@ -845,24 +910,20 @@ async fn make_app_with_ip_store(
         local_svc,
     } = empty_app_parts();
 
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_test_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            access_config,
-            registry_map,
-            ConfigureAppDefaults::default(),
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(RegistryModeMap::default()))
-        .app_data(actix_web::web::Data::new(ip_store));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+    finish_test_app_with_extra(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        RegistryModeMap::default(),
+        cargo_indexes,
+        ConfigureAppDefaults::default(),
+        ip_store,
+        test_auth_providers(),
+    )
+    .await
 }
 
 async fn make_app_with_notifications(
@@ -884,28 +945,24 @@ async fn make_app_with_notifications(
         local_svc,
     } = empty_app_parts();
 
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_test_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            access_config,
-            registry_map,
-            ConfigureAppDefaults {
-                notification_svc,
-                notification_store,
-                notifications_config,
-                ..Default::default()
-            },
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+    finish_test_app(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        RegistryModeMap::default(),
+        cargo_indexes,
+        ConfigureAppDefaults {
+            notification_svc,
+            notification_store,
+            notifications_config,
+            ..Default::default()
+        },
+        test_auth_providers(),
+    )
+    .await
 }
 
 async fn make_app_with_beta_store(
@@ -925,24 +982,20 @@ async fn make_app_with_beta_store(
         local_svc,
     } = empty_app_parts();
 
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_test_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            access_config,
-            registry_map,
-            ConfigureAppDefaults::default(),
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(RegistryModeMap::default()))
-        .app_data(actix_web::web::Data::new(beta_store));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+    finish_test_app_with_extra(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        RegistryModeMap::default(),
+        cargo_indexes,
+        ConfigureAppDefaults::default(),
+        beta_store,
+        test_auth_providers(),
+    )
+    .await
 }
 
 // ── Rate-limited app factory ──────────────────────────────────────────────────
@@ -2097,23 +2150,19 @@ async fn make_group_app(
     });
     let registry_map = registry_map_for(&[("github", "github"), ("github2", "github")]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_test_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            access_config,
-            registry_map,
-            ConfigureAppDefaults::default(),
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(group_auth_providers()))).await
+    finish_test_app(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        RegistryModeMap::default(),
+        cargo_indexes,
+        ConfigureAppDefaults::default(),
+        group_auth_providers(),
+    )
+    .await
 }
 
 // ── /api/v1/registries with groups ───────────────────────────────────────────
@@ -2524,22 +2573,6 @@ async fn make_app_with_tokens(
     let registry_map = registry_map_for(&[("npm", "npm")]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
 
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_test_app(
-            proxy_svc,
-            admin_svc,
-            tok_repo,
-            access_config,
-            registry_map,
-            ConfigureAppDefaults::default(),
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
-
     let providers: Vec<Arc<dyn AuthProvider>> = vec![
         Arc::new(StaticTokenAuthProvider::new([
             (
@@ -2552,7 +2585,19 @@ async fn make_app_with_tokens(
         Arc::new(OidcStyleAuthProvider),
     ];
 
-    init_service(app.wrap(AuthMiddlewareFactory::new(providers))).await
+    finish_test_app(
+        proxy_svc,
+        admin_svc,
+        tok_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        RegistryModeMap::default(),
+        cargo_indexes,
+        ConfigureAppDefaults::default(),
+        providers,
+    )
+    .await
 }
 
 // ── Token API tests ───────────────────────────────────────────────────────────
@@ -2895,23 +2940,19 @@ async fn make_app_with_cargo_index(
         },
     )]));
 
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_test_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            access_config,
-            registry_map,
-            ConfigureAppDefaults::default(),
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+    finish_test_app(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        RegistryModeMap::default(),
+        cargo_indexes,
+        ConfigureAppDefaults::default(),
+        test_auth_providers(),
+    )
+    .await
 }
 
 #[actix_web::test]
@@ -3558,23 +3599,19 @@ async fn make_unavailable_npm_app(
     let access_config = access_config_for(&["npm"]);
     let registry_map = registry_map_for(&[("npm", "npm")]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_test_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            access_config,
-            registry_map,
-            ConfigureAppDefaults::default(),
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+    finish_test_app(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        RegistryModeMap::default(),
+        cargo_indexes,
+        ConfigureAppDefaults::default(),
+        test_auth_providers(),
+    )
+    .await
 }
 
 fn stale_npm_meta(name: &str, version: &str) -> PackageMetadata {
@@ -3975,25 +4012,22 @@ async fn audit_quick_forwards_to_upstream_and_returns_response() {
     upstream_entries.insert("npm".to_owned(), upstream_url);
     let upstream_map = batlehub_web::UpstreamMap::from(upstream_entries);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_test_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            access_config,
-            registry_map,
-            ConfigureAppDefaults {
-                upstream_map,
-                ..Default::default()
-            },
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
-    let app = init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await;
+    let app = finish_test_app(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        RegistryModeMap::default(),
+        cargo_indexes,
+        ConfigureAppDefaults {
+            upstream_map,
+            ..Default::default()
+        },
+        test_auth_providers(),
+    )
+    .await;
 
     let req = TestRequest::post()
         .uri("/proxy/npm/-/npm/v1/audit/quick")
@@ -4175,22 +4209,19 @@ async fn cargo_registry_index_fetches_from_upstream_and_returns_content() {
             index_url,
         },
     )]));
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_test_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            access_config,
-            registry_map,
-            ConfigureAppDefaults::default(),
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
-    let app = init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await;
+    let app = finish_test_app(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        RegistryModeMap::default(),
+        cargo_indexes,
+        ConfigureAppDefaults::default(),
+        test_auth_providers(),
+    )
+    .await;
 
     let req = TestRequest::get()
         .uri("/proxy/cargo/registry/ra/nd/rand")
@@ -7094,25 +7125,20 @@ async fn make_app_with_ns_store(
     let registry_map = registry_map_for(&[]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
 
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_test_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            access_config,
-            registry_map,
-            ConfigureAppDefaults::default(),
-        ))
-        .split_for_parts();
-
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(RegistryModeMap::default()))
-        .app_data(actix_web::web::Data::new(ns_store));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+    finish_test_app_with_extra(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        RegistryModeMap::default(),
+        cargo_indexes,
+        ConfigureAppDefaults::default(),
+        ns_store,
+        test_auth_providers(),
+    )
+    .await
 }
 
 /// Build a local Cargo registry app wired with a `TeamNamespacePort`.
@@ -7214,25 +7240,20 @@ async fn make_ns_cargo_app_with_backend(
     let mode_map = RegistryModeMap::default();
     mode_map.insert("local-cargo".to_owned(), RegistryMode::Local);
 
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_test_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            access_config,
-            registry_map,
-            ConfigureAppDefaults::default(),
-        ))
-        .split_for_parts();
-
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(mode_map))
-        .app_data(actix_web::web::Data::new(ns_store));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(team_ns_auth_providers()))).await
+    finish_test_app_with_extra(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        mode_map,
+        cargo_indexes,
+        ConfigureAppDefaults::default(),
+        ns_store,
+        team_ns_auth_providers(),
+    )
+    .await
 }
 
 // ── Namespace back-office endpoint tests ─────────────────────────────────────
@@ -8113,25 +8134,20 @@ async fn make_ns_upload_app(
     let mode_map = RegistryModeMap::default();
     mode_map.insert(registry_name.to_owned(), RegistryMode::Local);
 
-    let (app, _) = App::new()
-        .into_utoipa_app()
-        .configure(configure_test_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            access_config,
-            registry_map,
-            ConfigureAppDefaults::default(),
-        ))
-        .split_for_parts();
-
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(mode_map))
-        .app_data(actix_web::web::Data::new(ns_store));
-
-    init_service(app.wrap(AuthMiddlewareFactory::new(team_ns_auth_providers()))).await
+    finish_test_app_with_extra(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        mode_map,
+        cargo_indexes,
+        ConfigureAppDefaults::default(),
+        ns_store,
+        team_ns_auth_providers(),
+    )
+    .await
 }
 
 // ── Payload builders for upload-capable registry types ────────────────────────
@@ -9406,22 +9422,19 @@ async fn make_explore_app(
         ("vscode", "vscode-marketplace"),
     ]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
-    let (app, _) = actix_web::App::new()
-        .into_utoipa_app()
-        .configure(configure_test_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            access_config,
-            registry_map,
-            ConfigureAppDefaults::default(),
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
-    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+    finish_test_app(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        RegistryModeMap::default(),
+        cargo_indexes,
+        ConfigureAppDefaults::default(),
+        test_auth_providers(),
+    )
+    .await
 }
 
 #[actix_web::test]
@@ -9749,22 +9762,19 @@ async fn make_rubygems_proxy_app() -> impl actix_web::dev::Service<
     let access_config = access_config_for(&["gems"]);
     let registry_map = registry_map_for(&[("gems", "rubygems")]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
-    let (app, _) = actix_web::App::new()
-        .into_utoipa_app()
-        .configure(configure_test_app(
-            proxy_svc,
-            admin_svc,
-            token_repo,
-            access_config,
-            registry_map,
-            ConfigureAppDefaults::default(),
-        ))
-        .split_for_parts();
-    let app = app
-        .app_data(actix_web::web::Data::new(cargo_indexes))
-        .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(RegistryModeMap::default()));
-    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+    finish_test_app(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        RegistryModeMap::default(),
+        cargo_indexes,
+        ConfigureAppDefaults::default(),
+        test_auth_providers(),
+    )
+    .await
 }
 
 #[actix_web::test]

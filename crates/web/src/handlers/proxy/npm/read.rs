@@ -1,7 +1,8 @@
 use super::{
-    base_url, get, post, proxy_stream, require_npm, require_npm_or_cargo, web, AppError, Arc,
-    AuthIdentity, CoreError, HttpRequest, HttpResponse, LocalRegistryService, PackageId,
-    ProxyService, RegistryMap, RegistryMode, RegistryModeMap, Responder, UpstreamMap,
+    base_url, get, post, proxy_stream, require_npm, require_npm_or_cargo,
+    serve_local_or_proxy_artifact, web, AppError, Arc, AuthIdentity, CoreError, HttpRequest,
+    HttpResponse, LocalOrProxyArtifactOpts, LocalRegistryService, PackageId, ProxyService,
+    RegistryMap, RegistryMode, RegistryModeMap, Responder, UpstreamMap,
 };
 
 /// Fetch package metadata (all versions / packument).
@@ -142,45 +143,24 @@ pub async fn download_tarball(
     let (registry, package, version) = path.into_inner();
     require_npm(&registry, &map)?;
 
-    let mode = mode_map.get(&registry);
-
-    if matches!(mode, RegistryMode::Local) {
-        local_svc
-            .check_prerelease_access(&registry, &version, &identity)
-            .await
-            .map_err(AppError::from)?;
-        let bytes = local_svc
-            .get_artifact(&registry, &package, &version, &identity)
-            .await
-            .map_err(AppError::from)?;
-        return Ok(HttpResponse::Ok()
-            .content_type("application/octet-stream")
-            .body(bytes));
-    }
-
-    if matches!(mode, RegistryMode::Hybrid) {
-        // Gate must be enforced before falling through to upstream: a non-member
-        // must not receive a pre-release artifact from the upstream registry.
-        local_svc
-            .check_prerelease_access(&registry, &version, &identity)
-            .await
-            .map_err(AppError::from)?;
-        match local_svc
-            .get_artifact(&registry, &package, &version, &identity)
-            .await
-        {
-            Ok(bytes) => {
-                return Ok(HttpResponse::Ok()
-                    .content_type("application/octet-stream")
-                    .body(bytes));
-            }
-            Err(CoreError::NotFound(_)) => {} // not found locally; fall through to upstream
-            Err(e) => return Err(AppError::from(e)),
-        }
-    }
-
-    let pkg = PackageId::new(&registry, &package, &version).with_artifact("tarball");
-    proxy_stream(svc, pkg, identity, "source:read", None).await
+    serve_local_or_proxy_artifact(
+        svc,
+        local_svc,
+        &mode_map,
+        &registry,
+        &package,
+        &version,
+        identity,
+        LocalOrProxyArtifactOpts {
+            artifact_suffix: "tarball",
+            local_content_type: "application/octet-stream",
+            proxy_content_type: None,
+            resource_type: "source:read",
+            check_prerelease: true,
+            append_signature: false,
+        },
+    )
+    .await
 }
 
 /// Proxy npm audit requests to the upstream npm registry.

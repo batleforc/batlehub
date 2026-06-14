@@ -10,8 +10,8 @@ use batlehub_core::{
 };
 
 use super::common::{
-    append_signature_headers, collect_payload, extract_signature_headers, proxy_gem_specs,
-    proxy_stream, require_local_mode, require_registry_type,
+    collect_payload, extract_signature_headers, proxy_gem_specs, proxy_stream, require_local_mode,
+    require_registry_type, serve_local_or_proxy_artifact, LocalOrProxyArtifactOpts,
 };
 use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,

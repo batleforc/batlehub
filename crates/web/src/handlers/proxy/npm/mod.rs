@@ -9,7 +9,7 @@ use batlehub_core::{
     services::{LocalRegistryService, ProxyService},
 };
 
-use super::common::proxy_stream;
+use super::common::{proxy_stream, serve_local_or_proxy_artifact, LocalOrProxyArtifactOpts};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
 
 pub mod read;

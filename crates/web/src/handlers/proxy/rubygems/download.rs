@@ -1,7 +1,7 @@
 use super::{
-    append_signature_headers, get, proxy_stream, require_registry_type, web, AppError, Arc,
-    AuthIdentity, HttpResponse, LocalRegistryService, PackageId, ProxyService, RegistryMap,
-    RegistryMode, RegistryModeMap, Responder,
+    get, proxy_stream, require_registry_type, serve_local_or_proxy_artifact, web, AppError, Arc,
+    AuthIdentity, HttpResponse, LocalOrProxyArtifactOpts, LocalRegistryService, PackageId,
+    ProxyService, RegistryMap, RegistryMode, RegistryModeMap, Responder,
 };
 
 /// Download a gem file.
@@ -39,51 +39,22 @@ pub async fn gem_download(
     let (name, version) = batlehub_adapters::registry::rubygems::split_gem_stem(stem)
         .ok_or_else(|| AppError::bad_request(format!("cannot parse gem filename: {filename}")))?;
 
-    let mode = mode_map.get(&registry);
-    if matches!(mode, RegistryMode::Local) {
-        local_svc
-            .check_prerelease_access(&registry, version, &identity)
-            .await
-            .map_err(AppError::from)?;
-        let bytes = local_svc
-            .get_artifact(&registry, name, version, &identity)
-            .await
-            .map_err(AppError::from)?;
-        let mut resp = HttpResponse::Ok();
-        resp.content_type("application/octet-stream");
-        append_signature_headers(&mut resp, &local_svc, &registry, name, version).await;
-        return Ok(resp.body(bytes));
-    }
-
-    if matches!(mode, RegistryMode::Hybrid) {
-        // Gate must be enforced before falling through to upstream: a non-member
-        // must not receive a pre-release artifact from the upstream registry.
-        local_svc
-            .check_prerelease_access(&registry, version, &identity)
-            .await
-            .map_err(AppError::from)?;
-        match local_svc
-            .get_artifact(&registry, name, version, &identity)
-            .await
-        {
-            Ok(bytes) => {
-                let mut resp = HttpResponse::Ok();
-                resp.content_type("application/octet-stream");
-                append_signature_headers(&mut resp, &local_svc, &registry, name, version).await;
-                return Ok(resp.body(bytes));
-            }
-            Err(batlehub_core::error::CoreError::NotFound(_)) => {} // not found locally; fall through to upstream
-            Err(e) => return Err(AppError::from(e)),
-        }
-    }
-
-    let pkg = PackageId::new(&registry, name, version).with_artifact("gem");
-    proxy_stream(
+    serve_local_or_proxy_artifact(
         svc,
-        pkg,
+        local_svc,
+        &mode_map,
+        &registry,
+        name,
+        version,
         identity,
-        "releases:read",
-        Some("application/octet-stream"),
+        LocalOrProxyArtifactOpts {
+            artifact_suffix: "gem",
+            local_content_type: "application/octet-stream",
+            proxy_content_type: Some("application/octet-stream"),
+            resource_type: "releases:read",
+            check_prerelease: true,
+            append_signature: true,
+        },
     )
     .await
 }
