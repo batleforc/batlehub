@@ -116,7 +116,7 @@ jobs:
           key: ${{ matrix.target }}
       - name: Install cross
         if: matrix.use_cross
-        uses: taiki-e/install-action@0631aa6515c7d545823c67cfae7ef4fc7f490154 # v2.81.8
+        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
         with:
           tool: cross
       - name: Build (cross)
@@ -181,7 +181,7 @@ jobs:
       # PRs + the daily rebuild-and-scan); this is the release backstop and feeds
       # the Security tab.
       - name: Trivy scan (SARIF)
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
           format: sarif
@@ -223,7 +223,7 @@ jobs:
           files: sbom-image.cdx.json
       # Final gate — fail the release run on any fixable HIGH/CRITICAL CVE.
       - name: Trivy scan (gate)
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
           format: table
