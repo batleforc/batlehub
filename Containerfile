@@ -58,7 +58,7 @@ RUN batlehub --config /etc/batlehub/config.toml dump-spec > openapi.json && \
     npm run build
 
 # ── Runtime image ─────────────────────────────────────────────────────────────
-FROM gcr.io/distroless/cc-debian12:latest@sha256:aa0b7af67fa8211751ea6e00baa8373ba56cc1417ffc986ec9619bd0e1556b56 AS runtime
+FROM gcr.io/distroless/cc-debian12:latest@sha256:d703b626ba455c4e6c6fbe5f36e6f427c85d51445598d564652a2f334179f96e AS runtime
 
 COPY --from=builder  /build/target/release/batlehub     /usr/local/bin/batlehub
 COPY --from=builder  /build/target/release/batlehub-cli /usr/local/bin/batlehub-cli
