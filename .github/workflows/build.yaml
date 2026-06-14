@@ -47,10 +47,11 @@ jobs:
         shell: bash
         run: |
           cargo install --locked cargo-cyclonedx
-          # cargo-cyclonedx writes <crate>.cdx.json next to the package manifest;
-          # copy it to a stable repo-root path for the release upload below.
-          cargo cyclonedx -p batlehub-server --format json
-          cp "$(find server -name '*.cdx.json' | head -1)" sbom-rust.cdx.json
+          # cargo-cyclonedx writes one <crate>.cdx.json per workspace member next
+          # to its manifest; keep only the server's, for the release upload below.
+          cargo cyclonedx --format json --manifest-path server/Cargo.toml
+          cp server/batlehub-server.cdx.json sbom-rust.cdx.json
+          find . -maxdepth 3 -name '*.cdx.json' -not -path './sbom-rust.cdx.json' -delete
       - name: Create GitHub Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:

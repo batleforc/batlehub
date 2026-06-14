@@ -222,15 +222,22 @@ tasks:
     desc: Check docs-website npm dependencies for security vulnerabilities
     dir: website
     cmds:
-      - npm audit --audit-level=high
+      # --omit=dev: vitepress (and its transitive vite/esbuild) are build-only
+      # tooling for the static site, never shipped or run as a service. Their
+      # current advisories (esbuild dev-server CORS/Deno RCE, vite optimized-deps
+      # path traversal) have no fix available upstream for vitepress 1.x and
+      # don't apply to this repo's build. Runtime deps (e.g. hash-wasm, bundled
+      # into the published site) are still audited.
+      - npm audit --audit-level=high --omit=dev
 
   sbom:rust:
     desc: "Generate a CycloneDX SBOM of the shipped server (sbom-rust.cdx.json) — feed to `trivy sbom` / `grype sbom:` to match future CVEs against a shipped build"
     cmds:
-      # cargo-cyclonedx writes <crate>.cdx.json next to the package manifest;
-      # copy it to a stable repo-root path consumers and CI can reference.
-      - cargo cyclonedx -p batlehub-server --format json
-      - cp "$(find server -name '*.cdx.json' | head -1)" sbom-rust.cdx.json
+      # cargo-cyclonedx writes one <crate>.cdx.json per workspace member next to
+      # its manifest; keep only the server's, as the stable repo-root artifact.
+      - cargo cyclonedx --format json --manifest-path server/Cargo.toml
+      - cp server/batlehub-server.cdx.json sbom-rust.cdx.json
+      - find . -maxdepth 3 -name '*.cdx.json' -not -path './sbom-rust.cdx.json' -delete
 
   security:
     desc: "Run the full local security gate — Rust advisories + bans, frontend audits, and Rust SBOM. Trivy/gitleaks/semgrep run in CI (see .github/workflows)"

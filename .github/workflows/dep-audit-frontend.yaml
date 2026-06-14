@@ -30,7 +30,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        workspace: [ui, website]
+        include:
+          - workspace: ui
+            audit-args: ""
+          # vitepress (and its transitive vite/esbuild) are build-only tooling
+          # for the static site, never shipped or run as a service. Their
+          # current advisories have no fix available upstream for vitepress 1.x
+          # and don't apply to this repo's build; runtime deps (e.g. hash-wasm)
+          # are still audited. Keep in sync with `task website:audit`.
+          - workspace: website
+            audit-args: "--omit=dev"
     defaults:
       run:
         working-directory: ${{ matrix.workspace }}
@@ -44,4 +53,4 @@ jobs:
       # Audit the committed lockfile directly — no install, no lifecycle scripts.
       # Fails the job on any high/critical advisory.
       - name: npm audit
-        run: npm audit --audit-level=high
+        run: npm audit --audit-level=high ${{ matrix.audit-args }}

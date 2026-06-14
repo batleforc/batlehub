@@ -11,7 +11,7 @@ you have already deployed.
 | Rust advisories | `cargo audit` (RUSTSEC) | `back-dep-audit.yaml` (PR + daily) | block |
 | Rust advisories + bans + licenses + sources | `cargo deny` (`deny.toml`) | `back-dep-audit.yaml` | block |
 | JS dependencies | `npm audit --audit-level=high` | `dep-audit-frontend.yaml` (PR + daily) | block on high/critical |
-| Container / OS layers | Trivy | `image-scan.yaml` (PR + daily, GitHub) and `.forgejo/workflows/build.yaml` (both images) | block on fixable HIGH/CRITICAL |
+| Container / OS layers | Trivy | `image-scan.yaml` (PR + daily, GitHub) runs Trivy directly; `.forgejo/workflows/build.yaml` (both images) polls Harbor's own scan-on-push report instead | block on fixable HIGH/CRITICAL |
 | Static analysis | CodeQL + Semgrep | `codeql.yaml`, `semgrep.yaml` | CodeQL report / Semgrep block on ERROR |
 | Secrets | gitleaks | `secret-scan.yaml` (PR + push) | block |
 | Lint / unsafe hygiene | clippy `-D warnings` | `test.yaml` `lint` job | block |
@@ -19,6 +19,17 @@ you have already deployed.
 The **daily** schedules are what turn this from a build-time snapshot into *future* CVE detection: a
 CVE disclosed against a pinned dependency or a base-image layer **after** the last commit still trips
 CI the next morning, with nothing in the repo having changed.
+
+### Harbor scan-on-push (Forgejo build)
+
+`registry.batleforc.fr` (Harbor) is configured to automatically scan every artifact pushed to the
+`batleforc/batlehub*` repositories and to generate its own SBOM accessory, so
+`.forgejo/workflows/build.yaml` doesn't run a second Trivy/Syft pass after pushing. Instead it polls
+Harbor's API for the vulnerability report of the digest it just pushed, for up to ~1 minute, and
+fails the job if Harbor reports a fixable HIGH/CRITICAL CVE — the same gate as before, just sourced
+from Harbor instead of a local `trivy image` run. If Harbor hasn't finished scanning within that
+minute, the job logs a warning and continues **without** a gate for that run (no local fallback
+scan); the daily `image-scan.yaml` run on GitHub remains the backstop for that layer.
 
 ## Run the gate locally
 
