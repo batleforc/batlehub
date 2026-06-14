@@ -60,16 +60,65 @@ ServiceAccount name.
 {{- end }}
 
 {{/*
-Name of the Secret or ConfigMap holding config.toml.
-When externalManifest.enabled is true, returns the external manifest name.
-Otherwise returns the chart-managed Secret name.
+Whether an externalManifest entry (passed as `.`) is enabled. Defaults to
+true when the `enabled` key is absent. Implemented with `hasKey` rather than
+`default true` because `default` treats an explicit `false` as "unset" and
+would coerce it back to true.
 */}}
-{{- define "batlehub.configManifestName" -}}
-{{- if .Values.externalManifest.enabled }}
-{{- .Values.externalManifest.name }}
-{{- else }}
-{{- printf "%s-config" (include "batlehub.fullname" .) }}
+{{- define "batlehub.manifestEnabled" -}}
+{{- $enabled := true -}}
+{{- if hasKey . "enabled" -}}
+{{- $enabled = .enabled -}}
+{{- end -}}
+{{- if $enabled }}true{{ else }}false{{ end -}}
 {{- end }}
+
+{{/*
+Find the (at most one) enabled externalManifest entry with mount.asConfig:
+true. Emits it as YAML so callers can do:
+  {{- $configEntry := include "batlehub.configManifestEntry" . | fromYaml }}
+Emits "{}" (empty dict) when no such entry exists, so $configEntry.name is
+always safe to dereference.
+*/}}
+{{- define "batlehub.configManifestEntry" -}}
+{{- $found := dict -}}
+{{- range .Values.externalManifest -}}
+{{- if and (eq (include "batlehub.manifestEnabled" .) "true") .mount .mount.asConfig -}}
+{{- $found = . -}}
+{{- end -}}
+{{- end -}}
+{{- if $found -}}
+{{- $found | toYaml -}}
+{{- else -}}
+{{- "{}" -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Returns "true" if config.auth contains an entry with type = "kubernetes",
+else "".
+*/}}
+{{- define "batlehub.kubernetesAuthEnabled" -}}
+{{- $enabled := false -}}
+{{- range .Values.config.auth -}}
+{{- if eq (.type | default "") "kubernetes" -}}
+{{- $enabled = true -}}
+{{- end -}}
+{{- end -}}
+{{- if $enabled }}true{{ end -}}
+{{- end }}
+
+{{/*
+Effective automountServiceAccountToken: explicit true, or implied by
+Kubernetes TokenReview auth (the provider reads its own projected token to
+call the TokenReview API, regardless of who manages the RBAC binding).
+*/}}
+{{- define "batlehub.automountServiceAccountToken" -}}
+{{- if or .Values.serviceAccount.automountServiceAccountToken (eq (include "batlehub.kubernetesAuthEnabled" .) "true") -}}
+true
+{{- else -}}
+false
+{{- end -}}
 {{- end }}
 
 {{/*

@@ -1,7 +1,19 @@
-{{- if and .Values.externalManifest.enabled
-    (not (or (eq .Values.externalManifest.kind "Secret")
-             (eq .Values.externalManifest.kind "ConfigMap"))) }}
-{{- fail (printf "externalManifest.kind must be 'Secret' or 'ConfigMap', got: %s" .Values.externalManifest.kind) }}
+{{- $configEntry := include "batlehub.configManifestEntry" . | fromYaml }}
+{{- $asConfigCount := 0 }}
+{{- range .Values.externalManifest }}
+{{- if and (eq (include "batlehub.manifestEnabled" .) "true") .mount }}
+{{- if not (or (eq .kind "Secret") (eq .kind "ConfigMap")) }}
+{{- fail (printf "externalManifest %q: mount requires kind to be 'Secret' or 'ConfigMap', got: %s" .name .kind) }}
+{{- end }}
+{{- if .mount.asConfig }}
+{{- $asConfigCount = add $asConfigCount 1 }}
+{{- else if not .mount.mountPath }}
+{{- fail (printf "externalManifest %q: mount.mountPath is required unless mount.asConfig is true" .name) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if gt $asConfigCount 1 }}
+{{- fail "externalManifest: only one entry may set mount.asConfig: true" }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
@@ -17,8 +29,17 @@ spec:
   template:
     metadata:
       annotations:
-        {{- if not .Values.externalManifest.enabled }}
+        {{- if not $configEntry.name }}
         checksum/config: {{ include "batlehub.config" . | sha256sum }}
+        {{- end }}
+        {{- $mountedManifests := list }}
+        {{- range .Values.externalManifest }}
+        {{- if and (eq (include "batlehub.manifestEnabled" .) "true") .mount .manifest }}
+        {{- $mountedManifests = append $mountedManifests . }}
+        {{- end }}
+        {{- end }}
+        {{- if $mountedManifests }}
+        checksum/extra-manifests: {{ $mountedManifests | toYaml | sha256sum }}
         {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -31,24 +52,26 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "batlehub.serviceAccountName" . }}
-      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      automountServiceAccountToken: {{ include "batlehub.automountServiceAccountToken" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       volumes:
         - name: config
-          {{- if .Values.externalManifest.enabled }}
-          {{- if eq .Values.externalManifest.kind "ConfigMap" }}
+          {{- if $configEntry.name }}
+          {{- if eq $configEntry.kind "ConfigMap" }}
           configMap:
-            name: {{ .Values.externalManifest.name }}
+            name: {{ $configEntry.name }}
+            {{- with $configEntry.mount.items }}
             items:
-              - key: {{ .Values.externalManifest.key }}
-                path: config.toml
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
           {{- else }}
           secret:
-            secretName: {{ .Values.externalManifest.name }}
+            secretName: {{ $configEntry.name }}
+            {{- with $configEntry.mount.items }}
             items:
-              - key: {{ .Values.externalManifest.key }}
-                path: config.toml
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
           {{- end }}
           {{- else }}
           secret:
@@ -61,6 +84,26 @@ spec:
         - name: cache
           persistentVolumeClaim:
             claimName: {{ .Values.persistence.existingClaim | default (printf "%s-cache" (include "batlehub.fullname" .)) }}
+        {{- end }}
+        {{- range .Values.externalManifest }}
+        {{- if and (eq (include "batlehub.manifestEnabled" .) "true") .mount (not .mount.asConfig) }}
+        - name: extra-{{ .name }}
+          {{- if eq .kind "ConfigMap" }}
+          configMap:
+            name: {{ .name }}
+            {{- with .mount.items }}
+            items:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+          {{- else }}
+          secret:
+            secretName: {{ .name }}
+            {{- with .mount.items }}
+            items:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+          {{- end }}
+        {{- end }}
         {{- end }}
       containers:
         - name: {{ .Chart.Name }}
@@ -104,6 +147,16 @@ spec:
             {{- if and .Values.persistence.enabled (eq .Values.config.storage.type "filesystem") }}
             - name: cache
               mountPath: {{ .Values.config.storage.path }}
+            {{- end }}
+            {{- range .Values.externalManifest }}
+            {{- if and (eq (include "batlehub.manifestEnabled" .) "true") .mount (not .mount.asConfig) }}
+            - name: extra-{{ .name }}
+              mountPath: {{ .mount.mountPath }}
+              {{- with .mount.subPath }}
+              subPath: {{ . }}
+              {{- end }}
+              readOnly: {{ if hasKey .mount "readOnly" }}{{ .mount.readOnly }}{{ else }}true{{ end }}
+            {{- end }}
             {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

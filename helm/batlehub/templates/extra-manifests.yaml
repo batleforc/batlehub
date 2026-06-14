@@ -1,0 +1,6 @@
+{{- range .Values.externalManifest }}
+{{- if and (eq (include "batlehub.manifestEnabled" .) "true") .manifest }}
+---
+{{ tpl .manifest $ }}
+{{- end }}
+{{- end }}

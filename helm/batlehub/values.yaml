@@ -18,8 +18,18 @@ serviceAccount:
   annotations: {}
   name: ""
   # No RBAC roles are bound to this ServiceAccount, so the projected token
-  # would be unused — disable automounting it into the pod.
+  # would be unused — disable automounting it into the pod. Automatically
+  # forced to true (regardless of this value) when config.auth contains a
+  # `type = "kubernetes"` entry, since that provider reads its own projected
+  # token to call the TokenReview API.
   automountServiceAccountToken: false
+  rbac:
+    # Auto-create a ClusterRole + ClusterRoleBinding granting this
+    # ServiceAccount `create` on authentication.k8s.io/tokenreviews,
+    # whenever config.auth contains an entry with type = "kubernetes".
+    # Set to false if you manage this ClusterRoleBinding yourself or point
+    # at an existing ServiceAccount that already has it.
+    autoTokenReview: true
 
 podAnnotations: {}
 podSecurityContext: {}
@@ -198,13 +208,62 @@ persistence:
   size: 10Gi
   # existingClaim: ""
 
-# ── External config manifest ──────────────────────────────────────────────────
-# When enabled, the chart skips creating a Secret and mounts this existing
-# Secret or ConfigMap instead. Use with Sealed Secrets, External Secrets
-# Operator, or Vault Agent to manage the config outside Helm.
-# The referenced manifest must contain a key matching `key` with valid TOML.
-externalManifest:
-  enabled: false
-  name: ""          # name of the existing Secret or ConfigMap
-  kind: Secret      # "Secret" or "ConfigMap"
-  key: config.toml  # key within the manifest that contains TOML content
+# ── Extra / external manifests ────────────────────────────────────────────────
+# 0..N additional Kubernetes manifests rendered by this chart. Each entry:
+#   name      - logical name; the K8s object name referenced by `mount`
+#               (secretName / configMap name) and used as the
+#               `extra-<name>` volume name.
+#   enabled   - default true.
+#   kind      - "Secret" | "ConfigMap"; required only when `mount` is set.
+#   manifest  - raw YAML for one Kubernetes object, rendered with `tpl`
+#               (can reference .Values/.Release/.Chart). Omit to reference
+#               a resource created outside this chart (e.g. by Sealed
+#               Secrets / External Secrets Operator / Vault Agent) — nothing
+#               is rendered, but `mount` can still reference it by `name`.
+#   mount     - optional, only valid for kind Secret/ConfigMap:
+#     asConfig  - if true, this entry replaces the chart-managed config
+#                 Secret as the source of /etc/batlehub/config.toml.
+#                 At most one entry may set this.
+#     mountPath - container mount path. Required unless asConfig.
+#     subPath   - optional subPath within the volume.
+#     items     - optional [{key, path}] projection; defaults to projecting
+#                 every key in the resource under its own name.
+#     readOnly  - default true.
+externalManifest: []
+# Examples:
+# externalManifest:
+#   # config.toml from a Secret managed by an External Secrets Operator —
+#   # nothing rendered, just mounted as the main config.
+#   - name: batlehub-config-eso
+#     kind: Secret
+#     mount:
+#       asConfig: true
+#       items:
+#         - key: config.toml
+#           path: config.toml
+#   # An extra ConfigMap the chart creates and mounts a single key from.
+#   - name: extra-ca-bundle
+#     kind: ConfigMap
+#     manifest: |
+#       apiVersion: v1
+#       kind: ConfigMap
+#       metadata:
+#         name: extra-ca-bundle
+#       data:
+#         ca.crt: |
+#           -----BEGIN CERTIFICATE-----
+#           ...
+#     mount:
+#       mountPath: /etc/ssl/certs/extra
+#       items:
+#         - key: ca.crt
+#           path: ca.crt
+#   # A standalone resource that is never mounted.
+#   - name: batlehub-allow-egress
+#     manifest: |
+#       apiVersion: networking.k8s.io/v1
+#       kind: NetworkPolicy
+#       metadata:
+#         name: batlehub-allow-egress
+#       spec:
+#         ...
