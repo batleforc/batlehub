@@ -93,8 +93,12 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
   npm: "default",
   cargo: "secondary",
   github: "outline",
+  forgejo: "outline",
+  gitlab: "outline",
   openvsx: "secondary",
   goproxy: "outline",
+  deb: "secondary",
+  rpm: "secondary",
 };
 </script>
 

@@ -24,7 +24,7 @@ A multi-arch image (`linux/amd64` + `linux/arm64`) is pushed to the GitHub Conta
 docker pull ghcr.io/batleforc/batlehub:<version>
 
 # Or always pull the latest tagged version (not :latest — pin to a specific version in production)
-docker pull ghcr.io/batleforc/batlehub:1.0.0
+docker pull ghcr.io/batleforc/batlehub:0.2.0
 ```
 
 Run it:

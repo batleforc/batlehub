@@ -5,9 +5,10 @@ use std::time::Duration;
 use batlehub_adapters::db::PgQuotaRepository;
 use batlehub_adapters::registry::{
     CargoRegistryClient, ComposerRegistryClient, CondaRegistryClient, FanoutRegistryClient,
-    GithubRegistryClient, GoProxyRegistryClient, MavenRegistryClient, NpmRegistryClient,
-    NugetRegistryClient, OpenVsxRegistryClient, PypiRegistryClient, RubyGemsRegistryClient,
-    TerraformRegistryClient, UpstreamHttpOptions, VsCodeMarketplaceRegistryClient,
+    ForgejoRegistryClient, GithubRegistryClient, GitlabRegistryClient, GoProxyRegistryClient,
+    MavenRegistryClient, NpmRegistryClient, NugetRegistryClient, OpenVsxRegistryClient,
+    PathProxyRegistryClient, PypiRegistryClient, RubyGemsRegistryClient, TerraformRegistryClient,
+    UpstreamHttpOptions, VsCodeMarketplaceRegistryClient,
 };
 use batlehub_config::schema::{
     QuotaEnforcement as ConfigQuotaEnforcement, RegistryConfig, RuleConfig, UpstreamAuthConfig,
@@ -83,6 +84,28 @@ pub(super) fn build_cargo_index(
     Ok(CargoIndexProxy { http, index_url })
 }
 
+/// Build the per-registry repository-metadata signing keys for `deb`/`rpm`
+/// registries that configured `[registries.repo_signing]`. Registries without a
+/// key host unsigned repositories.
+pub(super) fn build_repo_signer_map(
+    cfg: &batlehub_config::schema::AppConfig,
+) -> anyhow::Result<batlehub_web::RepoSignerMap> {
+    use batlehub_adapters::repo::OpenPgpSigner;
+    let mut map = HashMap::new();
+    for reg in &cfg.registries {
+        if let Some(sign) = &reg.repo_signing {
+            let signer = OpenPgpSigner::from_seed_hex(
+                &sign.seed_hex,
+                sign.created.unwrap_or(0),
+                sign.user_id.as_deref().unwrap_or("BatleHub"),
+            )
+            .map_err(|e| anyhow::anyhow!("building repo signing key for '{}': {e}", reg.name))?;
+            map.insert(reg.name.clone(), Arc::new(signer));
+        }
+    }
+    Ok(batlehub_web::RepoSignerMap::from(map))
+}
+
 pub(super) fn build_registry_client(
     reg: &RegistryConfig,
     global_proxy: Option<&batlehub_config::schema::UpstreamProxyConfig>,
@@ -101,6 +124,8 @@ pub(super) fn build_registry_client(
     ) -> anyhow::Result<Arc<dyn batlehub_core::ports::RegistryClient>> {
         let client: Arc<dyn batlehub_core::ports::RegistryClient> = match registry_type {
             "github" => Arc::new(GithubRegistryClient::new(url, opts)?),
+            "forgejo" => Arc::new(ForgejoRegistryClient::new(url, opts)?),
+            "gitlab" => Arc::new(GitlabRegistryClient::new(url, opts)?),
             "npm" => Arc::new(NpmRegistryClient::new(url, opts)?),
             "cargo" => Arc::new(CargoRegistryClient::new(url, opts)?),
             "nuget" => Arc::new(NugetRegistryClient::new(url, opts)?),
@@ -113,6 +138,8 @@ pub(super) fn build_registry_client(
             "composer" => Arc::new(ComposerRegistryClient::new(url, opts)?),
             "pypi" => Arc::new(PypiRegistryClient::new(url, opts)?),
             "conda" => Arc::new(CondaRegistryClient::new(url, opts)?),
+            "deb" => Arc::new(PathProxyRegistryClient::new("deb", url, opts)?),
+            "rpm" => Arc::new(PathProxyRegistryClient::new("rpm", url, opts)?),
             other => {
                 anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in")
             }
@@ -123,6 +150,8 @@ pub(super) fn build_registry_client(
     let opts = upstream_options(reg, global_proxy);
     let urls = match reg.registry_type.as_str() {
         "github" => resolve_urls(&reg.upstreams, "https://api.github.com"),
+        "forgejo" => resolve_urls(&reg.upstreams, "https://codeberg.org"),
+        "gitlab" => resolve_urls(&reg.upstreams, "https://gitlab.com"),
         "npm" => resolve_urls(&reg.upstreams, "https://registry.npmjs.org"),
         "cargo" => resolve_urls(&reg.upstreams, "https://crates.io"),
         "nuget" => resolve_urls(&reg.upstreams, "https://api.nuget.org"),
@@ -137,6 +166,11 @@ pub(super) fn build_registry_client(
         "composer" => resolve_urls(&reg.upstreams, "https://repo.packagist.org"),
         "pypi" => resolve_urls(&reg.upstreams, "https://pypi.org"),
         "conda" => resolve_urls(&reg.upstreams, "https://conda.anaconda.org"),
+        // Deb/RPM have no universal default upstream; proxy/hybrid mode requires an
+        // explicit `upstreams` entry. The placeholder keeps a client constructible
+        // for local-only mode, where the upstream is never contacted.
+        "deb" => resolve_urls(&reg.upstreams, "https://deb.debian.org"),
+        "rpm" => resolve_urls(&reg.upstreams, "https://example.invalid/rpm"),
         other => {
             anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in")
         }

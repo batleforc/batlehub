@@ -177,3 +177,188 @@ mode = "local"
 anonymous = ["releases:read", "source:read"]
 user = ["releases:read", "source:read"]
 admin = ["*"]
+
+# ── Git-host release proxies ───────────────────────────────────────────────────
+# Forgejo/Gitea and GitLab proxy release assets, source archives, and raw files.
+# Both are proxy-only (no private publish). Set `upstreams` to the instance root.
+
+# Forgejo / Gitea (defaults to codeberg.org when `upstreams` is omitted).
+[[registries]]
+type = "forgejo"
+name = "forgejo"
+upstreams = ["https://codeberg.org"]
+
+# Private instances: authenticate with a bearer token. Secrets may be pulled from
+# the environment with dollar-brace placeholders — see config.example.toml.
+# [registries.upstream_auth]
+# type = "bearer"
+# token = "change-me-forgejo-token"
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
+
+# GitLab (defaults to gitlab.com). Personal access tokens use the PRIVATE-TOKEN
+# header, configured here as a custom upstream auth header.
+[[registries]]
+type = "gitlab"
+name = "gitlab"
+upstreams = ["https://gitlab.com"]
+
+# [registries.upstream_auth]
+# type = "header"
+# name = "PRIVATE-TOKEN"
+# value = "change-me-gitlab-token"
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
+
+# ── Remaining language registries ──────────────────────────────────────────────
+
+# VS Code Marketplace (proxy of the Microsoft Gallery API).
+[[registries]]
+type = "vscode-marketplace"
+name = "vscode"
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
+
+# PyPI — hybrid: cache pypi.org and host private wheels/sdists via twine.
+[[registries]]
+type = "pypi"
+name = "pypi"
+mode = "hybrid"
+upstreams = ["https://pypi.org"]
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
+
+# Conda — hybrid channel proxy + private channel hosting.
+[[registries]]
+type = "conda"
+name = "conda"
+mode = "hybrid"
+upstreams = ["https://conda.anaconda.org"]
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
+
+# NuGet — hybrid: cache nuget.org and host private .nupkg packages.
+[[registries]]
+type = "nuget"
+name = "nuget"
+mode = "hybrid"
+upstreams = ["https://api.nuget.org"]
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
+
+# ── Variant showcase: upstream auth + local publish + versioning ────────────────
+
+# Proxy an authenticated internal npm registry with a bearer token.
+[[registries]]
+type = "npm"
+name = "internal-npm"
+upstreams = ["https://gitea.corp.example.com/api/packages/myorg/npm"]
+
+[registries.upstream_auth]
+type = "bearer"
+# Pull secrets from the environment in real deployments — see config.example.toml.
+token = "change-me-internal-npm-token"
+
+[registries.rbac]
+anonymous = []
+user = ["releases:read", "source:read"]
+admin = ["*"]
+
+# Authoritative private npm registry (local mode) with publish-time version policy.
+[[registries]]
+type = "npm"
+name = "private-npm"
+mode = "local"
+
+[registries.versioning]
+enforce_semver = true
+allow_prerelease = false
+
+[registries.rbac]
+anonymous = []
+user = ["releases:read", "source:read"]
+admin = ["*"]
+
+# ── Deb (APT) repositories ──────────────────────────────────────────────────────
+
+# Proxy/cache an upstream APT repository (hybrid: also serve locally published .deb).
+[[registries]]
+type = "deb"
+name = "apt"
+mode = "hybrid"
+upstreams = ["http://deb.debian.org/debian"]
+
+[registries.rbac]
+anonymous = ["releases:read"]
+user = ["releases:read"]
+admin = ["*"]
+
+# Private signed APT repository (local mode). BatleHub regenerates Packages/Release
+# and signs InRelease/Release.gpg with the Ed25519 key below. Generate your own
+# seed with:  head -c32 /dev/urandom | xxd -p -c64
+# (or load it from the environment — see config.example.toml).
+[[registries]]
+type = "deb"
+name = "apt-private"
+mode = "local"
+
+[registries.repo_signing]
+# Example seed — replace with your own (32-byte Ed25519 seed, hex-encoded).
+seed_hex = "9d61b19deffeba00aa3f3b6e3b0fe6a3f3a76b08e2c0a3f3b6e3b0fe6a3f3a76"
+user_id = "Acme Repo <repo@acme.example>"
+created = 1700000000              # key creation unix time (keep stable)
+
+[registries.rbac]
+anonymous = ["releases:read"]
+user = ["releases:read"]
+admin = ["*"]
+
+# ── RPM (YUM/DNF) repositories ──────────────────────────────────────────────────
+
+# Proxy/cache an upstream RPM repository.
+[[registries]]
+type = "rpm"
+name = "yum"
+mode = "proxy"
+upstreams = ["https://packages.example.com/rpm"]
+
+[registries.rbac]
+anonymous = ["releases:read"]
+user = ["releases:read"]
+admin = ["*"]
+
+# Private signed RPM repository (local mode). BatleHub regenerates repodata/ and
+# signs repomd.xml.asc with the Ed25519 key below.
+[[registries]]
+type = "rpm"
+name = "yum-private"
+mode = "local"
+
+[registries.repo_signing]
+# Example seed — replace with your own (32-byte Ed25519 seed, hex-encoded).
+seed_hex = "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb"
+user_id = "Acme Repo <repo@acme.example>"
+created = 1700000000
+
+[registries.rbac]
+anonymous = ["releases:read"]
+user = ["releases:read"]
+admin = ["*"]

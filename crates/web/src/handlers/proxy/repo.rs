@@ -1,0 +1,189 @@
+//! Debian APT (`deb`) and RPM/YUM (`rpm`) repository handlers.
+//!
+//! Both formats are addressed purely by file path. Reads try local storage first
+//! in Local/Hybrid mode (serving BatleHub-generated, signed index files and the
+//! stored packages), then fall back to the upstream proxy in Proxy/Hybrid mode.
+//! Publishing is handled in [`publish`].
+
+use std::sync::Arc;
+
+use actix_web::{get, web, HttpResponse, Responder};
+
+use batlehub_core::{
+    entities::PackageId,
+    services::{LocalRegistryService, ProxyService},
+};
+
+use batlehub_config::schema::RegistryMode;
+
+use super::common::{collect_storage_stream, proxy_stream, require_registry_type};
+use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+
+pub mod publish;
+
+/// Storage key for a file in a locally-hosted deb/rpm repository.
+pub fn repo_storage_key(registry: &str, path: &str) -> String {
+    format!("local:{registry}/{path}")
+}
+
+/// Best-effort `Content-Type` for a repository file path.
+pub fn repo_content_type(path: &str) -> &'static str {
+    if path.ends_with(".deb") {
+        "application/vnd.debian.binary-package"
+    } else if path.ends_with(".rpm") {
+        "application/x-rpm"
+    } else if path.ends_with(".xml") || path.ends_with(".xml.gz") {
+        // .xml.gz is gzip but DNF expects the gzip stream under an xml name; serve
+        // as octet-stream so clients don't try to render it.
+        if path.ends_with(".gz") {
+            "application/octet-stream"
+        } else {
+            "application/xml"
+        }
+    } else if path.ends_with(".gz") || path.ends_with(".asc") || path.ends_with(".key") {
+        "application/octet-stream"
+    } else {
+        // Release / InRelease / Packages and friends are plain text.
+        "text/plain; charset=utf-8"
+    }
+}
+
+/// Shared read path for `deb`/`rpm`: local-first (Local/Hybrid), then upstream proxy.
+#[allow(clippy::too_many_arguments)]
+async fn repo_get(
+    reg_type: &str,
+    registry: &str,
+    path: &str,
+    svc: web::Data<Arc<ProxyService>>,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
+    identity: AuthIdentity,
+    map: &RegistryMap,
+    mode_map: &RegistryModeMap,
+) -> Result<HttpResponse, AppError> {
+    require_registry_type(registry, reg_type, map)?;
+    // Edge validation: reject traversal before building a storage key. The storage
+    // backend's `ensure_safe_key` is the deeper guard.
+    batlehub_core::services::validate_path_safe("path", path).map_err(AppError::from)?;
+
+    let ct = repo_content_type(path);
+    let mode = mode_map.get(registry);
+
+    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        let key = repo_storage_key(registry, path);
+        match local_svc.storage.retrieve(&key).await {
+            Ok(Some(artifact)) => {
+                let buf = collect_storage_stream(artifact.stream).await?;
+                return Ok(HttpResponse::Ok().content_type(ct).body(buf));
+            }
+            Ok(None) if mode == RegistryMode::Local => {
+                return Err(AppError::not_found(format!("{path} not found in registry")));
+            }
+            Ok(None) => { /* hybrid: fall through to proxy */ }
+            Err(e) if mode == RegistryMode::Hybrid => {
+                tracing::warn!("local storage error, falling back to proxy: {e}");
+            }
+            Err(e) => return Err(AppError::from(e)),
+        }
+    }
+
+    let pkg = PackageId::new(registry, "repo", "_").with_artifact(path);
+    proxy_stream(svc, pkg, identity, "releases:read", Some(ct)).await
+}
+
+/// Serve a file from a Debian APT repository (`/proxy/{registry}/deb/{path}`).
+#[utoipa::path(
+    get,
+    path = "/proxy/{registry}/deb/{path}",
+    tag = "proxy/deb",
+    params(
+        ("registry" = String, Path, description = "Registry name"),
+        ("path" = String, Path, description = "Repository file path (e.g. dists/stable/Release, pool/.../x.deb)"),
+    ),
+    responses(
+        (status = 200, description = "Repository file"),
+        (status = 403, description = "Access denied"),
+        (status = 404, description = "Not found or unknown registry"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[get("/proxy/{registry}/deb/{path:.*}")]
+pub async fn deb_get(
+    path: web::Path<(String, String)>,
+    identity: AuthIdentity,
+    svc: web::Data<Arc<ProxyService>>,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
+    map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
+) -> Result<impl Responder, AppError> {
+    let (registry, file_path) = path.into_inner();
+    repo_get(
+        "deb", &registry, &file_path, svc, local_svc, identity, &map, &mode_map,
+    )
+    .await
+}
+
+/// Serve a file from an RPM/YUM repository (`/proxy/{registry}/rpm/{path}`).
+#[utoipa::path(
+    get,
+    path = "/proxy/{registry}/rpm/{path}",
+    tag = "proxy/rpm",
+    params(
+        ("registry" = String, Path, description = "Registry name"),
+        ("path" = String, Path, description = "Repository file path (e.g. repodata/repomd.xml, packages/x.rpm)"),
+    ),
+    responses(
+        (status = 200, description = "Repository file"),
+        (status = 403, description = "Access denied"),
+        (status = 404, description = "Not found or unknown registry"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[get("/proxy/{registry}/rpm/{path:.*}")]
+pub async fn rpm_get(
+    path: web::Path<(String, String)>,
+    identity: AuthIdentity,
+    svc: web::Data<Arc<ProxyService>>,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
+    map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
+) -> Result<impl Responder, AppError> {
+    let (registry, file_path) = path.into_inner();
+    repo_get(
+        "rpm", &registry, &file_path, svc, local_svc, identity, &map, &mode_map,
+    )
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_types() {
+        assert_eq!(
+            repo_content_type("pool/main/h/hello/hello_1.0_amd64.deb"),
+            "application/vnd.debian.binary-package"
+        );
+        assert_eq!(
+            repo_content_type("packages/hello-1.0-1.x86_64.rpm"),
+            "application/x-rpm"
+        );
+        assert_eq!(repo_content_type("repodata/repomd.xml"), "application/xml");
+        assert_eq!(
+            repo_content_type("repodata/primary.xml.gz"),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            repo_content_type("dists/stable/Release"),
+            "text/plain; charset=utf-8"
+        );
+    }
+
+    #[test]
+    fn storage_key_format() {
+        assert_eq!(
+            repo_storage_key("myapt", "dists/stable/Release"),
+            "local:myapt/dists/stable/Release"
+        );
+    }
+}

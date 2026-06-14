@@ -65,7 +65,7 @@ use batlehub_web::services::{
 };
 use batlehub_web::{
     configure_app, healthz, new_access_lock, prometheus_metrics, AuthMiddlewareFactory,
-    RateLimitMiddlewareFactory, RateLimitService, RegistryModeMap,
+    RateLimitMiddlewareFactory, RateLimitService, RegistryModeMap, RepoSignerMap,
 };
 use metrics_exporter_prometheus::PrometheusBuilder;
 use uuid::Uuid;
@@ -310,7 +310,8 @@ async fn finish_test_app(
     let app = app
         .app_data(actix_web::web::Data::new(cargo_indexes))
         .app_data(actix_web::web::Data::new(local_svc))
-        .app_data(actix_web::web::Data::new(mode_map));
+        .app_data(actix_web::web::Data::new(mode_map))
+        .app_data(actix_web::web::Data::new(RepoSignerMap::default()));
 
     init_service(app.wrap(AuthMiddlewareFactory::new(auth_providers))).await
 }
@@ -349,6 +350,7 @@ async fn finish_test_app_with_extra<E: 'static>(
         .app_data(actix_web::web::Data::new(cargo_indexes))
         .app_data(actix_web::web::Data::new(local_svc))
         .app_data(actix_web::web::Data::new(mode_map))
+        .app_data(actix_web::web::Data::new(RepoSignerMap::default()))
         .app_data(actix_web::web::Data::new(extra));
 
     init_service(app.wrap(AuthMiddlewareFactory::new(auth_providers))).await
@@ -405,6 +407,14 @@ async fn make_app_ext(
             "vscode".to_owned(),
             FixedRegistry::new("vscode-marketplace") as Arc<dyn RegistryClient>,
         ),
+        (
+            "fj".to_owned(),
+            FixedRegistry::new("forgejo") as Arc<dyn RegistryClient>,
+        ),
+        (
+            "gl".to_owned(),
+            FixedRegistry::new("gitlab") as Arc<dyn RegistryClient>,
+        ),
     ]
     .into();
 
@@ -418,6 +428,8 @@ async fn make_app_ext(
         ),
         ("go".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
         ("vscode".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
+        ("fj".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
+        ("gl".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
     ]
     .into();
 
@@ -438,7 +450,9 @@ async fn make_app_ext(
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
 
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = access_config_for(&["github", "npm", "cargo", "openvsx", "go", "vscode"]);
+    let access_config = access_config_for(&[
+        "github", "npm", "cargo", "openvsx", "go", "vscode", "fj", "gl",
+    ]);
     let registry_map = registry_map_for(&[
         ("github", "github"),
         ("npm", "npm"),
@@ -446,6 +460,8 @@ async fn make_app_ext(
         ("openvsx", "openvsx"),
         ("go", "goproxy"),
         ("vscode", "vscode-marketplace"),
+        ("fj", "forgejo"),
+        ("gl", "gitlab"),
     ]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
     finish_test_app(
@@ -1845,6 +1861,477 @@ async fn proxy_github_tarball_is_accessible_by_user() {
         .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
+}
+
+// ── Forgejo (shares the GitHub release URL scheme) ──────────────────────────────
+
+#[actix_web::test]
+async fn proxy_forgejo_releases_is_accessible_anonymously() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/fj/owner/repo/releases")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn proxy_forgejo_tarball_blocked_for_anonymous_allowed_for_user() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let anon = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/fj/owner/repo/tarball/v1.0.0")
+            .to_request(),
+    )
+    .await;
+    assert_eq!(anon.status(), 403);
+
+    let user = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/fj/owner/repo/tarball/v1.0.0")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(user.status(), 200);
+}
+
+// ── GitLab (distinct `/-/` URL scheme, nested groups) ───────────────────────────
+
+#[actix_web::test]
+async fn proxy_gitlab_releases_is_accessible_anonymously() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/gl/mygroup/myproj/-/releases")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn proxy_gitlab_nested_group_release_by_tag() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/gl/group/subgroup/proj/-/releases/v2.0.0")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn proxy_gitlab_link_download_is_accessible_anonymously() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/gl/group/proj/-/releases/v1.0.0/downloads/app.bin")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn proxy_gitlab_archive_blocked_for_anonymous_allowed_for_user() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let anon = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/gl/group/proj/-/archive/v1.0.0/proj-v1.0.0.tar.gz")
+            .to_request(),
+    )
+    .await;
+    assert_eq!(anon.status(), 403);
+
+    let user = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/gl/group/proj/-/archive/v1.0.0/proj-v1.0.0.tar.gz")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(user.status(), 200);
+}
+
+#[actix_web::test]
+async fn proxy_gitlab_route_on_github_registry_is_404() {
+    let app = make_app(InMemoryRepo::new()).await;
+    // `github` is a github-typed registry; the gitlab `/-/releases` route guard rejects it.
+    let req = TestRequest::get()
+        .uri("/proxy/github/group/proj/-/releases")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+// ── Deb / RPM repository hosting ────────────────────────────────────────────
+
+/// Build a minimal `.deb` (ar archive: debian-binary + control.tar.gz) for tests.
+fn make_test_deb(control: &str) -> Vec<u8> {
+    use std::io::Write;
+    let mut tar_buf = Vec::new();
+    {
+        let mut tb = tar::Builder::new(&mut tar_buf);
+        let mut header = tar::Header::new_gnu();
+        header.set_path("./control").unwrap();
+        header.set_size(control.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tb.append(&header, control.as_bytes()).unwrap();
+        tb.finish().unwrap();
+    }
+    let mut gz = Vec::new();
+    {
+        let mut enc = flate2::write::GzEncoder::new(&mut gz, flate2::Compression::default());
+        enc.write_all(&tar_buf).unwrap();
+        enc.finish().unwrap();
+    }
+    let mut deb = Vec::new();
+    {
+        let mut builder = ar::Builder::new(&mut deb);
+        let db = b"2.0\n";
+        builder
+            .append(
+                &ar::Header::new(b"debian-binary".to_vec(), db.len() as u64),
+                &db[..],
+            )
+            .unwrap();
+        builder
+            .append(
+                &ar::Header::new(b"control.tar.gz".to_vec(), gz.len() as u64),
+                &gz[..],
+            )
+            .unwrap();
+    }
+    deb
+}
+
+const HELLO_CONTROL: &str =
+    "Package: hello\nVersion: 1.0\nArchitecture: amd64\nMaintainer: me\nDescription: hi\n";
+
+#[actix_web::test]
+async fn deb_publish_then_read_indexes_and_pool() {
+    let parts = local_registry_app_parts("apt", "deb", RegistryMode::Local, None);
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+
+    let deb = make_test_deb(HELLO_CONTROL);
+    let publish = call_service(
+        &app,
+        TestRequest::put()
+            .uri("/proxy/apt/deb/pool/stable/main/upload")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .set_payload(deb.clone())
+            .to_request(),
+    )
+    .await;
+    assert_eq!(publish.status(), 201);
+
+    // Packages index lists the package with its pool Filename.
+    let packages = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/apt/deb/dists/stable/main/binary-amd64/Packages")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(packages.status(), 200);
+    let body = String::from_utf8(read_body(packages).await.to_vec()).unwrap();
+    assert!(body.contains("Package: hello"));
+    assert!(body.contains("Filename: pool/main/h/hello/hello_1.0_amd64.deb"));
+
+    // Release references the Packages file.
+    let release = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/apt/deb/dists/stable/Release")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(release.status(), 200);
+    let release_body = String::from_utf8(read_body(release).await.to_vec()).unwrap();
+    assert!(release_body.contains("Suite: stable"));
+    assert!(release_body.contains("main/binary-amd64/Packages"));
+
+    // The .deb is downloadable from the pool, byte-for-byte.
+    let pool = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/apt/deb/pool/main/h/hello/hello_1.0_amd64.deb")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(pool.status(), 200);
+    assert_eq!(read_body(pool).await.to_vec(), deb);
+
+    // Unsigned repo: no InRelease.
+    let inrelease = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/apt/deb/dists/stable/InRelease")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(inrelease.status(), 404);
+}
+
+#[actix_web::test]
+async fn deb_publish_requires_authentication() {
+    let parts = local_registry_app_parts("apt", "deb", RegistryMode::Local, None);
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    let resp = call_service(
+        &app,
+        TestRequest::put()
+            .uri("/proxy/apt/deb/pool/stable/main/upload")
+            .set_payload(make_test_deb(HELLO_CONTROL))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn deb_signed_publish_emits_inrelease_and_key() {
+    // 32-byte Ed25519 seed (hex).
+    let seed = "9d61b19deffeba00aa3f3b6e3b0fe6a3f3a76b08e2c0a3f3b6e3b0fe6a3f3a76";
+    let signer = Arc::new(
+        batlehub_adapters::repo::OpenPgpSigner::from_seed_hex(seed, 1_700_000_000, "BatleHub")
+            .unwrap(),
+    );
+    let mut map = HashMap::new();
+    map.insert("apt".to_owned(), signer);
+    let signer_map = RepoSignerMap::from(map);
+
+    let parts = local_registry_app_parts("apt", "deb", RegistryMode::Local, None);
+    let LocalRegistryAppParts {
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        mode_map,
+    } = parts;
+    let app = finish_test_app_with_extra(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        mode_map,
+        batlehub_web::CargoIndexMap::default(),
+        ConfigureAppDefaults::default(),
+        signer_map,
+        test_auth_providers(),
+    )
+    .await;
+
+    let publish = call_service(
+        &app,
+        TestRequest::put()
+            .uri("/proxy/apt/deb/pool/stable/main/upload")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .set_payload(make_test_deb(HELLO_CONTROL))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(publish.status(), 201);
+
+    let inrelease = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/apt/deb/dists/stable/InRelease")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(inrelease.status(), 200);
+    let body = String::from_utf8(read_body(inrelease).await.to_vec()).unwrap();
+    assert!(body.contains("-----BEGIN PGP SIGNED MESSAGE-----"));
+    assert!(body.contains("Suite: stable"));
+    assert!(body.contains("-----BEGIN PGP SIGNATURE-----"));
+
+    let key = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/apt/deb/key.gpg")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(key.status(), 200);
+    let key_body = String::from_utf8(read_body(key).await.to_vec()).unwrap();
+    assert!(key_body.contains("-----BEGIN PGP PUBLIC KEY BLOCK-----"));
+}
+
+/// Build a minimal real `.rpm` for tests.
+fn make_test_rpm() -> Vec<u8> {
+    let pkg = rpm::PackageBuilder::new("hello", "1.0", "MIT", "x86_64", "a greeting")
+        .with_file_contents(
+            b"#!/bin/sh\necho hi\n".to_vec(),
+            rpm::FileOptions::new("/usr/bin/hello").mode(0o100755),
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut buf = Vec::new();
+    pkg.write(&mut buf).unwrap();
+    buf
+}
+
+#[actix_web::test]
+async fn rpm_publish_then_read_repodata_and_package() {
+    let parts = local_registry_app_parts("yum", "rpm", RegistryMode::Local, None);
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+
+    let rpm_bytes = make_test_rpm();
+    let publish = call_service(
+        &app,
+        TestRequest::put()
+            .uri("/proxy/yum/rpm/upload")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .set_payload(rpm_bytes.clone())
+            .to_request(),
+    )
+    .await;
+    assert_eq!(publish.status(), 201);
+
+    // repomd.xml references the primary metadata.
+    let repomd = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/yum/rpm/repodata/repomd.xml")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(repomd.status(), 200);
+    let repomd_body = String::from_utf8(read_body(repomd).await.to_vec()).unwrap();
+    assert!(repomd_body.contains(r#"<data type="primary">"#));
+    assert!(repomd_body.contains("repodata/primary.xml.gz"));
+
+    // primary.xml.gz exists and gunzips to metadata naming the package.
+    let primary = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/yum/rpm/repodata/primary.xml.gz")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(primary.status(), 200);
+    let gz = read_body(primary).await.to_vec();
+    let mut decoder = flate2::read::GzDecoder::new(&gz[..]);
+    let mut xml = String::new();
+    std::io::Read::read_to_string(&mut decoder, &mut xml).unwrap();
+    assert!(xml.contains("<name>hello</name>"));
+    assert!(xml.contains("packages/hello-1.0-1.x86_64.rpm"));
+
+    // The .rpm is downloadable, byte-for-byte.
+    let pkg = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/yum/rpm/packages/hello-1.0-1.x86_64.rpm")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(pkg.status(), 200);
+    assert_eq!(read_body(pkg).await.to_vec(), rpm_bytes);
+}
+
+#[actix_web::test]
+async fn rpm_signed_publish_emits_repomd_asc() {
+    let seed = "9d61b19deffeba00aa3f3b6e3b0fe6a3f3a76b08e2c0a3f3b6e3b0fe6a3f3a76";
+    let signer = Arc::new(
+        batlehub_adapters::repo::OpenPgpSigner::from_seed_hex(seed, 1_700_000_000, "BatleHub")
+            .unwrap(),
+    );
+    let mut sm = HashMap::new();
+    sm.insert("yum".to_owned(), signer);
+
+    let parts = local_registry_app_parts("yum", "rpm", RegistryMode::Local, None);
+    let LocalRegistryAppParts {
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        mode_map,
+    } = parts;
+    let app = finish_test_app_with_extra(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        mode_map,
+        batlehub_web::CargoIndexMap::default(),
+        ConfigureAppDefaults::default(),
+        RepoSignerMap::from(sm),
+        test_auth_providers(),
+    )
+    .await;
+
+    let publish = call_service(
+        &app,
+        TestRequest::put()
+            .uri("/proxy/yum/rpm/upload")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .set_payload(make_test_rpm())
+            .to_request(),
+    )
+    .await;
+    assert_eq!(publish.status(), 201);
+
+    let asc = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/yum/rpm/repodata/repomd.xml.asc")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(asc.status(), 200);
+    let body = String::from_utf8(read_body(asc).await.to_vec()).unwrap();
+    assert!(body.contains("-----BEGIN PGP SIGNATURE-----"));
+}
+
+#[actix_web::test]
+async fn rpm_proxy_read_falls_through_to_upstream() {
+    // Proxy mode: repodata is fetched from upstream (FixedRegistry returns bytes).
+    let parts = local_registry_app_parts("yum", "rpm", RegistryMode::Proxy, None);
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    let resp = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/yum/rpm/repodata/repomd.xml")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn deb_local_missing_file_is_404() {
+    let parts = local_registry_app_parts("apt", "deb", RegistryMode::Local, None);
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    let resp = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/apt/deb/dists/stable/Release")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 404);
 }
 
 #[actix_web::test]

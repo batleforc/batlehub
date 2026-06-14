@@ -60,11 +60,13 @@ features:
 
 ## Supported registries
 
-BatleHub proxies thirteen registry types. Every registry type can run as a pure cache (proxy mode), a fully private registry (local mode), or a hybrid of both.
+BatleHub proxies seventeen registry types. Every registry type can run as a pure cache (proxy mode), a fully private registry (local mode), or a hybrid of both.
 
 | Registry | Protocol | Default upstream |
 |----------|----------|-----------------|
 | **GitHub** | Releases, assets, tarballs, raw files | `api.github.com` |
+| **Forgejo / Gitea** | Releases, assets, source archives, raw files (`/api/v1`) | `codeberg.org` |
+| **GitLab** | Releases, release link assets, source archives (`/api/v4`) | `gitlab.com` |
 | **npm** | Full packument + tarball proxy | `registry.npmjs.org` |
 | **Cargo** | Sparse index + `.crate` download | `crates.io` |
 | **OpenVSX** | VS Code extension VSIX | `open-vsx.org` |
@@ -77,6 +79,10 @@ BatleHub proxies thirteen registry types. Every registry type can run as a pure 
 | **PyPI** | Simple Repository API (PEP 503/691) + JSON API; URL-rewriting for pip/uv/Poetry | `pypi.org` |
 | **Conda** | repodata.json channel proxy; `.conda` and `.tar.bz2` package downloads | `conda.anaconda.org` |
 | **NuGet** | NuGet v3 service index, flat container metadata, `.nupkg` downloads and publish | `api.nuget.org` |
+| **Deb (APT)** | Path-based APT repository: `Packages`/`Release` proxy + signed private hosting | — ³ |
+| **RPM (YUM/DNF)** | Path-based `repodata/` repository proxy + signed private hosting | — ³ |
+
+The per-package feature matrix below covers the package-centric registries. **Forgejo** and **GitLab** behave like **GitHub** (proxy-only release assets). **Deb** and **RPM** are path-addressed repository formats — they support proxy caching and **signed private hosting** (BatleHub regenerates `Packages`/`Release`/`repodata` and signs them with an Ed25519 OpenPGP key) rather than the per-package axes below.
 
 | Feature | GitHub | npm | Cargo | OpenVSX | VS Code | Go | Maven | Terraform | RubyGems | Composer | PyPI | Conda | NuGet |
 |---------|:------:|:---:|:-----:|:-------:|:-------:|:--:|:-----:|:---------:|:--------:|:--------:|:----:|:-----:|:-----:|
@@ -92,3 +98,5 @@ BatleHub proxies thirteen registry types. Every registry type can run as a pure 
 > ¹ Conda has no dedicated per-package version listing API. BatleHub synthesises one by scanning `repodata.json` for `noarch`, `linux-64`, `osx-64`, `osx-arm64`, and `win-64`. Results are the union of versions found across all available platforms.
 >
 > ² Conda timestamps come from the `timestamp` field in `repodata.json` (ms since epoch). Most packages carry it; packages without one skip the gate by default. Set `deny_missing_timestamp = true` on the rule to block packages with no timestamp instead.
+>
+> ³ Deb / RPM have no universal default upstream — set `upstreams` explicitly for proxy/hybrid mode. In local mode no upstream is contacted.

@@ -102,6 +102,11 @@ tasks:
       - until curl -sf http://127.0.0.1:{{.MINIO_PORT}}/minio/health/live; do sleep 1; done
       - cargo test -p batlehub-adapters --features storage-s3 --test s3_storage -- --nocapture
 
+  test:repo-interop:
+    desc: Verify real apt + dnf accept BatleHub's signed Deb/RPM repos (needs podman or docker)
+    cmds:
+      - bash tests/interop/verify.sh
+
   coverage:
     desc: Generate an HTML coverage report and an lcov report for SonarQube — starts Postgres, MinIO and Redis to include all integration tests
     vars:

@@ -1,0 +1,261 @@
+use async_trait::async_trait;
+use chrono::DateTime;
+use futures::TryStreamExt;
+use serde::Deserialize;
+
+use batlehub_core::{
+    entities::{PackageId, PackageMetadata},
+    error::CoreError,
+    ports::{FetchedArtifact, RegistryClient},
+};
+
+use super::client::{is_release_signed, static_artifact_url, ForgejoRegistryClient};
+
+// ── Serde types for Forgejo/Gitea API responses ──────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub(super) struct FjRelease {
+    pub id: u64,
+    pub tag_name: String,
+    pub published_at: Option<String>,
+    #[serde(default)]
+    pub assets: Vec<FjAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct FjAsset {
+    pub id: u64,
+    pub name: String,
+    pub browser_download_url: String,
+    #[allow(dead_code)]
+    #[serde(default)]
+    pub size: u64,
+}
+
+impl ForgejoRegistryClient {
+    /// Resolve the upstream download URL for a release asset identified either by
+    /// filename (`filename/<name>`) or attachment id (numeric). Both look the asset
+    /// up inside the release fetched by tag, so the caller must pass a real tag.
+    async fn asset_download_url(
+        &self,
+        owner_repo: &str,
+        tag: &str,
+        artifact: &str,
+    ) -> Result<String, CoreError> {
+        let release = self.fetch_release_by_tag(owner_repo, tag).await?;
+        if let Some(filename) = artifact.strip_prefix("filename/") {
+            release
+                .assets
+                .iter()
+                .find(|a| a.name == filename)
+                .map(|a| a.browser_download_url.clone())
+                .ok_or_else(|| {
+                    CoreError::NotFound(format!(
+                        "no asset named '{filename}' in {owner_repo}@{tag}"
+                    ))
+                })
+        } else {
+            let asset_id: u64 = artifact
+                .parse()
+                .map_err(|_| CoreError::Registry(format!("invalid asset id: {artifact}")))?;
+            release
+                .assets
+                .iter()
+                .find(|a| a.id == asset_id)
+                .map(|a| a.browser_download_url.clone())
+                .ok_or_else(|| {
+                    CoreError::NotFound(format!("asset {asset_id} not found in {owner_repo}@{tag}"))
+                })
+        }
+    }
+}
+
+// ── RegistryClient impl ───────────────────────────────────────────────────────
+
+#[async_trait]
+impl RegistryClient for ForgejoRegistryClient {
+    fn registry_type(&self) -> &str {
+        "forgejo"
+    }
+
+    async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
+        let owner_repo = &pkg.name;
+
+        // Source archive / raw downloads use a branch/SHA, not a release tag.
+        if let Some(ref artifact) = pkg.artifact {
+            if artifact.starts_with("raw/")
+                || artifact.starts_with("tarball/")
+                || artifact == "zipball"
+            {
+                return Ok(PackageMetadata {
+                    id: pkg.clone(),
+                    published_at: None,
+                    download_url: None,
+                    checksum: None,
+                    is_signed: None,
+                    extra: serde_json::Value::Null,
+                    cache_control: None,
+                });
+            }
+        }
+
+        match pkg.version.as_str() {
+            "releases" => {
+                let url = format!(
+                    "{}/repos/{}/releases?limit=50",
+                    self.api_base_url, owner_repo
+                );
+                let resp = self
+                    .get(&url)
+                    .send()
+                    .await
+                    .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+                if resp.status() == reqwest::StatusCode::NOT_FOUND {
+                    return Err(CoreError::NotFound(format!("{owner_repo} not found")));
+                }
+
+                let releases: Vec<FjRelease> = resp
+                    .error_for_status()
+                    .map_err(|e| CoreError::Registry(e.to_string()))?
+                    .json()
+                    .await
+                    .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+                let extra = serde_json::to_value(releases.iter().map(|r| {
+                    serde_json::json!({ "id": r.id, "tag_name": r.tag_name, "published_at": r.published_at })
+                }).collect::<Vec<_>>()).unwrap_or_default();
+
+                Ok(PackageMetadata {
+                    id: pkg.clone(),
+                    published_at: None,
+                    download_url: None,
+                    checksum: None,
+                    is_signed: None,
+                    extra,
+                    cache_control: None,
+                })
+            }
+
+            tag => {
+                let release = self.fetch_release_by_tag(owner_repo, tag).await?;
+
+                let published_at = release
+                    .published_at
+                    .as_deref()
+                    .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&chrono::Utc));
+
+                let is_signed = is_release_signed(&release.assets);
+
+                let download_url = match &pkg.artifact {
+                    Some(artifact_str) => release
+                        .assets
+                        .iter()
+                        .find(|a| {
+                            artifact_str
+                                .strip_prefix("filename/")
+                                .map(|f| a.name == f)
+                                .unwrap_or_else(|| artifact_str.parse::<u64>().ok() == Some(a.id))
+                        })
+                        .map(|a| a.browser_download_url.clone()),
+                    None => None,
+                };
+
+                let extra = serde_json::json!({
+                    "release_id": release.id,
+                    "tag_name": release.tag_name,
+                    "assets": release.assets.iter().map(|a| serde_json::json!({
+                        "id": a.id,
+                        "name": a.name,
+                        "download_url": a.browser_download_url,
+                    })).collect::<Vec<_>>(),
+                });
+
+                Ok(PackageMetadata {
+                    id: pkg.clone(),
+                    published_at,
+                    download_url,
+                    checksum: None,
+                    is_signed: Some(is_signed),
+                    extra,
+                    cache_control: None,
+                })
+            }
+        }
+    }
+
+    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
+        let owner_repo = &pkg.name;
+        let git_ref = &pkg.version;
+
+        let download_url = match &pkg.artifact {
+            Some(artifact) => {
+                if let Some(url) =
+                    static_artifact_url(artifact, &self.base_url, owner_repo, git_ref)
+                {
+                    url
+                } else {
+                    self.asset_download_url(owner_repo, git_ref, artifact)
+                        .await?
+                }
+            }
+            None => {
+                return Err(CoreError::Registry(
+                    "fetch_artifact requires PackageId::artifact to be set".to_owned(),
+                ));
+            }
+        };
+
+        tracing::debug!(url = %download_url, "fetching Forgejo artifact");
+
+        let response = self
+            .get(&download_url)
+            .send()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        let cache_control = response
+            .headers()
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+
+        let stream = response
+            .bytes_stream()
+            .map_err(|e| CoreError::Registry(e.to_string()));
+
+        Ok(FetchedArtifact {
+            stream: Box::pin(stream),
+            cache_control,
+        })
+    }
+
+    async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
+        let url = format!("{}/repos/{}/releases?limit=50", self.api_base_url, package);
+        let resp = self
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(vec![]);
+        }
+        if !resp.status().is_success() {
+            return Err(CoreError::Registry(format!(
+                "forgejo: releases list returned {}",
+                resp.status()
+            )));
+        }
+
+        let releases: Vec<FjRelease> = resp
+            .json()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+
+        Ok(releases.into_iter().map(|r| r.tag_name).collect())
+    }
+}

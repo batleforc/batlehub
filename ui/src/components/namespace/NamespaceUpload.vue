@@ -26,13 +26,23 @@ const registryType = computed(
   () => props.registries.find((r) => r.name === selectedRegistry.value)?.type ?? "",
 );
 
-const BINARY_TYPES = new Set(["rubygems", "composer", "openvsx", "vscode-marketplace", "goproxy"]);
+const BINARY_TYPES = new Set([
+  "rubygems",
+  "composer",
+  "openvsx",
+  "vscode-marketplace",
+  "goproxy",
+  "deb",
+  "rpm",
+]);
 const isBinaryUpload = computed(() => BINARY_TYPES.has(registryType.value));
 
 const uploadFile = ref<File | null>(null);
 const uploadExtId = ref("");
 const uploadVersion = ref("");
 const uploadModule = ref("");
+const uploadDistribution = ref("");
+const uploadComponent = ref("main");
 const loading = ref(false);
 const error = ref<string | null>(null);
 const success = ref(false);
@@ -46,6 +56,8 @@ function acceptFor(t: string) {
   if (t === "composer") return ".zip";
   if (t === "openvsx" || t === "vscode-marketplace") return ".vsix";
   if (t === "goproxy") return ".zip";
+  if (t === "deb") return ".deb";
+  if (t === "rpm") return ".rpm";
   return "*";
 }
 
@@ -72,6 +84,14 @@ async function doUpload() {
         throw new Error("Module path and version are required");
       url = `${API_BASE_URL}/proxy/${reg}/${encodeURIComponent(uploadModule.value.trim())}/@v/${encodeURIComponent(uploadVersion.value.trim())}.zip`;
       method = "PUT";
+    } else if (registryType.value === "deb") {
+      if (!uploadDistribution.value.trim() || !uploadComponent.value.trim())
+        throw new Error("Distribution and component are required");
+      url = `${API_BASE_URL}/proxy/${reg}/deb/pool/${encodeURIComponent(uploadDistribution.value.trim())}/${encodeURIComponent(uploadComponent.value.trim())}/upload`;
+      method = "PUT";
+    } else if (registryType.value === "rpm") {
+      url = `${API_BASE_URL}/proxy/${reg}/rpm/upload`;
+      method = "PUT";
     }
     const body = await uploadFile.value.arrayBuffer();
     const r = await authFetch(url, {
@@ -85,6 +105,7 @@ async function doUpload() {
     uploadExtId.value = "";
     uploadVersion.value = "";
     uploadModule.value = "";
+    uploadDistribution.value = "";
     setTimeout(() => {
       success.value = false;
     }, 4000);
@@ -101,6 +122,8 @@ const cliSnippets: Record<string, string> = {
   cargo: `# .cargo/config.toml:\n[registries.${cliRegistryName.value}]\nindex = "sparse+${globalThis.location.origin}/proxy/${cliRegistryName.value}/registry/"\n\ncargo publish --registry ${cliRegistryName.value}`,
   maven: `<!-- settings.xml -->\n<server>\n  <id>${cliRegistryName.value}</id>\n  <username>your-user</username>\n  <password>your-token</password>\n</server>\n\n<!-- pom.xml -->\n<distributionManagement>\n  <repository>\n    <id>${cliRegistryName.value}</id>\n    <url>${globalThis.location.origin}/proxy/${cliRegistryName.value}/maven2</url>\n  </repository>\n</distributionManagement>\n\nmvn deploy`,
   terraform: `terraform {\n  required_providers {\n    <provider> = {\n      source = "${globalThis.location.hostname}/${cliRegistryName.value}/<namespace>/<provider>"\n    }\n  }\n}`,
+  deb: `# Publish a .deb to pool/{distribution}/{component}\ncurl -X PUT \\\n  -H "Authorization: Bearer <your-token>" \\\n  --data-binary @hello_1.0_amd64.deb \\\n  ${globalThis.location.origin}/proxy/${cliRegistryName.value}/deb/pool/stable/main/upload`,
+  rpm: `# Publish an .rpm\ncurl -X PUT \\\n  -H "Authorization: Bearer <your-token>" \\\n  --data-binary @hello-1.0-1.x86_64.rpm \\\n  ${globalThis.location.origin}/proxy/${cliRegistryName.value}/rpm/upload`,
 };
 const currentSnippet = computed(
   () =>
@@ -172,6 +195,31 @@ const currentSnippet = computed(
                 id="upload-version-module"
                 v-model="uploadVersion"
                 placeholder="v1.0.0"
+                class="font-mono text-sm"
+              />
+            </div>
+          </div>
+        </template>
+        <template v-else-if="registryType === 'deb'">
+          <div class="grid grid-cols-2 gap-3">
+            <div class="space-y-1.5">
+              <Label for="upload-distribution"
+                >Distribution
+                <span class="text-muted-foreground text-xs">(suite)</span></Label
+              >
+              <Input
+                id="upload-distribution"
+                v-model="uploadDistribution"
+                placeholder="stable"
+                class="font-mono text-sm"
+              />
+            </div>
+            <div class="space-y-1.5">
+              <Label for="upload-component">Component</Label>
+              <Input
+                id="upload-component"
+                v-model="uploadComponent"
+                placeholder="main"
                 class="font-mono text-sm"
               />
             </div>

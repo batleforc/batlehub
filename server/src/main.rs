@@ -265,6 +265,7 @@ async fn main() -> Result<()> {
         local_svc,
         quota_svc,
         registry_mode_map,
+        repo_signer_map: builders::build_repo_signer_map(&config)?,
         ip_block_store,
         beta_channel_store,
         team_namespace_store,

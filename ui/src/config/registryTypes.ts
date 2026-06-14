@@ -924,4 +924,188 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
       },
     ],
   },
+
+  // ── Forgejo / Gitea (releases) ───────────────────────────────────────────────
+  {
+    id: "forgejo",
+    label: "Forgejo",
+    fileHint: "Releases",
+    description:
+      `Proxy release assets, source archives, and raw files from a ` +
+      `<a href="https://forgejo.org" target="_blank" rel="noopener" ` +
+      `class="underline underline-offset-2 hover:text-foreground transition-colors">Forgejo</a> ` +
+      `or Gitea instance. Forgejo registries reuse the GitHub-style URL scheme.`,
+    snippets: [
+      {
+        key: "forgejo-curl",
+        label: "Download release assets & archives",
+        lang: "bash",
+        template: (ctx) => {
+          const reg = `${ctx.base}/proxy/${ctx.registryName}`;
+          const auth = ctx.isAuthenticated
+            ? ` \\\n  -H "Authorization: Bearer ${ctx.token}"`
+            : "";
+          return [
+            `# List releases for owner/repo`,
+            `curl${auth} ${reg}/<owner>/<repo>/releases`,
+            ``,
+            `# Release metadata by tag`,
+            `curl${auth} ${reg}/<owner>/<repo>/releases/tags/v1.0.0`,
+            ``,
+            `# Download a release asset by filename`,
+            `curl -L -O${auth} ${reg}/<owner>/<repo>/releases/download/v1.0.0/app.tar.gz`,
+            ``,
+            `# Source tarball / zip for a tag, branch, or commit`,
+            `curl -L -O${auth} ${reg}/<owner>/<repo>/tarball/v1.0.0`,
+            `curl -L -O${auth} ${reg}/<owner>/<repo>/zipball/v1.0.0`,
+          ].join("\n");
+        },
+        note:
+          `Configure the upstream instance URL (e.g. ` +
+          `<code class="font-mono bg-muted px-1 rounded">https://codeberg.org</code>) as the ` +
+          `registry's upstream. The same adapter serves both Forgejo and Gitea.`,
+      },
+    ],
+  },
+
+  // ── GitLab (releases) ────────────────────────────────────────────────────────
+  {
+    id: "gitlab",
+    label: "GitLab",
+    fileHint: "Releases",
+    description:
+      `Proxy GitLab releases, release link assets, and source archives. Project paths ` +
+      `may include nested groups; the release sub-path is separated by ` +
+      `<code class="text-xs font-mono bg-muted px-1 rounded">/-/</code>, mirroring GitLab's own URLs.`,
+    snippets: [
+      {
+        key: "gitlab-curl",
+        label: "Download releases & archives",
+        lang: "bash",
+        template: (ctx) => {
+          const reg = `${ctx.base}/proxy/${ctx.registryName}`;
+          const auth = ctx.isAuthenticated
+            ? ` \\\n  -H "Authorization: Bearer ${ctx.token}"`
+            : "";
+          return [
+            `# List releases for a project (nested groups allowed)`,
+            `curl${auth} ${reg}/<group>/<project>/-/releases`,
+            ``,
+            `# Release metadata by tag`,
+            `curl${auth} ${reg}/<group>/<project>/-/releases/v1.0.0`,
+            ``,
+            `# Download a release link asset (matched by link name)`,
+            `curl -L -O${auth} ${reg}/<group>/<project>/-/releases/v1.0.0/downloads/app.bin`,
+            ``,
+            `# Source archive for a tag (format inferred from the extension)`,
+            `curl -L -O${auth} ${reg}/<group>/<project>/-/archive/v1.0.0/source.tar.gz`,
+          ].join("\n");
+        },
+        note:
+          `GitLab personal access tokens use the ` +
+          `<code class="font-mono bg-muted px-1 rounded">PRIVATE-TOKEN</code> header — configure ` +
+          `it as a custom upstream auth header on the registry. Set the upstream URL to your ` +
+          `instance root (e.g. <code class="font-mono bg-muted px-1 rounded">https://gitlab.com</code>).`,
+      },
+    ],
+  },
+
+  // ── Debian APT (deb) ─────────────────────────────────────────────────────────
+  {
+    id: "deb",
+    label: "Debian (APT)",
+    fileHint: "/etc/apt/sources.list.d/",
+    description:
+      `Proxy and host Debian/Ubuntu APT repositories. In local/hybrid mode, publish ` +
+      `<code class="text-xs font-mono bg-muted px-1 rounded">.deb</code> packages and BatleHub ` +
+      `regenerates the <code class="text-xs font-mono bg-muted px-1 rounded">Packages</code>/` +
+      `<code class="text-xs font-mono bg-muted px-1 rounded">Release</code> indexes (Ed25519 ` +
+      `OpenPGP-signed when a key is configured).`,
+    snippets: [
+      {
+        key: "apt-source",
+        label: "APT source (signed)",
+        lang: "bash",
+        template: (ctx) => {
+          const reg = `${ctx.base}/proxy/${ctx.registryName}/deb`;
+          return [
+            `# Import the repository signing key`,
+            `curl -fsSL ${reg}/key.gpg | sudo tee /usr/share/keyrings/${ctx.registryName}.asc >/dev/null`,
+            ``,
+            `# Add the source (adjust suite/component to your repo)`,
+            `echo "deb [signed-by=/usr/share/keyrings/${ctx.registryName}.asc] ${reg} stable main" \\`,
+            `  | sudo tee /etc/apt/sources.list.d/${ctx.registryName}.list`,
+            ``,
+            `sudo apt update`,
+          ].join("\n");
+        },
+        note:
+          `For an unsigned repository, replace <code class="font-mono bg-muted px-1 rounded">[signed-by=…]</code> ` +
+          `with <code class="font-mono bg-muted px-1 rounded">[trusted=yes]</code>.`,
+      },
+      {
+        key: "apt-publish",
+        label: "Publish a .deb (local/hybrid)",
+        lang: "bash",
+        showWhen: isPublishMode,
+        template: (ctx) =>
+          [
+            `# Upload to pool/{distribution}/{component}`,
+            `curl -X PUT \\`,
+            `  -H "Authorization: Bearer ${authTokenOrPlaceholder(ctx)}" \\`,
+            `  --data-binary @hello_1.0_amd64.deb \\`,
+            `  ${ctx.base}/proxy/${ctx.registryName}/deb/pool/stable/main/upload`,
+          ].join("\n"),
+      },
+    ],
+  },
+
+  // ── RPM / YUM (rpm) ──────────────────────────────────────────────────────────
+  {
+    id: "rpm",
+    label: "RPM (YUM/DNF)",
+    fileHint: "/etc/yum.repos.d/",
+    description:
+      `Proxy and host RPM repositories for DNF/YUM. In local/hybrid mode, publish ` +
+      `<code class="text-xs font-mono bg-muted px-1 rounded">.rpm</code> packages and BatleHub ` +
+      `regenerates <code class="text-xs font-mono bg-muted px-1 rounded">repodata/</code> ` +
+      `(Ed25519 OpenPGP-signed <code class="text-xs font-mono bg-muted px-1 rounded">repomd.xml.asc</code> ` +
+      `when a key is configured).`,
+    snippets: [
+      {
+        key: "dnf-repo",
+        label: ".repo file",
+        lang: "ini",
+        template: (ctx) => {
+          const reg = `${ctx.base}/proxy/${ctx.registryName}/rpm`;
+          return [
+            `[${ctx.registryName}]`,
+            `name=${ctx.registryName}`,
+            `baseurl=${reg}`,
+            `enabled=1`,
+            `repo_gpgcheck=1`,
+            `gpgcheck=0`,
+            `gpgkey=${reg}/repodata/repomd.xml.key`,
+          ].join("\n");
+        },
+        note:
+          `Save to <code class="font-mono bg-muted px-1 rounded">/etc/yum.repos.d/${"{name}"}.repo</code>. ` +
+          `For an unsigned repo, set <code class="font-mono bg-muted px-1 rounded">repo_gpgcheck=0</code> and omit ` +
+          `<code class="font-mono bg-muted px-1 rounded">gpgkey</code>.`,
+      },
+      {
+        key: "rpm-publish",
+        label: "Publish a .rpm (local/hybrid)",
+        lang: "bash",
+        showWhen: isPublishMode,
+        template: (ctx) =>
+          [
+            `curl -X PUT \\`,
+            `  -H "Authorization: Bearer ${authTokenOrPlaceholder(ctx)}" \\`,
+            `  --data-binary @hello-1.0-1.x86_64.rpm \\`,
+            `  ${ctx.base}/proxy/${ctx.registryName}/rpm/upload`,
+          ].join("\n"),
+      },
+    ],
+  },
 ];

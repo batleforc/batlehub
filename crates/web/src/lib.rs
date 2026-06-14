@@ -411,6 +411,32 @@ impl From<HashMap<String, RegistryMode>> for RegistryModeMap {
     }
 }
 
+/// Maps a `deb`/`rpm` registry name → its repository-metadata signing key, when
+/// configured. Registries absent from the map host **unsigned** repositories
+/// (clients must use `[trusted=yes]` / `gpgcheck=0`).
+///
+/// Inner `HashMap` is behind `Arc<RwLock<>>` for the same hot-reload reason as [`RegistryMap`].
+#[derive(Clone, Default)]
+pub struct RepoSignerMap(
+    pub Arc<std::sync::RwLock<HashMap<String, Arc<batlehub_adapters::repo::OpenPgpSigner>>>>,
+);
+
+impl RepoSignerMap {
+    pub fn get(&self, name: &str) -> Option<Arc<batlehub_adapters::repo::OpenPgpSigner>> {
+        self.0
+            .read()
+            .expect("repo signer map lock poisoned")
+            .get(name)
+            .cloned()
+    }
+}
+
+impl From<HashMap<String, Arc<batlehub_adapters::repo::OpenPgpSigner>>> for RepoSignerMap {
+    fn from(map: HashMap<String, Arc<batlehub_adapters::repo::OpenPgpSigner>>) -> Self {
+        Self(Arc::new(std::sync::RwLock::new(map)))
+    }
+}
+
 /// Maps npm/terraform/pypi/conda registry name → first upstream base URL (for audit pass-through).
 ///
 /// Inner `HashMap` is behind `Arc<RwLock<>>` for the same hot-reload reason as [`RegistryMap`].
@@ -500,7 +526,10 @@ pub use middleware::RateLimitService;
 #[derive(OpenApi)]
 #[openapi(
     tags(
-        (name = "proxy/github",   description = "GitHub proxy — releases, assets, tarballs, raw files"),
+        (name = "proxy/github",   description = "GitHub proxy — releases, assets, tarballs, raw files (also serves Forgejo/Gitea registries, which share this URL scheme)"),
+        (name = "proxy/gitlab",   description = "GitLab proxy — releases, release link assets, and source archives"),
+        (name = "proxy/deb",      description = "Debian APT repository — proxy + local hosting (Packages/Release generation, Ed25519 OpenPGP signing)"),
+        (name = "proxy/rpm",      description = "RPM/YUM repository — proxy + local hosting (repodata generation, Ed25519 OpenPGP signing)"),
         (name = "proxy/npm",      description = "npm proxy — packuments, version metadata, tarballs"),
         (name = "proxy/cargo",    description = "Cargo proxy — sparse index, crate metadata, .crate downloads"),
         (name = "proxy/openvsx",  description = "OpenVSX proxy — VS Code extension metadata and VSIX packages"),
@@ -609,6 +638,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                 download_asset, download_asset_by_name, download_raw, download_tarball,
                 download_zipball, get_release, list_releases,
             },
+            gitlab::{gl_download_archive, gl_download_link, gl_get_release, gl_list_releases},
             goproxy::{goproxy_file, goproxy_latest, goproxy_list, goproxy_publish},
             maven::{maven_get, maven_put},
             npm::{
@@ -621,6 +651,11 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             },
             openvsx::{download_vsix, vsix_publish},
             pypi::{pypi_file_download, pypi_publish, pypi_simple_package, pypi_simple_root},
+            repo::{
+                deb_get,
+                publish::{deb_publish, rpm_publish},
+                rpm_get,
+            },
             rubygems::{
                 gem_download, gem_gemspec, gem_info, gem_publish, gem_specs_full, gem_specs_latest,
                 gem_specs_prerelease, gem_unyank, gem_versions, gem_yank,
@@ -657,7 +692,17 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(download_tarball);
     cfg.service(download_zipball);
     cfg.service(download_raw);
-    // Cargo download (literal "download" suffix)
+    // GitLab (distinct `/-/` delimiter; most-specific first)
+    cfg.service(gl_download_link); // …/-/releases/{tag}/downloads/{name}
+    cfg.service(gl_get_release); // …/-/releases/{tag}
+    cfg.service(gl_list_releases); // …/-/releases
+    cfg.service(gl_download_archive); // …/-/archive/{tag}/{filename}
+                                      // Deb / RPM repositories: publish (PUT) before the catch-all read (GET).
+    cfg.service(deb_publish); // PUT …/deb/pool/{dist}/{component}/upload
+    cfg.service(rpm_publish); // PUT …/rpm/upload
+    cfg.service(deb_get); // GET …/deb/{path}
+    cfg.service(rpm_get); // GET …/rpm/{path}
+                          // Cargo download (literal "download" suffix)
     cfg.service(download_crate);
     // Go module proxy (multi-segment module paths — must precede generic packument routes)
     // PUT goproxy_publish must come before GET goproxy_file (same path pattern, different method)

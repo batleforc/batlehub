@@ -81,6 +81,7 @@ pub(super) struct ServerParams {
     pub local_svc: Arc<LocalRegistryService>,
     pub quota_svc: Arc<QuotaService>,
     pub registry_mode_map: RegistryModeMap,
+    pub repo_signer_map: batlehub_web::RepoSignerMap,
     pub ip_block_store: Arc<dyn IpBlockStore>,
     pub beta_channel_store: Arc<dyn BetaChannelPort>,
     pub team_namespace_store: Arc<dyn TeamNamespacePort>,
@@ -119,6 +120,7 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
         local_svc,
         quota_svc,
         registry_mode_map,
+        repo_signer_map,
         ip_block_store,
         beta_channel_store,
         team_namespace_store,
@@ -165,6 +167,7 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
             .app_data(web::Data::new(local_svc.clone()))
             .app_data(web::Data::new(Arc::clone(&quota_svc)))
             .app_data(web::Data::new(registry_mode_map.clone()))
+            .app_data(web::Data::new(repo_signer_map.clone()))
             .app_data(web::Data::new(Arc::clone(&ip_block_store)))
             .app_data(web::Data::new(Arc::clone(&beta_channel_store)))
             .app_data(web::Data::new(Arc::clone(&team_namespace_store)))

@@ -41,7 +41,11 @@ zip = "8"
 [dev-dependencies]
 batlehub-adapters = { path = "../adapters" }
 actix-http = "3"
+ar = "0.9"
 flate2 = "1"
+# Test-only: build `.rpm` fixtures via `rpm::PackageBuilder` (the `payload` feature).
+# No `rsa` — that only arrives via `signature-pgp`, which we never enable.
+rpm = { version = "0.25", default-features = false, features = ["payload", "gzip-compression"] }
 tar = "0.4"
 tempfile.workspace = true
 mockito = "1"

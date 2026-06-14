@@ -12,6 +12,21 @@ pub mod github;
 #[cfg(feature = "registry-github")]
 pub use github::GithubRegistryClient;
 
+#[cfg(feature = "registry-forgejo")]
+pub mod forgejo;
+#[cfg(feature = "registry-forgejo")]
+pub use forgejo::ForgejoRegistryClient;
+
+#[cfg(feature = "registry-gitlab")]
+pub mod gitlab;
+#[cfg(feature = "registry-gitlab")]
+pub use gitlab::GitlabRegistryClient;
+
+#[cfg(any(feature = "registry-deb", feature = "registry-rpm"))]
+pub mod path_proxy;
+#[cfg(any(feature = "registry-deb", feature = "registry-rpm"))]
+pub use path_proxy::PathProxyRegistryClient;
+
 #[cfg(feature = "registry-npm")]
 pub mod npm;
 #[cfg(feature = "registry-npm")]

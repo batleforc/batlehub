@@ -1,0 +1,38 @@
+name: Repo interop (apt/dnf)
+# Confirms that real `apt` and `dnf` accept BatleHub's Deb/RPM repositories —
+# the hand-rolled Ed25519 OpenPGP signatures and generated indexes — end to end.
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/adapters/src/repo/**"
+      - "crates/adapters/tests/repo_interop.rs"
+      - "tests/interop/**"
+      - ".github/workflows/repo-interop.yaml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "crates/adapters/src/repo/**"
+      - "crates/adapters/tests/repo_interop.rs"
+      - "tests/interop/**"
+      - ".github/workflows/repo-interop.yaml"
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  interop:
+    name: apt + dnf accept signed repos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
+      # ubuntu-latest ships Docker; verify.sh auto-detects docker or podman.
+      - name: Verify apt + dnf interop
+        run: bash tests/interop/verify.sh

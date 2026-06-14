@@ -7,11 +7,15 @@ use batlehub_core::{entities::PackageId, services::ProxyService};
 use super::common::proxy_stream;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
+/// Forgejo/Gitea expose an identical release URL scheme (`{owner}/{repo}/releases…`)
+/// and the same `PackageId` semantics as GitHub, so they share these handlers — the
+/// concrete upstream client is resolved by registry *name* in `ProxyService`. The
+/// guard therefore accepts both `github` and `forgejo` registry types.
 fn require_github(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry).as_deref() {
-        Some("github") => Ok(()),
+        Some("github") | Some("forgejo") => Ok(()),
         Some(_) => Err(AppError::not_found(format!(
-            "registry '{registry}' is not a github registry"
+            "registry '{registry}' is not a github or forgejo registry"
         ))),
         None => Err(AppError::not_found(format!(
             "unknown registry '{registry}'"

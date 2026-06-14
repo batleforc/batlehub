@@ -8,16 +8,16 @@ For discussion or to propose a feature, open an issue on the [project repository
 
 ## New registry types
 
-Current adapters: npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules, Maven, RubyGems, Terraform, Composer, PyPI, Conda, NuGet.
+Current adapters: npm, Cargo, GitHub, Forgejo/Gitea, GitLab, OpenVSX, VS Code Marketplace, Go modules, Maven, RubyGems, Terraform, Composer, PyPI, Conda, NuGet, Deb (APT), RPM (YUM/DNF).
 
 - [x] **PyPI** — Python package index; Simple API proxy with URL rewriting; wheel / sdist downloads; private publishing via `twine` in `local`/`hybrid` mode
 - [x] **Maven / Gradle** — Maven Central-compatible metadata XML + JAR / POM downloads; private publishing via `mvn deploy` in `local`/`hybrid` mode
 - [x] **RubyGems** — gem downloads and version listing (proxy + local/hybrid with publish/yank/unyank)
 - [x] **NuGet** — .NET package protocol; NuGet v3 service index + flat container proxy; `.nupkg` and `.nuspec` downloads; private publishing via `dotnet nuget push` in `local`/`hybrid` mode
-- [ ] **Deb / RPM** — Debian APT and Red Hat YUM repository proxying
+- [x] **Deb / RPM** — Debian APT (`type = "deb"`) and Red Hat YUM/DNF (`type = "rpm"`) repository proxying **and** private hosting in `local`/`hybrid` mode: `.deb`/`.rpm` publish, `Packages`/`Release` and `repodata/` regeneration, Ed25519 OpenPGP-signed metadata (`InRelease`/`Release.gpg`, `repomd.xml.asc`). Signing is hand-rolled (Ed25519 only) to avoid the banned `rsa` crate
 - [x] **Terraform registry** — provider and module proxy protocol; private module + provider publishing in `local`/`hybrid` mode
-- [ ] **GitLab releases and packages** — similar to GitHub but with different auth and pagination
-- [ ] **Forgejo releases and packages** — Gitea fork with minor API differences
+- [~] **GitLab releases and packages** — releases proxy done (`type = "gitlab"`: release list/tag, link assets, source archives via the `/-/` URL scheme, nested groups, `PRIVATE-TOKEN`/Bearer auth); package registries not yet
+- [~] **Forgejo releases and packages** — releases proxy done (`type = "forgejo"`: Gitea/Forgejo `/api/v1` release list/tag, assets, source archives, raw files; reuses the GitHub URL scheme); package registries not yet
 - [x] **Composer** — PHP Composer registry (Packagist v2 protocol — `packages.json`, p2 metadata, dist downloads); private package publishing via ZIP upload in `local`/`hybrid` mode
 - [x] **Anaconda / Conda** — Python data science package registry; `repodata.json` proxy and channel merging; `.tar.bz2` and `.conda` package parsing; private channel publishing in `local`/`hybrid` mode
 - [ ] **Arch Linux / Pacman** — Arch Linux package repository proxying

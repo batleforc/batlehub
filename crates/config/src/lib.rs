@@ -864,4 +864,52 @@ path = "./tmp"
         let cfg: AppConfig = toml::from_str(&toml).unwrap();
         assert!(cfg.registries[0].firewall_only);
     }
+
+    /// The S3 example config showcases every registry type and variant. Loading it
+    /// through the real `load()` path (parse + env expansion + validate) guards it
+    /// from drift and proves the new registry types/blocks are accepted. It must be
+    /// self-contained (no `${VAR}` env placeholders) so it loads with no setup.
+    #[test]
+    fn example_s3_config_loads_and_validates() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config.example-s3.toml");
+        let cfg = load(path).expect("config.example-s3.toml must load and validate");
+        let types: std::collections::HashSet<&str> = cfg
+            .registries
+            .iter()
+            .map(|r| r.registry_type.as_str())
+            .collect();
+        for expected in [
+            "github",
+            "forgejo",
+            "gitlab",
+            "npm",
+            "cargo",
+            "goproxy",
+            "openvsx",
+            "vscode-marketplace",
+            "maven",
+            "rubygems",
+            "terraform",
+            "composer",
+            "pypi",
+            "conda",
+            "nuget",
+            "deb",
+            "rpm",
+        ] {
+            assert!(
+                types.contains(expected),
+                "s3 example is missing a '{expected}' registry"
+            );
+        }
+        // The signed deb/rpm hosting variants must carry a repo_signing key.
+        assert!(cfg
+            .registries
+            .iter()
+            .any(|r| r.registry_type == "deb" && r.repo_signing.is_some()));
+        assert!(cfg
+            .registries
+            .iter()
+            .any(|r| r.registry_type == "rpm" && r.repo_signing.is_some()));
+    }
 }

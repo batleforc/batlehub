@@ -75,6 +75,11 @@ pub struct RegistryConfig {
     /// Optional artifact signing configuration (local/hybrid mode only).
     #[serde(default)]
     pub signing: Option<SigningConfig>,
+    /// Optional Ed25519 OpenPGP key for signing generated Deb/RPM repository
+    /// metadata (`Release`/`InRelease`/`Release.gpg`, `repomd.xml.asc`). When
+    /// absent, the hosted repository is unsigned.
+    #[serde(default)]
+    pub repo_signing: Option<RepoSigningConfig>,
     /// Optional beta-channel configuration (local/hybrid mode only).
     /// When enabled, pre-release versions are only visible to registered beta-channel members.
     #[serde(default)]
@@ -159,6 +164,27 @@ pub struct SigningConfig {
     /// When empty, any type (or no type) is accepted.
     #[serde(default)]
     pub allowed_types: Vec<String>,
+}
+
+/// Ed25519 repository-metadata signing key for `deb`/`rpm` registries.
+///
+/// ```toml
+/// [registries.repo_signing]
+/// seed_hex = "9d61b19d..."   # 32-byte Ed25519 seed, hex-encoded
+/// user_id  = "BatleHub Repo <repo@example.com>"
+/// created  = 1700000000      # key creation unix time (stable across restarts)
+/// ```
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RepoSigningConfig {
+    /// Hex-encoded 32-byte Ed25519 seed.
+    pub seed_hex: String,
+    /// OpenPGP User ID string. Defaults to `"BatleHub"`.
+    #[serde(default)]
+    pub user_id: Option<String>,
+    /// Key creation time (unix seconds). Part of the fingerprint, so it must stay
+    /// stable. Defaults to 0.
+    #[serde(default)]
+    pub created: Option<u32>,
 }
 
 // ── SBOM generation ───────────────────────────────────────────────────────────

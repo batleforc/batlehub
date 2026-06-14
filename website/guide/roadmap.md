@@ -27,9 +27,9 @@ BatleHub currently supports npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go
 | **PyPI** | ✅ Shipped | Simple API proxy with URL rewriting (pip, uv, Poetry); wheel and sdist downloads; twine-compatible private publishing in local/hybrid mode |
 | **Conda** | ✅ Shipped | repodata.json proxy (all platforms); `.conda` and `.tar.bz2` downloads; private channel publishing; hybrid repodata merge |
 | **NuGet** | ✅ Shipped | NuGet v3 service index + flat container proxy; `.nupkg` and `.nuspec` downloads; private publishing via `dotnet nuget push` in `local`/`hybrid` mode |
-| **Deb / RPM** | Planned | Debian APT and Red Hat YUM repository proxying |
-| **GitLab** | Planned | Releases and packages — similar to GitHub, different auth / pagination |
-| **Forgejo** | Planned | Gitea fork with minor API differences |
+| **Deb / RPM** | ✅ Shipped | Debian APT (`deb`) and Red Hat YUM/DNF (`rpm`) proxy **and** signed private hosting in `local`/`hybrid` mode: `.deb`/`.rpm` publish, `Packages`/`Release` + `repodata/` regeneration, Ed25519 OpenPGP-signed metadata (hand-rolled to avoid the banned `rsa` crate) |
+| **GitLab** | 🟡 Releases | Release proxy shipped (`gitlab`): release list/tag, link assets, source archives via the `/-/` URL scheme, nested groups, `PRIVATE-TOKEN`/Bearer auth. Package registries not yet |
+| **Forgejo / Gitea** | 🟡 Releases | Release proxy shipped (`forgejo`): Gitea/Forgejo `/api/v1` releases, assets, source archives, raw files (reuses the GitHub URL scheme). Package registries not yet |
 
 ::: info Docker / OCI not planned
 [Harbor](https://goharbor.io) covers this use case better than BatleHub could. If you have a concrete need, open an issue.

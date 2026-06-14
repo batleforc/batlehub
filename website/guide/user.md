@@ -597,6 +597,135 @@ curl -s https://batlehub.example.com/proxy/internal-nuget/nuget/v3/flat/mylib/in
 
 ---
 
+## Forgejo / Gitea releases {#forgejo}
+
+A `forgejo` registry proxies release assets, source archives, and raw files from a
+[Forgejo](https://forgejo.org) or Gitea instance (set `upstreams` to the instance
+root, e.g. `https://codeberg.org`). It reuses the GitHub URL scheme.
+
+```bash
+REG="$BATLEHUB/proxy/my-forgejo"
+
+# List releases / get a release by tag
+curl $REG/<owner>/<repo>/releases
+curl $REG/<owner>/<repo>/releases/tags/v1.0.0
+
+# Download a release asset by filename
+curl -L -O $REG/<owner>/<repo>/releases/download/v1.0.0/app.tar.gz
+
+# Source tarball / zip for a tag, branch, or commit
+curl -L -O $REG/<owner>/<repo>/tarball/v1.0.0
+curl -L -O $REG/<owner>/<repo>/zipball/v1.0.0
+
+# Raw file
+curl -L $REG/<owner>/<repo>/raw/main/README.md
+```
+
+For private instances, configure a bearer token as the registry's upstream auth.
+
+---
+
+## GitLab releases {#gitlab}
+
+A `gitlab` registry proxies releases, release link assets, and source archives from
+a GitLab instance (`upstreams` = instance root, e.g. `https://gitlab.com`). Project
+paths may include nested groups; the release sub-path is separated by `/-/`, mirroring
+GitLab's own URLs.
+
+```bash
+REG="$BATLEHUB/proxy/my-gitlab"
+
+# List releases / get a release by tag (nested groups allowed)
+curl $REG/<group>/<project>/-/releases
+curl $REG/<group>/<subgroup>/<project>/-/releases/v1.0.0
+
+# Download a release link asset (matched by link name)
+curl -L -O $REG/<group>/<project>/-/releases/v1.0.0/downloads/app.bin
+
+# Source archive for a tag (format inferred from the extension)
+curl -L -O $REG/<group>/<project>/-/archive/v1.0.0/source.tar.gz
+```
+
+GitLab personal access tokens use the `PRIVATE-TOKEN` header — configure it as a
+custom upstream auth header on the registry.
+
+---
+
+## Debian / APT {#deb}
+
+A `deb` registry proxies a Debian/Ubuntu APT repository and, in `local`/`hybrid`
+mode, hosts your own: publish `.deb` packages and BatleHub regenerates the
+`Packages`/`Release` indexes, signing them with an Ed25519 OpenPGP key when
+`[registries.repo_signing]` is configured.
+
+### Consume the repository
+
+```bash
+REG="$BATLEHUB/proxy/my-apt/deb"
+
+# Import the signing key (signed repos only)
+curl -fsSL $REG/key.gpg | sudo tee /usr/share/keyrings/my-apt.asc >/dev/null
+
+# Add the source (adjust suite/component to your repo)
+echo "deb [signed-by=/usr/share/keyrings/my-apt.asc] $REG stable main" \
+  | sudo tee /etc/apt/sources.list.d/my-apt.list
+
+sudo apt update && sudo apt install hello
+```
+
+For an unsigned repository, replace `[signed-by=…]` with `[trusted=yes]`.
+
+### Publish a `.deb` (local/hybrid mode)
+
+```bash
+curl -X PUT \
+  -H "Authorization: Bearer $TOKEN" \
+  --data-binary @hello_1.0_amd64.deb \
+  $BATLEHUB/proxy/my-apt/deb/pool/stable/main/upload
+```
+
+The distribution (`stable`) and component (`main`) come from the upload path;
+BatleHub derives the pool location, regenerates the suite indexes, and re-signs
+`InRelease`/`Release.gpg`.
+
+---
+
+## RPM / YUM (DNF) {#rpm}
+
+An `rpm` registry proxies a YUM/DNF repository and, in `local`/`hybrid` mode, hosts
+your own: publish `.rpm` packages and BatleHub regenerates `repodata/`, signing
+`repomd.xml.asc` with an Ed25519 OpenPGP key when configured.
+
+### Consume the repository
+
+```ini
+# /etc/yum.repos.d/my-rpm.repo
+[my-rpm]
+name=my-rpm
+baseurl=$BATLEHUB/proxy/my-rpm/rpm
+enabled=1
+repo_gpgcheck=1
+gpgcheck=0
+gpgkey=$BATLEHUB/proxy/my-rpm/rpm/repodata/repomd.xml.key
+```
+
+```bash
+sudo dnf makecache && sudo dnf install hello
+```
+
+For an unsigned repo, set `repo_gpgcheck=0` and omit `gpgkey`.
+
+### Publish an `.rpm` (local/hybrid mode)
+
+```bash
+curl -X PUT \
+  -H "Authorization: Bearer $TOKEN" \
+  --data-binary @hello-1.0-1.x86_64.rpm \
+  $BATLEHUB/proxy/my-rpm/rpm/upload
+```
+
+---
+
 ## Team Namespace dashboard {#team-namespace}
 
 If your administrator has assigned namespace claims to your group, the **Team Namespace** page at `/my-namespace` gives you a single place to view your ownership, browse published packages, manage visibility, and upload new packages without needing CLI access.

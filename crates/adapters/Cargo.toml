@@ -26,6 +26,17 @@ chrono.workspace = true
 bzip2 = { version = "0.4", optional = true }
 flate2 = { version = "1", optional = true }
 zstd = { version = "0.13", optional = true }
+# Deb/RPM repository hosting (all pure-Rust; none pull the banned `rsa` crate).
+ar = { version = "0.9", optional = true }
+lzma-rs = { version = "0.3", optional = true }
+md-5 = { version = "0.11", optional = true }
+sha1 = { version = "0.11", optional = true }
+ed25519-dalek = { version = "2", optional = true }
+rpm = { version = "0.25", default-features = false, features = [
+  "gzip-compression",
+  "xz-compression",
+  "zstd-compression",
+], optional = true }
 futures.workspace = true
 glob = { workspace = true, optional = true }
 hex = "0.4"
@@ -51,9 +62,18 @@ quick-xml = { workspace = true, optional = true }
 zip = { version = "8", optional = true }
 
 [dev-dependencies]
+# Building .deb/.rpm fixtures for unit tests and the apt/dnf interop generator
+# (`tests/repo_interop.rs`). These are dev-only so they never reach production.
+ar = "0.9"
+flate2 = "1"
 mockito = "1"
 rcgen = "0.14"
+# Test-only: the `payload` feature unlocks `rpm::PackageBuilder` / `FileOptions` for
+# building `.rpm` fixtures. Pulls no extra crates (`payload = []`) — notably not the
+# banned `rsa`, which only arrives via `signature-pgp`.
+rpm = { version = "0.25", default-features = false, features = ["payload", "gzip-compression"] }
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
+tar = "0.4"
 tokio-rustls = "0.26"
 toml = { workspace = true }
 
@@ -68,8 +88,12 @@ default = [
   "registry-cargo",
   "registry-composer",
   "registry-conda",
+  "registry-deb",
+  "registry-forgejo",
   "registry-github",
+  "registry-gitlab",
   "registry-goproxy",
+  "registry-rpm",
   "registry-maven",
   "registry-npm",
   "registry-openvsx",
@@ -91,13 +115,32 @@ db-postgres = []
 local-registry = ["db-postgres"]
 registry-cargo = []
 registry-composer = ["dep:zip"]
+registry-forgejo = []
 registry-github = []
+registry-gitlab = []
 registry-goproxy = []
 registry-maven = []
 registry-npm = []
 registry-nuget = ["dep:zip"]
 registry-openvsx = []
 registry-conda = ["dep:bzip2", "dep:zip", "dep:zstd", "dep:tar"]
+registry-deb = [
+  "dep:ar",
+  "dep:flate2",
+  "dep:tar",
+  "dep:lzma-rs",
+  "dep:zstd",
+  "dep:md-5",
+  "dep:sha1",
+  "dep:ed25519-dalek",
+]
+registry-rpm = [
+  "dep:rpm",
+  "dep:flate2",
+  "dep:quick-xml",
+  "dep:ed25519-dalek",
+  "dep:sha1",
+]
 registry-pypi = []
 registry-rubygems = ["dep:flate2", "dep:tar"]
 registry-terraform = []
