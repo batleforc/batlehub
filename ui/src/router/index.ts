@@ -69,7 +69,11 @@ function checkAnonymousAccess(
 
 function checkMetaGuards(
   to: RouteLocationNormalized,
-  { isAuthenticated, identity, isAdmin }: Pick<AuthState, "isAuthenticated" | "identity" | "isAdmin">,
+  {
+    isAuthenticated,
+    identity,
+    isAdmin,
+  }: Pick<AuthState, "isAuthenticated" | "identity" | "isAdmin">,
 ): RouteLocationRaw | undefined {
   if (to.meta.requiresAuth && !isAuthenticated.value) {
     return { path: "/login", query: { redirect: to.fullPath } };

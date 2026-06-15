@@ -124,9 +124,7 @@ function formatDate(iso: string | null) {
   });
 }
 
-function severityVariant(
-  severity: string,
-): "default" | "destructive" | "secondary" | "outline" {
+function severityVariant(severity: string): "default" | "destructive" | "secondary" | "outline" {
   switch (severity) {
     case "critical":
     case "high":
@@ -298,7 +296,8 @@ onMounted(fetchDetail);
                       <span
                         class="absolute bottom-full left-0 mb-1 hidden group-hover:block z-10 w-64 rounded-sm bg-popover border p-2 text-xs text-popover-foreground shadow-md"
                       >
-                        <strong>{{ vuln.osv_id }}</strong><br />
+                        <strong>{{ vuln.osv_id }}</strong
+                        ><br />
                         {{ vuln.summary }}
                         <template v-if="vuln.fixed_version">
                           <br /><strong>Fixed in:</strong> {{ vuln.fixed_version }}

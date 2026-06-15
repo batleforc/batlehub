@@ -942,9 +942,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "bash",
         template: (ctx) => {
           const reg = `${ctx.base}/proxy/${ctx.registryName}`;
-          const auth = ctx.isAuthenticated
-            ? ` \\\n  -H "Authorization: Bearer ${ctx.token}"`
-            : "";
+          const auth = ctx.isAuthenticated ? ` \\\n  -H "Authorization: Bearer ${ctx.token}"` : "";
           return [
             `# List releases for owner/repo`,
             `curl${auth} ${reg}/<owner>/<repo>/releases`,
@@ -992,9 +990,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "bash",
         template: (ctx) => {
           const reg = `${ctx.base}/proxy/${ctx.registryName}`;
-          const auth = ctx.isAuthenticated
-            ? ` \\\n  -H "Authorization: Bearer ${ctx.token}"`
-            : "";
+          const auth = ctx.isAuthenticated ? ` \\\n  -H "Authorization: Bearer ${ctx.token}"` : "";
           return [
             `# List releases for a project (nested groups allowed)`,
             `curl${auth} ${reg}/<group>/<project>/-/releases`,
@@ -1119,7 +1115,12 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "ini",
         template: (ctx) => {
           const reg = `${ctx.base}/proxy/${ctx.registryName}/rpm`;
-          const lines = [`[${ctx.registryName}]`, `name=${ctx.registryName}`, `baseurl=${reg}`, `enabled=1`];
+          const lines = [
+            `[${ctx.registryName}]`,
+            `name=${ctx.registryName}`,
+            `baseurl=${reg}`,
+            `enabled=1`,
+          ];
           if (isPublishMode(ctx)) {
             // Local/hybrid: repomd.xml.asc is signed by BatleHub's key (served at the URL below).
             lines.push(`repo_gpgcheck=1`, `gpgcheck=0`, `gpgkey=${reg}/repodata/repomd.xml.key`);
@@ -1174,9 +1175,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "bash",
         template: (ctx) => {
           const reg = `${ctx.base}/proxy/${ctx.registryName}/jetbrains`;
-          const auth = ctx.isAuthenticated
-            ? ` \\\n  -H "Authorization: Bearer ${ctx.token}"`
-            : "";
+          const auth = ctx.isAuthenticated ? ` \\\n  -H "Authorization: Bearer ${ctx.token}"` : "";
           return [
             `# The path after /jetbrains/ maps to download.jetbrains.com/<path>`,
             `curl -fL -o ideaIC.tar.gz${auth} \\`,

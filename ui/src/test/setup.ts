@@ -65,8 +65,7 @@ class ResizeObserverStub {
     // no-op
   }
 }
-globalThis.ResizeObserver ??=
-  ResizeObserverStub as unknown as typeof ResizeObserver;
+globalThis.ResizeObserver ??= ResizeObserverStub as unknown as typeof ResizeObserver;
 
 Element.prototype.scrollIntoView ??= vi.fn();
 Element.prototype.hasPointerCapture ??= () => false;

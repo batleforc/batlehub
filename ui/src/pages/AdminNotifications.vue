@@ -470,8 +470,9 @@ function eventBadgeVariant(
         <fieldset class="space-y-1.5 border-0 p-0 m-0">
           <legend
             class="font-mono text-xs font-semibold uppercase tracking-wide text-muted-foreground leading-none"
-            >Event types <span class="text-destructive">*</span></legend
           >
+            Event types <span class="text-destructive">*</span>
+          </legend>
           <div class="flex flex-wrap gap-2">
             <button
               v-for="et in ALL_EVENT_TYPES"
