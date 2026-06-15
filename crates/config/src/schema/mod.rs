@@ -145,6 +145,19 @@ impl AppConfig {
                     registry.name
                 );
             }
+            // deb/rpm have no universal default upstream, so proxy mode (which would
+            // otherwise fall back to an unreachable placeholder) also requires an
+            // explicit upstream. Caught at startup instead of every fetch failing.
+            if registry.mode == RegistryMode::Proxy
+                && registry.upstreams.is_empty()
+                && matches!(registry.registry_type.as_str(), "deb" | "rpm")
+            {
+                bail!(
+                    "registry '{}': {} proxy mode requires at least one upstream URL (no default upstream exists)",
+                    registry.name,
+                    registry.registry_type
+                );
+            }
         }
         Ok(())
     }

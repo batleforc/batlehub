@@ -17,13 +17,26 @@ use batlehub_core::{
 use batlehub_config::schema::RegistryMode;
 
 use super::common::{collect_storage_stream, proxy_stream, require_registry_type};
-use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+use crate::{
+    error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, RepoSignerMap,
+};
 
 pub mod publish;
 
 /// Storage key for a file in a locally-hosted deb/rpm repository.
 pub fn repo_storage_key(registry: &str, path: &str) -> String {
     format!("local:{registry}/{path}")
+}
+
+/// Whether `path` is the public-key download for `reg_type`. The key is served
+/// live from the configured signer so clients can be set up before the first
+/// publish (`deb` accepts both `key.gpg` and `key.asc`).
+fn is_signing_key_path(reg_type: &str, path: &str) -> bool {
+    match reg_type {
+        "deb" => path == "key.gpg" || path == "key.asc",
+        "rpm" => path == "repodata/repomd.xml.key",
+        _ => false,
+    }
 }
 
 /// Best-effort `Content-Type` for a repository file path.
@@ -56,6 +69,7 @@ async fn repo_get(
     path: &str,
     svc: web::Data<Arc<ProxyService>>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
+    signers: &RepoSignerMap,
     identity: AuthIdentity,
     map: &RegistryMap,
     mode_map: &RegistryModeMap,
@@ -65,10 +79,33 @@ async fn repo_get(
     // backend's `ensure_safe_key` is the deeper guard.
     batlehub_core::services::validate_path_safe("path", path).map_err(AppError::from)?;
 
+    // The signing public key is served live from the configured signer, so clients
+    // can import it and configure the repo *before* anything is published (the key
+    // is otherwise only written to storage during index regeneration on publish).
+    if is_signing_key_path(reg_type, path) {
+        if let Some(signer) = signers.get(registry) {
+            return Ok(HttpResponse::Ok()
+                .content_type("application/pgp-keys")
+                .body(signer.armored_public_key()));
+        }
+        // No signer configured: this is an unsigned repository; fall through so the
+        // request 404s rather than implying a key exists.
+    }
+
     let ct = repo_content_type(path);
     let mode = mode_map.get(registry);
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        // Enforce repository visibility before serving from local storage. Unlike
+        // the proxy fall-through (which runs RBAC via `proxy_stream`), a direct
+        // storage read would otherwise hand Internal/Team repos to any caller. The
+        // repo is addressed by file path, so visibility is keyed on the synthetic
+        // `repo` package name used by the proxy path below.
+        local_svc
+            .check_visibility(registry, "repo", &identity.0)
+            .await
+            .map_err(AppError::from)?;
+
         let key = repo_storage_key(registry, path);
         match local_svc.storage.retrieve(&key).await {
             Ok(Some(artifact)) => {
@@ -114,10 +151,11 @@ pub async fn deb_get(
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
+    signers: web::Data<RepoSignerMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, file_path) = path.into_inner();
     repo_get(
-        "deb", &registry, &file_path, svc, local_svc, identity, &map, &mode_map,
+        "deb", &registry, &file_path, svc, local_svc, &signers, identity, &map, &mode_map,
     )
     .await
 }
@@ -146,10 +184,11 @@ pub async fn rpm_get(
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
+    signers: web::Data<RepoSignerMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, file_path) = path.into_inner();
     repo_get(
-        "rpm", &registry, &file_path, svc, local_svc, identity, &map, &mode_map,
+        "rpm", &registry, &file_path, svc, local_svc, &signers, identity, &map, &mode_map,
     )
     .await
 }

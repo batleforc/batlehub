@@ -1954,6 +1954,51 @@ async fn proxy_gitlab_archive_blocked_for_anonymous_allowed_for_user() {
 }
 
 #[actix_web::test]
+async fn proxy_gitlab_raw_file_allowed_for_user() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/gl/group/proj/-/raw/main/README.md")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn proxy_forgejo_package_passthrough() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/fj/api/packages/acme/generic/tool/1.0/tool.bin")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn proxy_gitlab_package_passthrough() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/gl/api/v4/projects/1/packages/generic/a/1.0/f.bin")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+}
+
+#[actix_web::test]
+async fn proxy_forgejo_package_on_github_registry_is_404() {
+    // The package route is Forgejo-only; a github-typed registry is rejected.
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/github/api/packages/acme/generic/x/1.0/f.bin")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
 async fn proxy_gitlab_route_on_github_registry_is_404() {
     let app = make_app(InMemoryRepo::new()).await;
     // `github` is a github-typed registry; the gitlab `/-/releases` route guard rejects it.
@@ -2301,6 +2346,73 @@ async fn rpm_signed_publish_emits_repomd_asc() {
     assert_eq!(asc.status(), 200);
     let body = String::from_utf8(read_body(asc).await.to_vec()).unwrap();
     assert!(body.contains("-----BEGIN PGP SIGNATURE-----"));
+}
+
+#[actix_web::test]
+async fn rpm_signing_key_is_served_before_any_publish() {
+    // A client must be able to fetch the repo signing key to configure dnf BEFORE
+    // the first package is published (the key is otherwise only written on publish).
+    let seed = "9d61b19deffeba00aa3f3b6e3b0fe6a3f3a76b08e2c0a3f3b6e3b0fe6a3f3a76";
+    let signer = Arc::new(
+        batlehub_adapters::repo::OpenPgpSigner::from_seed_hex(seed, 1_700_000_000, "BatleHub")
+            .unwrap(),
+    );
+    let mut sm = HashMap::new();
+    sm.insert("yum".to_owned(), signer);
+
+    let parts = local_registry_app_parts("yum", "rpm", RegistryMode::Local, None);
+    let LocalRegistryAppParts {
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        mode_map,
+    } = parts;
+    let app = finish_test_app_with_extra(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        mode_map,
+        batlehub_web::CargoIndexMap::default(),
+        ConfigureAppDefaults::default(),
+        RepoSignerMap::from(sm),
+        test_auth_providers(),
+    )
+    .await;
+
+    // No publish has happened — the key still resolves from the live signer.
+    let resp = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/yum/rpm/repodata/repomd.xml.key")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body = String::from_utf8(read_body(resp).await.to_vec()).unwrap();
+    assert!(body.contains("-----BEGIN PGP PUBLIC KEY BLOCK-----"));
+}
+
+#[actix_web::test]
+async fn rpm_signing_key_is_404_when_unsigned() {
+    // No signer configured → no key (an unsigned repo); must not imply one exists.
+    let parts = local_registry_app_parts("yum", "rpm", RegistryMode::Local, None);
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    let resp = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/yum/rpm/repodata/repomd.xml.key")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 404);
 }
 
 #[actix_web::test]

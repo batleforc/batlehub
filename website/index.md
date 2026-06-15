@@ -94,9 +94,12 @@ The per-package feature matrix below covers the package-centric registries. **Fo
 | Release age gate | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ⚠ ² | ✓ |
 | RBAC | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Cache warming (version enumeration) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — | ✓ | ✓ ¹ | ✓ |
+| Explorer upstream search ⁴ | — | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 
 > ¹ Conda has no dedicated per-package version listing API. BatleHub synthesises one by scanning `repodata.json` for `noarch`, `linux-64`, `osx-64`, `osx-arm64`, and `win-64`. Results are the union of versions found across all available platforms.
 >
 > ² Conda timestamps come from the `timestamp` field in `repodata.json` (ms since epoch). Most packages carry it; packages without one skip the gate by default. Set `deny_missing_timestamp = true` on the rule to block packages with no timestamp instead.
 >
 > ³ Deb / RPM have no universal default upstream — set `upstreams` explicitly for proxy/hybrid mode. In local mode no upstream is contacted.
+>
+> ⁴ Package Explorer upstream ("Not Yet Proxied") search. Go uses pkg.go.dev; PyPI is exact-name lookup; Terraform combines module search with namespace/exact provider lookup. The release proxies (GitHub/Forgejo/GitLab), VS Code Marketplace, Conda, and Deb/RPM have no upstream search API — see the [Package Explorer guide](/guide/package-explorer#upstream-supported).

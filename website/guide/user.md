@@ -623,6 +623,30 @@ curl -L $REG/<owner>/<repo>/raw/main/README.md
 
 For private instances, configure a bearer token as the registry's upstream auth.
 
+### Package registries {#forgejo-packages}
+
+A `forgejo` registry also proxies the Forgejo/Gitea **package registry** at
+`/api/packages/{owner}/…`. This is a transparent cache — ideal for the **generic**
+package registry (immutable file downloads):
+
+```bash
+curl -L -O $BATLEHUB/proxy/my-forgejo/api/packages/<owner>/generic/<name>/<version>/<file>
+```
+
+For **ecosystem** registries (npm, Maven, PyPI, Composer, NuGet, …), use the matching
+typed adapter pointed at the package endpoint instead — it rewrites metadata URLs so
+downloads are cached through BatleHub. For example, a `npm` registry:
+
+```toml
+[[registries]]
+type = "npm"
+name = "forgejo-npm"
+upstreams = ["https://codeberg.org/api/packages/myorg/npm"]
+[registries.upstream_auth]
+type = "bearer"
+token = "${FORGEJO_TOKEN}"
+```
+
 ---
 
 ## GitLab releases {#gitlab}
@@ -644,10 +668,26 @@ curl -L -O $REG/<group>/<project>/-/releases/v1.0.0/downloads/app.bin
 
 # Source archive for a tag (format inferred from the extension)
 curl -L -O $REG/<group>/<project>/-/archive/v1.0.0/source.tar.gz
+
+# Raw file from the repository
+curl -L $REG/<group>/<project>/-/raw/main/README.md
 ```
 
 GitLab personal access tokens use the `PRIVATE-TOKEN` header — configure it as a
 custom upstream auth header on the registry.
+
+### Package registries {#gitlab-packages}
+
+A `gitlab` registry also proxies the GitLab **Packages API** under `/api/v4/…`. This
+is a transparent cache — ideal for the **generic** package registry:
+
+```bash
+curl -L -O $BATLEHUB/proxy/my-gitlab/api/v4/projects/<id>/packages/generic/<name>/<version>/<file>
+```
+
+For **ecosystem** registries (npm, Maven, PyPI, NuGet, Composer, …), use the matching
+typed adapter pointed at the GitLab package endpoint, which rewrites metadata URLs so
+downloads route through BatleHub.
 
 ---
 
@@ -673,7 +713,25 @@ echo "deb [signed-by=/usr/share/keyrings/my-apt.asc] $REG stable main" \
 sudo apt update && sudo apt install hello
 ```
 
-For an unsigned repository, replace `[signed-by=…]` with `[trusted=yes]`.
+For an unsigned **local** repository (no `[registries.repo_signing]` key), replace
+`[signed-by=…]` with `[trusted=yes]`.
+
+> **Proxy mode:** a proxy registry has no BatleHub key — `…/deb/key.gpg` is served
+> only for `local`/`hybrid` registries with a `repo_signing` key. In proxy mode
+> BatleHub relays the **upstream** repo's `InRelease`/`Release.gpg` and its
+> signature, so apt verifies against the **upstream's** archive key:
+>
+> ```bash
+> # Official Debian/Ubuntu mirrors already ship the key
+> # (packages: debian-archive-keyring / ubuntu-keyring):
+> echo "deb [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] \
+>   $BATLEHUB/proxy/my-apt/deb stable main" | sudo tee /etc/apt/sources.list.d/my-apt.list
+> ```
+>
+> A `NO_PUBKEY` / "the following signatures couldn't be verified" error means that
+> key isn't in the keyring named by `signed-by` — install `debian-archive-keyring`
+> (Debian) or `ubuntu-keyring` (Ubuntu), import the upstream's key into a keyring and
+> point `signed-by` at it, or use `[trusted=yes]` if you trust the channel.
 
 ### Publish a `.deb` (local/hybrid mode)
 
@@ -713,7 +771,14 @@ gpgkey=$BATLEHUB/proxy/my-rpm/rpm/repodata/repomd.xml.key
 sudo dnf makecache && sudo dnf install hello
 ```
 
-For an unsigned repo, set `repo_gpgcheck=0` and omit `gpgkey`.
+For an unsigned **local** repo (no `[registries.repo_signing]` key), set
+`repo_gpgcheck=0` and omit `gpgkey`.
+
+> **Proxy mode:** a proxy registry has no BatleHub key — `repodata/repomd.xml.key`
+> is served only for `local`/`hybrid` registries with a `repo_signing` key. In proxy
+> mode BatleHub relays the **upstream** `repodata` (including any `repomd.xml.asc`),
+> so either point `gpgkey` at the **upstream project's** key with `repo_gpgcheck=1`,
+> or set `repo_gpgcheck=0` if you trust the channel.
 
 ### Publish an `.rpm` (local/hybrid mode)
 

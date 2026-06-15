@@ -10,8 +10,10 @@ use batlehub_core::{
 };
 
 use super::http_client::{
-    apply_upstream_options, basic_auth_get, cache_control, UpstreamHttpOptions,
+    apply_upstream_options, basic_auth_get, cache_control, percent_encode, UpstreamHttpOptions,
 };
+
+use batlehub_core::ports::UpstreamPackage;
 
 /// Go module proxy client (proxy.golang.org or compatible).
 ///
@@ -34,8 +36,31 @@ use super::http_client::{
 /// published. Clear the proxy storage to refresh, or pin versions in `go.sum`.
 pub struct GoProxyRegistryClient {
     http: reqwest::Client,
+    /// Credential-free client used for the search host. The default search target
+    /// (pkg.go.dev) is a *different* host than the GOPROXY upstream, so the
+    /// upstream's auth headers/basic-auth must never be sent to it.
+    search_http: reqwest::Client,
     base_url: String,
+    /// Base URL for free-text search. The GOPROXY protocol has no search endpoint,
+    /// so this points at a pkg.go.dev-compatible site (default `https://pkg.go.dev`).
+    /// `None` disables upstream search (configured via `search_url = ""`).
+    search_base: Option<String>,
+    /// Whether search may reuse the credentialed upstream client — only true when
+    /// the search host is the same origin as the GOPROXY upstream.
+    search_authed: bool,
     basic_auth: Option<(String, String)>,
+}
+
+/// True when `a` and `b` share scheme, host and (effective) port.
+fn same_origin(a: &str, b: &str) -> bool {
+    match (reqwest::Url::parse(a), reqwest::Url::parse(b)) {
+        (Ok(x), Ok(y)) => {
+            x.scheme() == y.scheme()
+                && x.host_str() == y.host_str()
+                && x.port_or_known_default() == y.port_or_known_default()
+        }
+        _ => false,
+    }
 }
 
 impl GoProxyRegistryClient {
@@ -44,9 +69,26 @@ impl GoProxyRegistryClient {
             .user_agent("batlehub/0.1")
             .redirect(reqwest::redirect::Policy::limited(10));
         let http = apply_upstream_options(builder, opts)?;
+        let search_http = reqwest::Client::builder()
+            .user_agent("batlehub/0.1")
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .build()?;
+        let base_url = base_url.into();
+        // search_url: None → built-in default; Some("") → disabled; Some(u) → override.
+        let search_base = match opts.search_url.as_deref() {
+            None => Some("https://pkg.go.dev".to_owned()),
+            Some("") => None,
+            Some(u) => Some(u.trim_end_matches('/').to_owned()),
+        };
+        let search_authed = search_base
+            .as_deref()
+            .is_some_and(|s| same_origin(&base_url, s));
         Ok(Self {
             http,
-            base_url: base_url.into(),
+            search_http,
+            base_url,
+            search_base,
+            search_authed,
             basic_auth: opts.basic_auth.clone(),
         })
     }
@@ -54,6 +96,65 @@ impl GoProxyRegistryClient {
     fn get(&self, url: &str) -> reqwest::RequestBuilder {
         basic_auth_get(&self.http, &self.basic_auth, url)
     }
+}
+
+/// Parse module/package paths (and synopses) out of a pkg.go.dev search results
+/// page. Best-effort and tolerant: unknown markup simply yields fewer results
+/// rather than an error.
+fn parse_pkg_go_dev_search(html: &str, limit: usize) -> Vec<UpstreamPackage> {
+    let mut out: Vec<UpstreamPackage> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Each result lives under a `SearchSnippet-header`; the module/package path is
+    // the first `href="/..."` inside it (the visible text contains <wbr> tags, so we
+    // use the href, not the text).
+    for chunk in html.split("SearchSnippet-header").skip(1) {
+        if out.len() >= limit {
+            break;
+        }
+        let Some(href_pos) = chunk.find("href=\"") else {
+            continue;
+        };
+        let after = &chunk[href_pos + 6..];
+        let Some(end) = after.find('"') else {
+            continue;
+        };
+        let href = &after[..end];
+        // `/github.com/foo/bar?tab=…` → `github.com/foo/bar`
+        let path = href
+            .trim_start_matches('/')
+            .split(['?', '#'])
+            .next()
+            .unwrap_or("")
+            .trim_end_matches('/');
+        if path.is_empty() || path.starts_with("search") || !path.contains('.') {
+            continue;
+        }
+        if !seen.insert(path.to_owned()) {
+            continue;
+        }
+
+        // Optional synopsis within this chunk.
+        let description = chunk
+            .find("SearchSnippet-synopsis")
+            .and_then(|p| chunk[p..].find('>').map(|g| p + g + 1))
+            .and_then(|start| {
+                chunk[start..]
+                    .find('<')
+                    .map(|e| chunk[start..start + e].trim())
+            })
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_owned());
+
+        out.push(UpstreamPackage {
+            name: path.to_owned(),
+            // pkg.go.dev search snippets don't carry a reliable version; the proxy
+            // resolves @latest when the module is first fetched.
+            latest_version: "latest".to_owned(),
+            description,
+        });
+    }
+    out
 }
 
 // ── Serde types ───────────────────────────────────────────────────────────────
@@ -184,6 +285,37 @@ impl RegistryClient for GoProxyRegistryClient {
             stream: Box::pin(stream),
             cache_control,
         })
+    }
+
+    async fn search_packages(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<UpstreamPackage>, CoreError> {
+        // The GOPROXY protocol has no search endpoint; query pkg.go.dev instead.
+        let Some(base) = &self.search_base else {
+            return Ok(vec![]);
+        };
+        let url = format!("{}/search?q={}&m=package", base, percent_encode(query));
+        // Only attach upstream credentials when the search host is the same origin
+        // as the GOPROXY upstream; otherwise use the credential-free client so we
+        // never leak the upstream token/basic-auth to a third-party search site.
+        let req = if self.search_authed {
+            self.get(&url)
+        } else {
+            self.search_http.get(&url)
+        };
+        let resp = match req.send().await {
+            Ok(r) if r.status().is_success() => r,
+            // Search is best-effort: a transport error or non-200 yields no results
+            // rather than failing the whole multi-registry explore search.
+            _ => return Ok(vec![]),
+        };
+        let html = resp
+            .text()
+            .await
+            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        Ok(parse_pkg_go_dev_search(&html, limit))
     }
 }
 
@@ -398,5 +530,74 @@ mod tests {
             .collect::<Vec<u8>>();
         let content = String::from_utf8(content).unwrap();
         assert!(content.contains("v0.3.7"));
+    }
+
+    const SEARCH_HTML: &str = r#"
+      <div class="SearchSnippet">
+        <h2 class="SearchSnippet-header">
+          <a href="/github.com/spf13/cobra?tab=overview" data-gtmc="search result">github.com/spf13/<wbr>cobra</a>
+        </h2>
+        <p class="SearchSnippet-synopsis" data-test-id="snippet-synopsis">A Commander for modern Go CLI interactions</p>
+      </div>
+      <div class="SearchSnippet">
+        <h2 class="SearchSnippet-header">
+          <a href="/golang.org/x/text" data-gtmc="search result">golang.org/x/<wbr>text</a>
+        </h2>
+        <p class="SearchSnippet-synopsis">Go text processing support</p>
+      </div>
+    "#;
+
+    #[test]
+    fn parse_search_extracts_paths_and_synopsis() {
+        let results = parse_pkg_go_dev_search(SEARCH_HTML, 10);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].name, "github.com/spf13/cobra");
+        assert_eq!(
+            results[0].description.as_deref(),
+            Some("A Commander for modern Go CLI interactions")
+        );
+        assert_eq!(results[0].latest_version, "latest");
+        assert_eq!(results[1].name, "golang.org/x/text");
+    }
+
+    #[test]
+    fn parse_search_respects_limit_and_dedups() {
+        assert_eq!(parse_pkg_go_dev_search(SEARCH_HTML, 1).len(), 1);
+        let dup = format!("{SEARCH_HTML}{SEARCH_HTML}");
+        assert_eq!(parse_pkg_go_dev_search(&dup, 10).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn search_packages_queries_pkg_go_dev() {
+        let mut server = Server::new_async().await;
+        let m = server
+            .mock("GET", "/search?q=cobra&m=package")
+            .with_status(200)
+            .with_body(SEARCH_HTML)
+            .create_async()
+            .await;
+        let opts = UpstreamHttpOptions {
+            search_url: Some(server.url()),
+            ..Default::default()
+        };
+        let client = GoProxyRegistryClient::new("https://proxy.golang.org", &opts).unwrap();
+        let results = client.search_packages("cobra", 10).await.unwrap();
+        m.assert_async().await;
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].name, "github.com/spf13/cobra");
+    }
+
+    #[tokio::test]
+    async fn search_disabled_returns_empty() {
+        let opts = UpstreamHttpOptions {
+            search_url: Some(String::new()), // search_url = "" disables search
+            ..Default::default()
+        };
+        let client = GoProxyRegistryClient::new("https://proxy.golang.org", &opts).unwrap();
+        assert!(client
+            .search_packages("cobra", 10)
+            .await
+            .unwrap()
+            .is_empty());
     }
 }

@@ -91,24 +91,25 @@ fn build_deb(control: &str) -> Vec<u8> {
         b"BatleHub interop test package\n",
     );
     let mut deb = Vec::new();
-    let mut b = ar::Builder::new(&mut deb);
-    let dbin = b"2.0\n";
-    b.append(
-        &ar::Header::new(b"debian-binary".to_vec(), dbin.len() as u64),
-        &dbin[..],
-    )
-    .unwrap();
-    b.append(
-        &ar::Header::new(b"control.tar.gz".to_vec(), control_gz.len() as u64),
-        &control_gz[..],
-    )
-    .unwrap();
-    b.append(
-        &ar::Header::new(b"data.tar.gz".to_vec(), data_gz.len() as u64),
-        &data_gz[..],
-    )
-    .unwrap();
-    drop(b);
+    {
+        let mut b = ar::Builder::new(&mut deb);
+        let dbin = b"2.0\n";
+        b.append(
+            &ar::Header::new(b"debian-binary".to_vec(), dbin.len() as u64),
+            &dbin[..],
+        )
+        .unwrap();
+        b.append(
+            &ar::Header::new(b"control.tar.gz".to_vec(), control_gz.len() as u64),
+            &control_gz[..],
+        )
+        .unwrap();
+        b.append(
+            &ar::Header::new(b"data.tar.gz".to_vec(), data_gz.len() as u64),
+            &data_gz[..],
+        )
+        .unwrap();
+    }
     deb
 }
 

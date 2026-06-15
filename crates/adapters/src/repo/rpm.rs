@@ -66,6 +66,25 @@ impl RpmPackage {
             self.name, self.version, self.release, self.arch
         )
     }
+
+    /// Storage-unique identifier for the package file and its sidecar.
+    ///
+    /// Standard RPM filenames omit the epoch, so two builds that share a
+    /// name-version-release-arch but differ in `Epoch` would map to the same
+    /// storage key and silently overwrite each other (and corrupt repodata).
+    /// We disambiguate by prefixing the epoch when it is non-zero; the resulting
+    /// href is still served verbatim from `<location>` in `primary.xml`, so DNF
+    /// resolves it correctly.
+    pub fn storage_id(&self) -> String {
+        if self.epoch == 0 {
+            self.nevra()
+        } else {
+            format!(
+                "{}-{}-{}-{}.{}",
+                self.epoch, self.name, self.version, self.release, self.arch
+            )
+        }
+    }
 }
 
 /// Parse a `.rpm` into [`RpmPackage`]; `location` is the repo-relative href under
@@ -80,18 +99,29 @@ pub fn parse_rpm(bytes: &[u8], location: &str) -> Result<RpmPackage, CoreError> 
     let map_deps = |deps: Result<Vec<rpm::Dependency>, rpm::Error>| -> Vec<RpmDep> {
         deps.unwrap_or_default()
             .into_iter()
-            .map(|d| RpmDep {
-                name: d.name,
-                // The `rpm` crate exposes a combined version string; expose it as
-                // `ver` and let consumers treat flags conservatively.
-                flags: None,
-                epoch: None,
-                ver: if d.version.is_empty() {
-                    None
-                } else {
-                    Some(d.version)
-                },
-                rel: None,
+            .map(|d| {
+                // Map the RPM dependency comparator to the repodata `flags` token
+                // (`EQ`/`LT`/`GT`/`LE`/`GE`); `None` when the dependency is
+                // unversioned, so DNF treats it as a plain (any-version) requirement.
+                let flags = match d.flags.comparator_str() {
+                    "=" => Some("EQ"),
+                    "<" => Some("LT"),
+                    ">" => Some("GT"),
+                    "<=" => Some("LE"),
+                    ">=" => Some("GE"),
+                    _ => None,
+                };
+                RpmDep {
+                    name: d.name,
+                    flags: flags.map(str::to_owned),
+                    epoch: None,
+                    ver: if d.version.is_empty() {
+                        None
+                    } else {
+                        Some(d.version)
+                    },
+                    rel: None,
+                }
             })
             .collect()
     };
@@ -166,10 +196,12 @@ fn dep_entries(deps: &[RpmDep], indent: &str) -> String {
         out.push_str(indent);
         out.push_str(&format!(r#"<rpm:entry name="{}""#, esc(&d.name)));
         if let Some(v) = &d.ver {
-            out.push_str(&format!(r#" flags="EQ" ver="{}""#, esc(v)));
+            // Preserve the real comparator; default to `EQ` only when a version is
+            // present without a parsed comparator (RPM auto-provides are exact).
+            let flags = d.flags.as_deref().unwrap_or("EQ");
+            out.push_str(&format!(r#" flags="{}" ver="{}""#, flags, esc(v)));
         }
         out.push_str("/>\n");
-        let _ = &d.flags;
         let _ = &d.epoch;
         let _ = &d.rel;
     }
@@ -477,5 +509,36 @@ mod tests {
     #[test]
     fn nevra_format() {
         assert_eq!(sample().nevra(), "hello-1.0-1.x86_64");
+    }
+
+    #[test]
+    fn storage_id_includes_epoch_only_when_nonzero() {
+        let mut p = sample();
+        assert_eq!(p.storage_id(), "hello-1.0-1.x86_64");
+        p.epoch = 2;
+        // Epoch-distinct builds get a distinct storage id (no overwrite).
+        assert_eq!(p.storage_id(), "2-hello-1.0-1.x86_64");
+        assert_ne!(p.storage_id(), sample().storage_id());
+    }
+
+    #[test]
+    fn dep_entries_preserve_real_comparator() {
+        let deps = vec![
+            RpmDep {
+                name: "libc".into(),
+                flags: Some("GE".into()),
+                ver: Some("2.34".into()),
+                ..Default::default()
+            },
+            RpmDep {
+                name: "old".into(),
+                flags: Some("LT".into()),
+                ver: Some("3.0".into()),
+                ..Default::default()
+            },
+        ];
+        let out = dep_entries(&deps, "");
+        assert!(out.contains(r#"<rpm:entry name="libc" flags="GE" ver="2.34"/>"#));
+        assert!(out.contains(r#"<rpm:entry name="old" flags="LT" ver="3.0"/>"#));
     }
 }

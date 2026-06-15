@@ -958,12 +958,20 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `# Source tarball / zip for a tag, branch, or commit`,
             `curl -L -O${auth} ${reg}/<owner>/<repo>/tarball/v1.0.0`,
             `curl -L -O${auth} ${reg}/<owner>/<repo>/zipball/v1.0.0`,
+            ``,
+            `# Raw file`,
+            `curl -L${auth} ${reg}/<owner>/<repo>/raw/main/README.md`,
+            ``,
+            `# Package registry passthrough (generic packages)`,
+            `curl -L -O${auth} ${reg}/api/packages/<owner>/generic/<name>/<version>/<file>`,
           ].join("\n");
         },
         note:
           `Configure the upstream instance URL (e.g. ` +
           `<code class="font-mono bg-muted px-1 rounded">https://codeberg.org</code>) as the ` +
-          `registry's upstream. The same adapter serves both Forgejo and Gitea.`,
+          `registry's upstream. The same adapter serves both Forgejo and Gitea. For ecosystem ` +
+          `package registries (npm, Maven, PyPI, …) use the matching typed adapter pointed at the ` +
+          `<code class="font-mono bg-muted px-1 rounded">/api/packages/{owner}/{type}</code> endpoint.`,
       },
     ],
   },
@@ -999,13 +1007,20 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             ``,
             `# Source archive for a tag (format inferred from the extension)`,
             `curl -L -O${auth} ${reg}/<group>/<project>/-/archive/v1.0.0/source.tar.gz`,
+            ``,
+            `# Raw file from the repository`,
+            `curl -L${auth} ${reg}/<group>/<project>/-/raw/main/README.md`,
+            ``,
+            `# Package registry passthrough (generic packages)`,
+            `curl -L -O${auth} ${reg}/api/v4/projects/<id>/packages/generic/<name>/<version>/<file>`,
           ].join("\n");
         },
         note:
           `GitLab personal access tokens use the ` +
           `<code class="font-mono bg-muted px-1 rounded">PRIVATE-TOKEN</code> header — configure ` +
           `it as a custom upstream auth header on the registry. Set the upstream URL to your ` +
-          `instance root (e.g. <code class="font-mono bg-muted px-1 rounded">https://gitlab.com</code>).`,
+          `instance root (e.g. <code class="font-mono bg-muted px-1 rounded">https://gitlab.com</code>). ` +
+          `For ecosystem package registries (npm, Maven, PyPI, …) use the matching typed adapter.`,
       },
     ],
   },
@@ -1024,24 +1039,50 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     snippets: [
       {
         key: "apt-source",
-        label: "APT source (signed)",
+        label: "APT source",
         lang: "bash",
         template: (ctx) => {
           const reg = `${ctx.base}/proxy/${ctx.registryName}/deb`;
+          if (isPublishMode(ctx)) {
+            // Local/hybrid: BatleHub signs Release with its own key (served at /key.gpg).
+            return [
+              `# Import BatleHub's repository signing key`,
+              `curl -fsSL ${reg}/key.gpg | sudo tee /usr/share/keyrings/${ctx.registryName}.asc >/dev/null`,
+              ``,
+              `# Add the source (adjust suite/component to your repo)`,
+              `echo "deb [signed-by=/usr/share/keyrings/${ctx.registryName}.asc] ${reg} stable main" \\`,
+              `  | sudo tee /etc/apt/sources.list.d/${ctx.registryName}.list`,
+              ``,
+              `sudo apt update`,
+            ].join("\n");
+          }
+          // Proxy: the upstream repo's own (relayed) signature is what apt verifies,
+          // so the client must trust the UPSTREAM's archive key. For official
+          // Debian/Ubuntu mirrors that key is already installed.
           return [
-            `# Import the repository signing key`,
-            `curl -fsSL ${reg}/key.gpg | sudo tee /usr/share/keyrings/${ctx.registryName}.asc >/dev/null`,
-            ``,
-            `# Add the source (adjust suite/component to your repo)`,
-            `echo "deb [signed-by=/usr/share/keyrings/${ctx.registryName}.asc] ${reg} stable main" \\`,
+            `# Proxy mode relays the upstream repo's Release/InRelease and its signature.`,
+            `# Verify with the UPSTREAM's archive key. Official Debian/Ubuntu mirrors`,
+            `# ship it already (packages: debian-archive-keyring / ubuntu-keyring):`,
+            `KEYRING=/usr/share/keyrings/debian-archive-keyring.gpg   # ubuntu: ubuntu-archive-keyring.gpg`,
+            `echo "deb [signed-by=$KEYRING] ${reg} stable main" \\`,
             `  | sudo tee /etc/apt/sources.list.d/${ctx.registryName}.list`,
+            ``,
+            `# For a third-party upstream, import ITS key instead:`,
+            `#   curl -fsSL <upstream-key-url> | gpg --dearmor \\`,
+            `#     | sudo tee /usr/share/keyrings/${ctx.registryName}.gpg >/dev/null`,
             ``,
             `sudo apt update`,
           ].join("\n");
         },
-        note:
-          `For an unsigned repository, replace <code class="font-mono bg-muted px-1 rounded">[signed-by=…]</code> ` +
-          `with <code class="font-mono bg-muted px-1 rounded">[trusted=yes]</code>.`,
+        note: (ctx) =>
+          isPublishMode(ctx)
+            ? `For an unsigned local repository (no <code class="font-mono bg-muted px-1 rounded">repo_signing</code> key), replace ` +
+              `<code class="font-mono bg-muted px-1 rounded">[signed-by=…]</code> with <code class="font-mono bg-muted px-1 rounded">[trusted=yes]</code>.`
+            : `Proxy registries relay the upstream's signature, so apt verifies against the <strong>upstream's</strong> key — ` +
+              `<code class="font-mono bg-muted px-1 rounded">${ctx.base}/proxy/${ctx.registryName}/deb/key.gpg</code> is not served (it is a local/hybrid signing artifact). ` +
+              `A <code class="font-mono bg-muted px-1 rounded">NO_PUBKEY</code> error means that key isn't in the keyring named by ` +
+              `<code class="font-mono bg-muted px-1 rounded">signed-by</code> — install <code class="font-mono bg-muted px-1 rounded">debian-archive-keyring</code>/` +
+              `<code class="font-mono bg-muted px-1 rounded">ubuntu-keyring</code> (or import the upstream key), or use <code class="font-mono bg-muted px-1 rounded">[trusted=yes]</code>.`,
       },
       {
         key: "apt-publish",
@@ -1078,20 +1119,26 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "ini",
         template: (ctx) => {
           const reg = `${ctx.base}/proxy/${ctx.registryName}/rpm`;
-          return [
-            `[${ctx.registryName}]`,
-            `name=${ctx.registryName}`,
-            `baseurl=${reg}`,
-            `enabled=1`,
-            `repo_gpgcheck=1`,
-            `gpgcheck=0`,
-            `gpgkey=${reg}/repodata/repomd.xml.key`,
-          ].join("\n");
+          const lines = [`[${ctx.registryName}]`, `name=${ctx.registryName}`, `baseurl=${reg}`, `enabled=1`];
+          if (isPublishMode(ctx)) {
+            // Local/hybrid: repomd.xml.asc is signed by BatleHub's key (served at the URL below).
+            lines.push(`repo_gpgcheck=1`, `gpgcheck=0`, `gpgkey=${reg}/repodata/repomd.xml.key`);
+          } else {
+            // Proxy: metadata (and any repomd.xml.asc) is relayed from upstream; there is
+            // no BatleHub key. Verify against the upstream's key or disable the repo check.
+            lines.push(`repo_gpgcheck=0`, `gpgcheck=0`, `# gpgkey=<upstream-project-gpg-key-url>`);
+          }
+          return lines.join("\n");
         },
-        note:
-          `Save to <code class="font-mono bg-muted px-1 rounded">/etc/yum.repos.d/${"{name}"}.repo</code>. ` +
-          `For an unsigned repo, set <code class="font-mono bg-muted px-1 rounded">repo_gpgcheck=0</code> and omit ` +
-          `<code class="font-mono bg-muted px-1 rounded">gpgkey</code>.`,
+        note: (ctx) =>
+          isPublishMode(ctx)
+            ? `Save to <code class="font-mono bg-muted px-1 rounded">/etc/yum.repos.d/${"{name}"}.repo</code>. ` +
+              `For an unsigned local repo (no <code class="font-mono bg-muted px-1 rounded">repo_signing</code> key), set ` +
+              `<code class="font-mono bg-muted px-1 rounded">repo_gpgcheck=0</code> and omit <code class="font-mono bg-muted px-1 rounded">gpgkey</code>.`
+            : `Proxy registries have no BatleHub key — <code class="font-mono bg-muted px-1 rounded">repodata/repomd.xml.key</code> ` +
+              `is only served for local/hybrid registries with a <code class="font-mono bg-muted px-1 rounded">repo_signing</code> key. ` +
+              `To verify, point <code class="font-mono bg-muted px-1 rounded">gpgkey</code> at the upstream project's key and set ` +
+              `<code class="font-mono bg-muted px-1 rounded">repo_gpgcheck=1</code>.`,
       },
       {
         key: "rpm-publish",

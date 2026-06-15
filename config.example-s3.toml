@@ -300,6 +300,8 @@ admin = ["*"]
 # ── Deb (APT) repositories ──────────────────────────────────────────────────────
 
 # Proxy/cache an upstream APT repository (hybrid: also serve locally published .deb).
+# In proxy mode the upstream's own signed Release/InRelease is relayed as-is — there
+# is no BatleHub key (no `/deb/key.gpg`); clients verify against the upstream's key.
 [[registries]]
 type = "deb"
 name = "apt"
@@ -333,7 +335,10 @@ admin = ["*"]
 
 # ── RPM (YUM/DNF) repositories ──────────────────────────────────────────────────
 
-# Proxy/cache an upstream RPM repository.
+# Proxy/cache an upstream RPM repository. In proxy mode the upstream repodata
+# (incl. any repomd.xml.asc) is relayed as-is — there is no BatleHub key
+# (no `repodata/repomd.xml.key`); verify against the upstream's key or set
+# repo_gpgcheck=0 in the client .repo.
 [[registries]]
 type = "rpm"
 name = "yum"

@@ -212,3 +212,78 @@ pub async fn gl_download_archive(
     )
     .await
 }
+
+/// Download a raw file from a GitLab repository.
+#[utoipa::path(
+    get,
+    path = "/proxy/{registry}/{project}/-/raw/{ref}/{path}",
+    tag = "proxy/gitlab",
+    params(
+        ("registry" = String, Path, description = "Registry name"),
+        ("project"  = String, Path, description = "Full project path"),
+        ("ref"      = String, Path, description = "Branch, tag, or commit SHA"),
+        ("path"     = String, Path, description = "File path within the repository"),
+    ),
+    responses(
+        (status = 200, description = "Raw file content"),
+        (status = 404, description = "File not found or unknown registry"),
+        (status = 403, description = "Access denied"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[get("/proxy/{registry}/{project:.+}/-/raw/{git_ref}/{path:.*}")]
+pub async fn gl_download_raw(
+    path: web::Path<(String, String, String, String)>,
+    identity: AuthIdentity,
+    svc: web::Data<Arc<ProxyService>>,
+    map: web::Data<RegistryMap>,
+) -> Result<impl Responder, AppError> {
+    let (registry, project, git_ref, file_path) = path.into_inner();
+    gitlab_proxy(
+        &registry,
+        project,
+        git_ref.clone(),
+        Some(format!("rawfile/{git_ref}/{file_path}")),
+        "source:read",
+        svc,
+        identity,
+        &map,
+    )
+    .await
+}
+
+/// Proxy a GitLab package-registry path (`/api/v4/projects/{id}/packages/…`).
+///
+/// This is a transparent passthrough/cache of the GitLab Packages API — ideal for
+/// the **generic** package registry (immutable file downloads). Ecosystem
+/// registries (npm, Maven, PyPI, …) are better served by the matching typed
+/// adapter pointed at the package endpoint, which rewrites metadata URLs.
+#[utoipa::path(
+    get,
+    path = "/proxy/{registry}/api/v4/{path}",
+    tag = "proxy/gitlab",
+    params(
+        ("registry" = String, Path, description = "Registry name"),
+        ("path" = String, Path, description = "GitLab API path under /api/v4/ (e.g. projects/{id}/packages/generic/...)"),
+    ),
+    responses(
+        (status = 200, description = "Package file"),
+        (status = 404, description = "Not found or unknown registry"),
+        (status = 403, description = "Access denied"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[get("/proxy/{registry}/api/v4/{path:.*}")]
+pub async fn gl_packages(
+    path: web::Path<(String, String)>,
+    identity: AuthIdentity,
+    svc: web::Data<Arc<ProxyService>>,
+    map: web::Data<RegistryMap>,
+) -> Result<impl Responder, AppError> {
+    let (registry, api_path) = path.into_inner();
+    require_gitlab(&registry, &map)?;
+    batlehub_core::services::validate_path_safe("path", &api_path).map_err(AppError::from)?;
+    let pkg = PackageId::new(&registry, "_packages", "_")
+        .with_artifact(format!("pkgpath/api/v4/{api_path}"));
+    proxy_stream(svc, pkg, identity, "releases:read", None).await
+}

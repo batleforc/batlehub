@@ -67,6 +67,51 @@ impl ForgejoRegistryClient {
         basic_auth_get(&self.http, &self.basic_auth, url)
     }
 
+    /// Fetch every release for `owner_repo`, following `Link: rel="next"`
+    /// pagination (Gitea/Forgejo default 50 per page; capped at 20 pages). Returns
+    /// `NotFound` if the repository's releases endpoint 404s on the first page.
+    pub(super) async fn fetch_all_releases(
+        &self,
+        owner_repo: &str,
+    ) -> Result<Vec<FjRelease>, CoreError> {
+        use super::super::http_client::next_link;
+        let mut url = format!(
+            "{}/repos/{}/releases?limit=50",
+            self.api_base_url, owner_repo
+        );
+        let mut all = Vec::new();
+        for page in 0..20 {
+            let resp = self
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| CoreError::Registry(e.to_string()))?;
+            if resp.status() == reqwest::StatusCode::NOT_FOUND {
+                if page == 0 {
+                    return Err(CoreError::NotFound(format!("{owner_repo} not found")));
+                }
+                break;
+            }
+            if !resp.status().is_success() {
+                return Err(CoreError::Registry(format!(
+                    "forgejo: releases list returned {}",
+                    resp.status()
+                )));
+            }
+            let next = next_link(resp.headers());
+            let releases: Vec<FjRelease> = resp
+                .json()
+                .await
+                .map_err(|e| CoreError::Registry(e.to_string()))?;
+            all.extend(releases);
+            match next {
+                Some(n) => url = n,
+                None => break,
+            }
+        }
+        Ok(all)
+    }
+
     pub(super) async fn fetch_release_by_tag(
         &self,
         owner_repo: &str,
@@ -207,6 +252,53 @@ mod tests {
         let client = ForgejoRegistryClient::new(server.url(), &opts).unwrap();
         let versions = client.list_versions("owner/repo").await.unwrap();
         assert_eq!(versions, vec!["v1.1.0", "v1.0.0"]);
+    }
+
+    #[tokio::test]
+    async fn list_versions_follows_pagination() {
+        let mut server = mockito::Server::new_async().await;
+        let page2_url = format!("{}/api/v1/repos/o/r/releases?limit=50&page=2", server.url());
+        let _p1 = server
+            .mock("GET", "/api/v1/repos/o/r/releases?limit=50")
+            .with_status(200)
+            .with_header("link", &format!(r#"<{page2_url}>; rel="next""#))
+            .with_body(r#"[{"id":1,"tag_name":"v2.0.0","assets":[]}]"#)
+            .create_async()
+            .await;
+        let _p2 = server
+            .mock("GET", "/api/v1/repos/o/r/releases?limit=50&page=2")
+            .with_status(200)
+            .with_body(r#"[{"id":2,"tag_name":"v1.0.0","assets":[]}]"#)
+            .create_async()
+            .await;
+        let client =
+            ForgejoRegistryClient::new(server.url(), &UpstreamHttpOptions::default()).unwrap();
+        let versions = client.list_versions("o/r").await.unwrap();
+        assert_eq!(versions, vec!["v2.0.0", "v1.0.0"]);
+    }
+
+    #[tokio::test]
+    async fn fetch_artifact_package_passthrough() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/api/packages/acme/generic/tool/1.0/tool.bin")
+            .with_status(200)
+            .with_body(b"BINARY")
+            .create_async()
+            .await;
+        let client =
+            ForgejoRegistryClient::new(server.url(), &UpstreamHttpOptions::default()).unwrap();
+        let pkg = batlehub_core::entities::PackageId::new("fj", "_packages", "_")
+            .with_artifact("pkgpath/api/packages/acme/generic/tool/1.0/tool.bin");
+        let fetched = client.fetch_artifact(&pkg).await.unwrap();
+        let body =
+            futures::TryStreamExt::try_fold(fetched.stream, Vec::new(), |mut a, c| async move {
+                a.extend_from_slice(&c);
+                Ok(a)
+            })
+            .await
+            .unwrap();
+        assert_eq!(body, b"BINARY");
     }
 
     #[tokio::test]

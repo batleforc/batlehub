@@ -81,11 +81,13 @@ impl RegistryClient for ForgejoRegistryClient {
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
         let owner_repo = &pkg.name;
 
-        // Source archive / raw downloads use a branch/SHA, not a release tag.
+        // Source archive / raw downloads and package-registry passthrough use no
+        // release tag; return minimal metadata.
         if let Some(ref artifact) = pkg.artifact {
             if artifact.starts_with("raw/")
                 || artifact.starts_with("tarball/")
                 || artifact == "zipball"
+                || artifact.starts_with("pkgpath/")
             {
                 return Ok(PackageMetadata {
                     id: pkg.clone(),
@@ -101,26 +103,7 @@ impl RegistryClient for ForgejoRegistryClient {
 
         match pkg.version.as_str() {
             "releases" => {
-                let url = format!(
-                    "{}/repos/{}/releases?limit=50",
-                    self.api_base_url, owner_repo
-                );
-                let resp = self
-                    .get(&url)
-                    .send()
-                    .await
-                    .map_err(|e| CoreError::Registry(e.to_string()))?;
-
-                if resp.status() == reqwest::StatusCode::NOT_FOUND {
-                    return Err(CoreError::NotFound(format!("{owner_repo} not found")));
-                }
-
-                let releases: Vec<FjRelease> = resp
-                    .error_for_status()
-                    .map_err(|e| CoreError::Registry(e.to_string()))?
-                    .json()
-                    .await
-                    .map_err(|e| CoreError::Registry(e.to_string()))?;
+                let releases = self.fetch_all_releases(owner_repo).await?;
 
                 let extra = serde_json::to_value(releases.iter().map(|r| {
                     serde_json::json!({ "id": r.id, "tag_name": r.tag_name, "published_at": r.published_at })
@@ -190,6 +173,11 @@ impl RegistryClient for ForgejoRegistryClient {
         let git_ref = &pkg.version;
 
         let download_url = match &pkg.artifact {
+            // Package-registry passthrough: `pkgpath/<instance-relative-path>` →
+            // `{instance}/<path>` (e.g. `api/packages/{owner}/generic/…`).
+            Some(artifact) if artifact.starts_with("pkgpath/") => {
+                format!("{}/{}", self.base_url, &artifact["pkgpath/".len()..])
+            }
             Some(artifact) => {
                 if let Some(url) =
                     static_artifact_url(artifact, &self.base_url, owner_repo, git_ref)
@@ -234,28 +222,10 @@ impl RegistryClient for ForgejoRegistryClient {
     }
 
     async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
-        let url = format!("{}/repos/{}/releases?limit=50", self.api_base_url, package);
-        let resp = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
-
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(vec![]);
+        match self.fetch_all_releases(package).await {
+            Ok(releases) => Ok(releases.into_iter().map(|r| r.tag_name).collect()),
+            Err(CoreError::NotFound(_)) => Ok(vec![]),
+            Err(e) => Err(e),
         }
-        if !resp.status().is_success() {
-            return Err(CoreError::Registry(format!(
-                "forgejo: releases list returned {}",
-                resp.status()
-            )));
-        }
-
-        let releases: Vec<FjRelease> = resp
-            .json()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
-
-        Ok(releases.into_iter().map(|r| r.tag_name).collect())
     }
 }

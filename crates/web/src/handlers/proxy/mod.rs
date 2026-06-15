@@ -2,6 +2,7 @@ pub mod cargo;
 pub mod common;
 pub mod composer;
 pub mod conda;
+pub mod forgejo;
 pub mod github;
 pub mod gitlab;
 pub mod goproxy;

@@ -634,11 +634,15 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             // npm tarball (literal "tarball") > shared version metadata > shared packument
             // composer: upload/yank (literal "api") > p2 (literal "p2") > dist > packages.json
             conda::{conda_current_repodata, conda_file_download, conda_publish, conda_repodata},
+            forgejo::fj_packages,
             github::{
                 download_asset, download_asset_by_name, download_raw, download_tarball,
                 download_zipball, get_release, list_releases,
             },
-            gitlab::{gl_download_archive, gl_download_link, gl_get_release, gl_list_releases},
+            gitlab::{
+                gl_download_archive, gl_download_link, gl_download_raw, gl_get_release,
+                gl_list_releases, gl_packages,
+            },
             goproxy::{goproxy_file, goproxy_latest, goproxy_list, goproxy_publish},
             maven::{maven_get, maven_put},
             npm::{
@@ -684,7 +688,11 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     // Cargo index (literal "registry" sub-path)
     cfg.service(cargo_registry_config);
     cfg.service(cargo_registry_index);
-    // GitHub (owner/repo structure, multi-segment)
+    // Forgejo/GitLab package registries: literal `api/…` prefix — register before
+    // the GitHub `{owner}/{repo}` routes so it isn't captured as owner="api".
+    cfg.service(fj_packages); // GET …/api/packages/{path}  (Forgejo/Gitea)
+    cfg.service(gl_packages); // GET …/api/v4/{path}         (GitLab)
+                              // GitHub (owner/repo structure, multi-segment) — also serves Forgejo releases.
     cfg.service(list_releases);
     cfg.service(get_release);
     cfg.service(download_asset_by_name);
@@ -697,7 +705,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(gl_get_release); // …/-/releases/{tag}
     cfg.service(gl_list_releases); // …/-/releases
     cfg.service(gl_download_archive); // …/-/archive/{tag}/{filename}
-                                      // Deb / RPM repositories: publish (PUT) before the catch-all read (GET).
+    cfg.service(gl_download_raw); // …/-/raw/{ref}/{path}
+                                  // Deb / RPM repositories: publish (PUT) before the catch-all read (GET).
     cfg.service(deb_publish); // PUT …/deb/pool/{dist}/{component}/upload
     cfg.service(rpm_publish); // PUT …/rpm/upload
     cfg.service(deb_get); // GET …/deb/{path}

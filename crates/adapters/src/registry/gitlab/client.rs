@@ -19,6 +19,9 @@ use batlehub_core::error::CoreError;
 /// `upstream_auth` as a custom header. OAuth `Authorization: Bearer` also works.
 pub struct GitlabRegistryClient {
     pub(super) http: reqwest::Client,
+    /// Instance root, e.g. `https://gitlab.com` (no trailing slash). Used for
+    /// package-registry passthrough.
+    pub(super) root: String,
     /// API base, derived as `{instance_root}/api/v4`.
     pub(super) api_base_url: String,
     pub(super) basic_auth: Option<(String, String)>,
@@ -44,11 +47,15 @@ impl GitlabRegistryClient {
 
         let root = base_url.into();
         let root = root.trim_end_matches('/');
-        let root = root.trim_end_matches("/api/v4");
-        let api_base_url = format!("{}/api/v4", root.trim_end_matches('/'));
+        let root = root
+            .trim_end_matches("/api/v4")
+            .trim_end_matches('/')
+            .to_owned();
+        let api_base_url = format!("{root}/api/v4");
 
         Ok(Self {
             http,
+            root,
             api_base_url,
             basic_auth: opts.basic_auth.clone(),
         })
@@ -61,6 +68,70 @@ impl GitlabRegistryClient {
     /// Build the API project selector: the full project path, URL-encoded.
     pub(super) fn project_selector(project: &str) -> String {
         percent_encode(project)
+    }
+
+    /// Fetch every release for `project`, following `Link: rel="next"` pagination
+    /// (GitLab default 20 per page; we request 100 and cap at 20 pages). Returns
+    /// `NotFound` if the project's releases endpoint 404s on the first page.
+    pub(super) async fn fetch_all_releases(
+        &self,
+        project: &str,
+    ) -> Result<Vec<GlRelease>, CoreError> {
+        use super::super::http_client::next_link;
+        let mut url = format!(
+            "{}/projects/{}/releases?per_page=100",
+            self.api_base_url,
+            Self::project_selector(project),
+        );
+        let mut all = Vec::new();
+        for page in 0..20 {
+            let resp = self
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| CoreError::Registry(e.to_string()))?;
+            if resp.status() == reqwest::StatusCode::NOT_FOUND {
+                if page == 0 {
+                    return Err(CoreError::NotFound(format!("{project} not found")));
+                }
+                break;
+            }
+            if !resp.status().is_success() {
+                return Err(CoreError::Registry(format!(
+                    "gitlab: releases list returned {}",
+                    resp.status()
+                )));
+            }
+            let next = next_link(resp.headers());
+            let releases: Vec<GlRelease> = resp
+                .json()
+                .await
+                .map_err(|e| CoreError::Registry(e.to_string()))?;
+            all.extend(releases);
+            match next {
+                Some(n) => url = n,
+                None => break,
+            }
+        }
+        Ok(all)
+    }
+
+    /// Raw-file download URL via the repository files API:
+    /// `{api}/projects/{enc}/repository/files/{enc(path)}/raw?ref={ref}`.
+    pub(super) fn raw_file_url(&self, project: &str, git_ref: &str, path: &str) -> String {
+        format!(
+            "{}/projects/{}/repository/files/{}/raw?ref={}",
+            self.api_base_url,
+            Self::project_selector(project),
+            percent_encode(path),
+            percent_encode(git_ref),
+        )
+    }
+
+    /// Package-registry passthrough URL: `{instance_root}/{relative}` (the relative
+    /// path already includes `api/v4/...`).
+    pub(super) fn passthrough_url(&self, relative: &str) -> String {
+        format!("{}/{}", self.root, relative)
     }
 
     pub(super) async fn fetch_release_by_tag(
@@ -142,6 +213,90 @@ mod tests {
         assert_eq!(source_format("link/foo"), None);
     }
 
+    #[test]
+    fn raw_file_and_passthrough_urls() {
+        let opts = UpstreamHttpOptions::default();
+        let client = GitlabRegistryClient::new("https://gitlab.com", &opts).unwrap();
+        assert_eq!(
+            client.raw_file_url("grp/proj", "main", "src/x.rs"),
+            "https://gitlab.com/api/v4/projects/grp%2Fproj/repository/files/src%2Fx.rs/raw?ref=main"
+        );
+        assert_eq!(
+            client.passthrough_url("api/v4/projects/1/packages/generic/a/1.0/f.bin"),
+            "https://gitlab.com/api/v4/projects/1/packages/generic/a/1.0/f.bin"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_versions_follows_pagination() {
+        let mut server = mockito::Server::new_async().await;
+        let p2 = format!(
+            "{}/api/v4/projects/grp%2Fproj/releases?per_page=100&page=2",
+            server.url()
+        );
+        let _m1 = server
+            .mock("GET", "/api/v4/projects/grp%2Fproj/releases?per_page=100")
+            .with_status(200)
+            .with_header("link", &format!(r#"<{p2}>; rel="next""#))
+            .with_body(r#"[{"tag_name":"v2.0.0","assets":{"links":[],"sources":[]}}]"#)
+            .create_async()
+            .await;
+        let _m2 = server
+            .mock(
+                "GET",
+                "/api/v4/projects/grp%2Fproj/releases?per_page=100&page=2",
+            )
+            .with_status(200)
+            .with_body(r#"[{"tag_name":"v1.0.0","assets":{"links":[],"sources":[]}}]"#)
+            .create_async()
+            .await;
+        let client =
+            GitlabRegistryClient::new(server.url(), &UpstreamHttpOptions::default()).unwrap();
+        let versions = client.list_versions("grp/proj").await.unwrap();
+        assert_eq!(versions, vec!["v2.0.0", "v1.0.0"]);
+    }
+
+    #[tokio::test]
+    async fn fetch_artifact_rawfile_and_package_passthrough() {
+        let mut server = mockito::Server::new_async().await;
+        let _raw = server
+            .mock(
+                "GET",
+                "/api/v4/projects/grp%2Fproj/repository/files/README.md/raw?ref=main",
+            )
+            .with_status(200)
+            .with_body(b"# readme")
+            .create_async()
+            .await;
+        let _pkg = server
+            .mock("GET", "/api/v4/projects/1/packages/generic/a/1.0/f.bin")
+            .with_status(200)
+            .with_body(b"PKG")
+            .create_async()
+            .await;
+        let client =
+            GitlabRegistryClient::new(server.url(), &UpstreamHttpOptions::default()).unwrap();
+
+        let raw = batlehub_core::entities::PackageId::new("gl", "grp/proj", "main")
+            .with_artifact("rawfile/main/README.md");
+        let body = collect(client.fetch_artifact(&raw).await.unwrap()).await;
+        assert_eq!(body, b"# readme");
+
+        let pkg = batlehub_core::entities::PackageId::new("gl", "_packages", "_")
+            .with_artifact("pkgpath/api/v4/projects/1/packages/generic/a/1.0/f.bin");
+        let body = collect(client.fetch_artifact(&pkg).await.unwrap()).await;
+        assert_eq!(body, b"PKG");
+    }
+
+    async fn collect(f: batlehub_core::ports::FetchedArtifact) -> Vec<u8> {
+        futures::TryStreamExt::try_fold(f.stream, Vec::new(), |mut a, c| async move {
+            a.extend_from_slice(&c);
+            Ok(a)
+        })
+        .await
+        .unwrap()
+    }
+
     #[tokio::test]
     async fn list_versions_returns_tags() {
         let mut server = mockito::Server::new_async().await;
@@ -151,7 +306,7 @@ mod tests {
         ]))
         .unwrap();
         let _mock = server
-            .mock("GET", "/api/v4/projects/grp%2Fproj/releases")
+            .mock("GET", "/api/v4/projects/grp%2Fproj/releases?per_page=100")
             .with_status(200)
             .with_body(&body)
             .create_async()

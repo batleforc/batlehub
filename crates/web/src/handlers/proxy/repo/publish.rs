@@ -27,7 +27,7 @@ use crate::{
 async fn store_bytes(
     storage: &dyn StorageBackend,
     key: &str,
-    bytes: Vec<u8>,
+    bytes: impl Into<actix_web::web::Bytes>,
 ) -> Result<(), AppError> {
     storage
         .store(key, bytes.into(), StorageMeta::default())
@@ -110,12 +110,16 @@ pub async fn deb_publish(
         .to_owned();
     batlehub_core::services::validate_coordinate(&name, &version, None).map_err(AppError::from)?;
     let arch = pkg.architecture().unwrap_or("all").to_owned();
+    // Edge validation: `arch` comes from the uploaded control file and flows into
+    // the pool path and sidecar storage key, so reject traversal/separators here
+    // for a clean 400 rather than relying on the storage backend's deeper guard.
+    batlehub_core::services::validate_path_safe("architecture", &arch).map_err(AppError::from)?;
 
     let storage = local_svc.storage.as_ref();
     let pool = deb::pool_path(&component, &pkg).map_err(AppError::from)?;
 
     // 1. Store the .deb in the pool.
-    store_bytes(storage, &repo_storage_key(&registry, &pool), bytes.to_vec()).await?;
+    store_bytes(storage, &repo_storage_key(&registry, &pool), bytes).await?;
 
     // 2. Record the Packages stanza as a sidecar keyed by suite/component/arch.
     let stanza = deb::packages_stanza(&pkg, &pool);
@@ -281,30 +285,38 @@ pub async fn rpm_publish(
 
     let bytes = collect_payload(payload).await?;
 
-    // Parse once to derive the NEVRA filename, then record with the final location.
-    let provisional = rpm::parse_rpm(&bytes, "").map_err(AppError::from)?;
-    let nevra = provisional.nevra();
-    batlehub_core::services::validate_path_safe("package", &nevra).map_err(AppError::from)?;
-    let location = format!("packages/{nevra}.rpm");
-    let pkg = rpm::parse_rpm(&bytes, &location).map_err(AppError::from)?;
+    // Parse once; `location` is just a settable field, so there's no need to
+    // re-parse (and re-hash) the whole artifact a second time.
+    let mut pkg = rpm::parse_rpm(&bytes, "").map_err(AppError::from)?;
+    // Reject a header missing its identifying fields: an empty name/version/
+    // release/arch would otherwise yield a degenerate id and corrupt repodata.
+    if pkg.name.is_empty()
+        || pkg.version.is_empty()
+        || pkg.release.is_empty()
+        || pkg.arch.is_empty()
+    {
+        return Err(AppError::bad_request(
+            "rpm header is missing name/version/release/arch".to_owned(),
+        ));
+    }
+    // Epoch-aware id so two builds differing only in Epoch don't overwrite.
+    let id = pkg.storage_id();
+    batlehub_core::services::validate_path_safe("package", &id).map_err(AppError::from)?;
+    let location = format!("packages/{id}.rpm");
+    pkg.location = location.clone();
 
     let storage = local_svc.storage.as_ref();
     // 1. Store the .rpm.
-    store_bytes(
-        storage,
-        &repo_storage_key(&registry, &location),
-        bytes.to_vec(),
-    )
-    .await?;
+    store_bytes(storage, &repo_storage_key(&registry, &location), bytes).await?;
     // 2. Record a JSON sidecar for repodata regeneration.
-    let sidecar = format!("local:{registry}/_index/rpm/{nevra}.json");
+    let sidecar = format!("local:{registry}/_index/rpm/{id}.json");
     let json = serde_json::to_vec(&pkg).map_err(|e| AppError::internal(e.to_string()))?;
     store_bytes(storage, &sidecar, json).await?;
     // 3. Regenerate repodata.
     let signer = signers.get(&registry);
     regenerate_rpm(storage, &registry, signer.as_deref()).await?;
 
-    Ok(HttpResponse::Created().body(format!("published {nevra}")))
+    Ok(HttpResponse::Created().body(format!("published {}", pkg.nevra())))
 }
 
 /// Rebuild `repodata/` (primary/filelists/other + repomd, optionally signed) from

@@ -78,10 +78,13 @@ impl RegistryClient for GitlabRegistryClient {
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
         let project = &pkg.name;
 
-        // Source archives are served straight from the archive endpoint; no
-        // release lookup needed.
+        // Source archives, raw files, and package-registry passthrough need no
+        // release lookup — return minimal metadata.
         if let Some(ref artifact) = pkg.artifact {
-            if source_format(artifact).is_some() {
+            if source_format(artifact).is_some()
+                || artifact.starts_with("rawfile/")
+                || artifact.starts_with("pkgpath/")
+            {
                 return Ok(PackageMetadata {
                     id: pkg.clone(),
                     published_at: None,
@@ -96,27 +99,7 @@ impl RegistryClient for GitlabRegistryClient {
 
         match pkg.version.as_str() {
             "releases" => {
-                let url = format!(
-                    "{}/projects/{}/releases",
-                    self.api_base_url,
-                    Self::project_selector(project),
-                );
-                let resp = self
-                    .get(&url)
-                    .send()
-                    .await
-                    .map_err(|e| CoreError::Registry(e.to_string()))?;
-
-                if resp.status() == reqwest::StatusCode::NOT_FOUND {
-                    return Err(CoreError::NotFound(format!("{project} not found")));
-                }
-
-                let releases: Vec<GlRelease> = resp
-                    .error_for_status()
-                    .map_err(|e| CoreError::Registry(e.to_string()))?
-                    .json()
-                    .await
-                    .map_err(|e| CoreError::Registry(e.to_string()))?;
+                let releases = self.fetch_all_releases(project).await?;
 
                 let extra = serde_json::to_value(
                     releases
@@ -197,6 +180,15 @@ impl RegistryClient for GitlabRegistryClient {
                     self.source_archive_url(project, tag, format)
                 } else if let Some(name) = artifact.strip_prefix("link/") {
                     self.link_download_url(project, tag, name).await?
+                } else if let Some(rest) = artifact.strip_prefix("rawfile/") {
+                    // `rawfile/{ref}/{path}` → repository raw-file API.
+                    let (git_ref, path) = rest.split_once('/').ok_or_else(|| {
+                        CoreError::Registry(format!("invalid rawfile selector: {artifact}"))
+                    })?;
+                    self.raw_file_url(project, git_ref, path)
+                } else if let Some(rest) = artifact.strip_prefix("pkgpath/") {
+                    // Package-registry passthrough (`api/v4/projects/.../packages/…`).
+                    self.passthrough_url(rest)
                 } else {
                     return Err(CoreError::Registry(format!(
                         "unsupported gitlab artifact selector: {artifact}"
@@ -237,32 +229,10 @@ impl RegistryClient for GitlabRegistryClient {
     }
 
     async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
-        let url = format!(
-            "{}/projects/{}/releases",
-            self.api_base_url,
-            Self::project_selector(package),
-        );
-        let resp = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
-
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(vec![]);
+        match self.fetch_all_releases(package).await {
+            Ok(releases) => Ok(releases.into_iter().map(|r| r.tag_name).collect()),
+            Err(CoreError::NotFound(_)) => Ok(vec![]),
+            Err(e) => Err(e),
         }
-        if !resp.status().is_success() {
-            return Err(CoreError::Registry(format!(
-                "gitlab: releases list returned {}",
-                resp.status()
-            )));
-        }
-
-        let releases: Vec<GlRelease> = resp
-            .json()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
-
-        Ok(releases.into_iter().map(|r| r.tag_name).collect())
     }
 }

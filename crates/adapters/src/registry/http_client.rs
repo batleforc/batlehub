@@ -121,6 +121,28 @@ pub fn cache_control(resp: &reqwest::Response) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Parse an HTTP `Link` header (RFC 8288) and return the URL for `rel="next"`,
+/// if present. Used to paginate Gitea/Forgejo and GitLab list endpoints.
+pub fn next_link(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    let link = headers.get(reqwest::header::LINK)?.to_str().ok()?;
+    for part in link.split(',') {
+        let mut url = None;
+        let mut is_next = false;
+        for seg in part.split(';') {
+            let s = seg.trim();
+            if s.starts_with('<') && s.ends_with('>') {
+                url = Some(s[1..s.len() - 1].to_owned());
+            } else if s == r#"rel="next""# {
+                is_next = true;
+            }
+        }
+        if is_next {
+            return url;
+        }
+    }
+    None
+}
+
 /// Parse an HTTP `Last-Modified` header value (RFC 7231 / RFC 2822) into a `DateTime<Utc>`.
 pub fn parse_http_date(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     chrono::DateTime::parse_from_rfc2822(s.trim())

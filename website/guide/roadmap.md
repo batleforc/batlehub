@@ -28,8 +28,8 @@ BatleHub currently supports npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go
 | **Conda** | ✅ Shipped | repodata.json proxy (all platforms); `.conda` and `.tar.bz2` downloads; private channel publishing; hybrid repodata merge |
 | **NuGet** | ✅ Shipped | NuGet v3 service index + flat container proxy; `.nupkg` and `.nuspec` downloads; private publishing via `dotnet nuget push` in `local`/`hybrid` mode |
 | **Deb / RPM** | ✅ Shipped | Debian APT (`deb`) and Red Hat YUM/DNF (`rpm`) proxy **and** signed private hosting in `local`/`hybrid` mode: `.deb`/`.rpm` publish, `Packages`/`Release` + `repodata/` regeneration, Ed25519 OpenPGP-signed metadata (hand-rolled to avoid the banned `rsa` crate) |
-| **GitLab** | 🟡 Releases | Release proxy shipped (`gitlab`): release list/tag, link assets, source archives via the `/-/` URL scheme, nested groups, `PRIVATE-TOKEN`/Bearer auth. Package registries not yet |
-| **Forgejo / Gitea** | 🟡 Releases | Release proxy shipped (`forgejo`): Gitea/Forgejo `/api/v1` releases, assets, source archives, raw files (reuses the GitHub URL scheme). Package registries not yet |
+| **GitLab** | ✅ Shipped | `gitlab`: paginated release list/tag, link assets, source archives + raw files (`/-/` URL scheme), nested groups, `PRIVATE-TOKEN`/Bearer auth; package-registry passthrough (`/api/v4/…`). Ecosystem package registries via the matching typed adapter pointed at the GitLab package endpoint |
+| **Forgejo / Gitea** | ✅ Shipped | `forgejo`: paginated `/api/v1` releases, assets, source archives, raw files (reuses the GitHub URL scheme); package-registry passthrough (`/api/packages/…`). Ecosystem registries via the matching typed adapter |
 
 ::: info Docker / OCI not planned
 [Harbor](https://goharbor.io) covers this use case better than BatleHub could. If you have a concrete need, open an issue.
