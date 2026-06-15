@@ -415,6 +415,10 @@ async fn make_app_ext(
             "gl".to_owned(),
             FixedRegistry::new("gitlab") as Arc<dyn RegistryClient>,
         ),
+        (
+            "jb".to_owned(),
+            FixedRegistry::new("jetbrains") as Arc<dyn RegistryClient>,
+        ),
     ]
     .into();
 
@@ -430,6 +434,7 @@ async fn make_app_ext(
         ("vscode".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
         ("fj".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
         ("gl".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
+        ("jb".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
     ]
     .into();
 
@@ -451,7 +456,7 @@ async fn make_app_ext(
 
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
     let access_config = access_config_for(&[
-        "github", "npm", "cargo", "openvsx", "go", "vscode", "fj", "gl",
+        "github", "npm", "cargo", "openvsx", "go", "vscode", "fj", "gl", "jb",
     ]);
     let registry_map = registry_map_for(&[
         ("github", "github"),
@@ -462,6 +467,7 @@ async fn make_app_ext(
         ("vscode", "vscode-marketplace"),
         ("fj", "forgejo"),
         ("gl", "gitlab"),
+        ("jb", "jetbrains"),
     ]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
     finish_test_app(
@@ -2440,6 +2446,98 @@ async fn deb_local_missing_file_is_404() {
         TestRequest::get()
             .uri("/proxy/apt/deb/dists/stable/Release")
             .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn deb_local_read_enforces_registry_rbac() {
+    let parts = local_registry_app_parts("apt", "deb", RegistryMode::Local, None);
+    // Replace the permissive default policy with one that denies anonymous
+    // `releases:read` but allows users — proving local reads honor registry RBAC.
+    {
+        let mut hot = parts.proxy_svc.hot.write().await;
+        let perms = HashMap::from([
+            (Role::Anonymous, vec![]),
+            (Role::User, vec!["releases:read".to_owned()]),
+            (Role::Admin, vec!["*".to_owned()]),
+        ]);
+        hot.policies.insert(
+            "apt".to_owned(),
+            Arc::new(RegistryPolicy {
+                metadata_ttl: None,
+                firewall_only: false,
+                serve_stale_metadata: false,
+                artifact_ttl: None,
+                rules: vec![Box::new(RbacRule::new(perms))],
+            }),
+        );
+    }
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+
+    // Publish as a user (publish only requires authentication, not releases:read).
+    let publish = call_service(
+        &app,
+        TestRequest::put()
+            .uri("/proxy/apt/deb/pool/stable/main/upload")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .set_payload(make_test_deb(HELLO_CONTROL))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(publish.status(), 201);
+
+    // Anonymous read of a published index file is denied (403), not served.
+    let anon = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/apt/deb/dists/stable/Release")
+            .to_request(),
+    )
+    .await;
+    assert_eq!(anon.status(), 403);
+
+    // The same read succeeds for an authenticated user.
+    let user = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/apt/deb/dists/stable/Release")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(user.status(), 200);
+}
+
+#[actix_web::test]
+async fn jetbrains_proxy_get_streams_upstream_by_path() {
+    let app = make_app(InMemoryRepo::new()).await;
+    // Anonymous GET of an IDE-archive path proxies to upstream (200). The whole
+    // path after /jetbrains/ is carried in the synthetic `repo` coordinate's
+    // artifact, so FixedRegistry echoes it back in the streamed body.
+    let resp = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/jb/jetbrains/idea/ideaIC-2024.1.4.tar.gz")
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body = String::from_utf8(read_body(resp).await.to_vec()).unwrap();
+    assert!(body.starts_with("artifact:jetbrains:"));
+    assert!(body.contains("jb/repo/_/idea/ideaIC-2024.1.4.tar.gz"));
+}
+
+#[actix_web::test]
+async fn jetbrains_get_on_non_jetbrains_registry_is_404() {
+    let app = make_app(InMemoryRepo::new()).await;
+    // `npm` exists but is not a jetbrains registry → require_registry_type 404s.
+    let resp = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/npm/jetbrains/idea/x.tar.gz")
             .to_request(),
     )
     .await;
@@ -9328,6 +9426,7 @@ async fn make_banner_app() -> impl actix_web::dev::Service<
         batlehub_web::RegistryModeMap::new(HashMap::new()),
         batlehub_web::UpstreamMap::new(HashMap::new()),
         batlehub_web::CargoIndexMap::new(HashMap::new()),
+        batlehub_web::RepoSignerMap::default(),
         "config.toml".to_owned(),
         None,
         true,
@@ -9470,6 +9569,7 @@ async fn reload_config_returns_503_when_disabled() {
         batlehub_web::RegistryModeMap::new(HashMap::new()),
         batlehub_web::UpstreamMap::new(HashMap::new()),
         batlehub_web::CargoIndexMap::new(HashMap::new()),
+        batlehub_web::RepoSignerMap::default(),
         "config.toml".to_owned(),
         None,
         false, // disabled
@@ -9894,6 +9994,20 @@ async fn warm_registry_requires_admin() {
         .set_json(serde_json::json!({"package": "lodash"}))
         .to_request();
     assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+#[actix_web::test]
+async fn warm_registry_accepts_paths_body() {
+    let app = make_app(InMemoryRepo::new()).await;
+    // The `paths` body must deserialize (the old shape required `package`, which
+    // would 400 here). The warming map is empty in make_app, so a valid body
+    // routes through to 404 "not configured" rather than a 400 deserialize error.
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/jb/warm")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"paths": ["idea/ideaIC-2024.1.4.tar.gz"]}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 404);
 }
 
 // ── Cache eviction ────────────────────────────────────────────────────────────

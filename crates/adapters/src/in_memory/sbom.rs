@@ -135,3 +135,122 @@ impl SbomRepository for InMemorySbomRepository {
             .collect())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use batlehub_core::entities::SbomSource;
+
+    fn sbom(key: &str, registry: &str, name: &str, version: &str, fmt: SbomFormat) -> ArtifactSbom {
+        ArtifactSbom {
+            id: uuid::Uuid::new_v4(),
+            artifact_key: key.into(),
+            registry: registry.into(),
+            package_name: name.into(),
+            version: version.into(),
+            format: fmt,
+            spec_version: "1.0".into(),
+            document: serde_json::json!({}),
+            source: SbomSource::Generated,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn noop_repo_stores_nothing() {
+        let repo = NoopSbomRepository::arc();
+        repo.upsert_sbom(sbom("k", "npm", "p", "1", SbomFormat::Spdx))
+            .await
+            .unwrap();
+        assert!(repo
+            .get_sbom("k", &SbomFormat::Spdx)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(repo
+            .get_sbom_by_coordinates("npm", "p", "1", &SbomFormat::Spdx)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(repo
+            .list_sboms_for_export(None, None, None, 10, 0)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn upsert_replaces_same_key_and_format() {
+        let repo = InMemorySbomRepository::new();
+        repo.upsert_sbom(sbom("k", "npm", "p", "1", SbomFormat::Spdx))
+            .await
+            .unwrap();
+        // Same key+format → replace (not duplicate).
+        repo.upsert_sbom(sbom("k", "npm", "p", "2", SbomFormat::Spdx))
+            .await
+            .unwrap();
+        // Different format → coexists.
+        repo.upsert_sbom(sbom("k", "npm", "p", "1", SbomFormat::CycloneDx))
+            .await
+            .unwrap();
+
+        let got = repo
+            .get_sbom("k", &SbomFormat::Spdx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.version, "2");
+        assert!(repo
+            .get_sbom("k", &SbomFormat::CycloneDx)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(repo
+            .get_sbom("missing", &SbomFormat::Spdx)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn lookup_by_coordinates_and_export_filtering() {
+        let repo = InMemorySbomRepository::new();
+        repo.upsert_sbom(sbom("k1", "npm", "a", "1", SbomFormat::Spdx))
+            .await
+            .unwrap();
+        repo.upsert_sbom(sbom("k2", "cargo", "b", "2", SbomFormat::Spdx))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            repo.get_sbom_by_coordinates("npm", "a", "1", &SbomFormat::Spdx)
+                .await
+                .unwrap()
+                .unwrap()
+                .artifact_key,
+            "k1"
+        );
+        // Registry filter narrows the export; limit/offset paginate.
+        assert_eq!(
+            repo.list_sboms_for_export(Some("npm"), None, None, 10, 0)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            repo.list_sboms_for_export(None, None, None, 10, 0)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            repo.list_sboms_for_export(None, None, None, 1, 1)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+}

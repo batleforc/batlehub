@@ -255,4 +255,53 @@ impl ProxyService {
         let stream = futures::stream::once(async move { Ok(data) });
         Ok(ProxyResponse::Stream(Box::pin(stream)))
     }
+
+    /// Authorize a read against a registry's policy rules **without** resolving
+    /// upstream metadata or streaming an artifact.
+    ///
+    /// Path-addressed registries (deb/rpm) serve approved files straight from
+    /// local storage, bypassing [`Self::handle`]. They call this first so a
+    /// Local/Hybrid read enforces the same RBAC as the proxy fall-through (which
+    /// builds the same synthetic `repo` coordinate and runs the full rule chain).
+    /// Returns `AccessDenied` when the policy denies the read.
+    pub async fn authorize_read(
+        &self,
+        package_id: &crate::entities::PackageId,
+        identity: &crate::entities::Identity,
+        resource_type: &str,
+    ) -> Result<(), CoreError> {
+        let policy = {
+            let hot = self.hot.read().await;
+            hot.policies.get(package_id.registry.as_str()).cloned()
+        };
+        let empty: Vec<Box<dyn crate::rules::Rule>> = vec![];
+        let rules = policy
+            .as_ref()
+            .map(|p| p.rules.as_slice())
+            .unwrap_or(empty.as_slice());
+
+        // Minimal metadata: deb/rpm files have no per-version upstream metadata,
+        // and the RBAC rule keys only off the identity. (The proxy fall-through
+        // evaluates the same rule set against the same synthetic coordinate.)
+        let metadata = crate::entities::PackageMetadata {
+            id: package_id.clone(),
+            published_at: None,
+            download_url: None,
+            checksum: None,
+            is_signed: None,
+            extra: serde_json::Value::Null,
+            cache_control: None,
+        };
+        let ctx = RuleContext {
+            identity,
+            package: &metadata,
+            resource_type,
+            cache_entry: None,
+            requested_version: Some(&package_id.version),
+        };
+        match evaluate_rules(rules, &ctx).await {
+            RuleDecision::Deny { reason } => Err(CoreError::AccessDenied(reason)),
+            _ => Ok(()),
+        }
+    }
 }

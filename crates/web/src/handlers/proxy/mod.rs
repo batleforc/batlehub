@@ -6,6 +6,7 @@ pub mod forgejo;
 pub mod github;
 pub mod gitlab;
 pub mod goproxy;
+pub mod jetbrains;
 pub mod maven;
 pub mod npm;
 pub mod nuget;

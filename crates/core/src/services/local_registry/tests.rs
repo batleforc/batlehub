@@ -169,6 +169,48 @@ async fn publish_rejects_oversized_artifact() {
     assert!(matches!(err, CoreError::PayloadTooLarge(_)));
 }
 
+// `enforce_publish_policy` is the shared policy gate that path-addressed
+// registries (deb/rpm) call directly, bypassing the standard package-version
+// `publish()`. These assert the limits still apply on that path.
+
+#[tokio::test]
+async fn enforce_publish_policy_rejects_oversized_artifact() {
+    let s = svc(InMemBackend::arc(), Some(10)); // 10-byte limit
+    let err = s
+        .enforce_publish_policy("apt", "hello", "1.0", 11, &user(), None, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, CoreError::PayloadTooLarge(_)));
+}
+
+#[tokio::test]
+async fn enforce_publish_policy_rejects_anonymous() {
+    let s = svc(InMemBackend::arc(), None);
+    let err = s
+        .enforce_publish_policy("apt", "hello", "1.0", 5, &anon(), None, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, CoreError::AccessDenied(_)));
+}
+
+#[tokio::test]
+async fn enforce_publish_policy_rejects_path_traversal_in_name() {
+    let s = svc(InMemBackend::arc(), None);
+    let err = s
+        .enforce_publish_policy("apt", "../../etc/evil", "1.0", 5, &user(), None, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, CoreError::InvalidInput(_)));
+}
+
+#[tokio::test]
+async fn enforce_publish_policy_accepts_valid_user_publish() {
+    let s = svc(InMemBackend::arc(), None);
+    s.enforce_publish_policy("apt", "hello", "1.0", 5, &user(), None, None)
+        .await
+        .expect("valid publish should pass policy");
+}
+
 #[tokio::test]
 async fn publish_rejects_path_traversal_in_name() {
     let s = svc(InMemBackend::arc(), None);

@@ -34,6 +34,7 @@ impl ConfigReloadService {
             new_registry_mode_map,
             new_upstream_map,
             new_cargo_index_map,
+            new_repo_signer_map,
         ) = (self.builder)(&new_config)?;
         let diff = self.compute_diff(&new_hot, &new_access).await;
         let now = Utc::now();
@@ -49,6 +50,7 @@ impl ConfigReloadService {
             new_registry_mode_map,
             new_upstream_map,
             new_cargo_index_map,
+            new_repo_signer_map,
         };
         *self.pending.lock().expect("pending reload lock poisoned") = Some(pending);
         Ok(diff)
@@ -144,6 +146,21 @@ impl ConfigReloadService {
                 .0
                 .read()
                 .expect("cargo index map lock poisoned")
+                .clone();
+        }
+        // Swap the deb/rpm repo signing keys so a reload that adds/changes/removes
+        // `[registries.repo_signing]` takes effect without a process restart.
+        {
+            let mut sm = self
+                .repo_signer_map
+                .0
+                .write()
+                .expect("repo signer map lock poisoned");
+            *sm = pending
+                .new_repo_signer_map
+                .0
+                .read()
+                .expect("repo signer map lock poisoned")
                 .clone();
         }
 

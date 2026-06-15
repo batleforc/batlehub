@@ -86,4 +86,62 @@ mod tests {
         assert_eq!(deps[1].name, "certifi");
         assert!(deps[1].version_req.is_none());
     }
+
+    #[test]
+    fn parse_pep_metadata_strips_environment_markers() {
+        let deps = parse_pep_metadata("Requires-Dist: pytest >=7 ; extra == 'test'\n");
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "pytest");
+        assert_eq!(deps[0].version_req.as_deref(), Some(">=7"));
+        assert_eq!(deps[0].ecosystem, "pypi");
+    }
+
+    #[test]
+    fn extract_pypi_deps_reads_wheel_metadata() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+        let mut buf = Vec::new();
+        {
+            let mut zw = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            zw.start_file(
+                "requests-2.31.0.dist-info/METADATA",
+                SimpleFileOptions::default(),
+            )
+            .unwrap();
+            zw.write_all(b"Requires-Dist: urllib3 >=1.21\n").unwrap();
+            zw.finish().unwrap();
+        }
+        let deps = extract_pypi_deps(&Bytes::from(buf));
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "urllib3");
+        assert_eq!(deps[0].ecosystem, "pypi");
+    }
+
+    #[test]
+    fn extract_pypi_deps_reads_sdist_pkg_info() {
+        use flate2::{write::GzEncoder, Compression};
+        use std::io::Write;
+        let pkg_info: &[u8] = b"Requires-Dist: certifi\n";
+        let mut tar_buf = Vec::new();
+        {
+            let mut b = tar::Builder::new(&mut tar_buf);
+            let mut h = tar::Header::new_gnu();
+            h.set_size(pkg_info.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            b.append_data(&mut h, "requests-2.31.0/PKG-INFO", pkg_info)
+                .unwrap();
+            b.finish().unwrap();
+        }
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        gz.write_all(&tar_buf).unwrap();
+        let deps = extract_pypi_deps(&Bytes::from(gz.finish().unwrap()));
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "certifi");
+    }
+
+    #[test]
+    fn extract_pypi_deps_on_garbage_is_empty() {
+        assert!(extract_pypi_deps(&Bytes::from_static(b"not an archive")).is_empty());
+    }
 }

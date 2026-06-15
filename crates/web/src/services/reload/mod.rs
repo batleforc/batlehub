@@ -8,7 +8,7 @@ use sqlx::PgPool;
 
 use crate::{
     services::banner::BannerService, AccessConfig, AccessConfigLock, CargoIndexMap, RegistryMap,
-    RegistryModeMap, UpstreamMap,
+    RegistryModeMap, RepoSignerMap, UpstreamMap,
 };
 
 pub(super) const PENDING_TTL_SECS: i64 = 600; // 10 minutes
@@ -53,6 +53,7 @@ pub struct PendingReload {
     pub new_registry_mode_map: RegistryModeMap,
     pub new_upstream_map: UpstreamMap,
     pub new_cargo_index_map: CargoIndexMap,
+    pub new_repo_signer_map: RepoSignerMap,
 }
 
 /// Snapshot of a pending reload returned to the GET /pending endpoint.
@@ -80,6 +81,7 @@ pub type HotConfigBuilder = Arc<
             RegistryModeMap,
             UpstreamMap,
             CargoIndexMap,
+            RepoSignerMap,
         )> + Send
         + Sync,
 >;
@@ -92,6 +94,7 @@ pub struct ConfigReloadService {
     pub(super) registry_mode_map: RegistryModeMap,
     pub(super) upstream_map: UpstreamMap,
     pub(super) cargo_index_map: CargoIndexMap,
+    pub(super) repo_signer_map: RepoSignerMap,
     pub(super) config_path: String,
     pub(super) pool: Option<PgPool>,
     pub hot_reload_enabled: bool,
@@ -109,6 +112,7 @@ impl ConfigReloadService {
         registry_mode_map: RegistryModeMap,
         upstream_map: UpstreamMap,
         cargo_index_map: CargoIndexMap,
+        repo_signer_map: RepoSignerMap,
         config_path: String,
         pool: Option<PgPool>,
         hot_reload_enabled: bool,
@@ -122,6 +126,7 @@ impl ConfigReloadService {
             registry_mode_map,
             upstream_map,
             cargo_index_map,
+            repo_signer_map,
             config_path,
             pool,
             hot_reload_enabled,

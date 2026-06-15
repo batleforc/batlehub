@@ -229,3 +229,33 @@ impl RegistryClient for ForgejoRegistryClient {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::registry::forgejo::ForgejoRegistryClient;
+    use crate::registry::http_client::UpstreamHttpOptions;
+
+    #[tokio::test]
+    async fn passthrough_artifacts_resolve_without_http() {
+        // raw/tarball/zipball/pkgpath need no release lookup, so resolve_metadata
+        // makes no HTTP call — an unreachable upstream proves it never connects.
+        let c = ForgejoRegistryClient::new("http://127.0.0.1:1", &UpstreamHttpOptions::default())
+            .unwrap();
+        for art in [
+            "raw/main/README.md",
+            "tarball/v1.0.0",
+            "zipball",
+            "pkgpath/api/packages/owner/generic/x/1/file",
+        ] {
+            let pkg = PackageId::new("fj", "owner/repo", "v1.0.0").with_artifact(art);
+            let md = c
+                .resolve_metadata(&pkg)
+                .await
+                .expect("passthrough must not hit the network");
+            assert_eq!(md.id.artifact.as_deref(), Some(art));
+            assert!(md.download_url.is_none());
+        }
+        assert_eq!(c.registry_type(), "forgejo");
+    }
+}

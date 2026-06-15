@@ -42,6 +42,24 @@ async fn read_opt(storage: &dyn StorageBackend, key: &str) -> Result<Option<Vec<
     }
 }
 
+/// Read many sidecar keys concurrently (bounded), preserving input order and
+/// dropping any that no longer exist. Index regeneration re-reads every sidecar
+/// in the repo, so issuing those reads concurrently rather than one-at-a-time
+/// keeps per-publish latency from growing linearly with the read round-trips.
+async fn read_many(
+    storage: &dyn StorageBackend,
+    keys: Vec<String>,
+) -> Result<Vec<Vec<u8>>, AppError> {
+    use futures::stream::{StreamExt, TryStreamExt};
+    const MAX_CONCURRENT_READS: usize = 16;
+    futures::stream::iter(keys)
+        .map(|k| async move { read_opt(storage, &k).await })
+        .buffered(MAX_CONCURRENT_READS)
+        .try_filter_map(|opt| async move { Ok(opt) })
+        .try_collect()
+        .await
+}
+
 /// Reject anonymous callers. Publishing to a local deb/rpm repo requires an
 /// authenticated identity.
 fn require_authenticated(identity: &AuthIdentity) -> Result<(), AppError> {
@@ -113,24 +131,62 @@ pub async fn deb_publish(
     // Edge validation: `arch` comes from the uploaded control file and flows into
     // the pool path and sidecar storage key, so reject traversal/separators here
     // for a clean 400 rather than relying on the storage backend's deeper guard.
+    // `validate_path_safe` permits interior '/', but `arch` is a single path
+    // segment in the sidecar key that `regenerate_deb` splits on — a '/' would
+    // shift the (component, arch) grouping — so reject it explicitly.
     batlehub_core::services::validate_path_safe("architecture", &arch).map_err(AppError::from)?;
+    if arch.contains('/') {
+        return Err(AppError::bad_request(
+            "architecture must not contain '/'".to_owned(),
+        ));
+    }
 
-    let storage = local_svc.storage.as_ref();
-    let pool = deb::pool_path(&component, &pkg).map_err(AppError::from)?;
+    // Enforce the shared publish policy (role >= User, versioning, signing,
+    // namespace, ownership, configured size limit, and quota) before writing to
+    // the repo layout — deb/rpm host their files outside the standard
+    // package-version model, so they call this directly instead of `publish()`.
+    let artifact_len = bytes.len() as u64;
+    local_svc
+        .enforce_publish_policy(
+            &registry,
+            &name,
+            &version,
+            artifact_len,
+            &identity.0,
+            None,
+            None,
+        )
+        .await
+        .map_err(AppError::from)?;
 
-    // 1. Store the .deb in the pool.
-    store_bytes(storage, &repo_storage_key(&registry, &pool), bytes).await?;
+    // `enforce_publish_policy` has already recorded quota; revoke it if any storage
+    // step below fails so a transient write error doesn't permanently charge the
+    // publisher for an artifact that never landed (mirrors `publish()`'s rollback).
+    let stored: Result<(), AppError> = async {
+        let storage = local_svc.storage.as_ref();
+        let pool = deb::pool_path(&component, &pkg).map_err(AppError::from)?;
 
-    // 2. Record the Packages stanza as a sidecar keyed by suite/component/arch.
-    let stanza = deb::packages_stanza(&pkg, &pool);
-    let sidecar = format!(
-        "local:{registry}/_index/deb/{distribution}/{component}/{arch}/{name}_{version}.stanza"
-    );
-    store_bytes(storage, &sidecar, stanza.into_bytes()).await?;
+        // 1. Store the .deb in the pool (`Bytes` clone is a cheap refcount bump).
+        store_bytes(storage, &repo_storage_key(&registry, &pool), bytes.clone()).await?;
 
-    // 3. Regenerate the suite indexes (Packages per component/arch + Release).
-    let signer = signers.get(&registry);
-    regenerate_deb(storage, &registry, &distribution, signer.as_deref()).await?;
+        // 2. Record the Packages stanza as a sidecar keyed by suite/component/arch.
+        let stanza = deb::packages_stanza(&pkg, &pool);
+        let sidecar = format!(
+            "local:{registry}/_index/deb/{distribution}/{component}/{arch}/{name}_{version}.stanza"
+        );
+        store_bytes(storage, &sidecar, stanza.into_bytes()).await?;
+
+        // 3. Regenerate the suite indexes (Packages per component/arch + Release).
+        let signer = signers.get(&registry);
+        regenerate_deb(storage, &registry, &distribution, signer.as_deref()).await
+    }
+    .await;
+    if let Err(e) = stored {
+        local_svc
+            .revoke_publish_quota(&identity.0, &registry, artifact_len)
+            .await;
+        return Err(e);
+    }
 
     Ok(HttpResponse::Created().body(format!("published {name} {version} ({arch})")))
 }
@@ -174,12 +230,13 @@ async fn regenerate_deb(
 
     for ((component, arch), mut sidecar_keys) in groups {
         sidecar_keys.sort();
-        let mut stanzas = Vec::new();
-        for k in sidecar_keys {
-            if let Some(bytes) = read_opt(storage, &k).await? {
-                stanzas.push(String::from_utf8_lossy(&bytes).into_owned());
-            }
-        }
+        // `read_many` preserves the (sorted) key order, so the generated Packages
+        // file stays deterministic.
+        let stanzas: Vec<String> = read_many(storage, sidecar_keys)
+            .await?
+            .iter()
+            .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+            .collect();
         let packages = deb::generate_packages(&stanzas);
         let packages_bytes = packages.into_bytes();
         let gz = gzip(&packages_bytes).map_err(|e| AppError::internal(e.to_string()))?;
@@ -187,21 +244,15 @@ async fn regenerate_deb(
         let rel_dir = format!("{component}/binary-{arch}");
         let pkg_path = format!("{rel_dir}/Packages");
         let gz_path = format!("{rel_dir}/Packages.gz");
-        store_bytes(
-            storage,
-            &repo_storage_key(registry, &format!("dists/{suite}/{pkg_path}")),
-            packages_bytes.clone(),
-        )
-        .await?;
-        store_bytes(
-            storage,
-            &repo_storage_key(registry, &format!("dists/{suite}/{gz_path}")),
-            gz.clone(),
-        )
-        .await?;
+        let pkg_key = repo_storage_key(registry, &format!("dists/{suite}/{pkg_path}"));
+        let gz_key = repo_storage_key(registry, &format!("dists/{suite}/{gz_path}"));
 
+        // Compute the Release entries (which copy out only the size/hash digests)
+        // before moving the buffers into storage, so the index blobs aren't cloned.
         release_files.push(deb::ReleaseFile::new(pkg_path, &packages_bytes));
         release_files.push(deb::ReleaseFile::new(gz_path, &gz));
+        store_bytes(storage, &pkg_key, packages_bytes).await?;
+        store_bytes(storage, &gz_key, gz).await?;
         components.insert(component);
         architectures.insert(arch);
     }
@@ -305,16 +356,47 @@ pub async fn rpm_publish(
     let location = format!("packages/{id}.rpm");
     pkg.location = location.clone();
 
-    let storage = local_svc.storage.as_ref();
-    // 1. Store the .rpm.
-    store_bytes(storage, &repo_storage_key(&registry, &location), bytes).await?;
-    // 2. Record a JSON sidecar for repodata regeneration.
-    let sidecar = format!("local:{registry}/_index/rpm/{id}.json");
-    let json = serde_json::to_vec(&pkg).map_err(|e| AppError::internal(e.to_string()))?;
-    store_bytes(storage, &sidecar, json).await?;
-    // 3. Regenerate repodata.
-    let signer = signers.get(&registry);
-    regenerate_rpm(storage, &registry, signer.as_deref()).await?;
+    // Enforce the shared publish policy before writing to the repo layout
+    // (see the matching call in `deb_publish`).
+    let artifact_len = bytes.len() as u64;
+    local_svc
+        .enforce_publish_policy(
+            &registry,
+            &pkg.name,
+            &pkg.version,
+            artifact_len,
+            &identity.0,
+            None,
+            None,
+        )
+        .await
+        .map_err(AppError::from)?;
+
+    // Revoke the quota recorded above if any storage step fails (see `deb_publish`).
+    let stored: Result<(), AppError> = async {
+        let storage = local_svc.storage.as_ref();
+        // 1. Store the .rpm (`Bytes` clone is a cheap refcount bump).
+        store_bytes(
+            storage,
+            &repo_storage_key(&registry, &location),
+            bytes.clone(),
+        )
+        .await?;
+        // 2. Record a JSON sidecar for repodata regeneration.
+        let sidecar = format!("local:{registry}/_index/rpm/{id}.json");
+        let json = serde_json::to_vec(&pkg).map_err(|e| AppError::internal(e.to_string()))?;
+        store_bytes(storage, &sidecar, json).await?;
+        // 3. Regenerate repodata.
+        let signer = signers.get(&registry);
+        regenerate_rpm(storage, &registry, signer.as_deref()).await
+    }
+    .await;
+    if let Err(e) = stored {
+        local_svc
+            .revoke_publish_quota(&identity.0, &registry, artifact_len)
+            .await;
+        return Err(e);
+    }
 
     Ok(HttpResponse::Created().body(format!("published {}", pkg.nevra())))
 }
@@ -328,14 +410,11 @@ async fn regenerate_rpm(
 ) -> Result<(), AppError> {
     let prefix = format!("local:{registry}/_index/rpm/");
     let keys = storage.list_keys(&prefix).await.map_err(AppError::from)?;
-    let mut packages: Vec<rpm::RpmPackage> = Vec::new();
-    for k in keys {
-        if let Some(bytes) = read_opt(storage, &k).await? {
-            if let Ok(p) = serde_json::from_slice::<rpm::RpmPackage>(&bytes) {
-                packages.push(p);
-            }
-        }
-    }
+    let mut packages: Vec<rpm::RpmPackage> = read_many(storage, keys)
+        .await?
+        .into_iter()
+        .filter_map(|bytes| serde_json::from_slice::<rpm::RpmPackage>(&bytes).ok())
+        .collect();
     packages.sort_by_key(|a| a.nevra());
 
     let primary = rpm::primary_xml(&packages).into_bytes();
@@ -351,8 +430,9 @@ async fn regenerate_rpm(
     ] {
         let gz = gzip(plain).map_err(|e| AppError::internal(e.to_string()))?;
         let href = format!("repodata/{kind}.xml.gz");
-        store_bytes(storage, &repo_storage_key(registry, &href), gz.clone()).await?;
+        // Build the repomd entry (digests only) before moving the gz into storage.
         repomd_entries.push(rpm::RepoMdData::new(kind, &href, &gz, plain, timestamp));
+        store_bytes(storage, &repo_storage_key(registry, &href), gz).await?;
     }
 
     let repomd = rpm::repomd_xml(&repomd_entries).into_bytes();

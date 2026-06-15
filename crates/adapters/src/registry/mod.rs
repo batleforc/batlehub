@@ -22,9 +22,17 @@ pub mod gitlab;
 #[cfg(feature = "registry-gitlab")]
 pub use gitlab::GitlabRegistryClient;
 
-#[cfg(any(feature = "registry-deb", feature = "registry-rpm"))]
+#[cfg(any(
+    feature = "registry-deb",
+    feature = "registry-rpm",
+    feature = "registry-jetbrains"
+))]
 pub mod path_proxy;
-#[cfg(any(feature = "registry-deb", feature = "registry-rpm"))]
+#[cfg(any(
+    feature = "registry-deb",
+    feature = "registry-rpm",
+    feature = "registry-jetbrains"
+))]
 pub use path_proxy::PathProxyRegistryClient;
 
 #[cfg(feature = "registry-npm")]

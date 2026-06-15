@@ -8,13 +8,14 @@ For discussion or to propose a feature, open an issue on the [project repository
 
 ## New registry types
 
-Current adapters: npm, Cargo, GitHub, Forgejo/Gitea, GitLab, OpenVSX, VS Code Marketplace, Go modules, Maven, RubyGems, Terraform, Composer, PyPI, Conda, NuGet, Deb (APT), RPM (YUM/DNF).
+Current adapters: npm, Cargo, GitHub, Forgejo/Gitea, GitLab, OpenVSX, VS Code Marketplace, Go modules, Maven, RubyGems, Terraform, Composer, PyPI, Conda, NuGet, Deb (APT), RPM (YUM/DNF), JetBrains (IDE archives).
 
 - [x] **PyPI** — Python package index; Simple API proxy with URL rewriting; wheel / sdist downloads; private publishing via `twine` in `local`/`hybrid` mode
 - [x] **Maven / Gradle** — Maven Central-compatible metadata XML + JAR / POM downloads; private publishing via `mvn deploy` in `local`/`hybrid` mode
 - [x] **RubyGems** — gem downloads and version listing (proxy + local/hybrid with publish/yank/unyank)
 - [x] **NuGet** — .NET package protocol; NuGet v3 service index + flat container proxy; `.nupkg` and `.nuspec` downloads; private publishing via `dotnet nuget push` in `local`/`hybrid` mode
 - [x] **Deb / RPM** — Debian APT (`type = "deb"`) and Red Hat YUM/DNF (`type = "rpm"`) repository proxying **and** private hosting in `local`/`hybrid` mode: `.deb`/`.rpm` publish, `Packages`/`Release` and `repodata/` regeneration, Ed25519 OpenPGP-signed metadata (`InRelease`/`Release.gpg`, `repomd.xml.asc`). Signing is hand-rolled (Ed25519 only) to avoid the banned `rsa` crate
+- [x] **JetBrains IDE archives** — `type = "jetbrains"`: proxy-only path-based cache for JetBrains IDE installer archives (default upstream `download.jetbrains.com`); reuses the generic `PathProxyRegistryClient`. No private hosting. IDE archives are large (~1–1.7 GB), so `limits.max_artifact_size_bytes` must be raised
 - [x] **Terraform registry** — provider and module proxy protocol; private module + provider publishing in `local`/`hybrid` mode
 - [x] **GitLab releases and packages** — `type = "gitlab"`: paginated release list/tag, link assets, source archives + raw files via the `/-/` URL scheme, nested groups, `PRIVATE-TOKEN`/Bearer auth; package registry passthrough (`/api/v4/…`, ideal for generic packages). Ecosystem package registries (npm/Maven/PyPI/…) are proxied via the matching typed adapter pointed at the GitLab package endpoint
 - [x] **Forgejo releases and packages** — `type = "forgejo"`: paginated Gitea/Forgejo `/api/v1` release list/tag, assets, source archives, raw files (reuses the GitHub URL scheme); package registry passthrough (`/api/packages/…`). Ecosystem registries via the matching typed adapter

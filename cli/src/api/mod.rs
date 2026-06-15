@@ -108,6 +108,45 @@ impl BatleHubClient {
         expect_no_content(resp).await
     }
 
+    /// GET a proxy path (relative to the server base URL) or an absolute URL and
+    /// stream the response body into `dest`, returning the number of bytes written.
+    /// Sends the auth token so RBAC-protected registries are reachable.
+    pub async fn download_to<W: std::io::Write>(
+        &self,
+        path_or_url: &str,
+        dest: &mut W,
+    ) -> Result<u64> {
+        use futures::StreamExt;
+
+        let url = if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
+            path_or_url.to_string()
+        } else if let Some(rest) = path_or_url.strip_prefix('/') {
+            self.url(&format!("/{rest}"))
+        } else {
+            self.url(&format!("/{path_or_url}"))
+        };
+
+        let mut req = self.inner.request(Method::GET, url);
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            bail!("HTTP {status}: {body}");
+        }
+
+        let mut total: u64 = 0;
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            dest.write_all(&chunk)?;
+            total += chunk.len() as u64;
+        }
+        Ok(total)
+    }
+
     pub async fn put_multipart_void(
         &self,
         path: &str,

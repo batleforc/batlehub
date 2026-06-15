@@ -171,6 +171,7 @@ impl TestServer {
             mode_map.clone(),
             UpstreamMap::default(),
             batlehub_web::CargoIndexMap::default(),
+            batlehub_web::RepoSignerMap::default(),
             "config.toml".to_owned(),
             None,
             false, // hot reload disabled -> deterministic 503 for `admin config reload`
@@ -974,13 +975,13 @@ fn admin_cache_clear() {
     );
 }
 
-/// `admin cache warm` always fails against a real server today: the CLI's
-/// `WarmRequest` sends `{"packages": [...]}` while the server's handler expects a
-/// required singular `"package"` field, so the JSON body extractor rejects the
-/// request with 400 before the handler runs. This test pins that error-handling
-/// path through `handle_cache`/`cache_warm`.
+/// The CLI's `WarmRequest` now sends a valid `{"packages": [...]}` body (the
+/// server accepts `packages`/`paths`), so the request reaches the handler. The
+/// test server registers no `WarmingService`, so the handler responds 404
+/// "warming not configured" — this pins that error-handling path through
+/// `handle_cache`/`cache_warm`.
 #[test]
-fn admin_cache_warm_fails() {
+fn admin_cache_warm_not_configured() {
     let srv = TestServer::start();
     let (ok, _stdout, stderr) = cli_cmd(
         &["admin", "cache", "warm", REGISTRY, "--packages", "pkg1"],
@@ -989,9 +990,9 @@ fn admin_cache_warm_fails() {
     );
     assert!(
         !ok,
-        "cache warm should fail given the current request shape"
+        "cache warm should fail when warming is not configured for the registry"
     );
-    assert!(stderr.contains("HTTP 400"), "stderr: {stderr}");
+    assert!(stderr.contains("HTTP 404"), "stderr: {stderr}");
 }
 
 #[test]

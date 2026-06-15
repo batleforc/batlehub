@@ -430,6 +430,32 @@ name   = "my-maven"
 mode   = "hybrid"
 upstreams = ["https://repo1.maven.org/maven2/"]
 
+# ── JetBrains IDE-archive proxy cache ────────────────────────────────────────
+#
+# Proxy-only: caches JetBrains IDE installer archives by path. A request to
+#   http(s)://your-host/proxy/jetbrains-ide/jetbrains/idea/ideaIC-2024.1.4.tar.gz
+# is served from cache after the first download from download.jetbrains.com.
+#
+# Use the canonical download.jetbrains.com path (real names: ideaIU-… Ultimate /
+# ideaIC-… Community). That host 302-redirects to a CDN (download-cdn.jetbrains.com);
+# the redirect is followed automatically — don't put the CDN host in the path.
+#
+# IMPORTANT: IDE archives are ~1–1.7 GB. The proxy buffers the whole artifact in
+# memory before caching and rejects anything over `max_artifact_size_bytes`
+# (default 500 MiB), so raise that limit (e.g. 2 GiB) for IDE archives.
+[[registries]]
+type   = "jetbrains"
+name   = "jetbrains-ide"
+mode   = "proxy"            # upstream defaults to https://download.jetbrains.com
+# upstreams = ["https://plugins.jetbrains.com"]   # override to cache plugins instead
+[registries.rbac]
+anonymous = ["releases:read"]
+# Pre-warm specific upstream paths on startup (and via the /warm admin endpoint).
+# Path-addressed registries (deb/rpm/jetbrains) use `warm_paths` instead of
+# `warm_packages`. Entries are upstream-relative paths.
+[registries.cache]
+warm_paths = ["idea/ideaIC-2024.1.4.tar.gz"]
+
 # ── Versioning policies (local/hybrid mode) ──────────────────────────────────
 #
 # Enforce versioning rules at publish time. Violations return HTTP 422.

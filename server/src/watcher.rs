@@ -35,16 +35,18 @@ pub(super) fn build_cors(allowed_origins: &[String]) -> Cors {
 
 pub(super) fn spawn_startup_warming(config: &AppConfig, warming_map: &WarmingServiceMap) {
     for reg in &config.registries {
-        if reg.cache.warm_packages.is_empty() {
+        if reg.cache.warm_packages.is_empty() && reg.cache.warm_paths.is_empty() {
             continue;
         }
         if let Some(svc) = warming_map.get(&reg.name) {
             let svc = Arc::clone(svc);
             let packages = reg.cache.warm_packages.clone();
+            let paths = reg.cache.warm_paths.clone();
             let name = reg.name.clone();
             tokio::spawn(async move {
                 tracing::info!(registry = %name, "warming: startup warming started");
-                let report = svc.warm_all(&packages).await;
+                let mut report = svc.warm_all(&packages).await;
+                report += svc.warm_all_paths(&paths).await;
                 tracing::info!(
                     registry = %name,
                     warmed = report.warmed,

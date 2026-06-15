@@ -65,4 +65,47 @@ mod tests {
         assert!(names.contains(&"express"));
         assert!(names.contains(&"react"));
     }
+
+    #[test]
+    fn parse_npm_package_json_invalid_is_empty() {
+        assert!(parse_npm_package_json("not json").is_empty());
+        // Valid JSON without dependency keys → no deps.
+        assert!(parse_npm_package_json(r#"{"name":"x"}"#).is_empty());
+    }
+
+    /// Build a gzipped npm-style tarball containing `package/package.json`.
+    fn npm_tgz(package_json: &[u8]) -> Bytes {
+        use flate2::{write::GzEncoder, Compression};
+        use std::io::Write;
+        let mut tar_buf = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_buf);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(package_json.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "package/package.json", package_json)
+                .unwrap();
+            builder.finish().unwrap();
+        }
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        gz.write_all(&tar_buf).unwrap();
+        Bytes::from(gz.finish().unwrap())
+    }
+
+    #[test]
+    fn extract_npm_deps_reads_top_level_package_json() {
+        let data = npm_tgz(br#"{"dependencies":{"express":"4.0.0"}}"#);
+        let deps = extract_npm_deps(&data);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "express");
+        assert_eq!(deps[0].ecosystem, "npm");
+        assert_eq!(deps[0].version_req.as_deref(), Some("4.0.0"));
+    }
+
+    #[test]
+    fn extract_npm_deps_on_non_gzip_is_empty() {
+        assert!(extract_npm_deps(&Bytes::from_static(b"not a gzip stream")).is_empty());
+    }
 }

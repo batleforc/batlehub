@@ -260,7 +260,16 @@ pub(super) fn make_hot_builder(
                 cargo_map.insert(reg.name.clone(), index);
             }
         }
-        Ok((hot, access, rm, rmm, um, CargoIndexMap::new(cargo_map)))
+        let repo_signer_map = crate::builders::build_repo_signer_map(cfg)?;
+        Ok((
+            hot,
+            access,
+            rm,
+            rmm,
+            um,
+            CargoIndexMap::new(cargo_map),
+            repo_signer_map,
+        ))
     })
 }
 

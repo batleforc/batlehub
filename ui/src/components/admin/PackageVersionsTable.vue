@@ -42,9 +42,7 @@ function fmtDate(iso: string | null | undefined) {
   return new Date(iso).toLocaleString();
 }
 
-function severityVariant(
-  severity: string,
-): "default" | "destructive" | "secondary" | "outline" {
+function severityVariant(severity: string): "default" | "destructive" | "secondary" | "outline" {
   switch (severity) {
     case "critical":
     case "high":
@@ -223,6 +221,7 @@ async function bulkUnblock() {
             <TableHead class="w-8">
               <input
                 type="checkbox"
+                aria-label="Select all versions"
                 :checked="allSelected"
                 class="cursor-pointer"
                 @change="toggleAll"
@@ -249,6 +248,7 @@ async function bulkUnblock() {
             <TableCell class="w-8">
               <input
                 type="checkbox"
+                :aria-label="`Select version ${v.version}`"
                 :checked="selectedIds.has(v.id)"
                 class="cursor-pointer"
                 @change="toggle(v)"

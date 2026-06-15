@@ -644,6 +644,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                 gl_list_releases, gl_packages,
             },
             goproxy::{goproxy_file, goproxy_latest, goproxy_list, goproxy_publish},
+            jetbrains::jetbrains_get,
             maven::{maven_get, maven_put},
             npm::{
                 audit_quick, download_tarball as npm_download_tarball, get_packument, get_version,
@@ -711,7 +712,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(rpm_publish); // PUT …/rpm/upload
     cfg.service(deb_get); // GET …/deb/{path}
     cfg.service(rpm_get); // GET …/rpm/{path}
-                          // Cargo download (literal "download" suffix)
+    cfg.service(jetbrains_get); // GET …/jetbrains/{path} (proxy-only cache)
+                                // Cargo download (literal "download" suffix)
     cfg.service(download_crate);
     // Go module proxy (multi-segment module paths — must precede generic packument routes)
     // PUT goproxy_publish must come before GET goproxy_file (same path pattern, different method)

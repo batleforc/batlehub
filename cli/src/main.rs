@@ -7,7 +7,8 @@ use anyhow::Result;
 use clap::Parser;
 
 use cli::{
-    admin, auth, config_cmd, owner, package, publish, registry, setup, version, Cli, Command,
+    admin, auth, config_cmd, download, owner, package, publish, registry, setup, version, Cli,
+    Command,
 };
 use config::ConfigFile;
 
@@ -74,6 +75,9 @@ async fn main() -> Result<()> {
         Command::Version { cmd } => version::run(cmd, &client).await?,
         Command::Owners { cmd } => owner::run(cmd, &client, cli.json).await?,
         Command::Publish(args) => publish::run(args, &client, resolved.registry.as_deref()).await?,
+        Command::Download(args) => {
+            download::run(args, &client, resolved.registry.as_deref()).await?
+        }
         Command::Auth { cmd } => auth::run(cmd, &client, cli.json, cli.profile.as_deref()).await?,
         Command::Admin { cmd } => admin::run(cmd, &client, cli.json).await?,
         Command::Tui => tui::run(client).await?,

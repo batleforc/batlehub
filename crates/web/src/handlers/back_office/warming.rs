@@ -13,12 +13,24 @@ use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 /// Map of registry name → WarmingService, injected as app data.
 pub type WarmingServiceMap = HashMap<String, Arc<WarmingService>>;
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Default, Deserialize, ToSchema)]
 pub struct WarmRequest {
-    /// Package name to warm, optionally with a pinned version (`"lodash"` or `"lodash@4.17.21"`).
-    pub package: String,
-    /// Override the number of most-recent versions to warm. Falls back to the registry's
-    /// `warm_latest_n` config when absent.
+    /// A package name to warm, optionally with a pinned version (`"lodash"` or
+    /// `"lodash@4.17.21"`). Use for package-centric registries.
+    #[serde(default)]
+    pub package: Option<String>,
+    /// Multiple package names to warm (same form as `package`).
+    #[serde(default)]
+    pub packages: Vec<String>,
+    /// A single upstream artifact path to warm, for path-addressed registries
+    /// (`deb`/`rpm`/`jetbrains`), e.g. `"idea/ideaIC-2024.1.4.tar.gz"`.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Multiple upstream artifact paths to warm (same form as `path`).
+    #[serde(default)]
+    pub paths: Vec<String>,
+    /// Override the number of most-recent versions to warm per package. Falls back
+    /// to the registry's `warm_latest_n` config when absent.
     pub versions: Option<usize>,
 }
 
@@ -65,17 +77,31 @@ pub async fn warm_registry(
         .get(&registry)
         .ok_or_else(|| AppError::not_found("warming not configured for this registry"))?;
 
-    // Use caller-specified version count when provided; fall back to configured default.
-    let report = if let Some(n) = body.versions {
-        svc.with_latest_n(n).warm_package(&body.package).await
+    // Gather packages (package + packages) and paths (path + paths).
+    let mut packages = body.packages.clone();
+    packages.extend(body.package.clone());
+    let mut paths = body.paths.clone();
+    paths.extend(body.path.clone());
+
+    if packages.is_empty() && paths.is_empty() {
+        return Err(AppError::bad_request(
+            "specify at least one of: package, packages, path, paths".to_owned(),
+        ));
+    }
+
+    // Version-based warming for package-centric registries (honour the optional
+    // per-request version count); path-based warming for path-addressed registries.
+    let pkg_report = if let Some(n) = body.versions {
+        svc.with_latest_n(n).warm_all(&packages).await
     } else {
-        svc.warm_package(&body.package).await
+        svc.warm_all(&packages).await
     };
+    let path_report = svc.warm_all_paths(&paths).await;
 
     Ok(web::Json(WarmResponse {
-        warmed: report.warmed,
-        skipped: report.skipped,
-        errors: report.errors,
+        warmed: pkg_report.warmed + path_report.warmed,
+        skipped: pkg_report.skipped + path_report.skipped,
+        errors: pkg_report.errors + path_report.errors,
     }))
 }
 

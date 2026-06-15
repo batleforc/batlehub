@@ -102,6 +102,7 @@ default = [
   "registry-rubygems",
   "registry-terraform",
   "registry-vscode-marketplace",
+  "registry-jetbrains",
   "sbom",
   "storage-fs",
   "vuln-scan"
@@ -142,6 +143,9 @@ registry-rpm = [
   "dep:sha1",
 ]
 registry-pypi = []
+# JetBrains IDE-archive proxy cache. Reuses the generic `PathProxyRegistryClient`
+# (shared with deb/rpm), so it needs no extra dependencies.
+registry-jetbrains = []
 registry-rubygems = ["dep:flate2", "dep:tar"]
 registry-terraform = []
 registry-vscode-marketplace = []

@@ -96,13 +96,14 @@ async fn repo_get(
     let mode = mode_map.get(registry);
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        // Enforce repository visibility before serving from local storage. Unlike
-        // the proxy fall-through (which runs RBAC via `proxy_stream`), a direct
-        // storage read would otherwise hand Internal/Team repos to any caller. The
-        // repo is addressed by file path, so visibility is keyed on the synthetic
-        // `repo` package name used by the proxy path below.
-        local_svc
-            .check_visibility(registry, "repo", &identity.0)
+        // Enforce the registry RBAC before serving from local storage. A direct
+        // storage read would otherwise hand a restricted repo to any caller; the
+        // proxy fall-through below runs the same `releases:read` check via the
+        // rule chain, so this keeps local and proxy reads consistent. deb/rpm have
+        // no per-package model, so authorization is keyed on the synthetic `repo`
+        // coordinate the proxy path also uses.
+        let auth_pkg = PackageId::new(registry, "repo", "_").with_artifact(path);
+        svc.authorize_read(&auth_pkg, &identity.0, "releases:read")
             .await
             .map_err(AppError::from)?;
 

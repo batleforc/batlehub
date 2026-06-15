@@ -388,6 +388,7 @@ async function submitPreBlock() {
         <Input
           v-model="search"
           placeholder="Filter by name, registry, or version…"
+          aria-label="Filter packages"
           class="max-w-sm h-8 text-sm"
         />
       </CardHeader>
@@ -406,6 +407,7 @@ async function submitPreBlock() {
               <TableHead class="w-8">
                 <input
                   type="checkbox"
+                  aria-label="Select all packages"
                   :checked="allSelected"
                   class="cursor-pointer"
                   @change="toggleAll"
@@ -432,6 +434,7 @@ async function submitPreBlock() {
               <TableCell class="w-8">
                 <input
                   type="checkbox"
+                  :aria-label="`Select ${pkg.package_id.name}`"
                   :checked="selected.has(pkgKey(pkg))"
                   class="cursor-pointer"
                   @change="toggleOne(pkg)"

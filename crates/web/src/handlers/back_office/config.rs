@@ -317,6 +317,7 @@ mod tests {
             crate::RegistryModeMap::new(HashMap::new()),
             crate::UpstreamMap::new(HashMap::new()),
             crate::CargoIndexMap::new(HashMap::new()),
+            crate::RepoSignerMap::default(),
             "config.toml".to_owned(),
             None,
             false, // hot_reload_enabled = false
@@ -360,6 +361,7 @@ mod tests {
             crate::RegistryModeMap::new(HashMap::new()),
             crate::UpstreamMap::new(HashMap::new()),
             crate::CargoIndexMap::new(HashMap::new()),
+            crate::RepoSignerMap::default(),
             "config.toml".to_owned(),
             None,
             true,

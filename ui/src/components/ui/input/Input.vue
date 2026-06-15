@@ -23,6 +23,7 @@ const delegatedProps = computed(() => {
 <template>
   <input
     v-bind="delegatedProps"
+    :aria-label="placeholder"
     :value="modelValue"
     :class="
       cn(

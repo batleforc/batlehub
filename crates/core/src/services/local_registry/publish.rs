@@ -74,13 +74,30 @@ impl LocalRegistryService {
         Ok(!package_exists)
     }
 
-    /// Validate and persist a published artifact.
+    /// Enforce the publish-time policy that every registry shares — role,
+    /// name/version validation, versioning policy, signing policy, namespace,
+    /// ownership, artifact size limit, and quota — *without* committing a
+    /// package-version row or storing bytes.
     ///
-    /// Returns a `QuotaCheck` describing the publisher's current quota state
-    /// after the publish (useful for setting `X-Quota-*` response headers).
-    /// Returns a zeroed `QuotaCheck` when no quota is configured.
-    pub async fn publish(&self, req: PublishRequest) -> Result<QuotaCheck, CoreError> {
-        if !req.publisher.has_role_at_least(&Role::User) {
+    /// Path-addressed registries (deb/rpm) host their packages under a custom
+    /// storage layout rather than the `{registry}/{name}/{version}` key + DB
+    /// version row that [`Self::publish`] manages, so they call this directly
+    /// before their own storage work to avoid bypassing the configured limits.
+    ///
+    /// Returns the post-publish [`QuotaCheck`] (for `X-Quota-*` headers) and
+    /// whether this is the first time the package name is seen.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn enforce_publish_policy(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        artifact_len: u64,
+        publisher: &Identity,
+        signature_bytes: Option<&Vec<u8>>,
+        signature_type: Option<&String>,
+    ) -> Result<(QuotaCheck, bool), CoreError> {
+        if !publisher.has_role_at_least(&Role::User) {
             return Err(CoreError::AccessDenied(
                 "publishing requires at least User role".into(),
             ));
@@ -89,58 +106,73 @@ impl LocalRegistryService {
         // Reject names/versions that could escape the storage root via path
         // traversal once interpolated into the storage key. Runs unconditionally,
         // independent of the optional versioning policy below.
-        validate_package_name(&req.name)?;
-        validate_path_safe("version", &req.version)?;
+        validate_package_name(name)?;
+        validate_path_safe("version", version)?;
 
         // Snapshot hot-swappable policy (versioning, signing, size limit).
         let (versioning, signing, limit) = {
             let hot = self.hot.read().await;
-            let versioning = hot.versioning.get(&req.registry).cloned();
-            let signing = hot.signing.get(&req.registry).cloned();
+            let versioning = hot.versioning.get(registry).cloned();
+            let signing = hot.signing.get(registry).cloned();
             let limit = hot.max_artifact_size_bytes.unwrap_or(500 * 1024 * 1024);
             (versioning, signing, limit)
         };
 
         // Versioning policy check.
         if let Some(ref policy) = versioning {
-            validate_version(&req.version, policy)?;
+            validate_version(version, policy)?;
         }
 
         // Signing check.
         if let Some(ref signing) = signing {
-            Self::check_signing_policy(
-                signing,
-                req.signature_bytes.as_ref(),
-                req.signature_type.as_ref(),
-            )?;
+            Self::check_signing_policy(signing, signature_bytes, signature_type)?;
         }
 
         // Namespace enforcement.
-        self.check_namespace_publish_access(&req.registry, &req.name, &req.publisher)
+        self.check_namespace_publish_access(registry, name, publisher)
             .await?;
 
         // Ownership check.
         let is_new_package = self
-            .check_ownership_publish_access(&req.registry, &req.name, &req.publisher)
+            .check_ownership_publish_access(registry, name, publisher)
             .await?;
 
         // `limit` was extracted from hot config above.
-        if req.artifact.len() as u64 > limit {
+        if artifact_len > limit {
             return Err(CoreError::PayloadTooLarge(format!(
-                "artifact is {} bytes; limit is {}",
-                req.artifact.len(),
-                limit
+                "artifact is {artifact_len} bytes; limit is {limit}"
             )));
         }
 
         // Check and record quota before persisting. This may return QuotaExceeded.
         let quota_check = if let Some(quota_svc) = &self.quota {
             quota_svc
-                .check_and_record_publish(&req.publisher, &req.registry, req.artifact.len() as u64)
+                .check_and_record_publish(publisher, registry, artifact_len)
                 .await?
         } else {
             QuotaCheck::default()
         };
+
+        Ok((quota_check, is_new_package))
+    }
+
+    /// Validate and persist a published artifact.
+    ///
+    /// Returns a `QuotaCheck` describing the publisher's current quota state
+    /// after the publish (useful for setting `X-Quota-*` response headers).
+    /// Returns a zeroed `QuotaCheck` when no quota is configured.
+    pub async fn publish(&self, req: PublishRequest) -> Result<QuotaCheck, CoreError> {
+        let (quota_check, is_new_package) = self
+            .enforce_publish_policy(
+                &req.registry,
+                &req.name,
+                &req.version,
+                req.artifact.len() as u64,
+                &req.publisher,
+                req.signature_bytes.as_ref(),
+                req.signature_type.as_ref(),
+            )
+            .await?;
 
         // Inherit the existing package visibility so that publishing a new version
         // doesn't silently reset a team/internal package back to public.

@@ -322,8 +322,9 @@ const lifetimePresets = [7, 30, 90];
           <fieldset class="space-y-2 border-0 p-0 m-0">
             <legend
               class="font-mono text-xs font-semibold uppercase tracking-wide text-muted-foreground leading-none"
-              >Lifetime</legend
             >
+              Lifetime
+            </legend>
             <div class="flex gap-2">
               <Button
                 v-for="days in lifetimePresets"
@@ -341,6 +342,7 @@ const lifetimePresets = [7, 30, 90];
                 type="number"
                 min="1"
                 max="90"
+                aria-label="Custom token expiry in days"
                 :value="form.expires_in_days"
                 class="w-24 h-8"
                 @input="

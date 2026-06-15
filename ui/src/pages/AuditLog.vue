@@ -70,6 +70,7 @@ const actionOptions = computed(() => {
         <Input
           v-model="userFilter"
           placeholder="Filter by user…"
+          aria-label="Filter by user"
           class="h-8 text-sm max-w-[200px]"
         />
         <select

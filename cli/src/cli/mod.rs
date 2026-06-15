@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod auth;
 pub mod config_cmd;
+pub mod download;
 pub mod owner;
 pub mod package;
 pub mod publish;
@@ -66,6 +67,8 @@ pub enum Command {
     },
     /// Publish an artifact to a local/hybrid registry
     Publish(publish::PublishArgs),
+    /// Download a file through the proxy cache (warms path-addressed registries)
+    Download(download::DownloadArgs),
     /// Authentication commands (tokens, whoami)
     Auth {
         #[command(subcommand)]

@@ -31,6 +31,7 @@ pub(super) fn make_svc(enabled: bool) -> Arc<ConfigReloadService> {
         crate::RegistryModeMap::new(HashMap::new()),
         crate::UpstreamMap::new(HashMap::new()),
         crate::CargoIndexMap::new(HashMap::new()),
+        crate::RepoSignerMap::default(),
         "config.toml".to_owned(),
         None,
         enabled,
@@ -103,6 +104,17 @@ fn expire_stale_clears_expired_pending() {
 #[tokio::test]
 async fn apply_success_swaps_hot_config() {
     let svc = make_svc(true);
+    // The service starts with no signers; the reload should swap in a new one.
+    assert!(svc.repo_signer_map.get("apt").is_none());
+    let seed = "9d61b19deffeba00aa3f3b6e3b0fe6a3f3a76b08e2c0a3f3b6e3b0fe6a3f3a76";
+    let new_signers: HashMap<String, Arc<batlehub_adapters::repo::OpenPgpSigner>> = [(
+        "apt".to_owned(),
+        Arc::new(
+            batlehub_adapters::repo::OpenPgpSigner::from_seed_hex(seed, 1_700_000_000, "BatleHub")
+                .unwrap(),
+        ),
+    )]
+    .into();
     let new_hot = batlehub_core::services::HotConfig {
         registries: HashMap::new(),
         policies: HashMap::new(),
@@ -133,6 +145,7 @@ async fn apply_success_swaps_hot_config() {
         new_registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
         new_upstream_map: crate::UpstreamMap::new(HashMap::new()),
         new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
+        new_repo_signer_map: crate::RepoSignerMap::from(new_signers),
     };
     *svc.pending.lock().unwrap() = Some(pending);
 
@@ -142,6 +155,8 @@ async fn apply_success_swaps_hot_config() {
     assert!(svc.pending_snapshot().is_none());
     let hot = svc.hot.read().await;
     assert_eq!(hot.max_artifact_size_bytes, Some(42));
+    // The deb/rpm signer map was swapped in by the same apply().
+    assert!(svc.repo_signer_map.get("apt").is_some());
 }
 
 #[tokio::test]
@@ -188,6 +203,7 @@ async fn reload_immediate_applies_config() {
             crate::RegistryModeMap::new(HashMap::new()),
             crate::UpstreamMap::new(HashMap::new()),
             crate::CargoIndexMap::new(HashMap::new()),
+            crate::RepoSignerMap::default(),
         ))
     });
     let svc = Arc::new(ConfigReloadService::new(
@@ -197,6 +213,7 @@ async fn reload_immediate_applies_config() {
         crate::RegistryModeMap::new(HashMap::new()),
         crate::UpstreamMap::new(HashMap::new()),
         crate::CargoIndexMap::new(HashMap::new()),
+        crate::RepoSignerMap::default(),
         tmp_path.clone(),
         None,
         true,
@@ -268,5 +285,6 @@ fn make_pending(expires_offset_secs: i64, already_expired: bool) -> PendingReloa
         new_registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
         new_upstream_map: crate::UpstreamMap::new(HashMap::new()),
         new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
+        new_repo_signer_map: crate::RepoSignerMap::default(),
     }
 }

@@ -312,6 +312,13 @@ pub struct CachePolicy {
     /// (`"lodash@4.17.21"`). Bare names warm the latest `warm_latest_n` versions.
     #[serde(default)]
     pub warm_packages: Vec<String>,
+    /// Upstream artifact paths to pre-fetch, for path-addressed registries
+    /// (`deb`/`rpm`/`jetbrains`) that have no per-package version model. Each entry
+    /// is the upstream-relative path, e.g. `"idea/ideaIC-2024.1.4.tar.gz"` for a
+    /// JetBrains registry or `"dists/stable/Release"` for a Deb registry. Warmed on
+    /// startup and via the `/warm` admin endpoint (`paths`).
+    #[serde(default)]
+    pub warm_paths: Vec<String>,
     /// Number of most-recent versions to pre-warm per package (default: 1 = latest only).
     #[serde(default = "default_warm_latest_n")]
     pub warm_latest_n: usize,
@@ -346,6 +353,7 @@ impl Default for CachePolicy {
             max_size_bytes: None,
             keep_latest_n: None,
             warm_packages: vec![],
+            warm_paths: vec![],
             warm_latest_n: default_warm_latest_n(),
             warm_concurrency: default_warm_concurrency(),
         }

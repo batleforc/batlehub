@@ -38,8 +38,9 @@ pub struct GoProxyRegistryClient {
     http: reqwest::Client,
     /// Credential-free client used for the search host. The default search target
     /// (pkg.go.dev) is a *different* host than the GOPROXY upstream, so the
-    /// upstream's auth headers/basic-auth must never be sent to it.
-    search_http: reqwest::Client,
+    /// upstream's auth headers/basic-auth must never be sent to it. `None` when
+    /// search is disabled (`search_url = ""`), so no client is allocated.
+    search_http: Option<reqwest::Client>,
     base_url: String,
     /// Base URL for free-text search. The GOPROXY protocol has no search endpoint,
     /// so this points at a pkg.go.dev-compatible site (default `https://pkg.go.dev`).
@@ -69,10 +70,6 @@ impl GoProxyRegistryClient {
             .user_agent("batlehub/0.1")
             .redirect(reqwest::redirect::Policy::limited(10));
         let http = apply_upstream_options(builder, opts)?;
-        let search_http = reqwest::Client::builder()
-            .user_agent("batlehub/0.1")
-            .redirect(reqwest::redirect::Policy::limited(10))
-            .build()?;
         let base_url = base_url.into();
         // search_url: None → built-in default; Some("") → disabled; Some(u) → override.
         let search_base = match opts.search_url.as_deref() {
@@ -83,6 +80,18 @@ impl GoProxyRegistryClient {
         let search_authed = search_base
             .as_deref()
             .is_some_and(|s| same_origin(&base_url, s));
+        // Only allocate the credential-free search client when search is enabled
+        // and points at a different origin than the credentialed upstream.
+        let search_http = if search_base.is_some() && !search_authed {
+            Some(
+                reqwest::Client::builder()
+                    .user_agent("batlehub/0.1")
+                    .redirect(reqwest::redirect::Policy::limited(10))
+                    .build()?,
+            )
+        } else {
+            None
+        };
         Ok(Self {
             http,
             search_http,
@@ -300,10 +309,13 @@ impl RegistryClient for GoProxyRegistryClient {
         // Only attach upstream credentials when the search host is the same origin
         // as the GOPROXY upstream; otherwise use the credential-free client so we
         // never leak the upstream token/basic-auth to a third-party search site.
-        let req = if self.search_authed {
-            self.get(&url)
-        } else {
-            self.search_http.get(&url)
+        let req = match (self.search_authed, self.search_http.as_ref()) {
+            (true, _) => self.get(&url),
+            (false, Some(client)) => client.get(&url),
+            // search_http is built whenever search is enabled and cross-origin, so
+            // this is unreachable past the `search_base` guard above; bail safely
+            // rather than fall back to the credentialed client and leak auth.
+            (false, None) => return Ok(vec![]),
         };
         let resp = match req.send().await {
             Ok(r) if r.status().is_success() => r,

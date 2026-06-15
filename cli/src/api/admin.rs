@@ -58,6 +58,9 @@ pub struct ConfigChangeEntry {
 pub struct WarmRequest {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub packages: Vec<String>,
+    /// Upstream artifact paths for path-addressed registries (deb/rpm/jetbrains).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
 }
 
 // ── Audit log ─────────────────────────────────────────────────────────────────
@@ -151,8 +154,13 @@ impl BatleHubClient {
 
     // ── Cache ──────────────────────────────────────────────────────────────────
 
-    pub async fn cache_warm(&self, registry: &str, packages: Vec<String>) -> Result<()> {
-        let body = WarmRequest { packages };
+    pub async fn cache_warm(
+        &self,
+        registry: &str,
+        packages: Vec<String>,
+        paths: Vec<String>,
+    ) -> Result<()> {
+        let body = WarmRequest { packages, paths };
         self.post_void(&format!("/api/v1/admin/registries/{registry}/warm"), &body)
             .await
     }

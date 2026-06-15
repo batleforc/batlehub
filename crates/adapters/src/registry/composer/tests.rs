@@ -394,3 +394,66 @@ fn parse_composer_zip_multi_root_zip_rejected() {
         "ambiguous multi-root ZIP must fail"
     );
 }
+
+#[tokio::test]
+async fn resolve_metadata_p2_passthrough_needs_no_http() {
+    // p2 / p2~dev artifacts return synthetic metadata pointing at the upstream
+    // URL without any request — an unreachable base proves it never connects.
+    let c = client("http://127.0.0.1:1");
+    let pkg = PackageId::new("composer", "monolog/monolog", "_").with_artifact("p2");
+    let md = c.resolve_metadata(&pkg).await.unwrap();
+    assert_eq!(
+        md.download_url.as_deref(),
+        Some("http://127.0.0.1:1/p2/monolog/monolog.json")
+    );
+
+    let dev = PackageId::new("composer", "monolog/monolog", "_").with_artifact("p2~dev");
+    let md_dev = c.resolve_metadata(&dev).await.unwrap();
+    assert_eq!(
+        md_dev.download_url.as_deref(),
+        Some("http://127.0.0.1:1/p2/monolog/monolog~dev.json")
+    );
+    assert_eq!(c.registry_type(), "composer");
+}
+
+#[tokio::test]
+async fn list_versions_returns_p2_versions() {
+    let mut server = Server::new_async().await;
+    let _m = server
+        .mock("GET", "/p2/monolog/monolog.json")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(p2_json("monolog/monolog", "2.0.0", "https://x/d.zip"))
+        .create_async()
+        .await;
+    let c = client(&server.url());
+    assert_eq!(
+        c.list_versions("monolog/monolog").await.unwrap(),
+        vec!["2.0.0"]
+    );
+}
+
+#[tokio::test]
+async fn search_packages_maps_results() {
+    let mut server = Server::new_async().await;
+    let _m = server
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(r"^/search\.json".to_string()),
+        )
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            serde_json::json!({
+                "results": [{"name": "monolog/monolog", "description": "logging"}]
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+    let c = client(&server.url());
+    let results = c.search_packages("monolog", 10).await.unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].name, "monolog/monolog");
+    assert_eq!(results[0].latest_version, "latest");
+}

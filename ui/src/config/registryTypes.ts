@@ -1155,4 +1155,65 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
       },
     ],
   },
+  // ── JetBrains IDE archives (proxy-only cache) ──────────────────────────────
+  {
+    id: "jetbrains",
+    label: "JetBrains IDE",
+    fileHint: "download.jetbrains.com",
+    description:
+      `Cache JetBrains IDE installer archives (proxy-only). The first download is ` +
+      `streamed from <code class="text-xs font-mono bg-muted px-1 rounded">download.jetbrains.com</code> ` +
+      `and cached; later downloads of the same file are served locally. ` +
+      `IDE archives are large (~1–1.7 GB), so raise ` +
+      `<code class="text-xs font-mono bg-muted px-1 rounded">[limits] max_artifact_size_bytes</code> ` +
+      `(e.g. 2 GiB) or they will be rejected.`,
+    snippets: [
+      {
+        key: "jetbrains-curl",
+        label: "Download an IDE archive",
+        lang: "bash",
+        template: (ctx) => {
+          const reg = `${ctx.base}/proxy/${ctx.registryName}/jetbrains`;
+          const auth = ctx.isAuthenticated
+            ? ` \\\n  -H "Authorization: Bearer ${ctx.token}"`
+            : "";
+          return [
+            `# The path after /jetbrains/ maps to download.jetbrains.com/<path>`,
+            `curl -fL -o ideaIC.tar.gz${auth} \\`,
+            `  ${reg}/idea/ideaIC-2024.1.4.tar.gz`,
+          ].join("\n");
+        },
+        note:
+          `Use the same path as the upstream URL: ` +
+          `<code class="font-mono bg-muted px-1 rounded">download.jetbrains.com/idea/ideaIC-2024.1.4.tar.gz</code> → ` +
+          `<code class="font-mono bg-muted px-1 rounded">/proxy/{name}/jetbrains/idea/ideaIC-2024.1.4.tar.gz</code>. ` +
+          `<code class="font-mono bg-muted px-1 rounded">download.jetbrains.com</code> redirects to a CDN ` +
+          `(<code class="font-mono bg-muted px-1 rounded">download-cdn.jetbrains.com</code>) — the redirect is followed ` +
+          `automatically, so always use the canonical path, not the CDN host. Use real archive names ` +
+          `(<code class="font-mono bg-muted px-1 rounded">ideaIU-…</code> Ultimate / ` +
+          `<code class="font-mono bg-muted px-1 rounded">ideaIC-…</code> Community).`,
+      },
+      {
+        key: "jetbrains-config",
+        label: "Server config",
+        lang: "toml",
+        template: (ctx) =>
+          [
+            `[limits]`,
+            `max_artifact_size_bytes = 2147483648  # 2 GiB — IDE archives are large`,
+            ``,
+            `[[registries]]`,
+            `name = "${ctx.registryName}"`,
+            `type = "jetbrains"`,
+            `mode = "proxy"            # upstream defaults to https://download.jetbrains.com`,
+            ``,
+            `[registries.rbac]`,
+            `anonymous = ["releases:read"]`,
+          ].join("\n"),
+        note:
+          `Override <code class="font-mono bg-muted px-1 rounded">upstreams</code> to cache another host ` +
+          `(e.g. <code class="font-mono bg-muted px-1 rounded">https://plugins.jetbrains.com</code>).`,
+      },
+    ],
+  },
 ];

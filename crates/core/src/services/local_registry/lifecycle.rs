@@ -82,6 +82,15 @@ impl LocalRegistryService {
         }
     }
 
+    /// Public revoke for path-addressed (deb/rpm) publish handlers, which record
+    /// quota via [`Self::enforce_publish_policy`] and then perform their own
+    /// storage writes outside the [`Self::publish`] transaction. They call this to
+    /// undo the recorded quota when a write fails, so a transient storage error
+    /// doesn't permanently charge the publisher for an artifact that never landed.
+    pub async fn revoke_publish_quota(&self, identity: &Identity, registry: &str, bytes: u64) {
+        self.revoke_quota(identity, registry, bytes).await;
+    }
+
     pub(super) async fn run_publish_sbom(
         &self,
         req: &PublishRequest,

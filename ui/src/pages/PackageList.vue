@@ -65,6 +65,7 @@ function statusLabel(pkg: PackageSummaryDto) {
       <Input
         v-model="search"
         placeholder="Filter by name, registry, or version…"
+        aria-label="Filter packages"
         class="max-w-sm h-8 text-sm"
       />
     </CardHeader>

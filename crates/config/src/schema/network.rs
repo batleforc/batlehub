@@ -202,3 +202,86 @@ pub struct UpstreamProxyConfig {
     #[serde(default)]
     pub no_proxy: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ip_blocking_defaults() {
+        let c = IpBlockingConfig::default();
+        assert!(!c.enabled);
+        assert_eq!(c.violation_threshold, 10);
+        assert_eq!(c.violation_window_secs, 300);
+        assert_eq!(c.ban_duration_secs, 3600);
+        assert_eq!(c.trigger_on_status, vec![429, 401]);
+        assert!(c.trusted_proxies.is_empty());
+    }
+
+    #[test]
+    fn ip_blocking_deserializes_overrides_and_defaults() {
+        let c: IpBlockingConfig = toml::from_str(
+            "enabled = true\nviolation_threshold = 3\ntrigger_on_status = [500]\ntrusted_proxies = [\"10.0.0.1\"]",
+        )
+        .unwrap();
+        assert!(c.enabled);
+        assert_eq!(c.violation_threshold, 3);
+        assert_eq!(c.trigger_on_status, vec![500]);
+        assert_eq!(c.trusted_proxies, vec!["10.0.0.1".to_string()]);
+        // Unspecified fields fall back to defaults.
+        assert_eq!(c.ban_duration_secs, 3600);
+        assert_eq!(c.violation_window_secs, 300);
+    }
+
+    #[test]
+    fn rate_limit_enforcement_default_and_parse() {
+        assert_eq!(RateLimitEnforcement::default(), RateLimitEnforcement::Block);
+        #[derive(serde::Deserialize)]
+        struct W {
+            e: RateLimitEnforcement,
+        }
+        let w: W = toml::from_str("e = \"warn\"").unwrap();
+        assert_eq!(w.e, RateLimitEnforcement::Warn);
+    }
+
+    #[test]
+    fn rate_limit_config_with_group() {
+        let c: RateLimitConfig = toml::from_str(
+            "requests_per_window = 100\nwindow_secs = 60\n\n[[groups]]\nname = \"ci\"\nrequests_per_window = 5000\nwindow_secs = 60",
+        )
+        .unwrap();
+        assert_eq!(c.requests_per_window, 100);
+        assert_eq!(c.window_secs, 60);
+        // Enforcement defaults to Block when omitted.
+        assert_eq!(c.enforcement, RateLimitEnforcement::Block);
+        assert_eq!(c.groups.len(), 1);
+        assert_eq!(c.groups[0].name, "ci");
+        assert_eq!(c.groups[0].requests_per_window, 5000);
+        assert!(c.groups[0].enforcement.is_none());
+    }
+
+    #[test]
+    fn upstream_auth_variants_deserialize() {
+        let b: UpstreamAuthConfig = toml::from_str("type = \"bearer\"\ntoken = \"t\"").unwrap();
+        assert!(matches!(b, UpstreamAuthConfig::Bearer(x) if x.token == "t"));
+        let basic: UpstreamAuthConfig =
+            toml::from_str("type = \"basic\"\nusername = \"u\"\npassword = \"p\"").unwrap();
+        assert!(
+            matches!(basic, UpstreamAuthConfig::Basic(x) if x.username == "u" && x.password == "p")
+        );
+        let h: UpstreamAuthConfig =
+            toml::from_str("type = \"header\"\nname = \"X-Api-Key\"\nvalue = \"k\"").unwrap();
+        assert!(
+            matches!(h, UpstreamAuthConfig::Header(x) if x.name == "X-Api-Key" && x.value == "k")
+        );
+    }
+
+    #[test]
+    fn upstream_proxy_and_tls_deserialize() {
+        let p: UpstreamProxyConfig = toml::from_str("url = \"http://proxy:3128\"").unwrap();
+        assert_eq!(p.url, "http://proxy:3128");
+        assert!(p.username.is_none() && p.password.is_none() && p.no_proxy.is_none());
+        let t = UpstreamTlsConfig::default();
+        assert!(t.ca_cert_path.is_none());
+    }
+}

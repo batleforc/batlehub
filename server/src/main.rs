@@ -186,6 +186,9 @@ async fn main() -> Result<()> {
         repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>,
         Arc::clone(&vuln_repo),
     );
+    // Built once here so the same instance is shared with the reload service (for
+    // hot-swapping) and registered as actix app_data below.
+    let repo_signer_map = builders::build_repo_signer_map(&config)?;
     let reload_svc = Arc::new(ConfigReloadService::new(
         Arc::clone(&hot),
         Arc::clone(&access_config),
@@ -193,6 +196,7 @@ async fn main() -> Result<()> {
         registry_mode_map.clone(),
         upstream_map.clone(),
         cargo_index_map.clone(),
+        repo_signer_map.clone(),
         config_path.clone(),
         Some(repo.pool()),
         hot_reload_enabled,
@@ -265,7 +269,7 @@ async fn main() -> Result<()> {
         local_svc,
         quota_svc,
         registry_mode_map,
-        repo_signer_map: builders::build_repo_signer_map(&config)?,
+        repo_signer_map,
         ip_block_store,
         beta_channel_store,
         team_namespace_store,

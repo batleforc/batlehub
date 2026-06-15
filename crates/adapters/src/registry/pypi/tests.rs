@@ -94,6 +94,71 @@ async fn resolve_metadata_404_returns_not_found() {
 }
 
 #[tokio::test]
+async fn fetch_artifact_resolves_then_streams_file() {
+    use futures::TryStreamExt;
+    let mut server = mockito::Server::new_async().await;
+    let file_url = format!("{}/files/requests-2.28.0-py3-none-any.whl", server.url());
+    let meta = server
+        .mock("GET", "/pypi/requests/2.28.0/json")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            serde_json::to_string(&serde_json::json!({
+                "urls": [
+                    {
+                        "filename": "requests-2.28.0-py3-none-any.whl",
+                        "url": file_url,
+                        "digests": { "sha256": "abc" }
+                    }
+                ]
+            }))
+            .unwrap(),
+        )
+        .create_async()
+        .await;
+    let file = server
+        .mock("GET", "/files/requests-2.28.0-py3-none-any.whl")
+        .with_status(200)
+        .with_body("WHEELBYTES")
+        .create_async()
+        .await;
+
+    let client = PypiRegistryClient::new(server.url(), &UpstreamHttpOptions::default()).unwrap();
+    let pkg = PackageId::new("reg", "requests", "2.28.0")
+        .with_artifact("requests-2.28.0-py3-none-any.whl");
+    let fetched = client.fetch_artifact(&pkg).await.unwrap();
+    let body: Vec<u8> = fetched
+        .stream
+        .try_fold(Vec::new(), |mut acc, c| async move {
+            acc.extend_from_slice(&c);
+            Ok(acc)
+        })
+        .await
+        .unwrap();
+    assert_eq!(body, b"WHEELBYTES");
+    meta.assert_async().await;
+    file.assert_async().await;
+}
+
+#[tokio::test]
+async fn fetch_artifact_missing_file_is_not_found() {
+    let mut server = mockito::Server::new_async().await;
+    let _meta = server
+        .mock("GET", "/pypi/requests/2.28.0/json")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(serde_json::to_string(&serde_json::json!({ "urls": [] })).unwrap())
+        .create_async()
+        .await;
+    let client = PypiRegistryClient::new(server.url(), &UpstreamHttpOptions::default()).unwrap();
+    let pkg = PackageId::new("reg", "requests", "2.28.0").with_artifact("nope.whl");
+    match client.fetch_artifact(&pkg).await {
+        Err(e) => assert!(matches!(e, CoreError::NotFound(_))),
+        Ok(_) => panic!("expected NotFound for a missing file"),
+    }
+}
+
+#[tokio::test]
 async fn list_versions_parses_releases() {
     let mut server = mockito::Server::new_async().await;
     let _mock = server

@@ -119,3 +119,69 @@ pub struct InboundWebhookConfig {
     /// When absent, any payload is accepted (suitable only for internal networks).
     pub secret: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_enabled_with_empty_channels() {
+        let c = NotificationsConfig::default();
+        // `Default` derive gives `false`; the serde default is `true` — exercise both.
+        assert!(!c.enabled);
+        assert!(c.channels.is_empty() && c.inbound.is_empty());
+    }
+
+    #[test]
+    fn deserializes_all_channel_types_and_defaults() {
+        let toml_str = r#"
+            enabled = true
+            [[channels]]
+            type = "webhook"
+            name = "ci-hook"
+            url = "https://example.com/hook"
+            secret = "s"
+            [[channels]]
+            type = "slack"
+            name = "slk"
+            url = "https://hooks.slack.com/x"
+            [[channels]]
+            type = "teams"
+            name = "tms"
+            url = "https://teams/x"
+            [[channels]]
+            type = "email"
+            name = "mail"
+            smtp_host = "smtp.example.com"
+            from = "a@example.com"
+            to = ["b@example.com"]
+            [[inbound]]
+            name = "scanner"
+            secret = "verify"
+        "#;
+        let c: NotificationsConfig = toml::from_str(toml_str).unwrap();
+        assert!(c.enabled);
+        assert_eq!(c.channels.len(), 4);
+        // `name()` covers every enum arm.
+        assert_eq!(c.channels[0].name(), "ci-hook");
+        assert_eq!(c.channels[1].name(), "slk");
+        assert_eq!(c.channels[2].name(), "tms");
+        assert_eq!(c.channels[3].name(), "mail");
+        // Defaults applied.
+        if let NotificationChannelConfig::Webhook(w) = &c.channels[0] {
+            assert_eq!(w.timeout_secs, 10);
+            assert_eq!(w.secret.as_deref(), Some("s"));
+        } else {
+            panic!("expected webhook");
+        }
+        if let NotificationChannelConfig::Email(e) = &c.channels[3] {
+            assert_eq!(e.smtp_port, 587);
+            assert!(e.tls);
+            assert_eq!(e.to, vec!["b@example.com".to_string()]);
+        } else {
+            panic!("expected email");
+        }
+        assert_eq!(c.inbound.len(), 1);
+        assert_eq!(c.inbound[0].name, "scanner");
+    }
+}

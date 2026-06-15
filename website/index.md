@@ -60,7 +60,7 @@ features:
 
 ## Supported registries
 
-BatleHub proxies seventeen registry types. Every registry type can run as a pure cache (proxy mode), a fully private registry (local mode), or a hybrid of both.
+BatleHub proxies eighteen registry types. Every registry type can run as a pure cache (proxy mode), a fully private registry (local mode), or a hybrid of both — except **JetBrains**, which is proxy-only.
 
 | Registry | Protocol | Default upstream |
 |----------|----------|-----------------|
@@ -81,20 +81,21 @@ BatleHub proxies seventeen registry types. Every registry type can run as a pure
 | **NuGet** | NuGet v3 service index, flat container metadata, `.nupkg` downloads and publish | `api.nuget.org` |
 | **Deb (APT)** | Path-based APT repository: `Packages`/`Release` proxy + signed private hosting | — ³ |
 | **RPM (YUM/DNF)** | Path-based `repodata/` repository proxy + signed private hosting | — ³ |
+| **JetBrains** | Path-based proxy cache for IDE installer archives | `download.jetbrains.com` ⁵ |
 
-The per-package feature matrix below covers the package-centric registries. **Forgejo** and **GitLab** behave like **GitHub** (proxy-only release assets). **Deb** and **RPM** are path-addressed repository formats — they support proxy caching and **signed private hosting** (BatleHub regenerates `Packages`/`Release`/`repodata` and signs them with an Ed25519 OpenPGP key) rather than the per-package axes below.
+The per-package feature matrix below covers the package-centric registries. **Forgejo** and **GitLab** behave like **GitHub** (proxy-only release assets). **Deb**, **RPM**, and **JetBrains** are **path-addressed** formats (last three columns, ⁶): they have no per-package model, so the structural axes do not apply — but they still get registry-level RBAC, multi-upstream fanout, and (Deb/RPM) signed private hosting.
 
-| Feature | GitHub | npm | Cargo | OpenVSX | VS Code | Go | Maven | Terraform | RubyGems | Composer | PyPI | Conda | NuGet |
-|---------|:------:|:---:|:-----:|:-------:|:-------:|:--:|:-----:|:---------:|:--------:|:--------:|:----:|:-----:|:-----:|
-| Version listing | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ ¹ | ✓ |
-| Source archive | ✓ | ✓ | ✓ | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
-| Binary / extension | ✓ | — | — | ✓ | ✓ | — | ✓ | ✓ | — | — | ✓ | ✓ | ✓ |
-| **Private publish** | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Multi-upstream fanout | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Release age gate | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ⚠ ² | ✓ |
-| RBAC | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Cache warming (version enumeration) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — | ✓ | ✓ ¹ | ✓ |
-| Explorer upstream search ⁴ | — | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ |
+| Feature | GitHub | npm | Cargo | OpenVSX | VS Code | Go | Maven | Terraform | RubyGems | Composer | PyPI | Conda | NuGet | Deb ⁶ | RPM ⁶ | JetBrains ⁶ |
+|---------|:------:|:---:|:-----:|:-------:|:-------:|:--:|:-----:|:---------:|:--------:|:--------:|:----:|:-----:|:-----:|:-----:|:-----:|:----------:|
+| Version listing | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ ¹ | ✓ | — | — | — |
+| Source archive | ✓ | ✓ | ✓ | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| Binary / extension | ✓ | — | — | ✓ | ✓ | — | ✓ | ✓ | — | — | ✓ | ✓ | ✓ | — | — | — |
+| **Private publish** | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| Multi-upstream fanout | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Release age gate | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ⚠ ² | ✓ | — | — | — |
+| RBAC | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Cache warming (version enumeration) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — | ✓ | ✓ ¹ | ✓ | — | — | — |
+| Explorer upstream search ⁴ | — | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | — | — | — |
 
 > ¹ Conda has no dedicated per-package version listing API. BatleHub synthesises one by scanning `repodata.json` for `noarch`, `linux-64`, `osx-64`, `osx-arm64`, and `win-64`. Results are the union of versions found across all available platforms.
 >
@@ -102,4 +103,8 @@ The per-package feature matrix below covers the package-centric registries. **Fo
 >
 > ³ Deb / RPM have no universal default upstream — set `upstreams` explicitly for proxy/hybrid mode. In local mode no upstream is contacted.
 >
-> ⁴ Package Explorer upstream ("Not Yet Proxied") search. Go uses pkg.go.dev; PyPI is exact-name lookup; Terraform combines module search with namespace/exact provider lookup. The release proxies (GitHub/Forgejo/GitLab), VS Code Marketplace, Conda, and Deb/RPM have no upstream search API — see the [Package Explorer guide](/guide/package-explorer#upstream-supported).
+> ⁴ Package Explorer upstream ("Not Yet Proxied") search. Go uses pkg.go.dev; PyPI is exact-name lookup; Terraform combines module search with namespace/exact provider lookup. The release proxies (GitHub/Forgejo/GitLab), VS Code Marketplace, Conda, Deb/RPM, and JetBrains have no upstream search API — see the [Package Explorer guide](/guide/package-explorer#upstream-supported).
+>
+> ⁵ JetBrains is proxy-only. The default upstream (`download.jetbrains.com`) serves IDE installer archives; override `upstreams` to cache another host (e.g. `plugins.jetbrains.com`). IDE archives are large (~1–1.7 GB), so raise `limits.max_artifact_size_bytes` (default 500 MiB).
+>
+> ⁶ Deb, RPM, and JetBrains are **path-addressed**: artifacts are fetched by file path with no per-package version model, so the version/source/binary/age-gate/warming/search axes do not apply (—). They do support multi-upstream fanout and registry-level RBAC; **Deb/RPM** additionally support signed private hosting (`local`/`hybrid`), while **JetBrains** is proxy-only.

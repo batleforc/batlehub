@@ -297,6 +297,7 @@ onMounted(() => {
           <Input
             class="pl-8"
             placeholder="Search packages…"
+            aria-label="Search packages"
             :value="search"
             @input="onSearchInput(($event.target as HTMLInputElement).value)"
           />

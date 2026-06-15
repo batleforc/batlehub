@@ -140,6 +140,7 @@ pub(super) fn build_registry_client(
             "conda" => Arc::new(CondaRegistryClient::new(url, opts)?),
             "deb" => Arc::new(PathProxyRegistryClient::new("deb", url, opts)?),
             "rpm" => Arc::new(PathProxyRegistryClient::new("rpm", url, opts)?),
+            "jetbrains" => Arc::new(PathProxyRegistryClient::new("jetbrains", url, opts)?),
             other => {
                 anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in")
             }
@@ -171,6 +172,9 @@ pub(super) fn build_registry_client(
         // for local-only mode, where the upstream is never contacted.
         "deb" => resolve_urls(&reg.upstreams, "https://deb.debian.org"),
         "rpm" => resolve_urls(&reg.upstreams, "https://example.invalid/rpm"),
+        // JetBrains IDE archives are served from a stable CDN, so it's a sensible
+        // default; users can override `upstreams` (e.g. for plugins.jetbrains.com).
+        "jetbrains" => resolve_urls(&reg.upstreams, "https://download.jetbrains.com"),
         other => {
             anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in")
         }

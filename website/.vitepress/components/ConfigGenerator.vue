@@ -11,13 +11,18 @@ type RegistryType =
   | "vscode-marketplace"
   | "goproxy"
   | "github"
+  | "forgejo"
+  | "gitlab"
   | "maven"
   | "terraform"
   | "rubygems"
   | "composer"
   | "pypi"
   | "conda"
-  | "nuget";
+  | "nuget"
+  | "deb"
+  | "rpm"
+  | "jetbrains";
 type AuthRole = "admin" | "user" | "anonymous";
 type StorageBackendType = "filesystem" | "s3";
 type StorageMode = "single" | "multi";
@@ -344,6 +349,8 @@ const defaultUpstream: Record<RegistryType, string> = {
   "vscode-marketplace": "https://marketplace.visualstudio.com",
   goproxy: "https://proxy.golang.org",
   github: "https://api.github.com",
+  forgejo: "https://codeberg.org",
+  gitlab: "https://gitlab.com",
   maven: "https://repo1.maven.org/maven2",
   terraform: "https://registry.terraform.io",
   rubygems: "https://rubygems.org",
@@ -351,6 +358,11 @@ const defaultUpstream: Record<RegistryType, string> = {
   pypi: "https://pypi.org",
   conda: "https://conda.anaconda.org",
   nuget: "https://api.nuget.org",
+  // Deb has a canonical Debian mirror; RPM has no universal default upstream,
+  // so it is left blank for the user to fill in (e.g. a Fedora/openSUSE mirror).
+  deb: "https://deb.debian.org",
+  rpm: "",
+  jetbrains: "https://download.jetbrains.com",
 };
 
 function defaultRegistry(type: RegistryType = "npm"): Registry {
@@ -916,8 +928,20 @@ function addRegistry() {
 function removeRegistry(id: number) {
   registries.value = registries.value.filter((r) => r.id !== id);
 }
+// Registry types that only support proxy mode (no private/local hosting) — they
+// mirror the backend's local/hybrid allowlist: anything NOT in it is proxy-only.
+const PROXY_ONLY_TYPES = new Set<RegistryType>([
+  "github",
+  "forgejo",
+  "gitlab",
+  "jetbrains",
+]);
+const isProxyOnly = (reg: Registry) => PROXY_ONLY_TYPES.has(reg.type);
+
 function onTypeChange(reg: Registry) {
   reg.upstreams = defaultUpstream[reg.type];
+  // Proxy-only types can't run in local/hybrid mode; force proxy.
+  if (isProxyOnly(reg)) reg.mode = "proxy";
 }
 
 function addBackend() {
@@ -1563,6 +1587,11 @@ const composerAuthSnippet = `{
                 <option value="goproxy">Go Modules</option>
                 <option value="terraform">Terraform</option>
                 <option value="github">GitHub</option>
+                <option value="forgejo">Forgejo / Gitea</option>
+                <option value="gitlab">GitLab</option>
+                <option value="deb">Deb (APT)</option>
+                <option value="rpm">RPM (YUM/DNF)</option>
+                <option value="jetbrains">JetBrains IDE</option>
               </select>
             </label>
           </div>
@@ -1571,15 +1600,29 @@ const composerAuthSnippet = `{
               ><input type="radio" v-model="reg.mode" value="proxy" />
               proxy</label
             >
-            <label class="cg-radio"
-              ><input type="radio" v-model="reg.mode" value="local" />
+            <label class="cg-radio" :class="{ 'cg-disabled': isProxyOnly(reg) }"
+              ><input
+                type="radio"
+                v-model="reg.mode"
+                value="local"
+                :disabled="isProxyOnly(reg)"
+              />
               local</label
             >
-            <label class="cg-radio"
-              ><input type="radio" v-model="reg.mode" value="hybrid" />
+            <label class="cg-radio" :class="{ 'cg-disabled': isProxyOnly(reg) }"
+              ><input
+                type="radio"
+                v-model="reg.mode"
+                value="hybrid"
+                :disabled="isProxyOnly(reg)"
+              />
               hybrid</label
             >
           </div>
+          <p v-if="isProxyOnly(reg)" class="cg-hint">
+            {{ reg.type }} is a proxy-only registry (no private hosting), so mode
+            is locked to <code>proxy</code>.
+          </p>
           <label v-if="reg.mode !== 'local'">
             Upstreams (one per line)
             <textarea v-model="reg.upstreams" rows="2" />
@@ -2220,6 +2263,21 @@ textarea {
 
 .cg-mb {
   margin-bottom: 0.6rem;
+}
+
+.cg-radio.cg-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.cg-hint {
+  font-size: 0.78rem;
+  color: var(--vp-c-text-2);
+  margin: 0 0 0.6rem;
+}
+
+.cg-hint code {
+  font-size: 0.74rem;
 }
 
 /* ── Grid layouts ────────────────────────────────────────────────── */

@@ -96,6 +96,10 @@ pub enum CacheCommand {
         /// Comma-separated list of package names to warm
         #[arg(long)]
         packages: Option<String>,
+        /// Comma-separated upstream artifact paths to warm, for path-addressed
+        /// registries (deb/rpm/jetbrains), e.g. "idea/ideaIC-2024.1.4.tar.gz"
+        #[arg(long)]
+        paths: Option<String>,
     },
     /// Clear the metadata cache for a registry
     Clear { registry: String },
@@ -240,15 +244,25 @@ async fn handle_config_admin(
 
 async fn handle_cache(cmd: CacheCommand, client: &BatleHubClient) -> Result<()> {
     match cmd {
-        CacheCommand::Warm { registry, packages } => {
-            let pkgs = packages
-                .unwrap_or_default()
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect();
-            client.cache_warm(&registry, pkgs).await?;
+        CacheCommand::Warm {
+            registry,
+            packages,
+            paths,
+        } => {
+            let split = |s: Option<String>| -> Vec<String> {
+                s.unwrap_or_default()
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            };
+            let pkgs = split(packages);
+            let pths = split(paths);
+            if pkgs.is_empty() && pths.is_empty() {
+                anyhow::bail!("specify --packages and/or --paths");
+            }
+            client.cache_warm(&registry, pkgs, pths).await?;
             println!("Cache warming started for {registry}");
         }
         CacheCommand::Clear { registry } => {

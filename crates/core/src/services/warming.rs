@@ -239,6 +239,56 @@ impl WarmingService {
         }
         total
     }
+
+    /// Warm a single artifact by its upstream **path**, for path-addressed
+    /// registries (`deb`/`rpm`/`jetbrains`) that have no per-package version model.
+    ///
+    /// The path is fetched through the same synthetic `repo` coordinate the proxy
+    /// read path uses (`{registry}/repo/_/{path}`), so the artifact lands in the
+    /// exact cache slot a later `GET /proxy/{registry}/…/{path}` will read.
+    pub async fn warm_path(&self, path: &str) -> WarmingReport {
+        self.warm_all_paths(std::slice::from_ref(&path.to_owned()))
+            .await
+    }
+
+    /// Warm every upstream path in `paths` concurrently (bounded by `concurrency`).
+    pub async fn warm_all_paths(&self, paths: &[String]) -> WarmingReport {
+        if self.concurrency == 0 {
+            return WarmingReport::default();
+        }
+
+        let sem = Arc::new(Semaphore::new(self.concurrency));
+        let mut handles = Vec::with_capacity(paths.len());
+
+        for path in paths {
+            let pkg =
+                PackageId::new(self.registry_name.clone(), "repo", "_").with_artifact(path.clone());
+            let artifact_key = format!("artifact:{}", pkg.cache_key());
+            handles.push(tokio::spawn(warm_one_version(
+                Arc::clone(&self.client),
+                Arc::clone(&self.storage),
+                Arc::clone(&self.artifact_meta),
+                artifact_key,
+                pkg,
+                self.registry_name.clone(),
+                path.clone(),
+                "_".to_owned(),
+                Arc::clone(&sem),
+            )));
+        }
+
+        let mut total = WarmingReport::default();
+        for handle in handles {
+            match handle.await {
+                Ok(r) => total += r,
+                Err(e) => {
+                    tracing::warn!(error = %e, "warming: path task panicked");
+                    total.errors += 1;
+                }
+            }
+        }
+        total
+    }
 }
 
 #[cfg(test)]
@@ -751,6 +801,51 @@ mod tests {
         let report = svc.warm_package("mylib").await;
         assert_eq!(report.errors, 1);
         assert_eq!(report.warmed, 0);
+    }
+
+    #[tokio::test]
+    async fn warm_path_stores_under_the_proxy_cache_key() {
+        let storage = StubStorage::new();
+        let svc = active_svc(StubClient::with_versions(vec!["unused"]), storage.clone());
+        let report = svc.warm_path("idea/ideaIC-2024.1.4.tar.gz").await;
+        assert_eq!(report.warmed, 1);
+        assert_eq!(report.errors, 0);
+        // Must be the exact key the proxy read path reads: artifact:{reg}/repo/_/{path}.
+        let key = "artifact:test-reg/repo/_/idea/ideaIC-2024.1.4.tar.gz";
+        assert!(storage.exists(key).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn warm_all_paths_skips_already_cached() {
+        let storage = StubStorage::new();
+        storage
+            .store(
+                "artifact:test-reg/repo/_/a.bin",
+                Bytes::from("cached"),
+                StorageMeta::default(),
+            )
+            .await
+            .unwrap();
+        let svc = active_svc(StubClient::with_versions(vec!["unused"]), storage.clone());
+        let report = svc
+            .warm_all_paths(&["a.bin".to_owned(), "b.bin".to_owned()])
+            .await;
+        assert_eq!(report.warmed, 1, "b.bin warmed");
+        assert_eq!(report.skipped, 1, "a.bin already cached");
+        assert_eq!(report.errors, 0);
+    }
+
+    #[tokio::test]
+    async fn warm_all_paths_disabled_when_concurrency_zero() {
+        let mut svc = active_svc(
+            StubClient::with_versions(vec!["unused"]),
+            StubStorage::new(),
+        );
+        svc.concurrency = 0;
+        let report = svc.warm_all_paths(&["a.bin".to_owned()]).await;
+        assert_eq!(report.warmed, 0);
+        assert_eq!(report.skipped, 0);
+        assert_eq!(report.errors, 0);
     }
 
     #[tokio::test]

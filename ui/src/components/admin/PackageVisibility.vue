@@ -68,7 +68,12 @@ async function save() {
         >
           {{ visibilityData?.visibility ?? "public" }}
         </Badge>
-        <Select v-model="selected" :options="[...VISIBILITY_OPTIONS]" class="w-72" />
+        <Select
+          v-model="selected"
+          :options="[...VISIBILITY_OPTIONS]"
+          aria-label="Package visibility"
+          class="w-72"
+        />
         <Button
           size="sm"
           :disabled="saving || selected === (visibilityData?.visibility ?? 'public')"

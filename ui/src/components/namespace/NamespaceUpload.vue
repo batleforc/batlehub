@@ -61,6 +61,49 @@ function acceptFor(t: string) {
   return "*";
 }
 
+/** Build the upload URL + HTTP method for the selected registry type.
+ *  Throws when type-specific required fields are missing. */
+function buildUploadTarget(type: string, reg: string): { url: string; method: string } {
+  switch (type) {
+    case "rubygems":
+      return { url: `${API_BASE_URL}/proxy/${reg}/api/v1/gems`, method: "POST" };
+    case "composer":
+      return { url: `${API_BASE_URL}/proxy/${reg}/api/upload`, method: "POST" };
+    case "openvsx":
+    case "vscode-marketplace": {
+      const id = uploadExtId.value.trim();
+      const version = uploadVersion.value.trim();
+      if (!id || !version) throw new Error("Extension ID and version are required");
+      return {
+        url: `${API_BASE_URL}/proxy/${reg}/${encodeURIComponent(id)}/${encodeURIComponent(version)}/vsix`,
+        method: "PUT",
+      };
+    }
+    case "goproxy": {
+      const mod = uploadModule.value.trim();
+      const version = uploadVersion.value.trim();
+      if (!mod || !version) throw new Error("Module path and version are required");
+      return {
+        url: `${API_BASE_URL}/proxy/${reg}/${encodeURIComponent(mod)}/@v/${encodeURIComponent(version)}.zip`,
+        method: "PUT",
+      };
+    }
+    case "deb": {
+      const dist = uploadDistribution.value.trim();
+      const component = uploadComponent.value.trim();
+      if (!dist || !component) throw new Error("Distribution and component are required");
+      return {
+        url: `${API_BASE_URL}/proxy/${reg}/deb/pool/${encodeURIComponent(dist)}/${encodeURIComponent(component)}/upload`,
+        method: "PUT",
+      };
+    }
+    case "rpm":
+      return { url: `${API_BASE_URL}/proxy/${reg}/rpm/upload`, method: "PUT" };
+    default:
+      return { url: "", method: "POST" };
+  }
+}
+
 async function doUpload() {
   if (!uploadFile.value || !selectedRegistry.value) return;
   loading.value = true;
@@ -68,31 +111,7 @@ async function doUpload() {
   success.value = false;
   try {
     const reg = encodeURIComponent(selectedRegistry.value);
-    let url = "";
-    let method = "POST";
-    if (registryType.value === "rubygems") {
-      url = `${API_BASE_URL}/proxy/${reg}/api/v1/gems`;
-    } else if (registryType.value === "composer") {
-      url = `${API_BASE_URL}/proxy/${reg}/api/upload`;
-    } else if (registryType.value === "openvsx" || registryType.value === "vscode-marketplace") {
-      if (!uploadExtId.value.trim() || !uploadVersion.value.trim())
-        throw new Error("Extension ID and version are required");
-      url = `${API_BASE_URL}/proxy/${reg}/${encodeURIComponent(uploadExtId.value.trim())}/${encodeURIComponent(uploadVersion.value.trim())}/vsix`;
-      method = "PUT";
-    } else if (registryType.value === "goproxy") {
-      if (!uploadModule.value.trim() || !uploadVersion.value.trim())
-        throw new Error("Module path and version are required");
-      url = `${API_BASE_URL}/proxy/${reg}/${encodeURIComponent(uploadModule.value.trim())}/@v/${encodeURIComponent(uploadVersion.value.trim())}.zip`;
-      method = "PUT";
-    } else if (registryType.value === "deb") {
-      if (!uploadDistribution.value.trim() || !uploadComponent.value.trim())
-        throw new Error("Distribution and component are required");
-      url = `${API_BASE_URL}/proxy/${reg}/deb/pool/${encodeURIComponent(uploadDistribution.value.trim())}/${encodeURIComponent(uploadComponent.value.trim())}/upload`;
-      method = "PUT";
-    } else if (registryType.value === "rpm") {
-      url = `${API_BASE_URL}/proxy/${reg}/rpm/upload`;
-      method = "PUT";
-    }
+    const { url, method } = buildUploadTarget(registryType.value, reg);
     const body = await uploadFile.value.arrayBuffer();
     const r = await authFetch(url, {
       method,
@@ -204,8 +223,7 @@ const currentSnippet = computed(
           <div class="grid grid-cols-2 gap-3">
             <div class="space-y-1.5">
               <Label for="upload-distribution"
-                >Distribution
-                <span class="text-muted-foreground text-xs">(suite)</span></Label
+                >Distribution <span class="text-muted-foreground text-xs">(suite)</span></Label
               >
               <Input
                 id="upload-distribution"

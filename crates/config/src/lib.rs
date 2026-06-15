@@ -240,6 +240,46 @@ mod tests {
     }
 
     #[test]
+    fn jetbrains_proxy_mode_passes_without_upstream() {
+        // jetbrains is proxy-only and has a real default upstream, so no explicit
+        // `upstreams` is required (unlike deb/rpm).
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [[registries]]
+        type = "jetbrains"
+        name = "jb"
+        mode = "proxy"
+        "#
+        );
+        let config: AppConfig = toml::from_str(&toml).unwrap();
+        config
+            .validate()
+            .expect("jetbrains + proxy mode (no upstream) must be accepted");
+    }
+
+    #[test]
+    fn jetbrains_local_mode_is_rejected() {
+        // jetbrains is proxy-only — local/hybrid hosting is not supported.
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [[registries]]
+        type = "jetbrains"
+        name = "jb"
+        mode = "local"
+        "#
+        );
+        let config: AppConfig = toml::from_str(&toml).unwrap();
+        assert!(
+            config.validate().is_err(),
+            "jetbrains + local mode should fail validation"
+        );
+    }
+
+    #[test]
     fn server_defaults_applied_when_fields_absent() {
         let toml = r#"
         [server]

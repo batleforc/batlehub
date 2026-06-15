@@ -112,7 +112,7 @@ impl AppConfig {
             match registry.registry_type.as_str() {
                 "github" | "forgejo" | "gitlab" | "cargo" | "npm" | "openvsx" | "goproxy"
                 | "pypi" | "conda" | "composer" | "vscode-marketplace" | "maven" | "terraform"
-                | "rubygems" | "nuget" | "deb" | "rpm" => {}
+                | "rubygems" | "nuget" | "deb" | "rpm" | "jetbrains" => {}
                 other => bail!("unknown registry type: '{other}'"),
             }
             if matches!(registry.mode, RegistryMode::Local | RegistryMode::Hybrid)
