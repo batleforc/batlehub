@@ -1156,6 +1156,82 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
       },
     ],
   },
+  // ── Arch Linux (pacman) ──────────────────────────────────────────────────────
+  {
+    id: "pacman",
+    label: "Arch Linux (pacman)",
+    fileHint: "/etc/pacman.conf",
+    description:
+      `Proxy and host Arch Linux pacman repositories. In local/hybrid mode, publish ` +
+      `<code class="text-xs font-mono bg-muted px-1 rounded">.pkg.tar.zst</code> packages and BatleHub ` +
+      `regenerates the repository database (<code class="text-xs font-mono bg-muted px-1 rounded">&lt;repo&gt;.db</code>), ` +
+      `signing it and each package (Ed25519 OpenPGP) when a ` +
+      `<code class="text-xs font-mono bg-muted px-1 rounded">repo_signing</code> key is configured.`,
+    snippets: [
+      {
+        key: "pacman-conf",
+        label: "pacman.conf repository",
+        lang: "ini",
+        template: (ctx) => {
+          const reg = `${ctx.base}/proxy/${ctx.registryName}/pacman`;
+          const lines = [
+            `[${ctx.registryName}]`,
+            // $arch is expanded by pacman (e.g. x86_64); $repo resolves to the section name.
+            `Server = ${reg}/$arch`,
+          ];
+          if (isPublishMode(ctx)) {
+            lines.push(
+              `# Signed local repo: import the key (snippet below), then:`,
+              `SigLevel = Required DatabaseOptional`,
+              `# Unsigned local repo (no repo_signing key): use instead:`,
+              `# SigLevel = Optional TrustAll`,
+            );
+          } else {
+            lines.push(`SigLevel = Required DatabaseOptional  # verify with the upstream's keyring`);
+          }
+          return lines.join("\n");
+        },
+        note: (ctx) =>
+          `Add the block to <code class="font-mono bg-muted px-1 rounded">/etc/pacman.conf</code>. ` +
+          `The DB is served as <code class="font-mono bg-muted px-1 rounded">$arch/${ctx.registryName}.db</code>, ` +
+          `so the section name must match the registry name.`,
+      },
+      {
+        key: "pacman-key",
+        label: "Import the signing key (signed local/hybrid)",
+        lang: "bash",
+        showWhen: isPublishMode,
+        template: (ctx) =>
+          [
+            `# Import BatleHub's repo key and locally trust it`,
+            `curl -fsSL ${ctx.base}/proxy/${ctx.registryName}/pacman/key.gpg \\`,
+            `  | sudo pacman-key --add -`,
+            `# Find the imported key id, then locally sign it:`,
+            `sudo pacman-key --lsign-key <KEYID>`,
+          ].join("\n"),
+        note:
+          `Only served for local/hybrid registries with a ` +
+          `<code class="font-mono bg-muted px-1 rounded">repo_signing</code> key. ` +
+          `<code class="font-mono bg-muted px-1 rounded">pacman-key --add</code> prints the key id to lsign.`,
+      },
+      {
+        key: "pacman-publish",
+        label: "Publish a package (local/hybrid)",
+        lang: "bash",
+        showWhen: isPublishMode,
+        template: (ctx) =>
+          [
+            `curl -X PUT \\`,
+            `  -H "Authorization: Bearer ${authTokenOrPlaceholder(ctx)}" \\`,
+            `  --data-binary @hello-1.0-1-x86_64.pkg.tar.zst \\`,
+            `  ${ctx.base}/proxy/${ctx.registryName}/pacman/upload`,
+          ].join("\n"),
+        note:
+          `The package name, version, and architecture are read from the archive's ` +
+          `<code class="font-mono bg-muted px-1 rounded">.PKGINFO</code>; the stored filename is derived from them.`,
+      },
+    ],
+  },
   // ── JetBrains IDE archives (proxy-only cache) ──────────────────────────────
   {
     id: "jetbrains",

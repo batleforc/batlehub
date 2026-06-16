@@ -20,6 +20,7 @@ fi
 
 DEBIAN_IMAGE="${DEBIAN_IMAGE:-docker.io/library/debian:stable-slim}"
 FEDORA_IMAGE="${FEDORA_IMAGE:-docker.io/library/fedora:41}"
+ARCH_IMAGE="${ARCH_IMAGE:-docker.io/library/archlinux:latest}"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -60,4 +61,32 @@ echo "==> Verifying DNF accepts the signed repodata (makecache + install)"
   echo "DNF-INTEROP-OK"
 '
 
-echo "==> apt + dnf interop PASSED"
+echo "==> Verifying pacman accepts the signed repo (sync + install)"
+"$ENGINE" run --rm --user 0 -v "$OUT/pacman:/srv/pacman:$MNT_SUFFIX" "$ARCH_IMAGE" bash -c '
+  set -e
+  # Fresh keyring, then import and locally trust the BatleHub Ed25519 repo key.
+  pacman-key --init
+  pacman-key --add /srv/pacman/key.gpg
+  FPR=$(gpg --homedir /etc/pacman.d/gnupg --list-keys --with-colons interop@batlehub.test \
+        | awk -F: "/^fpr:/{print \$10; exit}")
+  pacman-key --lsign-key "$FPR"
+
+  # Replace pacman.conf with just our repo so the offline sync never reaches the
+  # default Arch mirrors. SigLevel=Required verifies both the DB and the package
+  # signature; $arch / $repo are expanded by pacman, so keep them literal here.
+  cat > /etc/pacman.conf <<"PACMANCONF"
+[options]
+Architecture = x86_64
+SigLevel = Required
+
+[batlehub]
+Server = file:///srv/pacman/$arch
+PACMANCONF
+
+  pacman -Sy
+  pacman -S --noconfirm hello-batlehub
+  test -f /usr/share/hello-batlehub/data.txt
+  echo "PACMAN-INTEROP-OK"
+'
+
+echo "==> apt + dnf + pacman interop PASSED"

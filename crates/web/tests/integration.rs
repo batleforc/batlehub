@@ -2421,6 +2421,220 @@ async fn rpm_signing_key_is_404_when_unsigned() {
     assert_eq!(resp.status(), 404);
 }
 
+// ── Pacman repository hosting ────────────────────────────────────────────────
+
+const PKGINFO: &str = "pkgname = hello\npkgbase = hello\npkgver = 1.0-1\npkgdesc = A greeting\nurl = https://example.com\nbuilddate = 1700000000\npackager = me\nsize = 4096\narch = x86_64\nlicense = MIT\ndepend = glibc\n";
+
+/// Build a minimal pacman package (a gzip-compressed tar with a root `.PKGINFO`).
+/// The parser detects the codec from the magic bytes, so `.pkg.tar.gz` is just as
+/// valid as `.zst` and avoids pulling a zstd dev-dependency into the web tests.
+fn make_test_pkg(pkginfo: &str) -> Vec<u8> {
+    use std::io::Write;
+    let mut tar_buf = Vec::new();
+    {
+        let mut tb = tar::Builder::new(&mut tar_buf);
+        let mut header = tar::Header::new_gnu();
+        header.set_path(".PKGINFO").unwrap();
+        header.set_size(pkginfo.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tb.append(&header, pkginfo.as_bytes()).unwrap();
+        tb.finish().unwrap();
+    }
+    let mut gz = Vec::new();
+    {
+        let mut enc = flate2::write::GzEncoder::new(&mut gz, flate2::Compression::default());
+        enc.write_all(&tar_buf).unwrap();
+        enc.finish().unwrap();
+    }
+    gz
+}
+
+/// Gunzip + untar the repo DB and return the first `*/desc` entry's text.
+fn db_desc_text(db: &[u8]) -> String {
+    let mut decoder = flate2::read::GzDecoder::new(db);
+    let mut tar_bytes = Vec::new();
+    std::io::Read::read_to_end(&mut decoder, &mut tar_bytes).unwrap();
+    let mut archive = tar::Archive::new(std::io::Cursor::new(tar_bytes));
+    for entry in archive.entries().unwrap() {
+        let mut entry = entry.unwrap();
+        let path = entry.path().unwrap().to_string_lossy().into_owned();
+        if path.ends_with("/desc") {
+            let mut s = String::new();
+            std::io::Read::read_to_string(&mut entry, &mut s).unwrap();
+            return s;
+        }
+    }
+    panic!("db tar has no */desc entry");
+}
+
+#[actix_web::test]
+async fn pacman_publish_then_read_db_and_package() {
+    let parts = local_registry_app_parts("arch", "pacman", RegistryMode::Local, None);
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+
+    let pkg_bytes = make_test_pkg(PKGINFO);
+    let publish = call_service(
+        &app,
+        TestRequest::put()
+            .uri("/proxy/arch/pacman/upload")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .set_payload(pkg_bytes.clone())
+            .to_request(),
+    )
+    .await;
+    assert_eq!(publish.status(), 201);
+
+    // The repo DB lists the package's desc with its filename.
+    let db = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/arch/pacman/x86_64/arch.db")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(db.status(), 200);
+    let desc = db_desc_text(&read_body(db).await);
+    assert!(desc.contains("%NAME%\nhello\n"));
+    assert!(desc.contains("%FILENAME%\nhello-1.0-1-x86_64.pkg.tar.gz\n"));
+    // Unsigned repo: no PGPSIG embedded.
+    assert!(!desc.contains("%PGPSIG%"));
+
+    // The package is downloadable from its arch dir, byte-for-byte.
+    let pkg = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/arch/pacman/x86_64/hello-1.0-1-x86_64.pkg.tar.gz")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(pkg.status(), 200);
+    assert_eq!(read_body(pkg).await.to_vec(), pkg_bytes);
+
+    // Unsigned repo: no detached DB signature.
+    let sig = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/arch/pacman/x86_64/arch.db.sig")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(sig.status(), 404);
+}
+
+#[actix_web::test]
+async fn pacman_publish_requires_authentication() {
+    let parts = local_registry_app_parts("arch", "pacman", RegistryMode::Local, None);
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    let resp = call_service(
+        &app,
+        TestRequest::put()
+            .uri("/proxy/arch/pacman/upload")
+            .set_payload(make_test_pkg(PKGINFO))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn pacman_signed_publish_emits_db_sig_pgpsig_and_key() {
+    let seed = "9d61b19deffeba00aa3f3b6e3b0fe6a3f3a76b08e2c0a3f3b6e3b0fe6a3f3a76";
+    let signer = Arc::new(
+        batlehub_adapters::repo::OpenPgpSigner::from_seed_hex(seed, 1_700_000_000, "BatleHub")
+            .unwrap(),
+    );
+    let mut sm = HashMap::new();
+    sm.insert("arch".to_owned(), signer);
+
+    let parts = local_registry_app_parts("arch", "pacman", RegistryMode::Local, None);
+    let LocalRegistryAppParts {
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        mode_map,
+    } = parts;
+    let app = finish_test_app_with_extra(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        mode_map,
+        batlehub_web::CargoIndexMap::default(),
+        ConfigureAppDefaults::default(),
+        RepoSignerMap::from(sm),
+        test_auth_providers(),
+    )
+    .await;
+
+    let publish = call_service(
+        &app,
+        TestRequest::put()
+            .uri("/proxy/arch/pacman/upload")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .set_payload(make_test_pkg(PKGINFO))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(publish.status(), 201);
+
+    // Detached DB signature is present.
+    let db_sig = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/arch/pacman/x86_64/arch.db.sig")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(db_sig.status(), 200);
+    assert!(!read_body(db_sig).await.to_vec().is_empty());
+
+    // The package has a sidecar detached signature.
+    let pkg_sig = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/arch/pacman/x86_64/hello-1.0-1-x86_64.pkg.tar.gz.sig")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(pkg_sig.status(), 200);
+
+    // The DB embeds the base64 %PGPSIG% field.
+    let db = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/arch/pacman/x86_64/arch.db")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    let desc = db_desc_text(&read_body(db).await);
+    assert!(desc.contains("%PGPSIG%"));
+
+    // The public key is downloadable for pacman-key.
+    let key = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/proxy/arch/pacman/key.gpg")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(key.status(), 200);
+    let key_body = String::from_utf8(read_body(key).await.to_vec()).unwrap();
+    assert!(key_body.contains("-----BEGIN PGP PUBLIC KEY BLOCK-----"));
+}
+
 #[actix_web::test]
 async fn rpm_proxy_read_falls_through_to_upstream() {
     // Proxy mode: repodata is fetched from upstream (FixedRegistry returns bytes).

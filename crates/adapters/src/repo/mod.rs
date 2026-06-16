@@ -9,6 +9,9 @@ pub mod deb;
 #[cfg(feature = "registry-rpm")]
 pub mod rpm;
 
+#[cfg(feature = "registry-pacman")]
+pub mod pacman;
+
 pub use openpgp::OpenPgpSigner;
 
 /// Gzip a byte slice (used for `Packages.gz` and the `repodata/*.xml.gz` files).

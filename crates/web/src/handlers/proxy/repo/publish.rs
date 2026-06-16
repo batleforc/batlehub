@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use actix_web::{put, web, HttpResponse, Responder};
 
-use batlehub_adapters::repo::{deb, gzip, rpm, OpenPgpSigner};
+use batlehub_adapters::repo::{deb, gzip, pacman, rpm, OpenPgpSigner};
 use batlehub_core::{
     ports::{StorageBackend, StorageMeta},
     services::LocalRegistryService,
@@ -454,6 +454,202 @@ async fn regenerate_rpm(
         store_bytes(
             storage,
             &repo_storage_key(registry, "repodata/repomd.xml.key"),
+            signer.armored_public_key().into_bytes(),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+// ── Pacman publish ───────────────────────────────────────────────────────────
+
+/// `PUT /proxy/{registry}/pacman/upload`
+#[utoipa::path(
+    put,
+    path = "/proxy/{registry}/pacman/upload",
+    tag = "proxy/pacman",
+    params(("registry" = String, Path, description = "Registry name")),
+    responses(
+        (status = 201, description = "Package published; repo database regenerated"),
+        (status = 400, description = "Invalid package"),
+        (status = 403, description = "Authentication required"),
+        (status = 404, description = "Unknown or non-local registry"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[put("/proxy/{registry}/pacman/upload")]
+pub async fn pacman_publish(
+    path: web::Path<String>,
+    payload: web::Payload,
+    identity: AuthIdentity,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
+    map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
+    signers: web::Data<RepoSignerMap>,
+) -> Result<impl Responder, AppError> {
+    let registry = path.into_inner();
+    require_registry_type(&registry, "pacman", &map)?;
+    super::super::common::require_local_mode(&registry, &mode_map)?;
+    require_authenticated(&identity)?;
+
+    let bytes = collect_payload(payload).await?;
+
+    // Parse once with a placeholder filename, then name the stored file from the
+    // parsed coordinates + the compression magic — we never trust a client name.
+    let mut pkg = pacman::parse_pacman(&bytes, "").map_err(AppError::from)?;
+    let name = pkg
+        .name()
+        .ok_or_else(|| AppError::bad_request(".PKGINFO is missing pkgname".to_owned()))?
+        .to_owned();
+    let version = pkg
+        .version()
+        .ok_or_else(|| AppError::bad_request(".PKGINFO is missing pkgver".to_owned()))?
+        .to_owned();
+    let arch = pkg
+        .arch()
+        .ok_or_else(|| AppError::bad_request(".PKGINFO is missing arch".to_owned()))?
+        .to_owned();
+    batlehub_core::services::validate_coordinate(&name, &version, None).map_err(AppError::from)?;
+    // `arch` is a single path segment in both the package key (`{arch}/{file}`)
+    // and the sidecar key that `regenerate_pacman` groups on, so reject traversal
+    // and any '/' for a clean 400 rather than relying on the storage guard.
+    batlehub_core::services::validate_path_safe("architecture", &arch).map_err(AppError::from)?;
+    if arch.contains('/') {
+        return Err(AppError::bad_request(
+            "architecture must not contain '/'".to_owned(),
+        ));
+    }
+    let filename = format!("{name}-{version}-{arch}{}", pacman::download_suffix(&bytes));
+    pkg.filename = filename.clone();
+
+    // Enforce the shared publish policy before writing to the repo layout
+    // (see the matching call in `deb_publish`).
+    let artifact_len = bytes.len() as u64;
+    local_svc
+        .enforce_publish_policy(
+            &registry,
+            &name,
+            &version,
+            artifact_len,
+            &identity.0,
+            None,
+            None,
+        )
+        .await
+        .map_err(AppError::from)?;
+
+    // Revoke the quota recorded above if any storage step fails (see `deb_publish`).
+    let stored: Result<(), AppError> = async {
+        let storage = local_svc.storage.as_ref();
+        let signer = signers.get(&registry);
+        let pkg_path = format!("{arch}/{filename}");
+
+        // 1. Store the package (`Bytes` clone is a cheap refcount bump).
+        store_bytes(
+            storage,
+            &repo_storage_key(&registry, &pkg_path),
+            bytes.clone(),
+        )
+        .await?;
+
+        // 2. When signing, emit the detached `.sig` next to the package and embed
+        //    the same signature (base64) in the DB `%PGPSIG%` field.
+        if let Some(signer) = signer.as_deref() {
+            let sig = signer.detached_sign_binary(&bytes);
+            store_bytes(
+                storage,
+                &repo_storage_key(&registry, &format!("{pkg_path}.sig")),
+                sig.clone(),
+            )
+            .await?;
+            use base64::Engine;
+            pkg.pgpsig = Some(base64::engine::general_purpose::STANDARD.encode(&sig));
+        }
+
+        // 3. Record a JSON sidecar, keyed by arch, for DB regeneration.
+        let sidecar = format!("local:{registry}/_index/pacman/{arch}/{filename}.json");
+        let json = serde_json::to_vec(&pkg).map_err(|e| AppError::internal(e.to_string()))?;
+        store_bytes(storage, &sidecar, json).await?;
+
+        // 4. Regenerate the per-arch database.
+        regenerate_pacman(storage, &registry, &arch, signer.as_deref()).await
+    }
+    .await;
+    if let Err(e) = stored {
+        local_svc
+            .revoke_publish_quota(&identity.0, &registry, artifact_len)
+            .await;
+        return Err(e);
+    }
+
+    Ok(HttpResponse::Created().body(format!("published {name} {version} ({arch})")))
+}
+
+/// Rebuild the `{arch}/{registry}.db` (and `.files`) database from the stored
+/// pacman sidecars, optionally signing it with `<repo>.db.sig`.
+async fn regenerate_pacman(
+    storage: &dyn StorageBackend,
+    registry: &str,
+    arch: &str,
+    signer: Option<&OpenPgpSigner>,
+) -> Result<(), AppError> {
+    let prefix = format!("local:{registry}/_index/pacman/{arch}/");
+    let keys = storage.list_keys(&prefix).await.map_err(AppError::from)?;
+    let mut packages: Vec<pacman::PacmanPackage> = read_many(storage, keys)
+        .await?
+        .into_iter()
+        .filter_map(|bytes| {
+            serde_json::from_slice::<pacman::PacmanPackage>(&bytes)
+                .map_err(|e| {
+                    // A sidecar that no longer deserializes (corruption / schema
+                    // skew) is skipped so one bad entry can't wedge the whole DB,
+                    // but log it: the package silently vanishes from the index.
+                    tracing::warn!("pacman: skipping unreadable sidecar in {registry}/{arch}: {e}");
+                })
+                .ok()
+        })
+        .collect();
+    // Deterministic order keyed by the DB directory name (`<name>-<version>`).
+    packages.sort_by_key(|p| pacman::db_dir_name(p).unwrap_or_default());
+
+    let entries: Vec<(String, String)> = packages
+        .iter()
+        .filter_map(|p| Some((pacman::db_dir_name(p)?, pacman::desc_entry(p))))
+        .collect();
+    let db = pacman::generate_db(&entries).map_err(|e| AppError::internal(e.to_string()))?;
+
+    // `<repo>.db`/`<repo>.files` are what `pacman -Sy` fetches; the `.tar.gz`
+    // aliases match what `repo-add` writes, so tooling that expects either works.
+    for name in [
+        format!("{registry}.db"),
+        format!("{registry}.db.tar.gz"),
+        format!("{registry}.files"),
+        format!("{registry}.files.tar.gz"),
+    ] {
+        store_bytes(
+            storage,
+            &repo_storage_key(registry, &format!("{arch}/{name}")),
+            db.clone(),
+        )
+        .await?;
+    }
+
+    if let Some(signer) = signer {
+        let sig = signer.detached_sign_binary(&db);
+        for name in [
+            format!("{registry}.db.sig"),
+            format!("{registry}.files.sig"),
+        ] {
+            store_bytes(
+                storage,
+                &repo_storage_key(registry, &format!("{arch}/{name}")),
+                sig.clone(),
+            )
+            .await?;
+        }
+        store_bytes(
+            storage,
+            &repo_storage_key(registry, "key.gpg"),
             signer.armored_public_key().into_bytes(),
         )
         .await?;

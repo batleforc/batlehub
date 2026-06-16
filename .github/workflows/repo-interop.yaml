@@ -1,6 +1,7 @@
-name: Repo interop (apt/dnf)
-# Confirms that real `apt` and `dnf` accept BatleHub's Deb/RPM repositories —
-# the hand-rolled Ed25519 OpenPGP signatures and generated indexes — end to end.
+name: Repo interop (apt/dnf/pacman)
+# Confirms that real `apt`, `dnf`, and `pacman` accept BatleHub's Deb/RPM/pacman
+# repositories — the hand-rolled Ed25519 OpenPGP signatures and generated indexes —
+# end to end.
 on:
   push:
     branches: ["main"]
@@ -23,7 +24,7 @@ env:
   CARGO_TERM_COLOR: always
 jobs:
   interop:
-    name: apt + dnf accept signed repos
+    name: apt + dnf + pacman accept signed repos
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -34,5 +35,5 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
       # ubuntu-latest ships Docker; verify.sh auto-detects docker or podman.
-      - name: Verify apt + dnf interop
+      - name: Verify apt + dnf + pacman interop
         run: bash tests/interop/verify.sh

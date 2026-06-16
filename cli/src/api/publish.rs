@@ -17,6 +17,25 @@ pub fn detect_meta(path: &Path) -> Option<ArtifactMeta> {
     let ext = path.extension()?.to_str()?;
     let file_name = path.file_name()?.to_str()?;
 
+    // pacman packages are `<name>-<pkgver>-<pkgrel>-<arch>.pkg.tar.{zst,xz,gz}`;
+    // `extension()` only sees the final segment, so match on the full name.
+    if file_name.ends_with(".pkg.tar.zst")
+        || file_name.ends_with(".pkg.tar.xz")
+        || file_name.ends_with(".pkg.tar.gz")
+    {
+        // Strip from the first `.pkg.tar` to get the `<name>-<pkgver>-<pkgrel>-<arch>` stem.
+        let stem = &file_name[..file_name.find(".pkg.tar").unwrap()];
+        let parts: Vec<&str> = stem.rsplitn(4, '-').collect(); // [arch, pkgrel, pkgver, name]
+        if parts.len() == 4 && !parts[3].is_empty() {
+            return Some(ArtifactMeta {
+                registry_type: "pacman".into(),
+                name: parts[3].to_string(),
+                version: format!("{}-{}", parts[2], parts[1]),
+            });
+        }
+        return None;
+    }
+
     match ext {
         "nupkg" => {
             // filename: <id>.<version>.nupkg
@@ -79,5 +98,45 @@ impl BatleHubClient {
 
         self.put_multipart_void(&format!("/proxy/{registry}/nuget/api/v2/package"), form)
             .await
+    }
+
+    /// Upload a `.pkg.tar.{zst,xz,gz}` artifact to a pacman local/hybrid registry.
+    /// The server reads name/version/arch from the archive's `.PKGINFO`, so the
+    /// raw bytes are PUT directly to the upload endpoint.
+    pub async fn publish_pacman(&self, registry: &str, file_path: &Path) -> Result<()> {
+        let bytes = std::fs::read(file_path)?;
+        self.put_bytes(&format!("/proxy/{registry}/pacman/upload"), bytes)
+            .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn detect_meta_pacman_package() {
+        let meta =
+            detect_meta(&PathBuf::from("hello-world-1.0-2-x86_64.pkg.tar.zst")).expect("detected");
+        assert_eq!(meta.registry_type, "pacman");
+        assert_eq!(meta.name, "hello-world");
+        assert_eq!(meta.version, "1.0-2");
+
+        // .xz and .gz variants are also recognised.
+        assert_eq!(
+            detect_meta(&PathBuf::from("foo-2.3-1-any.pkg.tar.xz"))
+                .unwrap()
+                .registry_type,
+            "pacman"
+        );
+    }
+
+    #[test]
+    fn detect_meta_nuget_still_works() {
+        let meta = detect_meta(&PathBuf::from("Newtonsoft.Json.13.0.3.nupkg")).expect("detected");
+        assert_eq!(meta.registry_type, "nuget");
+        assert_eq!(meta.name, "Newtonsoft.Json");
+        assert_eq!(meta.version, "13.0.3");
     }
 }

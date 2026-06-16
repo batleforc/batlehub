@@ -99,6 +99,20 @@ impl BatleHubClient {
         expect_no_content(resp).await
     }
 
+    /// PUT a raw binary body (e.g. a package upload) and expect a 2xx response.
+    pub async fn put_bytes(&self, path: &str, body: Vec<u8>) -> Result<()> {
+        let mut req = self
+            .inner
+            .request(Method::PUT, self.url(path))
+            .header("Content-Type", "application/octet-stream")
+            .body(body);
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+        let resp = req.send().await?;
+        expect_no_content(resp).await
+    }
+
     pub async fn delete(&self, path: &str) -> Result<()> {
         let mut req = self.inner.request(Method::DELETE, self.url(path));
         if let Some(auth) = self.auth_header() {

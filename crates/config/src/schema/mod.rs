@@ -112,7 +112,7 @@ impl AppConfig {
             match registry.registry_type.as_str() {
                 "github" | "forgejo" | "gitlab" | "cargo" | "npm" | "openvsx" | "goproxy"
                 | "pypi" | "conda" | "composer" | "vscode-marketplace" | "maven" | "terraform"
-                | "rubygems" | "nuget" | "deb" | "rpm" | "jetbrains" => {}
+                | "rubygems" | "nuget" | "deb" | "rpm" | "pacman" | "jetbrains" => {}
                 other => bail!("unknown registry type: '{other}'"),
             }
             if matches!(registry.mode, RegistryMode::Local | RegistryMode::Hybrid)
@@ -132,10 +132,11 @@ impl AppConfig {
                         | "nuget"
                         | "deb"
                         | "rpm"
+                        | "pacman"
                 )
             {
                 bail!(
-                    "registry '{}': mode 'local'/'hybrid' is only supported for cargo, npm, openvsx, vscode-marketplace, goproxy, rubygems, maven, terraform, composer, pypi, conda, nuget, deb, and rpm registries",
+                    "registry '{}': mode 'local'/'hybrid' is only supported for cargo, npm, openvsx, vscode-marketplace, goproxy, rubygems, maven, terraform, composer, pypi, conda, nuget, deb, rpm, and pacman registries",
                     registry.name
                 );
             }

@@ -35,6 +35,9 @@ fn is_signing_key_path(reg_type: &str, path: &str) -> bool {
     match reg_type {
         "deb" => path == "key.gpg" || path == "key.asc",
         "rpm" => path == "repodata/repomd.xml.key",
+        // pacman has no standard key-download path; we expose the armored public
+        // key at a fixed `key.gpg` for `pacman-key --add`.
+        "pacman" => path == "key.gpg",
         _ => false,
     }
 }
@@ -53,7 +56,17 @@ pub fn repo_content_type(path: &str) -> &'static str {
         } else {
             "application/xml"
         }
-    } else if path.ends_with(".gz") || path.ends_with(".asc") || path.ends_with(".key") {
+    } else if path.ends_with(".gz")
+        || path.ends_with(".asc")
+        || path.ends_with(".key")
+        // pacman packages and databases: .pkg.tar.{zst,xz}, <repo>.db, <repo>.files,
+        // and detached .sig files all serve as opaque binary.
+        || path.ends_with(".zst")
+        || path.ends_with(".xz")
+        || path.ends_with(".sig")
+        || path.ends_with(".db")
+        || path.ends_with(".files")
+    {
         "application/octet-stream"
     } else {
         // Release / InRelease / Packages and friends are plain text.
@@ -194,6 +207,39 @@ pub async fn rpm_get(
     .await
 }
 
+/// Serve a file from an Arch Linux pacman repository (`/proxy/{registry}/pacman/{path}`).
+#[utoipa::path(
+    get,
+    path = "/proxy/{registry}/pacman/{path}",
+    tag = "proxy/pacman",
+    params(
+        ("registry" = String, Path, description = "Registry name"),
+        ("path" = String, Path, description = "Repository file path (e.g. x86_64/arch.db, x86_64/hello-1.0-1-x86_64.pkg.tar.zst)"),
+    ),
+    responses(
+        (status = 200, description = "Repository file"),
+        (status = 403, description = "Access denied"),
+        (status = 404, description = "Not found or unknown registry"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[get("/proxy/{registry}/pacman/{path:.*}")]
+pub async fn pacman_get(
+    path: web::Path<(String, String)>,
+    identity: AuthIdentity,
+    svc: web::Data<Arc<ProxyService>>,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
+    map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
+    signers: web::Data<RepoSignerMap>,
+) -> Result<impl Responder, AppError> {
+    let (registry, file_path) = path.into_inner();
+    repo_get(
+        "pacman", &registry, &file_path, svc, local_svc, &signers, identity, &map, &mode_map,
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,6 +262,19 @@ mod tests {
         assert_eq!(
             repo_content_type("dists/stable/Release"),
             "text/plain; charset=utf-8"
+        );
+        // pacman package, database, and signature.
+        assert_eq!(
+            repo_content_type("x86_64/hello-1.0-1-x86_64.pkg.tar.zst"),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            repo_content_type("x86_64/arch.db"),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            repo_content_type("x86_64/arch.db.sig"),
+            "application/octet-stream"
         );
     }
 

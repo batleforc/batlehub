@@ -195,8 +195,16 @@ impl OpenPgpSigner {
     /// Detached binary signature over `data`, ASCII-armored (`Release.gpg`,
     /// `repomd.xml.asc`).
     pub fn detached_sign(&self, data: &[u8]) -> String {
+        armor("PGP SIGNATURE", &self.detached_sign_binary(data))
+    }
+
+    /// Detached binary signature over `data`, **not** armored — the raw OpenPGP
+    /// signature packet. Used for pacman's `<repo>.db.sig` / `.pkg.tar.zst.sig`
+    /// files and the base64-encoded `%PGPSIG%` database field, which all expect
+    /// the binary form rather than an armored block.
+    pub fn detached_sign_binary(&self, data: &[u8]) -> Vec<u8> {
         let body = self.build_signature(0x00, &[], &[], data);
-        armor("PGP SIGNATURE", &framed_packet(2, &body))
+        framed_packet(2, &body)
     }
 
     /// Cleartext (inline) signature over `text`, producing an APT `InRelease`-style
@@ -402,6 +410,32 @@ mod tests {
         hasher.update((hashed_prefix.len() as u32).to_be_bytes());
         let digest = hasher.finalize();
 
+        use ed25519_dalek::Verifier;
+        let signature = s.signing.sign(&digest);
+        assert!(s.verifying.verify(&digest, &signature).is_ok());
+    }
+
+    #[test]
+    fn detached_binary_signature_is_unarmored_packet_and_verifies() {
+        let s = signer();
+        let data = b"pacman db bytes";
+        let bin = s.detached_sign_binary(data);
+        // New-format signature packet header: tag 2 ⇒ first byte 0xC2.
+        assert_eq!(bin[0], 0xC0 | 2);
+        // The armored form wraps exactly these bytes.
+        assert_eq!(s.detached_sign(data), armor("PGP SIGNATURE", &bin));
+
+        // Re-derive the committed digest and verify the Ed25519 signature.
+        let hashed_sp = s.hashed_subpackets(&[]);
+        let mut hashed_prefix = vec![4u8, 0x00, ALGO_EDDSA, HASH_SHA512];
+        hashed_prefix.extend_from_slice(&(hashed_sp.len() as u16).to_be_bytes());
+        hashed_prefix.extend_from_slice(&hashed_sp);
+        let mut hasher = Sha512::new();
+        hasher.update(data);
+        hasher.update(&hashed_prefix);
+        hasher.update([0x04, 0xFF]);
+        hasher.update((hashed_prefix.len() as u32).to_be_bytes());
+        let digest = hasher.finalize();
         use ed25519_dalek::Verifier;
         let signature = s.signing.sign(&digest);
         assert!(s.verifying.verify(&digest, &signature).is_ok());

@@ -530,6 +530,7 @@ pub use middleware::RateLimitService;
         (name = "proxy/gitlab",   description = "GitLab proxy — releases, release link assets, and source archives"),
         (name = "proxy/deb",      description = "Debian APT repository — proxy + local hosting (Packages/Release generation, Ed25519 OpenPGP signing)"),
         (name = "proxy/rpm",      description = "RPM/YUM repository — proxy + local hosting (repodata generation, Ed25519 OpenPGP signing)"),
+        (name = "proxy/pacman",   description = "Arch Linux pacman repository — proxy + local hosting (.pkg.tar.zst, repo DB generation, Ed25519 OpenPGP signing)"),
         (name = "proxy/npm",      description = "npm proxy — packuments, version metadata, tarballs"),
         (name = "proxy/cargo",    description = "Cargo proxy — sparse index, crate metadata, .crate downloads"),
         (name = "proxy/openvsx",  description = "OpenVSX proxy — VS Code extension metadata and VSIX packages"),
@@ -657,8 +658,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             openvsx::{download_vsix, vsix_publish},
             pypi::{pypi_file_download, pypi_publish, pypi_simple_package, pypi_simple_root},
             repo::{
-                deb_get,
-                publish::{deb_publish, rpm_publish},
+                deb_get, pacman_get,
+                publish::{deb_publish, pacman_publish, rpm_publish},
                 rpm_get,
             },
             rubygems::{
@@ -712,6 +713,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(rpm_publish); // PUT …/rpm/upload
     cfg.service(deb_get); // GET …/deb/{path}
     cfg.service(rpm_get); // GET …/rpm/{path}
+    cfg.service(pacman_publish); // PUT …/pacman/upload
+    cfg.service(pacman_get); // GET …/pacman/{path}
     cfg.service(jetbrains_get); // GET …/jetbrains/{path} (proxy-only cache)
                                 // Cargo download (literal "download" suffix)
     cfg.service(download_crate);

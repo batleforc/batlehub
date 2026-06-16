@@ -14,7 +14,7 @@ use std::path::Path;
 
 // `repo_rpm` is BatleHub's repodata generator; the bare `rpm` path is the external
 // crate used only to build a fixture package.
-use batlehub_adapters::repo::{deb, gzip, rpm as repo_rpm, OpenPgpSigner};
+use batlehub_adapters::repo::{deb, gzip, pacman, rpm as repo_rpm, OpenPgpSigner};
 
 // A throwaway 32-byte Ed25519 seed — interop fixtures only, never a real key.
 const SEED: &str = "9d61b19deffeba00aa3f3b6e3b0fe6a3f3a76b08e2c0a3f3b6e3b0fe6a3f3a76";
@@ -129,6 +129,41 @@ fn build_rpm() -> Vec<u8> {
     buf
 }
 
+/// Build an installable `.pkg.tar.zst`: a zstd-compressed tar with the root
+/// `.PKGINFO` metadata (read first, as `makepkg` writes it) plus one regular file
+/// and its parent dirs, so `pacman` can unpack it.
+fn build_pacman_pkg(pkginfo: &str) -> Vec<u8> {
+    let mut tar_buf = Vec::new();
+    {
+        let mut tb = tar::Builder::new(&mut tar_buf);
+        let mut h = tar::Header::new_gnu();
+        h.set_path(".PKGINFO").unwrap();
+        h.set_size(pkginfo.len() as u64);
+        h.set_mode(0o644);
+        h.set_cksum();
+        tb.append(&h, pkginfo.as_bytes()).unwrap();
+
+        for dir in ["usr/", "usr/share/", "usr/share/hello-batlehub/"] {
+            let mut h = tar::Header::new_gnu();
+            h.set_path(dir).unwrap();
+            h.set_entry_type(tar::EntryType::Directory);
+            h.set_size(0);
+            h.set_mode(0o755);
+            h.set_cksum();
+            tb.append(&h, std::io::empty()).unwrap();
+        }
+        let contents = b"BatleHub interop test package\n";
+        let mut h = tar::Header::new_gnu();
+        h.set_path("usr/share/hello-batlehub/data.txt").unwrap();
+        h.set_size(contents.len() as u64);
+        h.set_mode(0o644);
+        h.set_cksum();
+        tb.append(&h, &contents[..]).unwrap();
+        tb.finish().unwrap();
+    }
+    zstd::encode_all(std::io::Cursor::new(tar_buf), 0).unwrap()
+}
+
 #[test]
 #[ignore = "interop generator; run via task test:repo-interop"]
 fn generate_signed_repos() {
@@ -223,6 +258,54 @@ fn generate_signed_repos() {
         "repodata/repomd.xml.key",
         signer.armored_public_key().as_bytes(),
     );
+
+    // ── Arch Linux pacman repo ───────────────────────────────────────────────
+    // Mirrors exactly what the `pacman_publish` handler writes: the package under
+    // `{arch}/`, a detached `.sig`, the base64 `%PGPSIG%` embedded in the DB desc,
+    // the signed `{repo}.db`, and the armored public key for `pacman-key --add`.
+    use base64::Engine;
+    let pac = out.join("pacman");
+    let arch = "x86_64";
+    let repo = "batlehub"; // must match the `[batlehub]` section / `{repo}.db` name
+    let pkginfo = concat!(
+        "pkgname = hello-batlehub\n",
+        "pkgbase = hello-batlehub\n",
+        "pkgver = 1.0-1\n",
+        "pkgdesc = interop test package\n",
+        "url = https://batlehub.test\n",
+        "builddate = 1700000000\n",
+        "packager = BatleHub <interop@batlehub.test>\n",
+        "size = 30\n",
+        "arch = x86_64\n",
+        "license = MIT\n",
+    );
+    let pkg_bytes = build_pacman_pkg(pkginfo);
+    let filename = format!(
+        "hello-batlehub-1.0-1-{arch}{}",
+        pacman::download_suffix(&pkg_bytes)
+    );
+    let mut pkg = pacman::parse_pacman(&pkg_bytes, &filename).unwrap();
+    write_file(&pac, &format!("{arch}/{filename}"), &pkg_bytes);
+
+    let pkg_sig = signer.detached_sign_binary(&pkg_bytes);
+    write_file(&pac, &format!("{arch}/{filename}.sig"), &pkg_sig);
+    pkg.pgpsig = Some(base64::engine::general_purpose::STANDARD.encode(&pkg_sig));
+
+    let db = pacman::generate_db(&[(pacman::db_dir_name(&pkg).unwrap(), pacman::desc_entry(&pkg))])
+        .unwrap();
+    for name in [
+        format!("{repo}.db"),
+        format!("{repo}.db.tar.gz"),
+        format!("{repo}.files"),
+        format!("{repo}.files.tar.gz"),
+    ] {
+        write_file(&pac, &format!("{arch}/{name}"), &db);
+    }
+    let db_sig = signer.detached_sign_binary(&db);
+    for name in [format!("{repo}.db.sig"), format!("{repo}.files.sig")] {
+        write_file(&pac, &format!("{arch}/{name}"), &db_sig);
+    }
+    write_file(&pac, "key.gpg", signer.armored_public_key().as_bytes());
 
     eprintln!("wrote signed repos to {}", out.display());
 }

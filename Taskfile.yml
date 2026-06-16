@@ -103,7 +103,7 @@ tasks:
       - cargo test -p batlehub-adapters --features storage-s3 --test s3_storage -- --nocapture
 
   test:repo-interop:
-    desc: Verify real apt + dnf accept BatleHub's signed Deb/RPM repos (needs podman or docker)
+    desc: Verify real apt + dnf + pacman accept BatleHub's signed Deb/RPM/pacman repos (needs podman or docker)
     cmds:
       - bash tests/interop/verify.sh
 

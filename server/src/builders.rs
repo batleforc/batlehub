@@ -84,7 +84,7 @@ pub(super) fn build_cargo_index(
     Ok(CargoIndexProxy { http, index_url })
 }
 
-/// Build the per-registry repository-metadata signing keys for `deb`/`rpm`
+/// Build the per-registry repository-metadata signing keys for `deb`/`rpm`/`pacman`
 /// registries that configured `[registries.repo_signing]`. Registries without a
 /// key host unsigned repositories.
 pub(super) fn build_repo_signer_map(
@@ -140,6 +140,7 @@ pub(super) fn build_registry_client(
             "conda" => Arc::new(CondaRegistryClient::new(url, opts)?),
             "deb" => Arc::new(PathProxyRegistryClient::new("deb", url, opts)?),
             "rpm" => Arc::new(PathProxyRegistryClient::new("rpm", url, opts)?),
+            "pacman" => Arc::new(PathProxyRegistryClient::new("pacman", url, opts)?),
             "jetbrains" => Arc::new(PathProxyRegistryClient::new("jetbrains", url, opts)?),
             other => {
                 anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in")
@@ -172,6 +173,9 @@ pub(super) fn build_registry_client(
         // for local-only mode, where the upstream is never contacted.
         "deb" => resolve_urls(&reg.upstreams, "https://deb.debian.org"),
         "rpm" => resolve_urls(&reg.upstreams, "https://example.invalid/rpm"),
+        // Arch mirrors share a common layout (`$repo/os/$arch/…`); the geo CDN is a
+        // sensible default, overridable via `upstreams`.
+        "pacman" => resolve_urls(&reg.upstreams, "https://geo.mirror.pkgbuild.com"),
         // JetBrains IDE archives are served from a stable CDN, so it's a sensible
         // default; users can override `upstreams` (e.g. for plugins.jetbrains.com).
         "jetbrains" => resolve_urls(&reg.upstreams, "https://download.jetbrains.com"),

@@ -76,6 +76,8 @@ rustls = { version = "0.23", features = ["aws-lc-rs"] }
 tar = "0.4"
 tokio-rustls = "0.26"
 toml = { workspace = true }
+# Building `.pkg.tar.zst` fixtures for the pacman interop generator.
+zstd = "0.13"
 
 [features]
 default = [
@@ -94,6 +96,7 @@ default = [
   "registry-gitlab",
   "registry-goproxy",
   "registry-rpm",
+  "registry-pacman",
   "registry-maven",
   "registry-npm",
   "registry-openvsx",
@@ -141,6 +144,15 @@ registry-rpm = [
   "dep:quick-xml",
   "dep:ed25519-dalek",
   "dep:sha1",
+]
+registry-pacman = [
+  "dep:zstd",
+  "dep:tar",
+  "dep:flate2",
+  "dep:lzma-rs",
+  "dep:md-5",
+  "dep:sha1",
+  "dep:ed25519-dalek",
 ]
 registry-pypi = []
 # JetBrains IDE-archive proxy cache. Reuses the generic `PathProxyRegistryClient`

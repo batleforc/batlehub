@@ -67,6 +67,9 @@ pub async fn run(
         "nuget" => {
             client.publish_nuget(&registry, &args.file).await?;
         }
+        "pacman" => {
+            client.publish_pacman(&registry, &args.file).await?;
+        }
         _ => {
             bail!(
                 "automatic publish is not yet supported for registry type '{registry_type}'. \
