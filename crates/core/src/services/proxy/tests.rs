@@ -1188,3 +1188,261 @@ async fn metrics_artifact_miss_then_hit() {
     assert_eq!(npm.misses(), 1, "miss count must not change on second call");
     assert_eq!(npm.hits(), 1, "second call must register a hit");
 }
+
+// ── Integrity verification ─────────────────────────────────────────────────
+
+/// Registry whose metadata advertises a configurable checksum and whose
+/// artifact body is fixed, so a test can force verified / mismatch / missing.
+struct ChecksumRegistry {
+    checksum: Option<String>,
+    body: &'static [u8],
+}
+
+#[async_trait]
+impl RegistryClient for ChecksumRegistry {
+    fn registry_type(&self) -> &str {
+        "test"
+    }
+    async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
+        Ok(PackageMetadata {
+            id: pkg.clone(),
+            published_at: Some(Utc::now() - chrono::Duration::days(30)),
+            download_url: None,
+            checksum: self.checksum.clone(),
+            is_signed: None,
+            extra: serde_json::json!({}),
+            cache_control: None,
+        })
+    }
+    async fn fetch_artifact(&self, _pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
+        let data = Bytes::from_static(self.body);
+        Ok(FetchedArtifact {
+            stream: Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(data) })),
+            cache_control: None,
+        })
+    }
+}
+
+/// Build a proxy whose single registry has the given integrity policy (when
+/// `None`, the registry has no explicit block so the default policy applies).
+/// Returns the service together with its storage so caching can be asserted.
+fn proxy_with_integrity(
+    registry_name: &str,
+    client: Arc<dyn RegistryClient>,
+    integrity: Option<crate::services::IntegrityPolicy>,
+) -> (ProxyService, Arc<MemStorage>) {
+    let mut registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
+    registries.insert(registry_name.to_owned(), client);
+    let mut policies = HashMap::new();
+    policies.insert(
+        registry_name.to_owned(),
+        Arc::new(RegistryPolicy {
+            metadata_ttl: None,
+            firewall_only: false,
+            serve_stale_metadata: false,
+            artifact_ttl: None,
+            rules: vec![],
+        }),
+    );
+    let mut integrity_map = HashMap::new();
+    if let Some(i) = integrity {
+        integrity_map.insert(registry_name.to_owned(), i);
+    }
+    let hot = new_hot_lock(HotConfig {
+        registries,
+        policies,
+        integrity: integrity_map,
+        ..Default::default()
+    });
+    let storage = MemStorage::new();
+    let svc = ProxyService {
+        hot,
+        storage: storage.clone(),
+        cache: TestCacheStore::new(),
+        repo: SpyRepo::new(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
+    };
+    (svc, storage)
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(data))
+}
+
+const BODY: &[u8] = b"the-real-artifact-bytes";
+
+#[tokio::test]
+async fn integrity_verified_artifact_is_cached_and_served() {
+    let reg = Arc::new(ChecksumRegistry {
+        checksum: Some(sha256_hex(BODY)),
+        body: BODY,
+    });
+    // No explicit policy → default (enabled, block-on-mismatch).
+    let (svc, storage) = proxy_with_integrity("npm", reg, None);
+
+    let resp = svc.handle(req("npm")).await.unwrap();
+    assert!(matches!(resp, ProxyResponse::Stream(_)));
+
+    let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
+    assert!(
+        storage.exists(&artifact_key).await.unwrap(),
+        "verified artifact must be cached"
+    );
+}
+
+#[tokio::test]
+async fn integrity_mismatch_blocks_and_is_not_cached() {
+    let reg = Arc::new(ChecksumRegistry {
+        // Advertise the checksum of *different* bytes → mismatch.
+        checksum: Some(sha256_hex(b"some-other-bytes")),
+        body: BODY,
+    });
+    let (svc, storage) = proxy_with_integrity("npm", reg, None);
+
+    let result = svc.handle(req("npm")).await;
+    assert!(
+        matches!(result, Err(CoreError::IntegrityFailure(_))),
+        "mismatch must fail the download"
+    );
+
+    let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
+    assert!(
+        !storage.exists(&artifact_key).await.unwrap(),
+        "bytes that fail verification must never be cached"
+    );
+}
+
+#[tokio::test]
+async fn integrity_missing_metadata_warns_and_serves_by_default() {
+    let reg = Arc::new(ChecksumRegistry {
+        checksum: None,
+        body: BODY,
+    });
+    // Default policy: require_metadata = false → missing only warns.
+    let (svc, storage) = proxy_with_integrity("npm", reg, None);
+
+    let resp = svc.handle(req("npm")).await.unwrap();
+    assert!(matches!(resp, ProxyResponse::Stream(_)));
+    let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
+    assert!(storage.exists(&artifact_key).await.unwrap());
+}
+
+#[tokio::test]
+async fn integrity_require_metadata_blocks_when_absent() {
+    let reg = Arc::new(ChecksumRegistry {
+        checksum: None,
+        body: BODY,
+    });
+    let policy = crate::services::IntegrityPolicy {
+        enabled: true,
+        block_on_mismatch: true,
+        require_metadata: true,
+        bypass_roles: vec![],
+    };
+    let (svc, storage) = proxy_with_integrity("npm", reg, Some(policy));
+
+    let result = svc.handle(req("npm")).await;
+    assert!(
+        matches!(result, Err(CoreError::IntegrityFailure(_))),
+        "require_metadata must block a checksum-less download"
+    );
+    let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
+    assert!(!storage.exists(&artifact_key).await.unwrap());
+}
+
+#[tokio::test]
+async fn integrity_require_metadata_bypass_role_is_allowed() {
+    let reg = Arc::new(ChecksumRegistry {
+        checksum: None,
+        body: BODY,
+    });
+    let policy = crate::services::IntegrityPolicy {
+        enabled: true,
+        block_on_mismatch: true,
+        require_metadata: true,
+        bypass_roles: vec![crate::entities::Role::Admin],
+    };
+    let (svc, _storage) = proxy_with_integrity("npm", reg, Some(policy));
+
+    let admin_req = ProxyRequest {
+        package_id: PackageId::new("npm", "test-pkg", "1.0.0"),
+        identity: Identity {
+            user_id: None,
+            role: crate::entities::Role::Admin,
+            auth_provider: None,
+            groups: vec![],
+        },
+        resource_type: "releases:read".to_owned(),
+    };
+    let resp = svc.handle(admin_req).await.unwrap();
+    assert!(
+        matches!(resp, ProxyResponse::Stream(_)),
+        "a bypass-role caller must be served despite missing metadata"
+    );
+}
+
+#[tokio::test]
+async fn integrity_mismatch_warn_only_serves_and_caches() {
+    let reg = Arc::new(ChecksumRegistry {
+        checksum: Some(sha256_hex(b"some-other-bytes")),
+        body: BODY,
+    });
+    // block_on_mismatch = false → warn but do not block; bytes are still cached.
+    let policy = crate::services::IntegrityPolicy {
+        enabled: true,
+        block_on_mismatch: false,
+        require_metadata: false,
+        bypass_roles: vec![],
+    };
+    let (svc, storage) = proxy_with_integrity("npm", reg, Some(policy));
+
+    let resp = svc.handle(req("npm")).await.unwrap();
+    assert!(
+        matches!(resp, ProxyResponse::Stream(_)),
+        "warn-only mismatch must still serve the artifact"
+    );
+    let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
+    assert!(storage.exists(&artifact_key).await.unwrap());
+}
+
+#[tokio::test]
+async fn integrity_unparseable_checksum_warns_and_serves() {
+    let reg = Arc::new(ChecksumRegistry {
+        // Not SRI and not a known-length hex string → Unparseable.
+        checksum: Some("not-a-real-checksum".to_owned()),
+        body: BODY,
+    });
+    // Default policy: an unverifiable checksum is treated like missing (serve).
+    let (svc, storage) = proxy_with_integrity("npm", reg, None);
+
+    let resp = svc.handle(req("npm")).await.unwrap();
+    assert!(matches!(resp, ProxyResponse::Stream(_)));
+    let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
+    assert!(storage.exists(&artifact_key).await.unwrap());
+}
+
+#[tokio::test]
+async fn integrity_disabled_skips_verification_even_on_mismatch() {
+    let reg = Arc::new(ChecksumRegistry {
+        checksum: Some(sha256_hex(b"some-other-bytes")),
+        body: BODY,
+    });
+    let policy = crate::services::IntegrityPolicy {
+        enabled: false,
+        block_on_mismatch: true,
+        require_metadata: false,
+        bypass_roles: vec![],
+    };
+    let (svc, storage) = proxy_with_integrity("npm", reg, Some(policy));
+
+    let resp = svc.handle(req("npm")).await.unwrap();
+    assert!(
+        matches!(resp, ProxyResponse::Stream(_)),
+        "disabled integrity must not block a mismatching artifact"
+    );
+    let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
+    assert!(storage.exists(&artifact_key).await.unwrap());
+}

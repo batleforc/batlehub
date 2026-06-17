@@ -47,8 +47,8 @@ Current adapters: npm, Cargo, GitHub, Forgejo/Gitea, GitLab, OpenVSX, VS Code Ma
 
 ## Artifact integrity & security
 
-- [ ] Verify checksums for downloaded artifacts when the upstream provides them (e.g. Cargo's sparse index includes SHA-256 per version)
-- [ ] Block serving an artifact if its integrity check fails, or optionally if the upstream provides no integrity metadata at all
+- [x] Verify checksums for downloaded artifacts when the upstream provides them — per-registry `[registries.integrity]`: on the proxy fetch path the buffered bytes are hashed and compared against the metadata checksum (Cargo SHA-256, npm SRI/`shasum`, PyPI SHA-256). Supports SRI (`sha512-…`) and bare hex (algorithm inferred from length)
+- [x] Block serving an artifact if its integrity check fails, or optionally if the upstream provides no integrity metadata at all — a mismatch fails the download with `502` and is never cached (not bypassable); `require_metadata = true` additionally blocks downloads with no advertised checksum (with `bypass_roles`)
 - [ ] Sigstore / npm provenance verification for npm packages
 - [ ] `cargo verify-project`-style verification for Cargo crates
 - [ ] Detect and optionally require signed releases for GitHub, OpenVSX, and VS Code Marketplace
@@ -58,7 +58,7 @@ Current adapters: npm, Cargo, GitHub, Forgejo/Gitea, GitLab, OpenVSX, VS Code Ma
 - [ ] YARA rule evaluation for custom malware or policy patterns
 - [ ] Antivirus scanning for binary artifacts (VSIX, Go module zips) via a configurable external REST API
 - [ ] Warn when an upstream registry is returning high error rates or slow responses and cached data may be stale
-- [ ] Warn when a registry does not provide integrity metadata for its artifacts
+- [x] Warn when a registry does not provide integrity metadata for its artifacts — the proxy logs a warning and increments `batlehub_integrity_checks_total{outcome="missing"}` when an artifact is fetched with no advertised checksum (and blocks instead when `require_metadata = true`)
 
 ---
 

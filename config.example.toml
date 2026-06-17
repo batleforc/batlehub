@@ -284,6 +284,19 @@ bypass_roles = ["admin"]
 # [registries.feature_flags]
 # socket_badge = false
 
+# Artifact integrity: verify proxied downloads against the checksum advertised
+# in the upstream metadata (Cargo SHA-256, npm SRI/shasum, PyPI SHA-256). The
+# defaults below are applied even without this block: verify when a checksum is
+# advertised and fail the download on a mismatch (a mismatch is never
+# bypassable and the bytes are never cached). Registries that advertise no
+# checksum (NuGet, Maven, GitHub, Go, …) only warn unless require_metadata is
+# set. Does not apply to firewall_only registries (they stream un-buffered).
+# [registries.integrity]
+# enabled = true            # master switch
+# block_on_mismatch = true  # fail the download on a hash mismatch
+# require_metadata = false  # also block when no checksum is advertised
+# bypass_roles = ["admin"]  # roles exempt from the require_metadata gate
+
 [[registries]]
 type = "goproxy"
 name = "go"

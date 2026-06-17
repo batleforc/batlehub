@@ -6,8 +6,11 @@ use anyhow::Context;
 use batlehub_config::schema::{AppConfig, RegistryConfig, RegistryMode};
 use batlehub_core::ports::{BetaChannelPort, PackageRepository, VulnerabilityRepository};
 use batlehub_core::services::{
-    FeatureFlags, HotConfig, HotSbomConfig, SigningConfig as CoreSigningConfig, VersioningPolicy,
+    FeatureFlags, HotConfig, HotSbomConfig, IntegrityPolicy, SigningConfig as CoreSigningConfig,
+    VersioningPolicy,
 };
+
+use crate::builders::parse_role;
 use batlehub_web::{
     AccessConfig, CargoIndexMap, CargoIndexProxy, RegistryMap, RegistryModeMap, UpstreamMap,
 };
@@ -36,6 +39,28 @@ fn build_versioning_map(registries: &[RegistryConfig]) -> HashMap<String, Versio
                         enforce_semver: v.enforce_semver,
                         allow_prerelease: v.allow_prerelease,
                         version_pattern: pattern,
+                    },
+                )
+            })
+        })
+        .collect()
+}
+
+/// Build the per-registry integrity policy map. Only registries with an explicit
+/// `[registries.integrity]` block get an entry; the proxy applies
+/// [`IntegrityPolicy::default`] (verify + block-on-mismatch) to the rest.
+fn build_integrity_map(registries: &[RegistryConfig]) -> HashMap<String, IntegrityPolicy> {
+    registries
+        .iter()
+        .filter_map(|reg| {
+            reg.integrity.as_ref().map(|i| {
+                (
+                    reg.name.clone(),
+                    IntegrityPolicy {
+                        enabled: i.enabled,
+                        block_on_mismatch: i.block_on_mismatch,
+                        require_metadata: i.require_metadata,
+                        bypass_roles: i.bypass_roles.iter().map(|r| parse_role(r)).collect(),
                     },
                 )
             })
@@ -171,6 +196,7 @@ pub(super) fn build_hot_bundle(
         signing: build_signing_map(&cfg.registries),
         sbom: build_sbom_map(&cfg.registries),
         feature_flags: build_feature_flags_map(&cfg.registries),
+        integrity: build_integrity_map(&cfg.registries),
         beta_channel: build_beta_channel_map(Arc::clone(beta_channel_store), &cfg.registries),
         max_artifact_size_bytes: cfg.limits.max_artifact_size_bytes,
     };
@@ -354,6 +380,35 @@ mod tests {
     fn build_versioning_map_absent_for_unconfigured_registry() {
         let r = make_registry("npm", "test-reg", "");
         assert!(build_versioning_map(&[r]).is_empty());
+    }
+
+    #[test]
+    fn build_integrity_map_present_parses_bypass_roles() {
+        let r = make_registry(
+            "cargo",
+            "test-reg",
+            r#"
+            [registries.integrity]
+            enabled = true
+            block_on_mismatch = false
+            require_metadata = true
+            bypass_roles = ["admin"]
+            "#,
+        );
+        let map = build_integrity_map(&[r]);
+        let cfg = map.get("test-reg").expect("entry present");
+        assert!(cfg.enabled);
+        assert!(!cfg.block_on_mismatch);
+        assert!(cfg.require_metadata);
+        assert_eq!(cfg.bypass_roles, vec![batlehub_core::entities::Role::Admin]);
+    }
+
+    #[test]
+    fn build_integrity_map_absent_for_unconfigured_registry() {
+        // No [registries.integrity] block → no entry; the proxy applies the
+        // default policy (verify + block-on-mismatch) via unwrap_or_default().
+        let r = make_registry("npm", "test-reg", "");
+        assert!(build_integrity_map(&[r]).is_empty());
     }
 
     #[test]

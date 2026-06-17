@@ -20,6 +20,10 @@ metrics.workspace = true
 utoipa.workspace = true
 regex.workspace = true
 semver.workspace = true
+sha1 = "0.11"
+sha2 = "0.11"
+hex = "0.4"
+base64 = "0.22"
 
 [lints]
 workspace = true

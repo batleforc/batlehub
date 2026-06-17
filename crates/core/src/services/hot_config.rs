@@ -5,6 +5,7 @@ use std::time::Duration;
 use regex::Regex;
 use tokio::sync::RwLock;
 
+use crate::entities::Role;
 use crate::ports::{BetaChannelPort, RegistryClient};
 use crate::rules::Rule;
 
@@ -32,6 +33,42 @@ pub struct VersioningPolicy {
     pub allow_prerelease: bool,
     /// Optional compiled regex; publish is rejected when the version string does not match.
     pub version_pattern: Option<Regex>,
+}
+
+/// Per-registry artifact integrity policy (mirrors config-layer `IntegrityConfig`).
+///
+/// Verification runs on the proxy fetch-and-cache path: once the upstream bytes
+/// are buffered, they are hashed and compared against the checksum advertised in
+/// the registry metadata (`PackageMetadata.checksum`). It does **not** apply to
+/// `firewall_only` registries, which stream straight through without buffering.
+#[derive(Debug, Clone)]
+pub struct IntegrityPolicy {
+    /// Master switch. When `false`, no verification is performed.
+    pub enabled: bool,
+    /// When a mismatch is detected, fail the download (and never cache the bytes).
+    /// A mismatch is never bypassable — it means the bytes are wrong.
+    pub block_on_mismatch: bool,
+    /// When the upstream provides no usable checksum, block the download unless
+    /// the caller holds one of `bypass_roles`. When `false` (default), a missing
+    /// checksum is only warned about.
+    pub require_metadata: bool,
+    /// Roles allowed to bypass the `require_metadata` gate.
+    pub bypass_roles: Vec<Role>,
+}
+
+impl Default for IntegrityPolicy {
+    fn default() -> Self {
+        // Verify-and-block-on-mismatch by default: a mismatch indicates
+        // corruption or tampering and should essentially never fire in normal
+        // operation. Missing metadata only warns (registries like NuGet/Maven
+        // advertise no checksum), so the default never blocks a healthy fetch.
+        Self {
+            enabled: true,
+            block_on_mismatch: true,
+            require_metadata: false,
+            bypass_roles: Vec::new(),
+        }
+    }
 }
 
 /// Signing configuration stored in the service (mirrors config-layer `SigningConfig`).
@@ -86,6 +123,8 @@ pub struct HotConfig {
     pub sbom: HashMap<String, SbomConfig>,
     /// Per-registry feature flags (Clone, cheap).
     pub feature_flags: HashMap<String, FeatureFlags>,
+    /// Per-registry artifact integrity policies (Clone, cheap).
+    pub integrity: HashMap<String, IntegrityPolicy>,
     /// Per-registry beta-channel gate ports.
     pub beta_channel: HashMap<String, Arc<dyn BetaChannelPort>>,
     /// Maximum artifact size when buffering from upstream; None = 500 MiB default.
@@ -104,6 +143,7 @@ impl Default for HotConfig {
             signing: HashMap::new(),
             sbom: HashMap::new(),
             feature_flags: HashMap::new(),
+            integrity: HashMap::new(),
             beta_channel: HashMap::new(),
             max_artifact_size_bytes: None,
         }

@@ -115,6 +115,12 @@ impl From<CoreError> for AppError {
                 status: StatusCode::BAD_GATEWAY,
                 message: msg,
             },
+            // Upstream served bytes that fail their advertised checksum (or
+            // provided none when one is required) → 502, never the bad artifact.
+            CoreError::IntegrityFailure(msg) => Self {
+                status: StatusCode::BAD_GATEWAY,
+                message: msg,
+            },
             // Dependency unavailability → 503 so load-balancers can retry elsewhere.
             CoreError::Storage(msg) | CoreError::Cache(msg) => Self {
                 status: StatusCode::SERVICE_UNAVAILABLE,
@@ -159,6 +165,13 @@ mod tests {
     fn from_core_payload_too_large() {
         let e = AppError::from(CoreError::PayloadTooLarge("too big".into()));
         assert_eq!(e.status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[test]
+    fn from_core_integrity_failure_maps_to_502() {
+        let e = AppError::from(CoreError::IntegrityFailure("checksum mismatch".into()));
+        assert_eq!(e.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(e.message, "checksum mismatch");
     }
 
     #[test]

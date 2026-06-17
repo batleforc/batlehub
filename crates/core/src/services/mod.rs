@@ -3,6 +3,7 @@ pub mod cache_control;
 pub mod eviction;
 pub mod explore_cache;
 pub mod hot_config;
+pub mod integrity;
 pub mod local_registry;
 pub mod metrics;
 pub mod proxy;
@@ -16,9 +17,10 @@ pub use cache_control::{parse_cache_control, CacheControlDirectives};
 pub use eviction::{CoherenceReport, EvictionConfig, EvictionReport, EvictionService};
 pub use explore_cache::ExploreCache;
 pub use hot_config::{
-    new_hot_lock, FeatureFlags, HotConfig, HotConfigLock, RegistryPolicy,
+    new_hot_lock, FeatureFlags, HotConfig, HotConfigLock, IntegrityPolicy, RegistryPolicy,
     SbomConfig as HotSbomConfig, SigningConfig, VersioningPolicy,
 };
+pub use integrity::{verify as verify_checksum, ChecksumAlgo, IntegrityOutcome};
 pub use local_registry::{
     artifact_storage_key, maven_artifact_storage_key, tf_provider_binary_storage_key,
     validate_coordinate, validate_package_name, validate_path_safe, LocalRegistryService,

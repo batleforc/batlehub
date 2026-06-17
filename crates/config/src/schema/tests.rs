@@ -80,6 +80,40 @@ fn feature_flags_can_disable_socket_badge() {
 }
 
 #[test]
+fn integrity_defaults_verify_and_block_on_mismatch() {
+    // An empty (or partial) block must fall back to verify + block-on-mismatch.
+    let i: IntegrityConfig = toml::from_str("").unwrap();
+    assert!(i.enabled);
+    assert!(i.block_on_mismatch);
+    assert!(!i.require_metadata);
+    assert!(i.bypass_roles.is_empty());
+
+    let d = IntegrityConfig::default();
+    assert!(d.enabled);
+    assert!(d.block_on_mismatch);
+    assert!(!d.require_metadata);
+}
+
+#[test]
+fn integrity_parses_full_block() {
+    let raw = r#"
+        type = "cargo"
+        name = "crates"
+        [integrity]
+        enabled = true
+        block_on_mismatch = false
+        require_metadata = true
+        bypass_roles = ["admin"]
+    "#;
+    let reg: RegistryConfig = toml::from_str(raw).unwrap();
+    let i = reg.integrity.expect("integrity block parsed");
+    assert!(i.enabled);
+    assert!(!i.block_on_mismatch);
+    assert!(i.require_metadata);
+    assert_eq!(i.bypass_roles, vec!["admin".to_owned()]);
+}
+
+#[test]
 fn registry_parses_feature_flags_block() {
     let raw = r#"
         type = "cargo"

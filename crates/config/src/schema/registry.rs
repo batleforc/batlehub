@@ -101,6 +101,59 @@ pub struct RegistryConfig {
     /// UI/integration features). When absent, every flag takes its default.
     #[serde(default)]
     pub feature_flags: Option<FeatureFlagsConfig>,
+    /// Optional artifact integrity (checksum) verification on proxied downloads.
+    /// When absent, the defaults apply: verify against any advertised checksum
+    /// and block on a mismatch; warn (do not block) when none is advertised.
+    #[serde(default)]
+    pub integrity: Option<IntegrityConfig>,
+}
+
+// ── Artifact integrity ──────────────────────────────────────────────────────────
+
+/// Per-registry artifact integrity verification, applied on the proxy
+/// fetch-and-cache path. Once upstream bytes are buffered they are hashed and
+/// compared against the checksum advertised in the registry metadata
+/// (Cargo SHA-256, npm SRI/`shasum`, PyPI SHA-256). Registries that advertise no
+/// checksum (NuGet, Maven, GitHub, Go, …) fall through to the "missing" path.
+///
+/// Does **not** apply to `firewall_only` registries, which stream straight
+/// through without buffering.
+///
+/// ```toml
+/// [registries.integrity]
+/// enabled = true            # verify when a checksum is advertised
+/// block_on_mismatch = true  # fail the download on a hash mismatch (never bypassable)
+/// require_metadata = false  # block downloads with no advertised checksum
+/// bypass_roles = ["admin"]  # roles exempt from the require_metadata gate
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+pub struct IntegrityConfig {
+    /// Master switch. When `false`, no verification is performed.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Fail the download (and skip caching) when the computed digest does not
+    /// match the advertised one. A mismatch is never bypassable.
+    #[serde(default = "default_true")]
+    pub block_on_mismatch: bool,
+    /// Block downloads for which the upstream advertises no usable checksum,
+    /// unless the caller holds one of `bypass_roles`. Defaults to `false`
+    /// (missing checksums are only warned about).
+    #[serde(default)]
+    pub require_metadata: bool,
+    /// Roles allowed to bypass the `require_metadata` gate.
+    #[serde(default)]
+    pub bypass_roles: Vec<String>,
+}
+
+impl Default for IntegrityConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            block_on_mismatch: true,
+            require_metadata: false,
+            bypass_roles: Vec::new(),
+        }
+    }
 }
 
 // ── Feature flags ─────────────────────────────────────────────────────────────

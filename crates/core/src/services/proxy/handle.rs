@@ -30,7 +30,7 @@ impl ProxyService {
 
         // Acquire the read lock briefly to clone the Arc<RegistryClient> and
         // Arc<RegistryPolicy>. The lock is released before any async I/O begins.
-        let (client, policy, limit) = {
+        let (client, policy, integrity, limit) = {
             let hot = self.hot.read().await;
             let client = hot
                 .registries
@@ -38,8 +38,15 @@ impl ProxyService {
                 .ok_or_else(|| CoreError::UnknownRegistry(registry_name.to_owned()))?
                 .clone();
             let policy = hot.policies.get(registry_name).cloned();
+            // Registries without an explicit `[registries.integrity]` block get the
+            // default policy: verify against any advertised checksum, block on mismatch.
+            let integrity = hot
+                .integrity
+                .get(registry_name)
+                .cloned()
+                .unwrap_or_default();
             let limit = hot.max_artifact_size_bytes.unwrap_or(500 * 1024 * 1024);
-            (client, policy, limit)
+            (client, policy, integrity, limit)
         };
 
         // ── 1. Resolve metadata (cache-first) ─────────────────────────────────
@@ -199,6 +206,85 @@ impl ProxyService {
             buf.extend_from_slice(&chunk);
         }
         let data = Bytes::from(buf);
+
+        // ── 6. Verify integrity against the advertised checksum ────────────────
+        // The full bytes are buffered here, so this is the one place we can hash
+        // and compare before the artifact is cached or served. A mismatch means
+        // corruption or tampering: we never cache or serve those bytes, and the
+        // failure is not bypassable. (The firewall-only path above streams without
+        // buffering and is intentionally not verified.)
+        if integrity.enabled {
+            use crate::services::integrity::{verify, IntegrityOutcome};
+            match metadata.checksum.as_deref() {
+                Some(expected) => match verify(expected, &data) {
+                    IntegrityOutcome::Verified { algo } => {
+                        metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "verified").increment(1);
+                        tracing::debug!(registry = %registry_name, key = %artifact_key, algo = algo.as_str(), "artifact integrity verified");
+                    }
+                    IntegrityOutcome::Mismatch {
+                        algo,
+                        expected,
+                        actual,
+                    } => {
+                        metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "mismatch").increment(1);
+                        tracing::warn!(registry = %registry_name, key = %artifact_key, algo = algo.as_str(), %expected, %actual, "artifact integrity mismatch");
+                        if integrity.block_on_mismatch {
+                            let reason = format!(
+                                "integrity check failed for {}: {} digest mismatch (expected {expected}, got {actual})",
+                                req.package_id,
+                                algo.as_str(),
+                            );
+                            super::warn_if_audit_failed(
+                                self.repo
+                                    .record_access(AccessEvent::proxy_error(
+                                        req.package_id.clone(),
+                                        req.identity.user_id.clone(),
+                                        req.identity.role.clone(),
+                                        reason.clone(),
+                                    ))
+                                    .await,
+                                "integrity mismatch",
+                            );
+                            metrics::counter!("batlehub_requests_total", "registry" => registry_label.clone(), "outcome" => "integrity_failed").increment(1);
+                            metrics::histogram!("batlehub_request_duration_seconds", "registry" => registry_label.clone()).record(start.elapsed().as_secs_f64());
+                            return Err(CoreError::IntegrityFailure(reason));
+                        }
+                    }
+                    IntegrityOutcome::Unparseable => {
+                        // Advertised checksum in an unknown format → cannot verify;
+                        // treat like missing rather than falsely claiming "verified".
+                        metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "unparseable").increment(1);
+                        tracing::warn!(registry = %registry_name, key = %artifact_key, checksum = %expected, "advertised checksum could not be parsed; skipping verification");
+                    }
+                },
+                None => {
+                    metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "missing").increment(1);
+                    if integrity.require_metadata
+                        && !integrity.bypass_roles.contains(&req.identity.role)
+                    {
+                        let reason = format!(
+                            "integrity policy requires checksum metadata, but upstream provided none for {}",
+                            req.package_id,
+                        );
+                        super::warn_if_audit_failed(
+                            self.repo
+                                .record_access(AccessEvent::proxy_error(
+                                    req.package_id.clone(),
+                                    req.identity.user_id.clone(),
+                                    req.identity.role.clone(),
+                                    reason.clone(),
+                                ))
+                                .await,
+                            "integrity missing metadata",
+                        );
+                        metrics::counter!("batlehub_requests_total", "registry" => registry_label.clone(), "outcome" => "integrity_failed").increment(1);
+                        metrics::histogram!("batlehub_request_duration_seconds", "registry" => registry_label.clone()).record(start.elapsed().as_secs_f64());
+                        return Err(CoreError::IntegrityFailure(reason));
+                    }
+                    tracing::debug!(registry = %registry_name, key = %artifact_key, "upstream provided no integrity metadata");
+                }
+            }
+        }
 
         if !skip_artifact_cache {
             self.storage
