@@ -1,11 +1,13 @@
+mod cache;
 mod handle;
 mod resolve;
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::error::CoreError;
 use crate::ports::{
-    ArtifactMetaRepository, ArtifactStream, CacheStore, PackageRepository, StorageBackend,
+    ArtifactCacheMeta, ArtifactStream, CacheStore, PackageRepository, StorageBackend,
 };
 use crate::services::hot_config::HotConfigLock;
 use crate::services::metrics::ProxyMetrics;
@@ -34,7 +36,7 @@ pub struct ProxyService {
     pub storage: Arc<dyn StorageBackend>,
     pub cache: Arc<dyn CacheStore>,
     pub repo: Arc<dyn PackageRepository>,
-    pub artifact_meta: Arc<dyn ArtifactMetaRepository>,
+    pub artifact_meta: Arc<dyn ArtifactCacheMeta>,
     /// In-memory counters for the stats dashboard (reset on restart).
     pub metrics: Arc<ProxyMetrics>,
     /// Optional SBOM service; when `None`, SBOM generation is disabled globally.
@@ -45,6 +47,15 @@ pub(super) fn warn_if_audit_failed(r: Result<(), CoreError>, ctx: &str) {
     if let Err(e) = r {
         tracing::warn!(error = %e, ctx, "audit log write failed");
     }
+}
+
+/// Emit the terminal per-request metrics — the `batlehub_requests_total{outcome}`
+/// counter and the `batlehub_request_duration_seconds` histogram — at a request's
+/// exit point. Collapses the counter+histogram pair that every return path repeats.
+pub(super) fn finish_request(registry_label: &str, outcome: &'static str, start: Instant) {
+    metrics::counter!("batlehub_requests_total", "registry" => registry_label.to_owned(), "outcome" => outcome).increment(1);
+    metrics::histogram!("batlehub_request_duration_seconds", "registry" => registry_label.to_owned())
+        .record(start.elapsed().as_secs_f64());
 }
 
 #[cfg(test)]

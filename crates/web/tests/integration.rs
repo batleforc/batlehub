@@ -280,6 +280,7 @@ fn configure_test_app(
 /// Finish wiring a test app: split the configured routes off `App::new()`, attach the
 /// `cargo_indexes`/`local_svc`/`mode_map` app_data shared by (almost) every factory, and
 /// wrap with the given auth providers.
+#[allow(clippy::too_many_arguments)]
 async fn finish_test_app(
     proxy_svc: Arc<ProxyService>,
     admin_svc: Arc<AdminService>,
@@ -318,6 +319,7 @@ async fn finish_test_app(
 
 /// Like `finish_test_app`, but attaches one extra `app_data` value (e.g. an
 /// `IpBlockStore` or `TeamNamespacePort`) needed by a handful of factories.
+#[allow(clippy::too_many_arguments)]
 async fn finish_test_app_with_extra<E: 'static>(
     proxy_svc: Arc<ProxyService>,
     admin_svc: Arc<AdminService>,

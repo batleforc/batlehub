@@ -3,12 +3,14 @@ pub mod cve_gate;
 pub mod deny_latest;
 pub mod rbac;
 pub mod release_age;
+pub mod version_gate;
 
 pub use block_list::BlockListRule;
 pub use cve_gate::CveGateRule;
 pub use deny_latest::DenyLatestRule;
 pub use rbac::RbacRule;
 pub use release_age::ReleaseAgeGateRule;
+pub use version_gate::VersionGateRule;
 
 use async_trait::async_trait;
 

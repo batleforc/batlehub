@@ -190,7 +190,7 @@ pub(super) fn build_warming_map(
                 client: Arc::clone(client),
                 storage: storage.clone(),
                 artifact_meta: Arc::new(PgArtifactMetaRepository::new(pool.clone()))
-                    as Arc<dyn batlehub_core::ports::ArtifactMetaRepository>,
+                    as Arc<dyn batlehub_core::ports::ArtifactCacheMeta>,
                 registry_name: reg.name.clone(),
                 latest_n: reg.cache.warm_latest_n,
                 concurrency: reg.cache.warm_concurrency,

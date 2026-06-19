@@ -1,16 +1,18 @@
-use std::sync::Arc;
 use std::time::Instant;
-
-use bytes::Bytes;
-use futures::StreamExt;
 
 use crate::entities::AccessEvent;
 use crate::error::CoreError;
-use crate::ports::StorageMeta;
 use crate::rules::{evaluate_rules, RuleContext, RuleDecision};
-use crate::services::cache_control::parse_cache_control;
 
 use super::{ProxyRequest, ProxyResponse, ProxyService};
+
+/// Largest artifact that re-serve verification (`verify_on_serve`) will retain in
+/// memory so it can be hashed and served from the same buffer in a single read.
+/// Artifacts above this size are hashed by streaming (memory stays bounded) and
+/// then re-opened from storage to serve. 32 MiB comfortably covers typical
+/// package artifacts (npm tarballs, wheels, crates) while capping per-request
+/// memory for pathologically large ones.
+pub(crate) const RESERVE_VERIFY_BUFFER_LIMIT: usize = 32 * 1024 * 1024;
 
 impl ProxyService {
     pub async fn handle(&self, req: ProxyRequest) -> Result<ProxyResponse, CoreError> {
@@ -83,8 +85,7 @@ impl ProxyService {
                     .await,
                 "denied download",
             );
-            metrics::counter!("batlehub_requests_total", "registry" => registry_label.clone(), "outcome" => "denied").increment(1);
-            metrics::histogram!("batlehub_request_duration_seconds", "registry" => registry_label.clone()).record(start.elapsed().as_secs_f64());
+            super::finish_request(&registry_label, "denied", start);
             return Ok(ProxyResponse::Denied { reason });
         }
 
@@ -120,8 +121,7 @@ impl ProxyService {
                     .await,
                 "allowed download",
             );
-            metrics::counter!("batlehub_requests_total", "registry" => registry_label.clone(), "outcome" => "allowed").increment(1);
-            metrics::histogram!("batlehub_request_duration_seconds", "registry" => registry_label.clone()).record(start.elapsed().as_secs_f64());
+            super::finish_request(&registry_label, "allowed", start);
             return Ok(ProxyResponse::Stream(upstream.stream));
         }
 
@@ -133,213 +133,24 @@ impl ProxyService {
             .await?;
 
         if cached_artifact_is_fresh {
-            tracing::debug!(key = %artifact_key, "artifact cache hit");
-            metrics::counter!("batlehub_artifact_cache_hits_total", "registry" => registry_label.clone()).increment(1);
-            self.metrics.record_artifact_hit(registry_name);
-            let artifact = self.storage.retrieve(&artifact_key).await?.ok_or_else(|| {
-                CoreError::Registry(format!(
-                    "artifact '{artifact_key}' vanished between exists and retrieve"
-                ))
-            })?;
-
-            let meta_repo = Arc::clone(&self.artifact_meta);
-            let key_clone = artifact_key.clone();
-            tokio::spawn(async move {
-                if let Err(e) = meta_repo.touch_artifact(&key_clone).await {
-                    tracing::warn!(key = %key_clone, error = %e, "touch_artifact failed");
-                }
-            });
-
-            super::warn_if_audit_failed(
-                self.repo
-                    .record_access(AccessEvent::allowed_download(
-                        req.package_id,
-                        req.identity.user_id,
-                        req.identity.role,
-                    ))
-                    .await,
-                "allowed download",
-            );
-            metrics::counter!("batlehub_requests_total", "registry" => registry_label.clone(), "outcome" => "allowed").increment(1);
-            metrics::histogram!("batlehub_request_duration_seconds", "registry" => registry_label.clone()).record(start.elapsed().as_secs_f64());
-            return Ok(ProxyResponse::Stream(artifact.stream));
+            // ── 5a. Cache hit (see `cache::serve_cache_hit`) ──────────────────
+            return self
+                .serve_cache_hit(req, artifact_key, &integrity, registry_label, start)
+                .await;
         }
 
-        // ── 5. Fetch from upstream and (conditionally) cache ──────────────────
-        tracing::debug!(key = %artifact_key, "artifact not cached, fetching from upstream");
-        metrics::counter!("batlehub_artifact_cache_misses_total", "registry" => registry_label.clone()).increment(1);
-        self.metrics.record_artifact_miss(registry_name);
-        let mut upstream = match client.fetch_artifact(&req.package_id).await {
-            Ok(s) => s,
-            Err(e) => {
-                metrics::counter!("batlehub_upstream_errors_total", "registry" => registry_label.clone()).increment(1);
-                super::warn_if_audit_failed(
-                    self.repo
-                        .record_access(AccessEvent::proxy_error(
-                            req.package_id.clone(),
-                            req.identity.user_id.clone(),
-                            req.identity.role.clone(),
-                            e.to_string(),
-                        ))
-                        .await,
-                    "proxy error",
-                );
-                return Err(e);
-            }
-        };
-
-        let skip_artifact_cache = upstream
-            .cache_control
-            .as_deref()
-            .map(|h| parse_cache_control(h).no_store)
-            .unwrap_or(false);
-
-        let mut buf: Vec<u8> = Vec::new();
-        while let Some(chunk) = upstream.stream.next().await {
-            let chunk = chunk?;
-            if buf.len() as u64 + chunk.len() as u64 > limit {
-                return Err(CoreError::PayloadTooLarge(format!(
-                    "artifact exceeds the {} byte limit",
-                    limit
-                )));
-            }
-            buf.extend_from_slice(&chunk);
-        }
-        let data = Bytes::from(buf);
-
-        // ── 6. Verify integrity against the advertised checksum ────────────────
-        // The full bytes are buffered here, so this is the one place we can hash
-        // and compare before the artifact is cached or served. A mismatch means
-        // corruption or tampering: we never cache or serve those bytes, and the
-        // failure is not bypassable. (The firewall-only path above streams without
-        // buffering and is intentionally not verified.)
-        if integrity.enabled {
-            use crate::services::integrity::{verify, IntegrityOutcome};
-            match metadata.checksum.as_deref() {
-                Some(expected) => match verify(expected, &data) {
-                    IntegrityOutcome::Verified { algo } => {
-                        metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "verified").increment(1);
-                        tracing::debug!(registry = %registry_name, key = %artifact_key, algo = algo.as_str(), "artifact integrity verified");
-                    }
-                    IntegrityOutcome::Mismatch {
-                        algo,
-                        expected,
-                        actual,
-                    } => {
-                        metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "mismatch").increment(1);
-                        tracing::warn!(registry = %registry_name, key = %artifact_key, algo = algo.as_str(), %expected, %actual, "artifact integrity mismatch");
-                        if integrity.block_on_mismatch {
-                            let reason = format!(
-                                "integrity check failed for {}: {} digest mismatch (expected {expected}, got {actual})",
-                                req.package_id,
-                                algo.as_str(),
-                            );
-                            super::warn_if_audit_failed(
-                                self.repo
-                                    .record_access(AccessEvent::proxy_error(
-                                        req.package_id.clone(),
-                                        req.identity.user_id.clone(),
-                                        req.identity.role.clone(),
-                                        reason.clone(),
-                                    ))
-                                    .await,
-                                "integrity mismatch",
-                            );
-                            metrics::counter!("batlehub_requests_total", "registry" => registry_label.clone(), "outcome" => "integrity_failed").increment(1);
-                            metrics::histogram!("batlehub_request_duration_seconds", "registry" => registry_label.clone()).record(start.elapsed().as_secs_f64());
-                            return Err(CoreError::IntegrityFailure(reason));
-                        }
-                    }
-                    IntegrityOutcome::Unparseable => {
-                        // Advertised checksum in an unknown format → cannot verify;
-                        // treat like missing rather than falsely claiming "verified".
-                        metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "unparseable").increment(1);
-                        tracing::warn!(registry = %registry_name, key = %artifact_key, checksum = %expected, "advertised checksum could not be parsed; skipping verification");
-                    }
-                },
-                None => {
-                    metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "missing").increment(1);
-                    if integrity.require_metadata
-                        && !integrity.bypass_roles.contains(&req.identity.role)
-                    {
-                        let reason = format!(
-                            "integrity policy requires checksum metadata, but upstream provided none for {}",
-                            req.package_id,
-                        );
-                        super::warn_if_audit_failed(
-                            self.repo
-                                .record_access(AccessEvent::proxy_error(
-                                    req.package_id.clone(),
-                                    req.identity.user_id.clone(),
-                                    req.identity.role.clone(),
-                                    reason.clone(),
-                                ))
-                                .await,
-                            "integrity missing metadata",
-                        );
-                        metrics::counter!("batlehub_requests_total", "registry" => registry_label.clone(), "outcome" => "integrity_failed").increment(1);
-                        metrics::histogram!("batlehub_request_duration_seconds", "registry" => registry_label.clone()).record(start.elapsed().as_secs_f64());
-                        return Err(CoreError::IntegrityFailure(reason));
-                    }
-                    tracing::debug!(registry = %registry_name, key = %artifact_key, "upstream provided no integrity metadata");
-                }
-            }
-        }
-
-        if !skip_artifact_cache {
-            self.storage
-                .store(
-                    &artifact_key,
-                    data.clone(),
-                    StorageMeta {
-                        size: Some(data.len() as u64),
-                        ..Default::default()
-                    },
-                )
-                .await?;
-
-            if let Err(e) = self
-                .artifact_meta
-                .record_artifact(
-                    &artifact_key,
-                    registry_name,
-                    &req.package_id.name,
-                    &req.package_id.version,
-                    Some(data.len() as u64),
-                )
-                .await
-            {
-                tracing::warn!(key = %artifact_key, error = %e, "record_artifact failed");
-            }
-
-            self.maybe_trigger_sbom(
-                registry_name,
-                &artifact_key,
-                &data,
-                &metadata,
-                client.registry_type(),
-            )
-            .await;
-        } else {
-            tracing::debug!(key = %artifact_key, "upstream Cache-Control: no-store; skipping artifact cache");
-        }
-
-        super::warn_if_audit_failed(
-            self.repo
-                .record_access(AccessEvent::allowed_download(
-                    req.package_id,
-                    req.identity.user_id,
-                    req.identity.role,
-                ))
-                .await,
-            "allowed download",
-        );
-        metrics::counter!("batlehub_requests_total", "registry" => registry_label.clone(), "outcome" => "allowed").increment(1);
-        metrics::histogram!("batlehub_request_duration_seconds", "registry" => registry_label)
-            .record(start.elapsed().as_secs_f64());
-
-        let stream = futures::stream::once(async move { Ok(data) });
-        Ok(ProxyResponse::Stream(Box::pin(stream)))
+        // ── 5b. Cache miss: fetch + cache (see `cache::fetch_and_cache`) ───────
+        self.fetch_and_cache(
+            req,
+            client,
+            metadata,
+            artifact_key,
+            &integrity,
+            limit,
+            registry_label,
+            start,
+        )
+        .await
     }
 
     /// Authorize a read against a registry's policy rules **without** resolving

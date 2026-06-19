@@ -130,13 +130,13 @@ Applies to registries running in `local` or `hybrid` mode.
 
 ### For all private registry types
 
-- [x] Artifact signing framework: publish with `X-Artifact-Signature` / `X-Signature-Type` headers; signature stored in DB and returned on download; optional `signing.required` enforcement
+- [x] Artifact signing framework: publish with `X-Artifact-Signature` / `X-Signature-Type` headers; signature stored in DB and returned on download; optional `signing.required` enforcement. Optional download-time verification of stored `ed25519` signatures against configured `signing.trusted_keys` (`signing.verify_on_download`); Ed25519 only, since the `rsa` crate is banned
 - [x] Ownership and team management: per-package owner table (user/group, admin/maintainer roles); `initialize_owner` on first publish; `can_publish` check on subsequent publishes; admin API to list/add/remove owners
 - [x] Versioning policies: `enforce_semver`, `allow_prerelease`, `version_pattern` (regex) per registry; enforced at publish time with HTTP 422
 - [x] Beta / pre-release channel: allow specific users or groups to access unpublished versions before general release
 - [x] Bulk operations: `POST /api/v1/admin/registries/{registry}/bulk-yank|bulk-unyank|bulk-delete`
 - [x] Content-addressable deduplication for stored artifacts (ref-counted via `artifact_dedup_index` / `artifact_dedup_refs`)
-- [ ] Integrity verification: verify checksums on re-serve, not only at publish time
+- [x] Integrity verification: verify checksums on re-serve, not only at publish time — `integrity.verify_on_serve` re-hashes stored bytes against a self-computed SHA-256 (recorded when first cached) on every serve (proxy cache hits and local reads); a mismatch fails with `502` and evicts the corrupt entry
 
 ### CLI tool - `batlehub-cli`
 

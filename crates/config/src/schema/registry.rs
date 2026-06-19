@@ -143,6 +143,15 @@ pub struct IntegrityConfig {
     /// Roles allowed to bypass the `require_metadata` gate.
     #[serde(default)]
     pub bypass_roles: Vec<String>,
+    /// Re-verify cached/stored bytes against a self-computed SHA-256 on **every**
+    /// serve (cache hit on the proxy path, and local-registry reads), not just on
+    /// the first fetch. Catches storage corruption or tampering of already-cached
+    /// artifacts. Off by default: it reads and hashes the bytes on each serve (the
+    /// proxy path streams them through the hash, so memory stays bounded, then
+    /// re-opens the entry to serve it). A mismatch fails the download (`502`) and
+    /// evicts the bad entry.
+    #[serde(default)]
+    pub verify_on_serve: bool,
 }
 
 impl Default for IntegrityConfig {
@@ -152,6 +161,7 @@ impl Default for IntegrityConfig {
             block_on_mismatch: true,
             require_metadata: false,
             bypass_roles: Vec::new(),
+            verify_on_serve: false,
         }
     }
 }
@@ -217,6 +227,17 @@ pub struct SigningConfig {
     /// When empty, any type (or no type) is accepted.
     #[serde(default)]
     pub allowed_types: Vec<String>,
+    /// When `true`, verify a stored `ed25519` detached signature against
+    /// `trusted_keys` on every download. A stored signature that fails to verify
+    /// (or was signed by an untrusted key) fails the download with `502`.
+    /// Signatures of other types, and artifacts with no stored signature, are not
+    /// verified here (missing signatures are governed by `required` at publish time).
+    #[serde(default)]
+    pub verify_on_download: bool,
+    /// Hex-encoded 32-byte Ed25519 public keys trusted to sign artifacts in this
+    /// registry. A download verifies against each in turn; any match passes.
+    #[serde(default)]
+    pub trusted_keys: Vec<String>,
 }
 
 /// Ed25519 repository-metadata signing key for `deb`/`rpm` registries.

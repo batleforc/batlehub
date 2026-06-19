@@ -6,7 +6,7 @@ use tokio::sync::Semaphore;
 
 use crate::{
     entities::PackageId,
-    ports::{ArtifactMetaRepository, RegistryClient, StorageBackend, StorageMeta},
+    ports::{ArtifactCacheMeta, ArtifactMetaRecord, RegistryClient, StorageBackend, StorageMeta},
 };
 
 /// Result of a warming run (a single package or a batch).
@@ -33,7 +33,7 @@ impl std::ops::AddAssign for WarmingReport {
 pub struct WarmingService {
     pub client: Arc<dyn RegistryClient>,
     pub storage: Arc<dyn StorageBackend>,
-    pub artifact_meta: Arc<dyn ArtifactMetaRepository>,
+    pub artifact_meta: Arc<dyn ArtifactCacheMeta>,
     pub registry_name: String,
     /// How many of the most-recent versions to warm per package.
     /// Ignored when the package string includes a pinned version (e.g. `"lodash@4.17.21"`).
@@ -47,7 +47,7 @@ pub struct WarmingService {
 async fn warm_one_version(
     client: Arc<dyn RegistryClient>,
     storage: Arc<dyn StorageBackend>,
-    artifact_meta: Arc<dyn ArtifactMetaRepository>,
+    artifact_meta: Arc<dyn ArtifactCacheMeta>,
     artifact_key: String,
     pkg: PackageId,
     registry_name: String,
@@ -109,6 +109,9 @@ async fn warm_one_version(
     }
     let data = Bytes::from(buf);
     let size = data.len() as u64;
+    // Self-computed digest persisted in the cache metadata table (via
+    // `record_artifact`) for re-serve integrity verification.
+    let checksum = crate::services::integrity::sha256_hex(&data);
 
     if let Err(e) = storage
         .store(
@@ -129,7 +132,14 @@ async fn warm_one_version(
     }
 
     if let Err(e) = artifact_meta
-        .record_artifact(&artifact_key, &registry_name, &name, &version, Some(size))
+        .record_artifact(ArtifactMetaRecord {
+            key: &artifact_key,
+            registry: &registry_name,
+            package_name: &name,
+            version: &version,
+            size: Some(size),
+            checksum: Some(&checksum),
+        })
         .await
     {
         tracing::warn!(error = %e, key = %artifact_key, "warming: record_artifact failed");
@@ -300,7 +310,7 @@ mod tests {
         entities::{PackageId, PackageMetadata},
         error::CoreError,
         ports::{
-            ArtifactMeta, ArtifactMetaRepository, FetchedArtifact, RegistryClient, StorageBackend,
+            ArtifactCacheMeta, ArtifactMetaRecord, FetchedArtifact, RegistryClient, StorageBackend,
             StorageMeta, StoredArtifact,
         },
     };
@@ -352,27 +362,14 @@ mod tests {
     }
 
     #[async_trait]
-    impl ArtifactMetaRepository for PanicMeta {
-        async fn record_artifact(
-            &self,
-            _: &str,
-            _: &str,
-            _: &str,
-            _: &str,
-            _: Option<u64>,
-        ) -> Result<(), CoreError> {
+    impl ArtifactCacheMeta for PanicMeta {
+        async fn record_artifact(&self, _: ArtifactMetaRecord<'_>) -> Result<(), CoreError> {
             panic!("should not be called")
+        }
+        async fn get_artifact_checksum(&self, _: &str) -> Result<Option<String>, CoreError> {
+            Ok(None)
         }
         async fn touch_artifact(&self, _: &str) -> Result<(), CoreError> {
-            panic!("should not be called")
-        }
-        async fn list_artifacts(&self, _: &str) -> Result<Vec<ArtifactMeta>, CoreError> {
-            panic!("should not be called")
-        }
-        async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> {
-            panic!("should not be called")
-        }
-        async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> {
             panic!("should not be called")
         }
         async fn is_artifact_expired(
@@ -382,24 +379,7 @@ mod tests {
         ) -> Result<bool, CoreError> {
             panic!("should not be called")
         }
-        async fn list_expired_by_ttl(
-            &self,
-            _: &str,
-            _: chrono::DateTime<Utc>,
-        ) -> Result<Vec<ArtifactMeta>, CoreError> {
-            panic!("should not be called")
-        }
-        async fn list_idle(
-            &self,
-            _: &str,
-            _: chrono::DateTime<Utc>,
-        ) -> Result<Vec<ArtifactMeta>, CoreError> {
-            panic!("should not be called")
-        }
-        async fn total_size_bytes(&self, _: &str) -> Result<u64, CoreError> {
-            panic!("should not be called")
-        }
-        async fn list_lru(&self, _: &str, _: i64) -> Result<Vec<ArtifactMeta>, CoreError> {
+        async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> {
             panic!("should not be called")
         }
     }
@@ -628,27 +608,14 @@ mod tests {
 
     struct NoopMeta;
     #[async_trait]
-    impl ArtifactMetaRepository for NoopMeta {
-        async fn record_artifact(
-            &self,
-            _: &str,
-            _: &str,
-            _: &str,
-            _: &str,
-            _: Option<u64>,
-        ) -> Result<(), CoreError> {
+    impl ArtifactCacheMeta for NoopMeta {
+        async fn record_artifact(&self, _: ArtifactMetaRecord<'_>) -> Result<(), CoreError> {
             Ok(())
+        }
+        async fn get_artifact_checksum(&self, _: &str) -> Result<Option<String>, CoreError> {
+            Ok(None)
         }
         async fn touch_artifact(&self, _: &str) -> Result<(), CoreError> {
-            Ok(())
-        }
-        async fn list_artifacts(&self, _: &str) -> Result<Vec<ArtifactMeta>, CoreError> {
-            Ok(vec![])
-        }
-        async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> {
-            Ok(vec![])
-        }
-        async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> {
             Ok(())
         }
         async fn is_artifact_expired(
@@ -658,51 +625,21 @@ mod tests {
         ) -> Result<bool, CoreError> {
             Ok(false)
         }
-        async fn list_expired_by_ttl(
-            &self,
-            _: &str,
-            _: chrono::DateTime<Utc>,
-        ) -> Result<Vec<ArtifactMeta>, CoreError> {
-            Ok(vec![])
-        }
-        async fn list_idle(
-            &self,
-            _: &str,
-            _: chrono::DateTime<Utc>,
-        ) -> Result<Vec<ArtifactMeta>, CoreError> {
-            Ok(vec![])
-        }
-        async fn total_size_bytes(&self, _: &str) -> Result<u64, CoreError> {
-            Ok(0)
-        }
-        async fn list_lru(&self, _: &str, _: i64) -> Result<Vec<ArtifactMeta>, CoreError> {
-            Ok(vec![])
+        async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> {
+            Ok(())
         }
     }
 
     struct FailingRecordMeta;
     #[async_trait]
-    impl ArtifactMetaRepository for FailingRecordMeta {
-        async fn record_artifact(
-            &self,
-            _: &str,
-            _: &str,
-            _: &str,
-            _: &str,
-            _: Option<u64>,
-        ) -> Result<(), CoreError> {
+    impl ArtifactCacheMeta for FailingRecordMeta {
+        async fn record_artifact(&self, _: ArtifactMetaRecord<'_>) -> Result<(), CoreError> {
             Err(CoreError::Storage("record_artifact failed".into()))
         }
+        async fn get_artifact_checksum(&self, _: &str) -> Result<Option<String>, CoreError> {
+            Ok(None)
+        }
         async fn touch_artifact(&self, _: &str) -> Result<(), CoreError> {
-            Ok(())
-        }
-        async fn list_artifacts(&self, _: &str) -> Result<Vec<ArtifactMeta>, CoreError> {
-            Ok(vec![])
-        }
-        async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> {
-            Ok(vec![])
-        }
-        async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> {
             Ok(())
         }
         async fn is_artifact_expired(
@@ -712,25 +649,8 @@ mod tests {
         ) -> Result<bool, CoreError> {
             Ok(false)
         }
-        async fn list_expired_by_ttl(
-            &self,
-            _: &str,
-            _: chrono::DateTime<Utc>,
-        ) -> Result<Vec<ArtifactMeta>, CoreError> {
-            Ok(vec![])
-        }
-        async fn list_idle(
-            &self,
-            _: &str,
-            _: chrono::DateTime<Utc>,
-        ) -> Result<Vec<ArtifactMeta>, CoreError> {
-            Ok(vec![])
-        }
-        async fn total_size_bytes(&self, _: &str) -> Result<u64, CoreError> {
-            Ok(0)
-        }
-        async fn list_lru(&self, _: &str, _: i64) -> Result<Vec<ArtifactMeta>, CoreError> {
-            Ok(vec![])
+        async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> {
+            Ok(())
         }
     }
 

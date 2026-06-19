@@ -104,6 +104,88 @@ pub fn parse_expected(s: &str) -> Option<(ChecksumAlgo, Vec<u8>)> {
     None
 }
 
+/// Self-computed bare SHA-256 hex digest of `data`.
+///
+/// Used as the stored checksum for re-serve verification: a registry-independent
+/// digest we compute ourselves when bytes are first written, then re-check on
+/// every later serve. The bare-hex form is what [`verify`] infers as SHA-256 from
+/// its length, so a stored value round-trips straight back through [`verify`].
+pub fn sha256_hex(data: &[u8]) -> String {
+    hex::encode(Sha256::digest(data))
+}
+
+/// Incremental ("streaming") counterpart to [`verify`].
+///
+/// Callers that want to verify a large artifact without buffering the whole
+/// thing in memory build a verifier from the advertised checksum, feed it byte
+/// chunks as they arrive ([`update`](Self::update)), then call
+/// [`finish`](Self::finish) for the same `Verified`/`Mismatch` outcome [`verify`]
+/// would have produced over the concatenated bytes. Memory use is bounded by the
+/// hasher state, not the artifact size.
+///
+/// Constructing a verifier already consumes the "unparseable checksum" case:
+/// [`new`](Self::new) returns `None` for a checksum [`verify`] would have
+/// reported as [`IntegrityOutcome::Unparseable`], so [`finish`](Self::finish)
+/// only ever yields `Verified` or `Mismatch`.
+pub struct StreamingVerifier {
+    hasher: Hasher,
+    algo: ChecksumAlgo,
+    expected: Vec<u8>,
+}
+
+enum Hasher {
+    Sha1(Sha1),
+    Sha256(Sha256),
+    Sha512(Sha512),
+}
+
+impl StreamingVerifier {
+    /// Build a verifier for the algorithm implied by `expected`, or `None` when
+    /// the checksum is unparseable (the caller should treat that exactly like
+    /// [`IntegrityOutcome::Unparseable`] from [`verify`]).
+    pub fn new(expected: &str) -> Option<Self> {
+        let (algo, expected) = parse_expected(expected)?;
+        let hasher = match algo {
+            ChecksumAlgo::Sha1 => Hasher::Sha1(Sha1::new()),
+            ChecksumAlgo::Sha256 => Hasher::Sha256(Sha256::new()),
+            ChecksumAlgo::Sha512 => Hasher::Sha512(Sha512::new()),
+        };
+        Some(Self {
+            hasher,
+            algo,
+            expected,
+        })
+    }
+
+    /// Feed the next chunk of artifact bytes into the running digest.
+    pub fn update(&mut self, data: &[u8]) {
+        match &mut self.hasher {
+            Hasher::Sha1(h) => h.update(data),
+            Hasher::Sha256(h) => h.update(data),
+            Hasher::Sha512(h) => h.update(data),
+        }
+    }
+
+    /// Finalize the digest and compare it against the advertised checksum.
+    /// Always `Verified` or `Mismatch` (never `Unparseable` — see [`new`](Self::new)).
+    pub fn finish(self) -> IntegrityOutcome {
+        let actual = match self.hasher {
+            Hasher::Sha1(h) => h.finalize().to_vec(),
+            Hasher::Sha256(h) => h.finalize().to_vec(),
+            Hasher::Sha512(h) => h.finalize().to_vec(),
+        };
+        if actual == self.expected {
+            IntegrityOutcome::Verified { algo: self.algo }
+        } else {
+            IntegrityOutcome::Mismatch {
+                algo: self.algo,
+                expected: hex::encode(&self.expected),
+                actual: hex::encode(&actual),
+            }
+        }
+    }
+}
+
 /// Hash `data` and compare it against the advertised `expected` checksum.
 pub fn verify(expected: &str, data: &[u8]) -> IntegrityOutcome {
     let Some((algo, expected_bytes)) = parse_expected(expected) else {
@@ -245,6 +327,52 @@ mod tests {
         assert_eq!(verify("abcdef", HELLO), IntegrityOutcome::Unparseable);
         // Unknown SRI algorithm.
         assert_eq!(verify("md5-abcd", HELLO), IntegrityOutcome::Unparseable);
+    }
+
+    #[test]
+    fn streaming_verifier_matches_verify_when_fed_in_chunks() {
+        // Feed the bytes in several uneven chunks; the outcome must match the
+        // one-shot `verify` over the whole input.
+        let mut v = StreamingVerifier::new(HELLO_SHA256_HEX).unwrap();
+        v.update(b"he");
+        v.update(b"");
+        v.update(b"llo");
+        assert_eq!(
+            v.finish(),
+            IntegrityOutcome::Verified {
+                algo: ChecksumAlgo::Sha256
+            }
+        );
+    }
+
+    #[test]
+    fn streaming_verifier_reports_mismatch() {
+        let mut v = StreamingVerifier::new(HELLO_SHA256_HEX).unwrap();
+        v.update(b"good");
+        v.update(b"bye");
+        match v.finish() {
+            IntegrityOutcome::Mismatch { algo, .. } => assert_eq!(algo, ChecksumAlgo::Sha256),
+            other => panic!("expected mismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn streaming_verifier_handles_sri_sha512() {
+        let sri = hello_sri(ChecksumAlgo::Sha512);
+        let mut v = StreamingVerifier::new(&sri).unwrap();
+        v.update(HELLO);
+        assert_eq!(
+            v.finish(),
+            IntegrityOutcome::Verified {
+                algo: ChecksumAlgo::Sha512
+            }
+        );
+    }
+
+    #[test]
+    fn streaming_verifier_rejects_unparseable_checksum() {
+        assert!(StreamingVerifier::new("not-a-checksum").is_none());
+        assert!(StreamingVerifier::new("").is_none());
     }
 
     #[test]

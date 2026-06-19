@@ -11,7 +11,7 @@ use crate::{
     error::CoreError,
     ports::{QuotaRepository, QuotaUsage, StorageBackend, StorageMeta, StoredArtifact},
     services::hot_config::{new_hot_lock, HotConfig},
-    services::{QuotaEnforcement, RegistryQuotaConfig, SigningConfig},
+    services::{IntegrityPolicy, QuotaEnforcement, RegistryQuotaConfig, SigningConfig},
 };
 
 // ── Minimal mock backend ──────────────────────────────────────────────────
@@ -63,6 +63,54 @@ impl crate::ports::LocalRegistryBackend for InMemBackend {
             .unwrap()
             .iter()
             .any(|p| p.registry == registry && p.name == name))
+    }
+}
+
+/// In-memory storage that actually round-trips bytes, for download-path tests
+/// (re-serve checksum + signature verification).
+#[derive(Default)]
+struct MemStore {
+    data: Mutex<HashMap<String, Bytes>>,
+}
+impl MemStore {
+    fn arc() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+    fn put(&self, key: &str, bytes: Bytes) {
+        self.data.lock().unwrap().insert(key.to_owned(), bytes);
+    }
+}
+#[async_trait]
+impl StorageBackend for MemStore {
+    async fn store(&self, key: &str, data: Bytes, _: StorageMeta) -> Result<(), CoreError> {
+        self.data.lock().unwrap().insert(key.to_owned(), data);
+        Ok(())
+    }
+    async fn retrieve(&self, key: &str) -> Result<Option<StoredArtifact>, CoreError> {
+        Ok(self.data.lock().unwrap().get(key).cloned().map(|bytes| {
+            let s: crate::ports::ByteStream =
+                Box::pin(futures::stream::once(async move { Ok(bytes) }));
+            StoredArtifact {
+                stream: s,
+                meta: StorageMeta::default(),
+            }
+        }))
+    }
+    async fn exists(&self, key: &str) -> Result<bool, CoreError> {
+        Ok(self.data.lock().unwrap().contains_key(key))
+    }
+    async fn delete(&self, key: &str) -> Result<(), CoreError> {
+        self.data.lock().unwrap().remove(key);
+        Ok(())
+    }
+    async fn delete_by_prefix(&self, _: &str) -> Result<usize, CoreError> {
+        Ok(0)
+    }
+    async fn stat_by_prefix(&self, _: &str) -> Result<(u64, u64), CoreError> {
+        Ok((0, 0))
+    }
+    async fn list_keys(&self, _: &str) -> Result<Vec<String>, CoreError> {
+        Ok(vec![])
     }
 }
 
@@ -1160,6 +1208,7 @@ async fn publish_rejects_missing_required_signature() {
         SigningConfig {
             required: true,
             allowed_types: vec![],
+            ..Default::default()
         },
     );
     let req = publish_req("npm", "pkg", "1.0.0", user());
@@ -1178,6 +1227,7 @@ async fn publish_rejects_disallowed_signature_type() {
         SigningConfig {
             required: false,
             allowed_types: vec!["ed25519".into()],
+            ..Default::default()
         },
     );
     let mut req = publish_req("npm", "pkg", "1.0.0", user());
@@ -1198,12 +1248,245 @@ async fn publish_allows_matching_signature_type() {
         SigningConfig {
             required: true,
             allowed_types: vec!["ed25519".into()],
+            ..Default::default()
         },
     );
     let mut req = publish_req("npm", "pkg", "1.0.0", user());
     req.signature_bytes = Some(vec![1, 2, 3]);
     req.signature_type = Some("ed25519".into());
     assert!(s.publish(req).await.is_ok());
+}
+
+// ── download-path verification (re-serve checksum + signature) ─────────────
+
+/// Build a service wired for download-path verification tests: a real in-memory
+/// store plus per-registry integrity/signing policies for `"npm"`.
+fn download_svc(
+    backend: Arc<InMemBackend>,
+    storage: Arc<MemStore>,
+    integrity: Option<IntegrityPolicy>,
+    signing: Option<SigningConfig>,
+) -> LocalRegistryService {
+    let mut integrity_map = HashMap::new();
+    if let Some(i) = integrity {
+        integrity_map.insert("npm".to_owned(), i);
+    }
+    let mut signing_map = HashMap::new();
+    if let Some(s) = signing {
+        signing_map.insert("npm".to_owned(), s);
+    }
+    LocalRegistryService {
+        backend,
+        storage,
+        hot: new_hot_lock(HotConfig {
+            integrity: integrity_map,
+            signing: signing_map,
+            ..Default::default()
+        }),
+        quota: None,
+        ownership: None,
+        team_namespace: None,
+        sbom: None,
+        explore_cache: None,
+    }
+}
+
+fn seed_version(
+    backend: &InMemBackend,
+    checksum: &str,
+    sig_bytes: Option<Vec<u8>>,
+    sig_type: Option<String>,
+) {
+    backend.seed(PublishedPackage {
+        registry: "npm".into(),
+        name: "pkg".into(),
+        version: "1.0.0".into(),
+        checksum: checksum.to_owned(),
+        yanked: false,
+        index_metadata: serde_json::json!({}),
+        published_at: Utc::now(),
+        published_by: None,
+        signature_bytes: sig_bytes,
+        signature_type: sig_type,
+        visibility: Default::default(),
+    });
+}
+
+fn reserve_policy(verify_on_serve: bool) -> IntegrityPolicy {
+    IntegrityPolicy {
+        enabled: true,
+        block_on_mismatch: true,
+        require_metadata: false,
+        bypass_roles: vec![],
+        verify_on_serve,
+    }
+}
+
+#[tokio::test]
+async fn get_artifact_reserve_verification_passes_when_bytes_match() {
+    let body: &[u8] = b"local-artifact-bytes";
+    let backend = InMemBackend::arc();
+    seed_version(
+        &backend,
+        &crate::services::integrity::sha256_hex(body),
+        None,
+        None,
+    );
+    let storage = MemStore::arc();
+    storage.put(
+        &artifact_storage_key("npm", "pkg", "1.0.0"),
+        Bytes::from_static(body),
+    );
+
+    let s = download_svc(backend, storage, Some(reserve_policy(true)), None);
+    let out = s
+        .get_artifact("npm", "pkg", "1.0.0", &user())
+        .await
+        .unwrap();
+    assert_eq!(out.as_ref(), body);
+}
+
+#[tokio::test]
+async fn get_artifact_reserve_verification_detects_corruption() {
+    let body: &[u8] = b"local-artifact-bytes";
+    let backend = InMemBackend::arc();
+    // Recorded checksum is for the real bytes; stored bytes are corrupted.
+    seed_version(
+        &backend,
+        &crate::services::integrity::sha256_hex(body),
+        None,
+        None,
+    );
+    let storage = MemStore::arc();
+    storage.put(
+        &artifact_storage_key("npm", "pkg", "1.0.0"),
+        Bytes::from_static(b"CORRUPTED"),
+    );
+
+    let s = download_svc(backend, storage, Some(reserve_policy(true)), None);
+    let err = s
+        .get_artifact("npm", "pkg", "1.0.0", &user())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, CoreError::IntegrityFailure(_)),
+        "corrupted local artifact must fail re-serve verification, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn get_artifact_reserve_off_serves_corrupted_bytes() {
+    let body: &[u8] = b"local-artifact-bytes";
+    let backend = InMemBackend::arc();
+    seed_version(
+        &backend,
+        &crate::services::integrity::sha256_hex(body),
+        None,
+        None,
+    );
+    let storage = MemStore::arc();
+    storage.put(
+        &artifact_storage_key("npm", "pkg", "1.0.0"),
+        Bytes::from_static(b"CORRUPTED"),
+    );
+
+    let s = download_svc(backend, storage, Some(reserve_policy(false)), None);
+    assert!(s.get_artifact("npm", "pkg", "1.0.0", &user()).await.is_ok());
+}
+
+#[tokio::test]
+async fn get_artifact_reserve_fails_closed_when_metadata_row_missing() {
+    let body: &[u8] = b"local-artifact-bytes";
+    // Bytes exist in storage, but no published-version metadata row was seeded
+    // (an inconsistent state). With verify_on_serve on, we must refuse to serve
+    // unverified rather than silently skip the check.
+    let backend = InMemBackend::arc();
+    let storage = MemStore::arc();
+    storage.put(
+        &artifact_storage_key("npm", "pkg", "1.0.0"),
+        Bytes::from_static(body),
+    );
+
+    let s = download_svc(backend, storage, Some(reserve_policy(true)), None);
+    let err = s
+        .get_artifact("npm", "pkg", "1.0.0", &user())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, CoreError::IntegrityFailure(_)),
+        "missing metadata for stored bytes must fail closed, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn get_artifact_verifies_ed25519_signature() {
+    use ed25519_dalek::{Signer, SigningKey};
+    let body: &[u8] = b"signed-artifact";
+    let sk = SigningKey::from_bytes(&[42u8; 32]);
+    let pub_hex = hex::encode(sk.verifying_key().to_bytes());
+    let sig = sk.sign(body).to_bytes().to_vec();
+
+    let backend = InMemBackend::arc();
+    seed_version(
+        &backend,
+        &crate::services::integrity::sha256_hex(body),
+        Some(sig),
+        Some("ed25519".into()),
+    );
+    let storage = MemStore::arc();
+    storage.put(
+        &artifact_storage_key("npm", "pkg", "1.0.0"),
+        Bytes::from_static(body),
+    );
+
+    let signing = SigningConfig {
+        verify_on_download: true,
+        trusted_keys: vec![pub_hex],
+        ..Default::default()
+    };
+    let s = download_svc(backend, storage, None, Some(signing));
+    assert!(s.get_artifact("npm", "pkg", "1.0.0", &user()).await.is_ok());
+}
+
+#[tokio::test]
+async fn get_artifact_rejects_signature_from_untrusted_key() {
+    use ed25519_dalek::{Signer, SigningKey};
+    let body: &[u8] = b"signed-artifact";
+    let sk = SigningKey::from_bytes(&[42u8; 32]);
+    let other_pub = hex::encode(
+        SigningKey::from_bytes(&[7u8; 32])
+            .verifying_key()
+            .to_bytes(),
+    );
+    let sig = sk.sign(body).to_bytes().to_vec();
+
+    let backend = InMemBackend::arc();
+    seed_version(
+        &backend,
+        &crate::services::integrity::sha256_hex(body),
+        Some(sig),
+        Some("ed25519".into()),
+    );
+    let storage = MemStore::arc();
+    storage.put(
+        &artifact_storage_key("npm", "pkg", "1.0.0"),
+        Bytes::from_static(body),
+    );
+
+    let signing = SigningConfig {
+        verify_on_download: true,
+        trusted_keys: vec![other_pub],
+        ..Default::default()
+    };
+    let s = download_svc(backend, storage, None, Some(signing));
+    let err = s
+        .get_artifact("npm", "pkg", "1.0.0", &user())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, CoreError::IntegrityFailure(_)),
+        "signature from an untrusted key must be rejected, got {err:?}"
+    );
 }
 
 // ── ownership enforcement ─────────────────────────────────────────────────

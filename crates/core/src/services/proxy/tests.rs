@@ -15,8 +15,8 @@ use crate::entities::{
 };
 use crate::ports::ByteStream;
 use crate::ports::{
-    ArtifactMeta, ArtifactMetaRepository, CacheStore, FetchedArtifact, PackageRepository,
-    RegistryClient, StorageBackend, StorageMeta, StoredArtifact,
+    ArtifactCacheMeta, ArtifactMeta, ArtifactMetaRecord, CacheStore, FetchedArtifact,
+    PackageRepository, RegistryClient, StorageBackend, StorageMeta, StoredArtifact,
 };
 use crate::services::hot_config::{new_hot_lock, HotConfig, RegistryPolicy};
 use crate::services::metrics::ProxyMetrics;
@@ -56,32 +56,19 @@ fn empty_hot(
 
 struct NoopArtifactMeta;
 impl NoopArtifactMeta {
-    fn arc() -> Arc<dyn ArtifactMetaRepository> {
+    fn arc() -> Arc<dyn ArtifactCacheMeta> {
         Arc::new(Self)
     }
 }
 #[async_trait]
-impl ArtifactMetaRepository for NoopArtifactMeta {
-    async fn record_artifact(
-        &self,
-        _key: &str,
-        _registry: &str,
-        _name: &str,
-        _ver: &str,
-        _size: Option<u64>,
-    ) -> Result<(), CoreError> {
+impl ArtifactCacheMeta for NoopArtifactMeta {
+    async fn record_artifact(&self, _rec: ArtifactMetaRecord<'_>) -> Result<(), CoreError> {
         Ok(())
+    }
+    async fn get_artifact_checksum(&self, _key: &str) -> Result<Option<String>, CoreError> {
+        Ok(None)
     }
     async fn touch_artifact(&self, _key: &str) -> Result<(), CoreError> {
-        Ok(())
-    }
-    async fn list_artifacts(&self, _registry: &str) -> Result<Vec<ArtifactMeta>, CoreError> {
-        Ok(vec![])
-    }
-    async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> {
-        Ok(vec![])
-    }
-    async fn delete_artifact_meta(&self, _key: &str) -> Result<(), CoreError> {
         Ok(())
     }
     async fn is_artifact_expired(
@@ -91,25 +78,8 @@ impl ArtifactMetaRepository for NoopArtifactMeta {
     ) -> Result<bool, CoreError> {
         Ok(false)
     }
-    async fn list_expired_by_ttl(
-        &self,
-        _registry: &str,
-        _older_than: chrono::DateTime<chrono::Utc>,
-    ) -> Result<Vec<ArtifactMeta>, CoreError> {
-        Ok(vec![])
-    }
-    async fn list_idle(
-        &self,
-        _registry: &str,
-        _idle_since: chrono::DateTime<chrono::Utc>,
-    ) -> Result<Vec<ArtifactMeta>, CoreError> {
-        Ok(vec![])
-    }
-    async fn total_size_bytes(&self, _registry: &str) -> Result<u64, CoreError> {
-        Ok(0)
-    }
-    async fn list_lru(&self, _registry: &str, _limit: i64) -> Result<Vec<ArtifactMeta>, CoreError> {
-        Ok(vec![])
+    async fn delete_artifact_meta(&self, _key: &str) -> Result<(), CoreError> {
+        Ok(())
     }
 }
 
@@ -119,6 +89,8 @@ struct SpyArtifactMeta {
     recorded: Mutex<Vec<String>>,
     touched: Mutex<Vec<String>>,
     expired: Mutex<Vec<ArtifactMeta>>,
+    checksums: Mutex<HashMap<String, String>>,
+    fail_checksum_lookup: std::sync::atomic::AtomicBool,
 }
 impl SpyArtifactMeta {
     fn new() -> Arc<Self> {
@@ -126,6 +98,8 @@ impl SpyArtifactMeta {
             recorded: Mutex::new(vec![]),
             touched: Mutex::new(vec![]),
             expired: Mutex::new(vec![]),
+            checksums: Mutex::new(HashMap::new()),
+            fail_checksum_lookup: std::sync::atomic::AtomicBool::new(false),
         })
     }
     fn with_expired(expired: Vec<ArtifactMeta>) -> Arc<Self> {
@@ -133,7 +107,15 @@ impl SpyArtifactMeta {
             recorded: Mutex::new(vec![]),
             touched: Mutex::new(vec![]),
             expired: Mutex::new(expired),
+            checksums: Mutex::new(HashMap::new()),
+            fail_checksum_lookup: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+    /// Make `get_artifact_checksum` return an error, simulating a transient
+    /// metadata-store failure (used to assert the re-serve path fails closed).
+    fn fail_checksum_lookups(&self) {
+        self.fail_checksum_lookup
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
     fn recorded_keys(&self) -> Vec<String> {
         self.recorded.lock().unwrap().clone()
@@ -143,29 +125,28 @@ impl SpyArtifactMeta {
     }
 }
 #[async_trait]
-impl ArtifactMetaRepository for SpyArtifactMeta {
-    async fn record_artifact(
-        &self,
-        key: &str,
-        _: &str,
-        _: &str,
-        _: &str,
-        _: Option<u64>,
-    ) -> Result<(), CoreError> {
-        self.recorded.lock().unwrap().push(key.to_owned());
+impl ArtifactCacheMeta for SpyArtifactMeta {
+    async fn record_artifact(&self, rec: ArtifactMetaRecord<'_>) -> Result<(), CoreError> {
+        self.recorded.lock().unwrap().push(rec.key.to_owned());
+        if let Some(c) = rec.checksum {
+            self.checksums
+                .lock()
+                .unwrap()
+                .insert(rec.key.to_owned(), c.to_owned());
+        }
         Ok(())
+    }
+    async fn get_artifact_checksum(&self, key: &str) -> Result<Option<String>, CoreError> {
+        if self
+            .fail_checksum_lookup
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(CoreError::Storage("checksum lookup failed".into()));
+        }
+        Ok(self.checksums.lock().unwrap().get(key).cloned())
     }
     async fn touch_artifact(&self, key: &str) -> Result<(), CoreError> {
         self.touched.lock().unwrap().push(key.to_owned());
-        Ok(())
-    }
-    async fn list_artifacts(&self, _: &str) -> Result<Vec<ArtifactMeta>, CoreError> {
-        Ok(vec![])
-    }
-    async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> {
-        Ok(vec![])
-    }
-    async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> {
         Ok(())
     }
     async fn is_artifact_expired(
@@ -188,25 +169,8 @@ impl ArtifactMetaRepository for SpyArtifactMeta {
             .any(|m| m.artifact_key == key && m.cached_at < older_than);
         Ok(is_expired)
     }
-    async fn list_expired_by_ttl(
-        &self,
-        _: &str,
-        _: chrono::DateTime<chrono::Utc>,
-    ) -> Result<Vec<ArtifactMeta>, CoreError> {
-        Ok(self.expired.lock().unwrap().clone())
-    }
-    async fn list_idle(
-        &self,
-        _: &str,
-        _: chrono::DateTime<chrono::Utc>,
-    ) -> Result<Vec<ArtifactMeta>, CoreError> {
-        Ok(vec![])
-    }
-    async fn total_size_bytes(&self, _: &str) -> Result<u64, CoreError> {
-        Ok(0)
-    }
-    async fn list_lru(&self, _: &str, _: i64) -> Result<Vec<ArtifactMeta>, CoreError> {
-        Ok(vec![])
+    async fn delete_artifact_meta(&self, _: &str) -> Result<(), CoreError> {
+        Ok(())
     }
 }
 
@@ -1092,7 +1056,14 @@ async fn artifact_cache_hit_records_touch() {
     // production behavior) and the proxy re-fetches instead of serving from cache.
     let spy_meta = SpyArtifactMeta::new();
     spy_meta
-        .record_artifact(&artifact_key, "npm", "test-pkg", "1.0.0", None)
+        .record_artifact(ArtifactMetaRecord {
+            key: &artifact_key,
+            registry: "npm",
+            package_name: "test-pkg",
+            version: "1.0.0",
+            size: None,
+            checksum: None,
+        })
         .await
         .unwrap();
     let svc = ProxyService {
@@ -1341,6 +1312,7 @@ async fn integrity_require_metadata_blocks_when_absent() {
         block_on_mismatch: true,
         require_metadata: true,
         bypass_roles: vec![],
+        verify_on_serve: false,
     };
     let (svc, storage) = proxy_with_integrity("npm", reg, Some(policy));
 
@@ -1364,6 +1336,7 @@ async fn integrity_require_metadata_bypass_role_is_allowed() {
         block_on_mismatch: true,
         require_metadata: true,
         bypass_roles: vec![crate::entities::Role::Admin],
+        verify_on_serve: false,
     };
     let (svc, _storage) = proxy_with_integrity("npm", reg, Some(policy));
 
@@ -1396,6 +1369,7 @@ async fn integrity_mismatch_warn_only_serves_and_caches() {
         block_on_mismatch: false,
         require_metadata: false,
         bypass_roles: vec![],
+        verify_on_serve: false,
     };
     let (svc, storage) = proxy_with_integrity("npm", reg, Some(policy));
 
@@ -1435,6 +1409,7 @@ async fn integrity_disabled_skips_verification_even_on_mismatch() {
         block_on_mismatch: true,
         require_metadata: false,
         bypass_roles: vec![],
+        verify_on_serve: false,
     };
     let (svc, storage) = proxy_with_integrity("npm", reg, Some(policy));
 
@@ -1445,4 +1420,299 @@ async fn integrity_disabled_skips_verification_even_on_mismatch() {
     );
     let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
     assert!(storage.exists(&artifact_key).await.unwrap());
+}
+
+// ── Re-serve verification (verify_on_serve) ────────────────────────────────
+
+/// Build a ProxyService whose cached artifact (`storage`) and recorded checksum
+/// (`spy_meta`) can be set up independently, so a test can simulate a cached
+/// artifact whose stored bytes no longer match the checksum recorded at cache time.
+fn reserve_proxy(
+    verify_on_serve: bool,
+    spy_meta: Arc<SpyArtifactMeta>,
+    storage: Arc<MemStorage>,
+) -> ProxyService {
+    let mut registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
+    registries.insert("npm".to_owned(), Arc::new(FixedRegistry));
+    let mut policies = HashMap::new();
+    policies.insert(
+        "npm".to_owned(),
+        Arc::new(RegistryPolicy {
+            metadata_ttl: None,
+            firewall_only: false,
+            serve_stale_metadata: false,
+            artifact_ttl: Some(Duration::from_secs(3600)),
+            rules: vec![],
+        }),
+    );
+    let mut integrity_map = HashMap::new();
+    integrity_map.insert(
+        "npm".to_owned(),
+        crate::services::IntegrityPolicy {
+            enabled: true,
+            block_on_mismatch: true,
+            require_metadata: false,
+            bypass_roles: vec![],
+            verify_on_serve,
+        },
+    );
+    let hot = new_hot_lock(HotConfig {
+        registries,
+        policies,
+        integrity: integrity_map,
+        ..Default::default()
+    });
+    ProxyService {
+        hot,
+        storage,
+        cache: TestCacheStore::new(),
+        repo: SpyRepo::new(),
+        artifact_meta: spy_meta,
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
+    }
+}
+
+#[tokio::test]
+async fn reserve_verification_serves_when_stored_bytes_match() {
+    let storage = MemStorage::new();
+    let spy_meta = SpyArtifactMeta::new();
+    let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
+    storage
+        .store(
+            &artifact_key,
+            Bytes::from_static(BODY),
+            StorageMeta::default(),
+        )
+        .await
+        .unwrap();
+    spy_meta
+        .record_artifact(ArtifactMetaRecord {
+            key: &artifact_key,
+            registry: "npm",
+            package_name: "test-pkg",
+            version: "1.0.0",
+            size: None,
+            checksum: Some(&sha256_hex(BODY)),
+        })
+        .await
+        .unwrap();
+
+    let svc = reserve_proxy(true, spy_meta, storage);
+    let resp = svc.handle(req("npm")).await.unwrap();
+    let ProxyResponse::Stream(mut s) = resp else {
+        panic!("matching stored bytes must be served on re-verify");
+    };
+    // Drain the re-opened stream: it must yield exactly the verified bytes.
+    use futures::StreamExt as _;
+    let mut served = Vec::new();
+    while let Some(chunk) = s.next().await {
+        served.extend_from_slice(&chunk.unwrap());
+    }
+    assert_eq!(
+        served, BODY,
+        "re-served bytes must match the verified content"
+    );
+}
+
+#[tokio::test]
+async fn reserve_verification_blocks_and_evicts_corrupted_cache() {
+    let storage = MemStorage::new();
+    let spy_meta = SpyArtifactMeta::new();
+    let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
+    // Stored bytes are corrupted, but the recorded checksum is for the real bytes.
+    storage
+        .store(
+            &artifact_key,
+            Bytes::from_static(b"corrupted!"),
+            StorageMeta::default(),
+        )
+        .await
+        .unwrap();
+    spy_meta
+        .record_artifact(ArtifactMetaRecord {
+            key: &artifact_key,
+            registry: "npm",
+            package_name: "test-pkg",
+            version: "1.0.0",
+            size: None,
+            checksum: Some(&sha256_hex(BODY)),
+        })
+        .await
+        .unwrap();
+
+    let svc = reserve_proxy(true, spy_meta, storage.clone());
+    let result = svc.handle(req("npm")).await;
+    assert!(
+        matches!(result, Err(CoreError::IntegrityFailure(_))),
+        "a corrupted cached artifact must fail re-serve verification"
+    );
+    assert!(
+        !storage.exists(&artifact_key).await.unwrap(),
+        "the corrupt cache entry must be evicted"
+    );
+}
+
+#[tokio::test]
+async fn reserve_verification_off_serves_corrupted_bytes() {
+    let storage = MemStorage::new();
+    let spy_meta = SpyArtifactMeta::new();
+    let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
+    storage
+        .store(
+            &artifact_key,
+            Bytes::from_static(b"corrupted!"),
+            StorageMeta::default(),
+        )
+        .await
+        .unwrap();
+    spy_meta
+        .record_artifact(ArtifactMetaRecord {
+            key: &artifact_key,
+            registry: "npm",
+            package_name: "test-pkg",
+            version: "1.0.0",
+            size: None,
+            checksum: Some(&sha256_hex(BODY)),
+        })
+        .await
+        .unwrap();
+
+    // verify_on_serve = false → no re-check, the (corrupt) bytes are served as before.
+    let svc = reserve_proxy(false, spy_meta, storage.clone());
+    let resp = svc.handle(req("npm")).await.unwrap();
+    assert!(matches!(resp, ProxyResponse::Stream(_)));
+    assert!(storage.exists(&artifact_key).await.unwrap());
+}
+
+#[tokio::test]
+async fn reserve_verification_fails_closed_on_checksum_lookup_error() {
+    let storage = MemStorage::new();
+    let spy_meta = SpyArtifactMeta::new();
+    let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
+    // Bytes are fine and a checksum was recorded, but the lookup itself errors
+    // (transient metadata-store failure). verify_on_serve must fail closed rather
+    // than serve bytes it could not re-verify.
+    storage
+        .store(
+            &artifact_key,
+            Bytes::from_static(BODY),
+            StorageMeta::default(),
+        )
+        .await
+        .unwrap();
+    spy_meta
+        .record_artifact(ArtifactMetaRecord {
+            key: &artifact_key,
+            registry: "npm",
+            package_name: "test-pkg",
+            version: "1.0.0",
+            size: None,
+            checksum: Some(&sha256_hex(BODY)),
+        })
+        .await
+        .unwrap();
+    spy_meta.fail_checksum_lookups();
+
+    let svc = reserve_proxy(true, spy_meta, storage.clone());
+    let result = svc.handle(req("npm")).await;
+    assert!(
+        matches!(result, Err(CoreError::IntegrityFailure(_))),
+        "a checksum-lookup error must fail closed, not serve unverified bytes"
+    );
+    // The cache entry is left intact — the bytes may be fine; we just couldn't check.
+    assert!(storage.exists(&artifact_key).await.unwrap());
+}
+
+#[tokio::test]
+async fn reserve_verification_serves_when_no_checksum_recorded() {
+    let storage = MemStorage::new();
+    let spy_meta = SpyArtifactMeta::new();
+    let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
+    storage
+        .store(
+            &artifact_key,
+            Bytes::from_static(BODY),
+            StorageMeta::default(),
+        )
+        .await
+        .unwrap();
+    // Recorded with no checksum (entry cached before verify_on_serve existed):
+    // documented skip — serve as-is until the entry is next refreshed.
+    spy_meta
+        .record_artifact(ArtifactMetaRecord {
+            key: &artifact_key,
+            registry: "npm",
+            package_name: "test-pkg",
+            version: "1.0.0",
+            size: None,
+            checksum: None,
+        })
+        .await
+        .unwrap();
+
+    let svc = reserve_proxy(true, spy_meta, storage.clone());
+    let resp = svc.handle(req("npm")).await.unwrap();
+    assert!(
+        matches!(resp, ProxyResponse::Stream(_)),
+        "an entry with no recorded checksum is served (skip), not blocked"
+    );
+    assert!(storage.exists(&artifact_key).await.unwrap());
+}
+
+#[tokio::test]
+async fn reserve_verification_serves_oversized_artifact_via_reretrieve() {
+    // A body larger than RESERVE_VERIFY_BUFFER_LIMIT is hashed by streaming (its
+    // bytes are not retained) and then served by re-opening a fresh stream from
+    // storage — the bounded-memory fallback path.
+    let body = vec![0xABu8; super::handle::RESERVE_VERIFY_BUFFER_LIMIT + 1];
+    let storage = MemStorage::new();
+    let spy_meta = SpyArtifactMeta::new();
+    let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
+    storage
+        .store(
+            &artifact_key,
+            Bytes::from(body.clone()),
+            StorageMeta::default(),
+        )
+        .await
+        .unwrap();
+    spy_meta
+        .record_artifact(ArtifactMetaRecord {
+            key: &artifact_key,
+            registry: "npm",
+            package_name: "test-pkg",
+            version: "1.0.0",
+            size: None,
+            checksum: Some(&sha256_hex(&body)),
+        })
+        .await
+        .unwrap();
+
+    let svc = reserve_proxy(true, spy_meta, storage);
+    let resp = svc.handle(req("npm")).await.unwrap();
+    let ProxyResponse::Stream(mut s) = resp else {
+        panic!("oversized verified artifact must be served");
+    };
+    use futures::StreamExt as _;
+    let mut served_len = 0usize;
+    let mut first = None;
+    while let Some(chunk) = s.next().await {
+        let chunk = chunk.unwrap();
+        if first.is_none() {
+            first = chunk.first().copied();
+        }
+        served_len += chunk.len();
+    }
+    // The re-retrieved stream must deliver the complete artifact.
+    assert_eq!(
+        served_len,
+        body.len(),
+        "oversized artifact must serve in full"
+    );
+    assert_eq!(
+        first,
+        Some(0xAB),
+        "re-served bytes must match the stored content"
+    );
 }

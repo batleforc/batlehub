@@ -279,6 +279,17 @@ bypass_roles = ["admin"]
 # block = true
 # bypass_roles = ["admin"]
 
+# Version gate: an optional approved-version allowlist plus a blocklist of
+# specific versions with known issues. Each entry is an exact version string
+# or a semver range (a bare "1.2.3" stays exact; ranges use semver operators).
+# block takes precedence over allow; when allow is non-empty, versions matching
+# none of its entries are also rejected.
+# [[registries.rules]]
+# kind = "version_gate"
+# allow = [">=1.2.0, <2.0.0"]  # optional: only matching versions are served
+# block = ["1.4.7", "1.5.0"]   # specific versions with known issues
+# bypass_roles = ["admin"]
+
 # Feature flags: optional per-registry UI/integration toggles.
 # socket_badge is on by default; set false to hide the socket.dev badge.
 # [registries.feature_flags]
@@ -296,6 +307,11 @@ bypass_roles = ["admin"]
 # block_on_mismatch = true  # fail the download on a hash mismatch
 # require_metadata = false  # also block when no checksum is advertised
 # bypass_roles = ["admin"]  # roles exempt from the require_metadata gate
+# verify_on_serve = false   # re-hash stored bytes against a self-computed
+#                           # SHA-256 on every serve (cache hits + local reads),
+#                           # not just on first fetch; a mismatch fails with 502
+#                           # and evicts the corrupt entry. Off by default (it
+#                           # reads + hashes the bytes on each serve).
 
 [[registries]]
 type = "goproxy"
@@ -493,14 +509,20 @@ warm_paths = ["idea/ideaIC-2024.1.4.tar.gz"]
 # Stored signatures are returned on download as the same headers.
 # All fields are optional; omit the entire [signing] block to disable enforcement.
 #
+# verify_on_download additionally re-verifies a stored "ed25519" detached
+# signature against trusted_keys on every download (a failure / untrusted key
+# fails with 502). Ed25519 only: the rsa crate (PGP/x509) is banned by deny.toml.
+#
 # [[registries]]
 # type = "npm"
 # name = "signed-npm"
 # mode = "local"
 #
 # [registries.signing]
-# required      = true             # reject publishes that omit X-Artifact-Signature
-# allowed_types = ["pgp", "ed25519"]   # if non-empty, reject any other type
+# required           = true            # reject publishes that omit X-Artifact-Signature
+# allowed_types      = ["pgp", "ed25519"]   # if non-empty, reject any other type
+# verify_on_download = false           # re-verify stored ed25519 signatures on download
+# trusted_keys       = ["<hex-encoded 32-byte ed25519 public key>"]
 
 # ── Beta/Pre-Release Channel (local/hybrid mode) ─────────────────────────────
 #

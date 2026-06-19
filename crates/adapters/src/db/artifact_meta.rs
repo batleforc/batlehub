@@ -5,7 +5,7 @@ use sqlx::{PgPool, Row};
 
 use batlehub_core::{
     error::CoreError,
-    ports::{ArtifactMeta, ArtifactMetaRepository},
+    ports::{ArtifactCacheMeta, ArtifactInventory, ArtifactMeta, ArtifactMetaRecord},
 };
 
 pub struct PgArtifactMetaRepository {
@@ -19,35 +19,40 @@ impl PgArtifactMetaRepository {
 }
 
 #[async_trait]
-impl ArtifactMetaRepository for PgArtifactMetaRepository {
-    async fn record_artifact(
-        &self,
-        key: &str,
-        registry: &str,
-        package_name: &str,
-        version: &str,
-        size: Option<u64>,
-    ) -> Result<(), CoreError> {
+impl ArtifactCacheMeta for PgArtifactMetaRepository {
+    async fn record_artifact(&self, rec: ArtifactMetaRecord<'_>) -> Result<(), CoreError> {
         sqlx::query(
             r#"
             INSERT INTO artifact_cache_meta
-                (artifact_key, registry, package_name, version, size_bytes, cached_at, last_accessed_at)
-            VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+                (artifact_key, registry, package_name, version, size_bytes, checksum, cached_at, last_accessed_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
             ON CONFLICT (artifact_key) DO UPDATE
                 SET size_bytes       = EXCLUDED.size_bytes,
+                    checksum         = EXCLUDED.checksum,
                     cached_at        = EXCLUDED.cached_at,
                     last_accessed_at = NOW()
             "#,
         )
-        .bind(key)
-        .bind(registry)
-        .bind(package_name)
-        .bind(version)
-        .bind(size.map(|s| s as i64))
+        .bind(rec.key)
+        .bind(rec.registry)
+        .bind(rec.package_name)
+        .bind(rec.version)
+        .bind(rec.size.map(|s| s as i64))
+        .bind(rec.checksum)
         .execute(&self.pool)
         .await
         .db_err()?;
         Ok(())
+    }
+
+    async fn get_artifact_checksum(&self, key: &str) -> Result<Option<String>, CoreError> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT checksum FROM artifact_cache_meta WHERE artifact_key = $1")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await
+                .db_err()?;
+        Ok(row.and_then(|(checksum,)| checksum))
     }
 
     async fn touch_artifact(&self, key: &str) -> Result<(), CoreError> {
@@ -61,6 +66,37 @@ impl ArtifactMetaRepository for PgArtifactMetaRepository {
         Ok(())
     }
 
+    async fn is_artifact_expired(
+        &self,
+        key: &str,
+        older_than: DateTime<Utc>,
+    ) -> Result<bool, CoreError> {
+        // Returns true when: (a) the artifact IS expired, or (b) no metadata row exists.
+        // Case (b) covers artifacts written before the artifact_cache_meta migration was applied;
+        // treating them as expired forces a re-fetch rather than serving them stale forever.
+        let fresh: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM artifact_cache_meta WHERE artifact_key = $1 AND cached_at >= $2)",
+        )
+        .bind(key)
+        .bind(older_than)
+        .fetch_one(&self.pool)
+        .await
+        .db_err()?;
+        Ok(!fresh)
+    }
+
+    async fn delete_artifact_meta(&self, key: &str) -> Result<(), CoreError> {
+        sqlx::query("DELETE FROM artifact_cache_meta WHERE artifact_key = $1")
+            .bind(key)
+            .execute(&self.pool)
+            .await
+            .db_err()?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ArtifactInventory for PgArtifactMetaRepository {
     async fn list_artifacts(&self, registry: &str) -> Result<Vec<ArtifactMeta>, CoreError> {
         let query = if registry.is_empty() {
             sqlx::query("SELECT artifact_key, registry, package_name, version, size_bytes, cached_at, last_accessed_at FROM artifact_cache_meta ORDER BY cached_at DESC")
@@ -82,34 +118,6 @@ impl ArtifactMetaRepository for PgArtifactMetaRepository {
         .await
         .db_err()?;
         Ok(rows.into_iter().map(row_to_meta).collect())
-    }
-
-    async fn delete_artifact_meta(&self, key: &str) -> Result<(), CoreError> {
-        sqlx::query("DELETE FROM artifact_cache_meta WHERE artifact_key = $1")
-            .bind(key)
-            .execute(&self.pool)
-            .await
-            .db_err()?;
-        Ok(())
-    }
-
-    async fn is_artifact_expired(
-        &self,
-        key: &str,
-        older_than: DateTime<Utc>,
-    ) -> Result<bool, CoreError> {
-        // Returns true when: (a) the artifact IS expired, or (b) no metadata row exists.
-        // Case (b) covers artifacts written before the artifact_cache_meta migration was applied;
-        // treating them as expired forces a re-fetch rather than serving them stale forever.
-        let fresh: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM artifact_cache_meta WHERE artifact_key = $1 AND cached_at >= $2)",
-        )
-        .bind(key)
-        .bind(older_than)
-        .fetch_one(&self.pool)
-        .await
-        .db_err()?;
-        Ok(!fresh)
     }
 
     async fn list_expired_by_ttl(

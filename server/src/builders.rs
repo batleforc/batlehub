@@ -16,7 +16,9 @@ use batlehub_config::schema::{
 use batlehub_core::{
     entities::{Role, Severity},
     ports::VulnerabilityRepository,
-    rules::{BlockListRule, CveGateRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule},
+    rules::{
+        BlockListRule, CveGateRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule, VersionGateRule,
+    },
     services::{QuotaEnforcement, QuotaService, RegistryPolicy, RegistryQuotaConfig},
 };
 use batlehub_web::CargoIndexProxy;
@@ -240,6 +242,12 @@ pub(super) fn build_policy(
                     min_severity,
                     bypass,
                     cfg.block,
+                )));
+            }
+            RuleConfig::VersionGate(cfg) => {
+                let bypass: Vec<Role> = cfg.bypass_roles.iter().map(|r| parse_role(r)).collect();
+                rules.push(Box::new(VersionGateRule::new(
+                    &cfg.allow, &cfg.block, bypass,
                 )));
             }
         }

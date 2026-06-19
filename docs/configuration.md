@@ -935,6 +935,86 @@ bypass_roles = ["admin"]   # omit or leave empty for a hard block
 
 > This rule applies to all registry types. `"latest"` is the literal version string sent by the client — for npm it maps to the `latest` dist-tag, for Cargo and Go it triggers upstream `@latest` resolution, and for OpenVSX and VS Code Marketplace it fetches the current published version.
 
+**`[[registries.rules]]` — Version gate:**
+
+Gates downloads by version using an optional approved-version allowlist plus a blocklist of specific versions with known issues. The resolved version is matched against both lists: a `block` match is always rejected, and when `allow` is non-empty a version matching **none** of its entries is also rejected. `block` takes precedence over `allow`.
+
+```toml
+[[registries.rules]]
+kind = "version_gate"
+allow = [">=1.2.0, <2.0.0"]   # optional: when set, only matching versions are served
+block = ["1.4.7", "1.5.0"]    # specific versions with known issues
+bypass_roles = ["admin"]
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | string | — | Must be `"version_gate"` |
+| `allow` | string[] | `[]` | Approved-version allowlist. When non-empty, a version matching none of these entries is rejected. When empty, all versions are allowed (subject to `block`). |
+| `block` | string[] | `[]` | Blocklist of specific versions (or ranges) with known issues. A match is always rejected. |
+| `bypass_roles` | string[] | `[]` | Roles that may bypass the gate (e.g. `["admin"]`). When multiple are listed the least-privileged one sets the access floor. When empty, the gate applies to all roles. |
+
+> **Matching:** each entry is treated as a semver range when it contains a range operator (`<`, `>`, `=`, `^`, `~`, `*`, `,`) and parses as a valid [`VersionReq`](https://docs.rs/semver/) (e.g. `">=1.2.0, <2.0.0"`); otherwise it is matched by **exact string equality**. This keeps a bare `"1.2.3"` exact (rather than the caret semantics `^1.2.3` semver would otherwise infer) and lets non-semver version strings (git hashes, dates) be listed verbatim.
+
+**`[[registries.rules]]` — CVE gate:**
+
+Denies downloads of versions with a recorded vulnerability finding at or above a severity threshold. Requires a configured vulnerability scanner — see [Vulnerability scanning](security-scanning.md) for the full setup.
+
+```toml
+[[registries.rules]]
+kind         = "cve_gate"
+min_severity = "high"        # one of: low, medium, high, critical (default: high)
+bypass_roles = ["admin"]
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | string | — | Must be `"cve_gate"` |
+| `min_severity` | string | `"high"` | Minimum severity that triggers a block: `"low"`, `"medium"`, `"high"`, or `"critical"`. |
+| `bypass_roles` | string[] | `[]` | Roles exempt from the gate. |
+
+#### `[registries.integrity]` {#integrity}
+
+Per-registry artifact integrity verification. On the proxy fetch-and-cache path, buffered upstream bytes are hashed and compared against the checksum advertised in the registry metadata (Cargo SHA-256, npm SRI/`shasum`, PyPI SHA-256). Registries that advertise no checksum (NuGet, Maven, GitHub, Go, …) fall through to the "missing" path. Does **not** apply to `firewall_only` registries, which stream straight through without buffering.
+
+```toml
+[registries.integrity]
+enabled = true            # verify when a checksum is advertised
+block_on_mismatch = true  # fail the download on a hash mismatch (never bypassable)
+require_metadata = false  # block downloads with no advertised checksum
+bypass_roles = ["admin"]  # roles exempt from the require_metadata gate
+verify_on_serve = false   # re-hash stored bytes on every serve, not just on first fetch
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | bool | `true` | Master switch. When `false`, no verification is performed. |
+| `block_on_mismatch` | bool | `true` | Fail the download (and skip caching) when the computed digest does not match the advertised one. A mismatch is never bypassable. |
+| `require_metadata` | bool | `false` | Block downloads for which the upstream advertises no usable checksum, unless the caller holds one of `bypass_roles`. Defaults to warn-only. |
+| `bypass_roles` | string[] | `[]` | Roles allowed to bypass the `require_metadata` gate. |
+| `verify_on_serve` | bool | `false` | Re-verify cached/stored bytes against a **self-computed** SHA-256 (recorded when the bytes are first cached) on every serve — cache hits on the proxy path and local-registry reads — not just on first fetch. Catches storage corruption or tampering of already-cached artifacts. A mismatch fails the download (`502`) and evicts the bad entry so a later request re-fetches clean bytes. Off by default because it reads and hashes the bytes on each serve (the proxy path streams them through the hash so memory stays bounded, then re-opens the entry to serve it). Pre-existing cache rows have no stored checksum and are treated as "skip re-verify" until next refreshed. |
+
+#### `[registries.signing]` {#signing}
+
+Per-registry artifact signing. At publish time, a client supplies a detached signature via the `X-Artifact-Signature` (+ `X-Signature-Type`) headers, stored alongside the artifact. The `required`/`allowed_types` fields gate signature **presence and type** at publish; `verify_on_download`/`trusted_keys` re-check a stored `ed25519` signature on **download**.
+
+```toml
+[registries.signing]
+required = false                 # reject publishes with no X-Artifact-Signature header
+allowed_types = ["ed25519"]      # accepted signature types; empty = any (or none)
+verify_on_download = false       # re-verify a stored ed25519 signature on every download
+trusted_keys = ["<hex pubkey>"]  # hex-encoded 32-byte Ed25519 public keys trusted to sign
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `required` | bool | `false` | Reject publish requests that do not include an `X-Artifact-Signature` header. |
+| `allowed_types` | string[] | `[]` | Accepted signature types (e.g. `["pgp", "ed25519"]`). When empty, any type (or none) is accepted. |
+| `verify_on_download` | bool | `false` | Verify a stored `ed25519` detached signature against `trusted_keys` on every download (local-registry reads). A stored signature that fails to verify — or was signed by an untrusted key — fails the download with `502`. Signatures of other types and artifacts with no stored signature are not verified here (presence is governed by `required` at publish time). |
+| `trusted_keys` | string[] | `[]` | Hex-encoded 32-byte Ed25519 public keys trusted to sign artifacts in this registry. A download verifies against each in turn; any match passes. |
+
+> **Why Ed25519 only?** RSA-based crypto (the `rsa` crate, and therefore PGP / x509 / the default Sigstore paths) is hard-banned from the dependency tree by `deny.toml` (RUSTSEC-2023-0071). Ed25519 detached-signature verification keeps the tree RSA-free; Sigstore / npm provenance verification is left as a future item for that reason.
+
 #### `[registries.upstream_auth]` {#upstream_auth}
 
 Credentials to send on every upstream request for this registry. Three schemes are supported; choose one.

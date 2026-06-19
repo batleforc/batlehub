@@ -12,7 +12,7 @@ use chrono::{DateTime, Duration, Utc};
 use sqlx::PgPool;
 
 use batlehub_adapters::db::PgArtifactMetaRepository;
-use batlehub_core::ports::ArtifactMetaRepository;
+use batlehub_core::ports::{ArtifactCacheMeta, ArtifactInventory, ArtifactMetaRecord};
 
 fn db_url() -> Option<String> {
     std::env::var("DATABASE_URL").ok()
@@ -58,7 +58,14 @@ async fn record_and_list_artifact() {
     let key = t.key("lodash:1.0.0");
 
     t.repo
-        .record_artifact(&key, "npm", "lodash", "1.0.0", Some(1024))
+        .record_artifact(ArtifactMetaRecord {
+            key: &key,
+            registry: "npm",
+            package_name: "lodash",
+            version: "1.0.0",
+            size: Some(1024),
+            checksum: None,
+        })
         .await
         .unwrap();
 
@@ -78,12 +85,26 @@ async fn record_is_idempotent_upsert() {
     let key = t.key("serde:1.0.0");
 
     t.repo
-        .record_artifact(&key, "cargo", "serde", "1.0.0", Some(500))
+        .record_artifact(ArtifactMetaRecord {
+            key: &key,
+            registry: "cargo",
+            package_name: "serde",
+            version: "1.0.0",
+            size: Some(500),
+            checksum: None,
+        })
         .await
         .unwrap();
     // Second call: update size
     t.repo
-        .record_artifact(&key, "cargo", "serde", "1.0.0", Some(600))
+        .record_artifact(ArtifactMetaRecord {
+            key: &key,
+            registry: "cargo",
+            package_name: "serde",
+            version: "1.0.0",
+            size: Some(600),
+            checksum: None,
+        })
         .await
         .unwrap();
 
@@ -104,7 +125,14 @@ async fn touch_updates_last_accessed_at() {
     let key = t.key("react:18.0.0");
 
     t.repo
-        .record_artifact(&key, "npm", "react", "18.0.0", Some(200))
+        .record_artifact(ArtifactMetaRecord {
+            key: &key,
+            registry: "npm",
+            package_name: "react",
+            version: "18.0.0",
+            size: Some(200),
+            checksum: None,
+        })
         .await
         .unwrap();
 
@@ -150,11 +178,25 @@ async fn list_expired_by_ttl_filters_correctly() {
     let new_key = t.key("new:1.0.0");
 
     t.repo
-        .record_artifact(&old_key, "npm", "old", "1.0.0", None)
+        .record_artifact(ArtifactMetaRecord {
+            key: &old_key,
+            registry: "npm",
+            package_name: "old",
+            version: "1.0.0",
+            size: None,
+            checksum: None,
+        })
         .await
         .unwrap();
     t.repo
-        .record_artifact(&new_key, "npm", "new", "1.0.0", None)
+        .record_artifact(ArtifactMetaRecord {
+            key: &new_key,
+            registry: "npm",
+            package_name: "new",
+            version: "1.0.0",
+            size: None,
+            checksum: None,
+        })
         .await
         .unwrap();
 
@@ -190,11 +232,25 @@ async fn list_idle_filters_correctly() {
     let active_key = t.key("active:1.0.0");
 
     t.repo
-        .record_artifact(&idle_key, "npm", "idle", "1.0.0", None)
+        .record_artifact(ArtifactMetaRecord {
+            key: &idle_key,
+            registry: "npm",
+            package_name: "idle",
+            version: "1.0.0",
+            size: None,
+            checksum: None,
+        })
         .await
         .unwrap();
     t.repo
-        .record_artifact(&active_key, "npm", "active", "1.0.0", None)
+        .record_artifact(ArtifactMetaRecord {
+            key: &active_key,
+            registry: "npm",
+            package_name: "active",
+            version: "1.0.0",
+            size: None,
+            checksum: None,
+        })
         .await
         .unwrap();
 
@@ -225,15 +281,36 @@ async fn total_size_bytes_aggregates() {
     let t = make_repo(&url).await;
 
     t.repo
-        .record_artifact(&t.key("a:1.0"), "cargo", "a", "1.0", Some(100))
+        .record_artifact(ArtifactMetaRecord {
+            key: &t.key("a:1.0"),
+            registry: "cargo",
+            package_name: "a",
+            version: "1.0",
+            size: Some(100),
+            checksum: None,
+        })
         .await
         .unwrap();
     t.repo
-        .record_artifact(&t.key("b:1.0"), "cargo", "b", "1.0", Some(200))
+        .record_artifact(ArtifactMetaRecord {
+            key: &t.key("b:1.0"),
+            registry: "cargo",
+            package_name: "b",
+            version: "1.0",
+            size: Some(200),
+            checksum: None,
+        })
         .await
         .unwrap();
     t.repo
-        .record_artifact(&t.key("c:1.0"), "cargo", "c", "1.0", Some(300))
+        .record_artifact(ArtifactMetaRecord {
+            key: &t.key("c:1.0"),
+            registry: "cargo",
+            package_name: "c",
+            version: "1.0",
+            size: Some(300),
+            checksum: None,
+        })
         .await
         .unwrap();
 
@@ -258,7 +335,14 @@ async fn list_lru_returns_oldest_accessed_first() {
     for (i, name) in keys.iter().enumerate() {
         let k = t.key(name);
         t.repo
-            .record_artifact(&k, &registry, name, "1.0", Some(10))
+            .record_artifact(ArtifactMetaRecord {
+                key: &k,
+                registry: &registry,
+                package_name: name,
+                version: "1.0",
+                size: Some(10),
+                checksum: None,
+            })
             .await
             .unwrap();
         // Spread out last_accessed_at: lru-a accessed 3h ago, lru-b 2h, lru-c 1h
@@ -293,7 +377,14 @@ async fn delete_removes_record() {
     let key = t.key("deleteme:1.0");
 
     t.repo
-        .record_artifact(&key, "npm", "deleteme", "1.0", None)
+        .record_artifact(ArtifactMetaRecord {
+            key: &key,
+            registry: "npm",
+            package_name: "deleteme",
+            version: "1.0",
+            size: None,
+            checksum: None,
+        })
         .await
         .unwrap();
     assert!(t
@@ -324,7 +415,14 @@ async fn list_artifacts_by_package_groups_and_orders() {
     for (ver, hours_ago) in [("1.0", 3i64), ("2.0", 2), ("3.0", 1)] {
         let k = t.key(&format!("mypkg:{ver}"));
         t.repo
-            .record_artifact(&k, "npm", "mypkg", ver, Some(10))
+            .record_artifact(ArtifactMetaRecord {
+                key: &k,
+                registry: "npm",
+                package_name: "mypkg",
+                version: ver,
+                size: Some(10),
+                checksum: None,
+            })
             .await
             .unwrap();
         sqlx::query(
@@ -356,11 +454,25 @@ async fn list_artifacts_with_empty_registry_spans_all() {
     let t = make_repo(&url).await;
 
     t.repo
-        .record_artifact(&t.key("a:1.0"), "npm", "a", "1.0", None)
+        .record_artifact(ArtifactMetaRecord {
+            key: &t.key("a:1.0"),
+            registry: "npm",
+            package_name: "a",
+            version: "1.0",
+            size: None,
+            checksum: None,
+        })
         .await
         .unwrap();
     t.repo
-        .record_artifact(&t.key("b:1.0"), "cargo", "b", "1.0", None)
+        .record_artifact(ArtifactMetaRecord {
+            key: &t.key("b:1.0"),
+            registry: "cargo",
+            package_name: "b",
+            version: "1.0",
+            size: None,
+            checksum: None,
+        })
         .await
         .unwrap();
 

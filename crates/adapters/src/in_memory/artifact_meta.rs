@@ -5,11 +5,13 @@ use chrono::{DateTime, Utc};
 
 use batlehub_core::{
     error::CoreError,
-    ports::{ArtifactMeta, ArtifactMetaRepository},
+    ports::{ArtifactCacheMeta, ArtifactInventory, ArtifactMeta, ArtifactMetaRecord},
 };
 
-/// A no-op [`ArtifactMetaRepository`] that discards all writes and returns
-/// empty / non-expired results for all reads.
+/// A no-op artifact-meta repository that discards all writes and returns
+/// empty / non-expired results for all reads. Implements both
+/// [`ArtifactCacheMeta`] and [`ArtifactInventory`] (so it satisfies the full
+/// `ArtifactMetaRepository` supertrait too).
 ///
 /// Appropriate for tests that exercise proxy or publish paths but do not
 /// need eviction or cache-coherence checks.
@@ -17,37 +19,24 @@ use batlehub_core::{
 pub struct NoopArtifactMetaRepository;
 
 impl NoopArtifactMetaRepository {
-    pub fn arc() -> Arc<dyn ArtifactMetaRepository> {
+    /// Returns the concrete type behind an `Arc`; it coerces to whichever of the
+    /// artifact-meta `dyn` traits the caller's field requires.
+    pub fn arc() -> Arc<Self> {
         Arc::new(Self)
     }
 }
 
 #[async_trait]
-impl ArtifactMetaRepository for NoopArtifactMetaRepository {
-    async fn record_artifact(
-        &self,
-        _key: &str,
-        _registry: &str,
-        _package_name: &str,
-        _version: &str,
-        _size: Option<u64>,
-    ) -> Result<(), CoreError> {
+impl ArtifactCacheMeta for NoopArtifactMetaRepository {
+    async fn record_artifact(&self, _rec: ArtifactMetaRecord<'_>) -> Result<(), CoreError> {
         Ok(())
+    }
+
+    async fn get_artifact_checksum(&self, _key: &str) -> Result<Option<String>, CoreError> {
+        Ok(None)
     }
 
     async fn touch_artifact(&self, _key: &str) -> Result<(), CoreError> {
-        Ok(())
-    }
-
-    async fn list_artifacts(&self, _registry: &str) -> Result<Vec<ArtifactMeta>, CoreError> {
-        Ok(vec![])
-    }
-
-    async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> {
-        Ok(vec![])
-    }
-
-    async fn delete_artifact_meta(&self, _key: &str) -> Result<(), CoreError> {
         Ok(())
     }
 
@@ -57,6 +46,21 @@ impl ArtifactMetaRepository for NoopArtifactMetaRepository {
         _older_than: DateTime<Utc>,
     ) -> Result<bool, CoreError> {
         Ok(false)
+    }
+
+    async fn delete_artifact_meta(&self, _key: &str) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ArtifactInventory for NoopArtifactMetaRepository {
+    async fn list_artifacts(&self, _registry: &str) -> Result<Vec<ArtifactMeta>, CoreError> {
+        Ok(vec![])
+    }
+
+    async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError> {
+        Ok(vec![])
     }
 
     async fn list_expired_by_ttl(
@@ -94,9 +98,17 @@ mod tests {
         let repo = NoopArtifactMetaRepository::arc();
 
         assert!(repo
-            .record_artifact("k", "cargo", "tokio", "1.0", Some(100))
+            .record_artifact(ArtifactMetaRecord {
+                key: "k",
+                registry: "cargo",
+                package_name: "tokio",
+                version: "1.0",
+                size: Some(100),
+                checksum: None,
+            })
             .await
             .is_ok());
+        assert!(repo.get_artifact_checksum("k").await.unwrap().is_none());
         assert!(repo.touch_artifact("k").await.is_ok());
         assert!(repo.list_artifacts("cargo").await.unwrap().is_empty());
         assert!(repo.list_artifacts_by_package().await.unwrap().is_empty());

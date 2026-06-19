@@ -1187,7 +1187,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
               `# SigLevel = Optional TrustAll`,
             );
           } else {
-            lines.push(`SigLevel = Required DatabaseOptional  # verify with the upstream's keyring`);
+            lines.push(
+              `SigLevel = Required DatabaseOptional  # verify with the upstream's keyring`,
+            );
           }
           return lines.join("\n");
         },

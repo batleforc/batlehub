@@ -141,7 +141,145 @@ impl LocalRegistryService {
         while let Some(chunk) = stream.next().await {
             buf.extend_from_slice(&chunk?);
         }
-        Ok(Bytes::from(buf))
+        let bytes = Bytes::from(buf);
+
+        // Per-registry integrity (re-serve checksum) and signature policies.
+        let (integrity, signing) = {
+            let hot = self.hot.read().await;
+            (
+                hot.integrity.get(registry).cloned().unwrap_or_default(),
+                hot.signing.get(registry).cloned().unwrap_or_default(),
+            )
+        };
+
+        let verify_checksum = integrity.enabled && integrity.verify_on_serve;
+        if verify_checksum || signing.verify_on_download {
+            // Both checks need the stored per-version metadata (checksum + signature).
+            // These are opt-in guarantees that every served byte is verified, so we
+            // fail closed: a metadata-lookup error propagates, and a missing row for
+            // bytes that exist in storage is an inconsistency we refuse to serve
+            // unverified rather than silently skipping the check.
+            let meta = self
+                .backend
+                .get_versions(registry, name)
+                .await?
+                .into_iter()
+                .find(|p| p.version == version)
+                .ok_or_else(|| {
+                    CoreError::IntegrityFailure(format!(
+                        "cannot verify {registry}/{name}@{version}: no published metadata found for stored artifact"
+                    ))
+                })?;
+            if verify_checksum {
+                self.verify_reserve_checksum(registry, name, version, &meta.checksum, &bytes)?;
+            }
+            if signing.verify_on_download {
+                Self::verify_download_signature(
+                    registry,
+                    name,
+                    version,
+                    &signing,
+                    meta.signature_bytes.as_deref(),
+                    meta.signature_type.as_deref(),
+                    &bytes,
+                )?;
+            }
+        }
+
+        Ok(bytes)
+    }
+
+    /// Re-verify stored bytes against the SHA-256 recorded at publish time.
+    /// A mismatch means the stored artifact was corrupted or tampered with.
+    fn verify_reserve_checksum(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        expected: &str,
+        bytes: &Bytes,
+    ) -> Result<(), CoreError> {
+        use crate::services::integrity::{verify, IntegrityOutcome};
+        match verify(expected, bytes) {
+            IntegrityOutcome::Verified { algo } => {
+                metrics::counter!("batlehub_integrity_checks_total", "registry" => registry.to_owned(), "outcome" => "verified", "phase" => "reserve").increment(1);
+                tracing::debug!(
+                    registry,
+                    name,
+                    version,
+                    algo = algo.as_str(),
+                    "local artifact re-verified on serve"
+                );
+                Ok(())
+            }
+            IntegrityOutcome::Mismatch {
+                algo,
+                expected,
+                actual,
+            } => {
+                metrics::counter!("batlehub_integrity_checks_total", "registry" => registry.to_owned(), "outcome" => "mismatch", "phase" => "reserve").increment(1);
+                tracing::warn!(registry, name, version, algo = algo.as_str(), %expected, %actual, "local artifact failed re-serve integrity check");
+                Err(CoreError::IntegrityFailure(format!(
+                    "stored artifact failed integrity check for {registry}/{name}@{version}: {} digest mismatch",
+                    algo.as_str(),
+                )))
+            }
+            IntegrityOutcome::Unparseable => {
+                metrics::counter!("batlehub_integrity_checks_total", "registry" => registry.to_owned(), "outcome" => "unparseable", "phase" => "reserve").increment(1);
+                tracing::warn!(
+                    registry,
+                    name,
+                    version,
+                    "stored checksum could not be parsed; serving without re-verification"
+                );
+                Ok(())
+            }
+        }
+    }
+
+    /// Verify a stored `ed25519` detached signature against the registry's
+    /// trusted keys. Non-`ed25519` types and absent signatures are not verified
+    /// here (publish-time `signing.required` governs presence).
+    fn verify_download_signature(
+        registry: &str,
+        name: &str,
+        version: &str,
+        signing: &crate::services::hot_config::SigningConfig,
+        sig_bytes: Option<&[u8]>,
+        sig_type: Option<&str>,
+        bytes: &Bytes,
+    ) -> Result<(), CoreError> {
+        use crate::services::signature::{verify_ed25519, ED25519_SIG_TYPE};
+        let (Some(sig), Some(ty)) = (sig_bytes, sig_type) else {
+            metrics::counter!("batlehub_signature_checks_total", "registry" => registry.to_owned(), "outcome" => "skipped").increment(1);
+            return Ok(());
+        };
+        if !ty.eq_ignore_ascii_case(ED25519_SIG_TYPE) {
+            // Only Ed25519 is verifiable here (rsa/PGP are banned); skip others.
+            metrics::counter!("batlehub_signature_checks_total", "registry" => registry.to_owned(), "outcome" => "skipped").increment(1);
+            return Ok(());
+        }
+        if verify_ed25519(&signing.trusted_keys, sig, bytes) {
+            metrics::counter!("batlehub_signature_checks_total", "registry" => registry.to_owned(), "outcome" => "verified").increment(1);
+            tracing::debug!(
+                registry,
+                name,
+                version,
+                "ed25519 artifact signature verified on download"
+            );
+            Ok(())
+        } else {
+            metrics::counter!("batlehub_signature_checks_total", "registry" => registry.to_owned(), "outcome" => "mismatch").increment(1);
+            tracing::warn!(
+                registry,
+                name,
+                version,
+                "ed25519 artifact signature failed verification against trusted keys"
+            );
+            Err(CoreError::IntegrityFailure(format!(
+                "artifact signature verification failed for {registry}/{name}@{version}"
+            )))
+        }
     }
 
     // ── Visibility helpers ────────────────────────────────────────────────────

@@ -9,7 +9,8 @@ use super::*;
 use crate::error::CoreError;
 use crate::ports::ByteStream;
 use crate::ports::{
-    ArtifactMeta, ArtifactMetaRepository, StorageBackend, StorageMeta, StoredArtifact,
+    ArtifactCacheMeta, ArtifactInventory, ArtifactMeta, ArtifactMetaRecord, StorageBackend,
+    StorageMeta, StoredArtifact,
 };
 
 // ── In-memory ArtifactMetaRepository ─────────────────────────────────────
@@ -34,33 +35,30 @@ impl InMemArtifactMeta {
 }
 
 #[async_trait]
-impl ArtifactMetaRepository for InMemArtifactMeta {
-    async fn record_artifact(
-        &self,
-        key: &str,
-        registry: &str,
-        package_name: &str,
-        version: &str,
-        size: Option<u64>,
-    ) -> Result<(), CoreError> {
+impl ArtifactCacheMeta for InMemArtifactMeta {
+    async fn record_artifact(&self, rec: ArtifactMetaRecord<'_>) -> Result<(), CoreError> {
         let now = Utc::now();
         let mut rows = self.rows.lock().unwrap();
-        if let Some(r) = rows.iter_mut().find(|r| r.artifact_key == key) {
-            r.size_bytes = size;
+        if let Some(r) = rows.iter_mut().find(|r| r.artifact_key == rec.key) {
+            r.size_bytes = rec.size;
             r.cached_at = now;
             r.last_accessed_at = now;
         } else {
             rows.push(ArtifactMeta {
-                artifact_key: key.to_owned(),
-                registry: registry.to_owned(),
-                package_name: package_name.to_owned(),
-                version: version.to_owned(),
-                size_bytes: size,
+                artifact_key: rec.key.to_owned(),
+                registry: rec.registry.to_owned(),
+                package_name: rec.package_name.to_owned(),
+                version: rec.version.to_owned(),
+                size_bytes: rec.size,
                 cached_at: now,
                 last_accessed_at: now,
             });
         }
         Ok(())
+    }
+
+    async fn get_artifact_checksum(&self, _key: &str) -> Result<Option<String>, CoreError> {
+        Ok(None)
     }
 
     async fn touch_artifact(&self, key: &str) -> Result<(), CoreError> {
@@ -72,6 +70,27 @@ impl ArtifactMetaRepository for InMemArtifactMeta {
         Ok(())
     }
 
+    async fn is_artifact_expired(
+        &self,
+        key: &str,
+        older_than: DateTime<Utc>,
+    ) -> Result<bool, CoreError> {
+        let rows = self.rows.lock().unwrap();
+        // No row → treat as expired (matches PgArtifactMetaRepository semantics).
+        let fresh = rows
+            .iter()
+            .any(|r| r.artifact_key == key && r.cached_at >= older_than);
+        Ok(!fresh)
+    }
+
+    async fn delete_artifact_meta(&self, key: &str) -> Result<(), CoreError> {
+        self.rows.lock().unwrap().retain(|r| r.artifact_key != key);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ArtifactInventory for InMemArtifactMeta {
     async fn list_artifacts(&self, registry: &str) -> Result<Vec<ArtifactMeta>, CoreError> {
         let rows = self.rows.lock().unwrap();
         Ok(rows
@@ -90,24 +109,6 @@ impl ArtifactMetaRepository for InMemArtifactMeta {
                 .then(b.cached_at.cmp(&a.cached_at)) // DESC
         });
         Ok(rows)
-    }
-
-    async fn delete_artifact_meta(&self, key: &str) -> Result<(), CoreError> {
-        self.rows.lock().unwrap().retain(|r| r.artifact_key != key);
-        Ok(())
-    }
-
-    async fn is_artifact_expired(
-        &self,
-        key: &str,
-        older_than: DateTime<Utc>,
-    ) -> Result<bool, CoreError> {
-        let rows = self.rows.lock().unwrap();
-        // No row → treat as expired (matches PgArtifactMetaRepository semantics).
-        let fresh = rows
-            .iter()
-            .any(|r| r.artifact_key == key && r.cached_at >= older_than);
-        Ok(!fresh)
     }
 
     async fn list_expired_by_ttl(

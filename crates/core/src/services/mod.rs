@@ -9,6 +9,7 @@ pub mod metrics;
 pub mod proxy;
 pub mod quota;
 pub mod sbom;
+pub mod signature;
 pub mod vulnerability;
 pub mod warming;
 

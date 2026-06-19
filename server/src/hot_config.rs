@@ -61,6 +61,7 @@ fn build_integrity_map(registries: &[RegistryConfig]) -> HashMap<String, Integri
                         block_on_mismatch: i.block_on_mismatch,
                         require_metadata: i.require_metadata,
                         bypass_roles: i.bypass_roles.iter().map(|r| parse_role(r)).collect(),
+                        verify_on_serve: i.verify_on_serve,
                     },
                 )
             })
@@ -78,6 +79,8 @@ fn build_signing_map(registries: &[RegistryConfig]) -> HashMap<String, CoreSigni
                     CoreSigningConfig {
                         required: s.required,
                         allowed_types: s.allowed_types.clone(),
+                        verify_on_download: s.verify_on_download,
+                        trusted_keys: s.trusted_keys.clone(),
                     },
                 )
             })

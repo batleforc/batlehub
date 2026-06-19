@@ -99,6 +99,11 @@ pub fn embedded_migrator() -> Migrator {
                 "artifact vulnerabilities",
                 "../migrations/025_artifact_vulnerabilities.sql"
             ),
+            mig!(
+                26,
+                "artifact cache checksum",
+                "../migrations/026_artifact_cache_checksum.sql"
+            ),
         ]),
         ignore_missing: false,
         locking: true,
@@ -110,11 +115,39 @@ pub fn embedded_migrator() -> Migrator {
 mod tests {
     use super::*;
 
+    /// The embedded list must have a `mig!` entry for every `.sql` file in
+    /// `migrations/`, numbered contiguously from 1. This replaces a hand-bumped
+    /// count: adding a migration needs only the new `mig!` entry + `.sql` file —
+    /// no test edit — while a forgotten entry (or a numbering gap) fails here.
     #[test]
-    fn embedded_migrator_has_all_migrations() {
+    fn embedded_migrator_is_contiguous_and_complete() {
         let m = embedded_migrator();
-        assert_eq!(m.migrations.len(), 25, "all 25 migrations must be embedded");
-        assert_eq!(m.migrations[0].version, 1);
-        assert_eq!(m.migrations[24].version, 25);
+
+        // Versions are strictly increasing and contiguous starting at 1.
+        for (i, mig) in m.migrations.iter().enumerate() {
+            assert_eq!(
+                mig.version,
+                (i + 1) as i64,
+                "migration #{i} should have version {} (versions must be contiguous from 1)",
+                i + 1
+            );
+        }
+
+        // Every `NNN_*.sql` on disk is embedded (catches a new file with no `mig!` entry).
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/migrations");
+        let sql_count = std::fs::read_dir(dir)
+            .expect("read migrations dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("sql"))
+            })
+            .count();
+        assert_eq!(
+            m.migrations.len(),
+            sql_count,
+            "every .sql file in {dir} must have a mig!() entry (and vice versa)"
+        );
     }
 }

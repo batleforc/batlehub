@@ -54,6 +54,9 @@ pub struct IntegrityPolicy {
     pub require_metadata: bool,
     /// Roles allowed to bypass the `require_metadata` gate.
     pub bypass_roles: Vec<Role>,
+    /// Re-verify stored bytes against a self-computed SHA-256 on every serve
+    /// (cache hit / local read), not just on first fetch. Off by default.
+    pub verify_on_serve: bool,
 }
 
 impl Default for IntegrityPolicy {
@@ -62,11 +65,13 @@ impl Default for IntegrityPolicy {
         // corruption or tampering and should essentially never fire in normal
         // operation. Missing metadata only warns (registries like NuGet/Maven
         // advertise no checksum), so the default never blocks a healthy fetch.
+        // Re-serve verification stays opt-in (it costs a read+hash per serve).
         Self {
             enabled: true,
             block_on_mismatch: true,
             require_metadata: false,
             bypass_roles: Vec::new(),
+            verify_on_serve: false,
         }
     }
 }
@@ -76,6 +81,10 @@ impl Default for IntegrityPolicy {
 pub struct SigningConfig {
     pub required: bool,
     pub allowed_types: Vec<String>,
+    /// Verify a stored `ed25519` detached signature against `trusted_keys` on download.
+    pub verify_on_download: bool,
+    /// Hex-encoded 32-byte Ed25519 public keys trusted to sign artifacts.
+    pub trusted_keys: Vec<String>,
 }
 
 /// SBOM configuration stored in the service (mirrors config-layer `SbomConfig`).

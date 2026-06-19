@@ -2,6 +2,52 @@ import { defineConfig } from "vitest/config";
 import vue from "@vitejs/plugin-vue";
 import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
+import { readdirSync, existsSync } from "node:fs";
+
+/**
+ * Derive the coverage allow-list from co-located test files, so it stays in sync
+ * automatically (no hand-maintained list to forget to update). The 80% threshold
+ * below applies to exactly this set — the source files that actually have tests.
+ *
+ * Mapping rule (matches the repo's two conventions):
+ *  - Under `src/components/`, one test exercises a whole component directory, so
+ *    every sibling source file (`.vue`/`.ts`, excluding the `index.ts` barrel) is
+ *    included.
+ *  - Everywhere else (composables, pages, lib, router) tests are 1:1 with source,
+ *    so each `Foo.test.ts` maps to its exact sibling `Foo.vue` / `Foo.ts`.
+ */
+function coverageIncludeFromTests(): string[] {
+  const srcDir = path.resolve(__dirname, "src");
+  const rel = (p: string) => path.relative(__dirname, p).split(path.sep).join("/");
+  const included = new Set<string>();
+
+  const testFiles = readdirSync(srcDir, { recursive: true, encoding: "utf8" }).filter((f) =>
+    /\.(test|spec)\.ts$/.test(f),
+  );
+
+  for (const testFile of testFiles) {
+    const testPath = path.join(srcDir, testFile);
+    const dir = path.dirname(testPath);
+
+    if (rel(dir).startsWith("src/components/")) {
+      for (const entry of readdirSync(dir)) {
+        const isSource = /\.(vue|ts)$/.test(entry) && !/\.(test|spec)\.ts$/.test(entry);
+        if (isSource && entry !== "index.ts") included.add(rel(path.join(dir, entry)));
+      }
+    } else {
+      const base = path.basename(testPath).replace(/\.(test|spec)\.ts$/, "");
+      for (const ext of [".vue", ".ts"]) {
+        const candidate = path.join(dir, base + ext);
+        if (existsSync(candidate)) {
+          included.add(rel(candidate));
+          break;
+        }
+      }
+    }
+  }
+
+  return [...included].sort();
+}
 
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
@@ -19,44 +65,10 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       reporter: ["text", "lcov", "html"],
-      // Explicit allow-list. Add a source file here once it has a
-      // corresponding test file; the threshold below applies to this
-      // set, not the whole src/ tree.
-      include: [
-        "src/lib/utils.ts",
-        "src/composables/useApi.ts",
-        "src/composables/useAuth.ts",
-        "src/composables/useAuthFetch.ts",
-        "src/composables/useBanner.ts",
-        "src/composables/useShiki.ts",
-        "src/components/ui/button/Button.vue",
-        "src/components/ui/badge/Badge.vue",
-        "src/components/ui/alert/Alert.vue",
-        "src/components/ui/card/Card.vue",
-        "src/components/ui/card/CardHeader.vue",
-        "src/components/ui/card/CardTitle.vue",
-        "src/components/ui/card/CardDescription.vue",
-        "src/components/ui/card/CardContent.vue",
-        "src/components/ui/card/CardFooter.vue",
-        "src/components/ui/input/Input.vue",
-        "src/components/ui/label/Label.vue",
-        "src/components/ui/separator/Separator.vue",
-        "src/components/ui/switch/Switch.vue",
-        "src/components/ui/table/Table.vue",
-        "src/components/ui/table/TableHeader.vue",
-        "src/components/ui/table/TableHead.vue",
-        "src/components/ui/table/TableBody.vue",
-        "src/components/ui/table/TableRow.vue",
-        "src/components/ui/table/TableCell.vue",
-        "src/components/ui/table/TableCaption.vue",
-        "src/components/ui/tabs/Tabs.vue",
-        "src/components/ui/tabs/TabsList.vue",
-        "src/components/ui/tabs/TabsTrigger.vue",
-        "src/components/ui/tabs/TabsContent.vue",
-        "src/components/ui/select/Select.vue",
-        "src/components/ui/dialog/Dialog.vue",
-        "src/components/ui/code-block/CodeBlock.vue",
-      ],
+      // Auto-derived from co-located test files (see `coverageIncludeFromTests`);
+      // the threshold below applies to this set, not the whole src/ tree. Adding a
+      // co-located `*.test.ts` enrolls its source automatically.
+      include: coverageIncludeFromTests(),
       thresholds: {
         lines: 80,
         branches: 80,

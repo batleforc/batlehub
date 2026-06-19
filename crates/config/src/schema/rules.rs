@@ -62,6 +62,7 @@ pub enum RuleConfig {
     RequireSignedRelease(RequireSignedReleaseConfig),
     DenyLatest(DenyLatestConfig),
     CveGate(CveGateConfig),
+    VersionGate(VersionGateConfig),
 }
 
 #[derive(Debug, Deserialize)]
@@ -127,4 +128,29 @@ pub struct CveGateConfig {
 
 fn default_cve_min_severity() -> String {
     "high".to_owned()
+}
+
+/// Gate downloads by version: an optional approved-version allowlist plus a
+/// blocklist of specific versions with known issues. Each entry is an exact
+/// version string or a semver range (e.g. `">=1.2.0, <2.0.0"`).
+///
+/// ```toml
+/// [[registries.rules]]
+/// kind = "version_gate"
+/// allow = [">=1.2.0, <2.0.0"]   # optional: when set, only matching versions are served
+/// block = ["1.4.7", "1.5.0"]    # specific versions with known issues
+/// bypass_roles = ["admin"]
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct VersionGateConfig {
+    /// Approved-version allowlist. When non-empty, a version that matches none of
+    /// these entries is rejected.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// Blocklist of specific versions (or ranges) with known issues.
+    #[serde(default)]
+    pub block: Vec<String>,
+    /// Roles that may bypass the gate (e.g. `["admin"]`).
+    #[serde(default)]
+    pub bypass_roles: Vec<String>,
 }

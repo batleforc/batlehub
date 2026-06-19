@@ -17,33 +17,38 @@ pub struct ArtifactMeta {
     pub last_accessed_at: DateTime<Utc>,
 }
 
+/// Named arguments for [`ArtifactCacheMeta::record_artifact`]. Replaces a long
+/// positional signature whose two adjacent `Option`s (`size`, `checksum`) were
+/// easy to transpose.
+///
+/// `checksum` is a self-computed bare SHA-256 hex digest of the stored bytes,
+/// used by re-serve integrity verification. Set `None` when not computed.
+pub struct ArtifactMetaRecord<'a> {
+    pub key: &'a str,
+    pub registry: &'a str,
+    pub package_name: &'a str,
+    pub version: &'a str,
+    pub size: Option<u64>,
+    pub checksum: Option<&'a str>,
+}
+
+/// Hot serve-path cache-coherence operations on a single artifact: record/refresh,
+/// checksum lookup, access bump, per-request TTL check, and eviction of one key.
+/// This is the narrow dependency of [`ProxyService`](crate::services::ProxyService)
+/// and the warming service — they never enumerate the cache.
 #[async_trait]
-pub trait ArtifactMetaRepository: Send + Sync {
+pub trait ArtifactCacheMeta: Send + Sync {
     /// Record or refresh the metadata for a newly stored artifact.
-    /// Upserts: if the key already exists, updates `size_bytes` and resets `cached_at`.
-    async fn record_artifact(
-        &self,
-        key: &str,
-        registry: &str,
-        package_name: &str,
-        version: &str,
-        size: Option<u64>,
-    ) -> Result<(), CoreError>;
+    /// Upserts: if the key already exists, updates `size`/`checksum` and resets `cached_at`.
+    async fn record_artifact(&self, rec: ArtifactMetaRecord<'_>) -> Result<(), CoreError>;
+
+    /// Fetch the stored self-computed SHA-256 hex digest for an artifact key,
+    /// or `None` if the key is unknown or has no recorded checksum.
+    async fn get_artifact_checksum(&self, key: &str) -> Result<Option<String>, CoreError>;
 
     /// Update `last_accessed_at` to now for an existing artifact record.
     /// No-ops gracefully if the key does not exist in the meta table.
     async fn touch_artifact(&self, key: &str) -> Result<(), CoreError>;
-
-    /// List all artifact metadata rows for a given registry.
-    /// Pass `""` to list across all registries.
-    async fn list_artifacts(&self, registry: &str) -> Result<Vec<ArtifactMeta>, CoreError>;
-
-    /// List all artifact metadata rows, grouped by (registry, package_name),
-    /// sorted by `cached_at DESC` within each group.
-    async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError>;
-
-    /// Remove the metadata record for a key (called when an artifact is evicted).
-    async fn delete_artifact_meta(&self, key: &str) -> Result<(), CoreError>;
 
     /// Return `true` if the artifact's `cached_at` is older than `older_than`, OR if the
     /// artifact has no metadata row (unknown age → conservatively treat as expired so the
@@ -54,6 +59,22 @@ pub trait ArtifactMetaRepository: Send + Sync {
         key: &str,
         older_than: DateTime<Utc>,
     ) -> Result<bool, CoreError>;
+
+    /// Remove the metadata record for a key (called when an artifact is evicted).
+    async fn delete_artifact_meta(&self, key: &str) -> Result<(), CoreError>;
+}
+
+/// Inventory / eviction queries over the whole cache-meta table. The narrow
+/// dependency of admin listings and the eviction service.
+#[async_trait]
+pub trait ArtifactInventory: Send + Sync {
+    /// List all artifact metadata rows for a given registry.
+    /// Pass `""` to list across all registries.
+    async fn list_artifacts(&self, registry: &str) -> Result<Vec<ArtifactMeta>, CoreError>;
+
+    /// List all artifact metadata rows, grouped by (registry, package_name),
+    /// sorted by `cached_at DESC` within each group.
+    async fn list_artifacts_by_package(&self) -> Result<Vec<ArtifactMeta>, CoreError>;
 
     /// List artifact keys whose `cached_at` is older than `older_than`.
     async fn list_expired_by_ttl(
@@ -76,3 +97,13 @@ pub trait ArtifactMetaRepository: Send + Sync {
     /// up to `limit` rows. Used for LRU size-cap eviction.
     async fn list_lru(&self, registry: &str, limit: i64) -> Result<Vec<ArtifactMeta>, CoreError>;
 }
+
+/// The full artifact-meta repository: both the hot-path cache-coherence ops and
+/// the inventory/eviction queries. Anything implementing both sub-traits is an
+/// `ArtifactMetaRepository` automatically (blanket impl), so a concrete adapter
+/// only writes the two focused `impl` blocks and existing `Arc<dyn
+/// ArtifactMetaRepository>` wiring (e.g. the eviction service, which genuinely
+/// needs both) keeps working unchanged.
+pub trait ArtifactMetaRepository: ArtifactCacheMeta + ArtifactInventory {}
+
+impl<T: ArtifactCacheMeta + ArtifactInventory + ?Sized> ArtifactMetaRepository for T {}
