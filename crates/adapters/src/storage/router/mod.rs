@@ -8,7 +8,7 @@ use sqlx::PgPool;
 
 use batlehub_core::{
     error::CoreError,
-    ports::{StorageBackend, StorageMeta, StoredArtifact},
+    ports::{ByteStream, StorageBackend, StorageMeta, StoreOutcome, StoredArtifact},
 };
 
 mod routing;
@@ -62,20 +62,28 @@ impl StorageRouter {
             .or_else(|| self.backends.get(&self.default_name))
             .expect("default storage backend must always be present")
     }
-}
 
-#[async_trait]
-impl StorageBackend for StorageRouter {
-    async fn store(&self, key: &str, data: Bytes, meta: StorageMeta) -> Result<(), CoreError> {
-        let content_hash = hex::encode(sha2::Sha256::digest(&data));
-        let content_key = format!("blob/{content_hash}");
-        let size = meta.size;
-
-        let backend_name = self.backend_name_for_key(key).to_owned();
-        let backend = self.resolve_backend(&backend_name).clone();
-
-        // Atomically update the dedup tables inside a single transaction so that a
-        // failed refs insert can never leave an orphaned ref-count increment.
+    /// Run the dedup bookkeeping transaction for a logical `key` whose bytes
+    /// hash to `content_hash`, materializing the physical blob from `source`
+    /// only when this is its first reference.
+    ///
+    /// Shared by [`store`](StorageBackend::store) (bytes already in hand) and
+    /// [`store_streaming`](StorageBackend::store_streaming) (bytes already
+    /// staged at a temporary key). The blob is materialized *inside* the open
+    /// transaction so a backend failure rolls the dedup rows back rather than
+    /// leaving them pointing at a missing blob. Any staged blob that turns out
+    /// to be redundant (identical re-store, or a dedup hit) is deleted.
+    #[allow(clippy::too_many_arguments)]
+    async fn finalize_dedup(
+        &self,
+        key: &str,
+        content_hash: &str,
+        content_key: &str,
+        size: Option<u64>,
+        backend_name: &str,
+        backend: &Arc<dyn StorageBackend>,
+        source: BlobSource,
+    ) -> Result<(), CoreError> {
         let mut tx = self
             .pool
             .begin()
@@ -92,9 +100,10 @@ impl StorageBackend for StorageRouter {
         .await
         .map_err(|e| CoreError::Storage(e.to_string()))?;
 
-        if existing_hash.as_deref() == Some(content_hash.as_str()) {
+        if existing_hash.as_deref() == Some(content_hash) {
             // Identical bytes re-stored under the same key — nothing to do in the DB.
             tx.rollback().await.ok();
+            source.discard_staged(backend).await;
         } else {
             // Increment (or insert) ref count for the new hash.
             let count: i32 = sqlx::query_scalar(
@@ -106,8 +115,8 @@ impl StorageBackend for StorageRouter {
                 RETURNING ref_count
                 "#,
             )
-            .bind(&content_hash)
-            .bind(&content_key)
+            .bind(content_hash)
+            .bind(content_key)
             .bind(size.map(|s| s as i64))
             .fetch_one(&mut *tx)
             .await
@@ -125,7 +134,7 @@ impl StorageBackend for StorageRouter {
                 "#,
             )
             .bind(key)
-            .bind(&content_hash)
+            .bind(content_hash)
             .execute(&mut *tx)
             .await
             .map_err(|e| CoreError::Storage(format!("dedup refs insert failed: {e}")))?;
@@ -154,10 +163,15 @@ impl StorageBackend for StorageRouter {
             // this before commit ensures a backend failure causes a full rollback
             // rather than leaving orphaned dedup rows that point to a missing blob.
             if count == 1 {
-                if let Err(e) = backend.store(&content_key, data, meta).await {
+                if let Err(e) = source.materialize(backend, content_key).await {
                     let _ = tx.rollback().await;
+                    source.discard_staged(backend).await;
                     return Err(e);
                 }
+            } else {
+                // The blob already exists from another reference — drop the
+                // redundant staged copy (no-op for the inline path).
+                source.discard_staged(backend).await;
             }
 
             tx.commit()
@@ -166,9 +180,132 @@ impl StorageBackend for StorageRouter {
         }
 
         // Keep the legacy artifact_storage record for routing and size queries.
-        self.record_backend(key, &backend_name, size).await;
+        self.record_backend(key, backend_name, size).await;
 
         Ok(())
+    }
+}
+
+/// How [`StorageRouter::finalize_dedup`] obtains the physical blob bytes when a
+/// content hash is seen for the first time.
+enum BlobSource {
+    /// Bytes already in memory (the `store` path).
+    Inline(Bytes, StorageMeta),
+    /// Bytes already streamed to a staging key (the `store_streaming` path),
+    /// promoted to the content key with a cheap backend move.
+    Staged(String),
+}
+
+impl BlobSource {
+    /// Place the blob at `content_key` (first reference only).
+    async fn materialize(
+        &self,
+        backend: &Arc<dyn StorageBackend>,
+        content_key: &str,
+    ) -> Result<(), CoreError> {
+        match self {
+            BlobSource::Inline(data, meta) => {
+                backend.store(content_key, data.clone(), meta.clone()).await
+            }
+            BlobSource::Staged(staging_key) => backend.move_key(staging_key, content_key).await,
+        }
+    }
+
+    /// Best-effort removal of a staged blob that won't be promoted.
+    async fn discard_staged(&self, backend: &Arc<dyn StorageBackend>) {
+        if let BlobSource::Staged(staging_key) = self {
+            if let Err(e) = backend.delete(staging_key).await {
+                tracing::warn!(key = %staging_key, error = %e, "failed to delete staged blob");
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl StorageBackend for StorageRouter {
+    async fn store(&self, key: &str, data: Bytes, meta: StorageMeta) -> Result<(), CoreError> {
+        let content_hash = hex::encode(sha2::Sha256::digest(&data));
+        let content_key = format!("blob/{content_hash}");
+        let size = meta.size;
+
+        let backend_name = self.backend_name_for_key(key).to_owned();
+        let backend = self.resolve_backend(&backend_name).clone();
+
+        self.finalize_dedup(
+            key,
+            &content_hash,
+            &content_key,
+            size,
+            &backend_name,
+            &backend,
+            BlobSource::Inline(data, meta),
+        )
+        .await
+    }
+
+    /// Streaming counterpart to [`store`](Self::store). The bytes are streamed
+    /// to a temporary staging key on the target backend (peak memory bounded to
+    /// one chunk/part), and the content hash that decides dedup is computed
+    /// during that write. The staged blob is then promoted to `blob/<hash>` with
+    /// a cheap backend move on first reference, or discarded on a dedup hit.
+    async fn store_streaming(
+        &self,
+        key: &str,
+        stream: ByteStream,
+        meta: StorageMeta,
+    ) -> Result<StoreOutcome, CoreError> {
+        let backend_name = self.backend_name_for_key(key).to_owned();
+        let backend = self.resolve_backend(&backend_name).clone();
+
+        let staging_key = format!("blob/staging/{}", uuid::Uuid::new_v4());
+        let outcome = match backend.store_streaming(&staging_key, stream, meta).await {
+            Ok(o) => o,
+            Err(e) => {
+                // The stream failed mid-write (e.g. size limit hit, or upstream
+                // error). Drop any partially-written staging blob.
+                if let Err(del) = backend.delete(&staging_key).await {
+                    tracing::warn!(key = %staging_key, error = %del, "failed to delete partial staging blob");
+                }
+                return Err(e);
+            }
+        };
+        let content_key = format!("blob/{}", outcome.content_hash);
+        let size = Some(outcome.size);
+
+        // `finalize_dedup` promotes or discards the staged blob on its own happy
+        // paths, but its early DB-error returns do not. Keep the staging key here
+        // and clean it up if finalize fails, so a transient DB error can never
+        // leak an orphaned `blob/staging/<uuid>` (there is no staging GC sweep).
+        if let Err(e) = self
+            .finalize_dedup(
+                key,
+                &outcome.content_hash,
+                &content_key,
+                size,
+                &backend_name,
+                &backend,
+                BlobSource::Staged(staging_key.clone()),
+            )
+            .await
+        {
+            if let Err(del) = backend.delete(&staging_key).await {
+                tracing::warn!(key = %staging_key, error = %del, "failed to delete staging blob after finalize_dedup error");
+            }
+            return Err(e);
+        }
+
+        Ok(outcome)
+    }
+
+    /// Intentionally unsupported: a logical key here is a row in `artifact_dedup_refs`
+    /// pointing at a shared content blob, not a movable physical object, so a
+    /// logical-key move has no stable meaning (see the `move_key` note on the
+    /// [`StorageBackend`] trait). The router promotes staged blobs by calling
+    /// `move_key` on the *inner* leaf backend, never on itself.
+    async fn move_key(&self, _from: &str, _to: &str) -> Result<(), CoreError> {
+        Err(CoreError::Storage(
+            "move_key is not supported on the deduplicating storage router".into(),
+        ))
     }
 
     async fn retrieve(&self, key: &str) -> Result<Option<StoredArtifact>, CoreError> {

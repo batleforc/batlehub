@@ -1262,6 +1262,36 @@ async fn integrity_verified_artifact_is_cached_and_served() {
         storage.exists(&artifact_key).await.unwrap(),
         "verified artifact must be cached"
     );
+    // The block-on-mismatch path streams to a private `staging:` key and promotes
+    // only after verification; once served, no staging key must remain behind.
+    let staging = storage.list_keys("staging:").await.unwrap();
+    assert!(
+        staging.is_empty(),
+        "staging keys leaked after promotion: {staging:?}"
+    );
+}
+
+#[tokio::test]
+async fn integrity_mismatch_never_exposes_a_servable_key() {
+    let reg = Arc::new(ChecksumRegistry {
+        checksum: Some(sha256_hex(b"some-other-bytes")),
+        body: BODY,
+    });
+    // Default policy blocks on mismatch.
+    let (svc, storage) = proxy_with_integrity("npm", reg, None);
+
+    let result = svc.handle(req("npm")).await;
+    assert!(matches!(result, Err(CoreError::IntegrityFailure(_))));
+
+    // Neither the real key nor any staging key should be left servable — the
+    // mismatched bytes were only ever under the private staging key, now evicted.
+    let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
+    assert!(!storage.exists(&artifact_key).await.unwrap());
+    let leaked = storage.list_keys("staging:").await.unwrap();
+    assert!(
+        leaked.is_empty(),
+        "mismatch left staging keys behind: {leaked:?}"
+    );
 }
 
 #[tokio::test]

@@ -46,6 +46,21 @@ impl StorageBackend for InMemoryStorageBackend {
         }))
     }
 
+    /// Atomic key move under a single write lock. `store_streaming` falls back to
+    /// the trait default (collect + `store`), which is fine for an in-RAM map.
+    async fn move_key(&self, from: &str, to: &str) -> Result<(), CoreError> {
+        let mut map = self.data.write().await;
+        match map.remove(from) {
+            Some(entry) => {
+                map.insert(to.to_owned(), entry);
+                Ok(())
+            }
+            None => Err(CoreError::Storage(format!(
+                "move_key source '{from}' does not exist"
+            ))),
+        }
+    }
+
     async fn exists(&self, key: &str) -> Result<bool, CoreError> {
         Ok(self.data.read().await.contains_key(key))
     }
@@ -94,7 +109,9 @@ impl StorageBackend for InMemoryStorageBackend {
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
+    use futures::StreamExt;
 
+    use batlehub_core::error::CoreError;
     use batlehub_core::ports::{StorageBackend, StorageMeta};
 
     use super::InMemoryStorageBackend;
@@ -135,6 +152,50 @@ mod tests {
         s.store("k", Bytes::from("x"), meta(1)).await.unwrap();
         s.delete("k").await.unwrap();
         assert!(!s.exists("k").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn move_key_relocates_entry() {
+        let s = InMemoryStorageBackend::new();
+        s.store("from", Bytes::from("payload"), meta(7))
+            .await
+            .unwrap();
+        s.move_key("from", "to").await.unwrap();
+        assert!(!s.exists("from").await.unwrap());
+        let artifact = s.retrieve("to").await.unwrap().expect("should exist");
+        assert_eq!(artifact.meta.size, Some(7));
+    }
+
+    #[tokio::test]
+    async fn move_key_missing_source_errors() {
+        let s = InMemoryStorageBackend::new();
+        assert!(s.move_key("ghost", "dest").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn store_streaming_default_collects_and_hashes() {
+        use futures::stream;
+        let s = InMemoryStorageBackend::new();
+        let chunks: Vec<Result<Bytes, CoreError>> = vec![
+            Ok(Bytes::from_static(b"he")),
+            Ok(Bytes::from_static(b"llo")),
+        ];
+        let outcome = s
+            .store_streaming("k", Box::pin(stream::iter(chunks)), StorageMeta::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome.content_hash,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+        assert_eq!(outcome.size, 5);
+        let artifact = s.retrieve("k").await.unwrap().unwrap();
+        let mut stream = artifact.stream;
+        let mut buf = Vec::new();
+        while let Some(c) = stream.next().await {
+            buf.extend_from_slice(&c.unwrap());
+        }
+        assert_eq!(buf, b"hello");
     }
 
     #[tokio::test]

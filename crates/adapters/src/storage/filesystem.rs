@@ -2,13 +2,16 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::stream;
+use futures::{stream, StreamExt};
+use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
 use batlehub_core::{
     error::CoreError,
-    ports::{ByteStream, StorageBackend, StorageMeta, StoredArtifact},
+    ports::{ByteStream, StorageBackend, StorageMeta, StoreOutcome, StoredArtifact},
 };
+
+use super::read_chunked;
 
 /// Stores cached artifacts on the local filesystem.
 ///
@@ -54,27 +57,110 @@ impl StorageBackend for FilesystemStorageBackend {
         Ok(())
     }
 
+    /// Stream the bytes to disk, hashing as we go. Peak memory is one chunk: the
+    /// SHA-256 is computed incrementally rather than over a buffered copy.
+    async fn store_streaming(
+        &self,
+        key: &str,
+        mut stream: ByteStream,
+        _meta: StorageMeta,
+    ) -> Result<StoreOutcome, CoreError> {
+        let path = self.key_to_path(key)?;
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                CoreError::Storage(format!("create dirs for {}: {e}", path.display()))
+            })?;
+        }
+        let mut file = tokio::fs::File::create(&path)
+            .await
+            .map_err(|e| CoreError::Storage(format!("create file {}: {e}", path.display())))?;
+
+        // Write the stream to disk, hashing incrementally. On any mid-stream
+        // failure (e.g. an upstream error or a size-limit abort surfaced through
+        // the stream) the partially-written file is removed so a later
+        // `retrieve` can never serve a truncated artifact.
+        let mut hasher = Sha256::new();
+        let mut size: u64 = 0;
+        let write_result: Result<(), CoreError> = async {
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk?;
+                hasher.update(&chunk);
+                size += chunk.len() as u64;
+                file.write_all(&chunk).await.map_err(|e| {
+                    CoreError::Storage(format!("write file {}: {e}", path.display()))
+                })?;
+            }
+            file.flush()
+                .await
+                .map_err(|e| CoreError::Storage(format!("flush file {}: {e}", path.display())))
+        }
+        .await;
+
+        if let Err(e) = write_result {
+            drop(file);
+            if let Err(rm) = tokio::fs::remove_file(&path).await {
+                if rm.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(path = %path.display(), error = %rm, "failed to remove partial artifact after store_streaming error");
+                }
+            }
+            return Err(e);
+        }
+
+        tracing::debug!(key = %key, bytes = size, "streamed artifact to filesystem");
+        Ok(StoreOutcome {
+            content_hash: hex::encode(hasher.finalize()),
+            size,
+        })
+    }
+
+    /// Atomic rename within the same root — no bytes move through memory.
+    async fn move_key(&self, from: &str, to: &str) -> Result<(), CoreError> {
+        let from_path = self.key_to_path(from)?;
+        let to_path = self.key_to_path(to)?;
+        if let Some(parent) = to_path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                CoreError::Storage(format!("create dirs for {}: {e}", to_path.display()))
+            })?;
+        }
+        tokio::fs::rename(&from_path, &to_path).await.map_err(|e| {
+            CoreError::Storage(format!(
+                "rename {} -> {}: {e}",
+                from_path.display(),
+                to_path.display()
+            ))
+        })
+    }
+
     async fn retrieve(&self, key: &str) -> Result<Option<StoredArtifact>, CoreError> {
         let path = self.key_to_path(key)?;
-        match tokio::fs::read(&path).await {
-            Ok(bytes) => {
-                let size = bytes.len() as u64;
-                let data = Bytes::from(bytes);
-                let stream: ByteStream = Box::pin(stream::once(async move { Ok(data) }));
-                Ok(Some(StoredArtifact {
-                    stream,
-                    meta: StorageMeta {
-                        size: Some(size),
-                        ..Default::default()
-                    },
-                }))
+        let file = match tokio::fs::File::open(&path).await {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(CoreError::Storage(format!(
+                    "open file {}: {e}",
+                    path.display()
+                )))
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(CoreError::Storage(format!(
-                "read file {}: {e}",
-                path.display()
-            ))),
-        }
+        };
+        let size = file.metadata().await.ok().map(|m| m.len());
+
+        // Stream the file off disk in fixed-size chunks; peak memory is one chunk.
+        // A zero-length file still yields exactly one (empty) chunk so consumers
+        // that expect at least one item behave as they did before streaming.
+        let stream: ByteStream = if size == Some(0) {
+            Box::pin(stream::once(async { Ok(Bytes::new()) }))
+        } else {
+            read_chunked(file, path.display().to_string())
+        };
+
+        Ok(Some(StoredArtifact {
+            stream,
+            meta: StorageMeta {
+                size,
+                ..Default::default()
+            },
+        }))
     }
 
     async fn exists(&self, key: &str) -> Result<bool, CoreError> {
@@ -262,6 +348,120 @@ mod tests {
     async fn retrieve_missing_key_returns_none() {
         let b = make_backend().await;
         assert!(b.retrieve("artifact:npm/missing").await.unwrap().is_none());
+    }
+
+    fn chunked_stream(chunks: &[&'static [u8]]) -> ByteStream {
+        let items: Vec<Result<Bytes, CoreError>> =
+            chunks.iter().map(|c| Ok(Bytes::from_static(c))).collect();
+        Box::pin(stream::iter(items))
+    }
+
+    #[tokio::test]
+    async fn store_streaming_round_trips_and_hashes() {
+        let b = make_backend().await;
+        // "hello" split across chunks; SHA-256 of b"hello".
+        let outcome = b
+            .store_streaming(
+                "artifact:npm/streamed",
+                chunked_stream(&[b"he", b"", b"llo"]),
+                StorageMeta::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome.content_hash,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+        assert_eq!(outcome.size, 5);
+
+        let artifact = b
+            .retrieve("artifact:npm/streamed")
+            .await
+            .unwrap()
+            .expect("should exist");
+        assert_eq!(collect(artifact).await, b"hello");
+    }
+
+    #[tokio::test]
+    async fn retrieve_streams_large_payload_in_chunks() {
+        let b = make_backend().await;
+        // Bigger than READ_CHUNK so retrieve yields multiple chunks.
+        let big = vec![0xABu8; crate::storage::READ_CHUNK * 2 + 123];
+        b.store(
+            "artifact:npm/big",
+            Bytes::from(big.clone()),
+            StorageMeta::default(),
+        )
+        .await
+        .unwrap();
+        let artifact = b.retrieve("artifact:npm/big").await.unwrap().unwrap();
+        let mut stream = artifact.stream;
+        let mut chunks = 0;
+        let mut total = Vec::new();
+        while let Some(c) = stream.next().await {
+            let c = c.unwrap();
+            chunks += 1;
+            total.extend_from_slice(&c);
+        }
+        assert_eq!(total, big);
+        assert!(
+            chunks >= 2,
+            "expected a chunked read, got {chunks} chunk(s)"
+        );
+    }
+
+    #[tokio::test]
+    async fn move_key_renames_blob() {
+        let b = make_backend().await;
+        b.store(
+            "blob/staging/abc",
+            Bytes::from_static(b"promote me"),
+            StorageMeta::default(),
+        )
+        .await
+        .unwrap();
+        b.move_key("blob/staging/abc", "blob/deadbeef")
+            .await
+            .unwrap();
+        assert!(!b.exists("blob/staging/abc").await.unwrap());
+        let artifact = b.retrieve("blob/deadbeef").await.unwrap().unwrap();
+        assert_eq!(collect(artifact).await, b"promote me");
+    }
+
+    #[tokio::test]
+    async fn retrieve_empty_file_yields_one_empty_chunk() {
+        let b = make_backend().await;
+        b.store("artifact:npm/empty", Bytes::new(), StorageMeta::default())
+            .await
+            .unwrap();
+        let artifact = b.retrieve("artifact:npm/empty").await.unwrap().unwrap();
+        let mut stream = artifact.stream;
+        let mut chunks = 0;
+        let mut total = Vec::new();
+        while let Some(c) = stream.next().await {
+            chunks += 1;
+            total.extend_from_slice(&c.unwrap());
+        }
+        assert!(total.is_empty());
+        assert_eq!(chunks, 1, "empty file should still yield exactly one chunk");
+    }
+
+    #[tokio::test]
+    async fn store_streaming_cleans_up_partial_file_on_error() {
+        let b = make_backend().await;
+        // A stream that yields some bytes, then errors mid-way.
+        let items: Vec<Result<Bytes, CoreError>> = vec![
+            Ok(Bytes::from_static(b"partial")),
+            Err(CoreError::Registry("boom".into())),
+        ];
+        let stream: ByteStream = Box::pin(stream::iter(items));
+        let res = b
+            .store_streaming("artifact:npm/aborted", stream, StorageMeta::default())
+            .await;
+        assert!(res.is_err());
+        // No truncated file must be left behind at the key.
+        assert!(!b.exists("artifact:npm/aborted").await.unwrap());
+        assert!(b.retrieve("artifact:npm/aborted").await.unwrap().is_none());
     }
 
     #[tokio::test]

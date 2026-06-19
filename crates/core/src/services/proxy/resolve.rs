@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use bytes::Bytes;
 use chrono::Utc;
 
 use crate::entities::SbomFormat;
@@ -106,11 +105,15 @@ impl ProxyService {
     }
 
     /// Spawns SBOM generation for a freshly cached artifact (non-blocking, non-fatal).
+    ///
+    /// The artifact bytes are re-read from storage **inside the spawned task**
+    /// rather than passed in, so the request hot path never holds the full
+    /// artifact in memory — the buffering cost is paid only when SBOM is enabled
+    /// for the registry, and off the critical path.
     pub(super) async fn maybe_trigger_sbom(
         &self,
         registry_name: &str,
         artifact_key: &str,
-        data: &Bytes,
         metadata: &crate::entities::PackageMetadata,
         registry_type: &str,
     ) {
@@ -125,9 +128,9 @@ impl ProxyService {
             return;
         };
         let sbom = Arc::clone(sbom_svc);
+        let storage = Arc::clone(&self.storage);
         let meta_clone = metadata.clone();
         let key_clone = artifact_key.to_owned();
-        let data_clone = data.clone();
         let registry_type = registry_type.to_owned();
         let formats: Vec<SbomFormat> = cfg
             .formats
@@ -135,11 +138,31 @@ impl ProxyService {
             .filter_map(|s| SbomFormat::parse(s))
             .collect();
         tokio::spawn(async move {
+            // Pull the just-stored bytes back from storage for manifest extraction.
+            let data = match storage.retrieve(&key_clone).await {
+                Ok(Some(artifact)) => {
+                    match crate::ports::collect_byte_stream(artifact.stream).await {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            tracing::warn!(key = %key_clone, error = %e, "sbom: failed to read cached artifact (non-fatal)");
+                            return;
+                        }
+                    }
+                }
+                Ok(None) => {
+                    tracing::warn!(key = %key_clone, "sbom: cached artifact vanished before generation (non-fatal)");
+                    return;
+                }
+                Err(e) => {
+                    tracing::warn!(key = %key_clone, error = %e, "sbom: storage retrieve failed (non-fatal)");
+                    return;
+                }
+            };
             if let Err(e) = sbom
                 .record_for_proxied(
                     &meta_clone,
                     &key_clone,
-                    &data_clone,
+                    &data,
                     &formats,
                     cfg.fetch_upstream,
                     &registry_type,

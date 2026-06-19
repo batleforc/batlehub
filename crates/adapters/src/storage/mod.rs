@@ -13,6 +13,41 @@ pub use s3::S3StorageBackend;
 pub mod router;
 pub use router::StorageRouter;
 
+/// Chunk size for streaming an object body back to a caller. Keeps peak memory
+/// bounded to one chunk regardless of artifact size.
+#[cfg(any(feature = "storage-fs", feature = "storage-s3"))]
+pub(crate) const READ_CHUNK: usize = 64 * 1024;
+
+/// Adapt an [`AsyncRead`](tokio::io::AsyncRead) into a chunked [`ByteStream`],
+/// reading `READ_CHUNK` bytes at a time. Shared by the filesystem and S3
+/// `retrieve` paths so the reader-chunking loop lives in one place.
+#[cfg(any(feature = "storage-fs", feature = "storage-s3"))]
+pub(crate) fn read_chunked<R>(reader: R, label: String) -> batlehub_core::ports::ByteStream
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    use batlehub_core::error::CoreError;
+    use bytes::Bytes;
+    use tokio::io::AsyncReadExt;
+
+    Box::pin(futures::stream::try_unfold(reader, move |mut reader| {
+        let label = label.clone();
+        async move {
+            let mut buf = vec![0u8; READ_CHUNK];
+            let n = reader
+                .read(&mut buf)
+                .await
+                .map_err(|e| CoreError::Storage(format!("read {label}: {e}")))?;
+            if n == 0 {
+                Ok(None)
+            } else {
+                buf.truncate(n);
+                Ok(Some((Bytes::from(buf), reader)))
+            }
+        }
+    }))
+}
+
 /// Rejects storage keys that could escape the storage root via path traversal.
 ///
 /// Storage keys are built from untrusted package coordinates
