@@ -37,7 +37,7 @@ RUN touch crates/*/src/lib.rs server/src/main.rs cli/src/main.rs
 RUN cargo build --release -p batlehub-server -p batlehub-cli
 
 # ── Frontend build stage ───────────────────────────────────────────────────────
-FROM registry.access.redhat.com/hi/nodejs:latest-builder@sha256:00072bb6a524250de2a05af922f4c69b6a6403d535357ce9bb46f3c904be70fc AS ui-builder
+FROM registry.access.redhat.com/hi/nodejs:latest-builder@sha256:d122786393579ab64ac179b0b74fde4e6532859b174c8e17450afebcd1928084 AS ui-builder
 
 USER root
 WORKDIR /ui
