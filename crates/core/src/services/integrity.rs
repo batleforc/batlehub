@@ -73,35 +73,35 @@ pub enum IntegrityOutcome {
 /// strings may carry multiple space-separated digests; the first parseable one
 /// wins.
 pub fn parse_expected(s: &str) -> Option<(ChecksumAlgo, Vec<u8>)> {
-    // SRI permits a space-separated list of `<algo>-<base64>` entries.
-    for token in s.split_whitespace() {
-        if let Some((prefix, b64)) = token.split_once('-') {
-            let algo = match prefix.to_ascii_lowercase().as_str() {
-                "sha1" => ChecksumAlgo::Sha1,
-                "sha256" => ChecksumAlgo::Sha256,
-                "sha512" => ChecksumAlgo::Sha512,
-                _ => continue,
-            };
-            if let Ok(bytes) = STANDARD.decode(b64) {
-                if bytes.len() == algo.digest_len() {
-                    return Some((algo, bytes));
-                }
-            }
-            continue;
-        }
+    // SRI permits a space-separated list of `<algo>-<base64>` entries; the first
+    // parseable token (SRI `<algo>-<base64>` or bare hex) wins.
+    s.split_whitespace().find_map(parse_expected_token)
+}
 
-        // Bare hex: infer the algorithm from the digest length.
-        let algo = match token.len() {
-            40 => ChecksumAlgo::Sha1,
-            64 => ChecksumAlgo::Sha256,
-            128 => ChecksumAlgo::Sha512,
-            _ => continue,
+/// Parse a single advertised-checksum token: either SRI `<algo>-<base64>` or a
+/// bare hex digest whose algorithm is inferred from its length. `None` when the
+/// token is in an unrecognized format or fails to decode.
+fn parse_expected_token(token: &str) -> Option<(ChecksumAlgo, Vec<u8>)> {
+    if let Some((prefix, b64)) = token.split_once('-') {
+        let algo = match prefix.to_ascii_lowercase().as_str() {
+            "sha1" => ChecksumAlgo::Sha1,
+            "sha256" => ChecksumAlgo::Sha256,
+            "sha512" => ChecksumAlgo::Sha512,
+            _ => return None,
         };
-        if let Ok(bytes) = hex::decode(token.to_ascii_lowercase()) {
-            return Some((algo, bytes));
-        }
+        let bytes = STANDARD.decode(b64).ok()?;
+        return (bytes.len() == algo.digest_len()).then_some((algo, bytes));
     }
-    None
+
+    // Bare hex: infer the algorithm from the digest length.
+    let algo = match token.len() {
+        40 => ChecksumAlgo::Sha1,
+        64 => ChecksumAlgo::Sha256,
+        128 => ChecksumAlgo::Sha512,
+        _ => return None,
+    };
+    let bytes = hex::decode(token.to_ascii_lowercase()).ok()?;
+    Some((algo, bytes))
 }
 
 /// Self-computed bare SHA-256 hex digest of `data`.

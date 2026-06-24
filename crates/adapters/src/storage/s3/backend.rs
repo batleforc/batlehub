@@ -60,8 +60,8 @@ impl StorageBackend for S3StorageBackend {
         let mut completed: Vec<CompletedPart> = Vec::new();
         let mut part_number = 1;
 
-        // Helper closures can't borrow `self` across awaits cleanly, so the
-        // multipart bookkeeping is inlined below.
+        // The per-S3-call bookkeeping is factored into the inherent helpers below
+        // (an `async` closure can't borrow `self` across awaits cleanly).
         let result: Result<(), CoreError> = async {
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk?;
@@ -71,45 +71,13 @@ impl StorageBackend for S3StorageBackend {
 
                 while buf.len() >= PART_SIZE {
                     if upload_id.is_none() {
-                        let create = self
-                            .client
-                            .create_multipart_upload()
-                            .bucket(&self.bucket)
-                            .key(&obj_key)
-                            .set_content_type(meta.content_type.clone())
-                            .send()
-                            .await
-                            .map_err(|e| {
-                                CoreError::Storage(format!("S3 create_multipart {obj_key}: {e}"))
-                            })?;
-                        upload_id = create.upload_id().map(str::to_owned);
-                        if upload_id.is_none() {
-                            return Err(CoreError::Storage(format!(
-                                "S3 create_multipart {obj_key}: no upload id returned"
-                            )));
-                        }
+                        upload_id = Some(self.create_multipart(&obj_key, &meta).await?);
                     }
+                    let id = upload_id.as_deref().unwrap();
                     let part = buf.split_to(PART_SIZE).freeze();
-                    let resp = self
-                        .client
-                        .upload_part()
-                        .bucket(&self.bucket)
-                        .key(&obj_key)
-                        .upload_id(upload_id.as_deref().unwrap())
-                        .part_number(part_number)
-                        .body(part.into())
-                        .send()
-                        .await
-                        .map_err(|e| {
-                            CoreError::Storage(format!(
-                                "S3 upload_part {obj_key} #{part_number}: {e}"
-                            ))
-                        })?;
                     completed.push(
-                        CompletedPart::builder()
-                            .set_e_tag(resp.e_tag().map(str::to_owned))
-                            .part_number(part_number)
-                            .build(),
+                        self.upload_one_part(&obj_key, id, part_number, part)
+                            .await?,
                     );
                     part_number += 1;
                 }
@@ -117,65 +85,18 @@ impl StorageBackend for S3StorageBackend {
 
             match upload_id.as_deref() {
                 // Whole object fit under one part: a single put is cheaper.
-                None => {
-                    let data = buf.freeze();
-                    let len = data.len() as i64;
-                    let mut req = self
-                        .client
-                        .put_object()
-                        .bucket(&self.bucket)
-                        .key(&obj_key)
-                        .body(data.into())
-                        .content_length(len);
-                    if let Some(ref ct) = meta.content_type {
-                        req = req.content_type(ct);
-                    }
-                    req.send()
-                        .await
-                        .map_err(|e| CoreError::Storage(format!("S3 put_object {obj_key}: {e}")))?;
-                }
+                None => self.put_single(&obj_key, buf.freeze(), &meta).await?,
                 // Multipart in progress: flush the trailing remainder as the last
                 // part (it may be < 5 MiB, which is allowed for the final part).
                 Some(id) => {
                     if !buf.is_empty() {
                         let part = buf.split().freeze();
-                        let resp = self
-                            .client
-                            .upload_part()
-                            .bucket(&self.bucket)
-                            .key(&obj_key)
-                            .upload_id(id)
-                            .part_number(part_number)
-                            .body(part.into())
-                            .send()
-                            .await
-                            .map_err(|e| {
-                                CoreError::Storage(format!(
-                                    "S3 upload_part {obj_key} #{part_number}: {e}"
-                                ))
-                            })?;
                         completed.push(
-                            CompletedPart::builder()
-                                .set_e_tag(resp.e_tag().map(str::to_owned))
-                                .part_number(part_number)
-                                .build(),
+                            self.upload_one_part(&obj_key, id, part_number, part)
+                                .await?,
                         );
                     }
-                    self.client
-                        .complete_multipart_upload()
-                        .bucket(&self.bucket)
-                        .key(&obj_key)
-                        .upload_id(id)
-                        .multipart_upload(
-                            CompletedMultipartUpload::builder()
-                                .set_parts(Some(completed.clone()))
-                                .build(),
-                        )
-                        .send()
-                        .await
-                        .map_err(|e| {
-                            CoreError::Storage(format!("S3 complete_multipart {obj_key}: {e}"))
-                        })?;
+                    self.complete_multipart(&obj_key, id, completed).await?;
                 }
             }
             Ok(())
@@ -454,5 +375,105 @@ impl StorageBackend for S3StorageBackend {
         }
 
         Ok(total)
+    }
+}
+
+/// Single-S3-call helpers for the multipart streaming upload in `store_streaming`.
+/// Each wraps one SDK call and maps its error, keeping the orchestrator readable.
+impl S3StorageBackend {
+    /// Begin a multipart upload, returning its upload id.
+    async fn create_multipart(
+        &self,
+        obj_key: &str,
+        meta: &StorageMeta,
+    ) -> Result<String, CoreError> {
+        let create = self
+            .client
+            .create_multipart_upload()
+            .bucket(&self.bucket)
+            .key(obj_key)
+            .set_content_type(meta.content_type.clone())
+            .send()
+            .await
+            .map_err(|e| CoreError::Storage(format!("S3 create_multipart {obj_key}: {e}")))?;
+        create.upload_id().map(str::to_owned).ok_or_else(|| {
+            CoreError::Storage(format!(
+                "S3 create_multipart {obj_key}: no upload id returned"
+            ))
+        })
+    }
+
+    /// Upload one part, returning the `CompletedPart` to record for completion.
+    async fn upload_one_part(
+        &self,
+        obj_key: &str,
+        upload_id: &str,
+        part_number: i32,
+        body: Bytes,
+    ) -> Result<CompletedPart, CoreError> {
+        let resp = self
+            .client
+            .upload_part()
+            .bucket(&self.bucket)
+            .key(obj_key)
+            .upload_id(upload_id)
+            .part_number(part_number)
+            .body(body.into())
+            .send()
+            .await
+            .map_err(|e| {
+                CoreError::Storage(format!("S3 upload_part {obj_key} #{part_number}: {e}"))
+            })?;
+        Ok(CompletedPart::builder()
+            .set_e_tag(resp.e_tag().map(str::to_owned))
+            .part_number(part_number)
+            .build())
+    }
+
+    /// `put_object` for an object that fit entirely under one part.
+    async fn put_single(
+        &self,
+        obj_key: &str,
+        data: Bytes,
+        meta: &StorageMeta,
+    ) -> Result<(), CoreError> {
+        let len = data.len() as i64;
+        let mut req = self
+            .client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(obj_key)
+            .body(data.into())
+            .content_length(len);
+        if let Some(ref ct) = meta.content_type {
+            req = req.content_type(ct);
+        }
+        req.send()
+            .await
+            .map_err(|e| CoreError::Storage(format!("S3 put_object {obj_key}: {e}")))?;
+        Ok(())
+    }
+
+    /// Finalize a multipart upload from its recorded parts.
+    async fn complete_multipart(
+        &self,
+        obj_key: &str,
+        upload_id: &str,
+        completed: Vec<CompletedPart>,
+    ) -> Result<(), CoreError> {
+        self.client
+            .complete_multipart_upload()
+            .bucket(&self.bucket)
+            .key(obj_key)
+            .upload_id(upload_id)
+            .multipart_upload(
+                CompletedMultipartUpload::builder()
+                    .set_parts(Some(completed))
+                    .build(),
+            )
+            .send()
+            .await
+            .map_err(|e| CoreError::Storage(format!("S3 complete_multipart {obj_key}: {e}")))?;
+        Ok(())
     }
 }

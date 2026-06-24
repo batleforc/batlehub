@@ -50,141 +50,15 @@ impl ProxyService {
         // cache hit. The hash is computed by streaming the stored bytes through a
         // `StreamingVerifier` (memory stays bounded regardless of artifact size);
         // a verified entry is then re-opened from storage to serve.
-        let response_stream: crate::ports::ByteStream = if integrity.enabled
-            && integrity.verify_on_serve
-        {
-            let expected = match self
-                .artifact_meta
-                .get_artifact_checksum(&artifact_key)
-                .await
-            {
-                // A recorded checksum: re-verify against it below.
-                Ok(Some(c)) => Some(c),
-                // No checksum recorded (entry cached before `verify_on_serve`
-                // existed, or never refreshed since): documented skip — serve
-                // as-is until the entry is next refreshed with a checksum.
-                Ok(None) => None,
-                // The checksum lookup itself failed. `verify_on_serve` is an
-                // opt-in guarantee that every served byte is re-verified, so we
-                // must fail closed rather than serve possibly-corrupt bytes we
-                // cannot check. The cache entry is left intact (the bytes may be
-                // fine; we just could not confirm it this time).
-                Err(e) => {
-                    let reason = format!(
-                        "cannot re-verify cached artifact for {}: checksum lookup failed: {e}",
-                        req.package_id,
-                    );
-                    tracing::warn!(registry = %registry_name, key = %artifact_key, error = %e, "re-serve checksum lookup failed; failing closed");
-                    metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "lookup_failed", "phase" => "reserve").increment(1);
-                    super::finish_request(&registry_label, "integrity_failed", start);
-                    return Err(CoreError::IntegrityFailure(reason));
-                }
-            };
-            use crate::services::integrity::{IntegrityOutcome, StreamingVerifier};
-            match expected.as_deref().map(StreamingVerifier::new) {
-                // A recorded, parseable checksum: stream the stored bytes through
-                // the hasher. Retain the bytes up to `RESERVE_VERIFY_BUFFER_LIMIT`
-                // so a verified small artifact (the common case) is served from the
-                // exact bytes we hashed — a single read, with no re-retrieve race.
-                // An artifact larger than the cap drops the retained copy and is
-                // served by re-opening a fresh stream, keeping peak memory bounded.
-                Some(Some(mut verifier)) => {
-                    let mut s = artifact.stream;
-                    let mut retained: Option<Vec<u8>> = Some(Vec::new());
-                    while let Some(chunk) = s.next().await {
-                        let chunk = chunk?;
-                        verifier.update(&chunk);
-                        if let Some(buf) = retained.as_mut() {
-                            if buf.len() + chunk.len() > RESERVE_VERIFY_BUFFER_LIMIT {
-                                // Over the cap: stop retaining and hash-only from here.
-                                retained = None;
-                            } else {
-                                buf.extend_from_slice(&chunk);
-                            }
-                        }
-                    }
-                    match verifier.finish() {
-                        IntegrityOutcome::Verified { algo } => {
-                            metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "verified", "phase" => "reserve").increment(1);
-                            tracing::debug!(registry = %registry_name, key = %artifact_key, algo = algo.as_str(), "cached artifact re-verified on serve");
-                        }
-                        IntegrityOutcome::Mismatch {
-                            algo,
-                            expected,
-                            actual,
-                        } => {
-                            metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "mismatch", "phase" => "reserve").increment(1);
-                            tracing::warn!(registry = %registry_name, key = %artifact_key, algo = algo.as_str(), %expected, %actual, "cached artifact failed re-serve integrity check; evicting");
-                            // Drop the corrupt entry so a later request re-fetches clean bytes.
-                            if let Err(e) = self.storage.delete(&artifact_key).await {
-                                tracing::warn!(key = %artifact_key, error = %e, "failed to evict corrupt cached artifact");
-                            }
-                            if let Err(e) =
-                                self.artifact_meta.delete_artifact_meta(&artifact_key).await
-                            {
-                                tracing::warn!(key = %artifact_key, error = %e, "failed to delete meta for corrupt artifact");
-                            }
-                            let reason = format!(
-                                "cached artifact failed re-serve integrity check for {}: {} digest mismatch (expected {expected}, got {actual})",
-                                req.package_id,
-                                algo.as_str(),
-                            );
-                            super::warn_if_audit_failed(
-                                self.repo
-                                    .record_access(AccessEvent::proxy_error(
-                                        req.package_id.clone(),
-                                        req.identity.user_id.clone(),
-                                        req.identity.role.clone(),
-                                        reason.clone(),
-                                    ))
-                                    .await,
-                                "reserve integrity mismatch",
-                            );
-                            super::finish_request(&registry_label, "integrity_failed", start);
-                            return Err(CoreError::IntegrityFailure(reason));
-                        }
-                        // `StreamingVerifier::new` already rejected unparseable
-                        // checksums, so `finish` never returns `Unparseable`.
-                        IntegrityOutcome::Unparseable => {
-                            tracing::warn!(registry = %registry_name, key = %artifact_key, "re-serve verifier produced an unexpected unparseable outcome; serving without claiming verified");
-                        }
-                    }
-
-                    match retained {
-                        // Small artifact: serve the exact bytes we just verified.
-                        Some(buf) => Box::pin(futures::stream::once(async move {
-                            Ok::<Bytes, CoreError>(Bytes::from(buf))
-                        })),
-                        // Oversized artifact: the verifying read consumed the stream,
-                        // so re-open a fresh one to serve. A concurrent eviction
-                        // between the two reads yields a clean miss/error here, never
-                        // unverified bytes.
-                        None => {
-                            self.storage
-                                .retrieve(&artifact_key)
-                                .await?
-                                .ok_or_else(|| {
-                                    CoreError::Registry(format!(
-                                    "artifact '{artifact_key}' vanished after re-serve verification"
-                                ))
-                                })?
-                                .stream
-                        }
-                    }
-                }
-                // A recorded checksum that cannot be parsed: serve as-is (stream
-                // untouched), same as a missing checksum.
-                Some(None) => {
-                    metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "unparseable", "phase" => "reserve").increment(1);
-                    tracing::warn!(registry = %registry_name, key = %artifact_key, "stored checksum could not be parsed; serving without re-verification");
-                    artifact.stream
-                }
-                // No checksum recorded: serve as-is until the entry is refreshed.
-                None => {
-                    tracing::debug!(key = %artifact_key, "no stored checksum for re-serve verification; serving as-is");
-                    artifact.stream
-                }
-            }
+        let response_stream = if integrity.enabled && integrity.verify_on_serve {
+            self.reserve_verified_stream(
+                &req,
+                &artifact_key,
+                artifact.stream,
+                &registry_label,
+                start,
+            )
+            .await?
         } else {
             artifact.stream
         };
@@ -209,6 +83,153 @@ impl ProxyService {
         );
         super::finish_request(&registry_label, "allowed", start);
         Ok(ProxyResponse::Stream(response_stream))
+    }
+
+    /// Re-serve verification for a cache hit: re-hash the stored bytes against the
+    /// recorded SHA-256 and return the stream to serve. Serves as-is when no
+    /// (parseable) checksum is recorded; fails closed (`IntegrityFailure`) when the
+    /// checksum lookup fails or the digest mismatches. See [`serve_cache_hit`] and
+    /// the `RESERVE_VERIFY_BUFFER_LIMIT` note for the retain-vs-re-read trade-off.
+    ///
+    /// [`serve_cache_hit`]: Self::serve_cache_hit
+    async fn reserve_verified_stream(
+        &self,
+        req: &ProxyRequest,
+        artifact_key: &str,
+        stream: ByteStream,
+        registry_label: &Arc<str>,
+        start: Instant,
+    ) -> Result<ByteStream, CoreError> {
+        let registry_name = req.package_id.registry.as_str();
+
+        let expected = match self.artifact_meta.get_artifact_checksum(artifact_key).await {
+            // A recorded checksum: re-verify against it below.
+            Ok(Some(c)) => c,
+            // No checksum recorded (entry cached before `verify_on_serve` existed,
+            // or never refreshed since): documented skip — serve as-is.
+            Ok(None) => {
+                tracing::debug!(key = %artifact_key, "no stored checksum for re-serve verification; serving as-is");
+                return Ok(stream);
+            }
+            // The checksum lookup itself failed. `verify_on_serve` is an opt-in
+            // guarantee that every served byte is re-verified, so fail closed
+            // rather than serve possibly-corrupt bytes we cannot check. The cache
+            // entry is left intact (the bytes may be fine; we just could not
+            // confirm it this time).
+            Err(e) => {
+                let reason = format!(
+                    "cannot re-verify cached artifact for {}: checksum lookup failed: {e}",
+                    req.package_id,
+                );
+                tracing::warn!(registry = %registry_name, key = %artifact_key, error = %e, "re-serve checksum lookup failed; failing closed");
+                metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "lookup_failed", "phase" => "reserve").increment(1);
+                super::finish_request(registry_label, "integrity_failed", start);
+                return Err(CoreError::IntegrityFailure(reason));
+            }
+        };
+
+        // A recorded checksum that cannot be parsed: serve as-is, same as missing.
+        let Some(verifier) = StreamingVerifier::new(&expected) else {
+            metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "unparseable", "phase" => "reserve").increment(1);
+            tracing::warn!(registry = %registry_name, key = %artifact_key, "stored checksum could not be parsed; serving without re-verification");
+            return Ok(stream);
+        };
+
+        // Stream the stored bytes through the hasher, retaining them up to
+        // `RESERVE_VERIFY_BUFFER_LIMIT` so a verified small artifact (the common
+        // case) is served from the exact bytes we hashed — one read, no re-retrieve
+        // race. A larger artifact drops the copy and is re-opened below.
+        let (outcome, retained) = hash_stream_retaining(stream, verifier).await?;
+        match outcome {
+            IntegrityOutcome::Verified { algo } => {
+                metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "verified", "phase" => "reserve").increment(1);
+                tracing::debug!(registry = %registry_name, key = %artifact_key, algo = algo.as_str(), "cached artifact re-verified on serve");
+            }
+            IntegrityOutcome::Mismatch {
+                algo,
+                expected,
+                actual,
+            } => {
+                return Err(self
+                    .evict_reserve_mismatch(
+                        req,
+                        artifact_key,
+                        registry_label,
+                        algo.as_str(),
+                        &expected,
+                        &actual,
+                        start,
+                    )
+                    .await);
+            }
+            // `StreamingVerifier::new` already rejected unparseable checksums, so
+            // `finish` never returns `Unparseable`.
+            IntegrityOutcome::Unparseable => {
+                tracing::warn!(registry = %registry_name, key = %artifact_key, "re-serve verifier produced an unexpected unparseable outcome; serving without claiming verified");
+            }
+        }
+
+        match retained {
+            // Small artifact: serve the exact bytes we just verified.
+            Some(buf) => Ok(Box::pin(futures::stream::once(async move {
+                Ok::<Bytes, CoreError>(Bytes::from(buf))
+            }))),
+            // Oversized artifact: the verifying read consumed the stream, so re-open
+            // a fresh one. A concurrent eviction between the two reads yields a clean
+            // miss/error here, never unverified bytes.
+            None => Ok(self
+                .storage
+                .retrieve(artifact_key)
+                .await?
+                .ok_or_else(|| {
+                    CoreError::Registry(format!(
+                        "artifact '{artifact_key}' vanished after re-serve verification"
+                    ))
+                })?
+                .stream),
+        }
+    }
+
+    /// Evict a corrupt cached artifact (bytes + recorded meta), audit, finish the
+    /// request, and build the `IntegrityFailure` for a re-serve digest mismatch.
+    #[allow(clippy::too_many_arguments)]
+    async fn evict_reserve_mismatch(
+        &self,
+        req: &ProxyRequest,
+        artifact_key: &str,
+        registry_label: &Arc<str>,
+        algo: &str,
+        expected: &str,
+        actual: &str,
+        start: Instant,
+    ) -> CoreError {
+        let registry_name = req.package_id.registry.as_str();
+        metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "mismatch", "phase" => "reserve").increment(1);
+        tracing::warn!(registry = %registry_name, key = %artifact_key, algo, %expected, %actual, "cached artifact failed re-serve integrity check; evicting");
+        // Drop the corrupt entry so a later request re-fetches clean bytes.
+        if let Err(e) = self.storage.delete(artifact_key).await {
+            tracing::warn!(key = %artifact_key, error = %e, "failed to evict corrupt cached artifact");
+        }
+        if let Err(e) = self.artifact_meta.delete_artifact_meta(artifact_key).await {
+            tracing::warn!(key = %artifact_key, error = %e, "failed to delete meta for corrupt artifact");
+        }
+        let reason = format!(
+            "cached artifact failed re-serve integrity check for {}: {algo} digest mismatch (expected {expected}, got {actual})",
+            req.package_id,
+        );
+        super::warn_if_audit_failed(
+            self.repo
+                .record_access(AccessEvent::proxy_error(
+                    req.package_id.clone(),
+                    req.identity.user_id.clone(),
+                    req.identity.role.clone(),
+                    reason.clone(),
+                ))
+                .await,
+            "reserve integrity mismatch",
+        );
+        super::finish_request(registry_label, "integrity_failed", start);
+        CoreError::IntegrityFailure(reason)
     }
 
     /// Cache miss: fetch the artifact from upstream and stream it to storage
@@ -565,6 +586,29 @@ impl ProxyService {
             Ok(data)
         }))))
     }
+}
+
+/// Drain `stream` through `verifier`, retaining the bytes up to
+/// `RESERVE_VERIFY_BUFFER_LIMIT`. Returns the final digest verdict plus the
+/// retained bytes (`None` once the cap is crossed — the caller re-opens storage).
+async fn hash_stream_retaining(
+    mut stream: ByteStream,
+    mut verifier: StreamingVerifier,
+) -> Result<(IntegrityOutcome, Option<Vec<u8>>), CoreError> {
+    let mut retained: Option<Vec<u8>> = Some(Vec::new());
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        verifier.update(&chunk);
+        if let Some(buf) = retained.as_mut() {
+            if buf.len() + chunk.len() > RESERVE_VERIFY_BUFFER_LIMIT {
+                // Over the cap: stop retaining and hash-only from here.
+                retained = None;
+            } else {
+                buf.extend_from_slice(&chunk);
+            }
+        }
+    }
+    Ok((verifier.finish(), retained))
 }
 
 /// Record the metric + log line for an advertised-checksum verdict and decide

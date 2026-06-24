@@ -46,51 +46,70 @@ fn expand_braced_var(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Re
         .with_context(|| format!("config references env var '${{{var_name}}}' but it is not set"))
 }
 
-fn expand_env_vars(raw: &str) -> Result<String> {
-    let mut out = String::with_capacity(raw.len());
-    let mut chars = raw.chars().peekable();
-    let mut in_dquote = false;
-    let mut in_squote = false;
-    let mut in_comment = false;
+/// Tracks TOML string/comment context while scanning so `$` expansion only fires
+/// in code positions (not inside `'single'` strings or `#` comments).
+#[derive(Default)]
+struct QuoteScan {
+    in_dquote: bool,
+    in_squote: bool,
+    in_comment: bool,
+}
 
-    while let Some(ch) = chars.next() {
+impl QuoteScan {
+    /// Update state for `ch`, pushing it to `out` when it is structural.
+    /// Returns `true` when `ch` was consumed here (the caller should move on),
+    /// `false` when it is an ordinary character still eligible for `$` handling.
+    fn consume(
+        &mut self,
+        ch: char,
+        out: &mut String,
+        chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    ) -> bool {
         if ch == '\n' {
-            in_comment = false;
-            in_dquote = false;
-            in_squote = false;
+            *self = QuoteScan::default();
             out.push(ch);
-            continue;
+            return true;
         }
-
-        if in_comment {
+        if self.in_comment {
             out.push(ch);
-            continue;
+            return true;
         }
-
-        if ch == '"' && !in_squote {
-            in_dquote = !in_dquote;
+        if ch == '"' && !self.in_squote {
+            self.in_dquote = !self.in_dquote;
             out.push(ch);
-            continue;
+            return true;
         }
-        if ch == '\\' && in_dquote {
+        if ch == '\\' && self.in_dquote {
             // Don't let an escaped quote (\") toggle string state.
             out.push(ch);
             if let Some(next) = chars.next() {
                 out.push(next);
             }
-            continue;
+            return true;
         }
-        if ch == '\'' && !in_dquote {
-            in_squote = !in_squote;
+        if ch == '\'' && !self.in_dquote {
+            self.in_squote = !self.in_squote;
             out.push(ch);
-            continue;
+            return true;
         }
-        if ch == '#' && !in_dquote && !in_squote {
-            in_comment = true;
+        if ch == '#' && !self.in_dquote && !self.in_squote {
+            self.in_comment = true;
             out.push(ch);
-            continue;
+            return true;
         }
+        false
+    }
+}
 
+fn expand_env_vars(raw: &str) -> Result<String> {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    let mut scan = QuoteScan::default();
+
+    while let Some(ch) = chars.next() {
+        if scan.consume(ch, &mut out, &mut chars) {
+            continue;
+        }
         if ch != '$' {
             out.push(ch);
             continue;
