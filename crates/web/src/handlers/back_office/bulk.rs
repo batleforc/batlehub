@@ -184,3 +184,148 @@ pub async fn bulk_delete(
         .map_err(AppError::from)?;
     Ok(HttpResponse::Ok().json(bulk_response(result)))
 }
+
+// ── Deprecation & unlisting (single version) ────────────────────────────────
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PackageVersionRequest {
+    pub name: String,
+    pub version: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct DeprecateRequest {
+    pub name: String,
+    pub version: String,
+    /// Optional human-readable deprecation message (mirrored into npm's native
+    /// `deprecated` field for npm registries).
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// Flag a version as deprecated. It stays listed and downloadable (admin).
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/registries/{registry}/deprecate",
+    tag = "back-office",
+    params(("registry" = String, Path, description = "Registry name")),
+    request_body = DeprecateRequest,
+    responses(
+        (status = 200, description = "Version deprecated"),
+        (status = 403, description = "Admin role required"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[post("/api/v1/admin/registries/{registry}/deprecate")]
+pub async fn deprecate(
+    path: web::Path<String>,
+    body: web::Json<DeprecateRequest>,
+    identity: AuthIdentity,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
+) -> Result<impl Responder, AppError> {
+    require_admin(&identity)?;
+    let registry = path.into_inner();
+    let body = body.into_inner();
+    local_svc
+        .deprecate(
+            &registry,
+            &body.name,
+            &body.version,
+            body.message.as_deref(),
+            &identity.0,
+        )
+        .await
+        .map_err(AppError::from)?;
+    Ok(HttpResponse::Ok().finish())
+}
+
+/// Reverse a deprecation (admin).
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/registries/{registry}/undeprecate",
+    tag = "back-office",
+    params(("registry" = String, Path, description = "Registry name")),
+    request_body = PackageVersionRequest,
+    responses(
+        (status = 200, description = "Version undeprecated"),
+        (status = 403, description = "Admin role required"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[post("/api/v1/admin/registries/{registry}/undeprecate")]
+pub async fn undeprecate(
+    path: web::Path<String>,
+    body: web::Json<PackageVersionRequest>,
+    identity: AuthIdentity,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
+) -> Result<impl Responder, AppError> {
+    require_admin(&identity)?;
+    let registry = path.into_inner();
+    let body = body.into_inner();
+    local_svc
+        .undeprecate(&registry, &body.name, &body.version, &identity.0)
+        .await
+        .map_err(AppError::from)?;
+    Ok(HttpResponse::Ok().finish())
+}
+
+/// Hide a version from registry-protocol listings; still downloadable by exact
+/// coordinate (admin).
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/registries/{registry}/unlist",
+    tag = "back-office",
+    params(("registry" = String, Path, description = "Registry name")),
+    request_body = PackageVersionRequest,
+    responses(
+        (status = 200, description = "Version unlisted"),
+        (status = 403, description = "Admin role required"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[post("/api/v1/admin/registries/{registry}/unlist")]
+pub async fn unlist(
+    path: web::Path<String>,
+    body: web::Json<PackageVersionRequest>,
+    identity: AuthIdentity,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
+) -> Result<impl Responder, AppError> {
+    require_admin(&identity)?;
+    let registry = path.into_inner();
+    let body = body.into_inner();
+    local_svc
+        .unlist(&registry, &body.name, &body.version, &identity.0)
+        .await
+        .map_err(AppError::from)?;
+    Ok(HttpResponse::Ok().finish())
+}
+
+/// Make an unlisted version visible in listings again (admin).
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/registries/{registry}/relist",
+    tag = "back-office",
+    params(("registry" = String, Path, description = "Registry name")),
+    request_body = PackageVersionRequest,
+    responses(
+        (status = 200, description = "Version relisted"),
+        (status = 403, description = "Admin role required"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[post("/api/v1/admin/registries/{registry}/relist")]
+pub async fn relist(
+    path: web::Path<String>,
+    body: web::Json<PackageVersionRequest>,
+    identity: AuthIdentity,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
+) -> Result<impl Responder, AppError> {
+    require_admin(&identity)?;
+    let registry = path.into_inner();
+    let body = body.into_inner();
+    local_svc
+        .relist(&registry, &body.name, &body.version, &identity.0)
+        .await
+        .map_err(AppError::from)?;
+    Ok(HttpResponse::Ok().finish())
+}

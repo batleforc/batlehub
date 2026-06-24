@@ -129,6 +129,76 @@ impl LocalRegistryBackend for InMemoryLocalRegistry {
         Ok(())
     }
 
+    async fn deprecate(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        message: Option<&str>,
+    ) -> Result<(), CoreError> {
+        let mut map = self.inner.write().await;
+        if let Some(versions) = map.get_mut(&pkg_key(registry, name)) {
+            if let Some(r) = versions.get_mut(version) {
+                if r.status == RecordStatus::Published {
+                    r.pkg.deprecated = true;
+                    r.pkg.deprecation_message = message.map(str::to_owned);
+                    if let Some(obj) = r.pkg.index_metadata.as_object_mut() {
+                        obj.insert(
+                            "deprecated".to_owned(),
+                            serde_json::Value::String(message.unwrap_or("true").to_owned()),
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn undeprecate(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+    ) -> Result<(), CoreError> {
+        let mut map = self.inner.write().await;
+        if let Some(versions) = map.get_mut(&pkg_key(registry, name)) {
+            if let Some(r) = versions.get_mut(version) {
+                if r.status == RecordStatus::Published {
+                    r.pkg.deprecated = false;
+                    r.pkg.deprecation_message = None;
+                    if let Some(obj) = r.pkg.index_metadata.as_object_mut() {
+                        obj.remove("deprecated");
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn unlist(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError> {
+        let mut map = self.inner.write().await;
+        if let Some(versions) = map.get_mut(&pkg_key(registry, name)) {
+            if let Some(r) = versions.get_mut(version) {
+                if r.status == RecordStatus::Published {
+                    r.pkg.unlisted = true;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn relist(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError> {
+        let mut map = self.inner.write().await;
+        if let Some(versions) = map.get_mut(&pkg_key(registry, name)) {
+            if let Some(r) = versions.get_mut(version) {
+                if r.status == RecordStatus::Published {
+                    r.pkg.unlisted = false;
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn get_versions(
         &self,
         registry: &str,
@@ -229,6 +299,9 @@ mod tests {
             version: version.to_owned(),
             checksum: format!("sha256-{version}"),
             yanked: false,
+            deprecated: false,
+            deprecation_message: None,
+            unlisted: false,
             index_metadata: serde_json::json!({"yanked": false}),
             published_at: Utc::now(),
             published_by: Some("test-user".to_owned()),
@@ -314,6 +387,46 @@ mod tests {
             versions[0].index_metadata["yanked"],
             serde_json::Value::Bool(false)
         );
+    }
+
+    /// Deprecate sets the flag + message and mirrors into `index_metadata`.
+    #[tokio::test]
+    async fn deprecate_sets_flag_message_and_metadata() {
+        let store = InMemoryLocalRegistry::new();
+        store.publish(pkg("reg", "foo", "1.0.0")).await.unwrap();
+        store.commit_publish("reg", "foo", "1.0.0").await.unwrap();
+        store
+            .deprecate("reg", "foo", "1.0.0", Some("use bar instead"))
+            .await
+            .unwrap();
+
+        let versions = store.get_versions("reg", "foo").await.unwrap();
+        assert!(versions[0].deprecated);
+        assert_eq!(
+            versions[0].deprecation_message.as_deref(),
+            Some("use bar instead")
+        );
+        assert_eq!(versions[0].index_metadata["deprecated"], "use bar instead");
+
+        store.undeprecate("reg", "foo", "1.0.0").await.unwrap();
+        let versions = store.get_versions("reg", "foo").await.unwrap();
+        assert!(!versions[0].deprecated);
+        assert!(versions[0].deprecation_message.is_none());
+        assert!(versions[0].index_metadata.get("deprecated").is_none());
+    }
+
+    /// Unlist sets the flag; relist clears it.
+    #[tokio::test]
+    async fn unlist_and_relist_toggle_flag() {
+        let store = InMemoryLocalRegistry::new();
+        store.publish(pkg("reg", "foo", "1.0.0")).await.unwrap();
+        store.commit_publish("reg", "foo", "1.0.0").await.unwrap();
+
+        store.unlist("reg", "foo", "1.0.0").await.unwrap();
+        assert!(store.get_versions("reg", "foo").await.unwrap()[0].unlisted);
+
+        store.relist("reg", "foo", "1.0.0").await.unwrap();
+        assert!(!store.get_versions("reg", "foo").await.unwrap()[0].unlisted);
     }
 
     /// `remove_version` deletes a record regardless of its status.

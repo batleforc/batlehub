@@ -250,6 +250,17 @@ onMounted(fetchDetail);
                   <Badge v-if="ver.is_prerelease" variant="outline" class="ml-1 text-xs">
                     pre-release
                   </Badge>
+                  <Badge
+                    v-if="ver.deprecated"
+                    variant="destructive"
+                    class="ml-1 text-xs cursor-help"
+                    :title="ver.deprecation_message ?? 'Deprecated'"
+                  >
+                    deprecated
+                  </Badge>
+                  <Badge v-if="ver.unlisted" variant="secondary" class="ml-1 text-xs">
+                    unlisted
+                  </Badge>
                 </TableCell>
                 <TableCell>
                   <Badge

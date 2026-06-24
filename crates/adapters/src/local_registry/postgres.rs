@@ -119,13 +119,89 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
         Ok(())
     }
 
+    async fn deprecate(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        message: Option<&str>,
+    ) -> Result<(), CoreError> {
+        sqlx::query(
+            "UPDATE local_packages \
+             SET deprecated = TRUE, \
+                 deprecation_message = $4, \
+                 index_metadata = jsonb_set(index_metadata, '{deprecated}', \
+                     to_jsonb(COALESCE($4::text, 'true'))) \
+             WHERE registry = $1 AND name = $2 AND version = $3 AND status = 'published'",
+        )
+        .bind(registry)
+        .bind(name)
+        .bind(version)
+        .bind(message)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| CoreError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn undeprecate(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+    ) -> Result<(), CoreError> {
+        sqlx::query(
+            "UPDATE local_packages \
+             SET deprecated = FALSE, \
+                 deprecation_message = NULL, \
+                 index_metadata = index_metadata - 'deprecated' \
+             WHERE registry = $1 AND name = $2 AND version = $3 AND status = 'published'",
+        )
+        .bind(registry)
+        .bind(name)
+        .bind(version)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| CoreError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn unlist(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError> {
+        sqlx::query(
+            "UPDATE local_packages SET unlisted = TRUE \
+             WHERE registry = $1 AND name = $2 AND version = $3 AND status = 'published'",
+        )
+        .bind(registry)
+        .bind(name)
+        .bind(version)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| CoreError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn relist(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError> {
+        sqlx::query(
+            "UPDATE local_packages SET unlisted = FALSE \
+             WHERE registry = $1 AND name = $2 AND version = $3 AND status = 'published'",
+        )
+        .bind(registry)
+        .bind(name)
+        .bind(version)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| CoreError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     async fn get_versions(
         &self,
         registry: &str,
         name: &str,
     ) -> Result<Vec<PublishedPackage>, CoreError> {
         let rows = sqlx::query(
-            "SELECT registry, name, version, checksum, yanked, index_metadata, \
+            "SELECT registry, name, version, checksum, yanked, deprecated, \
+                    deprecation_message, unlisted, index_metadata, \
                     published_at, published_by, signature_bytes, signature_type, visibility \
              FROM local_packages \
              WHERE registry = $1 AND name = $2 AND status = 'published' \
@@ -147,6 +223,9 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
                     version: r.get("version"),
                     checksum: r.get("checksum"),
                     yanked: r.get("yanked"),
+                    deprecated: r.get("deprecated"),
+                    deprecation_message: r.get("deprecation_message"),
+                    unlisted: r.get("unlisted"),
                     index_metadata: r.get("index_metadata"),
                     published_at: r.get("published_at"),
                     published_by: r.get("published_by"),

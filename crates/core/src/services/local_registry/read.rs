@@ -363,6 +363,13 @@ impl LocalRegistryService {
             .collect())
     }
 
+    /// Drop unlisted versions. Unlisted versions are hidden from registry-protocol
+    /// listings (index, packument, version lists) but remain downloadable by exact
+    /// coordinate (see [`Self::get_artifact`], which is keyed directly, not filtered).
+    fn filter_unlisted(versions: Vec<PublishedPackage>) -> Vec<PublishedPackage> {
+        versions.into_iter().filter(|p| !p.unlisted).collect()
+    }
+
     /// Convenience wrapper: `check_visibility` → `get_versions` → `filter_for_identity`.
     ///
     /// Returns the filtered list (may be empty — callers decide whether that is an error).
@@ -374,6 +381,7 @@ impl LocalRegistryService {
     ) -> Result<Vec<PublishedPackage>, CoreError> {
         self.check_visibility(registry, name, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
+        let versions = Self::filter_unlisted(versions);
         self.filter_for_identity(registry, versions, identity).await
     }
 

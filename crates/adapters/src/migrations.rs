@@ -104,6 +104,11 @@ pub fn embedded_migrator() -> Migrator {
                 "artifact cache checksum",
                 "../migrations/026_artifact_cache_checksum.sql"
             ),
+            mig!(
+                27,
+                "deprecation unlisting",
+                "../migrations/027_deprecation_unlisting.sql"
+            ),
         ]),
         ignore_missing: false,
         locking: true,

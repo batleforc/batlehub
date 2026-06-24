@@ -37,6 +37,77 @@ impl LocalRegistryService {
         self.backend.unyank(registry, name, version).await
     }
 
+    pub async fn deprecate(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        message: Option<&str>,
+        identity: &Identity,
+    ) -> Result<(), CoreError> {
+        if !identity.has_role_at_least(&Role::User) {
+            return Err(CoreError::AccessDenied(
+                "deprecate requires at least User role".into(),
+            ));
+        }
+        self.check_namespace_membership(registry, name, identity)
+            .await?;
+        self.backend
+            .deprecate(registry, name, version, message)
+            .await
+    }
+
+    pub async fn undeprecate(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        identity: &Identity,
+    ) -> Result<(), CoreError> {
+        if !identity.has_role_at_least(&Role::User) {
+            return Err(CoreError::AccessDenied(
+                "undeprecate requires at least User role".into(),
+            ));
+        }
+        self.check_namespace_membership(registry, name, identity)
+            .await?;
+        self.backend.undeprecate(registry, name, version).await
+    }
+
+    pub async fn unlist(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        identity: &Identity,
+    ) -> Result<(), CoreError> {
+        if !identity.has_role_at_least(&Role::User) {
+            return Err(CoreError::AccessDenied(
+                "unlist requires at least User role".into(),
+            ));
+        }
+        self.check_namespace_membership(registry, name, identity)
+            .await?;
+        self.backend.unlist(registry, name, version).await
+    }
+
+    pub async fn relist(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        identity: &Identity,
+    ) -> Result<(), CoreError> {
+        if !identity.has_role_at_least(&Role::User) {
+            return Err(CoreError::AccessDenied(
+                "relist requires at least User role".into(),
+            ));
+        }
+        self.check_namespace_membership(registry, name, identity)
+            .await?;
+        self.backend.relist(registry, name, version).await
+    }
+
     /// If a namespace claim covers `package` in `registry`, verify `identity` is
     /// a member of the owning group. Admins and unclaimed packages bypass this.
     pub async fn check_namespace_membership(

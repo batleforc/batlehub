@@ -42,6 +42,18 @@ impl crate::ports::LocalRegistryBackend for InMemBackend {
     async fn unyank(&self, _: &str, _: &str, _: &str) -> Result<(), CoreError> {
         Ok(())
     }
+    async fn deprecate(&self, _: &str, _: &str, _: &str, _: Option<&str>) -> Result<(), CoreError> {
+        Ok(())
+    }
+    async fn undeprecate(&self, _: &str, _: &str, _: &str) -> Result<(), CoreError> {
+        Ok(())
+    }
+    async fn unlist(&self, _: &str, _: &str, _: &str) -> Result<(), CoreError> {
+        Ok(())
+    }
+    async fn relist(&self, _: &str, _: &str, _: &str) -> Result<(), CoreError> {
+        Ok(())
+    }
     async fn get_versions(
         &self,
         registry: &str,
@@ -169,6 +181,9 @@ fn pkg(registry: &str, name: &str, version: &str) -> PublishedPackage {
         version: version.to_owned(),
         checksum: "abc".to_owned(),
         yanked: false,
+        deprecated: false,
+        deprecation_message: None,
+        unlisted: false,
         index_metadata: serde_json::json!({}),
         published_at: Utc::now(),
         published_by: None,
@@ -1303,6 +1318,9 @@ fn seed_version(
         version: "1.0.0".into(),
         checksum: checksum.to_owned(),
         yanked: false,
+        deprecated: false,
+        deprecation_message: None,
+        unlisted: false,
         index_metadata: serde_json::json!({}),
         published_at: Utc::now(),
         published_by: None,
@@ -1751,6 +1769,29 @@ impl crate::ports::LocalRegistryBackend for CommitFailBackend {
     }
     async fn unyank(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError> {
         self.inner.unyank(registry, name, version).await
+    }
+    async fn deprecate(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        message: Option<&str>,
+    ) -> Result<(), CoreError> {
+        self.inner.deprecate(registry, name, version, message).await
+    }
+    async fn undeprecate(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+    ) -> Result<(), CoreError> {
+        self.inner.undeprecate(registry, name, version).await
+    }
+    async fn unlist(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError> {
+        self.inner.unlist(registry, name, version).await
+    }
+    async fn relist(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError> {
+        self.inner.relist(registry, name, version).await
     }
     async fn get_versions(
         &self,

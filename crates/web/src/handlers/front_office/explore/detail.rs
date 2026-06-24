@@ -46,6 +46,13 @@ pub struct ExploreVersionDto {
     pub vulnerabilities: Vec<VulnerabilityDto>,
     /// socket.dev badge URL when enabled for this registry; else null.
     pub socket_badge_url: Option<String>,
+    /// Flagged as deprecated (still downloadable). Local versions only.
+    pub deprecated: bool,
+    /// Optional deprecation message.
+    pub deprecation_message: Option<String>,
+    /// Hidden from registry-protocol listings but still downloadable by exact
+    /// coordinate. Local versions only.
+    pub unlisted: bool,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -190,6 +197,9 @@ pub async fn explore_package_detail(
             is_prerelease,
             vulnerabilities,
             socket_badge_url,
+            deprecated: false,
+            deprecation_message: None,
+            unlisted: false,
         });
     }
 
@@ -218,6 +228,9 @@ pub async fn explore_package_detail(
             is_prerelease,
             vulnerabilities,
             socket_badge_url,
+            deprecated: pkg.deprecated,
+            deprecation_message: pkg.deprecation_message,
+            unlisted: pkg.unlisted,
         });
     }
 

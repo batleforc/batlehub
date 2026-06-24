@@ -5458,6 +5458,113 @@ async fn cargo_unyank_user_can_unyank() {
     assert_eq!(body["ok"], true);
 }
 
+// ── deprecate / unlist ────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn unlist_hides_from_index_but_keeps_download() {
+    let app = make_local_registry_app(RegistryMode::Local).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(make_publish_payload("unlist-crate", "1.0.0"))
+        .to_request();
+    call_service(&app, req).await;
+
+    // Sharded sparse-index path for a name >= 4 chars: first2/next2/name.
+    let index_uri = "/proxy/local-cargo/registry/un/li/unlist-crate";
+
+    // Present in the index before unlisting.
+    let req = TestRequest::get()
+        .uri(index_uri)
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body = read_body(resp).await;
+    assert!(String::from_utf8_lossy(&body).contains("unlist-crate"));
+
+    // Unlist (admin).
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/local-cargo/unlist")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"name": "unlist-crate", "version": "1.0.0"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    // Gone from the index (no visible versions → 404 in local mode).
+    let req = TestRequest::get()
+        .uri(index_uri)
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 404);
+
+    // But still downloadable by exact coordinate.
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/unlist-crate/1.0.0/download")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    // Relist restores it.
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/local-cargo/relist")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"name": "unlist-crate", "version": "1.0.0"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    let req = TestRequest::get()
+        .uri(index_uri)
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+#[actix_web::test]
+async fn deprecate_keeps_version_listed_with_message() {
+    let app = make_local_registry_app(RegistryMode::Local).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(make_publish_payload("dep-crate", "1.0.0"))
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/local-cargo/deprecate")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({
+            "name": "dep-crate", "version": "1.0.0", "message": "use newer-crate instead"
+        }))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    // Still listed, and the index line carries the deprecation message.
+    let req = TestRequest::get()
+        .uri("/proxy/local-cargo/registry/de/p-/dep-crate")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body = read_body(resp).await;
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("dep-crate"));
+    assert!(text.contains("use newer-crate instead"));
+}
+
+#[actix_web::test]
+async fn deprecate_requires_admin() {
+    let app = make_local_registry_app(RegistryMode::Local).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/local-cargo/deprecate")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_json(serde_json::json!({"name": "x", "version": "1.0.0"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
 #[actix_web::test]
 async fn cargo_yank_proxy_mode_returns_404() {
     let app = make_app(InMemoryRepo::new()).await;

@@ -575,7 +575,10 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
         back_office::{
             audit::audit_log,
             beta_channel::{add_beta_member, list_beta_members, remove_beta_member},
-            bulk::{bulk_delete, bulk_unyank, bulk_yank as bulk_yank_handler},
+            bulk::{
+                bulk_delete, bulk_unyank, bulk_yank as bulk_yank_handler, deprecate, relist,
+                undeprecate, unlist,
+            },
             config::{
                 apply_pending_reload, clear_banner, discard_pending_reload, get_pending_reload,
                 list_config_changes, reload_config, set_banner,
@@ -837,6 +840,11 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(bulk_yank_handler);
     cfg.service(bulk_unyank);
     cfg.service(bulk_delete);
+    // Deprecation & unlisting admin (single version)
+    cfg.service(deprecate);
+    cfg.service(undeprecate);
+    cfg.service(unlist);
+    cfg.service(relist);
     // Beta channel admin
     cfg.service(list_beta_members);
     cfg.service(add_beta_member);

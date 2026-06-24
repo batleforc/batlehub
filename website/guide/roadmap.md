@@ -20,7 +20,7 @@ BatleHub currently supports npm, Cargo, GitHub, GitLab, Forgejo/Gitea, OpenVSX, 
 | **OpenVSX** | ✅ Shipped | Extension proxy |
 | **VS Code Marketplace** | ✅ Shipped | Extension proxy |
 | **Go modules** | ✅ Shipped | GOPROXY protocol |
-| **Maven / Gradle** | ✅ Shipped | Maven Central–compatible metadata XML + JAR / POM; `mvn deploy` support |
+| **Maven / Gradle** | ✅ Shipped | Maven Central-compatible metadata XML + JAR / POM; `mvn deploy` support |
 | **RubyGems** | ✅ Shipped | Gem downloads and version listing; publish/yank/unyank |
 | **Terraform registry** | ✅ Shipped | Provider and module proxy; private module + provider publishing |
 | **Composer** | ✅ Shipped | Packagist v2 protocol; packages.json + p2 metadata + dist downloads; private ZIP publishing in local/hybrid mode |
@@ -181,9 +181,9 @@ Applies to registries running in `local` or `hybrid` mode. See the [User Guide](
 | **Composer** | ✅ Shipped | Private PHP package publishing via ZIP upload; `composer.json` extracted automatically; `local` and `hybrid` modes |
 | **PyPI** | ✅ Shipped | Private Python distribution publishing via twine-compatible multipart upload (`POST /legacy/`); wheel and sdist formats; `local` and `hybrid` modes |
 | **Conda** | ✅ Shipped | Private conda package publishing (`.tar.bz2` and `.conda`); metadata extracted from `info/index.json`; `repodata.json` generated and merged automatically; `local` and `hybrid` modes |
-| **npm** | Planned | Versioning policies: enforce semantic versioning, restrict accepted version patterns |
-| **Cargo** | Planned | Versioning policies; full yank protocol compatibility with crates.io |
-| **VS Code extensions** | Planned | Deprecation and unlisting; VSIX upload form in the UI |
+| **npm** | ✅ Shipped | Versioning policies via the generic `[registries.versioning]` policy (semver enforcement, pre-release gating, regex version patterns); enforced at publish (HTTP 422) |
+| **Cargo** | ✅ Shipped | Versioning policies (same generic policy engine); crates.io-compatible yank protocol — `DELETE …/yank` + `PUT …/unyank` returning `{"ok":true}`, `yanked` reflected in the sparse index |
+| **VS Code extensions** | ✅ Shipped | VSIX upload form in the UI; deprecation and unlisting (now generic to all local registries — see the row below) |
 
 ### For all private registry types
 
@@ -193,6 +193,7 @@ Applies to registries running in `local` or `hybrid` mode. See the [User Guide](
 | **Ownership management** | ✅ Shipped | Per-package owner list with admin/maintainer roles; admin API for listing, adding, and removing owners |
 | **Versioning policies** | ✅ Shipped | Enforce semver and/or restrict accepted version patterns per registry; violations return HTTP 422 at publish time |
 | **Beta/pre-release channel** | ✅ Shipped | Gate pre-release versions (semver `-pre` suffix) to specific users or groups; non-members see only stable versions. See [Access Control guide](/guide/access-control#beta-channel). |
+| **Deprecation & unlisting** | ✅ Shipped | Flag a version as deprecated (stays listed/downloadable, optional message, mirrored into npm's native `deprecated` field) or unlist it (hidden from registry-protocol listings but downloadable by exact coordinate). Admin API: `POST /api/v1/admin/registries/{registry}/{deprecate,undeprecate,unlist,relist}`; status shown in the Package Explorer |
 | **Bulk operations** | ✅ Shipped | Bulk yank, unyank, and delete via admin API |
 | **Content-addressable deduplication** | ✅ Shipped | Identical artifact bytes stored once, ref-counted across logical keys; transparent and backwards-compatible |
 | Bulk publish / deprecation | Planned | Batch publish or deprecate multiple versions in a single API call |

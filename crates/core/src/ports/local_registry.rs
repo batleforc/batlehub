@@ -49,6 +49,28 @@ pub trait LocalRegistryBackend: Send + Sync {
     /// Reverse a yank. Also updates `index_metadata.yanked`.
     async fn unyank(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError>;
 
+    /// Flag a version as deprecated with an optional message. The version stays
+    /// listed and downloadable. Also mirrors the message into
+    /// `index_metadata.deprecated` (npm's native field).
+    async fn deprecate(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        message: Option<&str>,
+    ) -> Result<(), CoreError>;
+
+    /// Reverse a deprecation. Also removes `index_metadata.deprecated`.
+    async fn undeprecate(&self, registry: &str, name: &str, version: &str)
+        -> Result<(), CoreError>;
+
+    /// Hide a version from registry-protocol listings. It stays downloadable by
+    /// exact coordinate.
+    async fn unlist(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError>;
+
+    /// Reverse an unlist, making the version visible in listings again.
+    async fn relist(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError>;
+
     /// Return all versions of `name` in `registry`, sorted by `published_at` ASC.
     /// Returns an empty vec (not an error) when the crate has never been published.
     /// Must only return rows in the *published* state.

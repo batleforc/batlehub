@@ -82,12 +82,20 @@ async fn repeated_increments_accumulate() {
     let Some(url) = db_url() else { return };
     let s = make_store(&url).await;
     let key = s.key("k");
-    for expected in 1u64..=10 {
-        let (count, _) = s.store.increment(&key, 60).await.unwrap();
-        assert_eq!(
-            count, expected,
-            "increment #{expected} should return {expected}"
-        );
+    // window_start is wall-clock aligned, so the counter legitimately resets if the
+    // 60s window rolls over mid-loop. Track the reset boundary and re-base `expected`
+    // when it changes — the invariant under test is "consecutive increments within one
+    // window accumulate", not "the window never rolls".
+    let mut expected = 0u64;
+    let mut window = None;
+    for _ in 0..10 {
+        let (count, reset) = s.store.increment(&key, 60).await.unwrap();
+        if window != Some(reset) {
+            expected = 0;
+            window = Some(reset);
+        }
+        expected += 1;
+        assert_eq!(count, expected, "increment should return {expected}");
     }
 }
 
@@ -178,9 +186,12 @@ async fn prune_expired_removes_old_window_rows() {
         .unwrap();
     assert_eq!(s.raw_row_count(&key).await, 1, "seeded row should exist");
 
-    // retention_secs = 0 means "older than right now" — the seeded row (window_start = 0)
-    // must be pruned.
-    s.store.prune_expired(0).await.unwrap();
+    // prune_expired's DELETE is global (keyed by window_start only, not by key), so a
+    // tiny retention like 0 would also nuke the *current-window* rows of other tests
+    // running in parallel (e.g. concurrent_increments_are_atomic), causing spurious
+    // lost-update failures. Use an hour of retention: still well past the seeded epoch
+    // row (window_start = 0) so it's pruned, but safely keeps every live window.
+    s.store.prune_expired(3600).await.unwrap();
     assert_eq!(
         s.raw_row_count(&key).await,
         0,
@@ -210,14 +221,21 @@ async fn concurrent_increments_are_atomic() {
         .map(|r| r.unwrap())
         .collect();
 
-    let counts: std::collections::HashSet<u64> = results.iter().map(|(c, _)| *c).collect();
-    // Every concurrent increment must produce a unique count value (1..=20).
-    assert_eq!(
-        counts.len(),
-        20,
-        "expected 20 unique counts; got: {counts:?}"
-    );
-    assert_eq!(*counts.iter().max().unwrap(), 20, "max count should be 20");
+    // No lost updates: within each window, the returned counts must be exactly 1..=n
+    // (unique, contiguous). Group by the reset boundary so a task that straddles a
+    // 60s window roll doesn't look like a lost update.
+    let mut by_window: std::collections::HashMap<u64, Vec<u64>> = std::collections::HashMap::new();
+    for (count, reset) in results {
+        by_window.entry(reset).or_default().push(count);
+    }
+    for (reset, mut counts) in by_window {
+        counts.sort_unstable();
+        let expected: Vec<u64> = (1..=counts.len() as u64).collect();
+        assert_eq!(
+            counts, expected,
+            "counts within window {reset} must be 1..=n with no gaps or duplicates"
+        );
+    }
 }
 
 #[tokio::test]

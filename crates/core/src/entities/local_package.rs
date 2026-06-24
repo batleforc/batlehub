@@ -83,6 +83,17 @@ pub struct PublishedPackage {
     /// SHA-256 hex of the artifact bytes.
     pub checksum: String,
     pub yanked: bool,
+    /// Flagged as deprecated. Stays listed and downloadable; carries an optional
+    /// `deprecation_message`. For npm the message is mirrored into
+    /// `index_metadata.deprecated` (npm's native field).
+    #[serde(default)]
+    pub deprecated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecation_message: Option<String>,
+    /// Hidden from registry-protocol listings/index but still downloadable by
+    /// exact coordinate. Filtered in `load_visible_versions`.
+    #[serde(default)]
+    pub unlisted: bool,
     /// Registry-specific index line as opaque JSON.
     /// For Cargo: serialised `CargoIndexEntry`.
     pub index_metadata: serde_json::Value,
