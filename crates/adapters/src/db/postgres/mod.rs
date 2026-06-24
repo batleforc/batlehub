@@ -134,9 +134,24 @@ pub struct PgPackageRepository {
     pub(super) pool: PgPool,
 }
 
+/// Connection pool sizing, taken from `DatabaseConfig` (`crates/config/src/schema/server.rs`).
+pub struct PoolOptions {
+    pub max_connections: u32,
+    pub min_connections: u32,
+    pub acquire_timeout_secs: u64,
+}
+
 impl PgPackageRepository {
-    pub async fn new(database_url: &str) -> Result<Self, CoreError> {
-        let pool = PgPool::connect(database_url).await.db_err()?;
+    pub async fn new(database_url: &str, pool_options: PoolOptions) -> Result<Self, CoreError> {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(pool_options.max_connections)
+            .min_connections(pool_options.min_connections)
+            .acquire_timeout(std::time::Duration::from_secs(
+                pool_options.acquire_timeout_secs,
+            ))
+            .connect(database_url)
+            .await
+            .db_err()?;
         Ok(Self { pool })
     }
 

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use actix_web::{get, web, HttpResponse, Responder};
+use bytes::Bytes;
 
 use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
@@ -133,9 +134,11 @@ pub async fn nuget_flat_download(
             Ok(Some(artifact)) => {
                 let buf = collect_storage_stream(artifact.stream).await?;
                 let body = if filename.ends_with(".nuspec") {
-                    extract_nuspec_from_nupkg(&buf)?
+                    Bytes::from(extract_nuspec_from_nupkg(&buf)?)
                 } else {
-                    buf.to_vec()
+                    // Already an owned `Bytes`; respond with it directly instead of
+                    // copying the whole artifact into a fresh `Vec<u8>`.
+                    buf
                 };
                 let mut resp = HttpResponse::Ok();
                 resp.content_type(content_type_for(&filename));

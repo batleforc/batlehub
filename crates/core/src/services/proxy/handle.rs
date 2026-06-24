@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::entities::AccessEvent;
@@ -27,7 +28,10 @@ impl ProxyService {
         )?;
 
         let registry_name: &str = req.package_id.registry.as_str();
-        let registry_label = registry_name.to_owned();
+        // Arc<str> instead of String: every downstream metrics call below clones
+        // this cheaply (atomic refcount bump) instead of copying the registry
+        // name's bytes on every `counter!`/`histogram!` invocation.
+        let registry_label: Arc<str> = Arc::from(registry_name);
         let start = Instant::now();
 
         // Acquire the read lock briefly to clone the Arc<RegistryClient> and

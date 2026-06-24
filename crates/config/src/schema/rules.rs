@@ -63,6 +63,7 @@ pub enum RuleConfig {
     DenyLatest(DenyLatestConfig),
     CveGate(CveGateConfig),
     VersionGate(VersionGateConfig),
+    TrustedPublisher(TrustedPublisherConfig),
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,6 +151,33 @@ pub struct VersionGateConfig {
     /// Blocklist of specific versions (or ranges) with known issues.
     #[serde(default)]
     pub block: Vec<String>,
+    /// Roles that may bypass the gate (e.g. `["admin"]`).
+    #[serde(default)]
+    pub bypass_roles: Vec<String>,
+}
+
+/// Restrict downloads to packages published by an allowed org/user/scope.
+///
+/// The publisher is derived from already-resolved metadata, with no extra
+/// upstream calls — supported for `github`/`gitlab`/`forgejo` (top-level
+/// owner/group), `npm` (scope, or the publishing user when unscoped), and
+/// `openvsx`/`vscode-marketplace` (the extension's publisher segment).
+/// **Not yet supported for `cargo`** (crates.io ownership isn't in the sparse
+/// index and would need a separate API call) — configuring this rule on an
+/// unsupported registry denies every request. Matching is case-insensitive.
+///
+/// ```toml
+/// [[registries.rules]]
+/// kind = "trusted_publisher"
+/// allow = ["my-org", "trusted-user"]
+/// bypass_roles = ["admin"]
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct TrustedPublisherConfig {
+    /// Allowed publisher identifiers (org/user/scope). When non-empty, a
+    /// package whose derived publisher matches none of these is rejected.
+    #[serde(default)]
+    pub allow: Vec<String>,
     /// Roles that may bypass the gate (e.g. `["admin"]`).
     #[serde(default)]
     pub bypass_roles: Vec<String>,

@@ -160,46 +160,65 @@ pub(super) async fn list_packages_impl(
     pool: &PgPool,
     filter: PackageFilter,
 ) -> Result<Vec<PackageSummary>, CoreError> {
+    // `ps` is filtered, ordered, and paginated in the `page` CTE *before* the
+    // LATERAL joins run, so the correlated access_events subqueries only ever
+    // execute against the `limit` rows actually returned — not every row
+    // matching the WHERE clause. Safe because ORDER BY only references `page`
+    // (i.e. `ps`) columns, never the joined access_events aggregates.
     let rows = sqlx::query(
         r#"
+        WITH page AS (
+            SELECT
+                ps.id,
+                ps.registry,
+                ps.package_name,
+                ps.package_version,
+                ps.package_artifact,
+                ps.status,
+                ps.block_reason,
+                ps.blocked_by,
+                ps.blocked_at
+            FROM package_statuses ps
+            WHERE ($1::text IS NULL OR ps.registry = $1)
+              AND ($2::text IS NULL OR ps.package_name ILIKE '%' || $2 || '%')
+              AND ($3::boolean = false OR ps.status = 'blocked')
+              AND ($6::text IS NULL OR ps.package_name = $6)
+              AND ($7::text[] IS NULL OR ps.registry = ANY($7::text[]))
+            ORDER BY ps.registry, ps.package_name, ps.package_version
+            LIMIT $4 OFFSET $5
+        )
         SELECT
-            ps.id,
-            ps.registry,
-            ps.package_name,
-            ps.package_version,
-            ps.package_artifact,
-            ps.status,
-            ps.block_reason,
-            ps.blocked_by,
-            ps.blocked_at,
+            page.id,
+            page.registry,
+            page.package_name,
+            page.package_version,
+            page.package_artifact,
+            page.status,
+            page.block_reason,
+            page.blocked_by,
+            page.blocked_at,
             COALESCE(ae_counts.access_count, 0) AS access_count,
             ae_counts.last_accessed,
             ae_user.last_accessed_by
-        FROM package_statuses ps
+        FROM page
         LEFT JOIN LATERAL (
             SELECT COUNT(*) AS access_count, MAX(ae.created_at) AS last_accessed
             FROM access_events ae
-            WHERE ae.registry       = ps.registry
-              AND ae.package_name   = ps.package_name
-              AND ae.package_version = ps.package_version
+            WHERE ae.registry       = page.registry
+              AND ae.package_name   = page.package_name
+              AND ae.package_version = page.package_version
         ) ae_counts ON true
         LEFT JOIN LATERAL (
             SELECT ae2.user_id AS last_accessed_by
             FROM access_events ae2
-            WHERE ae2.registry       = ps.registry
-              AND ae2.package_name   = ps.package_name
-              AND ae2.package_version = ps.package_version
+            WHERE ae2.registry       = page.registry
+              AND ae2.package_name   = page.package_name
+              AND ae2.package_version = page.package_version
               AND ae2.outcome = 'allowed'
             ORDER BY ae2.created_at DESC
             LIMIT 1
         ) ae_user ON true
-        WHERE ($1::text IS NULL OR ps.registry = $1)
-          AND ($2::text IS NULL OR ps.package_name ILIKE '%' || $2 || '%')
-          AND ($3::boolean = false OR ps.status = 'blocked')
-          AND ($6::text IS NULL OR ps.package_name = $6)
-          AND ($7::text[] IS NULL OR ps.registry = ANY($7::text[]))
-        ORDER BY ps.registry, ps.package_name, ps.package_version
-        LIMIT $4 OFFSET $5
+        ORDER BY page.registry, page.package_name, page.package_version
         "#,
     )
     .bind(&filter.registry)

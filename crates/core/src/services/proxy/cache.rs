@@ -30,7 +30,7 @@ impl ProxyService {
         req: ProxyRequest,
         artifact_key: String,
         integrity: &IntegrityPolicy,
-        registry_label: String,
+        registry_label: Arc<str>,
         start: Instant,
     ) -> Result<ProxyResponse, CoreError> {
         let registry_name = req.package_id.registry.as_str();
@@ -229,7 +229,7 @@ impl ProxyService {
         artifact_key: String,
         integrity: &IntegrityPolicy,
         limit: u64,
-        registry_label: String,
+        registry_label: Arc<str>,
         start: Instant,
     ) -> Result<ProxyResponse, CoreError> {
         let registry_name = req.package_id.registry.as_str();
@@ -502,7 +502,7 @@ impl ProxyService {
         artifact_key: &str,
         integrity: &IntegrityPolicy,
         limit: u64,
-        registry_label: String,
+        registry_label: Arc<str>,
         start: Instant,
     ) -> Result<ProxyResponse, CoreError> {
         let registry_name = req.package_id.registry.as_str();
@@ -576,14 +576,14 @@ impl ProxyService {
 fn classify_integrity_outcome(
     outcome: &IntegrityOutcome,
     block_on_mismatch: bool,
-    registry_label: &str,
+    registry_label: &Arc<str>,
     registry_name: &str,
     key: &str,
     package_id: &crate::entities::PackageId,
 ) -> Option<String> {
     match outcome {
         IntegrityOutcome::Verified { algo } => {
-            metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.to_owned(), "outcome" => "verified").increment(1);
+            metrics::counter!("batlehub_integrity_checks_total", "registry" => Arc::clone(registry_label), "outcome" => "verified").increment(1);
             tracing::debug!(registry = %registry_name, key = %key, algo = algo.as_str(), "artifact integrity verified");
             None
         }
@@ -592,7 +592,7 @@ fn classify_integrity_outcome(
             expected,
             actual,
         } => {
-            metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.to_owned(), "outcome" => "mismatch").increment(1);
+            metrics::counter!("batlehub_integrity_checks_total", "registry" => Arc::clone(registry_label), "outcome" => "mismatch").increment(1);
             tracing::warn!(registry = %registry_name, key = %key, algo = algo.as_str(), %expected, %actual, "artifact integrity mismatch");
             block_on_mismatch.then(|| {
                 format!(
@@ -604,7 +604,7 @@ fn classify_integrity_outcome(
         // `StreamingVerifier::new` rejects unparseable checksums, so the streaming
         // path never yields this; the `no-store` one-shot `verify` can.
         IntegrityOutcome::Unparseable => {
-            metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.to_owned(), "outcome" => "unparseable").increment(1);
+            metrics::counter!("batlehub_integrity_checks_total", "registry" => Arc::clone(registry_label), "outcome" => "unparseable").increment(1);
             tracing::warn!(registry = %registry_name, key = %key, "advertised checksum could not be parsed; skipping verification");
             None
         }

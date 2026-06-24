@@ -17,7 +17,8 @@ use batlehub_core::{
     entities::{Role, Severity},
     ports::VulnerabilityRepository,
     rules::{
-        BlockListRule, CveGateRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule, VersionGateRule,
+        BlockListRule, CveGateRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule,
+        TrustedPublisherRule, VersionGateRule,
     },
     services::{QuotaEnforcement, QuotaService, RegistryPolicy, RegistryQuotaConfig},
 };
@@ -249,6 +250,10 @@ pub(super) fn build_policy(
                 rules.push(Box::new(VersionGateRule::new(
                     &cfg.allow, &cfg.block, bypass,
                 )));
+            }
+            RuleConfig::TrustedPublisher(cfg) => {
+                let bypass: Vec<Role> = cfg.bypass_roles.iter().map(|r| parse_role(r)).collect();
+                rules.push(Box::new(TrustedPublisherRule::new(&cfg.allow, bypass)));
             }
         }
     }
@@ -556,5 +561,24 @@ mod tests {
         let policy = build_policy(&r, repo, InMemoryVulnerabilityRepository::arc());
         let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
         assert_eq!(names, vec!["rbac", "block_list", "cve_gate"]);
+    }
+
+    #[test]
+    fn build_policy_appends_trusted_publisher_rule() {
+        let r = make_registry(
+            "github",
+            "reg",
+            r#"
+            [[registries.rules]]
+            kind = "trusted_publisher"
+            allow = ["my-org"]
+            bypass_roles = ["admin"]
+            "#,
+        );
+        let repo: Arc<dyn batlehub_core::ports::PackageRepository> =
+            InMemoryPackageRepository::new();
+        let policy = build_policy(&r, repo, InMemoryVulnerabilityRepository::arc());
+        let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
+        assert_eq!(names, vec!["rbac", "block_list", "trusted_publisher"]);
     }
 }

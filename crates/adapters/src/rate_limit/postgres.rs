@@ -34,6 +34,21 @@ impl PgRateLimitStore {
             .unwrap_or_default()
             .as_secs()
     }
+
+    /// Delete counter rows whose window closed more than `retention_secs` ago.
+    ///
+    /// Pruning used to run inline on every `increment()` call (an extra DB round
+    /// trip per rate-limited request). It now runs periodically in the
+    /// background instead — see `spawn_rate_limit_prune` in `server/src/stores.rs`.
+    pub async fn prune_expired(&self, retention_secs: u64) -> Result<(), CoreError> {
+        let cutoff = (Self::now_unix() as i64) - (retention_secs as i64);
+        sqlx::query("DELETE FROM rate_limit_counters WHERE window_start < $1")
+            .bind(cutoff)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| CoreError::Database(format!("rate_limit prune: {e}")))?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -46,14 +61,6 @@ impl RateLimitStore for PgRateLimitStore {
         let ws = window_secs as i64;
         let window_start = ((now as i64) / ws) * ws;
         let window_reset = (window_start + ws) as u64;
-
-        // Prune all rows for this key except the current window.
-        sqlx::query("DELETE FROM rate_limit_counters WHERE key = $1 AND window_start < $2")
-            .bind(key)
-            .bind(window_start)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| CoreError::Database(format!("rate_limit prune: {e}")))?;
 
         let count: i64 = sqlx::query_scalar(
             "INSERT INTO rate_limit_counters (key, window_start, count) \

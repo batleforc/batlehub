@@ -269,6 +269,13 @@ tasks:
     cmds:
       - cargo run -p batlehub-server -- --config config.example.toml
 
+  run:space:
+    desc: Start the server with the example config (requires postgres)
+    env:
+      OIDC_CLIENT_SECRET: "proxy-auth-secret"
+    cmds:
+      - cargo run -p batlehub-server -- --config config.example-space.toml
+
   run:s3:
     desc: Start the server with the S3 config (requires compose:s3:db; set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY first)
     env:

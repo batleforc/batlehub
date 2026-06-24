@@ -56,6 +56,10 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  server: {
+    allowedHosts: [".cde.batleforc.fr","localhost"],
+    host: true
+  },
   build: {
     outDir: "dist",
   },

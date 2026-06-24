@@ -147,10 +147,16 @@ interface Registry {
   // rules
   rule_age_gate_enabled: boolean;
   rule_age_gate_min_age: number;
+  rule_age_gate_bypass_roles: string;
   rule_deny_latest_enabled: boolean;
+  rule_deny_latest_bypass_roles: string;
   rule_cve_gate_enabled: boolean;
   rule_cve_gate_min_severity: string;
   rule_cve_gate_block: boolean;
+  rule_cve_gate_bypass_roles: string;
+  rule_trusted_publisher_enabled: boolean;
+  rule_trusted_publisher_allow: string;
+  rule_trusted_publisher_bypass_roles: string;
   // feature flags
   feature_flags_socket_badge: boolean;
 }
@@ -408,10 +414,16 @@ function defaultRegistry(type: RegistryType = "npm"): Registry {
     signing_allowed_types: "",
     rule_age_gate_enabled: false,
     rule_age_gate_min_age: 3600,
+    rule_age_gate_bypass_roles: "admin",
     rule_deny_latest_enabled: false,
+    rule_deny_latest_bypass_roles: "admin",
     rule_cve_gate_enabled: false,
     rule_cve_gate_min_severity: "high",
     rule_cve_gate_block: false,
+    rule_cve_gate_bypass_roles: "admin",
+    rule_trusted_publisher_enabled: false,
+    rule_trusted_publisher_allow: "",
+    rule_trusted_publisher_bypass_roles: "admin",
     feature_flags_socket_badge: true,
   };
 }
@@ -431,6 +443,13 @@ function permsToToml(csv: string): string {
     .filter(Boolean);
   if (!perms.length) return "[]";
   return `[${perms.map(q).join(", ")}]`;
+}
+
+function csvToList(csv: string): string[] {
+  return csv
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 function listToToml(csv: string): string {
@@ -714,16 +733,22 @@ const toml = computed(() => {
     }
 
     // [[registries.rules]]
+    const pushBypassRoles = (csv: string) => {
+      const roles = csvToList(csv);
+      if (roles.length) lines.push(`bypass_roles = [${roles.map(q).join(", ")}]`);
+    };
     if (reg.rule_age_gate_enabled) {
       lines.push("");
       lines.push("[[registries.rules]]");
       lines.push(`kind = "release_age_gate"`);
       lines.push(`min_age_secs = ${reg.rule_age_gate_min_age}`);
+      pushBypassRoles(reg.rule_age_gate_bypass_roles);
     }
     if (reg.rule_deny_latest_enabled) {
       lines.push("");
       lines.push("[[registries.rules]]");
       lines.push(`kind = "deny_latest"`);
+      pushBypassRoles(reg.rule_deny_latest_bypass_roles);
     }
     if (reg.rule_cve_gate_enabled) {
       lines.push("");
@@ -731,6 +756,17 @@ const toml = computed(() => {
       lines.push(`kind = "cve_gate"`);
       lines.push(`min_severity = ${q(reg.rule_cve_gate_min_severity)}`);
       if (reg.rule_cve_gate_block) lines.push(`block = true`);
+      pushBypassRoles(reg.rule_cve_gate_bypass_roles);
+    }
+    if (reg.rule_trusted_publisher_enabled) {
+      const allow = csvToList(reg.rule_trusted_publisher_allow);
+      if (allow.length) {
+        lines.push("");
+        lines.push("[[registries.rules]]");
+        lines.push(`kind = "trusted_publisher"`);
+        lines.push(`allow = [${allow.map(q).join(", ")}]`);
+        pushBypassRoles(reg.rule_trusted_publisher_bypass_roles);
+      }
     }
 
     // [registries.feature_flags]
@@ -1957,11 +1993,33 @@ curl -X POST \
                   seconds.</span
                 ></label
               >
+              <label
+                >Bypass roles (comma-separated, optional)<input
+                  v-model="reg.rule_age_gate_bypass_roles"
+                  type="text"
+                  placeholder="admin"
+                /><span class="cg-field-hint"
+                  >Roles that can bypass the gate. Leave blank for
+                  none.</span
+                ></label
+              >
             </template>
-            <label class="cg-check cg-mb">
+            <label class="cg-check">
               <input type="checkbox" v-model="reg.rule_deny_latest_enabled" />
               Deny <code>@latest</code> / unpinned version requests
             </label>
+            <template v-if="reg.rule_deny_latest_enabled">
+              <label
+                >Bypass roles (comma-separated, optional)<input
+                  v-model="reg.rule_deny_latest_bypass_roles"
+                  type="text"
+                  placeholder="admin"
+                /><span class="cg-field-hint"
+                  >Roles that can bypass the gate. Leave blank for
+                  none.</span
+                ></label
+              >
+            </template>
             <label class="cg-check">
               <input type="checkbox" v-model="reg.rule_cve_gate_enabled" />
               CVE gate (uses <code>[vulnerability_scan]</code> findings)
@@ -1980,6 +2038,45 @@ curl -X POST \
                 <input type="checkbox" v-model="reg.rule_cve_gate_block" />
                 Block downloads (otherwise warn-only, surfaced in the UI)
               </label>
+              <label
+                >Bypass roles (comma-separated, optional)<input
+                  v-model="reg.rule_cve_gate_bypass_roles"
+                  type="text"
+                  placeholder="admin"
+                /><span class="cg-field-hint"
+                  >Roles that can bypass the gate even when blocking.</span
+                ></label
+              >
+            </template>
+            <label class="cg-check">
+              <input
+                type="checkbox"
+                v-model="reg.rule_trusted_publisher_enabled"
+              />
+              Trusted publisher allowlist
+            </label>
+            <template v-if="reg.rule_trusted_publisher_enabled">
+              <label
+                >Allowed publishers<input
+                  v-model="reg.rule_trusted_publisher_allow"
+                  type="text"
+                  placeholder="my-org, trusted-user"
+                /><span class="cg-field-hint"
+                  >Comma-separated org/user/scope names. Supported for
+                  GitHub, GitLab, Forgejo, npm, OpenVSX, and VS Code
+                  Marketplace; not yet for Cargo — an unsupported registry
+                  denies every request.</span
+                ></label
+              >
+              <label
+                >Bypass roles (comma-separated, optional)<input
+                  v-model="reg.rule_trusted_publisher_bypass_roles"
+                  type="text"
+                  placeholder="admin"
+                /><span class="cg-field-hint"
+                  >Roles that can bypass the gate.</span
+                ></label
+              >
             </template>
 
             <!-- Feature flags -->

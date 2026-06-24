@@ -18,6 +18,14 @@ license = "MIT"
 [workspace.lints.clippy]
 wildcard_imports = "deny"
 
+# Not setting panic = "abort": actix-web isolates a panicking request handler
+# per-task via unwinding, so aborting would turn one bad request into a full
+# process crash.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
 [workspace.metadata.llvm-cov]
 # Exclude server startup wiring from coverage — it's integration-tested separately.
 exclude = ["server/src/main.rs"]

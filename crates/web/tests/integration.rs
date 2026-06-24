@@ -11896,3 +11896,50 @@ async fn export_org_sbom_returns_attachment() {
     assert!(disposition.starts_with("attachment; filename=\"sbom-export-all-"));
     assert!(disposition.ends_with("spdx.json\""));
 }
+
+// ── Concurrent load smoke test ───────────────────────────────────────────────
+//
+// Stands in for the k6/Podman perf harness (`perf/k6`, `task perf:run:*`) in
+// environments where Podman isn't available. Fires many concurrent requests
+// through `ProxyService::handle` against the in-memory backends, mixing
+// metadata reads (cache hit/miss) and authenticated tarball downloads
+// (artifact cache hit/miss) across a handful of distinct packages. It is a
+// correctness regression net for the hot-path changes (no panics, no
+// deadlocks, every response succeeds) — not a substitute for real RSS/CPU
+// numbers, which still require `task perf:run:mixed` against real Postgres.
+
+#[actix_web::test]
+async fn proxy_handles_concurrent_mixed_requests_without_errors() {
+    let app = make_app(InMemoryRepo::new()).await;
+
+    // 8 distinct packages, requested repeatedly: each package's first hit is a
+    // metadata/artifact cache miss, every subsequent one a cache hit.
+    let packages: Vec<String> = (0..8).map(|i| format!("pkg-{i}")).collect();
+
+    let requests: Vec<_> = (0..200)
+        .map(|i| {
+            let pkg = &packages[i % packages.len()];
+            if i % 2 == 0 {
+                TestRequest::get()
+                    .uri(&format!("/proxy/npm/{pkg}"))
+                    .to_request()
+            } else {
+                TestRequest::get()
+                    .uri(&format!("/proxy/npm/{pkg}/1.0.0/tarball"))
+                    .insert_header(("Authorization", bearer(USER_TOKEN)))
+                    .to_request()
+            }
+        })
+        .collect();
+
+    let responses =
+        futures::future::join_all(requests.into_iter().map(|req| call_service(&app, req))).await;
+
+    for resp in responses {
+        assert_eq!(
+            resp.status(),
+            200,
+            "every concurrent proxy request should succeed"
+        );
+    }
+}

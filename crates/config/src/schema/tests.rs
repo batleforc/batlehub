@@ -160,6 +160,41 @@ fn cve_gate_rule_parses_full() {
     }
 }
 
+// ── Trusted publisher rule ────────────────────────────────────────────────────
+
+#[test]
+fn trusted_publisher_rule_parses_with_defaults() {
+    let raw = r#"kind = "trusted_publisher""#;
+    let rule: RuleConfig = toml::from_str(raw).unwrap();
+    match rule {
+        RuleConfig::TrustedPublisher(c) => {
+            assert!(c.allow.is_empty());
+            assert!(c.bypass_roles.is_empty());
+        }
+        other => panic!("expected TrustedPublisher, got {other:?}"),
+    }
+}
+
+#[test]
+fn trusted_publisher_rule_parses_full() {
+    let raw = r#"
+        kind = "trusted_publisher"
+        allow = ["my-org", "trusted-user"]
+        bypass_roles = ["admin"]
+    "#;
+    let rule: RuleConfig = toml::from_str(raw).unwrap();
+    match rule {
+        RuleConfig::TrustedPublisher(c) => {
+            assert_eq!(
+                c.allow,
+                vec!["my-org".to_owned(), "trusted-user".to_owned()]
+            );
+            assert_eq!(c.bypass_roles, vec!["admin".to_owned()]);
+        }
+        other => panic!("expected TrustedPublisher, got {other:?}"),
+    }
+}
+
 // ── Vulnerability scan ────────────────────────────────────────────────────────
 
 #[test]

@@ -9,12 +9,17 @@ name = "batlehub"
 path = "src/main.rs"
 
 [features]
-default = ["cache-redis", "sbom"]
+default = ["cache-redis", "sbom", "jemalloc"]
 storage-s3 = ["batlehub-adapters/storage-s3"]
 cache-redis = ["batlehub-adapters/cache-redis"]
 sbom = ["batlehub-adapters/sbom"]
+# Use jemalloc as the global allocator. Reduces RSS/fragmentation under
+# concurrent load; disable with --no-default-features on platforms where
+# jemalloc doesn't build (e.g. some musl targets).
+jemalloc = ["tikv-jemallocator"]
 
 [dependencies]
+tikv-jemallocator = { version = "0.6", optional = true }
 batlehub-core = { path = "../crates/core" }
 batlehub-config = { path = "../crates/config" }
 batlehub-adapters = { path = "../crates/adapters" }

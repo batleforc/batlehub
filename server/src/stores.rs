@@ -24,6 +24,29 @@ use batlehub_core::services::SbomService;
 
 pub(super) const DEFAULT_REDIS_URL: &str = "redis://127.0.0.1:6379";
 
+/// How far back `prune_expired` reaches on each sweep. Generously larger than
+/// any realistic rate-limit window so a stale row is never pruned mid-window.
+const RATE_LIMIT_PRUNE_RETENTION_SECS: u64 = 24 * 60 * 60;
+const RATE_LIMIT_PRUNE_INTERVAL_SECS: u64 = 60;
+
+/// Periodically delete expired `rate_limit_counters` rows in the background,
+/// instead of pruning inline on every `increment()` call. Mirrors the detached
+/// `tokio::spawn` + `tokio::time::interval` pattern used by
+/// `watcher::spawn_periodic_vuln_scan`.
+fn spawn_rate_limit_prune(store: Arc<PgRateLimitStore>) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
+            RATE_LIMIT_PRUNE_INTERVAL_SECS,
+        ));
+        loop {
+            ticker.tick().await;
+            if let Err(e) = store.prune_expired(RATE_LIMIT_PRUNE_RETENTION_SECS).await {
+                tracing::warn!(error = %e, "rate-limit: periodic prune failed");
+            }
+        }
+    });
+}
+
 pub(super) async fn create_cache_store(
     config: &AppConfig,
     pool: sqlx::PgPool,
@@ -71,7 +94,9 @@ pub(super) async fn create_rate_limit_store(
     let store: Arc<dyn RateLimitStore> = match config.cache.cache_type.as_str() {
         "postgres" => {
             tracing::info!("rate limit store: postgres");
-            Arc::new(PgRateLimitStore::new(pool))
+            let store = Arc::new(PgRateLimitStore::new(pool));
+            spawn_rate_limit_prune(Arc::clone(&store));
+            store
         }
         "redis" => {
             #[cfg(feature = "cache-redis")]

@@ -667,6 +667,26 @@ kind         = "deny_latest"
 bypass_roles = ["admin"]
 ```
 
+### Trusted publisher
+
+Restrict downloads to packages published by an allowed org, user, or scope. The publisher is derived from metadata already resolved during the proxy fetch — no extra upstream calls.
+
+```toml
+[[registries.rules]]
+kind         = "trusted_publisher"
+allow        = ["my-org", "trusted-user"]
+bypass_roles = ["admin"]
+```
+
+Publisher support by registry type (matching is case-insensitive):
+
+- **GitHub**, **GitLab**, **Forgejo** — the top-level owner/group segment of the package path (`"owner/repo"` → `"owner"`)
+- **npm** — the scope for scoped packages (`"@scope/name"` → `"scope"`); otherwise the publishing user
+- **OpenVSX**, **VS Code Marketplace** — the publisher segment of the extension id (`"publisher.extension"` → `"publisher"`)
+- **Not yet supported: Cargo** and any other registry type — configuring this rule there denies every request (fail-closed)
+
+See [`docs/configuration.md`](https://github.com/batleforc/batlehub/blob/main/docs/configuration.md) for the full field table.
+
 ---
 
 ## Hot reload {#hot-reload}

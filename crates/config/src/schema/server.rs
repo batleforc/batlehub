@@ -43,10 +43,24 @@ pub struct DatabaseConfig {
     pub url: String,
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
+    /// Minimum number of idle connections the pool keeps warm.
+    #[serde(default = "default_min_connections")]
+    pub min_connections: u32,
+    /// How long to wait for a connection to become available before erroring out.
+    #[serde(default = "default_acquire_timeout_secs")]
+    pub acquire_timeout_secs: u64,
 }
 
 pub(super) fn default_max_connections() -> u32 {
     10
+}
+
+pub(super) fn default_min_connections() -> u32 {
+    1
+}
+
+pub(super) fn default_acquire_timeout_secs() -> u64 {
+    30
 }
 
 // ── Cache backend ─────────────────────────────────────────────────────────────

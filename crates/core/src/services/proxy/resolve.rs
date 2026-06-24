@@ -18,15 +18,15 @@ impl ProxyService {
         req: &ProxyRequest,
         cache_key: &str,
         ttl: Option<std::time::Duration>,
-        registry_label: &str,
+        registry_label: &Arc<str>,
     ) -> Result<crate::entities::PackageMetadata, CoreError> {
         if let Some(entry) = self.cache.get(cache_key).await? {
             tracing::debug!(key = %cache_key, "metadata cache hit");
-            metrics::counter!("batlehub_metadata_cache_hits_total", "registry" => registry_label.to_owned()).increment(1);
+            metrics::counter!("batlehub_metadata_cache_hits_total", "registry" => Arc::clone(registry_label)).increment(1);
             return Ok(entry.metadata);
         }
         tracing::debug!(key = %cache_key, "metadata cache miss, fetching from upstream");
-        metrics::counter!("batlehub_metadata_cache_misses_total", "registry" => registry_label.to_owned()).increment(1);
+        metrics::counter!("batlehub_metadata_cache_misses_total", "registry" => Arc::clone(registry_label)).increment(1);
         let meta = match client.resolve_metadata(&req.package_id).await {
             Ok(m) => m,
             Err(e) => {
@@ -40,7 +40,7 @@ impl ProxyService {
                         return Ok(stale.metadata);
                     }
                 }
-                metrics::counter!("batlehub_upstream_errors_total", "registry" => registry_label.to_owned()).increment(1);
+                metrics::counter!("batlehub_upstream_errors_total", "registry" => Arc::clone(registry_label)).increment(1);
                 super::warn_if_audit_failed(
                     self.repo
                         .record_access(crate::entities::AccessEvent::proxy_error(

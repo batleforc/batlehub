@@ -24,6 +24,9 @@ pub fn load(path: impl AsRef<Path>) -> Result<AppConfig> {
 /// - `$${VAR_NAME}` is an escape sequence that produces the literal string
 ///   `${VAR_NAME}` without any variable lookup.
 /// - Any other `$` character is left unchanged.
+/// - Placeholders inside a TOML `#` comment (i.e. outside of a quoted
+///   string) are left untouched — commented-out example lines never
+///   require the referenced variable to be set.
 ///
 /// Read `${VAR_NAME}` from `chars` (the `$` and `{` have already been consumed),
 /// look up the variable in the environment, and return its value.
@@ -46,8 +49,48 @@ fn expand_braced_var(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Re
 fn expand_env_vars(raw: &str) -> Result<String> {
     let mut out = String::with_capacity(raw.len());
     let mut chars = raw.chars().peekable();
+    let mut in_dquote = false;
+    let mut in_squote = false;
+    let mut in_comment = false;
 
     while let Some(ch) = chars.next() {
+        if ch == '\n' {
+            in_comment = false;
+            in_dquote = false;
+            in_squote = false;
+            out.push(ch);
+            continue;
+        }
+
+        if in_comment {
+            out.push(ch);
+            continue;
+        }
+
+        if ch == '"' && !in_squote {
+            in_dquote = !in_dquote;
+            out.push(ch);
+            continue;
+        }
+        if ch == '\\' && in_dquote {
+            // Don't let an escaped quote (\") toggle string state.
+            out.push(ch);
+            if let Some(next) = chars.next() {
+                out.push(next);
+            }
+            continue;
+        }
+        if ch == '\'' && !in_dquote {
+            in_squote = !in_squote;
+            out.push(ch);
+            continue;
+        }
+        if ch == '#' && !in_dquote && !in_squote {
+            in_comment = true;
+            out.push(ch);
+            continue;
+        }
+
         if ch != '$' {
             out.push(ch);
             continue;
@@ -572,6 +615,31 @@ mod tests {
         assert_eq!(cfg.database.max_connections, 25);
     }
 
+    #[test]
+    fn database_pool_fields_default() {
+        let cfg: AppConfig = toml::from_str(minimal()).unwrap();
+        assert_eq!(cfg.database.min_connections, 1);
+        assert_eq!(cfg.database.acquire_timeout_secs, 30);
+    }
+
+    #[test]
+    fn env_override_database_min_connections() {
+        let mut cfg: AppConfig = toml::from_str(minimal()).unwrap();
+        std::env::set_var("PROXY_CACHE__DATABASE__MIN_CONNECTIONS", "3");
+        cfg.apply_env_overrides();
+        std::env::remove_var("PROXY_CACHE__DATABASE__MIN_CONNECTIONS");
+        assert_eq!(cfg.database.min_connections, 3);
+    }
+
+    #[test]
+    fn env_override_database_acquire_timeout_secs() {
+        let mut cfg: AppConfig = toml::from_str(minimal()).unwrap();
+        std::env::set_var("PROXY_CACHE__DATABASE__ACQUIRE_TIMEOUT_SECS", "5");
+        cfg.apply_env_overrides();
+        std::env::remove_var("PROXY_CACHE__DATABASE__ACQUIRE_TIMEOUT_SECS");
+        assert_eq!(cfg.database.acquire_timeout_secs, 5);
+    }
+
     // ── env var interpolation ──────────────────────────────────────────────────
 
     #[test]
@@ -682,6 +750,32 @@ mod tests {
         std::env::remove_var("_TEST_MULTI_A");
         std::env::remove_var("_TEST_MULTI_B");
         assert_eq!(result, "a = \"val-a\"\nb = \"val-b\"");
+    }
+
+    #[test]
+    fn env_interpolation_skips_commented_placeholder() {
+        std::env::remove_var("_TEST_COMMENTED_UNSET");
+        let result = expand_env_vars(
+            "# token = \"${_TEST_COMMENTED_UNSET}\"   # export _TEST_COMMENTED_UNSET=tok\n",
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            "# token = \"${_TEST_COMMENTED_UNSET}\"   # export _TEST_COMMENTED_UNSET=tok\n"
+        );
+    }
+
+    #[test]
+    fn env_interpolation_trailing_comment_after_value() {
+        std::env::set_var("_TEST_TRAILING_COMMENT", "real-value");
+        let result =
+            expand_env_vars("x = \"${_TEST_TRAILING_COMMENT}\" # uses ${_TEST_TRAILING_COMMENT}\n")
+                .unwrap();
+        std::env::remove_var("_TEST_TRAILING_COMMENT");
+        assert_eq!(
+            result,
+            "x = \"real-value\" # uses ${_TEST_TRAILING_COMMENT}\n"
+        );
     }
 
     #[test]

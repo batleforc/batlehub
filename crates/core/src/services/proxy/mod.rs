@@ -52,9 +52,9 @@ pub(super) fn warn_if_audit_failed(r: Result<(), CoreError>, ctx: &str) {
 /// Emit the terminal per-request metrics — the `batlehub_requests_total{outcome}`
 /// counter and the `batlehub_request_duration_seconds` histogram — at a request's
 /// exit point. Collapses the counter+histogram pair that every return path repeats.
-pub(super) fn finish_request(registry_label: &str, outcome: &'static str, start: Instant) {
-    metrics::counter!("batlehub_requests_total", "registry" => registry_label.to_owned(), "outcome" => outcome).increment(1);
-    metrics::histogram!("batlehub_request_duration_seconds", "registry" => registry_label.to_owned())
+pub(super) fn finish_request(registry_label: &Arc<str>, outcome: &'static str, start: Instant) {
+    metrics::counter!("batlehub_requests_total", "registry" => Arc::clone(registry_label), "outcome" => outcome).increment(1);
+    metrics::histogram!("batlehub_request_duration_seconds", "registry" => Arc::clone(registry_label))
         .record(start.elapsed().as_secs_f64());
 }
 

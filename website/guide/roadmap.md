@@ -10,7 +10,7 @@ To propose a feature or discuss an item, open an issue on the [project repositor
 
 ## New registry types {#new-registries}
 
-BatleHub currently supports npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go modules, Maven / Gradle, RubyGems, Terraform, Composer, PyPI, and Conda. The following adapters are planned or in progress:
+BatleHub currently supports npm, Cargo, GitHub, GitLab, Forgejo/Gitea, OpenVSX, VS Code Marketplace, Go modules, Maven / Gradle, RubyGems, Terraform, Composer, PyPI, Conda, NuGet, Deb (APT), RPM (YUM/DNF), JetBrains IDE archives, and Arch Linux (Pacman):
 
 | Registry | Status | Notes |
 |----------|--------|-------|
@@ -30,6 +30,8 @@ BatleHub currently supports npm, Cargo, GitHub, OpenVSX, VS Code Marketplace, Go
 | **Deb / RPM** | ✅ Shipped | Debian APT (`deb`) and Red Hat YUM/DNF (`rpm`) proxy **and** signed private hosting in `local`/`hybrid` mode: `.deb`/`.rpm` publish, `Packages`/`Release` + `repodata/` regeneration, Ed25519 OpenPGP-signed metadata (hand-rolled to avoid the banned `rsa` crate) |
 | **GitLab** | ✅ Shipped | `gitlab`: paginated release list/tag, link assets, source archives + raw files (`/-/` URL scheme), nested groups, `PRIVATE-TOKEN`/Bearer auth; package-registry passthrough (`/api/v4/…`). Ecosystem package registries via the matching typed adapter pointed at the GitLab package endpoint |
 | **Forgejo / Gitea** | ✅ Shipped | `forgejo`: paginated `/api/v1` releases, assets, source archives, raw files (reuses the GitHub URL scheme); package-registry passthrough (`/api/packages/…`). Ecosystem registries via the matching typed adapter |
+| **JetBrains IDE archives** | ✅ Shipped | `jetbrains`: proxy-only path-based cache for IDE installer archives (default upstream `download.jetbrains.com`). No private hosting; raise `limits.max_artifact_size_bytes` for the large (~1-1.7 GB) installers |
+| **Arch Linux / Pacman** | ✅ Shipped | `pacman`: proxy upstream Arch mirrors **and** signed private hosting in `local`/`hybrid` mode — `.pkg.tar.{zst,xz,gz}` publish, per-arch `<repo>.db`/`<repo>.files` regeneration, Ed25519-signed database and packages |
 
 ::: info Docker / OCI not planned
 [Harbor](https://goharbor.io) covers this use case better than BatleHub could. If you have a concrete need, open an issue.
@@ -65,14 +67,14 @@ BatleHub aims to be a trust boundary, not just a cache.
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Checksum verification | Planned | Verify artifact hashes when the upstream provides them (Cargo sparse index SHA-256, npm `integrity`, etc.) |
-| Block on failed integrity | Planned | Block serving an artifact if its checksum fails, or optionally if no integrity metadata is available |
-| Sigstore / npm provenance | Planned | Verify npm provenance attestations and Sigstore signatures |
+| **Checksum verification** | ✅ Shipped | Verify artifact hashes when the upstream provides them (Cargo SHA-256, npm SRI/`shasum`, PyPI SHA-256); configurable per registry via `[registries.integrity]` |
+| **Block on failed integrity** | ✅ Shipped | A checksum mismatch fails the download (never bypassable, never cached); `require_metadata = true` additionally blocks downloads with no advertised checksum, with `bypass_roles` |
+| Sigstore / npm provenance | Planned | Deferred — Sigstore's default cert-chain verification path is adjacent to the `rsa` crate banned by `deny.toml` (RUSTSEC-2023-0071); needs a pure-ECDSA verification path |
 | Cargo crate verification | Planned | `cargo verify-project`-style verification for Cargo crates |
-| Signed release enforcement | Planned | Detect and optionally require signed releases (GitHub, OpenVSX, VS Code Marketplace) |
-| Trusted publisher allowlist | Planned | Allowlist of trusted GitHub users / orgs, npm scopes, Cargo owners |
-| Version allowlist / blocklist | Planned | Allowlist of approved versions; blocklist of specific versions with known issues |
-| OSV vulnerability scanning | Planned | Block or warn on CVEs via the [OSV API](https://osv.dev) |
+| Signed release enforcement | Planned | `require_signed_release` rule kind exists in config but is not yet implemented (logs a warning and is a no-op) |
+| **Trusted publisher allowlist** | ✅ Shipped | `trusted_publisher` rule — GitHub/GitLab/Forgejo (owner/group), npm (scope or publishing user), OpenVSX/VS Code Marketplace (publisher). **Cargo not yet supported** (crates.io ownership needs a separate API call) |
+| **Version allowlist / blocklist** | ✅ Shipped | `version_gate` rule — approved-version allowlist plus a blocklist of specific versions, exact match or semver range |
+| **OSV vulnerability scanning** | ✅ Shipped | Periodic SBOM re-scan against the [OSV API](https://osv.dev) plus a per-registry `cve_gate` rule (`min_severity`, block or warn-only, `bypass_roles`) |
 | YARA rule evaluation | Planned | Custom malware or policy pattern matching on artifact bytes |
 | Antivirus scanning | Planned | Binary artifact scanning (VSIX, Go module zips) via a configurable external REST API |
 | Upstream health warnings | Planned | Warn when cached data may be stale due to upstream errors |
@@ -159,10 +161,10 @@ See [Configuration § Actions OIDC auth](https://git.batleforc.fr/batleforc/batl
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Event subscriptions | Planned | Subscribe to new publish, deprecation, or removal events for specific packages, versions, or registries |
-| Notification channels | Planned | Email, Slack, Microsoft Teams, outbound webhooks |
-| User preferences UI | Planned | User-configurable notification preferences in the web UI |
-| Inbound webhook API | Planned | Allow external systems (CI pipelines, security scanners) to push events into BatleHub |
+| **Event subscriptions** | ✅ Shipped | Subscribe to new publish, deprecation, or removal events for specific packages, versions, or registries |
+| **Notification channels** | ✅ Shipped | Email, Slack, Microsoft Teams, outbound webhooks |
+| **User preferences UI** | ✅ Shipped | User-configurable notification preferences and channel configuration in the web UI |
+| **Inbound webhook API** | ✅ Shipped | External systems (CI pipelines, security scanners) push events into BatleHub to trigger notifications or policy updates |
 
 ---
 
@@ -194,22 +196,26 @@ Applies to registries running in `local` or `hybrid` mode. See the [User Guide](
 | **Bulk operations** | ✅ Shipped | Bulk yank, unyank, and delete via admin API |
 | **Content-addressable deduplication** | ✅ Shipped | Identical artifact bytes stored once, ref-counted across logical keys; transparent and backwards-compatible |
 | Bulk publish / deprecation | Planned | Batch publish or deprecate multiple versions in a single API call |
-| Integrity verification on re-serve | Planned | Re-verify checksums when serving artifacts, not only at publish time |
+| **Integrity verification on re-serve** | ✅ Shipped | `integrity.verify_on_serve` re-hashes stored bytes against the recorded checksum on every serve (proxy cache hits and local reads); a mismatch fails with `502` and evicts the corrupt entry |
 
 ### CLI tool — `batlehub-cli`
 
 A standalone CLI for common private registry tasks, suitable for CI pipelines:
 
 ```sh
-batlehub-cli publish --registry internal-npm ./dist
-batlehub-cli deprecate --registry internal-cargo my-crate@1.2.0
-batlehub-cli yank --registry internal-cargo my-crate@1.2.0
-batlehub-cli list --registry internal-go example.com/mymod
+batlehub-cli publish ./dist/my-package-1.2.0.tgz
+batlehub-cli version yank --registry internal-cargo my-crate 1.2.0
+batlehub-cli package list --registry internal-npm
+batlehub-cli auth login
 ```
 
-| Feature | Status |
-|---------|--------|
-| `publish`, `yank`, `unyank`, `list`, `deprecate` commands | Planned |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| **Publish, version, package, owners commands** | ✅ Shipped | `publish` (auto-detects registry type/name/version from the artifact), `version yank/unyank/delete`, `package list/versions`, `owners list/add/remove` |
+| **Registry & auth commands** | ✅ Shipped | `registry list/info`, `auth whoami`, `token list/create/revoke`, static-token and OIDC/Kubernetes login with token caching + auto-refresh |
+| **Config profiles** | ✅ Shipped | `~/.config/batlehub/config.toml` with named profiles; `config init/show/set`; `--json` on every command for CI automation |
+| **Shell completion** | ✅ Shipped | `completion bash/zsh/fish/...` |
+| **TUI mode** | ✅ Shipped | `batlehub-cli tui` — registry/package browsers, publish form, setup wizard (scans local manifests), OIDC/Kubernetes login screen |
 
 ---
 
@@ -225,7 +231,7 @@ Software Bill of Materials support, driven by compliance requirements (EU Cyber 
 | **Upload-time generation** | ✅ Shipped | For private registries: dependency manifests extracted from the archive at publish time (`go.mod`, `Cargo.toml`, `package.json`, `pom.xml`, `requirements.txt`) |
 | **Publish policy** | ✅ Shipped | `required = true` in `[registries.sbom]` denies publish when no manifest can be extracted |
 | **Explorer integration** | ✅ Shipped | Per-version SPDX and CycloneDX download buttons in the Package Explorer detail view |
-| Continuous re-evaluation | Planned | Periodically re-check cached SBOMs against the OSV database and update block / warn metadata automatically |
+| **Continuous re-evaluation** | ✅ Shipped | `[vulnerability_scan]` background task periodically re-checks cached SBOMs against OSV; findings surfaced per-version in the Package Explorer and admin views |
 
 ---
 
@@ -234,6 +240,7 @@ Software Bill of Materials support, driven by compliance requirements (EU Cyber 
 | Feature | Status | Notes |
 |---------|--------|-------|
 | **Package Explorer** | ✅ Shipped | `/explore` — collapsed catalog, registry sidebar, search/sort, upstream search, per-package version detail with firewall + gate status |
+| Explorer pagination & caching | Planned | Avoid fetching the entire index on every request for large registries (e.g. npm); cache invalidation on new publish or expiry |
 | Package detail deep links | Planned | Full metadata, version history, and download links beyond the Explorer summary |
 | Global search | Planned | Search across all registries including packages not yet cached |
 | User listing & block management | Planned | Manage OIDC and Kubernetes-sourced identities in the admin panel |
@@ -247,5 +254,7 @@ Software Bill of Materials support, driven by compliance requirements (EU Cyber 
 | Feature | Status | Notes |
 |---------|--------|-------|
 | **Unit test coverage** | ✅ Shipped | Entities, services, auth providers, storage router, registry adapters, web middleware, and handler guards covered; ≥ 80% line coverage enforced via `task coverage-check` (llvm-cov) |
+| **CLI test suite** | ✅ Shipped | 23 unit tests + 16 integration tests covering registry, package, version yank/unyank/delete, publish, auth, shell completion, and Kubernetes login |
 | Integration tests (real upstreams) | Planned | Gated, opt-in tests against real upstream registries |
 | Fuzzing expansion | Planned | Broader fuzzing targets beyond the current four (`fuzz_rbac_evaluate`, `fuzz_package_id_cache_key`, `fuzz_deny_latest`, `fuzz_release_age`) |
+| Sonarqube coverage | Planned | Track coverage and code quality via [SonarCloud](https://sonarcloud.io/project/overview?id=batleforc_batlehub) |

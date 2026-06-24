@@ -5,6 +5,10 @@ mod setup;
 mod stores;
 mod watcher;
 
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -86,9 +90,16 @@ async fn main() -> Result<()> {
     tracing::info!(config = %config_path, "batlehub starting");
 
     let repo = Arc::new(
-        PgPackageRepository::new(&config.database.url)
-            .await
-            .context("connecting to database")?,
+        PgPackageRepository::new(
+            &config.database.url,
+            batlehub_adapters::db::postgres::PoolOptions {
+                max_connections: config.database.max_connections,
+                min_connections: config.database.min_connections,
+                acquire_timeout_secs: config.database.acquire_timeout_secs,
+            },
+        )
+        .await
+        .context("connecting to database")?,
     );
     repo.run_migrations().await.context("running migrations")?;
 

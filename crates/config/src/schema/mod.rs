@@ -182,6 +182,8 @@ impl AppConfig {
     /// | `PROXY_CACHE__SERVER__STATIC_DIR`     | `server.static_dir`          |
     /// | `PROXY_CACHE__DATABASE__URL`          | `database.url`               |
     /// | `PROXY_CACHE__DATABASE__MAX_CONNECTIONS` | `database.max_connections` |
+    /// | `PROXY_CACHE__DATABASE__MIN_CONNECTIONS` | `database.min_connections` |
+    /// | `PROXY_CACHE__DATABASE__ACQUIRE_TIMEOUT_SECS` | `database.acquire_timeout_secs` |
     /// | `PROXY_CACHE__STORAGE__PATH`          | `storage.path` (single filesystem backend only)  |
     /// | `PROXY_CACHE__STORAGE__BUCKET`        | `storage.bucket` (single S3 backend only)        |
     /// | `PROXY_CACHE__STORAGE__REGION`        | `storage.region` (single S3 backend only)        |
@@ -208,6 +210,16 @@ impl AppConfig {
         if let Some(v) = env("PROXY_CACHE__DATABASE__MAX_CONNECTIONS") {
             if let Ok(n) = v.parse() {
                 self.database.max_connections = n;
+            }
+        }
+        if let Some(v) = env("PROXY_CACHE__DATABASE__MIN_CONNECTIONS") {
+            if let Ok(n) = v.parse() {
+                self.database.min_connections = n;
+            }
+        }
+        if let Some(v) = env("PROXY_CACHE__DATABASE__ACQUIRE_TIMEOUT_SECS") {
+            if let Ok(n) = v.parse() {
+                self.database.acquire_timeout_secs = n;
             }
         }
 

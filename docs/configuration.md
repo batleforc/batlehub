@@ -973,6 +973,29 @@ bypass_roles = ["admin"]
 | `min_severity` | string | `"high"` | Minimum severity that triggers a block: `"low"`, `"medium"`, `"high"`, or `"critical"`. |
 | `bypass_roles` | string[] | `[]` | Roles exempt from the gate. |
 
+**`[[registries.rules]]` — Trusted publisher:**
+
+Restricts downloads to packages published by an allowed org, user, or scope. The publisher is derived from metadata already resolved during the proxy fetch — no extra upstream calls.
+
+```toml
+[[registries.rules]]
+kind = "trusted_publisher"
+allow = ["my-org", "trusted-user"]
+bypass_roles = ["admin"]
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | string | — | Must be `"trusted_publisher"` |
+| `allow` | string[] | `[]` | Allowed publisher identifiers. When non-empty, a package whose derived publisher matches none of these is rejected. When empty, the rule allows everything. |
+| `bypass_roles` | string[] | `[]` | Roles that may bypass the gate (e.g. `["admin"]`). |
+
+> **Publisher support by registry type:** matching is case-insensitive.
+> - **GitHub**, **GitLab**, **Forgejo** — the top-level owner/group segment of the package path (`"owner/repo"` or `"group/subgroup/project"` → `"owner"` / `"group"`).
+> - **npm** — the scope for scoped packages (`"@scope/name"` → `"scope"`); otherwise the user who published that version.
+> - **OpenVSX**, **VS Code Marketplace** — the publisher segment of the extension id (`"publisher.extension"` → `"publisher"`).
+> - **Not yet supported: Cargo** (crate ownership isn't in the sparse index and would need a separate crates.io API call) and any other registry type. Configuring this rule on an unsupported registry **denies every request** — this is a fail-closed supply-chain gate, not a fail-open one.
+
 #### `[registries.integrity]` {#integrity}
 
 Per-registry artifact integrity verification. On the proxy fetch-and-cache path, buffered upstream bytes are hashed and compared against the checksum advertised in the registry metadata (Cargo SHA-256, npm SRI/`shasum`, PyPI SHA-256). Registries that advertise no checksum (NuGet, Maven, GitHub, Go, …) fall through to the "missing" path. Does **not** apply to `firewall_only` registries, which stream straight through without buffering.
