@@ -1,5 +1,5 @@
 # ── Build stage ───────────────────────────────────────────────────────────────
-FROM rust:1.96-slim-bookworm@sha256:c8a94a78f67ec8c4d474ec7f71e0720f21eb7e584e158daec0874cafa7c30e4d AS builder
+FROM rust:1.96-slim-bookworm@sha256:4732ca96fd086cb9be682050c3f0176288eebaac2b80aa2bcefccfaf198e1950 AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config libssl-dev curl \
@@ -42,7 +42,7 @@ RUN cargo build --release -p batlehub-server -p batlehub-cli
 RUN mkdir -p /var/cache/batlehub
 
 # ── Frontend build stage ───────────────────────────────────────────────────────
-FROM node:26-slim@sha256:95a34da32a840bd9b3b09a5b773591c16923e350174b1c50e1200c75bf15eaa9 AS ui-builder
+FROM node:26-slim@sha256:f9b8bd6c62fcd007c08ce2bb2907485b624b968fd76094445822e0ec14002cf0 AS ui-builder
 
 WORKDIR /ui
 COPY ui/package.json ui/package-lock.json ./
