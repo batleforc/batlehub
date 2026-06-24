@@ -110,7 +110,7 @@ jobs:
           key: ${{ matrix.target }}
       - name: Install cross
         if: matrix.use_cross
-        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        uses: taiki-e/install-action@ace6ebe54a6a0c86dfb5f7764b17f793b6925bc3 # v2.82.3
         with:
           tool: cross
       - name: Build (cross)
