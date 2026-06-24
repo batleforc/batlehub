@@ -23,7 +23,7 @@ batlehub-config = { path = "../config" }
 batlehub-core = { path = "../core" }
 bytes.workspace = true
 chrono.workspace = true
-bzip2 = { version = "0.4", optional = true }
+bzip2 = { version = "0.6", optional = true }
 flate2 = { version = "1", optional = true }
 zstd = { version = "0.13", optional = true }
 # Deb/RPM repository hosting (all pure-Rust; none pull the banned `rsa` crate).
