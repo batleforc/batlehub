@@ -8,7 +8,15 @@ use std::path::Path;
 pub fn load(path: impl AsRef<Path>) -> Result<AppConfig> {
     let raw = std::fs::read_to_string(path.as_ref())
         .with_context(|| format!("reading config file: {}", path.as_ref().display()))?;
-    let expanded = expand_env_vars(&raw)?;
+    load_from_str(&raw)
+}
+
+/// Parse a config from a raw TOML string.
+///
+/// Identical to `load` but takes the raw content directly instead of reading from disk.
+/// Environment variable placeholders (`${VAR}`) are still expanded.
+pub fn load_from_str(raw: &str) -> Result<AppConfig> {
+    let expanded = expand_env_vars(raw)?;
     let mut config: AppConfig = toml::from_str(&expanded).with_context(|| "parsing config TOML")?;
     config.apply_env_overrides();
     config.validate()?;

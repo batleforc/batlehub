@@ -4,6 +4,7 @@ use actix_web::{delete, get, post, put, web, HttpResponse, Responder};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
+use std::io;
 
 use batlehub_core::entities::{BannerLevel, GlobalBanner};
 
@@ -197,6 +198,83 @@ pub async fn list_config_changes(
         page: query.page,
         per_page: query.per_page,
     }))
+}
+
+// ── Config content endpoints ──────────────────────────────────────────────────
+
+#[derive(Serialize, ToSchema)]
+pub struct ConfigContentResponse {
+    pub content: String,
+    /// True when hot reload is disabled (e.g. Kubernetes ConfigMap mount).
+    /// Changes submitted via the editor API will be rejected when this is true.
+    pub is_readonly: bool,
+}
+
+/// Retrieve the raw TOML content of the current config file.
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/config/content",
+    tag = "back-office",
+    responses(
+        (status = 200, description = "Raw config TOML content", body = ConfigContentResponse),
+        (status = 403, description = "Admin role required"),
+        (status = 500, description = "Config file could not be read"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[get("/api/v1/admin/config/content")]
+pub async fn get_config_content(
+    identity: AuthIdentity,
+    reload_svc: web::Data<Arc<ConfigReloadService>>,
+) -> Result<impl Responder, AppError> {
+    require_admin(&identity)?;
+    let content = reload_svc.config_content().await.map_err(|e| match e.kind() {
+        io::ErrorKind::NotFound => AppError::not_found("config file not found"),
+        _ => AppError::internal(format!("reading config file: {e}")),
+    })?;
+    Ok(web::Json(ConfigContentResponse {
+        content,
+        is_readonly: !reload_svc.hot_reload_enabled,
+    }))
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct ConfigFromContentRequest {
+    pub content: String,
+}
+
+/// Validate a config TOML string and store it as a pending reload.
+///
+/// The content is parsed and validated exactly like the on-disk file;
+/// environment variable placeholders (`${VAR}`) are still expanded.
+/// On success a pending reload is created and can be confirmed via
+/// `POST /api/v1/admin/config/pending/apply`.
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/config/from-content",
+    tag = "back-office",
+    request_body = ConfigFromContentRequest,
+    responses(
+        (status = 200, description = "Pending reload created", body = ReloadResponse),
+        (status = 400, description = "Validation failure"),
+        (status = 403, description = "Admin role required"),
+        (status = 503, description = "Hot reload disabled"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[post("/api/v1/admin/config/from-content")]
+pub async fn load_config_from_content(
+    identity: AuthIdentity,
+    body: web::Json<ConfigFromContentRequest>,
+    reload_svc: web::Data<Arc<ConfigReloadService>>,
+) -> Result<impl Responder, AppError> {
+    require_admin(&identity)?;
+    require_hot_reload(&reload_svc)?;
+    let diff = reload_svc
+        .load_pending_from_content(&body.content, crate::services::ReloadSource::AdminRequest)
+        .await
+        .map_err(|e| AppError::bad_request(e.to_string()))?;
+    Ok(web::Json(ReloadResponse { diff }))
 }
 
 // ── Banner endpoints ──────────────────────────────────────────────────────────

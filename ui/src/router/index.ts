@@ -133,6 +133,7 @@ export const router = createRouter({
         { path: "health", component: () => import("@/pages/AdminHealth.vue") },
         { path: "sbom", component: () => import("@/pages/AdminSbom.vue") },
         { path: "ip-blocks", component: () => import("@/pages/AdminIpBlocks.vue") },
+        { path: "users", component: () => import("@/pages/AdminUsers.vue") },
         { path: "beta-channel", component: () => import("@/pages/AdminBetaChannel.vue") },
         { path: "team-namespaces", component: () => import("@/pages/AdminTeamNamespaces.vue") },
         { path: "config-reload", component: () => import("@/pages/AdminConfigReload.vue") },

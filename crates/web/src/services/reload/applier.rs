@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use batlehub_config::load as load_config;
+use batlehub_config::{load as load_config, load_from_str as load_config_from_str};
 use batlehub_core::entities::{BannerLevel, GlobalBanner};
 
 use super::{ConfigReloadService, PendingReload, ReloadDiff, ReloadSource, PENDING_TTL_SECS};
@@ -27,6 +27,40 @@ impl ConfigReloadService {
             anyhow::bail!("hot reload is disabled (BATLEHUB_DISABLE_HOT_RELOAD=1)");
         }
         let new_config = load_config(&self.config_path)?;
+        self.build_pending(new_config, source).await
+    }
+
+    /// Same as `load_pending` but parses the config from a supplied TOML string
+    /// instead of re-reading the file. Used by the config-editor endpoint.
+    pub async fn load_pending_from_content(
+        &self,
+        content: &str,
+        source: ReloadSource,
+    ) -> Result<ReloadDiff, anyhow::Error> {
+        if !self.hot_reload_enabled {
+            anyhow::bail!("hot reload is disabled (BATLEHUB_DISABLE_HOT_RELOAD=1)");
+        }
+        let new_config = load_config_from_str(content)?;
+        let diff = self.build_pending(new_config, source).await?;
+        // Store the raw content so apply() can persist it to disk.
+        if let Some(ref mut p) = *self.pending.lock().expect("pending reload lock poisoned") {
+            p.content = Some(content.to_owned());
+        }
+        Ok(diff)
+    }
+
+    /// Read the current on-disk config content without parsing or validating it.
+    /// Non-blocking: uses `tokio::fs` so it does not stall a tokio worker thread.
+    pub async fn config_content(&self) -> Result<String, std::io::Error> {
+        tokio::fs::read_to_string(&self.config_path).await
+    }
+
+    /// Internal helper shared by `load_pending` and `load_pending_from_content`.
+    async fn build_pending(
+        &self,
+        new_config: batlehub_config::AppConfig,
+        source: ReloadSource,
+    ) -> Result<ReloadDiff, anyhow::Error> {
         let (
             new_hot,
             new_access,
@@ -44,6 +78,7 @@ impl ConfigReloadService {
             expires_at: now + chrono::Duration::seconds(PENDING_TTL_SECS),
             source,
             diff: diff.clone(),
+            content: None, // set by load_pending_from_content when originating from the editor
             new_hot,
             new_access,
             new_registry_map,
@@ -167,6 +202,18 @@ impl ConfigReloadService {
         // Clear the in-progress banner on success.
         if let Some(ref banner) = self.banner {
             let _ = banner.clear().await;
+        }
+
+        // Write editor-submitted content back to disk so the change survives a restart.
+        // File-watcher reloads set content = None (the file is already correct on disk).
+        if let Some(ref text) = pending.content {
+            if let Err(e) = tokio::fs::write(&self.config_path, text).await {
+                tracing::warn!(
+                    path = %self.config_path,
+                    error = %e,
+                    "failed to persist editor config to disk; change is live in memory but will be lost on restart"
+                );
+            }
         }
 
         // Persist audit row (best-effort — do not fail the reload if DB is unavailable).

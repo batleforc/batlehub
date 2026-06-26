@@ -174,18 +174,19 @@ Applies to registries running in `local` or `hybrid` mode.
 ## UI improvements
 
 - [x] **Package explorer** (`/explore`) — collapsible catalog with registry sidebar; search and sort across all cached and upstream packages; per-package detail page showing version history with gate/firewall status per version; `[registries.rbac.explore]` config block for independent search permissions
-- [ ] Package explorer caching and pagination for large registries (e.g. npm) to avoid fetching the entire index on every request; cache invalidation on new versions published or cache expiry
-- [ ] Package detail pages with full metadata, version history, and download links (full deep-linking beyond the explorer summary)
-- [ ] User listing and block management in the admin panel (OIDC and Kubernetes-sourced identities, not just static tokens)
-- [ ] Config editor with validation, diff preview, and apply button (integrates with hot reload)
-  - [ ] Read-only warning when the config file is mounted from a Kubernetes ConfigMap, with instructions for applying changes externally
+- [x] Package explorer caching and pagination for large registries (e.g. npm) to avoid fetching the entire index on every request; cache invalidation on new versions published or cache expiry
+- [x] Package detail pages with version history and per-version download links (proxy URL constructed per registry type — cargo, npm, nuget, rubygems, pypi, conda, vsix)
+- [x] User listing and block management in the admin panel (OIDC and Kubernetes-sourced identities, not just static tokens)
+- [x] Config editor with validation and apply button (integrates with hot reload)
+  - [x] Read-only warning when the config file is mounted from a Kubernetes ConfigMap, with instructions for applying changes externally
 
 ---
 
 ## Testing
 
-- [~] Unit tests for all registry adapters and policy evaluation logic — significant coverage added (entities, services, auth, storage router, registry adapters, web middleware, handler guards); ≥80% line coverage enforced by `task coverage-check`
+
+- [~] Unit tests for all registry adapters and policy evaluation logic — significant coverage added (entities, services, auth, storage router, registry adapters, web middleware, handler guards); ≥80% line coverage enforced by `task coverage-check`; 199 lib unit tests + 468 integration tests as of last run; new tests cover `UserBlockMiddleware` (all branches including fail-open on DB error), `config_content()`, `load_pending_from_content()`, and the `apply()` disk-write path
 - [x] CLI test suite — 23 unit tests (`parse_oidc_paste`, `is_token_expiring_soon`, `detect_project_types` for all 9 manifest types) + 16 integration tests (registry, package, version yank/unyank/delete, publish, auth, shell completion, Kubernetes login); fixed `InMemoryLocalRegistry` case-sensitivity bug so yank/delete tests pass end-to-end
 - [ ] Integration tests against real upstream registries (gated, opt-in)
 - [ ] Broader fuzzing targets beyond the current four (RBAC, cache key, deny-latest, release age)
-- [ ] Cover code with [Sonarqube](https://sonarcloud.io/project/overview?id=batleforc_batlehub)
+- [x] Cover code with [SonarCloud](https://sonarcloud.io/project/overview?id=batleforc_batlehub) — `.github/workflows/sonar.yaml` runs frontend (vitest lcov) + backend (cargo-llvm-cov lcov, with Postgres/MinIO/Redis services) and uploads both reports to SonarCloud on every push to `main`

@@ -38,6 +38,9 @@ pub mod quota;
 pub mod team_namespace;
 
 #[cfg(feature = "db-postgres")]
+pub mod user_block;
+
+#[cfg(feature = "db-postgres")]
 pub mod user_tokens;
 
 #[cfg(feature = "db-postgres")]
@@ -66,6 +69,9 @@ pub use sbom::PgSbomRepository;
 
 #[cfg(feature = "db-postgres")]
 pub use team_namespace::PgTeamNamespaceStore;
+
+#[cfg(feature = "db-postgres")]
+pub use user_block::{InMemoryUserBlockRepository, PgUserBlockRepository};
 
 #[cfg(feature = "db-postgres")]
 pub use vulnerability::PgVulnerabilityRepository;

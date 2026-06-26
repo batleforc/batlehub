@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
+import { useExploreCache } from "@/composables/useExploreCache";
 import { Search, Package, RefreshCw } from "@lucide/vue";
 import {
   listRegistries,
@@ -97,6 +98,14 @@ function sourceVariant(source: string): "default" | "secondary" | "outline" {
   return "outline";
 }
 
+// ── Cache ─────────────────────────────────────────────────────────────────────
+
+interface PageResult {
+  items: ExploreEntryDto[];
+  total: number;
+}
+const exploreCache = useExploreCache<PageResult>();
+
 // ── Data fetching ─────────────────────────────────────────────────────────────
 
 async function fetchAllRegistries() {
@@ -120,22 +129,36 @@ async function fetchAllRegistries() {
 }
 
 async function fetchPackages() {
+  const reg = selectedRegistry.value ?? "";
+  const q = search.value.trim();
+  const s = sort.value;
+  const p = page.value;
+
+  const cached = exploreCache.get(reg, p, s, q);
+  if (cached) {
+    error.value = null;
+    packages.value = cached.items;
+    total.value = cached.total;
+    return;
+  }
+
   loading.value = true;
   error.value = null;
   try {
     const { data: res, error: apiErr } = await explorePackages({
       query: {
-        page: page.value,
+        page: p,
         per_page: perPage,
-        sort: sort.value,
-        registry: selectedRegistry.value ?? undefined,
-        name: search.value.trim() || undefined,
+        sort: s,
+        registry: reg || undefined,
+        name: q || undefined,
       },
     });
     if (apiErr) throw new Error("Failed to load packages");
     const body = res as ExplorePackageListResponse;
     packages.value = body.items;
     total.value = body.total;
+    exploreCache.set(reg, p, s, q, { items: body.items, total: body.total });
   } catch (e) {
     error.value = e instanceof Error ? e.message : "Failed to load packages";
   } finally {
@@ -280,6 +303,7 @@ onMounted(() => {
           size="sm"
           @click="
             () => {
+              exploreCache.invalidate(selectedRegistry ?? undefined);
               void fetchPackages();
               if (search.trim().length >= 2) void fetchUpstream();
             }

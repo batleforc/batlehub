@@ -44,6 +44,54 @@ const loadingClearBanner = ref(false);
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
+// ── Config editor ─────────────────────────────────────────────────────────────
+
+const configContent = ref("");
+const configReadonly = ref(false);
+const configLoadError = ref<string | null>(null);
+const editorLoading = ref(false);
+const editorSuccess = ref<string | null>(null);
+const editorError = ref<string | null>(null);
+
+async function loadConfigContent() {
+  configLoadError.value = null;
+  try {
+    const res = await authFetch(`${API_BASE_URL}/api/v1/admin/config/content`);
+    if (!res.ok) {
+      configLoadError.value = `HTTP ${res.status}`;
+      return;
+    }
+    const body = (await res.json()) as { content: string; is_readonly: boolean };
+    configContent.value = body.content;
+    configReadonly.value = body.is_readonly;
+  } catch (e) {
+    configLoadError.value = e instanceof Error ? e.message : "Failed to load config";
+  }
+}
+
+async function submitConfigContent() {
+  editorLoading.value = true;
+  editorSuccess.value = null;
+  editorError.value = null;
+  try {
+    const res = await authFetch(`${API_BASE_URL}/api/v1/admin/config/from-content`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: configContent.value }),
+    });
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(body.error ?? `HTTP ${res.status}`);
+    }
+    editorSuccess.value = "Config validated — pending reload created. Review it below, then apply.";
+    await fetchPending();
+  } catch (e) {
+    editorError.value = e instanceof Error ? e.message : "Validation failed";
+  } finally {
+    editorLoading.value = false;
+  }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function sdkErrMsg(err: unknown): string {
@@ -177,7 +225,7 @@ const expiresIn = computed(() => {
 });
 
 onMounted(async () => {
-  await Promise.all([fetchPending(), fetchHistory()]);
+  await Promise.all([fetchPending(), fetchHistory(), loadConfigContent()]);
   pollTimer = setInterval(() => void fetchPending(), 5_000);
 });
 onUnmounted(() => {
@@ -188,6 +236,52 @@ onUnmounted(() => {
 <template>
   <div class="space-y-6">
     <h1 class="text-2xl font-bold">Config Reload</h1>
+
+    <!-- Config Editor -->
+    <Card>
+      <CardHeader>
+        <CardTitle>Config Editor</CardTitle>
+      </CardHeader>
+      <CardContent class="space-y-3">
+        <div
+          v-if="configReadonly"
+          class="rounded-sm border border-yellow-400 bg-yellow-50 dark:bg-yellow-900/20 px-4 py-2 text-sm text-yellow-800 dark:text-yellow-300"
+        >
+          This config is mounted read-only (e.g. Kubernetes ConfigMap). Changes must be applied
+          externally. You can still view the current content below.
+        </div>
+        <p v-if="configLoadError" class="text-sm text-destructive">{{ configLoadError }}</p>
+        <textarea
+          v-model="configContent"
+          rows="18"
+          :readonly="configReadonly"
+          class="w-full rounded-sm border border-input bg-background font-mono text-xs p-3 focus:outline-none focus:ring-2 focus:ring-ring resize-y"
+          spellcheck="false"
+          aria-label="Config TOML content"
+        />
+        <div
+          v-if="editorSuccess"
+          class="rounded-sm bg-primary/10 border border-primary/30 px-4 py-2 text-primary text-sm"
+        >
+          {{ editorSuccess }}
+        </div>
+        <div
+          v-if="editorError"
+          class="rounded-sm bg-destructive/10 border border-destructive/30 px-4 py-2 text-destructive text-sm"
+        >
+          {{ editorError }}
+        </div>
+        <div class="flex gap-2">
+          <Button
+            :disabled="editorLoading || configReadonly || hotReloadEnabled === false"
+            @click="submitConfigContent"
+          >
+            {{ editorLoading ? "Validating…" : "Validate & Create Pending Reload" }}
+          </Button>
+          <Button variant="outline" @click="loadConfigContent"> Reload from Disk </Button>
+        </div>
+      </CardContent>
+    </Card>
 
     <!-- Status: hot reload disabled -->
     <Card v-if="hotReloadEnabled === false" class="border-yellow-400">

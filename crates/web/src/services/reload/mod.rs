@@ -46,6 +46,11 @@ pub struct PendingReload {
     pub expires_at: DateTime<Utc>,
     pub source: ReloadSource,
     pub diff: ReloadDiff,
+    /// Raw TOML submitted via the config-editor API. Present only when the pending
+    /// reload originated from `load_pending_from_content`; absent for file-watcher
+    /// reloads (the file is already on disk). `apply()` writes this back to disk so
+    /// editor changes survive a server restart.
+    pub content: Option<String>,
     /// Pre-built, ready to swap in — no async work required during apply.
     pub new_hot: HotConfig,
     pub new_access: AccessConfig,

@@ -12,7 +12,7 @@ use batlehub_adapters::auth::OidcSsoFlow;
 use batlehub_config::schema::{IpBlockingConfig, NotificationsConfig};
 use batlehub_core::ports::{
     AuthProvider, BetaChannelPort, IpBlockStore, NotificationPort, TeamNamespacePort,
-    UserTokenRepository,
+    UserBlockRepository, UserTokenRepository,
 };
 use batlehub_core::services::{
     AdminService, LocalRegistryService, ProxyMetrics, ProxyService, QuotaService, SbomService,
@@ -23,7 +23,7 @@ use batlehub_web::services::{BannerService, ConfigReloadService, NotificationSer
 use batlehub_web::{
     configure_app, healthz, prometheus_metrics, AccessConfigLock, ApiDoc, CargoIndexMap,
     CliBinaryPath, IpBlockMiddlewareFactory, RateLimitMiddlewareFactory, RateLimitService,
-    RegistryMap, RegistryModeMap, UpstreamMap,
+    RegistryMap, RegistryModeMap, UpstreamMap, UserBlockMiddlewareFactory,
 };
 
 // ── Tracing span builder ──────────────────────────────────────────────────────
@@ -83,6 +83,7 @@ pub(super) struct ServerParams {
     pub registry_mode_map: RegistryModeMap,
     pub repo_signer_map: batlehub_web::RepoSignerMap,
     pub ip_block_store: Arc<dyn IpBlockStore>,
+    pub user_block_repo: Arc<dyn UserBlockRepository>,
     pub beta_channel_store: Arc<dyn BetaChannelPort>,
     pub team_namespace_store: Arc<dyn TeamNamespacePort>,
     pub ip_blocking_cfg: Option<IpBlockingConfig>,
@@ -122,6 +123,7 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
         registry_mode_map,
         repo_signer_map,
         ip_block_store,
+        user_block_repo,
         beta_channel_store,
         team_namespace_store,
         ip_blocking_cfg,
@@ -169,6 +171,7 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
             .app_data(web::Data::new(registry_mode_map.clone()))
             .app_data(web::Data::new(repo_signer_map.clone()))
             .app_data(web::Data::new(Arc::clone(&ip_block_store)))
+            .app_data(web::Data::new(Arc::clone(&user_block_repo)))
             .app_data(web::Data::new(Arc::clone(&beta_channel_store)))
             .app_data(web::Data::new(Arc::clone(&team_namespace_store)))
             .app_data(web::Data::new(Arc::clone(&reload_svc)))
@@ -186,6 +189,7 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
 
         app.wrap(TracingLogger::<BatleHubSpanBuilder>::new())
             .wrap(RateLimitMiddlewareFactory::new(rate_limit_svc.clone()))
+            .wrap(UserBlockMiddlewareFactory::new(Arc::clone(&user_block_repo)))
             .wrap(batlehub_web::AuthMiddlewareFactory::new(
                 auth_providers.clone(),
             ))

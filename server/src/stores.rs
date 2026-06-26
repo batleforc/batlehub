@@ -10,6 +10,7 @@ use batlehub_adapters::cache::RedisCacheStore;
 use batlehub_adapters::cache::{InMemoryCacheStore, PgCacheStore};
 use batlehub_adapters::db::PgBannerStore;
 use batlehub_adapters::notification::PgNotificationStore;
+use batlehub_adapters::db::PgUserBlockRepository;
 use batlehub_adapters::rate_limit::{
     InMemoryIpBlockStore, InMemoryRateLimitStore, PgIpBlockStore, PgRateLimitStore,
 };
@@ -19,6 +20,7 @@ use batlehub_adapters::sbom::HttpSbomFetcher;
 use batlehub_config::schema::AppConfig;
 use batlehub_core::ports::{
     BannerPort, CacheStore, IpBlockStore, NotificationPort, RateLimitStore, SbomRepository,
+    UserBlockRepository,
 };
 use batlehub_core::services::SbomService;
 
@@ -162,6 +164,13 @@ pub(super) async fn create_ip_block_store(
     };
     Ok(store)
 }
+
+/// User blocks always use Postgres when available (in-memory in dev/test without a DB).
+pub(super) fn create_user_block_repository(pool: sqlx::PgPool) -> Arc<dyn UserBlockRepository> {
+    tracing::info!("user block repository: postgres");
+    Arc::new(PgUserBlockRepository::new(pool))
+}
+
 
 pub(super) async fn create_banner_store(
     config: &AppConfig,

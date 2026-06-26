@@ -522,6 +522,7 @@ pub use middleware::AuthMiddlewareFactory;
 pub use middleware::IpBlockMiddlewareFactory;
 pub use middleware::RateLimitMiddlewareFactory;
 pub use middleware::RateLimitService;
+pub use middleware::UserBlockMiddlewareFactory;
 
 #[derive(OpenApi)]
 #[openapi(
@@ -580,8 +581,9 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                 undeprecate, unlist,
             },
             config::{
-                apply_pending_reload, clear_banner, discard_pending_reload, get_pending_reload,
-                list_config_changes, reload_config, set_banner,
+                apply_pending_reload, clear_banner, discard_pending_reload, get_config_content,
+                get_pending_reload, list_config_changes, load_config_from_content, reload_config,
+                set_banner,
             },
             eviction::evict_registry,
             explore::invalidate_explore_cache,
@@ -606,6 +608,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                 claim_namespace, list_namespaces, my_namespace_packages, my_namespaces,
                 release_namespace,
             },
+            user_block::{block_user, list_blocked_users, unblock_user},
             visibility::{get_package_visibility, set_package_visibility},
             warming::warm_registry,
         },
@@ -853,12 +856,19 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(list_blocked_ips);
     cfg.service(block_ip);
     cfg.service(unblock_ip);
+    // User block admin (specific /blocked list before parameterised /{user_id}/block)
+    cfg.service(list_blocked_users);
+    cfg.service(block_user);
+    cfg.service(unblock_user);
     // Config reload admin (pending/apply before pending/delete — more specific first)
     cfg.service(reload_config);
     cfg.service(apply_pending_reload);
     cfg.service(get_pending_reload);
     cfg.service(discard_pending_reload);
     cfg.service(list_config_changes);
+    // Config content (editor) endpoints
+    cfg.service(get_config_content);
+    cfg.service(load_config_from_content);
     // Banner admin + public
     cfg.service(set_banner);
     cfg.service(clear_banner);

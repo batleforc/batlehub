@@ -13,6 +13,7 @@ pub mod quota;
 pub mod sbom;
 pub mod stats;
 pub mod team_namespaces;
+pub mod user_block;
 pub mod visibility;
 pub mod warming;
 

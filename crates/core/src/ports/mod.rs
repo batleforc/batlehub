@@ -14,6 +14,7 @@ pub mod registry;
 pub mod sbom;
 pub mod storage;
 pub mod team_namespace;
+pub mod user_block;
 pub mod user_token_repo;
 pub mod vulnerability;
 
@@ -33,5 +34,6 @@ pub use registry::{ArtifactStream, FetchedArtifact, RegistryClient, UpstreamPack
 pub use sbom::{SbomDependency, SbomExtractor, SbomRepository, UpstreamSbomFetcher};
 pub use storage::*;
 pub use team_namespace::TeamNamespacePort;
+pub use user_block::{UserBlock, UserBlockRepository};
 pub use user_token_repo::*;
 pub use vulnerability::{OsvMatch, VulnerabilityRepository, VulnerabilityScanner};

@@ -10,11 +10,13 @@ import {
   Package,
   FileJson,
   FileCode,
+  Download,
 } from "@lucide/vue";
-import { explorePackageDetail } from "@/client/sdk.gen";
-import type { ExplorePackageDetailResponse, FirewallDto } from "@/client/types.gen";
+import { explorePackageDetail, listRegistries } from "@/client/sdk.gen";
+import type { ExplorePackageDetailResponse, FirewallDto, RegistryInfo } from "@/client/types.gen";
 import { useAuth } from "@/composables/useAuth";
 import { useAuthFetch } from "@/composables/useAuthFetch";
+import { useApi } from "@/composables/useApi";
 import { API_BASE_URL } from "@/config";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -35,6 +37,14 @@ const router = useRouter();
 
 const registry = computed(() => String(route.params.registry ?? ""));
 const name = computed(() => String(route.params.name ?? ""));
+
+const { data: registriesList } = useApi<RegistryInfo[]>(
+  () => listRegistries() as Promise<{ data?: unknown; error?: unknown }>,
+  [token],
+);
+const registryType = computed(
+  () => registriesList.value?.find((r) => r.name === registry.value)?.type ?? null,
+);
 
 const data = ref<ExplorePackageDetailResponse | null>(null);
 const loading = ref(false);
@@ -133,6 +143,45 @@ function severityVariant(severity: string): "default" | "destructive" | "seconda
       return "default";
     default:
       return "secondary";
+  }
+}
+
+// ── Download URL construction ──────────────────────────────────────────────────
+
+/**
+ * Build the proxy download URL for a given version based on the registry type.
+ * Returns null for registries whose URL can't be derived purely from name/version
+ * (Maven, PyPI simple page, etc.).
+ */
+function downloadUrl(version: string): string | null {
+  const n = name.value;
+  const r = registry.value;
+  const base = `${API_BASE_URL}/proxy/${encodeURIComponent(r)}`;
+  switch (registryType.value) {
+    case "cargo":
+      return `${base}/${encodeURIComponent(n)}/${encodeURIComponent(version)}/download`;
+    case "npm":
+      // encodeURIComponent handles scoped packages: @scope/pkg → %40scope%2Fpkg (one path segment)
+      return `${base}/${encodeURIComponent(n)}/${encodeURIComponent(version)}/tarball`;
+    case "nuget":
+      return `${base}/nuget/v3/flat/${encodeURIComponent(n.toLowerCase())}/${encodeURIComponent(version.toLowerCase())}/${encodeURIComponent(n.toLowerCase())}.${encodeURIComponent(version.toLowerCase())}.nupkg`;
+    case "rubygems":
+      return `${base}/gems/${encodeURIComponent(n)}-${encodeURIComponent(version)}.gem`;
+    case "pypi":
+      // PyPI has hashed filenames — link to the simple page instead
+      return `${base}/simple/${encodeURIComponent(n)}/`;
+    case "conda":
+      return `${base}/noarch/${encodeURIComponent(n)}-${encodeURIComponent(version)}-py_0.conda`;
+    case "vsix":
+    case "openvsx": {
+      const parts = n.split(".");
+      if (parts.length === 2) {
+        return `${base}/${encodeURIComponent(parts[0])}.${encodeURIComponent(parts[1])}/${encodeURIComponent(version)}/vsix`;
+      }
+      return null;
+    }
+    default:
+      return null;
   }
 }
 
@@ -237,6 +286,7 @@ onMounted(fetchDetail);
                 <TableHead>Published</TableHead>
                 <TableHead>Security</TableHead>
                 <TableHead v-if="token">SBOM</TableHead>
+                <TableHead>Download</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -360,9 +410,27 @@ onMounted(fetchDetail);
                     </button>
                   </div>
                 </TableCell>
+                <!-- Download link -->
+                <TableCell class="text-sm">
+                  <a
+                    v-if="downloadUrl(ver.version)"
+                    :href="downloadUrl(ver.version)!"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs hover:bg-accent"
+                    :title="`Download ${ver.version} via proxy`"
+                  >
+                    <Download class="h-3 w-3" />
+                    Download
+                  </a>
+                  <span v-else class="text-muted-foreground text-xs">—</span>
+                </TableCell>
               </TableRow>
               <TableRow v-if="data.versions.length === 0">
-                <TableCell :colspan="token ? 8 : 7" class="text-center text-muted-foreground py-6">
+                <TableCell
+                  :colspan="token ? 9 : 8"
+                  class="text-center text-muted-foreground py-6"
+                >
                   No versions found
                 </TableCell>
               </TableRow>
