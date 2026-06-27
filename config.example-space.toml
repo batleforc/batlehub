@@ -30,7 +30,7 @@ type = "token"
 # fast.
 
 [[auth.tokens]]
-# Plain-text — replace before going to production.
+# Plain-text — replace before going to production.change-me-admin-token
 value = "change-me-admin-token"
 role = "admin"
 user_id = "admin"

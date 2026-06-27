@@ -59,7 +59,10 @@ async function submit() {
   try {
     const result = await me();
     const id = result.data as MeResponse | undefined;
-    if (id && id.role !== "anonymous") {
+    if (!id) {
+      throw new Error("no data returned from server");
+    }
+    if (id.role !== "anonymous") {
       storeTokens(tok); // no refresh token or expiry for static tokens
       router.push(redirect.value);
     } else {

@@ -32,3 +32,4 @@ ui/eslint-results.sarif
 # Generated SBOMs (task sbom:rust / task security)
 /sbom-rust.cdx.json
 *.cdx.json
+.env
