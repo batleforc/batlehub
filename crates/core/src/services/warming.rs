@@ -329,7 +329,7 @@ mod tests {
         async fn exists(&self, _: &str) -> Result<bool, CoreError> {
             panic!("should not be called")
         }
-        async fn delete(&self, _: &str) -> Result<(), CoreError> {
+        async fn delete(&self, _: &str) -> Result<bool, CoreError> {
             panic!("should not be called")
         }
         async fn delete_by_prefix(&self, _: &str) -> Result<usize, CoreError> {
@@ -558,9 +558,8 @@ mod tests {
             }
             Ok(self.data.lock().await.contains_key(key))
         }
-        async fn delete(&self, key: &str) -> Result<(), CoreError> {
-            self.data.lock().await.remove(key);
-            Ok(())
+        async fn delete(&self, key: &str) -> Result<bool, CoreError> {
+            Ok(self.data.lock().await.remove(key).is_some())
         }
         async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError> {
             let mut m = self.data.lock().await;

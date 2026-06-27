@@ -151,19 +151,13 @@ pub async fn delete_cached_artifact(
         format!("artifact:{registry}/{name}/{version}")
     };
 
-    let was_present = proxy_svc
+    let deleted = proxy_svc
         .storage
-        .exists(&artifact_key)
+        .delete(&artifact_key)
         .await
         .map_err(AppError::from)?;
 
-    if was_present {
-        proxy_svc
-            .storage
-            .delete(&artifact_key)
-            .await
-            .map_err(AppError::from)?;
-
+    if deleted {
         if let Err(e) = proxy_svc
             .artifact_meta
             .delete_artifact_meta(&artifact_key)
@@ -183,7 +177,7 @@ pub async fn delete_cached_artifact(
     }
 
     Ok(web::Json(DeleteCacheResponse {
-        deleted: was_present,
+        deleted,
         artifact_key,
     }))
 }

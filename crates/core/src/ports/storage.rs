@@ -108,7 +108,11 @@ pub trait StorageBackend: Send + Sync {
     async fn exists(&self, key: &str) -> Result<bool, CoreError>;
 
     /// Remove a cached artifact.
-    async fn delete(&self, key: &str) -> Result<(), CoreError>;
+    ///
+    /// Returns `true` if the key existed and was deleted, `false` if it was not present.
+    /// Backends that cannot determine existence atomically (e.g. S3) return `true` on any
+    /// successful delete call.
+    async fn delete(&self, key: &str) -> Result<bool, CoreError>;
 
     /// Remove all artifacts whose keys start with `prefix` and return the count deleted.
     async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError>;

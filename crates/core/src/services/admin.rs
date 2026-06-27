@@ -202,7 +202,8 @@ impl AdminService {
         };
         for pkg in items {
             match self.delete_package(&pkg, by_identity).await {
-                Ok(_) => result.succeeded.push(pkg),
+                Ok(true) => result.succeeded.push(pkg),
+                Ok(false) => result.failed.push((pkg, "package not found".to_string())),
                 Err(e) => result.failed.push((pkg, e.to_string())),
             }
         }
@@ -384,6 +385,9 @@ mod tests {
         }
         async fn list_events(&self, _f: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
             Ok(self.events.lock().unwrap().clone())
+        }
+        async fn delete_package(&self, pkg: &PackageId) -> Result<bool, CoreError> {
+            Ok(self.statuses.lock().unwrap().remove(&pkg.cache_key()).is_some())
         }
     }
 
@@ -645,6 +649,9 @@ mod tests {
         ) -> Result<Vec<RegistryStat>, CoreError> {
             Ok(self.stats.clone())
         }
+        async fn delete_package(&self, _: &PackageId) -> Result<bool, CoreError> {
+            Ok(false)
+        }
     }
 
     /// A repo whose explore methods always return an error.
@@ -687,6 +694,9 @@ mod tests {
             _: &[String],
         ) -> Result<Vec<RegistryStat>, CoreError> {
             Err(CoreError::Database("simulated failure".into()))
+        }
+        async fn delete_package(&self, _: &PackageId) -> Result<bool, CoreError> {
+            Ok(false)
         }
     }
 

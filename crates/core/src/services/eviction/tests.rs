@@ -207,9 +207,8 @@ impl StorageBackend for InMemStorage {
     async fn exists(&self, key: &str) -> Result<bool, CoreError> {
         Ok(self.data.lock().unwrap().contains_key(key))
     }
-    async fn delete(&self, key: &str) -> Result<(), CoreError> {
-        self.data.lock().unwrap().remove(key);
-        Ok(())
+    async fn delete(&self, key: &str) -> Result<bool, CoreError> {
+        Ok(self.data.lock().unwrap().remove(key).is_some())
     }
     async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError> {
         let mut m = self.data.lock().unwrap();
@@ -899,7 +898,7 @@ impl StorageBackend for FailStorage {
     async fn exists(&self, _: &str) -> Result<bool, CoreError> {
         Ok(false)
     }
-    async fn delete(&self, _: &str) -> Result<(), CoreError> {
+    async fn delete(&self, _: &str) -> Result<bool, CoreError> {
         Err(CoreError::Storage("injected delete failure".into()))
     }
     async fn delete_by_prefix(&self, _: &str) -> Result<usize, CoreError> {

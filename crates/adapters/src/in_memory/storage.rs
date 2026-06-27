@@ -65,9 +65,8 @@ impl StorageBackend for InMemoryStorageBackend {
         Ok(self.data.read().await.contains_key(key))
     }
 
-    async fn delete(&self, key: &str) -> Result<(), CoreError> {
-        self.data.write().await.remove(key);
-        Ok(())
+    async fn delete(&self, key: &str) -> Result<bool, CoreError> {
+        Ok(self.data.write().await.remove(key).is_some())
     }
 
     async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError> {

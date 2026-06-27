@@ -165,16 +165,16 @@ pub async fn bulk_delete_packages(
         })
         .collect();
 
-    // Purge cached artifacts best-effort before removing DB records.
-    for pkg in &items {
+    let result = admin_svc.bulk_delete_packages(items, &identity.0).await;
+
+    // Best-effort: purge cached artifacts only for packages successfully removed from the DB.
+    for pkg in &result.succeeded {
         let storage_key = format!("artifact:{}", pkg.cache_key());
         let meta_key = format!("meta:{}", pkg.cache_key());
         let _ = proxy_svc.storage.delete(&storage_key).await;
         let _ = proxy_svc.artifact_meta.delete_artifact_meta(&storage_key).await;
         let _ = proxy_svc.cache.invalidate(&meta_key).await;
     }
-
-    let result = admin_svc.bulk_delete_packages(items, &identity.0).await;
 
     Ok(web::Json(BulkActionResponse {
         succeeded_count: result.succeeded.len(),

@@ -220,7 +220,7 @@ impl StorageBackend for S3StorageBackend {
         }
     }
 
-    async fn delete(&self, key: &str) -> Result<(), CoreError> {
+    async fn delete(&self, key: &str) -> Result<bool, CoreError> {
         let obj_key = self.object_key(key)?;
 
         match self
@@ -231,13 +231,14 @@ impl StorageBackend for S3StorageBackend {
             .send()
             .await
         {
-            Ok(_) => Ok(()),
+            // S3 returns 204 regardless of whether the object existed; treat as present.
+            Ok(_) => Ok(true),
             Err(e) => {
                 let sdk_err = e.into_service_error();
                 let err_str = sdk_err.to_string();
-                // NoSuchKey on delete is fine
+                // NoSuchKey on delete is fine (some S3-compatible stores do return it)
                 if Self::is_not_found(&sdk_err.into()) {
-                    return Ok(());
+                    return Ok(false);
                 }
                 Err(CoreError::Storage(format!(
                     "S3 delete_object {obj_key}: {err_str}"

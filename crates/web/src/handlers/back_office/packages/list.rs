@@ -191,10 +191,17 @@ pub async fn delete_package(
         artifact: body.artifact.clone(),
     };
 
-    admin_svc
+    let deleted = admin_svc
         .delete_package(&pkg, &identity.0)
         .await
         .map_err(AppError::from)?;
+
+    if !deleted {
+        return Ok(web::Json(ActionResponse {
+            success: false,
+            message: format!("package '{}' not found", pkg),
+        }));
+    }
 
     let storage_key = format!("artifact:{}", pkg.cache_key());
     let meta_key = format!("meta:{}", pkg.cache_key());

@@ -263,6 +263,9 @@ impl PackageRepository for SpyRepo {
     async fn list_events(&self, _filter: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
         Ok(self.events.lock().unwrap().clone())
     }
+    async fn delete_package(&self, _pkg: &PackageId) -> Result<bool, CoreError> {
+        Ok(false)
+    }
 }
 
 struct MemStorage {
@@ -297,9 +300,8 @@ impl StorageBackend for MemStorage {
     async fn exists(&self, key: &str) -> Result<bool, CoreError> {
         Ok(self.data.lock().unwrap().contains_key(key))
     }
-    async fn delete(&self, key: &str) -> Result<(), CoreError> {
-        self.data.lock().unwrap().remove(key);
-        Ok(())
+    async fn delete(&self, key: &str) -> Result<bool, CoreError> {
+        Ok(self.data.lock().unwrap().remove(key).is_some())
     }
     async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError> {
         let mut map = self.data.lock().unwrap();

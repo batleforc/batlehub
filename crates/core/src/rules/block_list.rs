@@ -121,6 +121,9 @@ mod tests {
         async fn list_events(&self, _f: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
             Ok(vec![])
         }
+        async fn delete_package(&self, pkg: &PackageId) -> Result<bool, CoreError> {
+            Ok(self.statuses.lock().unwrap().remove(&pkg.cache_key()).is_some())
+        }
     }
 
     struct AlwaysErrorRepo;
@@ -148,6 +151,9 @@ mod tests {
         }
         async fn list_events(&self, _f: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
             Ok(vec![])
+        }
+        async fn delete_package(&self, _: &PackageId) -> Result<bool, CoreError> {
+            Ok(false)
         }
     }
 

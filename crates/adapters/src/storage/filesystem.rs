@@ -167,11 +167,11 @@ impl StorageBackend for FilesystemStorageBackend {
         Ok(self.key_to_path(key)?.exists())
     }
 
-    async fn delete(&self, key: &str) -> Result<(), CoreError> {
+    async fn delete(&self, key: &str) -> Result<bool, CoreError> {
         let path = self.key_to_path(key)?;
         match tokio::fs::remove_file(&path).await {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(e) => Err(CoreError::Storage(format!(
                 "delete file {}: {e}",
                 path.display()

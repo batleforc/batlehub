@@ -359,10 +359,10 @@ impl StorageBackend for StorageRouter {
         }
     }
 
-    async fn delete(&self, key: &str) -> Result<(), CoreError> {
+    async fn delete(&self, key: &str) -> Result<bool, CoreError> {
         // ── Dedup path ────────────────────────────────────────────────────────
         // Delegates the heavy DB work to `delete_dedup_entry` in tracking.rs.
-        if let Some((should_delete_blob, content_key, blob_backend_name)) =
+        let existed = if let Some((should_delete_blob, content_key, blob_backend_name)) =
             self.delete_dedup_entry(key).await?
         {
             // Delete physical blob when no more references.
@@ -372,14 +372,15 @@ impl StorageBackend for StorageRouter {
                     |e| tracing::warn!(error = %e, key = %content_key, "failed to delete physical blob"),
                 );
             }
+            true
         } else {
             // ── Legacy path ───────────────────────────────────────────────────
             let backend = match self.recorded_backend_for_key(key).await {
                 Some(b) => b,
                 None => self.resolve_backend(self.backend_name_for_key(key)).clone(),
             };
-            backend.delete(key).await?;
-        }
+            backend.delete(key).await?
+        };
 
         // Clean up the routing record regardless of path.
         let _ = sqlx::query("DELETE FROM artifact_storage WHERE storage_key = $1")
@@ -390,7 +391,7 @@ impl StorageBackend for StorageRouter {
                 |e| tracing::warn!(error = %e, key, "failed to delete artifact_storage record"),
             );
 
-        Ok(())
+        Ok(existed)
     }
 
     /// Returns count and total size of all logical artifact keys matching `prefix`.
