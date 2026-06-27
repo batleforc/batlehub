@@ -11,6 +11,7 @@ pub enum AccessAction {
     ViewMetadata,
     Block,
     Unblock,
+    Delete,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

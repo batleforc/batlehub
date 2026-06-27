@@ -30,6 +30,17 @@ impl ConfigReloadService {
         self.build_pending(new_config, source).await
     }
 
+    /// Validates a config TOML string without storing a pending reload.
+    /// Returns the diff that would result from applying the new config.
+    pub async fn validate_content(&self, content: &str) -> Result<ReloadDiff, anyhow::Error> {
+        if !self.hot_reload_enabled {
+            anyhow::bail!("hot reload is disabled (BATLEHUB_DISABLE_HOT_RELOAD=1)");
+        }
+        let new_config = load_config_from_str(content)?;
+        let (new_hot, new_access, ..) = (self.builder)(&new_config)?;
+        Ok(self.compute_diff(&new_hot, &new_access).await)
+    }
+
     /// Same as `load_pending` but parses the config from a supplied TOML string
     /// instead of re-reading the file. Used by the config-editor endpoint.
     pub async fn load_pending_from_content(

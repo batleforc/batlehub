@@ -243,6 +243,38 @@ pub struct ConfigFromContentRequest {
     pub content: String,
 }
 
+/// Validate a config TOML string without creating a pending reload.
+///
+/// Returns the diff that would result from applying the new config.
+/// Use `POST /api/v1/admin/config/from-content` to also create the pending reload.
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/config/validate",
+    tag = "back-office",
+    request_body = ConfigFromContentRequest,
+    responses(
+        (status = 200, description = "Config is valid; diff returned", body = ReloadResponse),
+        (status = 400, description = "Validation failure"),
+        (status = 403, description = "Admin role required"),
+        (status = 503, description = "Hot reload disabled"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[post("/api/v1/admin/config/validate")]
+pub async fn validate_config_content(
+    identity: AuthIdentity,
+    body: web::Json<ConfigFromContentRequest>,
+    reload_svc: web::Data<Arc<ConfigReloadService>>,
+) -> Result<impl Responder, AppError> {
+    require_admin(&identity)?;
+    require_hot_reload(&reload_svc)?;
+    let diff = reload_svc
+        .validate_content(&body.content)
+        .await
+        .map_err(|e| AppError::bad_request(e.to_string()))?;
+    Ok(web::Json(ReloadResponse { diff }))
+}
+
 /// Validate a config TOML string and store it as a pending reload.
 ///
 /// The content is parsed and validated exactly like the on-disk file;

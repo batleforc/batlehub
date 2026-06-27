@@ -1081,6 +1081,41 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
               `<code class="font-mono bg-muted px-1 rounded">ubuntu-keyring</code> (or import the upstream key), or use <code class="font-mono bg-muted px-1 rounded">[trusted=yes]</code>.`,
       },
       {
+        key: "apt-auth",
+        label: "Private registry auth",
+        lang: "bash",
+        template: (ctx) => {
+          const { netrcHost, netrcLogin, token, registryName: reg, base } = ctx;
+          const login = ctx.isAuthenticated ? netrcLogin : "<your-username>";
+          const password = ctx.isAuthenticated ? token : "<your-token>";
+          return [
+            `# APT reads credentials from /etc/apt/auth.conf.d/ (Debian 9+ / Ubuntu 19.04+).`,
+            `# The sources.list entry is unchanged — credentials are kept in a separate file.`,
+            ``,
+            `sudo tee /etc/apt/auth.conf.d/${reg}.conf > /dev/null <<'EOF'`,
+            `machine ${netrcHost}`,
+            `login ${login}`,
+            `password ${password}`,
+            `EOF`,
+            `sudo chmod 0600 /etc/apt/auth.conf.d/${reg}.conf`,
+            ``,
+            `sudo apt update`,
+            ``,
+            `# Alternative: embed credentials directly in the source URL`,
+            `# (less secure — credentials visible in sources.list)`,
+            `# echo "deb [signed-by=...] https://${login}:${password}@${netrcHost}/proxy/${reg}/deb stable main" \\`,
+            `#   | sudo tee /etc/apt/sources.list.d/${reg}.list`,
+          ].join("\n");
+        },
+        note:
+          `<code class="font-mono bg-muted px-1 rounded">/etc/apt/auth.conf.d/</code> is the recommended approach — credentials ` +
+          `are stored separately from the source list and are never shown in ` +
+          `<code class="font-mono bg-muted px-1 rounded">apt-cache policy</code> output. ` +
+          `On older systems without <code class="font-mono bg-muted px-1 rounded">auth.conf.d</code> support ` +
+          `(pre-Debian 9 / Ubuntu 18.10), use <code class="font-mono bg-muted px-1 rounded">/etc/apt/auth.conf</code> ` +
+          `with the same <code class="font-mono bg-muted px-1 rounded">machine / login / password</code> stanza.`,
+      },
+      {
         key: "apt-publish",
         label: "Publish a .deb (local/hybrid)",
         lang: "bash",
@@ -1115,12 +1150,18 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "ini",
         template: (ctx) => {
           const reg = `${ctx.base}/proxy/${ctx.registryName}/rpm`;
+          const { isAuthenticated, token, netrcLogin } = ctx;
+          const login = isAuthenticated ? netrcLogin : "<your-username>";
+          const password = isAuthenticated ? token : "<your-token>";
           const lines = [
             `[${ctx.registryName}]`,
             `name=${ctx.registryName}`,
             `baseurl=${reg}`,
             `enabled=1`,
           ];
+          if (isAuthenticated) {
+            lines.push(`username=${login}`, `password=${password}`);
+          }
           if (isPublishMode(ctx)) {
             // Local/hybrid: repomd.xml.asc is signed by BatleHub's key (served at the URL below).
             lines.push(`repo_gpgcheck=1`, `gpgcheck=0`, `gpgkey=${reg}/repodata/repomd.xml.key`);
@@ -1139,7 +1180,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             : `Proxy registries have no BatleHub key — <code class="font-mono bg-muted px-1 rounded">repodata/repomd.xml.key</code> ` +
               `is only served for local/hybrid registries with a <code class="font-mono bg-muted px-1 rounded">repo_signing</code> key. ` +
               `To verify, point <code class="font-mono bg-muted px-1 rounded">gpgkey</code> at the upstream project's key and set ` +
-              `<code class="font-mono bg-muted px-1 rounded">repo_gpgcheck=1</code>.`,
+              `<code class="font-mono bg-muted px-1 rounded">repo_gpgcheck=1</code>. ` +
+              `Credentials in <code class="font-mono bg-muted px-1 rounded">.repo</code> files are read by DNF/YUM; ` +
+              `alternatively, use a <code class="font-mono bg-muted px-1 rounded">~/.netrc</code> entry for the proxy host.`,
       },
       {
         key: "rpm-publish",

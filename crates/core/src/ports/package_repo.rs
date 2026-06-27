@@ -21,6 +21,10 @@ pub trait PackageRepository: Send + Sync {
     /// Update the administrative status of a package.
     async fn set_status(&self, pkg: &PackageId, status: PackageStatus) -> Result<(), CoreError>;
 
+    /// Remove a package's administrative record entirely.
+    /// Returns `true` if a row was found and deleted, `false` if it did not exist.
+    async fn delete_package(&self, pkg: &PackageId) -> Result<bool, CoreError>;
+
     /// List all known packages with optional filtering and pagination.
     async fn list_packages(&self, filter: PackageFilter) -> Result<Vec<PackageSummary>, CoreError>;
 

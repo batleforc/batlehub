@@ -117,6 +117,7 @@ pub(super) fn action_to_str(action: &AccessAction) -> &'static str {
         AccessAction::ViewMetadata => "view_metadata",
         AccessAction::Block => "block",
         AccessAction::Unblock => "unblock",
+        AccessAction::Delete => "delete",
     }
 }
 
@@ -126,6 +127,7 @@ pub(super) fn str_to_action(s: &str) -> AccessAction {
         "view_metadata" => AccessAction::ViewMetadata,
         "block" => AccessAction::Block,
         "unblock" => AccessAction::Unblock,
+        "delete" => AccessAction::Delete,
         _ => AccessAction::Download,
     }
 }
@@ -180,6 +182,10 @@ impl PackageRepository for PgPackageRepository {
 
     async fn set_status(&self, pkg: &PackageId, status: PackageStatus) -> Result<(), CoreError> {
         packages::set_status_impl(&self.pool, pkg, status).await
+    }
+
+    async fn delete_package(&self, pkg: &PackageId) -> Result<bool, CoreError> {
+        packages::delete_package_impl(&self.pool, pkg).await
     }
 
     async fn list_packages(&self, filter: PackageFilter) -> Result<Vec<PackageSummary>, CoreError> {

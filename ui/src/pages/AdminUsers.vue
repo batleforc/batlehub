@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { useAuthFetch } from "@/composables/useAuthFetch";
+import { API_BASE_URL } from "@/config";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -32,7 +33,7 @@ async function loadBlockedUsers() {
   listLoading.value = true;
   listError.value = null;
   try {
-    const res = await authFetch("/api/v1/admin/users/blocked");
+    const res = await authFetch(`${API_BASE_URL}/api/v1/admin/users/blocked`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     blockedUsers.value = (await res.json()) as BlockedUser[];
   } catch (e) {
@@ -55,7 +56,7 @@ async function submitBlock() {
   blockLoading.value = true;
   blockError.value = null;
   try {
-    const res = await authFetch(`/api/v1/admin/users/${encodeURIComponent(uid)}/block`, {
+    const res = await authFetch(`${API_BASE_URL}/api/v1/admin/users/${encodeURIComponent(uid)}/block`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reason: blockForm.value.reason.trim() || null }),
@@ -86,7 +87,7 @@ async function confirmUnblock() {
   unblockError.value = null;
   try {
     const res = await authFetch(
-      `/api/v1/admin/users/${encodeURIComponent(unblockTarget.value)}/block`,
+      `${API_BASE_URL}/api/v1/admin/users/${encodeURIComponent(unblockTarget.value)}/block`,
       { method: "DELETE" },
     );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

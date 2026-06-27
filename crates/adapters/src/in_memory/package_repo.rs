@@ -7,7 +7,10 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use batlehub_core::{
-    entities::{AccessEvent, EventFilter, PackageFilter, PackageId, PackageStatus, PackageSummary},
+    entities::{
+        AccessAction, AccessEvent, EventFilter, PackageFilter, PackageId, PackageStatus,
+        PackageSummary,
+    },
     error::CoreError,
     ports::PackageRepository,
 };
@@ -34,7 +37,8 @@ impl InMemoryPackageRepository {
 impl PackageRepository for InMemoryPackageRepository {
     async fn record_access(&self, event: AccessEvent) -> Result<(), CoreError> {
         let key = event.package_id.cache_key();
-        {
+        // Delete events must not recreate the row that was just removed.
+        if !matches!(event.action, AccessAction::Delete) {
             let mut sums = self.summaries.write().await;
             let entry = sums.entry(key).or_insert_with(|| PackageSummary {
                 id: Uuid::new_v4(),
@@ -76,6 +80,11 @@ impl PackageRepository for InMemoryPackageRepository {
             });
         entry.status = status;
         Ok(())
+    }
+
+    async fn delete_package(&self, pkg: &PackageId) -> Result<bool, CoreError> {
+        let removed = self.summaries.write().await.remove(&pkg.cache_key());
+        Ok(removed.is_some())
     }
 
     async fn list_packages(&self, filter: PackageFilter) -> Result<Vec<PackageSummary>, CoreError> {

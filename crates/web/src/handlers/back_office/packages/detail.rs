@@ -249,6 +249,7 @@ pub async fn package_detail(
                 AccessAction::ViewMetadata => "view_metadata",
                 AccessAction::Block => "block",
                 AccessAction::Unblock => "unblock",
+                AccessAction::Delete => "delete",
             };
             PackageEventDto {
                 id: e.id,

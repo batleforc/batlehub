@@ -831,6 +831,155 @@ Or store credentials in `auth.json` (never commit this file):
 
 ---
 
+**`deb`** — proxies and hosts Debian/Ubuntu APT repositories. In proxy mode the upstream `Release`/`InRelease` file and its existing signature are relayed unchanged; clients verify against the **upstream's** archive key. In local/hybrid mode BatleHub generates and (optionally) signs `Packages` and `Release` with an Ed25519 OpenPGP key (`repo_signing`). Default upstream: `https://deb.debian.org`.
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/proxy/{registry}/deb/dists/{dist}/{component}/binary-{arch}/Packages` | GET | Package index (plain text) |
+| `/proxy/{registry}/deb/dists/{dist}/{component}/binary-{arch}/Packages.gz` | GET | Package index (gzip) |
+| `/proxy/{registry}/deb/dists/{dist}/Release` | GET | Release metadata |
+| `/proxy/{registry}/deb/dists/{dist}/InRelease` | GET | Inline-signed release metadata |
+| `/proxy/{registry}/deb/pool/{dist}/{component}/{filename}` | GET | Download `.deb` package |
+| `/proxy/{registry}/deb/pool/{dist}/{component}/upload` | PUT | **Local/Hybrid:** publish a `.deb` |
+| `/proxy/{registry}/deb/key.gpg` | GET | **Local/Hybrid:** signing public key (ASCII-armored) |
+
+**Client setup — proxy mode** (relays upstream signature; trust the upstream archive key):
+
+```sh
+# Official Debian/Ubuntu mirrors — key is already in the keyring package
+KEYRING=/usr/share/keyrings/debian-archive-keyring.gpg  # ubuntu: ubuntu-archive-keyring.gpg
+echo "deb [signed-by=$KEYRING] http://batlehub.example.com/proxy/my-deb stable main" \
+  | sudo tee /etc/apt/sources.list.d/my-deb.list
+
+# Third-party upstream — import its key first:
+# curl -fsSL <upstream-key-url> | gpg --dearmor \
+#   | sudo tee /usr/share/keyrings/my-deb.gpg >/dev/null
+
+sudo apt update
+```
+
+**Client setup — local/hybrid mode** (BatleHub signs `Release`; import BatleHub's key):
+
+```sh
+# Import BatleHub's signing key
+curl -fsSL http://batlehub.example.com/proxy/my-deb/deb/key.gpg \
+  | sudo tee /usr/share/keyrings/my-deb.asc >/dev/null
+
+# Add the source (adjust suite/component to match your repo)
+echo "deb [signed-by=/usr/share/keyrings/my-deb.asc] \
+  http://batlehub.example.com/proxy/my-deb/deb stable main" \
+  | sudo tee /etc/apt/sources.list.d/my-deb.list
+
+sudo apt update
+```
+
+For an unsigned local repo (no `repo_signing` key configured), replace `[signed-by=…]` with `[trusted=yes]`.
+
+**Private registry authentication:**
+
+APT reads credentials from `/etc/apt/auth.conf.d/` (Debian 9+ / Ubuntu 19.04+). The `sources.list` entry stays unchanged — credentials are kept in a separate file.
+
+```sh
+sudo tee /etc/apt/auth.conf.d/batlehub.conf > /dev/null <<'EOF'
+machine batlehub.example.com
+login <your-username>
+password <your-token>
+EOF
+sudo chmod 0600 /etc/apt/auth.conf.d/batlehub.conf
+
+sudo apt update
+```
+
+On older systems without `auth.conf.d` support, use `/etc/apt/auth.conf` with the same `machine / login / password` stanza.
+
+Alternatively, embed the credentials directly in the URL (less secure — visible in `apt-cache policy` output):
+
+```sh
+echo "deb [signed-by=…] https://<user>:<token>@batlehub.example.com/proxy/my-deb/deb stable main" \
+  | sudo tee /etc/apt/sources.list.d/my-deb.list
+```
+
+**Publish a `.deb` (local/hybrid mode):**
+
+```sh
+curl -X PUT \
+  -H "Authorization: Bearer <your-token>" \
+  --data-binary @hello_1.0_amd64.deb \
+  http://batlehub.example.com/proxy/my-deb/deb/pool/stable/main/upload
+```
+
+---
+
+**`rpm`** — proxies and hosts RPM repositories for DNF/YUM. In proxy mode the upstream `repomd.xml` (and any `repomd.xml.asc` signature) is relayed; clients verify against the **upstream's** GPG key. In local/hybrid mode BatleHub regenerates `repodata/` and optionally signs `repomd.xml` with an Ed25519 OpenPGP key (`repo_signing`). Default upstream: `https://dl.fedoraproject.org/pub/fedora/linux/releases`.
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/proxy/{registry}/rpm/repodata/repomd.xml` | GET | Repository metadata index |
+| `/proxy/{registry}/rpm/repodata/repomd.xml.asc` | GET | **Local/Hybrid (signed):** detached OpenPGP signature |
+| `/proxy/{registry}/rpm/repodata/repomd.xml.key` | GET | **Local/Hybrid (signed):** signing public key (ASCII-armored) |
+| `/proxy/{registry}/rpm/repodata/{filename}` | GET | Other repodata files (primary.xml.gz, filelists.xml.gz, …) |
+| `/proxy/{registry}/rpm/{path}` | GET | Download `.rpm` package |
+| `/proxy/{registry}/rpm/upload` | PUT | **Local/Hybrid:** publish an `.rpm` |
+
+**Client setup — `.repo` file** (`/etc/yum.repos.d/<name>.repo`):
+
+```ini
+[my-rpm]
+name=My RPM Registry
+baseurl=http://batlehub.example.com/proxy/my-rpm/rpm
+enabled=1
+repo_gpgcheck=0   # set to 1 and add gpgkey= for a signed repo
+gpgcheck=0
+```
+
+For a signed local/hybrid repo (BatleHub `repo_signing` key configured):
+
+```ini
+[my-rpm]
+name=My RPM Registry
+baseurl=http://batlehub.example.com/proxy/my-rpm/rpm
+enabled=1
+repo_gpgcheck=1
+gpgcheck=0
+gpgkey=http://batlehub.example.com/proxy/my-rpm/rpm/repodata/repomd.xml.key
+```
+
+For a proxy repo whose upstream signs metadata, point `gpgkey` at the **upstream** project's key.
+
+**Private registry authentication:**
+
+DNF/YUM reads `username` and `password` directly from the `.repo` file:
+
+```ini
+[my-rpm]
+name=My RPM Registry
+baseurl=http://batlehub.example.com/proxy/my-rpm/rpm
+enabled=1
+repo_gpgcheck=0
+gpgcheck=0
+username=<your-username>
+password=<your-token>
+```
+
+Alternatively, use `~/.netrc` (DNF and libcurl honour it for HTTP Basic Auth):
+
+```
+machine batlehub.example.com
+login <your-username>
+password <your-token>
+```
+
+**Publish an `.rpm` (local/hybrid mode):**
+
+```sh
+curl -X PUT \
+  -H "Authorization: Bearer <your-token>" \
+  --data-binary @hello-1.0-1.x86_64.rpm \
+  http://batlehub.example.com/proxy/my-rpm/rpm/upload
+```
+
+---
+
 **`[registries.cache]` fields:**
 
 | Field | Type | Default | Notes |

@@ -49,9 +49,11 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 const configContent = ref("");
 const configReadonly = ref(false);
 const configLoadError = ref<string | null>(null);
-const editorLoading = ref(false);
+const editorValidating = ref(false);
+const editorCreating = ref(false);
 const editorSuccess = ref<string | null>(null);
 const editorError = ref<string | null>(null);
+const validatedContent = ref<string | null>(null);
 
 async function loadConfigContent() {
   configLoadError.value = null;
@@ -69,12 +71,13 @@ async function loadConfigContent() {
   }
 }
 
-async function submitConfigContent() {
-  editorLoading.value = true;
+async function validateConfigContent() {
+  editorValidating.value = true;
   editorSuccess.value = null;
   editorError.value = null;
+  validatedContent.value = null;
   try {
-    const res = await authFetch(`${API_BASE_URL}/api/v1/admin/config/from-content`, {
+    const res = await authFetch(`${API_BASE_URL}/api/v1/admin/config/validate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content: configContent.value }),
@@ -83,12 +86,36 @@ async function submitConfigContent() {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       throw new Error(body.error ?? `HTTP ${res.status}`);
     }
-    editorSuccess.value = "Config validated — pending reload created. Review it below, then apply.";
-    await fetchPending();
+    validatedContent.value = configContent.value;
+    editorSuccess.value = "Config is valid. Click \"Create Pending Reload\" to stage it for apply.";
   } catch (e) {
     editorError.value = e instanceof Error ? e.message : "Validation failed";
   } finally {
-    editorLoading.value = false;
+    editorValidating.value = false;
+  }
+}
+
+async function createPendingFromContent() {
+  editorCreating.value = true;
+  editorSuccess.value = null;
+  editorError.value = null;
+  try {
+    const res = await authFetch(`${API_BASE_URL}/api/v1/admin/config/from-content`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: validatedContent.value ?? configContent.value }),
+    });
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(body.error ?? `HTTP ${res.status}`);
+    }
+    validatedContent.value = null;
+    editorSuccess.value = "Pending reload created. Review it below, then apply.";
+    await fetchPending();
+  } catch (e) {
+    editorError.value = e instanceof Error ? e.message : "Failed to create pending reload";
+  } finally {
+    editorCreating.value = false;
   }
 }
 
@@ -258,6 +285,7 @@ onUnmounted(() => {
           class="w-full rounded-sm border border-input bg-background font-mono text-xs p-3 focus:outline-none focus:ring-2 focus:ring-ring resize-y"
           spellcheck="false"
           aria-label="Config TOML content"
+          @input="validatedContent = null"
         />
         <div
           v-if="editorSuccess"
@@ -271,12 +299,18 @@ onUnmounted(() => {
         >
           {{ editorError }}
         </div>
-        <div class="flex gap-2">
+        <div class="flex gap-2 flex-wrap">
           <Button
-            :disabled="editorLoading || configReadonly || hotReloadEnabled === false"
-            @click="submitConfigContent"
+            :disabled="editorValidating || editorCreating || configReadonly || hotReloadEnabled === false"
+            @click="validateConfigContent"
           >
-            {{ editorLoading ? "Validating…" : "Validate & Create Pending Reload" }}
+            {{ editorValidating ? "Validating…" : "Validate" }}
+          </Button>
+          <Button
+            :disabled="editorCreating || editorValidating || !validatedContent || configReadonly || hotReloadEnabled === false"
+            @click="createPendingFromContent"
+          >
+            {{ editorCreating ? "Creating…" : "Create Pending Reload" }}
           </Button>
           <Button variant="outline" @click="loadConfigContent"> Reload from Disk </Button>
         </div>

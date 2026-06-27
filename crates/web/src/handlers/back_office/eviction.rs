@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use actix_web::{post, web, Responder};
-use serde::Serialize;
+use actix_web::{delete, post, web, Responder};
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use batlehub_core::services::EvictionService;
+use batlehub_core::services::{validate_path_safe, EvictionService, ProxyService};
 
 use super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
@@ -64,6 +64,127 @@ pub async fn evict_registry(
         evicted_idle: report.evicted_idle,
         evicted_old_versions: report.evicted_old_versions,
         evicted_lru: report.evicted_lru,
+    }))
+}
+
+/// Request body for targeted proxy-cache artifact deletion.
+#[derive(Deserialize, ToSchema)]
+pub struct DeleteCacheRequest {
+    /// Package name. Required for package-centric registries.
+    pub name: Option<String>,
+    /// Package version. Required for package-centric registries.
+    pub version: Option<String>,
+    /// Artifact path for path-addressed registries (deb/rpm/jetbrains),
+    /// e.g. `"idea/ideaIC-2026.1.3.tar.gz"`. Takes precedence over name+version.
+    pub path: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct DeleteCacheResponse {
+    /// `true` if the artifact was present and removed; `false` if it was not cached.
+    pub deleted: bool,
+    /// The logical storage key that was targeted.
+    pub artifact_key: String,
+}
+
+/// Delete a single proxy-cached artifact for a registry (admin).
+///
+/// Removes the artifact from storage and clears its cache metadata so the next
+/// request re-downloads it from upstream. Use `path` for path-addressed registries
+/// (deb/rpm/jetbrains); use `name` + `version` for all others.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/admin/registries/{registry}/cache",
+    tag = "back-office",
+    params(
+        ("registry" = String, Path, description = "Registry name"),
+    ),
+    request_body = DeleteCacheRequest,
+    responses(
+        (status = 200, description = "Cache entry deleted (or was not present)", body = DeleteCacheResponse),
+        (status = 400, description = "Invalid or missing name/version/path"),
+        (status = 403, description = "Admin role required"),
+        (status = 404, description = "Registry not found"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[delete("/api/v1/admin/registries/{registry}/cache")]
+pub async fn delete_cached_artifact(
+    identity: AuthIdentity,
+    path: web::Path<String>,
+    body: web::Json<DeleteCacheRequest>,
+    registry_map: web::Data<RegistryMap>,
+    proxy_svc: web::Data<Arc<ProxyService>>,
+) -> Result<impl Responder, AppError> {
+    require_admin(&identity)?;
+
+    let registry = path.into_inner();
+
+    if !registry_map.contains(&registry) {
+        return Err(AppError::not_found("registry not found"));
+    }
+
+    validate_path_safe("registry", &registry)
+        .map_err(|e| AppError::bad_request(e.to_string()))?;
+
+    let artifact_key = if let Some(p) = &body.path {
+        if p.is_empty() {
+            return Err(AppError::bad_request("path must not be empty"));
+        }
+        validate_path_safe("path", p).map_err(|e| AppError::bad_request(e.to_string()))?;
+        format!("artifact:{registry}/repo/_/{p}")
+    } else {
+        let name = body
+            .name
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AppError::bad_request("name is required for package-centric registries"))?;
+        let version = body
+            .version
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                AppError::bad_request("version is required for package-centric registries")
+            })?;
+        validate_path_safe("name", name).map_err(|e| AppError::bad_request(e.to_string()))?;
+        validate_path_safe("version", version).map_err(|e| AppError::bad_request(e.to_string()))?;
+        format!("artifact:{registry}/{name}/{version}")
+    };
+
+    let was_present = proxy_svc
+        .storage
+        .exists(&artifact_key)
+        .await
+        .map_err(AppError::from)?;
+
+    if was_present {
+        proxy_svc
+            .storage
+            .delete(&artifact_key)
+            .await
+            .map_err(AppError::from)?;
+
+        if let Err(e) = proxy_svc
+            .artifact_meta
+            .delete_artifact_meta(&artifact_key)
+            .await
+        {
+            tracing::warn!(key = %artifact_key, error = %e, "delete_cached_artifact: artifact_meta cleanup failed");
+        }
+
+        // Best-effort metadata cache invalidation so the next request re-resolves
+        // versions from upstream instead of returning stale metadata.
+        if let Some(meta_key) = artifact_key.strip_prefix("artifact:") {
+            let cache_key = format!("meta:{meta_key}");
+            if let Err(e) = proxy_svc.cache.invalidate(&cache_key).await {
+                tracing::debug!(key = %cache_key, error = %e, "delete_cached_artifact: meta cache clear failed (non-fatal)");
+            }
+        }
+    }
+
+    Ok(web::Json(DeleteCacheResponse {
+        deleted: was_present,
+        artifact_key,
     }))
 }
 

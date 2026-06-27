@@ -1,7 +1,5 @@
 use std::sync::Arc;
 
-use bytes::Bytes;
-use futures::StreamExt;
 use tokio::sync::Semaphore;
 
 use crate::{
@@ -59,10 +57,15 @@ async fn warm_one_version(
 
     match storage.exists(&artifact_key).await {
         Ok(true) => {
+            tracing::debug!(
+                registry = %registry_name, package = %name,
+                version = %version, key = %artifact_key,
+                "warming: skipped — artifact already in cache"
+            );
             return WarmingReport {
                 skipped: 1,
                 ..Default::default()
-            }
+            };
         }
         Ok(false) => {}
         Err(e) => {
@@ -89,47 +92,24 @@ async fn warm_one_version(
         }
     };
 
-    let mut buf = Vec::new();
-    let mut stream = fetched.stream;
-    while let Some(chunk) = stream.next().await {
-        match chunk {
-            Ok(b) => buf.extend_from_slice(&b),
-            Err(e) => {
-                tracing::warn!(
-                    registry = %registry_name, package = %name,
-                    version = %version, error = %e,
-                    "warming: stream error"
-                );
-                return WarmingReport {
-                    errors: 1,
-                    ..Default::default()
-                };
-            }
-        }
-    }
-    let data = Bytes::from(buf);
-    let size = data.len() as u64;
-    // Self-computed digest persisted in the cache metadata table (via
-    // `record_artifact`) for re-serve integrity verification.
-    let checksum = crate::services::integrity::sha256_hex(&data);
-
-    if let Err(e) = storage
-        .store(
-            &artifact_key,
-            data,
-            StorageMeta {
-                size: Some(size),
-                ..Default::default()
-            },
-        )
+    // Stream directly to storage without buffering the full artifact in memory.
+    // `store_streaming` implementations (filesystem, S3) write incrementally so
+    // peak memory is bounded to a single chunk regardless of artifact size.
+    let outcome = match storage
+        .store_streaming(&artifact_key, fetched.stream, StorageMeta::default())
         .await
     {
-        tracing::warn!(error = %e, key = %artifact_key, "warming: store failed");
-        return WarmingReport {
-            errors: 1,
-            ..Default::default()
-        };
-    }
+        Ok(o) => o,
+        Err(e) => {
+            tracing::warn!(error = %e, key = %artifact_key, "warming: store failed");
+            return WarmingReport {
+                errors: 1,
+                ..Default::default()
+            };
+        }
+    };
+    let size = outcome.size;
+    let checksum = outcome.content_hash;
 
     if let Err(e) = artifact_meta
         .record_artifact(ArtifactMetaRecord {
@@ -303,7 +283,9 @@ impl WarmingService {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
     use chrono::Utc;
+    use futures::StreamExt;
 
     use super::*;
     use crate::{

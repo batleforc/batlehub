@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use actix_web::{post, web, Responder};
+use actix_web::{get, post, web, Responder};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -39,6 +39,47 @@ pub struct WarmResponse {
     pub warmed: usize,
     pub skipped: usize,
     pub errors: usize,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct WarmableRegistry {
+    pub name: String,
+    pub latest_n: usize,
+    pub concurrency: usize,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct WarmingStatusResponse {
+    pub registries: Vec<WarmableRegistry>,
+}
+
+/// List registries that have warming configured and their settings.
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/warming",
+    tag = "back-office",
+    responses(
+        (status = 200, description = "Warmable registries", body = WarmingStatusResponse),
+        (status = 403, description = "Admin role required"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[get("/api/v1/admin/warming")]
+pub async fn get_warming_status(
+    identity: AuthIdentity,
+    warming_map: web::Data<WarmingServiceMap>,
+) -> Result<impl Responder, AppError> {
+    require_admin(&identity)?;
+    let mut registries: Vec<WarmableRegistry> = warming_map
+        .iter()
+        .map(|(name, svc)| WarmableRegistry {
+            name: name.clone(),
+            latest_n: svc.latest_n,
+            concurrency: svc.concurrency,
+        })
+        .collect();
+    registries.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(web::Json(WarmingStatusResponse { registries }))
 }
 
 /// Pre-warm cached artifacts for a specific package in a registry (admin).

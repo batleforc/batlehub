@@ -733,6 +733,34 @@ For an unsigned **local** repository (no `[registries.repo_signing]` key), repla
 > (Debian) or `ubuntu-keyring` (Ubuntu), import the upstream's key into a keyring and
 > point `signed-by` at it, or use `[trusted=yes]` if you trust the channel.
 
+### Private registry access {#deb-auth}
+
+APT reads credentials from `/etc/apt/auth.conf.d/` (Debian 9+ / Ubuntu 19.04+).
+The `sources.list` entry stays unchanged — credentials live in a separate file
+that is not visible to `apt-cache policy`.
+
+```bash
+sudo tee /etc/apt/auth.conf.d/batlehub.conf > /dev/null <<'EOF'
+machine batlehub.example.com
+login <your-username>
+password <your-token>
+EOF
+sudo chmod 0600 /etc/apt/auth.conf.d/batlehub.conf
+
+sudo apt update
+```
+
+On older systems without `auth.conf.d` support, use `/etc/apt/auth.conf` with
+the same `machine / login / password` stanza.
+
+Alternatively, embed the credentials directly in the URL (less secure — the
+token is visible in `apt-cache policy` output):
+
+```bash
+echo "deb [signed-by=…] https://<user>:<token>@batlehub.example.com/proxy/my-apt/deb stable main" \
+  | sudo tee /etc/apt/sources.list.d/my-apt.list
+```
+
 ### Publish a `.deb` (local/hybrid mode)
 
 ```bash
@@ -779,6 +807,30 @@ For an unsigned **local** repo (no `[registries.repo_signing]` key), set
 > mode BatleHub relays the **upstream** `repodata` (including any `repomd.xml.asc`),
 > so either point `gpgkey` at the **upstream project's** key with `repo_gpgcheck=1`,
 > or set `repo_gpgcheck=0` if you trust the channel.
+
+### Private registry access {#rpm-auth}
+
+DNF/YUM reads `username` and `password` directly from the `.repo` file:
+
+```ini
+# /etc/yum.repos.d/my-rpm.repo
+[my-rpm]
+name=my-rpm
+baseurl=https://batlehub.example.com/proxy/my-rpm/rpm
+enabled=1
+repo_gpgcheck=0
+gpgcheck=0
+username=<your-username>
+password=<your-token>
+```
+
+Alternatively, use `~/.netrc` (DNF and libcurl honour it for HTTP Basic Auth):
+
+```
+machine batlehub.example.com
+login <your-username>
+password <your-token>
+```
 
 ### Publish an `.rpm` (local/hybrid mode)
 

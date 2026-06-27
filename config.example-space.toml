@@ -119,6 +119,14 @@ role_claim = "groups"
 # type  = "redis"
 # url   = "redis://localhost:6379"   # required when type = "redis"
 
+# ── Upload / download size limits ─────────────────────────────────────────────
+#
+# max_artifact_size_bytes caps the size of proxy downloads and local publishes.
+# Default is 500 MiB. Raise it when caching large archives (e.g. JetBrains IDEs
+# are 1–1.7 GB).
+[limits]
+max_artifact_size_bytes = 2147483648   # 2 GiB — required for JetBrains IDE archives
+
 # ── Storage backend ────────────────────────────────────────────────────────────
 
 # Single backend (legacy format — still supported):
@@ -450,13 +458,15 @@ upstreams = ["https://repo1.maven.org/maven2/"]
 #   http(s)://your-host/proxy/jetbrains-ide/jetbrains/idea/ideaIC-2024.1.4.tar.gz
 # is served from cache after the first download from download.jetbrains.com.
 #
-# Use the canonical download.jetbrains.com path (real names: ideaIU-… Ultimate /
-# ideaIC-… Community). That host 302-redirects to a CDN (download-cdn.jetbrains.com);
+# Use the canonical download.jetbrains.com path:
+#   ideaIU-<version>.tar.gz  — IntelliJ IDEA Ultimate
+#   ideaIC-<version>.tar.gz  — IntelliJ IDEA Community
+# That host 302-redirects to a CDN (download-cdn.jetbrains.com);
 # the redirect is followed automatically — don't put the CDN host in the path.
 #
-# IMPORTANT: IDE archives are ~1–1.7 GB. The proxy buffers the whole artifact in
-# memory before caching and rejects anything over `max_artifact_size_bytes`
-# (default 500 MiB), so raise that limit (e.g. 2 GiB) for IDE archives.
+# IMPORTANT: IDE archives are ~1–1.7 GB. The proxy rejects downloads over
+# `max_artifact_size_bytes` (default 500 MiB), so raise that limit for IDE
+# archives — see the [limits] section above.
 [[registries]]
 type   = "jetbrains"
 name   = "jetbrains-ide"
@@ -466,9 +476,9 @@ mode   = "proxy"            # upstream defaults to https://download.jetbrains.co
 anonymous = ["releases:read"]
 # Pre-warm specific upstream paths on startup (and via the /warm admin endpoint).
 # Path-addressed registries (deb/rpm/jetbrains) use `warm_paths` instead of
-# `warm_packages`. Entries are upstream-relative paths.
+# `warm_packages`. Entries are upstream-relative paths (ideaIC = Community, ideaIU = Ultimate).
 [registries.cache]
-warm_paths = ["idea/ideaIC-2024.1.4.tar.gz"]
+warm_paths = ["idea/idea-2026.1.3.tar.gz"]
 
 # ── Versioning policies (local/hybrid mode) ──────────────────────────────────
 #

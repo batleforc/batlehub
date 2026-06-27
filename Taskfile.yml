@@ -286,6 +286,12 @@ tasks:
     cmds:
       - cargo run -p batlehub-server --features storage-s3 -- --config config.example-s3.toml
 
+  generate:
+    desc: Regenerate the back client
+    cmds:
+      - task dump-spec
+      - task ui:generate
+
   cli:
     desc: "Run batlehub-cli with any arguments (e.g. task cli -- registry list)"
     cmds:

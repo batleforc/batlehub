@@ -583,9 +583,9 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             config::{
                 apply_pending_reload, clear_banner, discard_pending_reload, get_config_content,
                 get_pending_reload, list_config_changes, load_config_from_content, reload_config,
-                set_banner,
+                set_banner, validate_config_content,
             },
-            eviction::evict_registry,
+            eviction::{delete_cached_artifact, evict_registry},
             explore::invalidate_explore_cache,
             health::{clear_registry_cache, registry_health},
             ip_blocks::{block_ip, list_blocked_ips, unblock_ip},
@@ -596,8 +596,9 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             },
             ownership::{add_package_owner, list_package_owners, remove_package_owner},
             packages::{
-                block_package, bulk_block_packages, bulk_unblock_packages, invalidate_package,
-                list_packages as admin_list_packages, package_detail, unblock_package,
+                block_package, bulk_block_packages, bulk_delete_packages, bulk_unblock_packages,
+                delete_package, invalidate_package, list_packages as admin_list_packages,
+                package_detail, unblock_package,
             },
             quota::{
                 get_quota_for_user, list_quota, list_quota_for_registry, reset_quota_for_user,
@@ -610,7 +611,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             },
             user_block::{block_user, list_blocked_users, unblock_user},
             visibility::{get_package_visibility, set_package_visibility},
-            warming::warm_registry,
+            warming::{get_warming_status, warm_registry},
         },
         front_office::{
             banner::get_banner,
@@ -811,14 +812,18 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(package_detail);
     cfg.service(block_package);
     cfg.service(unblock_package);
+    cfg.service(delete_package);
+    cfg.service(bulk_delete_packages);
     cfg.service(bulk_block_packages);
     cfg.service(bulk_unblock_packages);
     cfg.service(invalidate_package);
     cfg.service(registry_health);
     cfg.service(clear_registry_cache);
     cfg.service(audit_log);
+    cfg.service(get_warming_status);
     cfg.service(warm_registry);
     cfg.service(evict_registry);
+    cfg.service(delete_cached_artifact);
     cfg.service(admin_stats);
     // Quota admin (specific user route before registry-level route)
     cfg.service(reset_quota_for_user);
@@ -868,6 +873,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(list_config_changes);
     // Config content (editor) endpoints
     cfg.service(get_config_content);
+    cfg.service(validate_config_content);
     cfg.service(load_config_from_content);
     // Banner admin + public
     cfg.service(set_banner);

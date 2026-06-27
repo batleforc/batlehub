@@ -150,6 +150,65 @@ pub async fn unblock_package(
     }))
 }
 
+// ── Delete package record + cached artifact ───────────────────────────────────
+
+#[derive(Deserialize, ToSchema)]
+pub struct DeletePackageRequest {
+    pub registry: String,
+    pub name: String,
+    pub version: String,
+    pub artifact: Option<String>,
+}
+
+/// Delete a package record and purge its cached artifact (admin).
+///
+/// Removes the entry from the administrative tracking table and deletes the
+/// cached artifact from storage so the next request re-downloads from upstream.
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/packages/delete",
+    tag = "back-office",
+    request_body = DeletePackageRequest,
+    responses(
+        (status = 200, description = "Package deleted", body = ActionResponse),
+        (status = 403, description = "Admin role required"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[post("/api/v1/admin/packages/delete")]
+pub async fn delete_package(
+    identity: AuthIdentity,
+    body: web::Json<DeletePackageRequest>,
+    admin_svc: web::Data<Arc<AdminService>>,
+    proxy_svc: web::Data<Arc<ProxyService>>,
+) -> Result<impl Responder, AppError> {
+    require_admin(&identity)?;
+
+    let pkg = PackageId {
+        registry: body.registry.clone(),
+        name: body.name.clone(),
+        version: body.version.clone(),
+        artifact: body.artifact.clone(),
+    };
+
+    admin_svc
+        .delete_package(&pkg, &identity.0)
+        .await
+        .map_err(AppError::from)?;
+
+    let storage_key = format!("artifact:{}", pkg.cache_key());
+    let meta_key = format!("meta:{}", pkg.cache_key());
+    // Best-effort: purge cached artifact and metadata cache.
+    let _ = proxy_svc.storage.delete(&storage_key).await;
+    let _ = proxy_svc.artifact_meta.delete_artifact_meta(&storage_key).await;
+    let _ = proxy_svc.cache.invalidate(&meta_key).await;
+
+    Ok(web::Json(ActionResponse {
+        success: true,
+        message: format!("package '{}' deleted", pkg),
+    }))
+}
+
 // ── Cache invalidation ────────────────────────────────────────────────────────
 
 #[derive(Deserialize, ToSchema)]

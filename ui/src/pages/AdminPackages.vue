@@ -13,6 +13,8 @@ import {
 import type { RegistryInfo } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
+import { useAuthFetch } from "@/composables/useAuthFetch";
+import { API_BASE_URL } from "@/config";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -49,6 +51,7 @@ interface AdminPackageSummary {
 }
 
 const { token } = useAuth();
+const { authFetch } = useAuthFetch();
 const router = useRouter();
 
 const {
@@ -118,6 +121,30 @@ async function unblock(pkg: AdminPackageSummary) {
     reload();
   } catch (e: unknown) {
     actionError.value = e instanceof Error ? e.message : "Failed to unblock package.";
+  }
+}
+
+async function deletePkg(pkg: AdminPackageSummary) {
+  if (!confirm(`Delete package record and purge cached artifact for "${pkg.package_id.name}@${pkg.package_id.version}"? This cannot be undone.`)) return;
+  actionError.value = null;
+  try {
+    const res = await authFetch(`${API_BASE_URL}/api/v1/admin/packages/delete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        registry: pkg.package_id.registry,
+        name: pkg.package_id.name,
+        version: pkg.package_id.version,
+        artifact: pkg.package_id.artifact ?? null,
+      }),
+    });
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(body.error ?? `HTTP ${res.status}`);
+    }
+    reload();
+  } catch (e: unknown) {
+    actionError.value = e instanceof Error ? e.message : "Failed to delete package.";
   }
 }
 
@@ -211,6 +238,38 @@ async function bulkUnblock() {
       const failSuffix = r.failed_count ? `, ${r.failed_count} failed` : "";
       bulkResultMsg.value = `Unblocked ${r.succeeded_count} package(s)${failSuffix}.`;
     }
+  } finally {
+    bulkLoading.value = false;
+    selected.value = new Set();
+    reload();
+  }
+}
+
+async function bulkDelete() {
+  if (!confirm(`Delete ${selected.value.size} selected package record(s) and purge their cached artifacts? This cannot be undone.`)) return;
+  bulkLoading.value = true;
+  bulkResultMsg.value = null;
+  try {
+    const res = await authFetch(`${API_BASE_URL}/api/v1/admin/packages/bulk-delete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        items: selectedPackages.value.map((p) => ({
+          registry: p.package_id.registry,
+          name: p.package_id.name,
+          version: p.package_id.version,
+          artifact: p.package_id.artifact ?? null,
+        })),
+      }),
+    });
+    const json = (await res.json().catch(() => ({}))) as {
+      succeeded_count?: number;
+      failed_count?: number;
+    };
+    const failSuffix = json.failed_count ? `, ${json.failed_count} failed` : "";
+    bulkResultMsg.value = `Deleted ${json.succeeded_count ?? 0} package(s)${failSuffix}.`;
+  } catch (e) {
+    bulkResultMsg.value = e instanceof Error ? e.message : "Bulk delete failed.";
   } finally {
     bulkLoading.value = false;
     selected.value = new Set();
@@ -367,6 +426,9 @@ async function submitPreBlock() {
       <Button size="sm" variant="outline" :disabled="bulkLoading" @click="bulkUnblock">
         Unblock selected
       </Button>
+      <Button size="sm" variant="destructive" :disabled="bulkLoading" @click="bulkDelete">
+        Delete selected
+      </Button>
       <Button size="sm" variant="ghost" @click="selected = new Set()"> Clear </Button>
       <span v-if="bulkResultMsg" class="text-xs text-muted-foreground ml-auto">{{
         bulkResultMsg
@@ -514,15 +576,22 @@ async function submitPreBlock() {
                 </div>
               </TableCell>
               <TableCell class="text-right">
-                <Button
-                  v-if="pkg.status.status === 'blocked'"
-                  variant="outline"
-                  size="sm"
-                  @click="unblock(pkg)"
-                >
-                  Unblock
-                </Button>
-                <Button v-else variant="destructive" size="sm" @click="block(pkg)"> Block </Button>
+                <div class="flex gap-1 justify-end">
+                  <Button
+                    v-if="pkg.status.status === 'blocked'"
+                    variant="outline"
+                    size="sm"
+                    @click="unblock(pkg)"
+                  >
+                    Unblock
+                  </Button>
+                  <Button v-else variant="destructive" size="sm" @click="block(pkg)">
+                    Block
+                  </Button>
+                  <Button variant="ghost" size="sm" class="text-destructive hover:text-destructive hover:bg-destructive/10" @click="deletePkg(pkg)">
+                    Delete
+                  </Button>
+                </div>
               </TableCell>
             </TableRow>
           </TableBody>

@@ -285,3 +285,43 @@ async fn unknown_registry_uses_default_backend() {
     );
     assert!(!fs_other.exists(&blob).await.unwrap());
 }
+
+// Regression: re-storing identical bytes after the physical blob was deleted
+// (e.g. `./storage` wiped without resetting the DB) must restore the blob and
+// make `retrieve` return the content — not a "vanished immediately after caching"
+// 502 error.
+#[tokio::test]
+async fn restore_after_physical_blob_deleted() {
+    let Some(url) = db_url() else { return };
+    let fs = make_fs("restore").await;
+    let key = ukey("jetbrains", "idea");
+
+    let data = upayload("idea-archive");
+    let blob = content_key(&data);
+
+    // First store: sets up dedup tables + physical blob.
+    let router = single_backend_router(fs.clone(), pool(&url).await);
+    router
+        .store(&key, data.clone(), StorageMeta::default())
+        .await
+        .unwrap();
+    assert!(router.exists(&key).await.unwrap());
+
+    // Simulate clearing the storage directory without resetting the DB.
+    fs.delete(&blob).await.unwrap();
+    assert!(!router.exists(&key).await.unwrap(), "blob gone → exists false");
+
+    // Re-store the same bytes (same hash). Must restore the physical blob.
+    router
+        .store(&key, data.clone(), StorageMeta::default())
+        .await
+        .unwrap();
+
+    // retrieve must now succeed — no "vanished immediately after caching" error.
+    let artifact = router
+        .retrieve(&key)
+        .await
+        .unwrap()
+        .expect("blob must be retrievable after re-store");
+    assert_eq!(collect(artifact).await, data.as_ref());
+}

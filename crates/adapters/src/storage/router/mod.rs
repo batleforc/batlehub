@@ -101,9 +101,19 @@ impl StorageRouter {
         .map_err(|e| CoreError::Storage(e.to_string()))?;
 
         if existing_hash.as_deref() == Some(content_hash) {
-            // Identical bytes re-stored under the same key — nothing to do in the DB.
             tx.rollback().await.ok();
-            source.discard_staged(backend).await;
+            if backend.exists(content_key).await.unwrap_or(false) {
+                // Identical bytes re-stored and the physical blob is present — nothing to do.
+                source.discard_staged(backend).await;
+            } else {
+                // Same hash but the physical blob is gone (e.g. storage was cleared without
+                // resetting the DB). The dedup rows are already correct, so just restore the
+                // blob without touching ref counts.
+                if let Err(e) = source.materialize(backend, content_key).await {
+                    source.discard_staged(backend).await;
+                    return Err(e);
+                }
+            }
         } else {
             // Increment (or insert) ref count for the new hash.
             let count: i32 = sqlx::query_scalar(

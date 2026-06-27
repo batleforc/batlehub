@@ -3,8 +3,8 @@ use std::sync::Arc;
 use chrono::Utc;
 
 use crate::entities::{
-    AccessEvent, AccessResult, ArtifactVulnerability, EventFilter, ExploreEntry, ExploreFilter,
-    Identity, PackageFilter, PackageId, PackageStatus, PackageSummary, RegistryStat,
+    AccessAction, AccessEvent, AccessResult, ArtifactVulnerability, EventFilter, ExploreEntry,
+    ExploreFilter, Identity, PackageFilter, PackageId, PackageStatus, PackageSummary, RegistryStat,
 };
 use crate::error::CoreError;
 use crate::ports::{PackageRepository, VulnerabilityRepository};
@@ -157,6 +157,52 @@ impl AdminService {
         for pkg in items {
             match self.unblock_package(&pkg, by_identity).await {
                 Ok(()) => result.succeeded.push(pkg),
+                Err(e) => result.failed.push((pkg, e.to_string())),
+            }
+        }
+        result
+    }
+
+    /// Remove a package's administrative record.
+    ///
+    /// Returns `true` if the row existed and was deleted. The caller is responsible
+    /// for also purging the cached artifact from storage when desired.
+    pub async fn delete_package(
+        &self,
+        pkg: &PackageId,
+        by_identity: &Identity,
+    ) -> Result<bool, CoreError> {
+        let deleted = self.repo.delete_package(pkg).await?;
+        if deleted {
+            self.repo
+                .record_access(AccessEvent {
+                    id: uuid::Uuid::new_v4(),
+                    user_id: by_identity.user_id.clone(),
+                    user_role: by_identity.role.clone(),
+                    package_id: pkg.clone(),
+                    action: AccessAction::Delete,
+                    result: AccessResult::Allowed,
+                    timestamp: Utc::now(),
+                })
+                .await
+                .unwrap_or_else(|e| tracing::warn!(error = %e, "failed to record delete action"));
+            tracing::info!(package = %pkg, "package record deleted");
+        }
+        Ok(deleted)
+    }
+
+    pub async fn bulk_delete_packages(
+        &self,
+        items: Vec<PackageId>,
+        by_identity: &Identity,
+    ) -> BulkActionResult {
+        let mut result = BulkActionResult {
+            succeeded: vec![],
+            failed: vec![],
+        };
+        for pkg in items {
+            match self.delete_package(&pkg, by_identity).await {
+                Ok(_) => result.succeeded.push(pkg),
                 Err(e) => result.failed.push((pkg, e.to_string())),
             }
         }

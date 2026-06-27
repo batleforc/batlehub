@@ -1,7 +1,7 @@
 use super::{
-    action_to_str, map_package_summary, prepare_registries_param, role_to_str, AccessEvent,
-    AccessResult, CoreError, DateTime, DbResultExt, PackageFilter, PackageId, PackageStatus,
-    PackageSummary, PgPool, Row, Utc, Uuid,
+    action_to_str, map_package_summary, prepare_registries_param, role_to_str, AccessAction,
+    AccessEvent, AccessResult, CoreError, DateTime, DbResultExt, PackageFilter, PackageId,
+    PackageStatus, PackageSummary, PgPool, Row, Utc, Uuid,
 };
 
 pub(super) async fn record_access_impl(pool: &PgPool, event: AccessEvent) -> Result<(), CoreError> {
@@ -36,7 +36,10 @@ pub(super) async fn record_access_impl(pool: &PgPool, event: AccessEvent) -> Res
 
     // Ensure the package appears in list_packages by creating an 'available' status
     // row on first access. DO NOTHING preserves any existing blocked status.
-    if matches!(event.result, AccessResult::Allowed) {
+    // Skip for Delete actions — the row was just removed and must not be recreated.
+    if matches!(event.result, AccessResult::Allowed)
+        && !matches!(event.action, AccessAction::Delete)
+    {
         sqlx::query(
             r#"
             INSERT INTO package_statuses
@@ -154,6 +157,25 @@ pub(super) async fn set_status_impl(
     .db_err()?;
 
     Ok(())
+}
+
+pub(super) async fn delete_package_impl(
+    pool: &PgPool,
+    pkg: &PackageId,
+) -> Result<bool, CoreError> {
+    let result = sqlx::query(
+        "DELETE FROM package_statuses \
+         WHERE registry = $1 AND package_name = $2 AND package_version = $3 \
+         AND (package_artifact IS NOT DISTINCT FROM $4)",
+    )
+    .bind(&pkg.registry)
+    .bind(&pkg.name)
+    .bind(&pkg.version)
+    .bind(&pkg.artifact)
+    .execute(pool)
+    .await
+    .db_err()?;
+    Ok(result.rows_affected() > 0)
 }
 
 pub(super) async fn list_packages_impl(
