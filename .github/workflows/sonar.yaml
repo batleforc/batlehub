@@ -1,5 +1,4 @@
 name: SonarCloud
-
 on:
   push:
     branches: ["main"]
@@ -26,11 +25,9 @@ on:
       - "sonar-project.properties"
       - ".github/workflows/sonar.yaml"
   workflow_dispatch:
-
 permissions:
   contents: read
   pull-requests: read
-
 env:
   CARGO_TERM_COLOR: always
   DATABASE_URL: postgresql://postgres:testpass@localhost:5432/postgres
@@ -40,12 +37,10 @@ env:
   REDIS_URL: redis://localhost:6379
   COVERAGE_EXCLUDE: >-
     server/src/(main|server_factory|setup|stores|watcher)\.rs|crates/web/src/handlers/auth/oidc(\.rs|/)|crates/web/src/handlers/back_office/health/system\.rs|crates/adapters/src/db/|crates/adapters/src/registry/(cargo|npm)\.rs|crates/adapters/src/registry/github/|crates/adapters/src/notification/postgres\.rs|crates/adapters/src/sbom/fetcher\.rs|crates/adapters/src/cache/(postgres|banner_redis)\.rs|crates/adapters/src/local_registry/postgres\.rs|crates/adapters/src/rate_limit/(postgres|ip_block_postgres)\.rs|crates/adapters/src/storage/router/|cli/src/tui/|cli/src/(api|cli)/owner\.rs
-
 jobs:
   sonar:
     name: SonarCloud Analysis
     runs-on: ubuntu-latest
-
     services:
       postgres:
         image: postgres:17-alpine
@@ -54,11 +49,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 3s --health-retries 10
       minio:
         image: rustfs/rustfs:latest
         env:
@@ -66,107 +57,73 @@ jobs:
           RUSTFS_ROOT_PASSWORD: minioadmin
         ports:
           - 9000:9000
-
       redis:
         image: redis:7-alpine
         ports:
           - 6379:6379
         options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
         with:
           fetch-depth: 0
-
       # ── Frontend coverage ────────────────────────────────────────────────────
-
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: ui/package-lock.json
-
       - name: Install frontend dependencies
         run: npm ci --ignore-scripts
         working-directory: ui
-
       - name: Generate frontend coverage (lcov)
         run: npm run coverage
         working-directory: ui
         env:
           CI: "true"
-
       # ── Rust coverage (workspace + integration tests) ────────────────────────
-
       - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
         with:
           components: llvm-tools-preview
-
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
-
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
-
       - name: Clean previous coverage data
         run: cargo llvm-cov clean --workspace
-
       - name: Coverage — workspace unit + doc tests
         run: >-
-          cargo llvm-cov --no-report --workspace
-          --ignore-filename-regex "${{ env.COVERAGE_EXCLUDE }}"
-
+          cargo llvm-cov --no-report --workspace --ignore-filename-regex "${{ env.COVERAGE_EXCLUDE }}"
       - name: Coverage — pg_cache integration tests
         run: cargo llvm-cov --no-report -p batlehub-adapters --test pg_cache
-
       - name: Coverage — pg_vulnerability integration tests
         run: cargo llvm-cov --no-report -p batlehub-adapters --test pg_vulnerability
-
       - name: Coverage — local_registry integration tests
         run: cargo llvm-cov --no-report -p batlehub-adapters --test local_registry
-
       - name: Coverage — artifact_meta integration tests
         run: cargo llvm-cov --no-report -p batlehub-adapters --test artifact_meta
-
       - name: Coverage — pg_rate_limit integration tests
         run: cargo llvm-cov --no-report -p batlehub-adapters --test pg_rate_limit
-
       - name: Coverage — storage_router integration tests
         run: cargo llvm-cov --no-report -p batlehub-adapters --test storage_router
-
       - name: Coverage — s3_storage integration tests
         run: >-
-          cargo llvm-cov --no-report -p batlehub-adapters
-          --features storage-s3 --test s3_storage
-
+          cargo llvm-cov --no-report -p batlehub-adapters --features storage-s3 --test s3_storage
       - name: Coverage — actions_oidc integration tests
         run: cargo llvm-cov --no-report -p batlehub-adapters --test actions_oidc
-
       - name: Coverage — redis_cache integration tests
         run: >-
-          cargo llvm-cov --no-report -p batlehub-adapters
-          --features cache-redis --test redis_cache
-
+          cargo llvm-cov --no-report -p batlehub-adapters --features cache-redis --test redis_cache
       - name: Coverage — redis_rate_limit integration tests
         run: >-
-          cargo llvm-cov --no-report -p batlehub-adapters
-          --features cache-redis --test redis_rate_limit
-
+          cargo llvm-cov --no-report -p batlehub-adapters --features cache-redis --test redis_rate_limit
       - name: Generate LCOV report
         run: >-
-          cargo llvm-cov report --lcov --output-path lcov.info
-          --ignore-filename-regex "${{ env.COVERAGE_EXCLUDE }}"
-
+          cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex "${{ env.COVERAGE_EXCLUDE }}"
       # ── SonarCloud scan ──────────────────────────────────────────────────────
-
       - name: SonarCloud scan
         uses: SonarSource/sonarcloud-github-action@ffc3010689be73b8e5ae0c57ce35968afd7909e8 # v5.0.0
         env:
