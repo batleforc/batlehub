@@ -1,3 +1,4 @@
+mod admin_stats;
 mod help;
 mod list_nav;
 mod login;
@@ -18,6 +19,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use crate::api::{package::PackageQuery, BatleHubClient};
 use uuid::Uuid;
 
+use admin_stats::AdminStatsWidget;
 use login::LoginWidget;
 use package_detail::PackageDetailWidget;
 use package_list::PackageListWidget;
@@ -34,6 +36,7 @@ pub enum Screen {
     SetupWizard,
     Login,
     Help,
+    AdminStats,
 }
 
 pub struct App {
@@ -45,6 +48,7 @@ pub struct App {
     pub publish_form: PublishFormWidget,
     pub setup_wizard: SetupWizardWidget,
     pub login: LoginWidget,
+    pub admin_stats: AdminStatsWidget,
     pub client: BatleHubClient,
     pub status_msg: Option<String>,
     pub should_quit: bool,
@@ -61,6 +65,7 @@ impl App {
             publish_form: PublishFormWidget::new(),
             setup_wizard: SetupWizardWidget::new(),
             login: LoginWidget::new(),
+            admin_stats: AdminStatsWidget::new(),
             client,
             status_msg: None,
             should_quit: false,
@@ -146,6 +151,7 @@ async fn handle_key(app: &mut App, key: event::KeyEvent) {
                 app.go_back();
             }
         }
+        Screen::AdminStats => handle_admin_stats(app, key).await,
     }
 }
 
@@ -203,6 +209,28 @@ async fn handle_registry_list(app: &mut App, key: event::KeyEvent) {
             app.prev_screen = Some(Screen::RegistryList);
             app.screen = Screen::Help;
         }
+        KeyCode::Char('A') => {
+            app.prev_screen = Some(Screen::RegistryList);
+            app.screen = Screen::AdminStats;
+            load_admin_stats(app).await;
+        }
+        _ => {}
+    }
+}
+
+async fn load_admin_stats(app: &mut App) {
+    app.admin_stats.loading = true;
+    app.admin_stats.error = None;
+    match app.client.admin_stats().await {
+        Ok(v) => app.admin_stats.set_data(v),
+        Err(e) => app.admin_stats.set_error(e.to_string()),
+    }
+}
+
+async fn handle_admin_stats(app: &mut App, key: event::KeyEvent) {
+    match key.code {
+        KeyCode::Esc => app.go_back(),
+        KeyCode::Char('r') => load_admin_stats(app).await,
         _ => {}
     }
 }
@@ -389,6 +417,9 @@ fn render(f: &mut ratatui::Frame, app: &App) {
         }
         Screen::Help => {
             help::render(f, app);
+        }
+        Screen::AdminStats => {
+            admin_stats::render(f, app);
         }
     }
 

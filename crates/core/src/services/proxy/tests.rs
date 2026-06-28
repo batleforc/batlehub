@@ -405,6 +405,8 @@ fn req(registry: &str) -> ProxyRequest {
         package_id: PackageId::new(registry, "test-pkg", "1.0.0"),
         identity: Identity::anonymous(),
         resource_type: "releases:read".to_owned(),
+        ip_address: None,
+        user_agent: None,
     }
 }
 
@@ -451,6 +453,8 @@ async fn rejects_path_traversal_in_coordinate() {
         package_id: PackageId::new("npm", "../../../../etc/passwd", "1.0.0"),
         identity: Identity::anonymous(),
         resource_type: "releases:read".to_owned(),
+        ip_address: None,
+        user_agent: None,
     };
     assert!(
         matches!(svc.handle(bad_name).await, Err(CoreError::InvalidInput(_))),
@@ -462,6 +466,8 @@ async fn rejects_path_traversal_in_coordinate() {
         package_id: PackageId::new("npm", "test-pkg", "../../etc"),
         identity: Identity::anonymous(),
         resource_type: "releases:read".to_owned(),
+        ip_address: None,
+        user_agent: None,
     };
     assert!(
         matches!(
@@ -476,6 +482,8 @@ async fn rejects_path_traversal_in_coordinate() {
         package_id: PackageId::new("npm", "test-pkg", "1.0.0").with_artifact("../evil"),
         identity: Identity::anonymous(),
         resource_type: "source:read".to_owned(),
+        ip_address: None,
+        user_agent: None,
     };
     assert!(
         matches!(
@@ -1381,6 +1389,8 @@ async fn integrity_require_metadata_bypass_role_is_allowed() {
             groups: vec![],
         },
         resource_type: "releases:read".to_owned(),
+        ip_address: None,
+        user_agent: None,
     };
     let resp = svc.handle(admin_req).await.unwrap();
     assert!(

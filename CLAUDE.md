@@ -90,6 +90,7 @@ The dependency direction is strict: `core` ← `adapters` ← `web` ← `server`
 5. **`crates/config/src/schema.rs`** — allow `"<name>"` in the `RegistryConfig` type field.
 6. **`server/src/main.rs`** — instantiate the client and wire it into `HotConfig`.
 7. **`ui/src/config/registryTypes.ts`** — add a `RegistryTypeDef` entry with setup snippets.
+8. **Add a regression test** in `crates/web/tests/integration.rs` — at minimum a `<name>_publish_traversal_version_returns_400` test that publishes with `version = "../../etc/x"` and asserts `400`. Follow the `nuget_publish_traversal_version_returns_400` / `npm_publish_traversal_version_returns_400` pattern.
 
 For **local/hybrid mode**, additionally implement `get_<name>_versions` (and related helpers) in `crates/core/src/services/local_registry.rs`, following the existing `get_nuget_versions` / `get_maven_versions` patterns.
 

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use crate::entities::{
     AccessAction, AccessEvent, AccessResult, ArtifactVulnerability, EventFilter, ExploreEntry,
@@ -92,6 +92,8 @@ impl AdminService {
                 action: crate::entities::AccessAction::Block,
                 result: AccessResult::Allowed,
                 timestamp: Utc::now(),
+                ip_address: None,
+                user_agent: None,
             })
             .await
             .unwrap_or_else(|e| tracing::warn!(error = %e, "failed to record block action"));
@@ -116,6 +118,8 @@ impl AdminService {
                 action: crate::entities::AccessAction::Unblock,
                 result: AccessResult::Allowed,
                 timestamp: Utc::now(),
+                ip_address: None,
+                user_agent: None,
             })
             .await
             .unwrap_or_else(|e| tracing::warn!(error = %e, "failed to record unblock action"));
@@ -183,6 +187,8 @@ impl AdminService {
                     action: AccessAction::Delete,
                     result: AccessResult::Allowed,
                     timestamp: Utc::now(),
+                    ip_address: None,
+                    user_agent: None,
                 })
                 .await
                 .unwrap_or_else(|e| tracing::warn!(error = %e, "failed to record delete action"));
@@ -223,6 +229,10 @@ impl AdminService {
 
     pub async fn list_events(&self, filter: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
         self.repo.list_events(filter).await
+    }
+
+    pub async fn purge_events_before(&self, before: DateTime<Utc>) -> Result<u64, CoreError> {
+        self.repo.purge_events_before(before).await
     }
 
     pub async fn get_package_status(&self, pkg: &PackageId) -> Result<PackageStatus, CoreError> {

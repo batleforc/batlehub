@@ -110,6 +110,7 @@ pub fn embedded_migrator() -> Migrator {
                 "../migrations/027_deprecation_unlisting.sql"
             ),
             mig!(28, "user blocks", "../migrations/028_user_blocks.sql"),
+            mig!(29, "audit ip ua", "../migrations/029_audit_ip_ua.sql"),
         ]),
         ignore_missing: false,
         locking: true,

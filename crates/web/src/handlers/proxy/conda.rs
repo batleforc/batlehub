@@ -76,6 +76,8 @@ pub async fn conda_repodata(
                 package_id: pkg,
                 identity: identity.0.clone(),
                 resource_type: "releases:read".to_owned(),
+                ip_address: None,
+                user_agent: None,
             })
             .await
             .map_err(AppError::from)?

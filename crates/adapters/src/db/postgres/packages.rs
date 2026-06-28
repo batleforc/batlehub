@@ -15,8 +15,9 @@ pub(super) async fn record_access_impl(pool: &PgPool, event: AccessEvent) -> Res
         r#"
         INSERT INTO access_events
             (id, user_id, user_role, registry, package_name, package_version,
-             package_artifact, action, outcome, deny_reason, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             package_artifact, action, outcome, deny_reason, created_at,
+             ip_address, user_agent)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         "#,
     )
     .bind(event.id)
@@ -30,6 +31,8 @@ pub(super) async fn record_access_impl(pool: &PgPool, event: AccessEvent) -> Res
     .bind(outcome)
     .bind(deny_reason)
     .bind(event.timestamp)
+    .bind(&event.ip_address)
+    .bind(&event.user_agent)
     .execute(pool)
     .await
     .db_err()?;

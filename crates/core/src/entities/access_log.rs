@@ -42,6 +42,12 @@ pub struct AccessEvent {
     pub action: AccessAction,
     pub result: AccessResult,
     pub timestamp: DateTime<Utc>,
+    /// Caller's IP address (from X-Forwarded-For / RemoteAddr).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip_address: Option<String>,
+    /// HTTP User-Agent from the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
 }
 
 impl AccessEvent {
@@ -58,6 +64,8 @@ impl AccessEvent {
             action: AccessAction::Download,
             result: AccessResult::Allowed,
             timestamp: Utc::now(),
+            ip_address: None,
+            user_agent: None,
         }
     }
 
@@ -75,6 +83,8 @@ impl AccessEvent {
             action: AccessAction::Download,
             result: AccessResult::Denied { reason },
             timestamp: Utc::now(),
+            ip_address: None,
+            user_agent: None,
         }
     }
 
@@ -92,7 +102,16 @@ impl AccessEvent {
             action: AccessAction::Download,
             result: AccessResult::ProxyError { reason },
             timestamp: Utc::now(),
+            ip_address: None,
+            user_agent: None,
         }
+    }
+
+    /// Builder: attach the caller's IP address and User-Agent to this event.
+    pub fn with_ip_ua(mut self, ip: Option<String>, ua: Option<String>) -> Self {
+        self.ip_address = ip;
+        self.user_agent = ua;
+        self
     }
 }
 

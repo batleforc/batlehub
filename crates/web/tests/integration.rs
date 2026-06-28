@@ -5772,6 +5772,32 @@ async fn npm_publish_proxy_mode_returns_404() {
 }
 
 #[actix_web::test]
+async fn npm_publish_traversal_version_returns_400() {
+    let app = make_local_npm_app(RegistryMode::Local).await;
+    // A traversal sequence in the version field must be rejected before reaching
+    // the storage layer so that `validate_path_safe` returns a clean 400.
+    let req = TestRequest::put()
+        .uri("/proxy/local-npm/legit-pkg")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_json(make_npm_publish_payload("legit-pkg", "../../etc/x"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 400);
+}
+
+#[actix_web::test]
+async fn npm_publish_traversal_name_returns_400() {
+    let app = make_local_npm_app(RegistryMode::Local).await;
+    // `evil%2F..` URL-decodes to `evil/..` which contains a `..` path segment —
+    // rejected by validate_package_name before reaching the storage layer.
+    let req = TestRequest::put()
+        .uri("/proxy/local-npm/evil%2F..")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_json(make_npm_publish_payload("evil/..", "1.0.0"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 400);
+}
+
+#[actix_web::test]
 async fn npm_packument_returns_published_version() {
     let app = make_local_npm_app(RegistryMode::Local).await;
 
@@ -11224,6 +11250,36 @@ async fn nuget_publish_proxy_mode_returns_404() {
         .set_payload(body)
         .to_request();
     assert_eq!(call_service(&app, req).await.status(), 404);
+}
+
+#[actix_web::test]
+async fn nuget_publish_traversal_id_returns_400() {
+    let app = make_local_nuget_app(RegistryMode::Local).await;
+    // A traversal sequence in the package ID (inside the .nuspec) must be rejected
+    // by validate_package_name before reaching the storage layer — clean 400.
+    let nupkg = make_sample_nupkg("../../etc/x", "1.0.0", "traversal test");
+    let (body, ct) = make_nuget_publish_body(&nupkg);
+    let req = TestRequest::put()
+        .uri("/proxy/local-nuget/nuget/api/v2/package")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .insert_header(("Content-Type", ct))
+        .set_payload(body)
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 400);
+}
+
+#[actix_web::test]
+async fn nuget_publish_traversal_version_returns_400() {
+    let app = make_local_nuget_app(RegistryMode::Local).await;
+    let nupkg = make_sample_nupkg("SafeLib", "../../etc/x", "traversal test");
+    let (body, ct) = make_nuget_publish_body(&nupkg);
+    let req = TestRequest::put()
+        .uri("/proxy/local-nuget/nuget/api/v2/package")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .insert_header(("Content-Type", ct))
+        .set_payload(body)
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 400);
 }
 
 #[actix_web::test]

@@ -16,3 +16,8 @@ pub use banner_redis::RedisBannerStore;
 pub mod redis;
 #[cfg(feature = "cache-redis")]
 pub use redis::RedisCacheStore;
+
+#[cfg(feature = "cache-redis")]
+pub mod warm_coordinator;
+#[cfg(feature = "cache-redis")]
+pub use warm_coordinator::RedisWarmCoordinator;

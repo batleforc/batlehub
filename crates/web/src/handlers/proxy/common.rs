@@ -177,6 +177,8 @@ pub async fn proxy_stream(
         package_id: pkg,
         identity: identity.0,
         resource_type: resource_type.to_owned(),
+        ip_address: None,
+        user_agent: None,
     };
     match svc.handle(req).await.map_err(AppError::from)? {
         ProxyResponse::Denied { reason } => Err(AppError::forbidden(reason)),

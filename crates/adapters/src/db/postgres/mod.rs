@@ -200,6 +200,10 @@ impl PackageRepository for PgPackageRepository {
         explore::list_events_impl(&self.pool, filter).await
     }
 
+    async fn purge_events_before(&self, before: DateTime<Utc>) -> Result<u64, CoreError> {
+        explore::purge_events_before_impl(&self.pool, before).await
+    }
+
     async fn explore_packages(
         &self,
         filter: ExploreFilter,

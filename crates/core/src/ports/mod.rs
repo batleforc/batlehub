@@ -17,6 +17,7 @@ pub mod team_namespace;
 pub mod user_block;
 pub mod user_token_repo;
 pub mod vulnerability;
+pub mod warm_coordinator;
 
 pub use artifact_meta::*;
 pub use auth::*;
@@ -37,3 +38,4 @@ pub use team_namespace::TeamNamespacePort;
 pub use user_block::{UserBlock, UserBlockRepository};
 pub use user_token_repo::*;
 pub use vulnerability::{OsvMatch, VulnerabilityRepository, VulnerabilityScanner};
+pub use warm_coordinator::{NoopWarmCoordinator, WarmCoordinator};

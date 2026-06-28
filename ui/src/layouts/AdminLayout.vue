@@ -2,6 +2,8 @@
 import { RouterView, RouterLink, useRoute } from "vue-router";
 import {
   ShieldCheck,
+  ShieldQuestion,
+  LayoutDashboard,
   Package,
   RefreshCw,
   Upload,
@@ -20,6 +22,7 @@ import {
 const route = useRoute();
 
 const adminLinks = [
+  { to: "/admin/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/admin/packages", label: "Packages", icon: Package },
   { to: "/admin/bulk", label: "Bulk Import", icon: Upload },
   { to: "/admin/audit-log", label: "Audit Log", icon: ScrollText },
@@ -33,6 +36,7 @@ const adminLinks = [
   { to: "/admin/warming", label: "Warming", icon: Flame },
   { to: "/admin/explore-cache", label: "Explore Cache", icon: DatabaseZap },
   { to: "/admin/notifications", label: "Notifications", icon: Bell },
+  { to: "/admin/access-check", label: "Access Check", icon: ShieldQuestion },
 ];
 
 function isActive(to: string) {

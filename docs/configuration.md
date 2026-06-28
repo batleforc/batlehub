@@ -1032,6 +1032,10 @@ curl -X POST http://localhost:8080/api/v1/admin/registries/npm/warm \
 
 > **Registry support:** version enumeration (used by bare-name warming) is implemented for **npm**, **Cargo**, **OpenVSX**, and **Go** modules. For GitHub and VS Code Marketplace, pass a pinned version string (e.g. `"owner/repo@v1.2.3"`) to warm a specific version.
 
+**Cross-replica warm-up coordination (Redis):**
+
+When `[cache] type = "redis"` is configured and the `cache-redis` feature is compiled in, BatleHub automatically coordinates cache warming across replicas. Before downloading an artifact, each replica attempts to acquire a short-lived Redis lock (`SET batlehub:warm:{key} 1 NX PX 600000`). Only the first replica to acquire the lock performs the upstream download; the others skip that artifact. This prevents thundering-herd downloads when multiple replicas restart simultaneously and discover the same cold-cache misses. No additional configuration is required — the coordination is enabled automatically whenever the Redis cache backend is selected. With non-Redis backends (`memory` or `postgres`), each replica warms independently (safe but redundant).
+
 **Content-addressable deduplication:**
 
 BatleHub stores physical artifact bytes at a content-addressed key (`blob/{sha256}`) and maps logical artifact keys to that blob via a reference count. When the same bytes are referenced by multiple logical keys (e.g. the same package mirrored across two registries, or a yanked-then-re-released version), only one copy of the data is stored on disk or in S3. The deduplication tables (`artifact_dedup_index`, `artifact_dedup_refs`) are created automatically by the database migration and require no configuration.
@@ -3145,3 +3149,73 @@ admin     = ["*"]
 > **Global proxy:** Instead of repeating `[registries.proxy]` on every registry, add a single `[proxy]` section at the top level — it applies to all registries at once. Per-registry `[registries.proxy]` blocks override the global value for that specific registry. The global proxy can also be set without touching the config file via `PROXY_CACHE__PROXY__URL` (and related env vars) — see [§3.8](#38-proxy-optional).
 
 > **SOCKS5 proxy:** Replace `http://` with `socks5://` in the `url` field if your environment uses a SOCKS5 proxy (e.g. an SSH tunnel: `socks5://localhost:1080`).
+
+---
+
+## Appendix — Capacity Planning
+
+This section provides guidance on sizing disk, memory, CPU, and database resources based on registry type and expected usage.
+
+### Artifact storage sizing
+
+Artifact size varies dramatically by ecosystem. Use these typical values to estimate `max_artifact_size_bytes` and total storage needs:
+
+| Registry type | Typical artifact size | Recommended `max_artifact_size_bytes` |
+|---------------|----------------------|--------------------------------------|
+| npm | 50 KB – 5 MB | 50 MiB |
+| Cargo | 100 KB – 10 MB | 50 MiB |
+| PyPI (wheel) | 1 MB – 100 MB | 200 MiB |
+| Maven (JAR) | 1 MB – 200 MB | 256 MiB |
+| NuGet | 100 KB – 50 MB | 100 MiB |
+| Conda | 50 MB – 500 MB | 512 MiB |
+| Docker (layer) | 1 MB – 2 GB | 4 GiB |
+| JetBrains IDE | 500 MB – 2 GB | 4 GiB |
+| Debian / RPM | 100 KB – 500 MB | 512 MiB |
+| Terraform provider | 5 MB – 100 MB | 256 MiB |
+
+For a **proxy-only** deployment: size storage at `(unique packages cached) × (average artifact size) × (versions per package)`. A practical starting point for a small team is 100 GB.
+
+For a **local-mode** deployment: add the total size of all artifacts you plan to publish, and keep a separate backup (see [disaster-recovery.md](disaster-recovery.md)).
+
+### Memory
+
+BatleHub's in-process memory use is low (< 200 MB baseline). Most memory is consumed by:
+
+- The metadata cache (configurable TTL; use `[cache] type = "redis"` to offload it).
+- Per-request buffering for streaming large artifacts.
+
+Recommended minimum: **512 MB RAM** for a small deployment. For high concurrency (> 100 simultaneous downloads), allocate **2 GB** to accommodate in-flight buffers.
+
+### CPU
+
+BatleHub is I/O-bound, not CPU-bound. Even a 2-core instance handles several hundred requests/second for cached artifacts. CPU spikes occur during:
+
+- SBOM extraction (ZIP decompression + JSON serialization).
+- TLS termination (offload to a reverse proxy / load balancer for very high traffic).
+- Vulnerability scanning (periodic, not on the hot path).
+
+Recommended: **2–4 vCPUs** for most deployments.
+
+### Database (PostgreSQL)
+
+- **Connections:** Default `max_connections = 10` is fine for < 50 concurrent requests. Increase to 25–50 for busy deployments. The DB itself should allow at least `max_connections * (number of instances) + 10` headroom.
+- **Disk:** The `access_events` table grows ~1 KB per event. At 1,000 events/day, that is ~365 MB/year. Schedule periodic purges: `batlehub-cli admin audit-log --purge-before 2024-01-01T00:00:00Z`.
+- **IOPS:** Metadata reads and `record_access` writes are the hottest paths. An SSD with 3,000 IOPS is sufficient for most teams.
+
+### Recommended `max_artifact_size_bytes` by deployment type
+
+Set per registry, not globally, to avoid a large JetBrains IDE download from blocking smaller npm installs that share a connection pool:
+
+```toml
+[[registries]]
+name = "npm-proxy"
+type = "npm"
+[registries.local_registry]
+max_artifact_size_bytes = 52428800   # 50 MiB
+
+[[registries]]
+name = "jetbrains-proxy"
+type = "jetbrains"
+[registries.local_registry]
+max_artifact_size_bytes = 4294967296  # 4 GiB
+```

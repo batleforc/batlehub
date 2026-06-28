@@ -9,7 +9,9 @@ use batlehub_adapters::cache::RedisBannerStore;
 use batlehub_adapters::cache::RedisCacheStore;
 use batlehub_adapters::cache::{InMemoryCacheStore, PgCacheStore};
 use batlehub_adapters::db::PgBannerStore;
+use batlehub_adapters::local_registry::PostgresLocalRegistry;
 use batlehub_adapters::notification::PgNotificationStore;
+use batlehub_core::ports::LocalRegistryBackend;
 use batlehub_adapters::db::PgUserBlockRepository;
 use batlehub_adapters::rate_limit::{
     InMemoryIpBlockStore, InMemoryRateLimitStore, PgIpBlockStore, PgRateLimitStore,
@@ -30,6 +32,34 @@ pub(super) const DEFAULT_REDIS_URL: &str = "redis://127.0.0.1:6379";
 /// any realistic rate-limit window so a stale row is never pruned mid-window.
 const RATE_LIMIT_PRUNE_RETENTION_SECS: u64 = 24 * 60 * 60;
 const RATE_LIMIT_PRUNE_INTERVAL_SECS: u64 = 60;
+
+/// How long a pending publish row must be older than before it is deleted.
+/// Two cleanup intervals — so a row created just before one sweep survives long
+/// enough to be promoted before the next sweep can remove it.
+const PENDING_CLEANUP_INTERVAL_SECS: u64 = 3600;
+
+/// Periodically delete orphaned `status = 'pending'` rows left by hard crashes.
+/// A normal publish either promotes the row to `'published'` or removes it on
+/// error; rows that survive are only from processes that died mid-publish. The
+/// cleanup threshold is twice the interval so a row created just before a sweep
+/// cannot be deleted before it has time to be promoted.
+pub(super) fn spawn_pending_publish_cleanup(backend: Arc<PostgresLocalRegistry>) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
+            PENDING_CLEANUP_INTERVAL_SECS,
+        ));
+        loop {
+            ticker.tick().await;
+            let older_than =
+                std::time::Duration::from_secs(PENDING_CLEANUP_INTERVAL_SECS * 2);
+            match backend.cleanup_pending(older_than).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(deleted = n, "cleaned up orphaned pending publish rows"),
+                Err(e) => tracing::warn!(error = %e, "pending publish cleanup failed"),
+            }
+        }
+    });
+}
 
 /// Periodically delete expired `rate_limit_counters` rows in the background,
 /// instead of pruning inline on every `increment()` call. Mirrors the detached
@@ -81,7 +111,11 @@ pub(super) async fn create_cache_store(
             if other != "memory" {
                 tracing::warn!(cache_type = %other, "unknown cache type, falling back to memory");
             } else {
-                tracing::info!("metadata cache: memory");
+                tracing::warn!(
+                    "metadata cache: in-memory — rate-limit, quota, and session state \
+                     are NOT shared between replicas; use [cache] type = \"postgres\" or \
+                     type = \"redis\" in multi-instance deployments"
+                );
             }
             Arc::new(InMemoryCacheStore::new())
         }
@@ -194,6 +228,37 @@ pub(super) async fn create_banner_store(
         _ => Arc::new(InMemoryBannerStore::new()),
     };
     Ok(store)
+}
+
+pub(super) async fn create_warm_coordinator(
+    config: &AppConfig,
+) -> Result<Arc<dyn batlehub_core::ports::WarmCoordinator>> {
+    use batlehub_core::ports::NoopWarmCoordinator;
+
+    let coordinator: Arc<dyn batlehub_core::ports::WarmCoordinator> =
+        match config.cache.cache_type.as_str() {
+            "redis" => {
+                #[cfg(feature = "cache-redis")]
+                {
+                    let url = config.cache.url.as_deref().unwrap_or(DEFAULT_REDIS_URL);
+                    tracing::info!(url, "warm-up coordinator: redis");
+                    Arc::new(
+                        batlehub_adapters::cache::RedisWarmCoordinator::new(url)
+                            .await
+                            .context("connecting to Redis warm coordinator")?,
+                    )
+                }
+                #[cfg(not(feature = "cache-redis"))]
+                {
+                    tracing::warn!(
+                        "compiled without cache-redis feature; warm-up coordination disabled"
+                    );
+                    Arc::new(NoopWarmCoordinator)
+                }
+            }
+            _ => Arc::new(NoopWarmCoordinator),
+        };
+    Ok(coordinator)
 }
 
 pub(super) fn create_notification_store(pool: sqlx::PgPool) -> Arc<dyn NotificationPort> {

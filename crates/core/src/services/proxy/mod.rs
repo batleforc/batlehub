@@ -19,6 +19,10 @@ pub struct ProxyRequest {
     pub identity: crate::entities::Identity,
     /// The operation being checked against RBAC (e.g. `"releases:read"`).
     pub resource_type: String,
+    /// Caller's IP address (for audit log enrichment).
+    pub ip_address: Option<String>,
+    /// HTTP User-Agent header (for audit log enrichment).
+    pub user_agent: Option<String>,
 }
 
 /// Output of `ProxyService::handle`.

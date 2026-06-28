@@ -574,7 +574,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             tokens::{create_token, list_tokens, revoke_token},
         },
         back_office::{
-            audit::audit_log,
+            access_check::admin_access_check,
+            audit::{audit_log, export_audit_log, purge_audit_log},
             beta_channel::{add_beta_member, list_beta_members, remove_beta_member},
             bulk::{
                 bulk_delete, bulk_unyank, bulk_yank as bulk_yank_handler, deprecate, relist,
@@ -819,12 +820,15 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(invalidate_package);
     cfg.service(registry_health);
     cfg.service(clear_registry_cache);
+    cfg.service(export_audit_log); // specific path before parameterised handlers
     cfg.service(audit_log);
+    cfg.service(purge_audit_log);
     cfg.service(get_warming_status);
     cfg.service(warm_registry);
     cfg.service(evict_registry);
     cfg.service(delete_cached_artifact);
     cfg.service(admin_stats);
+    cfg.service(admin_access_check);
     // Quota admin (specific user route before registry-level route)
     cfg.service(reset_quota_for_user);
     cfg.service(get_quota_for_user);

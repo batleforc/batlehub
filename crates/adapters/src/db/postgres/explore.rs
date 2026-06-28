@@ -1,3 +1,5 @@
+use chrono::{DateTime, Utc};
+
 use super::{
     map_explore_entry, prepare_registries_param, sort_order_for, str_to_action, str_to_role,
     AccessEvent, AccessResult, CoreError, DbResultExt, EventFilter, ExploreEntry, ExploreFilter,
@@ -12,7 +14,8 @@ pub(super) async fn list_events_impl(
         r#"
         SELECT
             id, user_id, user_role, registry, package_name, package_version,
-            package_artifact, action, outcome, deny_reason, created_at
+            package_artifact, action, outcome, deny_reason, created_at,
+            ip_address, user_agent
         FROM access_events
         WHERE ($1::text IS NULL OR registry = $1)
           AND ($2::text IS NULL OR user_id = $2)
@@ -65,6 +68,8 @@ pub(super) async fn list_events_impl(
                     _ => AccessResult::Allowed,
                 },
                 timestamp: r.get("created_at"),
+                ip_address: r.get("ip_address"),
+                user_agent: r.get("user_agent"),
             }
         })
         .collect();
@@ -258,4 +263,16 @@ pub(super) async fn registry_explore_stats_impl(
         .collect();
 
     Ok(stats)
+}
+
+pub(super) async fn purge_events_before_impl(
+    pool: &PgPool,
+    before: DateTime<Utc>,
+) -> Result<u64, CoreError> {
+    let result = sqlx::query("DELETE FROM access_events WHERE created_at < $1")
+        .bind(before)
+        .execute(pool)
+        .await
+        .db_err()?;
+    Ok(result.rows_affected())
 }

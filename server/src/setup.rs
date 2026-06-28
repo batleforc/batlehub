@@ -177,6 +177,7 @@ pub(super) fn build_warming_map(
     warming_clients: &HashMap<String, Arc<dyn batlehub_core::ports::RegistryClient>>,
     storage: Arc<dyn StorageBackend>,
     pool: sqlx::PgPool,
+    coordinator: Arc<dyn batlehub_core::ports::WarmCoordinator>,
 ) -> batlehub_web::handlers::back_office::warming::WarmingServiceMap {
     use batlehub_adapters::db::PgArtifactMetaRepository;
     use batlehub_core::services::WarmingService;
@@ -194,6 +195,7 @@ pub(super) fn build_warming_map(
                 registry_name: reg.name.clone(),
                 latest_n: reg.cache.warm_latest_n,
                 concurrency: reg.cache.warm_concurrency,
+                coordinator: Arc::clone(&coordinator),
             });
             warming_map.insert(reg.name.clone(), warming_svc);
         }

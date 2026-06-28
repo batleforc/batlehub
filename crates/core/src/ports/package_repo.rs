@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 use crate::entities::{
     AccessEvent, EventFilter, ExploreEntry, ExploreFilter, PackageFilter, PackageId, PackageStatus,
@@ -33,6 +34,12 @@ pub trait PackageRepository: Send + Sync {
 
     /// Query the access event log.
     async fn list_events(&self, filter: EventFilter) -> Result<Vec<AccessEvent>, CoreError>;
+
+    /// Delete access-event rows older than `before`. Returns the number of rows deleted.
+    async fn purge_events_before(&self, before: DateTime<Utc>) -> Result<u64, CoreError> {
+        let _ = before;
+        Ok(0)
+    }
 
     /// Explorer: collapsed list of packages (one entry per name) from both proxied and local sources.
     async fn explore_packages(

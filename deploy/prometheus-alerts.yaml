@@ -1,0 +1,132 @@
+groups:
+  - name: batlehub
+    interval: 60s
+    rules:
+      # ── Availability ─────────────────────────────────────────────────────────
+
+      - alert: BatleHubHighErrorRate
+        expr: |
+          (
+            rate(batlehub_requests_total{outcome="error"}[5m])
+            /
+            rate(batlehub_requests_total[5m])
+          ) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BatleHub error rate above 5% on {{ $labels.instance }}"
+          description: >
+            {{ $value | humanizePercentage }} of requests are returning errors
+            (threshold 5%). Check application logs for upstream or DB errors.
+
+      - alert: BatleHubDown
+        expr: up{job="batlehub"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "BatleHub instance {{ $labels.instance }} is down"
+          description: "Prometheus cannot scrape {{ $labels.instance }}. The process may have crashed."
+
+      # ── Cache performance ─────────────────────────────────────────────────────
+
+      - alert: BatleHubCacheMissRateHigh
+        expr: |
+          (
+            rate(batlehub_cache_misses_total[5m])
+            /
+            (rate(batlehub_cache_hits_total[5m]) + rate(batlehub_cache_misses_total[5m]))
+          ) > 0.80
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BatleHub cache miss rate above 80% for registry {{ $labels.registry }}"
+          description: >
+            Cache miss rate is {{ $value | humanizePercentage }} for registry
+            {{ $labels.registry }}. Consider pre-warming the cache or increasing
+            storage capacity.
+
+      # ── Upstream errors ───────────────────────────────────────────────────────
+
+      - alert: BatleHubUpstreamErrors
+        expr: |
+          rate(batlehub_upstream_errors_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BatleHub upstream fetch errors on {{ $labels.registry }}"
+          description: >
+            More than 0.1 upstream errors/sec for registry {{ $labels.registry }}.
+            Upstream may be rate-limiting or unavailable.
+
+      # ── Storage / quota ───────────────────────────────────────────────────────
+
+      - alert: BatleHubStorageQuotaApproaching
+        expr: |
+          (
+            batlehub_quota_bytes_used
+            /
+            batlehub_quota_bytes_limit
+          ) > 0.85
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BatleHub storage quota above 85% for {{ $labels.registry }}/{{ $labels.user }}"
+          description: >
+            User {{ $labels.user }} has consumed {{ $value | humanizePercentage }}
+            of their quota in registry {{ $labels.registry }}.
+
+      # ── Database ──────────────────────────────────────────────────────────────
+
+      - alert: BatleHubDBPoolExhausted
+        expr: |
+          batlehub_db_pool_available_connections == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "BatleHub DB connection pool exhausted on {{ $labels.instance }}"
+          description: >
+            All database connections are in use. New requests will queue or fail.
+            Consider increasing max_connections in [database] config.
+
+      - alert: BatleHubDBQueryLatencyHigh
+        expr: |
+          histogram_quantile(0.99, rate(batlehub_db_query_duration_seconds_bucket[5m])) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BatleHub DB p99 query latency above 1s on {{ $labels.instance }}"
+          description: >
+            99th percentile DB query time is {{ $value | humanizeDuration }}.
+            Check for slow queries, missing indexes, or DB overload.
+
+      # ── Security ──────────────────────────────────────────────────────────────
+
+      - alert: BatleHubHighDeniedRequestRate
+        expr: |
+          rate(batlehub_requests_total{outcome="denied"}[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BatleHub high rate of denied requests on {{ $labels.instance }}"
+          description: >
+            More than 1 denied request/sec. Could indicate a blocked client
+            retrying aggressively, or a policy misconfiguration.
+
+      - alert: BatleHubRateLimitTriggered
+        expr: |
+          rate(batlehub_rate_limit_hits_total[1m]) > 10
+        for: 2m
+        labels:
+          severity: info
+        annotations:
+          summary: "BatleHub rate limiter triggering frequently on {{ $labels.instance }}"
+          description: >
+            {{ $value }} rate-limit hits/sec. A client may be hammering the API.

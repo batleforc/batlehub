@@ -34,6 +34,30 @@ const { data, error, loading, reload } = useApi<AccessEvent[]>(
   [token],
 );
 
+const exportFormat = ref<"json" | "csv">("csv");
+const exporting = ref(false);
+
+async function exportAuditLog() {
+  exporting.value = true;
+  try {
+    const headers: Record<string, string> = {};
+    if (token.value) headers["Authorization"] = `Bearer ${token.value}`;
+    const url = `/api/v1/admin/audit-log/export?format=${exportFormat.value}`;
+    const resp = await fetch(url, { headers });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const blob = await resp.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    const cd = resp.headers.get("Content-Disposition") ?? "";
+    const match = cd.match(/filename="([^"]+)"/);
+    a.download = match ? match[1] : `audit-log.${exportFormat.value}`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } finally {
+    exporting.value = false;
+  }
+}
+
 const userFilter = ref("");
 const actionFilter = ref("");
 
@@ -64,7 +88,19 @@ const actionOptions = computed(() => {
             ({{ data.length }})
           </span>
         </CardTitle>
-        <Button variant="outline" size="sm" @click="reload"> Refresh </Button>
+        <div class="flex gap-2 items-center">
+          <select
+            v-model="exportFormat"
+            class="h-8 rounded-sm border border-input bg-transparent px-2 text-sm shadow-sm text-foreground"
+          >
+            <option value="csv">CSV</option>
+            <option value="json">JSON</option>
+          </select>
+          <Button variant="outline" size="sm" :disabled="exporting" @click="exportAuditLog">
+            {{ exporting ? "Exporting…" : "Export" }}
+          </Button>
+          <Button variant="outline" size="sm" @click="reload"> Refresh </Button>
+        </div>
       </div>
       <div class="flex gap-2 flex-wrap">
         <Input

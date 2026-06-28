@@ -122,6 +122,22 @@ impl BatleHubClient {
         expect_no_content(resp).await
     }
 
+    pub async fn delete_with_params_json<T: DeserializeOwned, P: Serialize>(
+        &self,
+        path: &str,
+        params: &P,
+    ) -> Result<T> {
+        let mut req = self
+            .inner
+            .request(Method::DELETE, self.url(path))
+            .query(params);
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+        let resp = req.send().await?;
+        expect_ok(resp).await
+    }
+
     /// GET a proxy path (relative to the server base URL) or an absolute URL and
     /// stream the response body into `dest`, returning the number of bytes written.
     /// Sends the auth token so RBAC-protected registries are reachable.

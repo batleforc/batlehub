@@ -1,11 +1,20 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::Semaphore;
 
 use crate::{
     entities::PackageId,
-    ports::{ArtifactCacheMeta, ArtifactMetaRecord, RegistryClient, StorageBackend, StorageMeta},
+    ports::{
+        ArtifactCacheMeta, ArtifactMetaRecord, RegistryClient, StorageBackend, StorageMeta,
+        WarmCoordinator,
+    },
 };
+
+/// How long a warm-up claim is held in the coordinator. Long enough to cover the
+/// full fetch+store cycle for large artifacts; short enough to unblock other replicas
+/// when the winning replica crashes mid-download.
+const WARM_CLAIM_TTL: Duration = Duration::from_secs(600);
 
 /// Result of a warming run (a single package or a batch).
 #[derive(Debug, Default, Clone)]
@@ -38,6 +47,9 @@ pub struct WarmingService {
     pub latest_n: usize,
     /// Maximum concurrent artifact downloads.
     pub concurrency: usize,
+    /// Cross-replica coordination: prevents multiple replicas from downloading
+    /// the same artifact simultaneously. Defaults to `NoopWarmCoordinator`.
+    pub coordinator: Arc<dyn WarmCoordinator>,
 }
 
 /// Fetch and store one artifact version. Returns a single-field `WarmingReport`.
@@ -46,6 +58,7 @@ async fn warm_one_version(
     client: Arc<dyn RegistryClient>,
     storage: Arc<dyn StorageBackend>,
     artifact_meta: Arc<dyn ArtifactCacheMeta>,
+    coordinator: Arc<dyn WarmCoordinator>,
     artifact_key: String,
     pkg: PackageId,
     registry_name: String,
@@ -55,7 +68,46 @@ async fn warm_one_version(
 ) -> WarmingReport {
     let _permit = sem.acquire_owned().await;
 
-    match storage.exists(&artifact_key).await {
+    if !coordinator.try_claim(&artifact_key, WARM_CLAIM_TTL).await {
+        tracing::debug!(
+            registry = %registry_name, package = %name,
+            version = %version, key = %artifact_key,
+            "warming: skipped — another replica is warming this artifact"
+        );
+        return WarmingReport {
+            skipped: 1,
+            ..Default::default()
+        };
+    }
+
+    let report = warm_one_version_inner(
+        client,
+        storage,
+        artifact_meta,
+        &artifact_key,
+        pkg,
+        &registry_name,
+        &name,
+        &version,
+    )
+    .await;
+
+    coordinator.release(&artifact_key).await;
+    report
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn warm_one_version_inner(
+    client: Arc<dyn RegistryClient>,
+    storage: Arc<dyn StorageBackend>,
+    artifact_meta: Arc<dyn ArtifactCacheMeta>,
+    artifact_key: &str,
+    pkg: PackageId,
+    registry_name: &str,
+    name: &str,
+    version: &str,
+) -> WarmingReport {
+    match storage.exists(artifact_key).await {
         Ok(true) => {
             tracing::debug!(
                 registry = %registry_name, package = %name,
@@ -96,7 +148,7 @@ async fn warm_one_version(
     // `store_streaming` implementations (filesystem, S3) write incrementally so
     // peak memory is bounded to a single chunk regardless of artifact size.
     let outcome = match storage
-        .store_streaming(&artifact_key, fetched.stream, StorageMeta::default())
+        .store_streaming(artifact_key, fetched.stream, StorageMeta::default())
         .await
     {
         Ok(o) => o,
@@ -113,10 +165,10 @@ async fn warm_one_version(
 
     if let Err(e) = artifact_meta
         .record_artifact(ArtifactMetaRecord {
-            key: &artifact_key,
-            registry: &registry_name,
-            package_name: &name,
-            version: &version,
+            key: artifact_key,
+            registry: registry_name,
+            package_name: name,
+            version,
             size: Some(size),
             checksum: Some(&checksum),
         })
@@ -147,6 +199,7 @@ impl WarmingService {
             registry_name: self.registry_name.clone(),
             latest_n: n,
             concurrency: self.concurrency,
+            coordinator: Arc::clone(&self.coordinator),
         }
     }
 
@@ -199,6 +252,7 @@ impl WarmingService {
                 Arc::clone(&self.client),
                 Arc::clone(&self.storage),
                 Arc::clone(&self.artifact_meta),
+                Arc::clone(&self.coordinator),
                 artifact_key,
                 pkg,
                 self.registry_name.clone(),
@@ -258,6 +312,7 @@ impl WarmingService {
                 Arc::clone(&self.client),
                 Arc::clone(&self.storage),
                 Arc::clone(&self.artifact_meta),
+                Arc::clone(&self.coordinator),
                 artifact_key,
                 pkg,
                 self.registry_name.clone(),
@@ -374,6 +429,7 @@ mod tests {
             registry_name: "test".into(),
             latest_n: 3,
             concurrency: 0,
+            coordinator: Arc::new(crate::ports::NoopWarmCoordinator),
         }
     }
 
@@ -646,6 +702,7 @@ mod tests {
             registry_name: "test-reg".into(),
             latest_n: 3,
             concurrency: 4,
+            coordinator: Arc::new(crate::ports::NoopWarmCoordinator),
         }
     }
 
@@ -689,6 +746,7 @@ mod tests {
             registry_name: "test-reg".into(),
             latest_n: 2,
             concurrency: 4,
+            coordinator: Arc::new(crate::ports::NoopWarmCoordinator),
         };
         let report = svc.warm_package("mylib").await;
         assert_eq!(report.warmed, 2);
@@ -818,6 +876,7 @@ mod tests {
             registry_name: "test-reg".into(),
             latest_n: 3,
             concurrency: 4,
+            coordinator: Arc::new(crate::ports::NoopWarmCoordinator),
         };
         let report = svc.warm_package("mylib@1.0.0").await;
         // record_artifact failure is logged but non-fatal: the artifact is
@@ -836,6 +895,7 @@ mod tests {
             registry_name: "test-reg".into(),
             latest_n: 10,
             concurrency: 4,
+            coordinator: Arc::new(crate::ports::NoopWarmCoordinator),
         };
         let report = svc.warm_package("mylib").await;
         assert_eq!(report.warmed, 2);

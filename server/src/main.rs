@@ -129,6 +129,7 @@ async fn main() -> Result<()> {
             .with_vulnerability_repo(Arc::clone(&vuln_repo)),
     );
     let local_registry_backend = Arc::new(PostgresLocalRegistry::new(repo.pool()));
+    stores::spawn_pending_publish_cleanup(Arc::clone(&local_registry_backend));
     let quota_svc = Arc::new(builders::build_quota_service(
         repo.pool(),
         &config.registries,
@@ -179,8 +180,14 @@ async fn main() -> Result<()> {
         explore_cache: Some(Arc::clone(&admin_svc.explore_cache)),
     });
 
-    let warming_map =
-        setup::build_warming_map(&config, &warming_clients, storage.clone(), repo.pool());
+    let warm_coordinator = stores::create_warm_coordinator(&config).await?;
+    let warming_map = setup::build_warming_map(
+        &config,
+        &warming_clients,
+        storage.clone(),
+        repo.pool(),
+        warm_coordinator,
+    );
     let eviction_map = setup::build_eviction_map(&config, storage.clone(), repo.pool());
     let access_config = new_access_lock(init_access);
 

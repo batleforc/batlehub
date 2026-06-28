@@ -126,6 +126,8 @@ export const router = createRouter({
       component: () => import("@/layouts/AdminLayout.vue"),
       meta: { requiresAdmin: true },
       children: [
+        { path: "", redirect: "dashboard" },
+        { path: "dashboard", component: () => import("@/pages/AdminDashboard.vue") },
         { path: "packages", component: () => import("@/pages/AdminPackages.vue") },
         { path: "packages/detail", component: () => import("@/pages/AdminPackageDetail.vue") },
         { path: "bulk", component: () => import("@/pages/AdminBulk.vue") },
@@ -140,6 +142,7 @@ export const router = createRouter({
         { path: "warming", component: () => import("@/pages/AdminWarming.vue") },
         { path: "explore-cache", component: () => import("@/pages/AdminExploreCache.vue") },
         { path: "notifications", component: () => import("@/pages/AdminNotifications.vue") },
+        { path: "access-check", component: () => import("@/pages/AdminAccessCheck.vue") },
       ],
     },
   ],

@@ -1,3 +1,4 @@
+pub mod access_check;
 pub mod audit;
 pub mod beta_channel;
 pub mod bulk;
