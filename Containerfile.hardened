@@ -1,7 +1,7 @@
 # ── Build stage ───────────────────────────────────────────────────────────────
 FROM registry.access.redhat.com/hi/rust:latest-builder@sha256:52120609ffe5746997d50074a5b8f1bd212fd112d5805669d6d6754ac038ea37 AS builder
 
-RUN dnf install -y openssl-devel pkgconfig make gcc && dnf clean all
+RUN dnf install -y openssl-devel pkgconfig make gcc awk && dnf clean all
 
 WORKDIR /build
 

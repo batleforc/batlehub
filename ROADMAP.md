@@ -184,7 +184,6 @@ Applies to registries running in `local` or `hybrid` mode.
 
 ## Testing
 
-
 - [~] Unit tests for all registry adapters and policy evaluation logic — significant coverage added (entities, services, auth, storage router, registry adapters, web middleware, handler guards); ≥80% line coverage enforced by `task coverage-check`; 199 lib unit tests + 468 integration tests as of last run; new tests cover `UserBlockMiddleware` (all branches including fail-open on DB error), `config_content()`, `load_pending_from_content()`, and the `apply()` disk-write path
 - [x] CLI test suite — 23 unit tests (`parse_oidc_paste`, `is_token_expiring_soon`, `detect_project_types` for all 9 manifest types) + 16 integration tests (registry, package, version yank/unyank/delete, publish, auth, shell completion, Kubernetes login); fixed `InMemoryLocalRegistry` case-sensitivity bug so yank/delete tests pass end-to-end
 - [ ] Integration tests against real upstream registries (gated, opt-in)

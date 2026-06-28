@@ -40,7 +40,7 @@ function fmtPct(n: number | null | undefined): string {
   return (n * 100).toFixed(1) + "%";
 }
 
-const healthyCount = computed(() => health.value?.filter((h) => h.errors?.length === 0).length ?? 0);
+const healthyCount = computed(() => health.value?.filter((h) => h.recent_errors?.length === 0).length ?? 0);
 const totalCount = computed(() => health.value?.length ?? 0);
 </script>
 

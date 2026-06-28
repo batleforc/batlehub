@@ -29,7 +29,7 @@ pub struct AccessCheckRequest {
 }
 
 #[derive(Serialize, ToSchema)]
-pub struct AccessCheckResponse {
+pub struct AccessSimulationResponse {
     /// "allow" or "deny".
     pub decision: String,
     /// Present when decision is "deny".
@@ -54,7 +54,7 @@ fn parse_role(s: Option<&str>) -> Role {
     tag = "back-office",
     request_body = AccessCheckRequest,
     responses(
-        (status = 200, description = "Simulation result", body = AccessCheckResponse),
+        (status = 200, description = "Simulation result", body = AccessSimulationResponse),
         (status = 403, description = "Admin role required"),
         (status = 404, description = "Registry not configured"),
     ),
@@ -104,17 +104,17 @@ pub async fn admin_access_check(
     let (decision, rule_matched) = evaluate_and_trace(&policy.rules, &ctx).await;
 
     let response = match decision {
-        RuleDecision::Allow => AccessCheckResponse {
+        RuleDecision::Allow => AccessSimulationResponse {
             decision: "allow".to_owned(),
             reason: None,
             rule_matched,
         },
-        RuleDecision::Deny { reason } => AccessCheckResponse {
+        RuleDecision::Deny { reason } => AccessSimulationResponse {
             decision: "deny".to_owned(),
             reason: Some(reason),
             rule_matched,
         },
-        RuleDecision::RequireRole { minimum } => AccessCheckResponse {
+        RuleDecision::RequireRole { minimum } => AccessSimulationResponse {
             decision: "deny".to_owned(),
             reason: Some(format!("requires role '{minimum}' or higher")),
             rule_matched,
