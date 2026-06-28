@@ -355,35 +355,21 @@ pub async fn run(cmd: AdminCommand, client: &BatleHubClient, json: bool) -> Resu
             per_page,
             purge_before,
         } => {
-            if let Some(before) = purge_before {
-                let resp = client.purge_audit_log(&before).await?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
-                } else {
-                    let deleted = resp
-                        .get("deleted")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    println!("Deleted {deleted} audit-log row(s) older than {before}");
-                }
-            } else {
-                let resp = client
-                    .audit_log(AuditQuery {
-                        registry,
-                        user_id: user,
-                        from,
-                        to,
-                        denied_only: if denied_only { Some(true) } else { None },
-                        page,
-                        per_page,
-                    })
-                    .await?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
-                } else {
-                    print_audit_log_table(&resp);
-                }
-            }
+            handle_audit_log(
+                client,
+                json,
+                AuditLogArgs {
+                    registry,
+                    user,
+                    from,
+                    to,
+                    denied_only,
+                    page,
+                    per_page,
+                    purge_before,
+                },
+            )
+            .await?
         }
         AdminCommand::Stats => {
             let resp = client.admin_stats().await?;
@@ -462,22 +448,7 @@ pub async fn run(cmd: AdminCommand, client: &BatleHubClient, json: bool) -> Resu
                     &groups,
                 )
                 .await?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&resp)?);
-            } else {
-                let decision = resp.get("decision").and_then(|v| v.as_str()).unwrap_or("?");
-                if decision == "allow" {
-                    println!("ALLOW");
-                } else {
-                    let reason = resp.get("reason").and_then(|v| v.as_str()).unwrap_or("unknown");
-                    let rule = resp
-                        .get("rule_matched")
-                        .and_then(|v| v.as_str())
-                        .map(|r| format!("  (rule: {r})"))
-                        .unwrap_or_default();
-                    println!("DENY: {reason}{rule}");
-                }
-            }
+            print_access_check(json, &resp)?;
         }
         AdminCommand::ExportAuditLog {
             from,
@@ -502,6 +473,72 @@ pub async fn run(cmd: AdminCommand, client: &BatleHubClient, json: bool) -> Resu
                 None => print!("{text}"),
             }
         }
+    }
+    Ok(())
+}
+
+struct AuditLogArgs {
+    registry: Option<String>,
+    user: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+    denied_only: bool,
+    page: u64,
+    per_page: u64,
+    purge_before: Option<String>,
+}
+
+async fn handle_audit_log(
+    client: &BatleHubClient,
+    json: bool,
+    args: AuditLogArgs,
+) -> Result<()> {
+    if let Some(before) = args.purge_before {
+        let resp = client.purge_audit_log(&before).await?;
+        if json {
+            println!("{}", serde_json::to_string_pretty(&resp)?);
+        } else {
+            let deleted = resp.get("deleted").and_then(|v| v.as_u64()).unwrap_or(0);
+            println!("Deleted {deleted} audit-log row(s) older than {before}");
+        }
+        return Ok(());
+    }
+
+    let resp = client
+        .audit_log(AuditQuery {
+            registry: args.registry,
+            user_id: args.user,
+            from: args.from,
+            to: args.to,
+            denied_only: if args.denied_only { Some(true) } else { None },
+            page: args.page,
+            per_page: args.per_page,
+        })
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&resp)?);
+    } else {
+        print_audit_log_table(&resp);
+    }
+    Ok(())
+}
+
+fn print_access_check(json: bool, resp: &serde_json::Value) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(resp)?);
+        return Ok(());
+    }
+    let decision = resp.get("decision").and_then(|v| v.as_str()).unwrap_or("?");
+    if decision == "allow" {
+        println!("ALLOW");
+    } else {
+        let reason = resp.get("reason").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let rule = resp
+            .get("rule_matched")
+            .and_then(|v| v.as_str())
+            .map(|r| format!("  (rule: {r})"))
+            .unwrap_or_default();
+        println!("DENY: {reason}{rule}");
     }
     Ok(())
 }
@@ -577,17 +614,7 @@ async fn handle_config_admin(
             if json {
                 println!("{}", serde_json::to_string_pretty(&changes)?);
             } else {
-                let mut table = Table::new();
-                table.set_header(["Applied At", "Status", "Triggered By", "Summary"]);
-                for c in &changes {
-                    table.add_row([
-                        c.applied_at.as_deref().unwrap_or("-"),
-                        c.status.as_deref().unwrap_or("-"),
-                        c.triggered_by.as_deref().unwrap_or("-"),
-                        c.summary.as_deref().unwrap_or("-"),
-                    ]);
-                }
-                println!("{table}");
+                print_config_changes_table(&changes);
             }
         }
         ConfigAdminCommand::View => {
@@ -609,17 +636,7 @@ async fn handle_config_admin(
             if json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
-                let ok = resp.get("valid").and_then(|v| v.as_bool()).unwrap_or(true);
-                if ok {
-                    println!("{file}: valid");
-                } else {
-                    let msg = resp
-                        .get("error")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("validation failed");
-                    eprintln!("{file}: {msg}");
-                    std::process::exit(1);
-                }
+                print_config_validation(&file, &resp);
             }
         }
         ConfigAdminCommand::FromFile { file } => {
@@ -634,6 +651,34 @@ async fn handle_config_admin(
         }
     }
     Ok(())
+}
+
+fn print_config_changes_table(changes: &[crate::api::admin::ConfigChangeEntry]) {
+    let mut table = Table::new();
+    table.set_header(["Applied At", "Status", "Triggered By", "Summary"]);
+    for c in changes {
+        table.add_row([
+            c.applied_at.as_deref().unwrap_or("-"),
+            c.status.as_deref().unwrap_or("-"),
+            c.triggered_by.as_deref().unwrap_or("-"),
+            c.summary.as_deref().unwrap_or("-"),
+        ]);
+    }
+    println!("{table}");
+}
+
+fn print_config_validation(file: &str, resp: &serde_json::Value) {
+    let ok = resp.get("valid").and_then(|v| v.as_bool()).unwrap_or(true);
+    if ok {
+        println!("{file}: valid");
+    } else {
+        let msg = resp
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("validation failed");
+        eprintln!("{file}: {msg}");
+        std::process::exit(1);
+    }
 }
 
 async fn handle_cache(cmd: CacheCommand, client: &BatleHubClient) -> Result<()> {
@@ -877,40 +922,40 @@ fn print_bulk_result(json: bool, resp: &serde_json::Value) -> Result<()> {
     Ok(())
 }
 
+/// Render a JSON scalar as a plain string (without the surrounding quotes a
+/// `to_string()` would add to a `String`).
+fn json_cell(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn print_json_array_table(label: &str, arr: &[serde_json::Value]) {
+    if arr.is_empty() {
+        println!("(no {label})");
+        return;
+    }
+    let mut table = Table::new();
+    if let Some(serde_json::Value::Object(first)) = arr.first() {
+        table.set_header(first.keys().collect::<Vec<_>>());
+        for item in arr {
+            if let serde_json::Value::Object(obj) = item {
+                table.add_row(obj.values().map(json_cell).collect::<Vec<_>>());
+            }
+        }
+    }
+    println!("{table}");
+}
+
 fn print_json_value_table(label: &str, value: &serde_json::Value) {
     match value {
-        serde_json::Value::Array(arr) => {
-            if arr.is_empty() {
-                println!("(no {label})");
-                return;
-            }
-            let mut table = Table::new();
-            if let Some(serde_json::Value::Object(first)) = arr.first() {
-                table.set_header(first.keys().collect::<Vec<_>>());
-                for item in arr {
-                    if let serde_json::Value::Object(obj) = item {
-                        table.add_row(
-                            obj.values()
-                                .map(|v| match v {
-                                    serde_json::Value::String(s) => s.clone(),
-                                    other => other.to_string(),
-                                })
-                                .collect::<Vec<_>>(),
-                        );
-                    }
-                }
-            }
-            println!("{table}");
-        }
+        serde_json::Value::Array(arr) => print_json_array_table(label, arr),
         serde_json::Value::Object(obj) => {
             let mut table = Table::new();
             table.set_header(["Key", "Value"]);
             for (k, v) in obj {
-                let val = match v {
-                    serde_json::Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                table.add_row([k.as_str(), val.as_str()]);
+                table.add_row([k.clone(), json_cell(v)]);
             }
             println!("{table}");
         }

@@ -1,18 +1,15 @@
 use std::sync::Arc;
 
 use actix_multipart::Multipart;
-use actix_web::{post, web, HttpRequest, HttpResponse, Responder};
+use actix_web::{post, web, HttpRequest, Responder};
 use bytes::BytesMut;
 use futures::StreamExt;
 use sha2::{Digest, Sha256};
 
-use batlehub_core::{
-    entities::NotificationEventType,
-    services::{LocalRegistryService, PublishRequest},
-};
+use batlehub_core::services::{LocalRegistryService, PublishRequest};
 
 use crate::handlers::proxy::common::{
-    dispatch_notification, extract_signature_headers, require_local_mode, require_registry_type,
+    extract_signature_headers, publish_and_respond, require_local_mode, require_registry_type,
 };
 use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
@@ -120,37 +117,25 @@ pub async fn pypi_publish(
     });
 
     let (signature_bytes, signature_type) = extract_signature_headers(&req);
-    let actor = identity.0.user_id.clone().unwrap_or_default();
 
-    let quota_check = local_svc
-        .publish(PublishRequest {
-            registry: registry.clone(),
-            name: name.clone(),
-            version: version.clone(),
+    publish_and_respond(
+        &local_svc,
+        &notification_svc,
+        PublishRequest {
+            registry,
+            name,
+            version,
             artifact: content,
             checksum: computed_checksum,
             index_metadata,
             publisher: identity.0,
             signature_bytes,
             signature_type,
-        })
-        .await
-        .map_err(AppError::from)?;
-
-    dispatch_notification(
-        &notification_svc,
-        NotificationEventType::PackagePublished,
-        &registry,
-        &name,
-        Some(version),
-        &actor,
-    );
-
-    let mut resp = HttpResponse::Ok();
-    for (header, value) in quota_check.headers() {
-        resp.insert_header((header, value));
-    }
-    Ok(resp.json(serde_json::json!({
-        "message": format!("File uploaded: {filename}")
-    })))
+        },
+        actix_web::http::StatusCode::OK,
+        serde_json::json!({
+            "message": format!("File uploaded: {filename}")
+        }),
+    )
+    .await
 }

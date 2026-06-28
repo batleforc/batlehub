@@ -154,9 +154,19 @@ async fn increment_no_longer_prunes_inline() {
     let s = make_store(&url).await;
     let key = s.key("prune");
 
-    // Insert a fake row from a long-past window directly.
-    sqlx::query("INSERT INTO rate_limit_counters (key, window_start, count) VALUES ($1, 0, 999)")
+    // Seed a row in a *previous but recent* window (≈10 min ago, aligned to 60s).
+    // It must NOT be at window_start = 0: prune_expired_removes_old_window_rows runs in
+    // parallel and its DELETE is global (keyed by window_start only), so an epoch row would
+    // get swept by that test's prune(3600), leaving us with a spurious count of 1. A row
+    // ~10 min old survives a 3600s-retention sweep yet is still a distinct, stale window.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let stale_window = ((now - 600) / 60) * 60;
+    sqlx::query("INSERT INTO rate_limit_counters (key, window_start, count) VALUES ($1, $2, 999)")
         .bind(&key)
+        .bind(stale_window)
         .execute(&s.pool)
         .await
         .unwrap();

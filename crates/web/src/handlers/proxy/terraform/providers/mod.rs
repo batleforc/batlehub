@@ -3,7 +3,7 @@ use super::{
     extract_signature_headers, get, post, proxy_stream, put, require_local_mode,
     require_registry_type, terraform_set_yanked, terraform_versions_response,
     tf_provider_binary_storage_key, web, AppError, Arc, AuthIdentity, Digest, HttpRequest,
-    HttpResponse, LocalRegistryService, NotificationEventType, NotificationService, PackageId,
+    HttpResponse, LocalRegistryService, NotificationService, PackageId,
     ProxyService, PublishRequest, RegistryMap, RegistryMode, RegistryModeMap, Responder, Sha256,
     StorageMeta, TerraformPlatform,
 };

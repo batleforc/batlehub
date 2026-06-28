@@ -64,11 +64,12 @@ pub async fn gem_publish(
     let version = gem_meta.version.clone();
 
     let (signature_bytes, signature_type) = extract_signature_headers(&req);
-    let actor = identity.0.user_id.clone().unwrap_or_default();
 
-    let quota_check = local_svc
-        .publish(PublishRequest {
-            registry: registry.clone(),
+    super::super::common::publish_and_respond(
+        &local_svc,
+        &notification_svc,
+        PublishRequest {
+            registry,
             name: name.clone(),
             version: version.clone(),
             artifact: data,
@@ -77,26 +78,13 @@ pub async fn gem_publish(
             publisher: identity.0,
             signature_bytes,
             signature_type,
-        })
-        .await
-        .map_err(AppError::from)?;
-
-    super::super::common::dispatch_notification(
-        &notification_svc,
-        NotificationEventType::PackagePublished,
-        &registry,
-        &name,
-        Some(version.clone()),
-        &actor,
-    );
-
-    let mut resp = HttpResponse::Ok();
-    for (header, value) in quota_check.headers() {
-        resp.insert_header((header, value));
-    }
-    Ok(resp.json(serde_json::json!({
-        "message": format!("Successfully registered gem: {} ({})", name, version)
-    })))
+        },
+        actix_web::http::StatusCode::OK,
+        serde_json::json!({
+            "message": format!("Successfully registered gem: {name} ({version})")
+        }),
+    )
+    .await
 }
 
 /// Yank a gem version (local/hybrid registries only).

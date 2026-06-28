@@ -9,7 +9,7 @@ use batlehub_core::{
     entities::{NotificationEvent, NotificationEventType, PackageId},
     error::CoreError,
     ports::ByteStream,
-    services::{LocalRegistryService, ProxyRequest, ProxyResponse, ProxyService},
+    services::{LocalRegistryService, ProxyRequest, ProxyResponse, ProxyService, PublishRequest},
 };
 
 use crate::{
@@ -98,6 +98,40 @@ pub fn dispatch_notification(
         let event = NotificationEvent::new(event_type, registry, package_name, version, actor);
         svc.dispatch_event_background(event);
     }
+}
+
+/// Publish an artifact, fire a `PackagePublished` notification, and build a JSON
+/// response carrying the publish quota headers.
+///
+/// Collapses the publish→notify→respond tail shared by every local/hybrid publish
+/// handler. `status` is the success status (200/201) and `body` the JSON payload.
+pub async fn publish_and_respond(
+    local_svc: &LocalRegistryService,
+    notification_svc: &web::Data<Option<Arc<NotificationService>>>,
+    req: PublishRequest,
+    status: actix_web::http::StatusCode,
+    body: serde_json::Value,
+) -> Result<HttpResponse, AppError> {
+    let registry = req.registry.clone();
+    let name = req.name.clone();
+    let version = req.version.clone();
+    let actor = req.publisher.user_id.clone().unwrap_or_default();
+
+    let quota = local_svc.publish(req).await.map_err(AppError::from)?;
+    dispatch_notification(
+        notification_svc,
+        NotificationEventType::PackagePublished,
+        &registry,
+        &name,
+        Some(version),
+        &actor,
+    );
+
+    let mut resp = HttpResponse::build(status);
+    for (header, value) in quota.headers() {
+        resp.insert_header((header, value));
+    }
+    Ok(resp.json(body))
 }
 
 /// Reject the request if `registry` is not of the expected type.

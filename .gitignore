@@ -8,6 +8,7 @@ fuzz/target/
 fuzz/corpus/
 fuzz/artifacts/
 coverage/
+node_modules/
 
 # Config (contains secrets)
 /config.toml

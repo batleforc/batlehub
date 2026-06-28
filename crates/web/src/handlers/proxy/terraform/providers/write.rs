@@ -2,8 +2,8 @@ use super::{
     collect_payload, delete, extract_signature_headers, post, put, require_local_mode,
     require_registry_type, terraform_set_yanked, tf_provider_binary_storage_key, web, AppError,
     Arc, AuthIdentity, Digest, HttpRequest, HttpResponse, LocalRegistryService,
-    NotificationEventType, NotificationService, PublishRequest, RegistryMap, RegistryModeMap,
-    Responder, Sha256, StorageMeta,
+    NotificationService, PublishRequest, RegistryMap, RegistryModeMap, Responder, Sha256,
+    StorageMeta,
 };
 
 /// Upload a Terraform provider version manifest (JSON describing version + platforms).
@@ -66,37 +66,25 @@ pub async fn tf_provider_upload(
 
     let name = format!("providers/{namespace}/{ptype}");
     let (signature_bytes, signature_type) = extract_signature_headers(&req);
-    let actor = identity.0.user_id.clone().unwrap_or_default();
 
-    let quota_check = local_svc
-        .publish(PublishRequest {
-            registry: registry.clone(),
-            name: name.clone(),
-            version: version.clone(),
+    super::super::super::common::publish_and_respond(
+        &local_svc,
+        &notification_svc,
+        PublishRequest {
+            registry,
+            name,
+            version,
             artifact: bytes,
             checksum,
             index_metadata,
             publisher: identity.0,
             signature_bytes,
             signature_type,
-        })
-        .await
-        .map_err(AppError::from)?;
-
-    super::super::super::common::dispatch_notification(
-        &notification_svc,
-        NotificationEventType::PackagePublished,
-        &registry,
-        &name,
-        Some(version),
-        &actor,
-    );
-
-    let mut resp = HttpResponse::Created();
-    for (header, value) in quota_check.headers() {
-        resp.insert_header((header, value));
-    }
-    Ok(resp.json(serde_json::json!({"message": "provider version published"})))
+        },
+        actix_web::http::StatusCode::CREATED,
+        serde_json::json!({"message": "provider version published"}),
+    )
+    .await
 }
 
 /// Upload a platform binary for a locally-published Terraform provider.

@@ -222,9 +222,7 @@ mod tests {
     // DB hiccups).
     #[actix_web::test]
     async fn block_check_error_allows_request_through() {
-        use std::sync::Mutex;
-
-        struct FailingRepo(Mutex<()>);
+        struct FailingRepo;
 
         #[async_trait::async_trait]
         impl UserBlockRepository for FailingRepo {
@@ -258,7 +256,7 @@ mod tests {
             }
         }
 
-        let repo: Arc<dyn UserBlockRepository> = Arc::new(FailingRepo(Mutex::new(())));
+        let repo: Arc<dyn UserBlockRepository> = Arc::new(FailingRepo);
         let app = test::init_service(
             App::new()
                 .wrap(UserBlockMiddlewareFactory::new(Arc::clone(&repo)))

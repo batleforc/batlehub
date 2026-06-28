@@ -101,97 +101,138 @@ impl StorageRouter {
         .map_err(|e| CoreError::Storage(e.to_string()))?;
 
         if existing_hash.as_deref() == Some(content_hash) {
-            tx.rollback().await.ok();
-            if backend.exists(content_key).await.unwrap_or(false) {
-                // Identical bytes re-stored and the physical blob is present — nothing to do.
-                source.discard_staged(backend).await;
-            } else {
-                // Same hash but the physical blob is gone (e.g. storage was cleared without
-                // resetting the DB). The dedup rows are already correct, so just restore the
-                // blob without touching ref counts.
-                if let Err(e) = source.materialize(backend, content_key).await {
-                    source.discard_staged(backend).await;
-                    return Err(e);
-                }
-            }
+            Self::reuse_identical_blob(tx, content_key, backend, source).await?;
         } else {
-            // Increment (or insert) ref count for the new hash.
-            let count: i32 = sqlx::query_scalar(
-                r#"
-                INSERT INTO artifact_dedup_index (content_hash, content_key, ref_count, size_bytes)
-                VALUES ($1, $2, 1, $3)
-                ON CONFLICT (content_hash) DO UPDATE
-                    SET ref_count = artifact_dedup_index.ref_count + 1
-                RETURNING ref_count
-                "#,
+            self.commit_new_hash(
+                tx,
+                key,
+                content_hash,
+                content_key,
+                size,
+                backend,
+                existing_hash,
+                source,
             )
-            .bind(content_hash)
-            .bind(content_key)
-            .bind(size.map(|s| s as i64))
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| CoreError::Storage(format!("dedup index upsert failed: {e}")))?;
-
-            // Map logical key → content hash (propagate errors instead of silently dropping).
-            // This must happen before the old hash's row is touched below, so that the
-            // foreign key from artifact_dedup_refs no longer points at the old hash when
-            // we try to delete it.
-            sqlx::query(
-                r#"
-                INSERT INTO artifact_dedup_refs (logical_key, content_hash)
-                VALUES ($1, $2)
-                ON CONFLICT (logical_key) DO UPDATE SET content_hash = EXCLUDED.content_hash
-                "#,
-            )
-            .bind(key)
-            .bind(content_hash)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| CoreError::Storage(format!("dedup refs insert failed: {e}")))?;
-
-            // Decrement ref count for the previous hash if the key is being replaced.
-            if let Some(old_hash) = &existing_hash {
-                let old_count: i32 = sqlx::query_scalar(
-                    "UPDATE artifact_dedup_index SET ref_count = ref_count - 1 \
-                     WHERE content_hash = $1 RETURNING ref_count",
-                )
-                .bind(old_hash)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(|e| CoreError::Storage(e.to_string()))?;
-
-                if old_count <= 0 {
-                    sqlx::query("DELETE FROM artifact_dedup_index WHERE content_hash = $1")
-                        .bind(old_hash)
-                        .execute(&mut *tx)
-                        .await
-                        .map_err(|e| CoreError::Storage(e.to_string()))?;
-                }
-            }
-
-            // Write the physical blob while the transaction is still open.  Doing
-            // this before commit ensures a backend failure causes a full rollback
-            // rather than leaving orphaned dedup rows that point to a missing blob.
-            if count == 1 {
-                if let Err(e) = source.materialize(backend, content_key).await {
-                    let _ = tx.rollback().await;
-                    source.discard_staged(backend).await;
-                    return Err(e);
-                }
-            } else {
-                // The blob already exists from another reference — drop the
-                // redundant staged copy (no-op for the inline path).
-                source.discard_staged(backend).await;
-            }
-
-            tx.commit()
-                .await
-                .map_err(|e| CoreError::Storage(e.to_string()))?;
+            .await?;
         }
 
         // Keep the legacy artifact_storage record for routing and size queries.
         self.record_backend(key, backend_name, size).await;
 
+        Ok(())
+    }
+
+    /// Re-store of identical bytes for a key that already maps to `content_hash`:
+    /// the dedup rows are already correct, so roll the transaction back and only
+    /// touch the physical blob (restore it if it went missing, else discard the
+    /// redundant staged copy).
+    async fn reuse_identical_blob(
+        tx: sqlx::Transaction<'_, sqlx::Postgres>,
+        content_key: &str,
+        backend: &Arc<dyn StorageBackend>,
+        source: BlobSource,
+    ) -> Result<(), CoreError> {
+        tx.rollback().await.ok();
+        if backend.exists(content_key).await.unwrap_or(false) {
+            // Identical bytes re-stored and the physical blob is present — nothing to do.
+            source.discard_staged(backend).await;
+        } else if let Err(e) = source.materialize(backend, content_key).await {
+            // Same hash but the physical blob is gone (e.g. storage was cleared without
+            // resetting the DB). Restore the blob without touching ref counts.
+            source.discard_staged(backend).await;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// A new (or changed) content hash for `key`: increment ref counts, remap the
+    /// logical key, decrement the replaced hash, materialize the blob on first
+    /// reference, and commit. The blob is written *inside* the transaction so a
+    /// backend failure rolls the dedup rows back.
+    #[allow(clippy::too_many_arguments)]
+    async fn commit_new_hash(
+        &self,
+        mut tx: sqlx::Transaction<'_, sqlx::Postgres>,
+        key: &str,
+        content_hash: &str,
+        content_key: &str,
+        size: Option<u64>,
+        backend: &Arc<dyn StorageBackend>,
+        existing_hash: Option<String>,
+        source: BlobSource,
+    ) -> Result<(), CoreError> {
+        // Increment (or insert) ref count for the new hash.
+        let count: i32 = sqlx::query_scalar(
+            r#"
+            INSERT INTO artifact_dedup_index (content_hash, content_key, ref_count, size_bytes)
+            VALUES ($1, $2, 1, $3)
+            ON CONFLICT (content_hash) DO UPDATE
+                SET ref_count = artifact_dedup_index.ref_count + 1
+            RETURNING ref_count
+            "#,
+        )
+        .bind(content_hash)
+        .bind(content_key)
+        .bind(size.map(|s| s as i64))
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| CoreError::Storage(format!("dedup index upsert failed: {e}")))?;
+
+        // Map logical key → content hash (propagate errors instead of silently dropping).
+        // This must happen before the old hash's row is touched below, so that the
+        // foreign key from artifact_dedup_refs no longer points at the old hash when
+        // we try to delete it.
+        sqlx::query(
+            r#"
+            INSERT INTO artifact_dedup_refs (logical_key, content_hash)
+            VALUES ($1, $2)
+            ON CONFLICT (logical_key) DO UPDATE SET content_hash = EXCLUDED.content_hash
+            "#,
+        )
+        .bind(key)
+        .bind(content_hash)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| CoreError::Storage(format!("dedup refs insert failed: {e}")))?;
+
+        // Decrement ref count for the previous hash if the key is being replaced.
+        if let Some(old_hash) = &existing_hash {
+            let old_count: i32 = sqlx::query_scalar(
+                "UPDATE artifact_dedup_index SET ref_count = ref_count - 1 \
+                 WHERE content_hash = $1 RETURNING ref_count",
+            )
+            .bind(old_hash)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| CoreError::Storage(e.to_string()))?;
+
+            if old_count <= 0 {
+                sqlx::query("DELETE FROM artifact_dedup_index WHERE content_hash = $1")
+                    .bind(old_hash)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+            }
+        }
+
+        // Write the physical blob while the transaction is still open.  Doing
+        // this before commit ensures a backend failure causes a full rollback
+        // rather than leaving orphaned dedup rows that point to a missing blob.
+        if count == 1 {
+            if let Err(e) = source.materialize(backend, content_key).await {
+                let _ = tx.rollback().await;
+                source.discard_staged(backend).await;
+                return Err(e);
+            }
+        } else {
+            // The blob already exists from another reference — drop the
+            // redundant staged copy (no-op for the inline path).
+            source.discard_staged(backend).await;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| CoreError::Storage(e.to_string()))?;
         Ok(())
     }
 }

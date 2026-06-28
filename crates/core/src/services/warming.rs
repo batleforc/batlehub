@@ -340,7 +340,6 @@ impl WarmingService {
 mod tests {
     use bytes::Bytes;
     use chrono::Utc;
-    use futures::StreamExt;
 
     use super::*;
     use crate::{

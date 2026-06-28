@@ -285,29 +285,8 @@ impl ProxyService {
         // ── Missing-checksum gate (no artifact bytes needed) ───────────────────
         // Decided up front so it applies equally to the streaming and no-store
         // paths, and so we never start a transfer that policy will reject.
-        if integrity.enabled && metadata.checksum.is_none() {
-            metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "missing").increment(1);
-            if integrity.require_metadata && !integrity.bypass_roles.contains(&req.identity.role) {
-                let reason = format!(
-                    "integrity policy requires checksum metadata, but upstream provided none for {}",
-                    req.package_id,
-                );
-                super::warn_if_audit_failed(
-                    self.repo
-                        .record_access(AccessEvent::proxy_error(
-                            req.package_id.clone(),
-                            req.identity.user_id.clone(),
-                            req.identity.role.clone(),
-                            reason.clone(),
-                        ))
-                        .await,
-                    "integrity missing metadata",
-                );
-                super::finish_request(&registry_label, "integrity_failed", start);
-                return Err(CoreError::IntegrityFailure(reason));
-            }
-            tracing::debug!(registry = %registry_name, key = %artifact_key, "upstream provided no integrity metadata");
-        }
+        self.gate_missing_checksum(&req, &metadata, integrity, &artifact_key, &registry_label, start)
+            .await?;
 
         if skip_artifact_cache {
             tracing::debug!(key = %artifact_key, "upstream Cache-Control: no-store; skipping artifact cache");
@@ -328,21 +307,13 @@ impl ProxyService {
         // ── Build the advertised-checksum verifier (None ⇒ no verification) ────
         // `None` covers: integrity disabled, no advertised checksum (gated above),
         // or an unparseable checksum (treated like missing, with a metric).
-        let verifier = if integrity.enabled {
-            match metadata.checksum.as_deref() {
-                Some(c) => match StreamingVerifier::new(c) {
-                    Some(v) => Some(v),
-                    None => {
-                        metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "unparseable").increment(1);
-                        tracing::warn!(registry = %registry_name, key = %artifact_key, checksum = c, "advertised checksum could not be parsed; skipping verification");
-                        None
-                    }
-                },
-                None => None,
-            }
-        } else {
-            None
-        };
+        let verifier = build_artifact_verifier(
+            integrity,
+            &metadata,
+            &registry_label,
+            registry_name,
+            &artifact_key,
+        );
 
         // Only artifacts that can actually be *blocked* need to be hidden from
         // concurrent readers until verified. Stream those to a private staging
@@ -381,62 +352,17 @@ impl ProxyService {
 
         // ── Inspect the advertised-checksum verdict (post-stream) ──────────────
         let verify_outcome = outcome_slot.lock().expect("verifier mutex").take();
-
-        // Fail closed: a verifier was installed but published no verdict, which
-        // means the stream was not consumed to completion. We cannot claim the
-        // bytes were verified, so evict and reject rather than serve them.
-        if had_verifier && verify_outcome.is_none() {
-            if let Err(e) = self.storage.delete(&store_key).await {
-                tracing::warn!(key = %store_key, error = %e, "failed to evict unverified artifact");
-            }
-            let reason = format!(
-                "integrity verification did not complete for {}",
-                req.package_id,
-            );
-            super::warn_if_audit_failed(
-                self.repo
-                    .record_access(AccessEvent::proxy_error(
-                        req.package_id.clone(),
-                        req.identity.user_id.clone(),
-                        req.identity.role.clone(),
-                        reason.clone(),
-                    ))
-                    .await,
-                "integrity incomplete",
-            );
-            super::finish_request(&registry_label, "integrity_failed", start);
-            return Err(CoreError::IntegrityFailure(reason));
-        }
-
-        if let Some(outcome) = &verify_outcome {
-            if let Some(reason) = classify_integrity_outcome(
-                outcome,
-                integrity.block_on_mismatch,
-                &registry_label,
-                registry_name,
-                &artifact_key,
-                &req.package_id,
-            ) {
-                // Evict the just-stored (staging) bytes so they are never promoted
-                // or served, and so a later request re-fetches clean bytes.
-                if let Err(e) = self.storage.delete(&store_key).await {
-                    tracing::warn!(key = %store_key, error = %e, "failed to evict mismatched artifact");
-                }
-                super::warn_if_audit_failed(
-                    self.repo
-                        .record_access(AccessEvent::proxy_error(
-                            req.package_id.clone(),
-                            req.identity.user_id.clone(),
-                            req.identity.role.clone(),
-                            reason.clone(),
-                        ))
-                        .await,
-                    "integrity mismatch",
-                );
-                super::finish_request(&registry_label, "integrity_failed", start);
-                return Err(CoreError::IntegrityFailure(reason));
-            }
-        }
+        self.enforce_verify_outcome(
+            &req,
+            &store_key,
+            &artifact_key,
+            had_verifier,
+            verify_outcome,
+            integrity,
+            &registry_label,
+            start,
+        )
+        .await?;
 
         // Verified (or warn-only): promote a staged blob to the real key now —
         // after verification — so the artifact only becomes visible to concurrent
@@ -444,22 +370,7 @@ impl ProxyService {
         // bytes (bounded memory) and dedup-hits the existing blob, so it costs no
         // extra blob copy.
         if must_stage {
-            let staged = self.storage.retrieve(&store_key).await?.ok_or_else(|| {
-                CoreError::Registry(format!(
-                    "staged artifact '{store_key}' vanished before promotion"
-                ))
-            })?;
-            if let Err(e) = self
-                .storage
-                .store_streaming(&artifact_key, staged.stream, StorageMeta::default())
-                .await
-            {
-                let _ = self.storage.delete(&store_key).await;
-                return Err(e);
-            }
-            if let Err(e) = self.storage.delete(&store_key).await {
-                tracing::warn!(key = %store_key, error = %e, "failed to delete staging artifact after promotion");
-            }
+            self.promote_staged(&store_key, &artifact_key).await?;
         }
 
         // The digest computed by the streaming store is the same bare SHA-256 the
@@ -507,6 +418,152 @@ impl ProxyService {
         );
         super::finish_request(&registry_label, "allowed", start);
         Ok(ProxyResponse::Stream(stored.stream))
+    }
+
+    /// Enforce the integrity policy when upstream advertises no checksum. No-op
+    /// unless integrity is on and the checksum is missing; fails closed (evicting
+    /// nothing, since no bytes are stored yet) when metadata is required and the
+    /// caller's role is not exempt.
+    async fn gate_missing_checksum(
+        &self,
+        req: &ProxyRequest,
+        metadata: &PackageMetadata,
+        integrity: &IntegrityPolicy,
+        artifact_key: &str,
+        registry_label: &Arc<str>,
+        start: Instant,
+    ) -> Result<(), CoreError> {
+        if !(integrity.enabled && metadata.checksum.is_none()) {
+            return Ok(());
+        }
+        let registry_name = req.package_id.registry.as_str();
+        metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "missing").increment(1);
+        if integrity.require_metadata && !integrity.bypass_roles.contains(&req.identity.role) {
+            let reason = format!(
+                "integrity policy requires checksum metadata, but upstream provided none for {}",
+                req.package_id,
+            );
+            super::warn_if_audit_failed(
+                self.repo
+                    .record_access(AccessEvent::proxy_error(
+                        req.package_id.clone(),
+                        req.identity.user_id.clone(),
+                        req.identity.role.clone(),
+                        reason.clone(),
+                    ))
+                    .await,
+                "integrity missing metadata",
+            );
+            super::finish_request(registry_label, "integrity_failed", start);
+            return Err(CoreError::IntegrityFailure(reason));
+        }
+        tracing::debug!(registry = %registry_name, key = %artifact_key, "upstream provided no integrity metadata");
+        Ok(())
+    }
+
+    /// Inspect the post-stream advertised-checksum verdict and fail closed when
+    /// required: a verifier that published no verdict (stream not consumed) or a
+    /// blocking mismatch. In both cases the just-stored (staging) bytes are
+    /// evicted so they are never promoted or served. `Ok(())` means proceed.
+    #[allow(clippy::too_many_arguments)]
+    async fn enforce_verify_outcome(
+        &self,
+        req: &ProxyRequest,
+        store_key: &str,
+        artifact_key: &str,
+        had_verifier: bool,
+        verify_outcome: Option<IntegrityOutcome>,
+        integrity: &IntegrityPolicy,
+        registry_label: &Arc<str>,
+        start: Instant,
+    ) -> Result<(), CoreError> {
+        let registry_name = req.package_id.registry.as_str();
+
+        // Fail closed: a verifier was installed but published no verdict, which
+        // means the stream was not consumed to completion. We cannot claim the
+        // bytes were verified, so evict and reject rather than serve them.
+        if had_verifier && verify_outcome.is_none() {
+            self.evict_staged(store_key, "failed to evict unverified artifact")
+                .await;
+            let reason = format!(
+                "integrity verification did not complete for {}",
+                req.package_id,
+            );
+            self.audit_integrity_failure(req, &reason, "integrity incomplete", registry_label, start)
+                .await;
+            return Err(CoreError::IntegrityFailure(reason));
+        }
+
+        if let Some(outcome) = &verify_outcome {
+            if let Some(reason) = classify_integrity_outcome(
+                outcome,
+                integrity.block_on_mismatch,
+                registry_label,
+                registry_name,
+                artifact_key,
+                &req.package_id,
+            ) {
+                self.evict_staged(store_key, "failed to evict mismatched artifact")
+                    .await;
+                self.audit_integrity_failure(req, &reason, "integrity mismatch", registry_label, start)
+                    .await;
+                return Err(CoreError::IntegrityFailure(reason));
+            }
+        }
+        Ok(())
+    }
+
+    /// Best-effort eviction of a stored (staging) key, logging on failure.
+    async fn evict_staged(&self, store_key: &str, warn_msg: &str) {
+        if let Err(e) = self.storage.delete(store_key).await {
+            tracing::warn!(key = %store_key, error = %e, "{warn_msg}");
+        }
+    }
+
+    /// Record a proxy-error audit event and finish the request as integrity-failed.
+    async fn audit_integrity_failure(
+        &self,
+        req: &ProxyRequest,
+        reason: &str,
+        audit_label: &str,
+        registry_label: &Arc<str>,
+        start: Instant,
+    ) {
+        super::warn_if_audit_failed(
+            self.repo
+                .record_access(AccessEvent::proxy_error(
+                    req.package_id.clone(),
+                    req.identity.user_id.clone(),
+                    req.identity.role.clone(),
+                    reason.to_owned(),
+                ))
+                .await,
+            audit_label,
+        );
+        super::finish_request(registry_label, "integrity_failed", start);
+    }
+
+    /// Promote verified staged bytes to the real artifact key, then drop the
+    /// staging copy. The promote re-streams the staged bytes (bounded memory) and
+    /// dedup-hits the existing blob, so it costs no extra blob copy.
+    async fn promote_staged(&self, store_key: &str, artifact_key: &str) -> Result<(), CoreError> {
+        let staged = self.storage.retrieve(store_key).await?.ok_or_else(|| {
+            CoreError::Registry(format!(
+                "staged artifact '{store_key}' vanished before promotion"
+            ))
+        })?;
+        if let Err(e) = self
+            .storage
+            .store_streaming(artifact_key, staged.stream, StorageMeta::default())
+            .await
+        {
+            let _ = self.storage.delete(store_key).await;
+            return Err(e);
+        }
+        if let Err(e) = self.storage.delete(store_key).await {
+            tracing::warn!(key = %store_key, error = %e, "failed to delete staging artifact after promotion");
+        }
+        Ok(())
     }
 
     /// `no-store` fallback: the upstream forbids caching, so there is nothing to
@@ -609,6 +666,30 @@ async fn hash_stream_retaining(
         }
     }
     Ok((verifier.finish(), retained))
+}
+
+/// Build the advertised-checksum verifier for the streaming path. Returns `None`
+/// when integrity is disabled, no checksum is advertised (gated earlier), or the
+/// checksum is unparseable (treated like missing, with a metric).
+fn build_artifact_verifier(
+    integrity: &IntegrityPolicy,
+    metadata: &PackageMetadata,
+    registry_label: &Arc<str>,
+    registry_name: &str,
+    artifact_key: &str,
+) -> Option<StreamingVerifier> {
+    if !integrity.enabled {
+        return None;
+    }
+    let checksum = metadata.checksum.as_deref()?;
+    match StreamingVerifier::new(checksum) {
+        Some(v) => Some(v),
+        None => {
+            metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "unparseable").increment(1);
+            tracing::warn!(registry = %registry_name, key = %artifact_key, checksum = checksum, "advertised checksum could not be parsed; skipping verification");
+            None
+        }
+    }
 }
 
 /// Record the metric + log line for an advertised-checksum verdict and decide

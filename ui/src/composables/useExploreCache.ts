@@ -11,6 +11,16 @@ function key(registry: string, page: number, sort: string, query: string): strin
   return `${registry}::${page}::${sort}::${query}`;
 }
 
+function invalidate(registry?: string): void {
+  if (!registry) {
+    _store.clear();
+    return;
+  }
+  for (const k of _store.keys()) {
+    if (k.startsWith(`${registry}::`)) _store.delete(k);
+  }
+}
+
 export function useExploreCache<T>() {
   function get(registry: string, page: number, sort: string, query: string): T | undefined {
     const entry = _store.get(key(registry, page, sort, query)) as CacheEntry<T> | undefined;
@@ -27,16 +37,6 @@ export function useExploreCache<T>() {
       data,
       expiresAt: Date.now() + TTL_MS,
     });
-  }
-
-  function invalidate(registry?: string): void {
-    if (!registry) {
-      _store.clear();
-      return;
-    }
-    for (const k of _store.keys()) {
-      if (k.startsWith(`${registry}::`)) _store.delete(k);
-    }
   }
 
   return { get, set, invalidate };

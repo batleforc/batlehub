@@ -18,7 +18,6 @@ use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
     RegistryModeMap,
 };
-use batlehub_core::entities::NotificationEventType;
 
 // ── Proxy routes ──────────────────────────────────────────────────────────────
 
@@ -382,39 +381,27 @@ pub async fn conda_publish(
     });
 
     let (signature_bytes, signature_type) = extract_signature_headers(&req);
-    let actor = identity.0.user_id.clone().unwrap_or_default();
 
-    let quota_check = local_svc
-        .publish(PublishRequest {
-            registry: registry.clone(),
+    super::common::publish_and_respond(
+        &local_svc,
+        &notification_svc,
+        PublishRequest {
+            registry,
             name: pkg_info.name.clone(),
-            version: version_key.clone(),
+            version: version_key,
             artifact: data,
             checksum,
             index_metadata,
             publisher: identity.0,
             signature_bytes,
             signature_type,
-        })
-        .await
-        .map_err(AppError::from)?;
-
-    super::common::dispatch_notification(
-        &notification_svc,
-        NotificationEventType::PackagePublished,
-        &registry,
-        &pkg_info.name,
-        Some(version_key),
-        &actor,
-    );
-
-    let mut resp = HttpResponse::Ok();
-    for (header, value) in quota_check.headers() {
-        resp.insert_header((header, value));
-    }
-    Ok(resp.json(serde_json::json!({
-        "message": format!("Conda package published: {filename}")
-    })))
+        },
+        actix_web::http::StatusCode::OK,
+        serde_json::json!({
+            "message": format!("Conda package published: {filename}")
+        }),
+    )
+    .await
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

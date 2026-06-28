@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, type Ref, type ComputedRef } from "vue";
 import { API_BASE_URL } from "@/config";
 import { listRegistries } from "@/client/sdk.gen";
 import { useApi } from "@/composables/useApi";
@@ -58,45 +58,33 @@ const { data: registries } = useApi<Array<{ name: string; type: string }>>(
   [],
 );
 
+const registryNameRefs: Record<string, Ref<string>> = {
+  github: githubRegistryName,
+  npm: npmRegistryName,
+  cargo: cargoRegistryName,
+  composer: composerRegistryName,
+  nuget: nugetRegistryName,
+  pypi: pypiRegistryName,
+  goproxy: goproxyRegistryName,
+  maven: mavenRegistryName,
+  terraform: terraformRegistryName,
+  rubygems: rubygemsRegistryName,
+  conda: condaRegistryName,
+  openvsx: openvsxRegistryName,
+  forgejo: forgejoRegistryName,
+  gitlab: gitlabRegistryName,
+  deb: debRegistryName,
+  rpm: rpmRegistryName,
+  pacman: pacmanRegistryName,
+  jetbrains: jetbrainsRegistryName,
+};
+
 watch(registries, (regs) => {
   if (!regs) return;
-  const pick = (type: string) => regs.find((r) => r.type === type);
-  const gh = pick("github");
-  const np = pick("npm");
-  const cg = pick("cargo");
-  const cmp = pick("composer");
-  const nug = pick("nuget");
-  const pyp = pick("pypi");
-  const go = pick("goproxy");
-  const mvn = pick("maven");
-  const tf = pick("terraform");
-  const rg = pick("rubygems");
-  const cnd = pick("conda");
-  const vsx = pick("openvsx");
-  const fj = pick("forgejo");
-  const gl = pick("gitlab");
-  const db = pick("deb");
-  const rp = pick("rpm");
-  const pc = pick("pacman");
-  const jb = pick("jetbrains");
-  if (gh) githubRegistryName.value = gh.name;
-  if (np) npmRegistryName.value = np.name;
-  if (cg) cargoRegistryName.value = cg.name;
-  if (cmp) composerRegistryName.value = cmp.name;
-  if (nug) nugetRegistryName.value = nug.name;
-  if (pyp) pypiRegistryName.value = pyp.name;
-  if (go) goproxyRegistryName.value = go.name;
-  if (mvn) mavenRegistryName.value = mvn.name;
-  if (tf) terraformRegistryName.value = tf.name;
-  if (rg) rubygemsRegistryName.value = rg.name;
-  if (cnd) condaRegistryName.value = cnd.name;
-  if (vsx) openvsxRegistryName.value = vsx.name;
-  if (fj) forgejoRegistryName.value = fj.name;
-  if (gl) gitlabRegistryName.value = gl.name;
-  if (db) debRegistryName.value = db.name;
-  if (rp) rpmRegistryName.value = rp.name;
-  if (pc) pacmanRegistryName.value = pc.name;
-  if (jb) jetbrainsRegistryName.value = jb.name;
+  for (const [type, nameRef] of Object.entries(registryNameRefs)) {
+    const found = regs.find((r) => r.type === type);
+    if (found) nameRef.value = found.name;
+  }
 });
 
 const githubRegistries = computed(() => registries.value?.filter((r) => r.type === "github") ?? []);
@@ -561,7 +549,7 @@ const mavenPaths = computed<ProxyPath[]>(() => {
   const ver = mavenVersion.value.trim();
   const file = mavenFilename.value.trim();
   // Maven groupId uses dots; the path uses slashes
-  const groupPath = group.replace(/\./g, "/");
+  const groupPath = group.replaceAll(".", "/");
   const hasCoords = !!group && !!artifact;
   const defaultFile = hasCoords && ver ? `${artifact}-${ver}.jar` : "";
   return [
@@ -847,26 +835,28 @@ const jetbrainsPaths = computed<ProxyPath[]>(() => {
   ];
 });
 
-const activePaths = computed(() => {
-  if (registry.value === "npm") return npmPaths.value;
-  if (registry.value === "cargo") return cargoPaths.value;
-  if (registry.value === "composer") return composerPaths.value;
-  if (registry.value === "nuget") return nugetPaths.value;
-  if (registry.value === "pypi") return pypiPaths.value;
-  if (registry.value === "goproxy") return goproxyPaths.value;
-  if (registry.value === "maven") return mavenPaths.value;
-  if (registry.value === "terraform") return terraformPaths.value;
-  if (registry.value === "rubygems") return rubygemsPaths.value;
-  if (registry.value === "conda") return condaPaths.value;
-  if (registry.value === "openvsx") return openvsxPaths.value;
-  if (registry.value === "forgejo") return forgejoPaths.value;
-  if (registry.value === "gitlab") return gitlabPaths.value;
-  if (registry.value === "deb") return debPaths.value;
-  if (registry.value === "rpm") return rpmPaths.value;
-  if (registry.value === "pacman") return pacmanPaths.value;
-  if (registry.value === "jetbrains") return jetbrainsPaths.value;
-  return githubPaths.value;
-});
+const pathsByType: Record<string, ComputedRef<ProxyPath[]>> = {
+  npm: npmPaths,
+  cargo: cargoPaths,
+  composer: composerPaths,
+  nuget: nugetPaths,
+  pypi: pypiPaths,
+  goproxy: goproxyPaths,
+  maven: mavenPaths,
+  terraform: terraformPaths,
+  rubygems: rubygemsPaths,
+  conda: condaPaths,
+  openvsx: openvsxPaths,
+  forgejo: forgejoPaths,
+  gitlab: gitlabPaths,
+  deb: debPaths,
+  rpm: rpmPaths,
+  pacman: pacmanPaths,
+  jetbrains: jetbrainsPaths,
+  github: githubPaths,
+};
+
+const activePaths = computed(() => (pathsByType[registry.value] ?? githubPaths).value);
 
 // ── Copy helper ────────────────────────────────────────────────────────────────
 

@@ -91,6 +91,7 @@ const actionOptions = computed(() => {
         <div class="flex gap-2 items-center">
           <select
             v-model="exportFormat"
+            aria-label="Export format"
             class="h-8 rounded-sm border border-input bg-transparent px-2 text-sm shadow-sm text-foreground"
           >
             <option value="csv">CSV</option>

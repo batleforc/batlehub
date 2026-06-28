@@ -73,8 +73,9 @@ async function simulate() {
     <form @submit.prevent="simulate" class="space-y-4 max-w-lg">
       <div class="grid grid-cols-2 gap-4">
         <div class="space-y-1">
-          <label class="text-sm font-medium">Registry</label>
+          <label for="aac-registry" class="text-sm font-medium">Registry</label>
           <input
+            id="aac-registry"
             v-model="registry"
             required
             placeholder="npm"
@@ -82,8 +83,9 @@ async function simulate() {
           />
         </div>
         <div class="space-y-1">
-          <label class="text-sm font-medium">Package name</label>
+          <label for="aac-package" class="text-sm font-medium">Package name</label>
           <input
+            id="aac-package"
             v-model="packageName"
             required
             placeholder="lodash"
@@ -91,8 +93,9 @@ async function simulate() {
           />
         </div>
         <div class="space-y-1">
-          <label class="text-sm font-medium">Version</label>
+          <label for="aac-version" class="text-sm font-medium">Version</label>
           <input
+            id="aac-version"
             v-model="version"
             required
             placeholder="1.0.0"
@@ -100,8 +103,9 @@ async function simulate() {
           />
         </div>
         <div class="space-y-1">
-          <label class="text-sm font-medium">Resource type</label>
+          <label for="aac-resource-type" class="text-sm font-medium">Resource type</label>
           <select
+            id="aac-resource-type"
             v-model="resourceType"
             class="w-full rounded border border-border bg-background px-3 py-1.5 text-sm"
           >
@@ -118,8 +122,9 @@ async function simulate() {
 
       <div class="grid grid-cols-2 gap-4">
         <div class="space-y-1">
-          <label class="text-sm font-medium">Role</label>
+          <label for="aac-role" class="text-sm font-medium">Role</label>
           <select
+            id="aac-role"
             v-model="role"
             class="w-full rounded border border-border bg-background px-3 py-1.5 text-sm"
           >
@@ -129,16 +134,18 @@ async function simulate() {
           </select>
         </div>
         <div class="space-y-1">
-          <label class="text-sm font-medium">User ID <span class="text-muted-foreground">(optional)</span></label>
+          <label for="aac-user-id" class="text-sm font-medium">User ID <span class="text-muted-foreground">(optional)</span></label>
           <input
+            id="aac-user-id"
             v-model="userId"
             placeholder="alice"
             class="w-full rounded border border-border bg-background px-3 py-1.5 text-sm"
           />
         </div>
         <div class="col-span-2 space-y-1">
-          <label class="text-sm font-medium">Groups <span class="text-muted-foreground">(comma-separated)</span></label>
+          <label for="aac-groups" class="text-sm font-medium">Groups <span class="text-muted-foreground">(comma-separated)</span></label>
           <input
+            id="aac-groups"
             v-model="groups"
             placeholder="oidc1:team-a, team-b"
             class="w-full rounded border border-border bg-background px-3 py-1.5 text-sm"

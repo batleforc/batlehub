@@ -60,7 +60,7 @@ describe("Select", () => {
     await wrapper.vm.$nextTick();
 
     const items = document.body.querySelectorAll('[role="option"]');
-    expect(items.length).toBe(2);
+    expect(items).toHaveLength(2);
     expect(document.body.textContent).toContain("Option A");
     expect(document.body.textContent).toContain("Option B");
   });

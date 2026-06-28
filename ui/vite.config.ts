@@ -16,9 +16,31 @@ import { readdirSync, existsSync } from "node:fs";
  *  - Everywhere else (composables, pages, lib, router) tests are 1:1 with source,
  *    so each `Foo.test.ts` maps to its exact sibling `Foo.vue` / `Foo.ts`.
  */
+const rel = (p: string) => path.relative(__dirname, p).split(path.sep).join("/");
+
+function collectSourcesForTest(testPath: string, included: Set<string>): void {
+  const dir = path.dirname(testPath);
+
+  if (rel(dir).startsWith("src/components/")) {
+    for (const entry of readdirSync(dir)) {
+      const isSource = /\.(vue|ts)$/.test(entry) && !/\.(test|spec)\.ts$/.test(entry);
+      if (isSource && entry !== "index.ts") included.add(rel(path.join(dir, entry)));
+    }
+    return;
+  }
+
+  const base = path.basename(testPath).replace(/\.(test|spec)\.ts$/, "");
+  for (const ext of [".vue", ".ts"]) {
+    const candidate = path.join(dir, base + ext);
+    if (existsSync(candidate)) {
+      included.add(rel(candidate));
+      break;
+    }
+  }
+}
+
 function coverageIncludeFromTests(): string[] {
   const srcDir = path.resolve(__dirname, "src");
-  const rel = (p: string) => path.relative(__dirname, p).split(path.sep).join("/");
   const included = new Set<string>();
 
   const testFiles = readdirSync(srcDir, { recursive: true, encoding: "utf8" }).filter((f) =>
@@ -26,27 +48,10 @@ function coverageIncludeFromTests(): string[] {
   );
 
   for (const testFile of testFiles) {
-    const testPath = path.join(srcDir, testFile);
-    const dir = path.dirname(testPath);
-
-    if (rel(dir).startsWith("src/components/")) {
-      for (const entry of readdirSync(dir)) {
-        const isSource = /\.(vue|ts)$/.test(entry) && !/\.(test|spec)\.ts$/.test(entry);
-        if (isSource && entry !== "index.ts") included.add(rel(path.join(dir, entry)));
-      }
-    } else {
-      const base = path.basename(testPath).replace(/\.(test|spec)\.ts$/, "");
-      for (const ext of [".vue", ".ts"]) {
-        const candidate = path.join(dir, base + ext);
-        if (existsSync(candidate)) {
-          included.add(rel(candidate));
-          break;
-        }
-      }
-    }
+    collectSourcesForTest(path.join(srcDir, testFile), included);
   }
 
-  return [...included].sort();
+  return [...included].sort((a, b) => a.localeCompare(b));
 }
 
 export default defineConfig({

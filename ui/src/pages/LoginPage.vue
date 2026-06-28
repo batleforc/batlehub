@@ -62,12 +62,12 @@ async function submit() {
     if (!id) {
       throw new Error("no data returned from server");
     }
-    if (id.role !== "anonymous") {
-      storeTokens(tok); // no refresh token or expiry for static tokens
-      router.push(redirect.value);
-    } else {
+    if (id.role === "anonymous") {
       error.value = "Token is valid but grants only anonymous access.";
       client.setConfig({ auth: undefined });
+    } else {
+      storeTokens(tok); // no refresh token or expiry for static tokens
+      router.push(redirect.value);
     }
   } catch {
     error.value = "Invalid token — check the value and try again.";
