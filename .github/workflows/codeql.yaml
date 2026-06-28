@@ -41,6 +41,8 @@ jobs:
         with:
           languages: rust
       - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
+        with:
+          toolchain: "stable"
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Build Rust workspace
         run: cargo build --locked --workspace
