@@ -9,10 +9,9 @@ use batlehub_adapters::cache::RedisBannerStore;
 use batlehub_adapters::cache::RedisCacheStore;
 use batlehub_adapters::cache::{InMemoryCacheStore, PgCacheStore};
 use batlehub_adapters::db::PgBannerStore;
+use batlehub_adapters::db::PgUserBlockRepository;
 use batlehub_adapters::local_registry::PostgresLocalRegistry;
 use batlehub_adapters::notification::PgNotificationStore;
-use batlehub_core::ports::LocalRegistryBackend;
-use batlehub_adapters::db::PgUserBlockRepository;
 use batlehub_adapters::rate_limit::{
     InMemoryIpBlockStore, InMemoryRateLimitStore, PgIpBlockStore, PgRateLimitStore,
 };
@@ -20,6 +19,7 @@ use batlehub_adapters::rate_limit::{
 use batlehub_adapters::rate_limit::{RedisIpBlockStore, RedisRateLimitStore};
 use batlehub_adapters::sbom::HttpSbomFetcher;
 use batlehub_config::schema::AppConfig;
+use batlehub_core::ports::LocalRegistryBackend;
 use batlehub_core::ports::{
     BannerPort, CacheStore, IpBlockStore, NotificationPort, RateLimitStore, SbomRepository,
     UserBlockRepository,
@@ -50,8 +50,7 @@ pub(super) fn spawn_pending_publish_cleanup(backend: Arc<PostgresLocalRegistry>)
         ));
         loop {
             ticker.tick().await;
-            let older_than =
-                std::time::Duration::from_secs(PENDING_CLEANUP_INTERVAL_SECS * 2);
+            let older_than = std::time::Duration::from_secs(PENDING_CLEANUP_INTERVAL_SECS * 2);
             match backend.cleanup_pending(older_than).await {
                 Ok(0) => {}
                 Ok(n) => tracing::info!(deleted = n, "cleaned up orphaned pending publish rows"),
@@ -204,7 +203,6 @@ pub(super) fn create_user_block_repository(pool: sqlx::PgPool) -> Arc<dyn UserBl
     tracing::info!("user block repository: postgres");
     Arc::new(PgUserBlockRepository::new(pool))
 }
-
 
 pub(super) async fn create_banner_store(
     config: &AppConfig,

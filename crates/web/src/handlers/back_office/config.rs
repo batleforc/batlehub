@@ -3,8 +3,8 @@ use std::sync::Arc;
 use actix_web::{delete, get, post, put, web, HttpResponse, Responder};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use utoipa::{IntoParams, ToSchema};
 use std::io;
+use utoipa::{IntoParams, ToSchema};
 
 use batlehub_core::entities::{BannerLevel, GlobalBanner};
 
@@ -228,10 +228,13 @@ pub async fn get_config_content(
     reload_svc: web::Data<Arc<ConfigReloadService>>,
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
-    let content = reload_svc.config_content().await.map_err(|e| match e.kind() {
-        io::ErrorKind::NotFound => AppError::not_found("config file not found"),
-        _ => AppError::internal(format!("reading config file: {e}")),
-    })?;
+    let content = reload_svc
+        .config_content()
+        .await
+        .map_err(|e| match e.kind() {
+            io::ErrorKind::NotFound => AppError::not_found("config file not found"),
+            _ => AppError::internal(format!("reading config file: {e}")),
+        })?;
     Ok(web::Json(ConfigContentResponse {
         content,
         is_readonly: !reload_svc.hot_reload_enabled,

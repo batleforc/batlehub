@@ -221,20 +221,13 @@ impl BatleHubClient {
         .await
     }
 
-    pub async fn set_visibility(
-        &self,
-        registry: &str,
-        name: &str,
-        visibility: &str,
-    ) -> Result<()> {
+    pub async fn set_visibility(&self, registry: &str, name: &str, visibility: &str) -> Result<()> {
         #[derive(serde::Serialize)]
         struct Body<'a> {
             visibility: &'a str,
         }
         self.put(
-            &format!(
-                "/api/v1/admin/registries/{registry}/packages/{name}/visibility"
-            ),
+            &format!("/api/v1/admin/registries/{registry}/packages/{name}/visibility"),
             &Body { visibility },
         )
         .await
@@ -243,10 +236,8 @@ impl BatleHubClient {
     // ── Team namespaces ────────────────────────────────────────────────────────
 
     pub async fn list_namespaces(&self, registry: &str) -> Result<serde_json::Value> {
-        self.get(&format!(
-            "/api/v1/admin/registries/{registry}/namespaces"
-        ))
-        .await
+        self.get(&format!("/api/v1/admin/registries/{registry}/namespaces"))
+            .await
     }
 
     pub async fn claim_namespace(
@@ -335,8 +326,16 @@ impl BatleHubClient {
             to: Option<&'a str>,
             format: &'a str,
         }
-        self.get_with_params("/api/v1/sbom/export", &Q { registry, from, to, format })
-            .await
+        self.get_with_params(
+            "/api/v1/sbom/export",
+            &Q {
+                registry,
+                from,
+                to,
+                format,
+            },
+        )
+        .await
     }
 
     // ── Notifications ──────────────────────────────────────────────────────────
@@ -350,10 +349,8 @@ impl BatleHubClient {
     }
 
     pub async fn delete_notification_subscription(&self, id: &str) -> Result<()> {
-        self.delete(&format!(
-            "/api/v1/admin/notifications/subscriptions/{id}"
-        ))
-        .await
+        self.delete(&format!("/api/v1/admin/notifications/subscriptions/{id}"))
+            .await
     }
 
     // ── Bulk operations ────────────────────────────────────────────────────────
@@ -449,7 +446,11 @@ impl BatleHubClient {
         }
         self.post_void(
             &format!("/api/v1/admin/registries/{registry}/deprecate"),
-            &Body { name, version, message },
+            &Body {
+                name,
+                version,
+                message,
+            },
         )
         .await
     }
@@ -558,7 +559,12 @@ impl BatleHubClient {
         let mut req = self
             .inner
             .request(Method::GET, self.url("/api/v1/admin/audit-log/export"))
-            .query(&Params { from, to, registry, format });
+            .query(&Params {
+                from,
+                to,
+                registry,
+                format,
+            });
         if let Some(auth) = self.auth_header() {
             req = req.header("Authorization", auth);
         }

@@ -78,7 +78,11 @@ pub struct ExportQuery {
 }
 
 fn default_export_format(fmt: &str) -> &'static str {
-    if fmt == "csv" { "csv" } else { "json" }
+    if fmt == "csv" {
+        "csv"
+    } else {
+        "json"
+    }
 }
 
 /// Export audit-log events for a time range (admin, SOC 2 compliance export).
@@ -118,10 +122,7 @@ pub async fn export_audit_log(
         .map_err(AppError::from)?;
 
     let fmt = default_export_format(&query.format);
-    let filename = format!(
-        "audit-log-{}.{fmt}",
-        Utc::now().format("%Y%m%dT%H%M%SZ")
-    );
+    let filename = format!("audit-log-{}.{fmt}", Utc::now().format("%Y%m%dT%H%M%SZ"));
 
     let disposition = ContentDisposition {
         disposition: DispositionType::Attachment,

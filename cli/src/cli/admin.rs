@@ -409,7 +409,9 @@ pub async fn run(cmd: AdminCommand, client: &BatleHubClient, json: bool) -> Resu
             name,
             version,
         } => {
-            client.undeprecate_package(&registry, &name, &version).await?;
+            client
+                .undeprecate_package(&registry, &name, &version)
+                .await?;
             println!("Undeprecated {registry}/{name}@{version}");
         }
         AdminCommand::Unlist {
@@ -458,12 +460,7 @@ pub async fn run(cmd: AdminCommand, client: &BatleHubClient, json: bool) -> Resu
             output,
         } => {
             let text = client
-                .export_audit_log(
-                    from.as_deref(),
-                    to.as_deref(),
-                    registry.as_deref(),
-                    &format,
-                )
+                .export_audit_log(from.as_deref(), to.as_deref(), registry.as_deref(), &format)
                 .await?;
             match output {
                 Some(path) => {
@@ -488,11 +485,7 @@ struct AuditLogArgs {
     purge_before: Option<String>,
 }
 
-async fn handle_audit_log(
-    client: &BatleHubClient,
-    json: bool,
-    args: AuditLogArgs,
-) -> Result<()> {
+async fn handle_audit_log(client: &BatleHubClient, json: bool, args: AuditLogArgs) -> Result<()> {
     if let Some(before) = args.purge_before {
         let resp = client.purge_audit_log(&before).await?;
         if json {
@@ -532,7 +525,10 @@ fn print_access_check(json: bool, resp: &serde_json::Value) -> Result<()> {
     if decision == "allow" {
         println!("ALLOW");
     } else {
-        let reason = resp.get("reason").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let reason = resp
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
         let rule = resp
             .get("rule_matched")
             .and_then(|v| v.as_str())
@@ -775,11 +771,15 @@ async fn handle_namespace(
             prefix,
             group_id,
         } => {
-            let resp = client.claim_namespace(&registry, &prefix, &group_id).await?;
+            let resp = client
+                .claim_namespace(&registry, &prefix, &group_id)
+                .await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
-                println!("Claimed namespace prefix '{prefix}' for group '{group_id}' in {registry}");
+                println!(
+                    "Claimed namespace prefix '{prefix}' for group '{group_id}' in {registry}"
+                );
             }
         }
         NamespaceCommand::Release { registry, prefix } => {
@@ -831,12 +831,7 @@ async fn handle_sbom(cmd: SbomCommand, client: &BatleHubClient, _json: bool) -> 
             output,
         } => {
             let resp = client
-                .export_sbom(
-                    registry.as_deref(),
-                    from.as_deref(),
-                    to.as_deref(),
-                    &format,
-                )
+                .export_sbom(registry.as_deref(), from.as_deref(), to.as_deref(), &format)
                 .await?;
             let content = serde_json::to_string_pretty(&resp)?;
             if let Some(path) = output {

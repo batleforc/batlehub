@@ -78,13 +78,12 @@ impl UserBlockRepository for PgUserBlockRepository {
     }
 
     async fn is_blocked(&self, user_id: &str) -> Result<bool, CoreError> {
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM user_blocks WHERE user_id = $1)",
-        )
-        .bind(user_id)
-        .fetch_one(&self.pool)
-        .await
-        .db_err()?;
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM user_blocks WHERE user_id = $1)")
+                .bind(user_id)
+                .fetch_one(&self.pool)
+                .await
+                .db_err()?;
         Ok(exists)
     }
 }
@@ -193,7 +192,9 @@ mod tests {
     async fn reblock_updates_entry() {
         let repo = InMemoryUserBlockRepository::new();
         repo.block("alice", "admin", Some("reason1")).await.unwrap();
-        repo.block("alice", "admin2", Some("reason2")).await.unwrap();
+        repo.block("alice", "admin2", Some("reason2"))
+            .await
+            .unwrap();
         let list = repo.list().await.unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].reason.as_deref(), Some("reason2"));

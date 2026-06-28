@@ -285,8 +285,15 @@ impl ProxyService {
         // ── Missing-checksum gate (no artifact bytes needed) ───────────────────
         // Decided up front so it applies equally to the streaming and no-store
         // paths, and so we never start a transfer that policy will reject.
-        self.gate_missing_checksum(&req, &metadata, integrity, &artifact_key, &registry_label, start)
-            .await?;
+        self.gate_missing_checksum(
+            &req,
+            &metadata,
+            integrity,
+            &artifact_key,
+            &registry_label,
+            start,
+        )
+        .await?;
 
         if skip_artifact_cache {
             tracing::debug!(key = %artifact_key, "upstream Cache-Control: no-store; skipping artifact cache");
@@ -489,8 +496,14 @@ impl ProxyService {
                 "integrity verification did not complete for {}",
                 req.package_id,
             );
-            self.audit_integrity_failure(req, &reason, "integrity incomplete", registry_label, start)
-                .await;
+            self.audit_integrity_failure(
+                req,
+                &reason,
+                "integrity incomplete",
+                registry_label,
+                start,
+            )
+            .await;
             return Err(CoreError::IntegrityFailure(reason));
         }
 
@@ -505,8 +518,14 @@ impl ProxyService {
             ) {
                 self.evict_staged(store_key, "failed to evict mismatched artifact")
                     .await;
-                self.audit_integrity_failure(req, &reason, "integrity mismatch", registry_label, start)
-                    .await;
+                self.audit_integrity_failure(
+                    req,
+                    &reason,
+                    "integrity mismatch",
+                    registry_label,
+                    start,
+                )
+                .await;
                 return Err(CoreError::IntegrityFailure(reason));
             }
         }

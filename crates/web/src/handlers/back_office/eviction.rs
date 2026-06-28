@@ -124,8 +124,7 @@ pub async fn delete_cached_artifact(
         return Err(AppError::not_found("registry not found"));
     }
 
-    validate_path_safe("registry", &registry)
-        .map_err(|e| AppError::bad_request(e.to_string()))?;
+    validate_path_safe("registry", &registry).map_err(|e| AppError::bad_request(e.to_string()))?;
 
     let artifact_key = if let Some(p) = &body.path {
         if p.is_empty() {
@@ -138,7 +137,9 @@ pub async fn delete_cached_artifact(
             .name
             .as_deref()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| AppError::bad_request("name is required for package-centric registries"))?;
+            .ok_or_else(|| {
+                AppError::bad_request("name is required for package-centric registries")
+            })?;
         let version = body
             .version
             .as_deref()

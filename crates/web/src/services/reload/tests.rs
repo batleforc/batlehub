@@ -377,7 +377,9 @@ async fn load_pending_from_content_stores_raw_content_in_pending() {
     let raw = "# valid minimal config\n";
     let svc = make_svc(true);
     // Override builder to succeed without touching the file.
-    let hot = batlehub_core::services::HotConfig { ..Default::default() };
+    let hot = batlehub_core::services::HotConfig {
+        ..Default::default()
+    };
     let access = crate::AccessConfig {
         anonymous: Default::default(),
         user: Default::default(),

@@ -122,7 +122,12 @@ mod tests {
             Ok(vec![])
         }
         async fn delete_package(&self, pkg: &PackageId) -> Result<bool, CoreError> {
-            Ok(self.statuses.lock().unwrap().remove(&pkg.cache_key()).is_some())
+            Ok(self
+                .statuses
+                .lock()
+                .unwrap()
+                .remove(&pkg.cache_key())
+                .is_some())
         }
     }
 

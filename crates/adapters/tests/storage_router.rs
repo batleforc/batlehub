@@ -309,7 +309,10 @@ async fn restore_after_physical_blob_deleted() {
 
     // Simulate clearing the storage directory without resetting the DB.
     fs.delete(&blob).await.unwrap();
-    assert!(!router.exists(&key).await.unwrap(), "blob gone → exists false");
+    assert!(
+        !router.exists(&key).await.unwrap(),
+        "blob gone → exists false"
+    );
 
     // Re-store the same bytes (same hash). Must restore the physical blob.
     router

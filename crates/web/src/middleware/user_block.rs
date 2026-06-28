@@ -91,10 +91,7 @@ where
                 }
             }
 
-            service
-                .call(req)
-                .await
-                .map(|r| r.map_into_boxed_body())
+            service.call(req).await.map(|r| r.map_into_boxed_body())
         })
     }
 }
@@ -203,7 +200,9 @@ mod tests {
     #[actix_web::test]
     async fn blocked_user_is_rejected() {
         let repo: Arc<dyn UserBlockRepository> = Arc::new(InMemoryUserBlockRepository::new());
-        repo.block("blocked-user", "admin", Some("test")).await.unwrap();
+        repo.block("blocked-user", "admin", Some("test"))
+            .await
+            .unwrap();
         let app = test::init_service(
             App::new()
                 .wrap(UserBlockMiddlewareFactory::new(Arc::clone(&repo)))
@@ -239,16 +238,10 @@ mod tests {
             ) -> Result<(), batlehub_core::error::CoreError> {
                 Ok(())
             }
-            async fn unblock(
-                &self,
-                _: &str,
-            ) -> Result<(), batlehub_core::error::CoreError> {
+            async fn unblock(&self, _: &str) -> Result<(), batlehub_core::error::CoreError> {
                 Ok(())
             }
-            async fn is_blocked(
-                &self,
-                _: &str,
-            ) -> Result<bool, batlehub_core::error::CoreError> {
+            async fn is_blocked(&self, _: &str) -> Result<bool, batlehub_core::error::CoreError> {
                 Err(batlehub_core::error::CoreError::Database(
                     "simulated DB error".into(),
                 ))

@@ -71,7 +71,11 @@ pub fn render(f: &mut Frame, app: &App) {
     f.render_widget(
         Paragraph::new("Admin Stats  [r] refresh  [Esc] back")
             .block(Block::default().borders(Borders::BOTTOM))
-            .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
         chunks[0],
     );
 
@@ -115,7 +119,12 @@ pub fn render(f: &mut Frame, app: &App) {
     let summary = vec![
         Line::from(vec![
             Span::styled("Hit rate: ", Style::default().fg(Color::Gray)),
-            Span::styled(hit_rate, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                hit_rate,
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("  "),
             Span::styled("Hits: ", Style::default().fg(Color::Gray)),
             Span::raw(hits),
@@ -132,8 +141,7 @@ pub fn render(f: &mut Frame, app: &App) {
         ]),
     ];
     f.render_widget(
-        Paragraph::new(summary)
-            .block(Block::default().title("Aggregate").borders(Borders::ALL)),
+        Paragraph::new(summary).block(Block::default().title("Aggregate").borders(Borders::ALL)),
         chunks[1],
     );
 

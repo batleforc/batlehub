@@ -162,10 +162,7 @@ pub(super) async fn set_status_impl(
     Ok(())
 }
 
-pub(super) async fn delete_package_impl(
-    pool: &PgPool,
-    pkg: &PackageId,
-) -> Result<bool, CoreError> {
+pub(super) async fn delete_package_impl(pool: &PgPool, pkg: &PackageId) -> Result<bool, CoreError> {
     let result = sqlx::query(
         "DELETE FROM package_statuses \
          WHERE registry = $1 AND package_name = $2 AND package_version = $3 \

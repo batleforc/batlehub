@@ -189,7 +189,9 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
 
         app.wrap(TracingLogger::<BatleHubSpanBuilder>::new())
             .wrap(RateLimitMiddlewareFactory::new(rate_limit_svc.clone()))
-            .wrap(UserBlockMiddlewareFactory::new(Arc::clone(&user_block_repo)))
+            .wrap(UserBlockMiddlewareFactory::new(Arc::clone(
+                &user_block_repo,
+            )))
             .wrap(batlehub_web::AuthMiddlewareFactory::new(
                 auth_providers.clone(),
             ))

@@ -172,7 +172,10 @@ pub async fn bulk_delete_packages(
         let storage_key = format!("artifact:{}", pkg.cache_key());
         let meta_key = format!("meta:{}", pkg.cache_key());
         let _ = proxy_svc.storage.delete(&storage_key).await;
-        let _ = proxy_svc.artifact_meta.delete_artifact_meta(&storage_key).await;
+        let _ = proxy_svc
+            .artifact_meta
+            .delete_artifact_meta(&storage_key)
+            .await;
         let _ = proxy_svc.cache.invalidate(&meta_key).await;
     }
 

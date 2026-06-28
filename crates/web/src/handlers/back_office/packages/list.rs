@@ -207,7 +207,10 @@ pub async fn delete_package(
     let meta_key = format!("meta:{}", pkg.cache_key());
     // Best-effort: purge cached artifact and metadata cache.
     let _ = proxy_svc.storage.delete(&storage_key).await;
-    let _ = proxy_svc.artifact_meta.delete_artifact_meta(&storage_key).await;
+    let _ = proxy_svc
+        .artifact_meta
+        .delete_artifact_meta(&storage_key)
+        .await;
     let _ = proxy_svc.cache.invalidate(&meta_key).await;
 
     Ok(web::Json(ActionResponse {

@@ -26,6 +26,7 @@ use base64::Engine as _;
 use batlehub_adapters::auth::StaticTokenAuthProvider;
 use batlehub_adapters::cache::InMemoryBannerStore;
 use batlehub_adapters::cache::InMemoryCacheStore;
+use batlehub_adapters::db::InMemoryUserBlockRepository;
 use batlehub_adapters::in_memory::{
     InMemoryPackageRepository as InMemoryRepo, InMemorySbomRepository,
     InMemoryStorageBackend as InMemoryStorage, InMemoryVulnerabilityRepository,
@@ -33,7 +34,6 @@ use batlehub_adapters::in_memory::{
 };
 use batlehub_adapters::local_registry::InMemoryLocalRegistry;
 use batlehub_adapters::notification::InMemoryNotificationStore;
-use batlehub_adapters::db::InMemoryUserBlockRepository;
 use batlehub_adapters::rate_limit::{InMemoryIpBlockStore, InMemoryRateLimitStore};
 use batlehub_config::schema::{
     GroupRateLimitConfig, InboundWebhookConfig, NotificationChannelConfig, NotificationsConfig,
@@ -12152,8 +12152,7 @@ async fn make_app_with_user_block_repo(
 
     // UserBlock added before Auth in code → UserBlock runs after Auth in the pipeline.
     init_service(
-        app
-            .wrap(UserBlockMiddlewareFactory::new(user_block_repo))
+        app.wrap(UserBlockMiddlewareFactory::new(user_block_repo))
             .wrap(AuthMiddlewareFactory::new(test_auth_providers())),
     )
     .await
