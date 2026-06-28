@@ -25,8 +25,6 @@ import { useAuth } from "@/composables/useAuth";
 
 // --------------------------------------------------------------------------
 
-const ALICE: import("./AdminUsers.vue").default = undefined as unknown as typeof AdminUsers;
-
 function blockedUser(over: Record<string, unknown> = {}) {
   return {
     user_id: "alice",
@@ -48,14 +46,6 @@ function okJson(data: unknown): Response {
 
 function noContent(): Response {
   return { ok: true, status: 204, json: async () => null } as unknown as Response;
-}
-
-function errJson(status: number, body: Record<string, string>): Response {
-  return {
-    ok: false,
-    status,
-    json: async () => body,
-  } as unknown as Response;
 }
 
 async function mountPage(): Promise<VueWrapper> {

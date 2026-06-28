@@ -1,5 +1,3 @@
-import { type Ref, ref } from "vue";
-
 const TTL_MS = 5 * 60 * 1_000; // 5 minutes
 
 interface CacheEntry<T> {

@@ -91,11 +91,11 @@ jobs:
           cache-dependency-path: ui/package-lock.json
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
         working-directory: ui
 
       - name: Generate frontend coverage (lcov)
-        run: npx vitest run --coverage
+        run: npm run coverage
         working-directory: ui
         env:
           CI: "true"

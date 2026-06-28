@@ -1085,7 +1085,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "Private registry auth",
         lang: "bash",
         template: (ctx) => {
-          const { netrcHost, netrcLogin, token, registryName: reg, base } = ctx;
+          const { netrcHost, netrcLogin, token, registryName: reg } = ctx;
           const login = ctx.isAuthenticated ? netrcLogin : "<your-username>";
           const password = ctx.isAuthenticated ? token : "<your-token>";
           return [
