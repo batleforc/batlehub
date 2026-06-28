@@ -2,7 +2,7 @@
 FROM rust:1.96-slim-bookworm@sha256:4732ca96fd086cb9be682050c3f0176288eebaac2b80aa2bcefccfaf198e1950 AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libssl-dev curl \
+    pkg-config libssl-dev curl make \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build

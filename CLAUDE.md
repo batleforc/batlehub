@@ -60,7 +60,10 @@ crates/examples  — integration test helpers and smoke/real-proxy test binaries
 server/          — binary: wires everything together, no domain logic
 cli/             — batlehub-cli binary: clap commands + reqwest API client + ratatui TUI
 ui/              — Vue 3 + Vite SPA (TypeScript, Tailwind, shadcn-inspired components)
+website/         — separate Vite docs/guide site (its own npm project; covered by `task website:*`)
 ```
+
+Registry adapters are gated behind `registry-*` cargo features (all on by default) declared in `crates/adapters/src/registry/mod.rs` and the `[features]` block of `crates/adapters/Cargo.toml`.
 
 The dependency direction is strict: `core` ← `adapters` ← `web` ← `server`. The `config` crate is read only by `server` and `web`.
 
@@ -84,7 +87,7 @@ The dependency direction is strict: `core` ← `adapters` ← `web` ← `server`
 ### Adding a new registry adapter
 
 1. **`crates/adapters/src/registry/<name>.rs`** — implement `RegistryClient` (`registry_type`, `resolve_metadata`, `fetch_artifact`; optionally `list_versions`, `search_packages`). Use `NugetRegistryClient` as a reference.
-2. **`crates/adapters/src/registry/mod.rs`** — add `#[cfg(feature = "registry-<name>")] pub mod <name>` entry.
+2. **`crates/adapters/src/registry/mod.rs`** — add `#[cfg(feature = "registry-<name>")] pub mod <name>` entry, **and** declare `registry-<name>` in the `[features]` block of `crates/adapters/Cargo.toml` (add it to `default` so it ships in the standard build). Without the feature declared, the `cfg` never activates.
 3. **`crates/web/src/handlers/proxy/<name>.rs`** — actix-web handlers; use `proxy_stream`, `require_registry_type`, `require_local_mode`, `content_type_for` helpers from `common.rs`. **Validate any package name/version taken from the request** with `batlehub_core::services::validate_package_name` (and reject `..`/separators in version) before it reaches a storage key — see the PyPI/Composer handlers. Two funnels enforce this in depth — `ProxyService::handle` (every proxy read) and `LocalRegistryService::get_artifact` (every local read) call `validate_coordinate` on the `PackageId`, and `ensure_safe_key` guards the storage backends as the last line of defense — but a handler that builds a storage key directly (e.g. the Maven, NuGet flat, and Terraform-provider paths) must still validate at the edge for a clean `400`, not rely on the deeper guards.
 4. **`crates/web/src/lib.rs`** — register routes with `cfg.service(...)` and add the `utoipa` tag.
 5. **`crates/config/src/schema.rs`** — allow `"<name>"` in the `RegistryConfig` type field.
