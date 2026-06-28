@@ -166,8 +166,7 @@ mod tests {
             if let Some(ref id) = self.identity {
                 req.extensions_mut().insert(id.clone());
             }
-            let fut = self.service.call(req);
-            Box::pin(async move { fut.await })
+            Box::pin(self.service.call(req))
         }
     }
 
