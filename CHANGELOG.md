@@ -8,6 +8,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-29
+
+### Registry adapters
+
+- **Arch Linux / Pacman** (`type = "pacman"`) — proxy upstream Arch mirrors **and** private hosting in `local`/`hybrid` mode: `.pkg.tar.{zst,xz,gz}` publish (metadata read from `.PKGINFO`), per-arch `<repo>.db`/`<repo>.files` database regeneration, Ed25519 OpenPGP-signed database (`<repo>.db.sig`) and packages (`.sig` + embedded `%PGPSIG%`) so `SigLevel = Required` works. Signing reuses the hand-rolled Ed25519 signer (the `rsa` crate is banned)
+
+### Vulnerability management
+
+- **OSV vulnerability scanning** — per-registry `cve_gate` rule (`min_severity`, `block`/warn-only, `bypass_roles`); periodic background re-scan via `[vulnerability_scan]` task; findings stored in `artifact_vulnerabilities` DB table; per-version CVE status surfaced in the Package Explorer and admin views
+- **Go module vulnerability database proxy** — GOPROXY vuln endpoint (`/proxy/{reg}/goproxy/vuln/`) proxied so `govulncheck` and related tooling can query BatleHub directly without reaching the public database
+- **NuGet vulnerability endpoint proxy** — NuGet v3 vulnerability endpoint wired into the service index so `dotnet restore` vulnerability checks flow through the proxy cache
+- **Vulnerability scanner extension point** — documented API for adding custom vulnerability scanners (`docs/adding-a-vulnerability-scanner.md`); `docs/vulnerability-proxy.md` covers the proxy-side configuration
+
+### Admin & security
+
+- **User block management** — DB-backed user block list (`028_user_blocks` migration); `UserBlockMiddleware` evaluates the block list before any request handler and returns 403; admin API (`GET/POST/DELETE /api/v1/admin/users/blocks`); Admin Users page in the UI lists OIDC, Kubernetes, and static-token identities with block/unblock actions; fails open on DB errors to avoid locking out admins
+
+### Developer experience
+
+- **Eclipse Che workspace login** — login page detects Eclipse Che environment variables and displays pre-configured connection instructions for workspace-hosted instances
+- **CLI download command** (`batlehub-cli download`) — downloads an artifact from any configured registry to a local file; auto-detects registry type and constructs the correct download URL
+- **SonarCloud integration** — `.github/workflows/sonar.yaml` runs frontend (Vitest LCOV) and backend (cargo-llvm-cov LCOV, with Postgres/MinIO/Redis services) coverage and uploads both reports to SonarCloud on every push to `main`
+
+### Bug fixes
+
+- JetBrains artifact post-copy path handling corrected; improved `docs/path-mapper.md` to clarify URL routing for large IDE archives
+- TOCTOU race condition fixes and general code-review hardening across several handler paths
+- Correct handling of unreachable match arms and unused assigned values flagged by the compiler
+
+### Code quality
+
+- Code duplication reduced below 5% (tracked via SonarCloud)
+- Container image updated to TiKV-based build; `Containerfile` and `Containerfile.hardened` both updated
+
+---
+
 ## [0.2.0] - 2026-06-14
 
 ### Registry adapters
@@ -115,5 +151,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-[Unreleased]: https://git.batleforc.fr/batleforc/batlehub/compare/v0.2.0...HEAD
+[Unreleased]: https://git.batleforc.fr/batleforc/batlehub/compare/v0.5.0...HEAD
+[0.5.0]: https://git.batleforc.fr/batleforc/batlehub/compare/v0.2.0...v0.5.0
 [0.2.0]: https://git.batleforc.fr/batleforc/batlehub/releases/tag/v0.2.0

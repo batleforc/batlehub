@@ -968,7 +968,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "batlehub-adapters"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "ar",
@@ -1017,7 +1017,7 @@ dependencies = [
 
 [[package]]
 name = "batlehub-cli"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "actix-web",
  "anyhow",
@@ -1048,7 +1048,7 @@ dependencies = [
 
 [[package]]
 name = "batlehub-config"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "batlehub-core",
@@ -1059,7 +1059,7 @@ dependencies = [
 
 [[package]]
 name = "batlehub-core"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1085,7 +1085,7 @@ dependencies = [
 
 [[package]]
 name = "batlehub-examples"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "actix-web",
  "async-trait",
@@ -1112,7 +1112,7 @@ dependencies = [
 
 [[package]]
 name = "batlehub-server"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "actix-cors",
  "actix-files",
@@ -1147,7 +1147,7 @@ dependencies = [
 
 [[package]]
 name = "batlehub-web"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "actix-files",
  "actix-http",
