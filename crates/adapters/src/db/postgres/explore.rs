@@ -151,7 +151,7 @@ pub(super) async fn explore_packages_impl(
         "#
     );
 
-    let rows = sqlx::query(&sql)
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(&filter.registry)
         .bind(&filter.name_contains)
         .bind(registries)

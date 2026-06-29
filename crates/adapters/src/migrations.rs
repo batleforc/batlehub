@@ -4,6 +4,7 @@
 // what `sqlx::migrate!()` would have embedded.
 
 use sqlx::migrate::{Migration, MigrationType, Migrator};
+use sqlx::SqlStr;
 use std::borrow::Cow;
 
 macro_rules! mig {
@@ -12,7 +13,7 @@ macro_rules! mig {
             $ver,
             Cow::Borrowed($desc),
             MigrationType::Simple,
-            Cow::Borrowed(include_str!($path)),
+            SqlStr::from_static(include_str!($path)),
             false,
         )
     };
@@ -20,8 +21,7 @@ macro_rules! mig {
 
 /// Build the embedded SQL migrator without connecting to a database.
 pub fn embedded_migrator() -> Migrator {
-    Migrator {
-        migrations: Cow::Owned(vec![
+    Migrator::with_migrations(vec![
             mig!(1, "init", "../migrations/001_init.sql"),
             mig!(
                 2,
@@ -111,11 +111,7 @@ pub fn embedded_migrator() -> Migrator {
             ),
             mig!(28, "user blocks", "../migrations/028_user_blocks.sql"),
             mig!(29, "audit ip ua", "../migrations/029_audit_ip_ua.sql"),
-        ]),
-        ignore_missing: false,
-        locking: true,
-        no_tx: false,
-    }
+        ])
 }
 
 #[cfg(test)]
@@ -131,7 +127,7 @@ mod tests {
         let m = embedded_migrator();
 
         // Versions are strictly increasing and contiguous starting at 1.
-        for (i, mig) in m.migrations.iter().enumerate() {
+        for (i, mig) in m.iter().enumerate() {
             assert_eq!(
                 mig.version,
                 (i + 1) as i64,
@@ -152,7 +148,7 @@ mod tests {
             })
             .count();
         assert_eq!(
-            m.migrations.len(),
+            m.iter().count(),
             sql_count,
             "every .sql file in {dir} must have a mig!() entry (and vice versa)"
         );
