@@ -1,9 +1,7 @@
 use actix_web::{get, web, HttpResponse, Responder};
 
 use crate::{
-    error::AppError,
-    extractors::AuthIdentity,
-    handlers::proxy::common::require_registry_type,
+    error::AppError, extractors::AuthIdentity, handlers::proxy::common::require_registry_type,
     RegistryMap, UpstreamMap,
 };
 

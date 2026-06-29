@@ -157,9 +157,7 @@ pub async fn goproxy_vuln_query(
 
     let status = resp.status();
     if !status.is_success() {
-        return Err(AppError::bad_gateway(format!(
-            "vuln DB returned {status}"
-        )));
+        return Err(AppError::bad_gateway(format!("vuln DB returned {status}")));
     }
 
     let bytes = resp
@@ -187,9 +185,7 @@ async fn forward_get(client: &reqwest::Client, url: &str) -> Result<HttpResponse
 
     let status = resp.status();
     if !status.is_success() {
-        return Err(AppError::bad_gateway(format!(
-            "vuln DB returned {status}"
-        )));
+        return Err(AppError::bad_gateway(format!("vuln DB returned {status}")));
     }
 
     let bytes = resp
@@ -210,7 +206,12 @@ mod tests {
 
     #[test]
     fn id_validation_accepts_valid_ids() {
-        let valid = ["GO-2023-1234", "GO-2024-5678", "CVE-2023-12345", "GHSA-x.1-y2"];
+        let valid = [
+            "GO-2023-1234",
+            "GO-2024-5678",
+            "CVE-2023-12345",
+            "GHSA-x.1-y2",
+        ];
         for id in valid {
             let ok = id
                 .chars()

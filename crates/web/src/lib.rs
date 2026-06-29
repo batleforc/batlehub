@@ -699,8 +699,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                 gl_list_releases, gl_packages,
             },
             goproxy::{
-                goproxy_file, goproxy_latest, goproxy_list, goproxy_publish,
-                goproxy_vuln_entry, goproxy_vuln_index, goproxy_vuln_query,
+                goproxy_file, goproxy_latest, goproxy_list, goproxy_publish, goproxy_vuln_entry,
+                goproxy_vuln_index, goproxy_vuln_query,
             },
             jetbrains::jetbrains_get,
             maven::{maven_get, maven_put},
@@ -777,10 +777,10 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(download_crate);
     // Go module proxy (multi-segment module paths — must precede generic packument routes)
     // Vuln DB passthrough: literal /v1/ paths registered before the module wildcard routes.
-    cfg.service(goproxy_vuln_index);  // GET …/v1/index.json
-    cfg.service(goproxy_vuln_entry);  // GET …/v1/ID/{id}.json
-    cfg.service(goproxy_vuln_query);  // POST …/v1/query
-    // PUT goproxy_publish must come before GET goproxy_file (same path pattern, different method)
+    cfg.service(goproxy_vuln_index); // GET …/v1/index.json
+    cfg.service(goproxy_vuln_entry); // GET …/v1/ID/{id}.json
+    cfg.service(goproxy_vuln_query); // POST …/v1/query
+                                     // PUT goproxy_publish must come before GET goproxy_file (same path pattern, different method)
     cfg.service(goproxy_publish);
     cfg.service(goproxy_latest);
     cfg.service(goproxy_list);

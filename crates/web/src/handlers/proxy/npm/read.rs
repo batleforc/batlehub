@@ -188,7 +188,15 @@ pub async fn audit_quick(
     client: web::Data<reqwest::Client>,
 ) -> Result<impl Responder, AppError> {
     let (registry,) = path.into_inner();
-    forward_npm_audit(&registry, "quick", body.into_inner(), &map, &upstream_map, &client).await
+    forward_npm_audit(
+        &registry,
+        "quick",
+        body.into_inner(),
+        &map,
+        &upstream_map,
+        &client,
+    )
+    .await
 }
 
 /// Proxy full npm bulk audit requests (`npm audit` default mode).
@@ -216,7 +224,15 @@ pub async fn audit_bulk(
     client: web::Data<reqwest::Client>,
 ) -> Result<impl Responder, AppError> {
     let (registry,) = path.into_inner();
-    forward_npm_audit(&registry, "bulk", body.into_inner(), &map, &upstream_map, &client).await
+    forward_npm_audit(
+        &registry,
+        "bulk",
+        body.into_inner(),
+        &map,
+        &upstream_map,
+        &client,
+    )
+    .await
 }
 
 async fn forward_npm_audit(

@@ -11097,7 +11097,9 @@ async fn nuget_service_index_includes_vulnerabilities_url_resource() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
-    let resources = body["resources"].as_array().expect("resources must be an array");
+    let resources = body["resources"]
+        .as_array()
+        .expect("resources must be an array");
     let vuln_resource = resources
         .iter()
         .find(|r| r["@type"].as_str() == Some("VulnerabilitiesUrl/6.7.0"))
@@ -12404,13 +12406,20 @@ async fn audit_bulk_forwards_to_upstream_and_returns_response() {
     let repo_dyn: Arc<dyn batlehub_core::ports::PackageRepository> = InMemoryRepo::new();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let registries: HashMap<String, Arc<dyn RegistryClient>> =
-        [("npm".to_owned(), FixedRegistry::new("npm") as Arc<dyn RegistryClient>)].into();
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
+        "npm".to_owned(),
+        FixedRegistry::new("npm") as Arc<dyn RegistryClient>,
+    )]
+    .into();
     let policies: HashMap<String, Arc<batlehub_core::services::RegistryPolicy>> =
         [("npm".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig { registries, policies, ..Default::default() }),
+        hot: new_hot_lock(HotConfig {
+            registries,
+            policies,
+            ..Default::default()
+        }),
         storage,
         cache,
         repo: repo_dyn.clone(),
@@ -12430,7 +12439,10 @@ async fn audit_bulk_forwards_to_upstream_and_returns_response() {
         local_svc,
         RegistryModeMap::default(),
         batlehub_web::CargoIndexMap::default(),
-        ConfigureAppDefaults { upstream_map, ..Default::default() },
+        ConfigureAppDefaults {
+            upstream_map,
+            ..Default::default()
+        },
         test_auth_providers(),
     )
     .await;
@@ -12498,13 +12510,20 @@ async fn build_nuget_vuln_test_app(
     let repo_dyn: Arc<dyn batlehub_core::ports::PackageRepository> = InMemoryRepo::new();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let registries: HashMap<String, Arc<dyn RegistryClient>> =
-        [("nuget".to_owned(), FixedRegistry::new("nuget") as Arc<dyn RegistryClient>)].into();
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
+        "nuget".to_owned(),
+        FixedRegistry::new("nuget") as Arc<dyn RegistryClient>,
+    )]
+    .into();
     let policies: HashMap<String, Arc<batlehub_core::services::RegistryPolicy>> =
         [("nuget".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig { registries, policies, ..Default::default() }),
+        hot: new_hot_lock(HotConfig {
+            registries,
+            policies,
+            ..Default::default()
+        }),
         storage,
         cache,
         repo: repo_dyn.clone(),
@@ -12524,7 +12543,10 @@ async fn build_nuget_vuln_test_app(
         local_svc,
         RegistryModeMap::default(),
         batlehub_web::CargoIndexMap::default(),
-        ConfigureAppDefaults { upstream_map, ..Default::default() },
+        ConfigureAppDefaults {
+            upstream_map,
+            ..Default::default()
+        },
         test_auth_providers(),
     )
     .await
@@ -12661,11 +12683,18 @@ async fn composer_security_advisories_forwards_to_upstream_and_returns_response(
         FixedRegistry::new("composer") as Arc<dyn RegistryClient>,
     )]
     .into();
-    let policies: HashMap<String, Arc<batlehub_core::services::RegistryPolicy>> =
-        [("packagist".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
+    let policies: HashMap<String, Arc<batlehub_core::services::RegistryPolicy>> = [(
+        "packagist".to_owned(),
+        Arc::new(rbac_policy(repo_dyn.clone())),
+    )]
+    .into();
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig { registries, policies, ..Default::default() }),
+        hot: new_hot_lock(HotConfig {
+            registries,
+            policies,
+            ..Default::default()
+        }),
         storage,
         cache,
         repo: repo_dyn.clone(),
@@ -12687,7 +12716,10 @@ async fn composer_security_advisories_forwards_to_upstream_and_returns_response(
         local_svc,
         mode_map,
         batlehub_web::CargoIndexMap::default(),
-        ConfigureAppDefaults { upstream_map, ..Default::default() },
+        ConfigureAppDefaults {
+            upstream_map,
+            ..Default::default()
+        },
         test_auth_providers(),
     )
     .await;
@@ -12745,13 +12777,20 @@ async fn build_goproxy_vuln_test_app(
     let repo_dyn: Arc<dyn batlehub_core::ports::PackageRepository> = InMemoryRepo::new();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let registries: HashMap<String, Arc<dyn RegistryClient>> =
-        [("go".to_owned(), FixedRegistry::new("goproxy") as Arc<dyn RegistryClient>)].into();
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
+        "go".to_owned(),
+        FixedRegistry::new("goproxy") as Arc<dyn RegistryClient>,
+    )]
+    .into();
     let policies: HashMap<String, Arc<batlehub_core::services::RegistryPolicy>> =
         [("go".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig { registries, policies, ..Default::default() }),
+        hot: new_hot_lock(HotConfig {
+            registries,
+            policies,
+            ..Default::default()
+        }),
         storage,
         cache,
         repo: repo_dyn.clone(),
@@ -12773,7 +12812,9 @@ async fn build_goproxy_vuln_test_app(
         .split_for_parts();
 
     let app = app
-        .app_data(actix_web::web::Data::new(batlehub_web::CargoIndexMap::default()))
+        .app_data(actix_web::web::Data::new(
+            batlehub_web::CargoIndexMap::default(),
+        ))
         .app_data(actix_web::web::Data::new(local_svc))
         .app_data(actix_web::web::Data::new(RegistryModeMap::default()))
         .app_data(actix_web::web::Data::new(RepoSignerMap::default()))
@@ -12785,9 +12826,8 @@ async fn build_goproxy_vuln_test_app(
 #[actix_web::test]
 async fn goproxy_vuln_index_disabled_returns_404() {
     // An empty string URL disables the vuln DB proxy for the registry.
-    let vuln_db = batlehub_web::VulnDbMap::new(
-        [("go".to_owned(), String::new())].into_iter().collect(),
-    );
+    let vuln_db =
+        batlehub_web::VulnDbMap::new([("go".to_owned(), String::new())].into_iter().collect());
     let app = build_goproxy_vuln_test_app(vuln_db).await;
     let req = TestRequest::get()
         .uri("/proxy/go/v1/index.json")
@@ -12821,7 +12861,9 @@ async fn goproxy_vuln_index_forwards_to_upstream_and_returns_response() {
     });
 
     let vuln_db = batlehub_web::VulnDbMap::new(
-        [("go".to_owned(), format!("http://127.0.0.1:{port}"))].into_iter().collect(),
+        [("go".to_owned(), format!("http://127.0.0.1:{port}"))]
+            .into_iter()
+            .collect(),
     );
     let app = build_goproxy_vuln_test_app(vuln_db).await;
     let req = TestRequest::get()
@@ -12856,7 +12898,9 @@ async fn goproxy_vuln_query_forwards_to_upstream_and_returns_response() {
     });
 
     let vuln_db = batlehub_web::VulnDbMap::new(
-        [("go".to_owned(), format!("http://127.0.0.1:{port}"))].into_iter().collect(),
+        [("go".to_owned(), format!("http://127.0.0.1:{port}"))]
+            .into_iter()
+            .collect(),
     );
     let app = build_goproxy_vuln_test_app(vuln_db).await;
     let req = TestRequest::post()
@@ -12892,7 +12936,9 @@ async fn goproxy_vuln_entry_forwards_to_upstream_and_returns_response() {
     });
 
     let vuln_db = batlehub_web::VulnDbMap::new(
-        [("go".to_owned(), format!("http://127.0.0.1:{port}"))].into_iter().collect(),
+        [("go".to_owned(), format!("http://127.0.0.1:{port}"))]
+            .into_iter()
+            .collect(),
     );
     let app = build_goproxy_vuln_test_app(vuln_db).await;
     let req = TestRequest::get()
@@ -12917,7 +12963,8 @@ async fn audit_bulk_relays_upstream_response_body() {
         let mut buf = vec![0u8; 4096];
         let _ = stream.read(&mut buf).await;
         // Upstream returns a non-trivial audit report.
-        let body = br#"{"advisories":{"lodash":{"findings":[{"version":"4.17.15"}],"severity":"high"}}}"#;
+        let body =
+            br#"{"advisories":{"lodash":{"findings":[{"version":"4.17.15"}],"severity":"high"}}}"#;
         let _ = stream
             .write_all(
                 format!(
@@ -12934,13 +12981,20 @@ async fn audit_bulk_relays_upstream_response_body() {
     let repo_dyn: Arc<dyn batlehub_core::ports::PackageRepository> = InMemoryRepo::new();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let registries: HashMap<String, Arc<dyn RegistryClient>> =
-        [("npm".to_owned(), FixedRegistry::new("npm") as Arc<dyn RegistryClient>)].into();
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
+        "npm".to_owned(),
+        FixedRegistry::new("npm") as Arc<dyn RegistryClient>,
+    )]
+    .into();
     let policies: HashMap<String, Arc<batlehub_core::services::RegistryPolicy>> =
         [("npm".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
     let local_svc = make_local_svc(storage.clone());
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig { registries, policies, ..Default::default() }),
+        hot: new_hot_lock(HotConfig {
+            registries,
+            policies,
+            ..Default::default()
+        }),
         storage,
         cache,
         repo: repo_dyn.clone(),
@@ -12960,7 +13014,10 @@ async fn audit_bulk_relays_upstream_response_body() {
         local_svc,
         RegistryModeMap::default(),
         batlehub_web::CargoIndexMap::default(),
-        ConfigureAppDefaults { upstream_map, ..Default::default() },
+        ConfigureAppDefaults {
+            upstream_map,
+            ..Default::default()
+        },
         test_auth_providers(),
     )
     .await;

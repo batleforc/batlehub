@@ -252,11 +252,9 @@ pub async fn composer_security_advisories(
         format!("{upstream}/api/security-advisories/?{query}")
     };
 
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| AppError::bad_gateway(format!("upstream security advisory request failed: {e}")))?;
+    let resp = client.get(&url).send().await.map_err(|e| {
+        AppError::bad_gateway(format!("upstream security advisory request failed: {e}"))
+    })?;
 
     let status = actix_web::http::StatusCode::from_u16(resp.status().as_u16())
         .unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR);
