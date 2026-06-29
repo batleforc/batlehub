@@ -80,6 +80,7 @@ impl ConfigReloadService {
             new_upstream_map,
             new_cargo_index_map,
             new_repo_signer_map,
+            new_vuln_db_map,
         ) = (self.builder)(&new_config)?;
         let diff = self.compute_diff(&new_hot, &new_access).await;
         let now = Utc::now();
@@ -97,6 +98,7 @@ impl ConfigReloadService {
             new_upstream_map,
             new_cargo_index_map,
             new_repo_signer_map,
+            new_vuln_db_map,
         };
         *self.pending.lock().expect("pending reload lock poisoned") = Some(pending);
         Ok(diff)
@@ -208,6 +210,16 @@ impl ConfigReloadService {
                 .read()
                 .expect("repo signer map lock poisoned")
                 .clone();
+        }
+        // Swap the Go vuln DB URL map; reuse the existing HTTP client.
+        {
+            let new_urls = pending
+                .new_vuln_db_map
+                .urls
+                .read()
+                .expect("vuln db map lock poisoned")
+                .clone();
+            self.vuln_db_map.update(new_urls);
         }
 
         // Clear the in-progress banner on success.

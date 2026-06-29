@@ -12,7 +12,7 @@ use batlehub_core::{
 use crate::handlers::proxy::common::{
     proxy_stream, require_registry_type, serve_local_or_proxy_artifact, LocalOrProxyArtifactOpts,
 };
-use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
 
 use super::build_base_url;
 
@@ -204,6 +204,70 @@ pub async fn composer_dist(
         },
     )
     .await
+}
+
+// ── Security advisories ───────────────────────────────────────────────────────
+
+/// Proxy Composer security advisory queries to the upstream Packagist server.
+///
+/// `composer audit` calls `GET /api/security-advisories/?packages[]=vendor/pkg&…`
+/// against each configured repository. This handler forwards the request (including
+/// all query parameters) to the upstream Packagist URL so `composer audit` works
+/// without direct internet access to packagist.org.
+#[utoipa::path(
+    get,
+    path = "/proxy/{registry}/api/security-advisories/",
+    tag = "proxy/composer",
+    params(
+        ("registry" = String, Path, description = "Registry name (must be a composer registry)"),
+    ),
+    responses(
+        (status = 200, description = "Security advisory JSON from upstream"),
+        (status = 404, description = "Registry not found or not a Composer registry"),
+        (status = 502, description = "Upstream Packagist error"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[get("/proxy/{registry}/api/security-advisories/")]
+pub async fn composer_security_advisories(
+    req: HttpRequest,
+    path: web::Path<String>,
+    _identity: AuthIdentity,
+    map: web::Data<RegistryMap>,
+    upstream_map: web::Data<UpstreamMap>,
+    client: web::Data<reqwest::Client>,
+) -> Result<impl Responder, AppError> {
+    let registry = path.into_inner();
+    require_registry_type(&registry, "composer", &map)?;
+
+    let upstream = upstream_map
+        .upstream_for(&registry)
+        .ok_or_else(|| AppError::not_found(format!("no upstream configured for '{registry}'")))?;
+
+    // Forward query string (?packages[]=vendor/pkg&...) verbatim.
+    let query = req.query_string();
+    let url = if query.is_empty() {
+        format!("{upstream}/api/security-advisories/")
+    } else {
+        format!("{upstream}/api/security-advisories/?{query}")
+    };
+
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| AppError::bad_gateway(format!("upstream security advisory request failed: {e}")))?;
+
+    let status = actix_web::http::StatusCode::from_u16(resp.status().as_u16())
+        .unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR);
+    let body = resp
+        .bytes()
+        .await
+        .map_err(|e| AppError::bad_gateway(format!("reading security advisory response: {e}")))?;
+
+    Ok(HttpResponse::build(status)
+        .content_type("application/json")
+        .body(body))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

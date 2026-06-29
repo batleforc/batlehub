@@ -187,13 +187,11 @@ onMounted(() => {
       }
     "
   >
+    <template #title>Block user</template>
+    <template #description>
+      The user will receive 401 on all authenticated requests until unblocked.
+    </template>
     <div class="space-y-4">
-      <div>
-        <h2 class="text-lg font-semibold">Block user</h2>
-        <p class="text-sm text-muted-foreground mt-1">
-          The user will receive 401 on all authenticated requests until unblocked.
-        </p>
-      </div>
       <div class="space-y-3">
         <div class="space-y-1.5">
           <Label for="userblock-id">User ID <span class="text-destructive">*</span></Label>
@@ -250,15 +248,9 @@ onMounted(() => {
       }
     "
   >
+    <template #title>Unblock <span class="font-mono">{{ unblockTarget }}</span>?</template>
+    <template #description>This user will be immediately allowed to authenticate again.</template>
     <div class="space-y-4">
-      <div>
-        <h2 class="text-lg font-semibold">
-          Unblock <span class="font-mono">{{ unblockTarget }}</span>?
-        </h2>
-        <p class="text-sm text-muted-foreground mt-1">
-          This user will be immediately allowed to authenticate again.
-        </p>
-      </div>
       <p v-if="unblockError" class="text-sm text-destructive">{{ unblockError }}</p>
       <div class="flex justify-end gap-2">
         <Button

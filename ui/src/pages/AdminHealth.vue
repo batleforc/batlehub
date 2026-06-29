@@ -400,17 +400,14 @@ const REGISTRY_TYPE_VARIANTS: Record<string, string> = {
       }
     "
   >
+    <template #title>
+      Clear cache for <span class="font-mono">{{ clearTarget }}</span>?
+    </template>
+    <template #description>
+      All cached artifacts for this registry will be permanently removed. Packages will be
+      re-fetched from upstream on the next request.
+    </template>
     <div class="space-y-4">
-      <div>
-        <h2 class="text-lg font-semibold">
-          Clear cache for <span class="font-mono">{{ clearTarget }}</span
-          >?
-        </h2>
-        <p class="text-sm text-muted-foreground mt-1">
-          All cached artifacts for this registry will be permanently removed. Packages will be
-          re-fetched from upstream on the next request.
-        </p>
-      </div>
       <p v-if="clearError" class="text-sm text-destructive">
         {{ clearError }}
       </p>

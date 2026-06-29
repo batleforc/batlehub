@@ -15,7 +15,7 @@ use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryMode
 pub mod read;
 pub mod write;
 
-pub use read::{audit_quick, download_tarball, get_packument, get_version};
+pub use read::{audit_bulk, audit_quick, download_tarball, get_packument, get_version};
 pub use write::npm_publish;
 
 pub(crate) fn require_npm_or_cargo(

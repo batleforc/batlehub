@@ -167,15 +167,12 @@ const principalTypeOptions = [
       }
     "
   >
+    <template #title>Add beta channel member</template>
+    <template #description>
+      Add a user or group to the beta channel for
+      <span class="font-mono">{{ selectedRegistry }}</span>.
+    </template>
     <div class="space-y-4">
-      <div>
-        <h2 class="text-lg font-semibold">Add beta channel member</h2>
-        <p class="text-sm text-muted-foreground mt-1">
-          Add a user or group to the beta channel for
-          <span class="font-mono">{{ selectedRegistry }}</span
-          >.
-        </p>
-      </div>
       <div class="space-y-3">
         <div class="space-y-1.5">
           <Label for="beta-principal-type">Type</Label>
@@ -239,16 +236,13 @@ const principalTypeOptions = [
       }
     "
   >
+    <template #title>Remove member?</template>
+    <template #description>
+      <span class="font-mono">{{ removeTarget?.principal_id }}</span>
+      will lose access to pre-release versions in
+      <span class="font-mono">{{ selectedRegistry }}</span>.
+    </template>
     <div class="space-y-4">
-      <div>
-        <h2 class="text-lg font-semibold">Remove member?</h2>
-        <p class="text-sm text-muted-foreground mt-1">
-          <span class="font-mono">{{ removeTarget?.principal_id }}</span>
-          will lose access to pre-release versions in
-          <span class="font-mono">{{ selectedRegistry }}</span
-          >.
-        </p>
-      </div>
       <p v-if="removeError" class="text-sm text-destructive">
         {{ removeError }}
       </p>

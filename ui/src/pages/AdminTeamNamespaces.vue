@@ -167,14 +167,12 @@ const {
       }
     "
   >
+    <template #title>Claim namespace</template>
+    <template #description>
+      Restrict publishing under a prefix in
+      <span class="font-mono">{{ selectedRegistry }}</span> to a specific group.
+    </template>
     <div class="space-y-4">
-      <div>
-        <h2 class="text-lg font-semibold">Claim namespace</h2>
-        <p class="text-sm text-muted-foreground mt-1">
-          Restrict publishing under a prefix in
-          <span class="font-mono">{{ selectedRegistry }}</span> to a specific group.
-        </p>
-      </div>
       <div class="space-y-3">
         <div class="space-y-1.5">
           <Label for="team-ns-prefix">Prefix <span class="text-destructive">*</span></Label>
@@ -248,15 +246,13 @@ const {
       }
     "
   >
+    <template #title>Release namespace claim?</template>
+    <template #description>
+      The prefix <span class="font-mono">{{ releaseTarget?.prefix }}</span> will no longer be
+      restricted to group <span class="font-mono">{{ releaseTarget?.group_id }}</span>.
+      Any authenticated user will be able to publish packages under this prefix.
+    </template>
     <div class="space-y-4">
-      <div>
-        <h2 class="text-lg font-semibold">Release namespace claim?</h2>
-        <p class="text-sm text-muted-foreground mt-1">
-          The prefix <span class="font-mono">{{ releaseTarget?.prefix }}</span> will no longer be
-          restricted to group <span class="font-mono">{{ releaseTarget?.group_id }}</span
-          >. Any authenticated user will be able to publish packages under this prefix.
-        </p>
-      </div>
       <p v-if="releaseError" class="text-sm text-destructive">
         {{ releaseError }}
       </p>

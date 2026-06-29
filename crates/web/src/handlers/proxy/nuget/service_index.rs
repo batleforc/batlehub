@@ -63,6 +63,11 @@ pub async fn nuget_service_index(
                 "@id": format!("{base}/proxy/{registry}/nuget/v3/query"),
                 "@type": "SearchQueryService/3.5.0",
                 "comment": "NuGet package search"
+            },
+            {
+                "@id": format!("{base}/proxy/{registry}/nuget/v3/vulnerabilities/"),
+                "@type": "VulnerabilitiesUrl/6.7.0",
+                "comment": "NuGet vulnerability database"
             }
         ]
     });

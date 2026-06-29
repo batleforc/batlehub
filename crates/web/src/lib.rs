@@ -469,6 +469,51 @@ impl From<HashMap<String, String>> for UpstreamMap {
     }
 }
 
+/// Maps a `goproxy` registry name → the base URL of its upstream Go Vulnerability
+/// Database (default `https://vuln.go.dev`). Registries absent from the map have
+/// the vuln DB passthrough disabled (`vuln_db_url = ""`).
+///
+/// Holds a shared `reqwest::Client` so all registries reuse one connection pool.
+/// The URL map is behind `Arc<RwLock<>>` for hot-reload support.
+#[derive(Clone)]
+pub struct VulnDbMap {
+    pub http: reqwest::Client,
+    pub urls: Arc<std::sync::RwLock<HashMap<String, String>>>,
+}
+
+impl VulnDbMap {
+    pub fn new(urls: HashMap<String, String>) -> Self {
+        let http = reqwest::Client::builder()
+            .user_agent("batlehub/0.1")
+            .redirect(reqwest::redirect::Policy::limited(5))
+            .build()
+            .expect("building vuln DB HTTP client");
+        Self {
+            http,
+            urls: Arc::new(std::sync::RwLock::new(urls)),
+        }
+    }
+
+    pub fn url_for(&self, registry: &str) -> Option<String> {
+        self.urls
+            .read()
+            .expect("vuln db map lock poisoned")
+            .get(registry)
+            .cloned()
+    }
+
+    /// Replace the URL map in place (called by the hot-reload applier).
+    pub fn update(&self, urls: HashMap<String, String>) {
+        *self.urls.write().expect("vuln db map lock poisoned") = urls;
+    }
+}
+
+impl Default for VulnDbMap {
+    fn default() -> Self {
+        Self::new(HashMap::new())
+    }
+}
+
 /// Maps Cargo registry name → [`CargoIndexProxy`] (sparse-index HTTP client + URL).
 ///
 /// Inner `HashMap` is behind `Arc<RwLock<>>` so hot-reload can swap proxy settings
@@ -632,16 +677,17 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                 cargo_unyank, cargo_yank, download_crate,
             },
             composer::{
-                composer_dist, composer_p2_metadata, composer_packages_json, composer_upload,
-                composer_yank,
+                composer_dist, composer_p2_metadata, composer_packages_json,
+                composer_security_advisories, composer_upload, composer_yank,
             },
             // Register most-specific patterns first so actix-web resolves correctly:
             // cargo api/v1 (literal "api" segment) > cargo index (literal "registry" segment) >
             // github (owner/repo/verb) > cargo download (literal "download") >
             // maven (literal "maven2" segment) >
-            // openvsx vsix (literal "vsix") > npm audit (literal "/-/npm/v1/audit/quick") >
-            // npm tarball (literal "tarball") > shared version metadata > shared packument
-            // composer: upload/yank (literal "api") > p2 (literal "p2") > dist > packages.json
+            // openvsx vsix (literal "vsix") > npm audit bulk/quick > npm tarball >
+            // shared version metadata > shared packument
+            // nuget: vuln page/index > registration > flat > search
+            // composer: upload/yank > advisories (literal "api") > p2 > dist > packages.json
             conda::{conda_current_repodata, conda_file_download, conda_publish, conda_repodata},
             forgejo::fj_packages,
             github::{
@@ -652,16 +698,19 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                 gl_download_archive, gl_download_link, gl_download_raw, gl_get_release,
                 gl_list_releases, gl_packages,
             },
-            goproxy::{goproxy_file, goproxy_latest, goproxy_list, goproxy_publish},
+            goproxy::{
+                goproxy_file, goproxy_latest, goproxy_list, goproxy_publish,
+                goproxy_vuln_entry, goproxy_vuln_index, goproxy_vuln_query,
+            },
             jetbrains::jetbrains_get,
             maven::{maven_get, maven_put},
             npm::{
-                audit_quick, download_tarball as npm_download_tarball, get_packument, get_version,
-                npm_publish,
+                audit_bulk, audit_quick, download_tarball as npm_download_tarball, get_packument,
+                get_version, npm_publish,
             },
             nuget::{
                 nuget_flat_download, nuget_flat_versions, nuget_publish, nuget_registration,
-                nuget_search, nuget_service_index, nuget_yank,
+                nuget_search, nuget_service_index, nuget_vuln_index, nuget_vuln_page, nuget_yank,
             },
             openvsx::{download_vsix, vsix_publish},
             pypi::{pypi_file_download, pypi_publish, pypi_simple_package, pypi_simple_root},
@@ -727,6 +776,10 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                                 // Cargo download (literal "download" suffix)
     cfg.service(download_crate);
     // Go module proxy (multi-segment module paths — must precede generic packument routes)
+    // Vuln DB passthrough: literal /v1/ paths registered before the module wildcard routes.
+    cfg.service(goproxy_vuln_index);  // GET …/v1/index.json
+    cfg.service(goproxy_vuln_entry);  // GET …/v1/ID/{id}.json
+    cfg.service(goproxy_vuln_query);  // POST …/v1/query
     // PUT goproxy_publish must come before GET goproxy_file (same path pattern, different method)
     cfg.service(goproxy_publish);
     cfg.service(goproxy_latest);
@@ -739,6 +792,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(nuget_publish); // PUT  .../api/v2/package
     cfg.service(nuget_yank); // DELETE .../v2/package/{id}/{version}
     cfg.service(nuget_service_index); // GET .../v3/index.json
+    cfg.service(nuget_vuln_page); // GET .../v3/vulnerabilities/page/{page}
+    cfg.service(nuget_vuln_index); // GET .../v3/vulnerabilities/index.json
     cfg.service(nuget_registration); // GET .../v3/registration5/{id}/index.json
     cfg.service(nuget_flat_versions); // GET .../v3/flat/{id}/index.json
     cfg.service(nuget_search); // GET .../v3/query
@@ -773,6 +828,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     // Composer: literal "api" routes before "p2" before "dist" before "packages.json"
     cfg.service(composer_upload); // POST …/api/upload
     cfg.service(composer_yank); // DELETE …/api/packages/{vendor}/{package}/versions/{version}
+    cfg.service(composer_security_advisories); // GET …/api/security-advisories/
     cfg.service(composer_p2_metadata); // GET …/p2/{path:.*}
     cfg.service(composer_dist); // GET …/dist/{vendor}/{package}/{version}
     cfg.service(composer_packages_json); // GET …/packages.json
@@ -789,7 +845,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                                       // OpenVSX/VSCode VSIX publish (PUT) and download (GET) — same path, different method
     cfg.service(vsix_publish);
     cfg.service(download_vsix);
-    // npm audit pass-through (literal "/-/npm/v1/audit/quick" path)
+    // npm audit pass-through (literal "/-/npm/v1/audit/{quick,bulk}" paths — bulk before quick)
+    cfg.service(audit_bulk);
     cfg.service(audit_quick);
     // npm tarball (literal "tarball" suffix)
     cfg.service(npm_download_tarball);

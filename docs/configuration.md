@@ -592,6 +592,7 @@ deny_missing_timestamp = false   # set true to block packages with no timestamp
 | `upstreams` | string[] | no | Upstream URLs tried in order on cache miss; 404 from one falls through to the next. Defaults to the registry's built-in URL. Required for `hybrid` mode. |
 | `index_url` | string | no | Cargo only: sparse crate index URL. Defaults to `https://index.crates.io`. Required for `hybrid` mode and self-hosted Gitea/Forgejo registries. |
 | `storage` | string | no | Name of the storage backend. Must match a `[[storage.backends]]` name. Omit to use the default backend. |
+| `vuln_db_url` | string | no | **goproxy only.** Upstream URL for the Go Vulnerability Database. Default: `https://vuln.go.dev`. Set to `""` to disable the `/v1/` endpoints. See [Vulnerability Proxy](vulnerability-proxy.md#1-go--govulncheck--go-vulnerability-database). |
 | `upstream_auth` | table | no | Credentials sent on every upstream request. See [upstream auth](#upstream_auth). |
 | `tls` | table | no | TLS settings for upstream connections. See [upstream TLS](#upstream_tls). |
 | `proxy` | table | no | HTTP/SOCKS proxy for upstream connections. See [upstream proxy](#upstream_proxy). |
@@ -632,7 +633,7 @@ Publishing requires at least the `user` role. The `published_by` field is set fr
 
 **`github`** — proxies the GitHub REST API (releases, assets, source tarballs, raw files). Requires `upstreams` to point at `https://api.github.com` (the default).
 
-**`npm`** — proxies the full npm registry protocol: packuments, version metadata, and `.tgz` tarballs. Works with npm, yarn, pnpm, and any tool that speaks the npm registry protocol. Set `mode = "local"` or `mode = "hybrid"` to enable publishing. See [registry modes](#registry-modes) and [Worked Example 6.7](#67-private-npm-registry-local--hybrid-mode).
+**`npm`** — proxies the full npm registry protocol: packuments, version metadata, and `.tgz` tarballs. Works with npm, yarn, pnpm, and any tool that speaks the npm registry protocol. Set `mode = "local"` or `mode = "hybrid"` to enable publishing. See [registry modes](#registry-modes) and [Worked Example 6.7](#67-private-npm-registry-local--hybrid-mode). Both `npm audit` modes (`quick` and `bulk`) are proxied automatically — see [Vulnerability Proxy](vulnerability-proxy.md#2-npm--npm-audit).
 
 **`cargo`** — proxies the Cargo sparse index and `.crate` downloads. Set `index_url` for self-hosted Gitea/Forgejo registries. Set `mode = "local"` or `mode = "hybrid"` to enable publishing. See [registry modes](#registry-modes) and [Worked Example 6.6](#66-private-cargo-registry-local--hybrid-mode).
 
@@ -665,7 +666,7 @@ curl -H "Authorization: Bearer <token>" \
   -o ms-python.python-2024.2.1.vsix
 ```
 
-**`goproxy`** — implements the [GOPROXY protocol](https://go.dev/ref/mod#goproxy-protocol) for Go module proxying. Set `mode = "local"` or `mode = "hybrid"` to host private modules — see [registry modes](#registry-modes) and [Worked Example 6.9](#69-private-go-module-proxy-local--hybrid-mode). Supports all five endpoints:
+**`goproxy`** — implements the [GOPROXY protocol](https://go.dev/ref/mod#goproxy-protocol) for Go module proxying. Set `mode = "local"` or `mode = "hybrid"` to host private modules — see [registry modes](#registry-modes) and [Worked Example 6.9](#69-private-go-module-proxy-local--hybrid-mode). Supports all five module proxy endpoints plus the Go Vulnerability Database (`govulndb`) protocol — see [Vulnerability Proxy](vulnerability-proxy.md#1-go--govulncheck--go-vulnerability-database).
 
 | Endpoint | Description |
 |----------|-------------|
@@ -674,10 +675,15 @@ curl -H "Authorization: Bearer <token>" \
 | `/{module}/@v/{version}.info` | Version metadata JSON |
 | `/{module}/@v/{version}.mod` | Raw `go.mod` file |
 | `/{module}/@v/{version}.zip` | Module source zip archive |
+| `/v1/index.json` | govulndb — all known vulnerability IDs |
+| `/v1/ID/{id}.json` | govulndb — full OSV record for one vulnerability |
+| `/v1/query` | govulndb — batch query by module/version |
 
 Module paths may contain slashes (e.g. `golang.org/x/text`). Uppercase-encoded paths (`!{lowercase}` convention) are passed through to the upstream unchanged.
 
 > **Caching note:** `@latest` and `@v/list` responses are cached permanently after the first request, just like other artifacts. They may become stale if new versions are published. Clear the proxy storage (or configure a shorter `metadata_ttl_secs`) to pick up new versions immediately.
+
+The optional `vuln_db_url` field controls which govulndb upstream is used (default: `https://vuln.go.dev`). Set it to `""` to disable the `/v1/` endpoints entirely.
 
 Configure the go toolchain to use the proxy:
 
@@ -685,6 +691,7 @@ Configure the go toolchain to use the proxy:
 export GONOSUMCHECK="*"
 export GONOSUMDB="*"
 export GOPROXY="http://batlehub.example.com/proxy/go,direct"
+export GOVULNDB="http://batlehub.example.com/proxy/go"
 ```
 
 ---
@@ -748,7 +755,40 @@ provider_installation {
 
 ---
 
-**`composer`** — implements the [Packagist v2 protocol](https://packagist.org/apidoc) for PHP Composer. Serves `packages.json` (repository root index), `p2/{vendor}/{package}.json` (metadata), and `dist/{vendor}/{package}/{version}` (ZIP artifact downloads). Default upstream: `https://repo.packagist.org`. Set `mode = "local"` or `mode = "hybrid"` to enable private package publishing — see [registry modes](#registry-modes) and [Worked Example 6.15](#615-private-composer-registry-local--hybrid-mode).
+**`nuget`** — implements the [NuGet v3 API](https://learn.microsoft.com/en-us/nuget/api/overview) for .NET package management. The v3 service index (`index.json`) is synthesised by BatleHub and points all resource URLs back at the proxy. Default upstream: `https://api.nuget.org`. Vulnerability data for `dotnet list package --vulnerable` is proxied automatically — see [Vulnerability Proxy](vulnerability-proxy.md#3-nuget--dotnet-list-package---vulnerable).
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/proxy/{registry}/nuget/v3/index.json` | GET | NuGet v3 service index |
+| `/proxy/{registry}/nuget/v3/registration5/{id}/index.json` | GET | Package registration (all versions + metadata) |
+| `/proxy/{registry}/nuget/v3/flat/{id}/index.json` | GET | Flat container version list |
+| `/proxy/{registry}/nuget/v3/flat/{id}/{version}/{filename}` | GET | Package content download (`.nupkg`, `.nuspec`) |
+| `/proxy/{registry}/nuget/v3/query` | GET | Package search |
+| `/proxy/{registry}/nuget/v3/vulnerabilities/index.json` | GET | Vulnerability catalogue index |
+| `/proxy/{registry}/nuget/v3/vulnerabilities/page/{page}` | GET | Vulnerability catalogue page |
+| `/proxy/{registry}/nuget/api/v2/package` | PUT | Publish `.nupkg` |
+| `/proxy/{registry}/nuget/v2/package/{id}/{version}` | DELETE | Yank a version |
+
+Configure NuGet in `nuget.config`:
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <add key="batlehub" value="https://batlehub.example.com/proxy/nuget/nuget/v3/index.json" />
+  </packageSources>
+  <packageSourceCredentials>
+    <batlehub>
+      <add key="Username" value="user" />
+      <add key="ClearTextPassword" value="<token>" />
+    </batlehub>
+  </packageSourceCredentials>
+</configuration>
+```
+
+---
+
+**`composer`** — implements the [Packagist v2 protocol](https://packagist.org/apidoc) for PHP Composer. Serves `packages.json` (repository root index), `p2/{vendor}/{package}.json` (metadata), and `dist/{vendor}/{package}/{version}` (ZIP artifact downloads). Default upstream: `https://packagist.org`. `composer audit` is proxied automatically — see [Vulnerability Proxy](vulnerability-proxy.md#4-composer--composer-audit). Set `mode = "local"` or `mode = "hybrid"` to enable private package publishing — see [registry modes](#registry-modes) and [Worked Example 6.15](#615-private-composer-registry-local--hybrid-mode).
 
 | Endpoint | Method | Description |
 |---|---|---|
@@ -756,6 +796,7 @@ provider_installation {
 | `/proxy/{registry}/p2/{vendor}/{package}.json` | GET | Package metadata (all versions, dist URLs) |
 | `/proxy/{registry}/p2/{vendor}/{package}~dev.json` | GET | Dev-stability metadata variant |
 | `/proxy/{registry}/dist/{vendor}/{package}/{version}` | GET | Download ZIP artifact |
+| `/proxy/{registry}/api/security-advisories/` | GET | Security advisory query (`composer audit`) |
 | `/proxy/{registry}/api/upload` | POST | **Local/Hybrid:** publish a package (multipart or raw ZIP body) |
 | `/proxy/{registry}/api/packages/{vendor}/{package}/versions/{version}` | DELETE | **Local/Hybrid:** yank a version |
 

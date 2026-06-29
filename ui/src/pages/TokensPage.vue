@@ -290,15 +290,9 @@ const lifetimePresets = [7, 30, 90];
 
     <!-- Create dialog -->
     <Dialog :open="showCreate" @update:open="showCreate = $event">
-      <template #default>
-        <div class="space-y-1 pr-6">
-          <h2 class="text-lg font-semibold">Create API Token</h2>
-          <p class="text-sm text-muted-foreground">
-            Choose a name, role, and lifetime for your token.
-          </p>
-        </div>
-
-        <div class="space-y-4 mt-2">
+      <template #title>Create API Token</template>
+      <template #description>Choose a name, role, and lifetime for your token.</template>
+      <div class="space-y-4">
           <div class="space-y-1.5">
             <Label for="token-name">Name</Label>
             <Input
@@ -370,7 +364,6 @@ const lifetimePresets = [7, 30, 90];
             </Button>
           </div>
         </div>
-      </template>
     </Dialog>
   </div>
 </template>

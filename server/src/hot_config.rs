@@ -13,6 +13,7 @@ use batlehub_core::services::{
 use crate::builders::parse_role;
 use batlehub_web::{
     AccessConfig, CargoIndexMap, CargoIndexProxy, RegistryMap, RegistryModeMap, UpstreamMap,
+    VulnDbMap,
 };
 
 fn build_versioning_map(registries: &[RegistryConfig]) -> HashMap<String, VersioningPolicy> {
@@ -143,6 +144,7 @@ pub(super) fn upstream_url_for(reg: &RegistryConfig) -> Option<String> {
         "pypi" => "https://pypi.org",
         "conda" => "https://conda.anaconda.org",
         "nuget" => "https://api.nuget.org",
+        "composer" => "https://packagist.org",
         _ => return None,
     };
     Some(
@@ -151,6 +153,20 @@ pub(super) fn upstream_url_for(reg: &RegistryConfig) -> Option<String> {
             .cloned()
             .unwrap_or_else(|| default_url.to_owned()),
     )
+}
+
+fn build_vuln_db_map(registries: &[RegistryConfig]) -> VulnDbMap {
+    const DEFAULT: &str = "https://vuln.go.dev";
+    let urls = registries
+        .iter()
+        .filter(|r| r.registry_type == "goproxy")
+        .filter_map(|r| match r.vuln_db_url.as_deref() {
+            Some("") => None,
+            Some(url) => Some((r.name.clone(), url.trim_end_matches('/').to_owned())),
+            None => Some((r.name.clone(), DEFAULT.to_owned())),
+        })
+        .collect();
+    VulnDbMap::new(urls)
 }
 
 pub(super) fn build_hot_bundle(
@@ -164,6 +180,7 @@ pub(super) fn build_hot_bundle(
     RegistryMap,
     RegistryModeMap,
     UpstreamMap,
+    VulnDbMap,
 )> {
     let mut reg_clients: HashMap<String, Arc<dyn batlehub_core::ports::RegistryClient>> =
         HashMap::new();
@@ -210,6 +227,7 @@ pub(super) fn build_hot_bundle(
         RegistryMap::from(reg_type_map),
         RegistryModeMap::from(reg_mode_map),
         UpstreamMap::from(upstream_map),
+        build_vuln_db_map(&cfg.registries),
     ))
 }
 
@@ -279,7 +297,7 @@ pub(super) fn make_hot_builder(
     vuln_repo: Arc<dyn VulnerabilityRepository>,
 ) -> batlehub_web::services::HotConfigBuilder {
     Arc::new(move |cfg: &AppConfig| {
-        let (hot, access, rm, rmm, um) =
+        let (hot, access, rm, rmm, um, vuln_db) =
             build_hot_bundle(cfg, &beta_channel_store, &repo, &vuln_repo)?;
         let mut cargo_map: HashMap<String, CargoIndexProxy> = HashMap::new();
         for reg in &cfg.registries {
@@ -298,6 +316,7 @@ pub(super) fn make_hot_builder(
             um,
             CargoIndexMap::new(cargo_map),
             repo_signer_map,
+            vuln_db,
         ))
     })
 }
@@ -522,6 +541,15 @@ mod tests {
         assert_eq!(
             upstream_url_for(&r),
             Some("https://npm.example.com".to_owned())
+        );
+    }
+
+    #[test]
+    fn upstream_url_for_composer_default() {
+        let r = make_registry("composer", "composer-reg", "");
+        assert_eq!(
+            upstream_url_for(&r),
+            Some("https://packagist.org".to_owned())
         );
     }
 

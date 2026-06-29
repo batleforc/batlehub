@@ -41,6 +41,7 @@ async fn make_svc_with_file(
         crate::UpstreamMap::new(HashMap::new()),
         crate::CargoIndexMap::new(HashMap::new()),
         crate::RepoSignerMap::default(),
+        crate::VulnDbMap::default(),
         path,
         None,
         enabled,
@@ -76,6 +77,7 @@ pub(super) fn make_svc(enabled: bool) -> Arc<ConfigReloadService> {
         crate::UpstreamMap::new(HashMap::new()),
         crate::CargoIndexMap::new(HashMap::new()),
         crate::RepoSignerMap::default(),
+        crate::VulnDbMap::default(),
         "config.toml".to_owned(),
         None,
         enabled,
@@ -191,6 +193,7 @@ async fn apply_success_swaps_hot_config() {
         new_upstream_map: crate::UpstreamMap::new(HashMap::new()),
         new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         new_repo_signer_map: crate::RepoSignerMap::from(new_signers),
+        new_vuln_db_map: crate::VulnDbMap::default(),
     };
     *svc.pending.lock().unwrap() = Some(pending);
 
@@ -249,6 +252,7 @@ async fn reload_immediate_applies_config() {
             crate::UpstreamMap::new(HashMap::new()),
             crate::CargoIndexMap::new(HashMap::new()),
             crate::RepoSignerMap::default(),
+            crate::VulnDbMap::default(),
         ))
     });
     let svc = Arc::new(ConfigReloadService::new(
@@ -259,6 +263,7 @@ async fn reload_immediate_applies_config() {
         crate::UpstreamMap::new(HashMap::new()),
         crate::CargoIndexMap::new(HashMap::new()),
         crate::RepoSignerMap::default(),
+        crate::VulnDbMap::default(),
         tmp_path.clone(),
         None,
         true,
@@ -332,6 +337,7 @@ fn make_pending(expires_offset_secs: i64, already_expired: bool) -> PendingReloa
         new_upstream_map: crate::UpstreamMap::new(HashMap::new()),
         new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         new_repo_signer_map: crate::RepoSignerMap::default(),
+        new_vuln_db_map: crate::VulnDbMap::default(),
     }
 }
 
@@ -404,6 +410,7 @@ async fn load_pending_from_content_stores_raw_content_in_pending() {
         new_upstream_map: crate::UpstreamMap::new(HashMap::new()),
         new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         new_repo_signer_map: crate::RepoSignerMap::default(),
+        new_vuln_db_map: crate::VulnDbMap::default(),
     };
     *svc.pending.lock().unwrap() = Some(pending);
 
@@ -440,6 +447,7 @@ async fn apply_writes_editor_content_to_disk() {
         new_upstream_map: crate::UpstreamMap::new(HashMap::new()),
         new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         new_repo_signer_map: crate::RepoSignerMap::default(),
+        new_vuln_db_map: crate::VulnDbMap::default(),
     };
     *svc.pending.lock().unwrap() = Some(pending);
 
@@ -480,6 +488,7 @@ async fn apply_with_no_content_leaves_file_unchanged() {
         new_upstream_map: crate::UpstreamMap::new(HashMap::new()),
         new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         new_repo_signer_map: crate::RepoSignerMap::default(),
+        new_vuln_db_map: crate::VulnDbMap::default(),
     };
     *svc.pending.lock().unwrap() = Some(pending);
     svc.apply("test-user").await.unwrap();

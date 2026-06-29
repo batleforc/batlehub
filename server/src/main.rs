@@ -141,7 +141,7 @@ async fn main() -> Result<()> {
     let team_namespace_store: Arc<dyn batlehub_core::ports::TeamNamespacePort> =
         Arc::new(PgTeamNamespaceStore::new(repo.pool()));
 
-    let (init_hot, init_access, registry_map, registry_mode_map, upstream_map) =
+    let (init_hot, init_access, registry_map, registry_mode_map, upstream_map, vuln_db_map) =
         hot_config::build_hot_bundle(
             &config,
             &beta_channel_store,
@@ -216,6 +216,7 @@ async fn main() -> Result<()> {
         upstream_map.clone(),
         cargo_index_map.clone(),
         repo_signer_map.clone(),
+        vuln_db_map.clone(),
         config_path.clone(),
         Some(repo.pool()),
         hot_reload_enabled,
@@ -276,6 +277,7 @@ async fn main() -> Result<()> {
         access_config,
         registry_map,
         upstream_map,
+        vuln_db_map,
         oidc_sso_flows,
         warming_map,
         eviction_map,

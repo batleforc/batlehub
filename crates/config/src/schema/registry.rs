@@ -106,6 +106,13 @@ pub struct RegistryConfig {
     /// and block on a mismatch; warn (do not block) when none is advertised.
     #[serde(default)]
     pub integrity: Option<IntegrityConfig>,
+    /// Base URL for the Go Vulnerability Database (`govulndb`) proxy endpoints.
+    /// Only applies to `goproxy` registries.
+    /// Absent → default to `https://vuln.go.dev`.
+    /// Set to `""` to disable the `/v1/index.json`, `/v1/ID/{id}.json`, and
+    /// `/v1/query` passthrough endpoints for this registry.
+    #[serde(default)]
+    pub vuln_db_url: Option<String>,
 }
 
 // ── Artifact integrity ──────────────────────────────────────────────────────────

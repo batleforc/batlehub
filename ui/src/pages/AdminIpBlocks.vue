@@ -172,13 +172,11 @@ function isExpired(unblock_at: number): boolean {
       }
     "
   >
+    <template #title>Block IP address</template>
+    <template #description>
+      The IP will be blocked for the specified duration and receive 403 on all requests.
+    </template>
     <div class="space-y-4">
-      <div>
-        <h2 class="text-lg font-semibold">Block IP address</h2>
-        <p class="text-sm text-muted-foreground mt-1">
-          The IP will be blocked for the specified duration and receive 403 on all requests.
-        </p>
-      </div>
       <div class="space-y-3">
         <div class="space-y-1.5">
           <Label for="ipblock-ip">IP address <span class="text-destructive">*</span></Label>
@@ -244,16 +242,9 @@ function isExpired(unblock_at: number): boolean {
       }
     "
   >
+    <template #title>Unblock <span class="font-mono">{{ unblockTarget }}</span>?</template>
+    <template #description>This IP will be immediately allowed to send requests again.</template>
     <div class="space-y-4">
-      <div>
-        <h2 class="text-lg font-semibold">
-          Unblock <span class="font-mono">{{ unblockTarget }}</span
-          >?
-        </h2>
-        <p class="text-sm text-muted-foreground mt-1">
-          This IP will be immediately allowed to send requests again.
-        </p>
-      </div>
       <p v-if="unblockError" class="text-sm text-destructive">
         {{ unblockError }}
       </p>

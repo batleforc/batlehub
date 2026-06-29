@@ -431,6 +431,7 @@ mod tests {
             crate::UpstreamMap::new(HashMap::new()),
             crate::CargoIndexMap::new(HashMap::new()),
             crate::RepoSignerMap::default(),
+            crate::VulnDbMap::default(),
             "config.toml".to_owned(),
             None,
             false, // hot_reload_enabled = false
@@ -475,6 +476,7 @@ mod tests {
             crate::UpstreamMap::new(HashMap::new()),
             crate::CargoIndexMap::new(HashMap::new()),
             crate::RepoSignerMap::default(),
+            crate::VulnDbMap::default(),
             "config.toml".to_owned(),
             None,
             true,

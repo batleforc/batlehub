@@ -105,6 +105,15 @@ Or, with `.npmrc` configured for `internal-npm`:
 npm publish
 ```
 
+### Security audit
+
+`npm audit` works automatically once the registry is configured — both quick and bulk audit modes are proxied through BatleHub to the upstream advisory database.
+
+```sh
+npm audit
+npm audit --fix
+```
+
 ### Verify
 
 ```sh
@@ -228,6 +237,24 @@ The module path may contain slashes (e.g. `example.com/org/mymod`). BatleHub ext
 export GOPROXY="https://batlehub.example.com/proxy/internal-go,direct"
 go get example.com/mymod@v1.0.0
 ```
+
+### Vulnerability scanning with govulncheck
+
+BatleHub proxies the [Go Vulnerability Database](https://vuln.go.dev) so `govulncheck` works without direct access to vuln.go.dev. Set `GOVULNDB` to the same base URL as `GOPROXY`:
+
+```sh
+export GOVULNDB="https://batlehub.example.com/proxy/go"
+govulncheck ./...
+```
+
+With authentication (put the token in `~/.netrc`):
+
+```sh
+echo "machine batlehub.example.com login user password $BATLEHUB_TOKEN" >> ~/.netrc
+chmod 600 ~/.netrc
+```
+
+The govulndb URL can be changed per-registry with `vuln_db_url` in the server config (default: `https://vuln.go.dev`). Setting it to `""` disables the endpoints.
 
 ### Zip format requirements
 
@@ -354,6 +381,14 @@ curl -X DELETE \
 ```
 
 Yanked versions are hidden from version listings and return 404 on download attempts.
+
+### Security audit
+
+`composer audit` works automatically once the repository is configured — BatleHub proxies the Packagist security advisory API transparently.
+
+```sh
+composer audit
+```
 
 ### Verify
 
@@ -581,6 +616,15 @@ dotnet nuget push bin/Release/MyLib.1.0.0.nupkg \
 curl -X DELETE \
   -H "Authorization: Bearer $BATLEHUB_TOKEN" \
   "https://batlehub.example.com/proxy/internal-nuget/nuget/v2/package/mylib/1.0.0"
+```
+
+### Check for vulnerable packages
+
+`dotnet list package --vulnerable` works automatically — BatleHub exposes a `VulnerabilitiesUrl` resource in the v3 service index and proxies the vulnerability catalogue from the upstream NuGet gallery.
+
+```sh
+dotnet list package --vulnerable
+dotnet list package --vulnerable --include-transitive
 ```
 
 ### Verify

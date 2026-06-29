@@ -437,11 +437,8 @@ function eventBadgeVariant(
       }
     "
   >
+    <template #title>{{ editingId ? "Edit Subscription" : "New Subscription" }}</template>
     <div class="space-y-4">
-      <h2 class="text-lg font-semibold">
-        {{ editingId ? "Edit Subscription" : "New Subscription" }}
-      </h2>
-
       <div class="space-y-3">
         <div class="space-y-1.5">
           <Label for="notif-registry"
@@ -537,9 +534,9 @@ function eventBadgeVariant(
       }
     "
   >
+    <template #title>Delete subscription?</template>
+    <template #description>This action cannot be undone.</template>
     <div class="space-y-4">
-      <h2 class="text-lg font-semibold">Delete subscription?</h2>
-      <p class="text-sm text-muted-foreground">This action cannot be undone.</p>
       <p v-if="deleteError" class="text-sm text-destructive">{{ deleteError }}</p>
       <div class="flex justify-end gap-2">
         <Button variant="outline" size="sm" :disabled="deleteLoading" @click="deleteTarget = null"

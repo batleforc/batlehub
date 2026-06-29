@@ -8,7 +8,7 @@ use sqlx::PgPool;
 
 use crate::{
     services::banner::BannerService, AccessConfig, AccessConfigLock, CargoIndexMap, RegistryMap,
-    RegistryModeMap, RepoSignerMap, UpstreamMap,
+    RegistryModeMap, RepoSignerMap, UpstreamMap, VulnDbMap,
 };
 
 pub(super) const PENDING_TTL_SECS: i64 = 600; // 10 minutes
@@ -59,6 +59,7 @@ pub struct PendingReload {
     pub new_upstream_map: UpstreamMap,
     pub new_cargo_index_map: CargoIndexMap,
     pub new_repo_signer_map: RepoSignerMap,
+    pub new_vuln_db_map: VulnDbMap,
 }
 
 /// Snapshot of a pending reload returned to the GET /pending endpoint.
@@ -87,6 +88,7 @@ pub type HotConfigBuilder = Arc<
             UpstreamMap,
             CargoIndexMap,
             RepoSignerMap,
+            VulnDbMap,
         )> + Send
         + Sync,
 >;
@@ -100,6 +102,7 @@ pub struct ConfigReloadService {
     pub(super) upstream_map: UpstreamMap,
     pub(super) cargo_index_map: CargoIndexMap,
     pub(super) repo_signer_map: RepoSignerMap,
+    pub(super) vuln_db_map: VulnDbMap,
     pub(super) config_path: String,
     pub(super) pool: Option<PgPool>,
     pub hot_reload_enabled: bool,
@@ -118,6 +121,7 @@ impl ConfigReloadService {
         upstream_map: UpstreamMap,
         cargo_index_map: CargoIndexMap,
         repo_signer_map: RepoSignerMap,
+        vuln_db_map: VulnDbMap,
         config_path: String,
         pool: Option<PgPool>,
         hot_reload_enabled: bool,
@@ -132,6 +136,7 @@ impl ConfigReloadService {
             upstream_map,
             cargo_index_map,
             repo_signer_map,
+            vuln_db_map,
             config_path,
             pool,
             hot_reload_enabled,

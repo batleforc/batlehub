@@ -174,6 +174,17 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "ini",
         template: (ctx) => buildNpmAuthLines(ctx).join("\n"),
       },
+      {
+        key: "npm-audit",
+        label: "npm audit",
+        lang: "bash",
+        template: () =>
+          [`npm audit`, `npm audit --fix`].join("\n"),
+        note:
+          `Both audit modes (<code class="font-mono bg-muted px-1 rounded">quick</code> and ` +
+          `<code class="font-mono bg-muted px-1 rounded">bulk</code>) are proxied automatically ` +
+          `once the registry is configured — no extra setup needed.`,
+      },
     ],
   },
 
@@ -324,6 +335,41 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           `<code class="font-mono bg-muted px-1 rounded">@latest</code> and ` +
           `<code class="font-mono bg-muted px-1 rounded">@v/list</code> responses are also cached — ` +
           `clear the proxy storage if you need to pick up newly published versions immediately.`,
+      },
+      {
+        key: "govulncheck",
+        label: "govulncheck",
+        lang: "bash",
+        template: (ctx) => {
+          const proxyUrl = withCredentials(`${ctx.base}/proxy/${ctx.registryName}`, ctx);
+          const lines = [
+            `# Point govulncheck at BatleHub (same base URL as GOPROXY)`,
+            `export GOVULNDB="${proxyUrl}"`,
+            `govulncheck ./...`,
+          ];
+          if (ctx.isAuthenticated) {
+            lines.push(
+              ``,
+              `# Or put credentials in ~/.netrc so govulncheck picks them up:`,
+              `# machine ${ctx.netrcHost}`,
+              `# login ${ctx.netrcLogin}`,
+              `# password ${ctx.token}`,
+            );
+          }
+          return lines.join("\n");
+        },
+        note:
+          `BatleHub proxies the ` +
+          `<a href="https://vuln.go.dev" target="_blank" rel="noopener" ` +
+          `class="underline underline-offset-2 hover:text-foreground transition-colors">Go Vulnerability Database</a> ` +
+          `(<code class="font-mono bg-muted px-1 rounded">/v1/index.json</code>, ` +
+          `<code class="font-mono bg-muted px-1 rounded">/v1/ID/{id}.json</code>, ` +
+          `<code class="font-mono bg-muted px-1 rounded">POST /v1/query</code>) so ` +
+          `<code class="font-mono bg-muted px-1 rounded">govulncheck</code> works without direct internet access. ` +
+          `The upstream vuln DB URL defaults to ` +
+          `<code class="font-mono bg-muted px-1 rounded">https://vuln.go.dev</code> and can be ` +
+          `overridden per-registry with <code class="font-mono bg-muted px-1 rounded">vuln_db_url</code> in ` +
+          `<code class="font-mono bg-muted px-1 rounded">config.toml</code>.`,
       },
     ],
   },
@@ -618,6 +664,17 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           `<code class="font-mono bg-muted px-1 rounded">composer.json</code>.`,
       },
       {
+        key: "composer-audit",
+        label: "composer audit",
+        lang: "bash",
+        template: () => `composer audit`,
+        note:
+          `<code class="font-mono bg-muted px-1 rounded">composer audit</code> queries the ` +
+          `<code class="font-mono bg-muted px-1 rounded">/api/security-advisories/</code> endpoint on the ` +
+          `configured repository. BatleHub proxies this request to upstream Packagist automatically — ` +
+          `no extra configuration needed once the repository is set up.`,
+      },
+      {
         key: "composer-publish",
         label: "Publish a private package (Local / Hybrid mode)",
         lang: "bash",
@@ -894,6 +951,25 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         note:
           `Place <code class="font-mono bg-muted px-1 rounded">nuget.config</code> in your project root ` +
           `or user profile (<code class="font-mono bg-muted px-1 rounded">~/.nuget/NuGet/NuGet.Config</code>).`,
+      },
+      {
+        key: "nuget-vulnerable",
+        label: "dotnet list package --vulnerable",
+        lang: "bash",
+        template: () =>
+          [
+            `# Check all packages in the solution for known vulnerabilities`,
+            `dotnet list package --vulnerable`,
+            ``,
+            `# Include transitive dependencies`,
+            `dotnet list package --vulnerable --include-transitive`,
+          ].join("\n"),
+        note:
+          `BatleHub exposes a ` +
+          `<code class="font-mono bg-muted px-1 rounded">VulnerabilitiesUrl/6.7.0</code> resource in the ` +
+          `v3 service index, so <code class="font-mono bg-muted px-1 rounded">dotnet list package --vulnerable</code> ` +
+          `discovers and queries the vulnerability catalogue automatically through the proxy. ` +
+          `No extra configuration needed.`,
       },
       {
         key: "nuget-publish",
