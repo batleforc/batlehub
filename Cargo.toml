@@ -75,7 +75,7 @@ opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic"] }
 # sqlx-mysql → rsa (RUSTSEC-2023-0071, no upstream fix available).
 # Migrations are embedded via Migration::new() + include_str! in db/postgres.rs.
 # sqlx-macros is further patched to a no-dep stub (see [patch.crates-io] below).
-sqlx = { version = "0.8", default-features = false, features = [
+sqlx = { version = "0.9", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls-aws-lc-rs",
     "postgres",
