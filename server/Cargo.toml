@@ -19,7 +19,7 @@ sbom = ["batlehub-adapters/sbom"]
 jemalloc = ["tikv-jemallocator"]
 
 [dependencies]
-tikv-jemallocator = { version = "0.6", optional = true }
+tikv-jemallocator = { version = "0.7", optional = true }
 batlehub-core = { path = "../crates/core" }
 batlehub-config = { path = "../crates/config" }
 batlehub-adapters = { path = "../crates/adapters" }

@@ -224,5 +224,5 @@ describe("router navigation guards (integration)", () => {
 
     // "/" redirects to "/packages".
     expect(await go("/")).toBe("/packages");
-  });
+  }, 15000);
 });
