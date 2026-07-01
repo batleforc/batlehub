@@ -242,8 +242,9 @@ impl EvictionService {
             let (batch, new_total) = self.evict_lru_batch(candidates, total, cap).await;
             count += batch;
             total = new_total;
-            // If we didn't reduce below cap and ran out of candidates, stop.
-            if total > cap {
+            // A batch that evicted nothing (e.g. every delete failed) makes no
+            // progress; stop rather than re-fetching the same candidates forever.
+            if batch == 0 {
                 break;
             }
         }

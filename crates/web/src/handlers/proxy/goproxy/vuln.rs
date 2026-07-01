@@ -202,8 +202,6 @@ async fn forward_get(client: &reqwest::Client, url: &str) -> Result<HttpResponse
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn id_validation_accepts_valid_ids() {
         let valid = [

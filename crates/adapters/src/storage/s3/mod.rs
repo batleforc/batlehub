@@ -3,8 +3,8 @@ pub mod backend;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::{config::Builder as S3ConfigBuilder, Client};
 
-use batlehub_config::schema::S3StorageConfig;
 use batlehub_core::error::CoreError;
+use batlehub_core::ports::S3StorageConfig;
 
 pub struct S3StorageBackend {
     pub(super) client: Client,

@@ -8,7 +8,7 @@ use jsonwebtoken::{decode, decode_header, DecodingKey, Validation};
 use serde::Deserialize;
 use tokio::sync::RwLock;
 
-use batlehub_config::schema::OidcAuthConfig;
+use batlehub_core::ports::OidcAuthConfig;
 use batlehub_core::{
     entities::{Identity, Role},
     error::CoreError,
@@ -845,7 +845,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
             .create_async()
             .await;
 
-        use batlehub_config::schema::OidcAuthConfig;
+        use batlehub_core::ports::OidcAuthConfig;
         let cfg = OidcAuthConfig {
             name: "test".to_owned(),
             issuer_url: base.clone(),
@@ -886,7 +886,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
             .create_async()
             .await;
 
-        use batlehub_config::schema::OidcAuthConfig;
+        use batlehub_core::ports::OidcAuthConfig;
         let cfg = OidcAuthConfig {
             name: "oidc".to_owned(),
             issuer_url: base.clone(),
@@ -939,7 +939,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
             .create_async()
             .await;
 
-        use batlehub_config::schema::OidcAuthConfig;
+        use batlehub_core::ports::OidcAuthConfig;
         let cfg = OidcAuthConfig {
             name: "oidc".to_owned(),
             issuer_url: base.clone(),
@@ -990,7 +990,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
             .create_async()
             .await;
 
-        use batlehub_config::schema::OidcAuthConfig;
+        use batlehub_core::ports::OidcAuthConfig;
         let cfg = OidcAuthConfig {
             name: "oidc".to_owned(),
             issuer_url: base,

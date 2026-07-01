@@ -73,8 +73,8 @@ pub async fn explore_packages(
             return Ok(web::Json(ExplorePackageListResponse {
                 items: vec![],
                 total: 0,
-                page: query.page,
-                per_page: query.per_page,
+                page: query.page.min(10_000),
+                per_page: query.per_page.clamp(1, 100),
                 upstream_unavailable: false,
             }));
         }
@@ -92,13 +92,21 @@ pub async fn explore_packages(
         _ => ExploreSortBy::Downloads,
     };
 
+    // Clamp caller-supplied pagination: `per_page=0` would make `LIMIT 0` return
+    // zero rows while the count query still reports a nonzero total, and would
+    // also collapse `filter`'s cache key onto `count_filter`'s (both would be
+    // limit=0,offset=0). `page` is capped to keep `page * per_page` from
+    // overflowing `u64`.
+    let per_page = query.per_page.clamp(1, 100);
+    let page = query.page.min(10_000);
+
     let filter = ExploreFilter {
         registry: query.registry.clone(),
         registries: registries.clone(),
         name_contains: query.name.clone(),
         sort_by: sort_by.clone(),
-        limit: query.per_page,
-        offset: query.page * query.per_page,
+        limit: per_page,
+        offset: page * per_page,
     };
     let count_filter = ExploreFilter {
         registry: query.registry.clone(),
@@ -135,8 +143,8 @@ pub async fn explore_packages(
     Ok(web::Json(ExplorePackageListResponse {
         total: total as usize,
         items,
-        page: query.page,
-        per_page: query.per_page,
+        page,
+        per_page,
         upstream_unavailable: pkg_unavailable || count_unavailable,
     }))
 }

@@ -208,12 +208,21 @@ impl WarmingService {
     /// If `package` contains an `@version` suffix (e.g. `"lodash@4.17.21"`), only
     /// that exact version is warmed regardless of `self.latest_n`. Otherwise the
     /// latest `self.latest_n` versions are fetched.
+    ///
+    /// Scoped npm names (`"@scope/name"` or `"@scope/name@version"`) start with a
+    /// leading `@` that is part of the name, not a version separator, so it is
+    /// skipped before searching for the real `@version` split point.
     pub async fn warm_package(&self, package: &str) -> WarmingReport {
         if self.concurrency == 0 {
             return WarmingReport::default();
         }
 
-        let (name, pinned_version) = if let Some((n, v)) = package.split_once('@') {
+        let (name, pinned_version) = if let Some(rest) = package.strip_prefix('@') {
+            match rest.find('@') {
+                Some(pos) => (&package[..pos + 1], Some(package[pos + 2..].to_owned())),
+                None => (package, None),
+            }
+        } else if let Some((n, v)) = package.split_once('@') {
             (n, Some(v.to_owned()))
         } else {
             (package, None)
@@ -714,6 +723,38 @@ mod tests {
         assert_eq!(report.skipped, 0);
         assert_eq!(report.errors, 0);
         let key = "artifact:test-reg/mylib:1.0.0";
+        assert!(storage.exists(key).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn warm_package_pinned_scoped_npm_name() {
+        let storage = StubStorage::new();
+        let svc = active_svc(StubClient::with_versions(vec!["1.0.0"]), storage.clone());
+        let report = svc.warm_package("@babel/core@1.0.0").await;
+        assert_eq!(report.warmed, 1);
+        assert_eq!(report.skipped, 0);
+        assert_eq!(report.errors, 0);
+        let key = "artifact:test-reg/@babel/core:1.0.0";
+        assert!(storage.exists(key).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn warm_package_unpinned_scoped_npm_name() {
+        let storage = StubStorage::new();
+        let svc = WarmingService {
+            client: StubClient::with_versions(vec!["1.0.0"]),
+            storage: storage.clone(),
+            artifact_meta: Arc::new(NoopMeta),
+            registry_name: "test-reg".into(),
+            latest_n: 1,
+            concurrency: 4,
+            coordinator: Arc::new(crate::ports::NoopWarmCoordinator),
+        };
+        let report = svc.warm_package("@babel/core").await;
+        assert_eq!(report.warmed, 1);
+        assert_eq!(report.skipped, 0);
+        assert_eq!(report.errors, 0);
+        let key = "artifact:test-reg/@babel/core:1.0.0";
         assert!(storage.exists(key).await.unwrap());
     }
 

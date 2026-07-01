@@ -118,8 +118,38 @@ fn interactive_init() -> Result<()> {
 }
 
 fn mask_token(t: &str) -> String {
-    if t.len() <= 8 {
+    let chars: Vec<char> = t.chars().collect();
+    if chars.len() <= 8 {
         return "****".to_string();
     }
-    format!("{}…{}", &t[..4], &t[t.len() - 4..])
+    let first: String = chars[..4].iter().collect();
+    let last: String = chars[chars.len() - 4..].iter().collect();
+    format!("{first}…{last}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mask_token_short_token_returns_stars() {
+        assert_eq!(mask_token("short"), "****");
+        assert_eq!(mask_token("exactly8"), "****");
+    }
+
+    #[test]
+    fn mask_token_long_ascii_token_shows_first_and_last_four() {
+        assert_eq!(mask_token("abcdefghijklmnop"), "abcd…mnop");
+    }
+
+    #[test]
+    fn mask_token_does_not_panic_on_multibyte_chars_near_boundary() {
+        // A multi-byte character sitting right at the 4-byte offset from
+        // either end used to panic with byte-index slicing; char-based
+        // slicing must handle it cleanly instead.
+        let token = "€€€€abcdefgh€€€€";
+        let masked = mask_token(token);
+        assert!(masked.starts_with('€'));
+        assert!(masked.ends_with('€'));
+    }
 }

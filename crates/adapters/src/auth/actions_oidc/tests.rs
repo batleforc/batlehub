@@ -119,7 +119,7 @@ fn template_provider_name_slash_replaced() {
 
 #[test]
 fn glob_matches_wildcard() {
-    let c = batlehub_config::schema::Condition {
+    let c = batlehub_core::ports::Condition {
         claim: "repository".to_owned(),
         pattern: "myorg/*".to_owned(),
         match_type: ConditionMatchType::Auto,
@@ -133,7 +133,7 @@ fn glob_matches_wildcard() {
 
 #[test]
 fn regex_matches_tag_pattern() {
-    let c = batlehub_config::schema::Condition {
+    let c = batlehub_core::ports::Condition {
         claim: "ref".to_owned(),
         pattern: "^refs/tags/v[0-9]+".to_owned(),
         match_type: ConditionMatchType::Auto,
@@ -153,7 +153,7 @@ fn auto_detect_regex_on_caret() {
 
 #[test]
 fn absent_claim_does_not_match() {
-    let c = batlehub_config::schema::Condition {
+    let c = batlehub_core::ports::Condition {
         claim: "missing".to_owned(),
         pattern: "something".to_owned(),
         match_type: ConditionMatchType::Glob,
@@ -165,7 +165,7 @@ fn absent_claim_does_not_match() {
 
 #[test]
 fn explicit_glob_with_regex_chars() {
-    let c = batlehub_config::schema::Condition {
+    let c = batlehub_core::ports::Condition {
         claim: "ref".to_owned(),
         pattern: "refs/heads/main".to_owned(),
         match_type: ConditionMatchType::Glob,
@@ -195,13 +195,13 @@ fn make_rule(
 
 #[test]
 fn rule_all_requires_all_conditions() {
-    let cond1 = CompiledCondition::compile(&batlehub_config::schema::Condition {
+    let cond1 = CompiledCondition::compile(&batlehub_core::ports::Condition {
         claim: "repository_owner".to_owned(),
         pattern: "myorg".to_owned(),
         match_type: ConditionMatchType::Glob,
     })
     .unwrap();
-    let cond2 = CompiledCondition::compile(&batlehub_config::schema::Condition {
+    let cond2 = CompiledCondition::compile(&batlehub_core::ports::Condition {
         claim: "ref".to_owned(),
         pattern: "refs/heads/main".to_owned(),
         match_type: ConditionMatchType::Glob,
@@ -224,13 +224,13 @@ fn rule_all_requires_all_conditions() {
 
 #[test]
 fn rule_any_requires_one_condition() {
-    let cond1 = CompiledCondition::compile(&batlehub_config::schema::Condition {
+    let cond1 = CompiledCondition::compile(&batlehub_core::ports::Condition {
         claim: "ref_type".to_owned(),
         pattern: "branch".to_owned(),
         match_type: ConditionMatchType::Glob,
     })
     .unwrap();
-    let cond2 = CompiledCondition::compile(&batlehub_config::schema::Condition {
+    let cond2 = CompiledCondition::compile(&batlehub_core::ports::Condition {
         claim: "ref_type".to_owned(),
         pattern: "tag".to_owned(),
         match_type: ConditionMatchType::Glob,
@@ -343,7 +343,7 @@ async fn valid_jwt_no_rules_returns_anonymous_empty_groups() {
 
 #[tokio::test]
 async fn matching_rule_grants_group_and_role() {
-    let cond = CompiledCondition::compile(&batlehub_config::schema::Condition {
+    let cond = CompiledCondition::compile(&batlehub_core::ports::Condition {
         claim: "repository_owner".to_owned(),
         pattern: "myorg".to_owned(),
         match_type: ConditionMatchType::Glob,
@@ -369,13 +369,13 @@ async fn matching_rule_grants_group_and_role() {
 
 #[tokio::test]
 async fn two_matching_rules_union_groups_max_role() {
-    let cond1 = CompiledCondition::compile(&batlehub_config::schema::Condition {
+    let cond1 = CompiledCondition::compile(&batlehub_core::ports::Condition {
         claim: "repository_owner".to_owned(),
         pattern: "myorg".to_owned(),
         match_type: ConditionMatchType::Glob,
     })
     .unwrap();
-    let cond2 = CompiledCondition::compile(&batlehub_config::schema::Condition {
+    let cond2 = CompiledCondition::compile(&batlehub_core::ports::Condition {
         claim: "repository_owner".to_owned(),
         pattern: "myorg".to_owned(),
         match_type: ConditionMatchType::Glob,
@@ -433,7 +433,7 @@ async fn template_rule_renders_dynamic_group() {
 
 #[tokio::test]
 async fn non_matching_rule_contributes_nothing() {
-    let cond = CompiledCondition::compile(&batlehub_config::schema::Condition {
+    let cond = CompiledCondition::compile(&batlehub_core::ports::Condition {
         claim: "repository_owner".to_owned(),
         pattern: "other-org".to_owned(),
         match_type: ConditionMatchType::Glob,
@@ -612,12 +612,12 @@ async fn rule_with_no_role_contributes_group_only() {
 
 #[test]
 fn compiled_rule_compile_error_neither_group_nor_template() {
-    let rule_cfg = batlehub_config::schema::ActionsGroupRule {
+    let rule_cfg = batlehub_core::ports::ActionsGroupRule {
         group: None,
         group_template: None,
         role: None,
         conditions: vec![],
-        match_mode: batlehub_config::schema::RuleMatch::All,
+        match_mode: batlehub_core::ports::RuleMatch::All,
     };
     assert!(CompiledRule::compile(&rule_cfg).is_err());
 }

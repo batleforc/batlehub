@@ -56,6 +56,14 @@ impl RateLimitStore for InMemoryRateLimitStore {
             .inner
             .lock()
             .map_err(|_| CoreError::Cache("rate_limit lock poisoned".into()))?;
+
+        // Opportunistic eviction: when the map exceeds 10 000 entries, drop all
+        // entries from windows older than 2 periods to bound memory growth.
+        if map.len() > 10_000 {
+            let cutoff = window_start.saturating_sub(ws * 2);
+            map.retain(|_, e| e.window_start >= cutoff);
+        }
+
         let entry = map.entry(map_key).or_insert(WindowEntry {
             window_start,
             count: 0,
@@ -174,6 +182,27 @@ mod tests {
         assert_eq!(
             c3600, 1,
             "different window_secs must give independent counters"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_entries_evicted_once_map_grows_past_10_000() {
+        let store = InMemoryRateLimitStore::new();
+        // Seed more than 10_000 entries, all in a long-expired window, so a
+        // subsequent increment's opportunistic eviction has something to drop.
+        for i in 0..10_001 {
+            store.force_old_window(&format!("stale-{i}"), 60, 0, 1);
+        }
+        assert_eq!(store.inner.lock().unwrap().len(), 10_001);
+
+        // This increment pushes the map over the 10_000 threshold, triggering
+        // eviction of the long-expired entries before the new one is inserted.
+        store.increment("fresh", 60).await.unwrap();
+
+        let remaining = store.inner.lock().unwrap().len();
+        assert!(
+            remaining < 10_001,
+            "expected stale entries to be evicted, but map still has {remaining} entries"
         );
     }
 

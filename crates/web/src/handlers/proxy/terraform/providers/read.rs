@@ -1,8 +1,9 @@
 use super::{
     append_signature_headers, base_url_from_req, collect_storage_stream, get, proxy_stream,
-    require_registry_type, terraform_versions_response, tf_provider_binary_storage_key, web,
-    AppError, Arc, AuthIdentity, HttpRequest, HttpResponse, LocalRegistryService, PackageId,
-    ProxyService, RegistryMap, RegistryMode, RegistryModeMap, Responder, TerraformPlatform,
+    require_local_mode, require_registry_type, terraform_versions_response,
+    tf_provider_binary_storage_key, web, AppError, Arc, AuthIdentity, HttpRequest, HttpResponse,
+    LocalRegistryService, PackageId, ProxyService, RegistryMap, RegistryMode, RegistryModeMap,
+    Responder, TerraformPlatform,
 };
 
 /// List available versions for a Terraform provider.
@@ -169,9 +170,11 @@ pub async fn tf_provider_artifact(
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, ptype, version, os, arch) = path.into_inner();
     require_registry_type(&registry, "terraform", &map)?;
+    require_local_mode(&registry, &mode_map)?;
     // Edge chokepoint: this handler builds a storage key directly from the path
     // components, so reject any traversal attempt with a clean 400 first.
     for (kind, value) in [

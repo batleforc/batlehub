@@ -1,5 +1,10 @@
 use serde::Deserialize;
 
+// `S3StorageConfig` lives in `batlehub_core::ports` so the S3 storage adapter
+// in `adapters` doesn't need a dependency on this crate. Re-exported here so
+// existing `batlehub_config::schema::S3StorageConfig` import paths keep working.
+pub use batlehub_core::ports::S3StorageConfig;
+
 // ── Storage ───────────────────────────────────────────────────────────────────
 
 /// Accepts both the legacy single-backend form and the new multi-backend form.
@@ -61,14 +66,4 @@ pub enum StorageBackendConfig {
 #[derive(Debug, Deserialize)]
 pub struct FilesystemStorageConfig {
     pub path: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct S3StorageConfig {
-    pub bucket: String,
-    pub region: String,
-    pub prefix: Option<String>,
-    pub endpoint_url: Option<String>,
-    /// Use path-style URLs (required for RustFS, MinIO, and other S3-compatible stores).
-    pub force_path_style: Option<bool>,
 }

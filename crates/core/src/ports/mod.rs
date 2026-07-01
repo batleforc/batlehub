@@ -1,5 +1,6 @@
 pub mod artifact_meta;
 pub mod auth;
+pub mod auth_config;
 pub mod banner;
 pub mod beta_channel;
 pub mod cache_store;
@@ -21,6 +22,10 @@ pub mod warm_coordinator;
 
 pub use artifact_meta::*;
 pub use auth::*;
+pub use auth_config::{
+    ActionsGroupRule, ActionsOidcAuthConfig, Condition, ConditionMatchType, KubernetesAuthConfig,
+    OidcAuthConfig, RuleMatch,
+};
 pub use banner::BannerPort;
 pub use beta_channel::{BetaChannelEntry, BetaChannelPort};
 pub use cache_store::*;
@@ -29,7 +34,7 @@ pub use local_registry::{BulkResult, LocalRegistryBackend};
 pub use notification::NotificationPort;
 pub use ownership::{OwnerEntry, OwnershipPort};
 pub use package_repo::*;
-pub use quota::{QuotaRepository, QuotaUsage};
+pub use quota::{QuotaOutcome, QuotaRepository, QuotaUsage};
 pub use rate_limit_store::RateLimitStore;
 pub use registry::{ArtifactStream, FetchedArtifact, RegistryClient, UpstreamPackage};
 pub use sbom::{SbomDependency, SbomExtractor, SbomRepository, UpstreamSbomFetcher};

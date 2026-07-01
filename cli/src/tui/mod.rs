@@ -17,6 +17,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::api::{package::PackageQuery, BatleHubClient};
+use tui_input::Input;
 use uuid::Uuid;
 
 use admin_stats::AdminStatsWidget;
@@ -274,7 +275,11 @@ async fn handle_package_list(app: &mut App, key: event::KeyEvent, registry: Stri
             }
         }
         KeyCode::Char('/') => {
-            app.package_list.toggle_search();
+            if app.package_list.search_active {
+                app.package_list.handle_search_key(key);
+            } else {
+                app.package_list.toggle_search();
+            }
         }
         KeyCode::Char('?') => {
             app.prev_screen = Some(Screen::PackageList { registry });
@@ -370,6 +375,8 @@ async fn handle_login(app: &mut App, key: event::KeyEvent) {
     if key.code == KeyCode::Char('2') {
         app.login.method = login::LoginMethod::Oidc;
         app.login.status = None;
+        app.login.token_input = Input::default();
+        app.login.path_input = Input::default();
         if app.login.oidc_url.is_none() {
             let csrf = Uuid::new_v4().to_string();
             match crate::api::auth::get_oidc_login_url(&app.client.base_url, &csrf, None).await {
@@ -470,6 +477,57 @@ mod tests {
 
         app.go_back();
         assert_eq!(app.screen, Screen::RegistryList);
+    }
+
+    #[tokio::test]
+    async fn slash_key_opens_search_when_inactive() {
+        let mut app = make_app();
+        assert!(!app.package_list.search_active);
+
+        handle_package_list(
+            &mut app,
+            event::KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+            "npm".to_owned(),
+        )
+        .await;
+
+        assert!(app.package_list.search_active);
+    }
+
+    #[tokio::test]
+    async fn slash_key_inserts_literal_slash_while_search_is_active() {
+        let mut app = make_app();
+        app.package_list.toggle_search();
+        assert!(app.package_list.search_active);
+
+        handle_package_list(
+            &mut app,
+            event::KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+            "npm".to_owned(),
+        )
+        .await;
+
+        // Must still be searching, with the '/' appended to the query rather
+        // than the search box being toggled closed.
+        assert!(app.package_list.search_active);
+        assert_eq!(app.package_list.search_input.value(), "/");
+    }
+
+    #[tokio::test]
+    async fn switching_to_oidc_tab_clears_leftover_input() {
+        let mut app = make_app();
+        app.login.token_input =
+            tui_input::Input::default().with_value("leftover-static-token".to_owned());
+
+        handle_login(
+            &mut app,
+            event::KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.login.method, login::LoginMethod::Oidc);
+        assert_eq!(app.login.token_input.value(), "");
+        assert_eq!(app.login.path_input.value(), "");
     }
 
     #[test]

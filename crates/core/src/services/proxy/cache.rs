@@ -621,7 +621,17 @@ impl ProxyService {
             // with anything to check. Nothing is stored, so a blocking verdict just
             // returns — there is no cached entry to evict.
             if let Some(expected) = metadata.checksum.as_deref() {
-                let outcome = verify(expected, &data);
+                // `verify` hashes the whole buffer synchronously; offload it to a
+                // blocking task so a large artifact's SHA computation doesn't stall
+                // this Tokio worker's other in-flight requests.
+                let expected_owned = expected.to_owned();
+                let data_for_hash = data.clone();
+                let outcome =
+                    tokio::task::spawn_blocking(move || verify(&expected_owned, &data_for_hash))
+                        .await
+                        .map_err(|e| {
+                            CoreError::Other(anyhow::anyhow!("integrity check task panicked: {e}"))
+                        })?;
                 if let Some(reason) = classify_integrity_outcome(
                     &outcome,
                     integrity.block_on_mismatch,

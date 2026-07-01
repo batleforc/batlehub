@@ -9,7 +9,9 @@ use super::*;
 use crate::{
     entities::{Identity, Role},
     error::CoreError,
-    ports::{QuotaRepository, QuotaUsage, StorageBackend, StorageMeta, StoredArtifact},
+    ports::{
+        QuotaOutcome, QuotaRepository, QuotaUsage, StorageBackend, StorageMeta, StoredArtifact,
+    },
     services::hot_config::{new_hot_lock, HotConfig},
     services::{IntegrityPolicy, QuotaEnforcement, RegistryQuotaConfig, SigningConfig},
 };
@@ -1662,6 +1664,33 @@ impl QuotaRepository for MockQuotaRepo {
         g.0 += bytes;
         g.1 += 1;
         Ok(())
+    }
+
+    async fn try_record_publish(
+        &self,
+        _: &str,
+        _: &str,
+        bytes: u64,
+        max_bytes: Option<u64>,
+        max_packages: Option<u32>,
+    ) -> Result<QuotaOutcome, CoreError> {
+        let mut g = self.usage.lock().unwrap();
+        let new_bytes = g.0 + bytes;
+        let new_packages = g.1 + 1;
+        let exceeded = max_bytes.is_some_and(|max| new_bytes > max)
+            || max_packages.is_some_and(|max| new_packages > max);
+        if exceeded {
+            return Ok(QuotaOutcome::Exceeded {
+                bytes_used: new_bytes,
+                packages_used: new_packages,
+            });
+        }
+        g.0 = new_bytes;
+        g.1 = new_packages;
+        Ok(QuotaOutcome::Recorded {
+            bytes_used: new_bytes,
+            packages_used: new_packages,
+        })
     }
 
     async fn revoke_publish(&self, _: &str, _: &str, bytes: u64) -> Result<(), CoreError> {

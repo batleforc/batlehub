@@ -5292,6 +5292,17 @@ async fn cargo_publish_user_can_publish() {
 }
 
 #[actix_web::test]
+async fn cargo_publish_traversal_version_returns_400() {
+    let app = make_local_registry_app(RegistryMode::Local).await;
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(make_publish_payload("my-crate", "../../etc/x"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 400);
+}
+
+#[actix_web::test]
 async fn cargo_publish_duplicate_version_returns_409() {
     let app = make_local_registry_app(RegistryMode::Local).await;
 
@@ -5795,6 +5806,215 @@ async fn npm_publish_traversal_name_returns_400() {
         .uri("/proxy/local-npm/evil%2F..")
         .insert_header(("Authorization", bearer(USER_TOKEN)))
         .set_json(make_npm_publish_payload("evil/..", "1.0.0"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 400);
+}
+
+// ── pypi publish traversal ─────────────────────────────────────────────────────
+
+async fn make_local_pypi_app(
+    mode: RegistryMode,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    build_local_registry_app(
+        local_registry_app_parts("local-pypi", "pypi", mode, None),
+        batlehub_web::CargoIndexMap::default(),
+        None,
+    )
+    .await
+}
+
+/// Build a `twine upload`-style `multipart/form-data` body for `pypi_publish`.
+fn make_pypi_publish_body(name: &str, version: &str) -> (Vec<u8>, String) {
+    let boundary = "pypiboundary";
+    let mut body = Vec::new();
+    for (field_name, value) in [
+        (":action", "file_upload"),
+        ("name", name),
+        ("version", version),
+    ] {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{field_name}\"\r\n\r\n{value}\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"content\"; filename=\"{name}-{version}.tar.gz\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(b"fake-pypi-sdist-content");
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    (body, format!("multipart/form-data; boundary={boundary}"))
+}
+
+#[actix_web::test]
+async fn pypi_publish_traversal_version_returns_400() {
+    let app = make_local_pypi_app(RegistryMode::Local).await;
+    let (body, content_type) = make_pypi_publish_body("my-pkg", "../../etc/x");
+    let req = TestRequest::post()
+        .uri("/proxy/local-pypi/legacy/")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("Content-Type", content_type))
+        .set_payload(body)
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 400);
+}
+
+// ── rubygems publish traversal ─────────────────────────────────────────────────
+
+/// Minimal RubyGems `.gem` (tar containing a gzip'd YAML `metadata.gz` entry).
+fn make_gem(name: &str, version: &str) -> Vec<u8> {
+    use flate2::{write::GzEncoder, Compression};
+    use std::io::Write as _;
+
+    let yaml = format!("name: {name}\nversion:\n  version: '{version}'\nplatform: ruby\n");
+    let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+    gz.write_all(yaml.as_bytes()).unwrap();
+    let metadata_gz = gz.finish().unwrap();
+
+    let mut builder = tar::Builder::new(Vec::new());
+    let mut header = tar::Header::new_gnu();
+    header.set_size(metadata_gz.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    builder
+        .append_data(&mut header, "metadata.gz", metadata_gz.as_slice())
+        .unwrap();
+    builder.into_inner().unwrap()
+}
+
+#[actix_web::test]
+async fn rubygems_publish_traversal_version_returns_400() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_upload_app("local-gems", "rubygems", ns_store).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-gems/api/v1/gems")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .insert_header(("Content-Type", "application/octet-stream"))
+        .set_payload(make_gem("my-gem", "../../etc/x"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 400);
+}
+
+// ── composer publish traversal ─────────────────────────────────────────────────
+// (uses the `make_composer_zip` helper defined further down, near the other
+// composer tests)
+
+#[actix_web::test]
+async fn composer_publish_traversal_version_returns_400() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_upload_app("local-composer", "composer", ns_store).await;
+
+    // No `?version=` override, so the traversal string comes from
+    // composer.json's own `version` field (the query-param override has its
+    // own, separate character-allowlist validation).
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .set_payload(make_composer_zip("acme/widget", "../../etc/x"))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 400);
+}
+
+// ── openvsx publish traversal ───────────────────────────────────────────────────
+
+/// Minimal VSIX: a ZIP with a `[Content_Types].xml` entry so the handler
+/// recognises it as a valid archive. Name and version come from the URL path.
+fn make_minimal_vsix() -> Vec<u8> {
+    use std::io::Write as _;
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut zw = zip::ZipWriter::new(&mut buf);
+        let opts = zip::write::SimpleFileOptions::default();
+        zw.start_file("[Content_Types].xml", opts).unwrap();
+        zw.write_all(b"<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"></Types>").unwrap();
+        zw.finish().unwrap();
+    }
+    buf.into_inner()
+}
+
+#[actix_web::test]
+async fn openvsx_publish_traversal_version_returns_400() {
+    let ns_store = InMemoryTeamNamespaceStore::new();
+    let app = make_ns_upload_app("local-vsx", "openvsx", ns_store).await;
+
+    // `version` is its own routed path segment for vsix_publish, so a literal
+    // ".." there must be rejected by the deep `local_svc.publish` funnel.
+    let req = TestRequest::put()
+        .uri("/proxy/local-vsx/acme.widget/../vsix")
+        .insert_header(("Authorization", bearer(NS_PLAIN_USER_TOKEN)))
+        .set_payload(make_minimal_vsix())
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 400);
+}
+
+// ── conda publish traversal ─────────────────────────────────────────────────────
+
+/// Minimal conda `.tar.bz2` package: a bzip2-compressed tar containing
+/// `info/index.json`.
+fn make_conda_tar_bz2(name: &str, version: &str) -> Vec<u8> {
+    use bzip2::write::BzEncoder;
+    use bzip2::Compression;
+    use std::io::Write as _;
+
+    let index_json = serde_json::json!({
+        "name": name,
+        "version": version,
+        "build": "0",
+        "build_number": 0,
+        "depends": [],
+        "subdir": "linux-64",
+    });
+    let index_bytes = serde_json::to_vec(&index_json).unwrap();
+
+    let mut tar_bytes = Vec::new();
+    {
+        let mut builder = tar::Builder::new(&mut tar_bytes);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(index_bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "info/index.json", index_bytes.as_slice())
+            .unwrap();
+        builder.finish().unwrap();
+    }
+
+    let mut encoder = BzEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(&tar_bytes).unwrap();
+    encoder.finish().unwrap()
+}
+
+async fn make_local_conda_app(
+    mode: RegistryMode,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    build_local_registry_app(
+        local_registry_app_parts("local-conda", "conda", mode, None),
+        batlehub_web::CargoIndexMap::default(),
+        None,
+    )
+    .await
+}
+
+#[actix_web::test]
+async fn conda_publish_traversal_version_returns_400() {
+    let app = make_local_conda_app(RegistryMode::Local).await;
+    let req = TestRequest::post()
+        .uri("/proxy/local-conda/linux-64/")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(make_conda_tar_bz2("my-pkg", "../../etc/x"))
         .to_request();
     assert_eq!(call_service(&app, req).await.status(), 400);
 }
@@ -6533,6 +6753,46 @@ async fn maven_put_pom_creates_version() {
 }
 
 #[actix_web::test]
+async fn maven_put_pom_version_mismatch_returns_400() {
+    let app = make_local_maven_app(RegistryMode::Local).await;
+
+    // URL path says 1.0.0, POM body declares 1.0.1 — must be rejected rather
+    // than silently publishing under whichever version the body claims.
+    let req = TestRequest::put()
+        .uri("/proxy/local-maven/maven2/com/example/mylib/1.0.0/mylib-1.0.0.pom")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("Content-Type", "application/xml"))
+        .set_payload(SAMPLE_POM.replace("<version>1.0.0</version>", "<version>1.0.1</version>"))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 400);
+
+    // Nothing must have been published under either version.
+    let req = TestRequest::get()
+        .uri("/proxy/local-maven/maven2/com/example/mylib/maven-metadata.xml")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn maven_publish_traversal_version_returns_400() {
+    let app = make_local_maven_app(RegistryMode::Local).await;
+
+    // A lone ".." lands as the version segment (2nd-from-last) — must be
+    // rejected before it reaches the storage key, per
+    // `parse_maven_path_traversal_version_rejected` (unit test) exercised here
+    // end-to-end over HTTP.
+    let req = TestRequest::put()
+        .uri("/proxy/local-maven/maven2/com/example/mylib/../mylib-1.0.0.jar")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(b"fake-jar-bytes".as_slice())
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 400);
+}
+
+#[actix_web::test]
 async fn maven_put_jar_before_pom_is_accepted() {
     let app = make_local_maven_app(RegistryMode::Local).await;
 
@@ -6678,6 +6938,126 @@ async fn make_local_terraform_app(
         mode_map,
     };
     build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await
+}
+
+/// Like `make_local_terraform_app`, but also returns the `RegistryModeMap` handle
+/// so a test can flip the registry's mode after publishing (simulating a
+/// hot-reload) to confirm mode-gated endpoints re-check the *current* mode.
+async fn make_local_terraform_app_with_mode_map(
+    mode: RegistryMode,
+) -> (
+    impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+    RegistryModeMap,
+) {
+    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
+    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
+        "local-tf".to_owned(),
+        Arc::new(rbac_policy(repo_dyn.clone())),
+    )]
+    .into();
+
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        hot: new_hot_lock(HotConfig {
+            registries,
+            policies,
+            ..Default::default()
+        }),
+        storage,
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let mode_map = RegistryModeMap::default();
+    mode_map.insert("local-tf".to_owned(), mode);
+
+    let parts = LocalRegistryAppParts {
+        proxy_svc,
+        admin_svc,
+        token_repo: Arc::new(NullTokenRepository),
+        access_config: access_config(&[], &["local-tf"]),
+        registry_map: registry_map_for(&[("local-tf", "terraform")]),
+        local_svc,
+        mode_map: mode_map.clone(),
+    };
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    (app, mode_map)
+}
+
+#[actix_web::test]
+async fn tf_provider_artifact_proxy_mode_rejects_previously_published_binary() {
+    let (app, mode_map) = make_local_terraform_app_with_mode_map(RegistryMode::Local).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/versions")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("Content-Type", "application/json"))
+        .set_payload(PROVIDER_MANIFEST)
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/5.0.0/artifact/linux/amd64")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(b"fake-zip-bytes".as_slice())
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    // Confirm it's actually retrievable while still in Local mode.
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/5.0.0/artifact/linux/amd64")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    // Simulate a hot-reload switching the registry to Proxy mode: the binary
+    // must no longer be servable from local storage.
+    mode_map.insert("local-tf".to_owned(), RegistryMode::Proxy);
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/5.0.0/artifact/linux/amd64")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 404);
+}
+
+#[actix_web::test]
+async fn tf_module_artifact_proxy_mode_rejects_previously_published_tarball() {
+    let (app, mode_map) = make_local_terraform_app_with_mode_map(RegistryMode::Local).await;
+    let payload = b"tarball-content-bytes";
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.1.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(payload.as_slice())
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 201);
+
+    // Confirm it's actually retrievable while still in Local mode.
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.1.0/artifact")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    // Simulate a hot-reload switching the registry to Proxy mode: the tarball
+    // must no longer be servable from local storage.
+    mode_map.insert("local-tf".to_owned(), RegistryMode::Proxy);
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.1.0/artifact")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 404);
 }
 
 // ── Terraform module tests ────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
-use batlehub_config::schema::{ActionsGroupRule, ConditionMatchType, RuleMatch};
 use batlehub_core::entities::Role;
+use batlehub_core::ports::{ActionsGroupRule, ConditionMatchType, RuleMatch};
 
 pub(super) enum CompiledCondition {
     Glob {
@@ -13,7 +13,7 @@ pub(super) enum CompiledCondition {
 }
 
 impl CompiledCondition {
-    pub(super) fn compile(c: &batlehub_config::schema::Condition) -> anyhow::Result<Self> {
+    pub(super) fn compile(c: &batlehub_core::ports::Condition) -> anyhow::Result<Self> {
         let is_regex = match c.match_type {
             ConditionMatchType::Regex => true,
             ConditionMatchType::Glob => false,

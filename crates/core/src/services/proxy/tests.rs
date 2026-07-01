@@ -1204,6 +1204,40 @@ impl RegistryClient for ChecksumRegistry {
     }
 }
 
+/// Like [`ChecksumRegistry`], but the fetched artifact is `Cache-Control:
+/// no-store`, so it's served via `ProxyService::serve_no_store` rather than
+/// the streaming-verifier path — exercises integrity checking on that
+/// separate code path.
+struct NoStoreChecksumRegistry {
+    checksum: Option<String>,
+    body: &'static [u8],
+}
+
+#[async_trait]
+impl RegistryClient for NoStoreChecksumRegistry {
+    fn registry_type(&self) -> &str {
+        "test"
+    }
+    async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
+        Ok(PackageMetadata {
+            id: pkg.clone(),
+            published_at: Some(Utc::now() - chrono::Duration::days(30)),
+            download_url: None,
+            checksum: self.checksum.clone(),
+            is_signed: None,
+            extra: serde_json::json!({}),
+            cache_control: None,
+        })
+    }
+    async fn fetch_artifact(&self, _pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
+        let data = Bytes::from_static(self.body);
+        Ok(FetchedArtifact {
+            stream: Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(data) })),
+            cache_control: Some("no-store".to_owned()),
+        })
+    }
+}
+
 /// Build a proxy whose single registry has the given integrity policy (when
 /// `None`, the registry has no explicit block so the default policy applies).
 /// Returns the service together with its storage so caching can be asserted.
@@ -1422,6 +1456,55 @@ async fn integrity_mismatch_warn_only_serves_and_caches() {
     );
     let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
     assert!(storage.exists(&artifact_key).await.unwrap());
+}
+
+#[tokio::test]
+async fn integrity_no_store_matching_checksum_serves() {
+    let reg = Arc::new(NoStoreChecksumRegistry {
+        checksum: Some(sha256_hex(BODY)),
+        body: BODY,
+    });
+    let policy = crate::services::IntegrityPolicy {
+        enabled: true,
+        block_on_mismatch: true,
+        require_metadata: false,
+        bypass_roles: vec![],
+        verify_on_serve: false,
+    };
+    let (svc, _storage) = proxy_with_integrity("npm", reg, Some(policy));
+
+    let resp = svc.handle(req("npm")).await.unwrap();
+    assert!(
+        matches!(resp, ProxyResponse::Stream(_)),
+        "a matching checksum on the no-store path must serve normally"
+    );
+}
+
+#[tokio::test]
+async fn integrity_no_store_mismatch_blocks() {
+    let reg = Arc::new(NoStoreChecksumRegistry {
+        checksum: Some(sha256_hex(b"some-other-bytes")),
+        body: BODY,
+    });
+    let policy = crate::services::IntegrityPolicy {
+        enabled: true,
+        block_on_mismatch: true,
+        require_metadata: false,
+        bypass_roles: vec![],
+        verify_on_serve: false,
+    };
+    let (svc, storage) = proxy_with_integrity("npm", reg, Some(policy));
+
+    let result = svc.handle(req("npm")).await;
+    assert!(
+        matches!(result, Err(CoreError::IntegrityFailure(_))),
+        "a checksum mismatch on the no-store path must block, same as the streaming path"
+    );
+    let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
+    assert!(
+        !storage.exists(&artifact_key).await.unwrap(),
+        "no-store artifacts are never written to storage regardless of outcome"
+    );
 }
 
 #[tokio::test]

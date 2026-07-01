@@ -4,7 +4,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use jsonwebtoken::{decode, decode_header, Validation};
 
-use batlehub_config::schema::ActionsOidcAuthConfig;
+use batlehub_core::ports::ActionsOidcAuthConfig;
 use batlehub_core::{
     entities::Identity,
     error::CoreError,
@@ -21,9 +21,9 @@ use jwks::{fetch_jwks, find_key, JwksCache, OidcDiscovery, JWKS_MIN_REFRESH};
 use rules::CompiledRule;
 
 #[cfg(test)]
-use batlehub_config::schema::{ConditionMatchType, RuleMatch};
-#[cfg(test)]
 use batlehub_core::entities::Role;
+#[cfg(test)]
+use batlehub_core::ports::{ConditionMatchType, RuleMatch};
 #[cfg(test)]
 use jsonwebtoken::jwk::JwkSet;
 #[cfg(test)]

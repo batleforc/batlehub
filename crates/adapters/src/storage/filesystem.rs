@@ -288,7 +288,7 @@ impl StorageBackend for FilesystemStorageBackend {
         tracing::info!(dir = %dir.display(), count, "delete_by_prefix: removing directory");
 
         match tokio::fs::remove_dir_all(&dir).await {
-            Ok(()) => Ok(count.max(1)),
+            Ok(()) => Ok(count),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
             Err(e) => {
                 tracing::error!(dir = %dir.display(), error = %e, "delete_by_prefix: remove_dir_all failed");
@@ -570,6 +570,19 @@ mod tests {
             b.exists("artifact:cargo/keep").await.unwrap(),
             "cargo artifact must survive"
         );
+    }
+
+    #[tokio::test]
+    async fn delete_by_prefix_existing_empty_dir_returns_zero() {
+        // A directory that exists (so `remove_dir_all` succeeds) but contains
+        // no `.dat` files must report 0 deletions, not the previous `count.max(1)`
+        // false positive.
+        let b = make_backend().await;
+        let dir = b.root.join("artifact__npm").join("empty-pkg");
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+
+        let deleted = b.delete_by_prefix("artifact:npm/empty-pkg").await.unwrap();
+        assert_eq!(deleted, 0);
     }
 
     #[tokio::test]

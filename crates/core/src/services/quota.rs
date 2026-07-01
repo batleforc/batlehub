@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::{
     entities::Identity,
     error::CoreError,
-    ports::{QuotaRepository, QuotaUsage},
+    ports::{QuotaOutcome, QuotaRepository, QuotaUsage},
 };
 
 /// Quota limits for a single registry, sourced from config.
@@ -103,38 +103,75 @@ impl QuotaService {
             }
         };
 
-        let usage = self.repo.get_usage(&user_id, registry).await?;
+        // In `Block` mode, pass the real limits so the repository atomically
+        // rejects the publish (rather than recording it) when it would exceed
+        // either one — this closes the check-then-record race that existed
+        // when the check and the write were two separate calls. In `Warn`
+        // mode (or when no limit is configured), pass `None` so the publish
+        // always records; the warning is computed from the returned totals.
+        let (enforce_bytes, enforce_packages) = match config.enforcement {
+            QuotaEnforcement::Block => (
+                config.max_storage_bytes_per_user,
+                config.max_packages_per_user,
+            ),
+            QuotaEnforcement::Warn => (None, None),
+        };
 
-        let new_bytes = usage.bytes_published.saturating_add(bytes);
-        let new_count = usage.packages_count.saturating_add(1);
+        let outcome = self
+            .repo
+            .try_record_publish(&user_id, registry, bytes, enforce_bytes, enforce_packages)
+            .await?;
 
-        enforce_limit(
-            new_bytes,
-            config.max_storage_bytes_per_user,
-            &config.enforcement,
-            || {
-                format!(
-                    "storage quota exceeded for registry '{registry}': \
-                 {new_bytes} bytes used, limit is {}",
-                    config.max_storage_bytes_per_user.unwrap_or(0)
-                )
-            },
-        )?;
-        enforce_limit(
-            new_count as u64,
-            config.max_packages_per_user.map(|x| x as u64),
-            &config.enforcement,
-            || {
-                format!(
-                    "package quota exceeded for registry '{registry}': \
-                 {new_count} packages, limit is {}",
-                    config.max_packages_per_user.unwrap_or(0)
-                )
-            },
-        )?;
+        let (new_bytes, new_count) = match outcome {
+            QuotaOutcome::Recorded {
+                bytes_used,
+                packages_used,
+            } => (bytes_used, packages_used),
+            QuotaOutcome::Exceeded {
+                bytes_used,
+                packages_used,
+            } => {
+                let msg = if config
+                    .max_storage_bytes_per_user
+                    .is_some_and(|max| bytes_used > max)
+                {
+                    format!(
+                        "storage quota exceeded for registry '{registry}': \
+                         {bytes_used} bytes used, limit is {}",
+                        config.max_storage_bytes_per_user.unwrap_or(0)
+                    )
+                } else {
+                    format!(
+                        "package quota exceeded for registry '{registry}': \
+                         {packages_used} packages, limit is {}",
+                        config.max_packages_per_user.unwrap_or(0)
+                    )
+                };
+                return Err(CoreError::QuotaExceeded(msg));
+            }
+        };
 
-        // Record the publish
-        self.repo.record_publish(&user_id, registry, bytes).await?;
+        // In Warn mode the publish always records even past the limit; log it
+        // server-side the same way the old check-then-write path did, since
+        // nothing rejected the request to make the operator aware otherwise.
+        if config.enforcement == QuotaEnforcement::Warn {
+            if let Some(max) = config.max_storage_bytes_per_user {
+                if new_bytes > max {
+                    tracing::warn!(
+                        "storage quota exceeded for registry '{registry}': \
+                         {new_bytes} bytes used, limit is {max}"
+                    );
+                }
+            }
+            if let Some(max) = config.max_packages_per_user {
+                if new_count > max {
+                    tracing::warn!(
+                        "package quota exceeded for registry '{registry}': \
+                         {new_count} packages, limit is {max}"
+                    );
+                }
+            }
+        }
 
         // Build QuotaCheck with updated counts
         let warning = is_warning(
@@ -185,24 +222,6 @@ impl QuotaService {
     }
 }
 
-fn enforce_limit(
-    current: u64,
-    limit: Option<u64>,
-    enforcement: &QuotaEnforcement,
-    msg: impl Fn() -> String,
-) -> Result<(), CoreError> {
-    let Some(max) = limit else { return Ok(()) };
-    if current <= max {
-        return Ok(());
-    }
-    let msg = msg();
-    if *enforcement == QuotaEnforcement::Block {
-        return Err(CoreError::QuotaExceeded(msg));
-    }
-    tracing::warn!("{msg}");
-    Ok(())
-}
-
 fn is_warning(used: u64, limit: Option<u64>, threshold: f64) -> bool {
     match limit {
         Some(max) if max > 0 => used as f64 / max as f64 >= threshold,
@@ -251,6 +270,33 @@ mod tests {
             g.0 += bytes;
             g.1 += 1;
             Ok(())
+        }
+
+        async fn try_record_publish(
+            &self,
+            _: &str,
+            _: &str,
+            bytes: u64,
+            max_bytes: Option<u64>,
+            max_packages: Option<u32>,
+        ) -> Result<QuotaOutcome, CoreError> {
+            let mut g = self.usage.lock().unwrap();
+            let new_bytes = g.0 + bytes;
+            let new_packages = g.1 + 1;
+            let exceeded = max_bytes.is_some_and(|max| new_bytes > max)
+                || max_packages.is_some_and(|max| new_packages > max);
+            if exceeded {
+                return Ok(QuotaOutcome::Exceeded {
+                    bytes_used: new_bytes,
+                    packages_used: new_packages,
+                });
+            }
+            g.0 = new_bytes;
+            g.1 = new_packages;
+            Ok(QuotaOutcome::Recorded {
+                bytes_used: new_bytes,
+                packages_used: new_packages,
+            })
         }
 
         async fn revoke_publish(&self, _: &str, _: &str, bytes: u64) -> Result<(), CoreError> {

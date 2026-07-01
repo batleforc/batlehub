@@ -3,10 +3,24 @@ use std::pin::Pin;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::{Stream, StreamExt};
+use serde::Deserialize;
 
 use crate::error::CoreError;
 
 pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, CoreError>> + Send + 'static>>;
+
+/// Config for the S3-compatible storage backend adapter. Lives in `core`
+/// (rather than `crates/config`, which re-exports it) so `adapters` doesn't
+/// need a dependency on the `config` crate.
+#[derive(Debug, Deserialize)]
+pub struct S3StorageConfig {
+    pub bucket: String,
+    pub region: String,
+    pub prefix: Option<String>,
+    pub endpoint_url: Option<String>,
+    /// Use path-style URLs (required for RustFS, MinIO, and other S3-compatible stores).
+    pub force_path_style: Option<bool>,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct StorageMeta {

@@ -78,7 +78,13 @@ impl ConfigFile {
                 .with_context(|| format!("creating config dir {}", parent.display()))?;
         }
         let content = toml::to_string_pretty(self).context("serializing config")?;
-        std::fs::write(&path, content).with_context(|| format!("writing {}", path.display()))
+        std::fs::write(&path, content).with_context(|| format!("writing {}", path.display()))?;
+
+        // This file holds live bearer/OIDC/k8s tokens; don't leave it readable
+        // by other local users under a permissive umask.
+        restrict_to_owner(&path);
+
+        Ok(())
     }
 
     pub fn resolve(
@@ -107,6 +113,18 @@ impl ConfigFile {
         }
     }
 }
+
+/// Restrict `path` to owner-only read/write (`0600`) on Unix. Best-effort: a
+/// failure here shouldn't fail the save, since the content was already
+/// written successfully.
+#[cfg(unix)]
+fn restrict_to_owner(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+}
+
+#[cfg(not(unix))]
+fn restrict_to_owner(_path: &std::path::Path) {}
 
 #[cfg(test)]
 mod tests {
@@ -200,5 +218,23 @@ mod tests {
     fn token_not_expiring_when_no_expiry_set() {
         let profile = Profile::default();
         assert!(!profile.is_token_expiring_soon());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restrict_to_owner_sets_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "content").unwrap();
+        // Start from permissive perms so the test would fail if
+        // `restrict_to_owner` were a no-op.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        restrict_to_owner(&path);
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 }

@@ -6,7 +6,7 @@ use tokio::sync::RwLock;
 
 use batlehub_core::{
     error::CoreError,
-    ports::{QuotaRepository, QuotaUsage},
+    ports::{QuotaOutcome, QuotaRepository, QuotaUsage},
 };
 
 /// In-memory [`QuotaRepository`].
@@ -59,6 +59,49 @@ impl QuotaRepository for InMemoryQuotaRepository {
         Ok(())
     }
 
+    async fn try_record_publish(
+        &self,
+        user_id: &str,
+        registry: &str,
+        bytes: u64,
+        max_bytes: Option<u64>,
+        max_packages: Option<u32>,
+    ) -> Result<QuotaOutcome, CoreError> {
+        // Hold the write guard across the whole check-then-write so a
+        // concurrent call for the same key can't observe (or clobber) an
+        // in-between state.
+        let mut map = self.data.write().await;
+        let entry = map
+            .entry((user_id.to_owned(), registry.to_owned()))
+            .or_insert_with(|| QuotaUsage {
+                user_id: user_id.to_owned(),
+                registry: registry.to_owned(),
+                bytes_published: 0,
+                packages_count: 0,
+            });
+
+        let new_bytes = entry.bytes_published.saturating_add(bytes);
+        let new_packages = entry.packages_count.saturating_add(1);
+
+        let exceeded = max_bytes.is_some_and(|max| new_bytes > max)
+            || max_packages.is_some_and(|max| new_packages > max);
+
+        if exceeded {
+            return Ok(QuotaOutcome::Exceeded {
+                bytes_used: new_bytes,
+                packages_used: new_packages,
+            });
+        }
+
+        entry.bytes_published = new_bytes;
+        entry.packages_count = new_packages;
+
+        Ok(QuotaOutcome::Recorded {
+            bytes_used: new_bytes,
+            packages_used: new_packages,
+        })
+    }
+
     async fn revoke_publish(
         &self,
         user_id: &str,
@@ -107,9 +150,79 @@ impl QuotaRepository for InMemoryQuotaRepository {
 
 #[cfg(test)]
 mod tests {
-    use batlehub_core::ports::QuotaRepository;
+    use batlehub_core::ports::{QuotaOutcome, QuotaRepository};
 
     use super::InMemoryQuotaRepository;
+
+    #[tokio::test]
+    async fn try_record_publish_records_when_under_limit() {
+        let repo = InMemoryQuotaRepository::new();
+        let outcome = repo
+            .try_record_publish("alice", "cargo", 100, Some(1000), Some(10))
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            QuotaOutcome::Recorded {
+                bytes_used: 100,
+                packages_used: 1
+            }
+        );
+        let usage = repo.get_usage("alice", "cargo").await.unwrap();
+        assert_eq!(usage.bytes_published, 100);
+        assert_eq!(usage.packages_count, 1);
+    }
+
+    #[tokio::test]
+    async fn try_record_publish_rejects_and_leaves_usage_unchanged_when_over_limit() {
+        let repo = InMemoryQuotaRepository::new();
+        repo.try_record_publish("alice", "cargo", 900, Some(1000), None)
+            .await
+            .unwrap();
+        let outcome = repo
+            .try_record_publish("alice", "cargo", 200, Some(1000), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            QuotaOutcome::Exceeded {
+                bytes_used: 1100,
+                packages_used: 2
+            }
+        );
+        // Usage must be unchanged by the rejected attempt.
+        let usage = repo.get_usage("alice", "cargo").await.unwrap();
+        assert_eq!(usage.bytes_published, 900);
+        assert_eq!(usage.packages_count, 1);
+    }
+
+    #[tokio::test]
+    async fn try_record_publish_concurrent_calls_never_exceed_limit() {
+        let repo = InMemoryQuotaRepository::new();
+        let mut tasks = Vec::new();
+        for _ in 0..20 {
+            let repo = repo.clone();
+            tasks.push(tokio::spawn(async move {
+                repo.try_record_publish("alice", "cargo", 100, Some(1000), None)
+                    .await
+                    .unwrap()
+            }));
+        }
+        let mut recorded = 0;
+        for t in tasks {
+            if matches!(t.await.unwrap(), QuotaOutcome::Recorded { .. }) {
+                recorded += 1;
+            }
+        }
+        // At most 10 of the 20 concurrent 100-byte publishes can fit under a
+        // 1000-byte cap; the race must never let more than that through.
+        assert!(
+            recorded <= 10,
+            "recorded {recorded} publishes, expected <= 10"
+        );
+        let usage = repo.get_usage("alice", "cargo").await.unwrap();
+        assert!(usage.bytes_published <= 1000);
+    }
 
     #[tokio::test]
     async fn get_usage_returns_zero_for_new_user() {

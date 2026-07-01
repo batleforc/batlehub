@@ -2,6 +2,16 @@ use serde::Deserialize;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
+// `OidcAuthConfig`, `KubernetesAuthConfig`, `ActionsOidcAuthConfig` and their
+// supporting types live in `batlehub_core::ports` so that `adapters` (which
+// constructs auth providers from them) doesn't need a dependency on this
+// crate — `config` is meant to be read only by `server` and `web`. Re-exported
+// here so existing `batlehub_config::schema::...` import paths keep working.
+pub use batlehub_core::ports::{
+    ActionsGroupRule, ActionsOidcAuthConfig, Condition, ConditionMatchType, KubernetesAuthConfig,
+    OidcAuthConfig, RuleMatch,
+};
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum AuthConfig {
@@ -10,63 +20,6 @@ pub enum AuthConfig {
     Kubernetes(KubernetesAuthConfig),
     #[serde(rename = "actions-oidc")]
     ActionsOidc(ActionsOidcAuthConfig),
-}
-
-#[derive(Debug, Deserialize, Default, Clone, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ConditionMatchType {
-    #[default]
-    Auto,
-    Glob,
-    Regex,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct Condition {
-    pub claim: String,
-    pub pattern: String,
-    #[serde(default)]
-    pub match_type: ConditionMatchType,
-}
-
-#[derive(Debug, Deserialize, Default, Clone, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum RuleMatch {
-    #[default]
-    All,
-    Any,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct ActionsGroupRule {
-    pub group: Option<String>,
-    /// Template rendered from JWT claims, e.g. `"{name}/{repository}/{ref_name}"`.
-    /// `{name}` = provider name; `{ref_name}` = branch/tag stripped of `refs/heads/`/`refs/tags/`;
-    /// any other `{key}` maps to that JWT claim value. All substituted values have `/` → `-`.
-    pub group_template: Option<String>,
-    /// Role granted when this rule matches. When absent the rule contributes groups
-    /// without affecting role elevation — useful for pure group-assignment rules.
-    #[serde(default)]
-    pub role: Option<String>,
-    #[serde(default)]
-    pub conditions: Vec<Condition>,
-    #[serde(default, rename = "match")]
-    pub match_mode: RuleMatch,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ActionsOidcAuthConfig {
-    #[serde(default = "default_actions_oidc_name")]
-    pub name: String,
-    pub issuer_url: String,
-    #[serde(default = "default_sub")]
-    pub user_id_claim: String,
-    #[serde(default)]
-    pub rules: Vec<ActionsGroupRule>,
-}
-
-fn default_actions_oidc_name() -> String {
-    "actions-oidc".to_owned()
 }
 
 #[derive(Debug, Deserialize)]
@@ -80,100 +33,4 @@ pub struct TokenEntry {
     pub value: String,
     pub role: String,
     pub user_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct OidcAuthConfig {
-    /// Unique name for this provider instance.
-    /// Used as the prefix for unmapped groups: e.g. `name = "oidc1"` → group `"oidc1:team-a"`.
-    /// Also used as `"*:team-a"` wildcard target in `[registries.rbac.groups]`.
-    /// Defaults to `"oidc"`.
-    #[serde(default = "default_oidc_name")]
-    pub name: String,
-    pub issuer_url: String,
-    pub client_id: String,
-    pub client_secret: Option<String>,
-    /// Redirect URI registered with the OIDC provider.
-    /// Required for the browser-based SSO login flow.
-    /// Example: `"https://batlehub.example.com/api/v1/auth/oidc/callback"`.
-    pub redirect_uri: Option<String>,
-    /// Base URL of the SPA frontend.  After a successful OIDC callback the
-    /// browser is redirected to `{frontend_url}/?oidc_access_token=...`.
-    /// Defaults to `""` (same origin as the backend — correct for production).
-    /// In development set this to `"http://localhost:5173"`.
-    #[serde(default)]
-    pub frontend_url: String,
-    /// OAuth2 scopes to request.  Defaults to `["openid", "profile", "email"]`.
-    #[serde(default = "default_oidc_scopes")]
-    pub scopes: Vec<String>,
-    /// JWT claim used as `user_id` (default: `"sub"`).
-    #[serde(default = "default_sub")]
-    pub user_id_claim: String,
-    /// JWT claim to inspect for role mapping (default: `"role"`).
-    /// The claim value may be a string or an array of strings; the highest
-    /// matching role in `role_mappings` wins.
-    #[serde(default = "default_role_claim")]
-    pub role_claim: String,
-    /// Maps JWT claim values → proxy role names (`"admin"`, `"user"`).
-    /// Claim values not present here default to the `anonymous` role.
-    #[serde(default)]
-    pub role_mappings: std::collections::HashMap<String, String>,
-}
-
-fn default_oidc_name() -> String {
-    "oidc".to_owned()
-}
-
-fn default_oidc_scopes() -> Vec<String> {
-    vec![
-        "openid".to_owned(),
-        "profile".to_owned(),
-        "email".to_owned(),
-    ]
-}
-
-pub(super) fn default_sub() -> String {
-    "sub".to_owned()
-}
-
-fn default_role_claim() -> String {
-    "role".to_owned()
-}
-
-#[derive(Debug, Deserialize)]
-pub struct KubernetesAuthConfig {
-    /// Unique name for this provider instance.
-    /// Used as the prefix for unmapped groups: e.g. `name = "k8s-prod"` → group `"k8s-prod:team-a"`.
-    /// Defaults to `"kubernetes"`.
-    #[serde(default = "default_kubernetes_name")]
-    pub name: String,
-    /// Kubernetes API server URL.
-    /// Defaults to `https://<KUBERNETES_SERVICE_HOST>:<KUBERNETES_SERVICE_PORT>`
-    /// (the env vars injected by Kubernetes for in-cluster use).
-    pub api_server: Option<String>,
-    /// Path to the CA certificate PEM file for the Kubernetes API server.
-    /// Defaults to `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt`.
-    pub ca_cert_path: Option<String>,
-    /// Path to the batlehub's own service account token used to authenticate
-    /// TokenReview API calls.
-    /// Defaults to `/var/run/secrets/kubernetes.io/serviceaccount/token`.
-    pub token_path: Option<String>,
-    /// Audiences passed to the TokenReview API for bound-token validation.
-    /// Defaults to `["batlehub"]` when empty.
-    #[serde(default)]
-    pub audiences: Vec<String>,
-    /// Maps Kubernetes usernames or group names to proxy roles.
-    ///
-    /// Kubernetes populates:
-    /// - username: `"system:serviceaccount:<namespace>:<name>"`
-    /// - groups:   `["system:serviceaccounts", "system:serviceaccounts:<namespace>", ...]`
-    ///
-    /// Values not listed here default to the `anonymous` role.
-    /// When a token matches multiple keys, the highest role wins.
-    #[serde(default)]
-    pub role_mappings: std::collections::HashMap<String, String>,
-}
-
-fn default_kubernetes_name() -> String {
-    "kubernetes".to_owned()
 }

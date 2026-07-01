@@ -42,6 +42,8 @@ zip = "8"
 batlehub-adapters = { path = "../adapters" }
 actix-http = "3"
 ar = "0.9"
+# Test-only: build `.tar.bz2` conda package fixtures.
+bzip2 = "0.6"
 flate2 = "1"
 # Test-only: build `.rpm` fixtures via `rpm::PackageBuilder` (the `payload` feature).
 # No `rsa` — that only arrives via `signature-pgp`, which we never enable.

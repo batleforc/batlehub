@@ -328,3 +328,68 @@ async fn restore_after_physical_blob_deleted() {
         .expect("blob must be retrievable after re-store");
     assert_eq!(collect(artifact).await, data.as_ref());
 }
+
+// A literal `%` in a prefix must be treated as a literal character, not a SQL
+// wildcard. Without escaping, `LIKE 'base-50%%'` (prefix's own `%` plus the
+// trailing wildcard the router appends) degrades to "starts with base-50",
+// matching keys that never contained the literal `%` at all.
+#[tokio::test]
+async fn stat_by_prefix_treats_percent_as_literal_not_wildcard() {
+    let Some(url) = db_url() else { return };
+    let router = single_backend_router(make_fs("pct-stat").await, pool(&url).await);
+    let base = ukey("npm", "orig");
+
+    // Contains a literal '%' right after "-50" — must match.
+    let matching_key = format!("{base}-50%-real");
+    // Starts with "-50" but the next character is '1', not '%' — must NOT
+    // match a correctly-escaped `LIKE '{base}-50%%'` (prefix `%` escaped to
+    // literal, trailing `%` as the only wildcard).
+    let decoy_key = format!("{base}-501-other");
+
+    router
+        .store(&matching_key, upayload("match"), StorageMeta::default())
+        .await
+        .unwrap();
+    router
+        .store(&decoy_key, upayload("decoy"), StorageMeta::default())
+        .await
+        .unwrap();
+
+    let prefix = format!("{base}-50%");
+    let (count, _total) = router.stat_by_prefix(&prefix).await.unwrap();
+    assert_eq!(
+        count, 1,
+        "only the key containing the literal '%' should match"
+    );
+}
+
+#[tokio::test]
+async fn delete_by_prefix_treats_percent_as_literal_not_wildcard() {
+    let Some(url) = db_url() else { return };
+    let router = single_backend_router(make_fs("pct-del").await, pool(&url).await);
+    let base = ukey("npm", "orig");
+
+    let matching_key = format!("{base}-50%-real");
+    let decoy_key = format!("{base}-501-other");
+
+    router
+        .store(&matching_key, upayload("match"), StorageMeta::default())
+        .await
+        .unwrap();
+    router
+        .store(&decoy_key, upayload("decoy"), StorageMeta::default())
+        .await
+        .unwrap();
+
+    let prefix = format!("{base}-50%");
+    let deleted = router.delete_by_prefix(&prefix).await.unwrap();
+    assert_eq!(deleted, 1, "only the literal '%' key should be deleted");
+    assert!(
+        !router.exists(&matching_key).await.unwrap(),
+        "matching key must be gone"
+    );
+    assert!(
+        router.exists(&decoy_key).await.unwrap(),
+        "decoy key must survive an escaped prefix delete"
+    );
+}

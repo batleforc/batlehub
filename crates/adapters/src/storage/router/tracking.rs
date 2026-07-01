@@ -179,14 +179,14 @@ impl StorageRouter {
         prefix: &str,
     ) -> Result<Vec<String>, CoreError> {
         use sqlx::Row;
-        let like = format!("{prefix}%");
+        let like = super::like_prefix_pattern(prefix);
         let rows = sqlx::query(
             r#"
-            SELECT logical_key AS key FROM artifact_dedup_refs WHERE logical_key LIKE $1
+            SELECT logical_key AS key FROM artifact_dedup_refs WHERE logical_key LIKE $1 ESCAPE '\'
             UNION
             SELECT storage_key AS key FROM artifact_storage
-              WHERE storage_key LIKE $1
-                AND storage_key NOT IN (SELECT logical_key FROM artifact_dedup_refs WHERE logical_key LIKE $1)
+              WHERE storage_key LIKE $1 ESCAPE '\'
+                AND storage_key NOT IN (SELECT logical_key FROM artifact_dedup_refs WHERE logical_key LIKE $1 ESCAPE '\')
             "#,
         )
         .bind(&like)

@@ -19,7 +19,6 @@ aws-sdk-s3 = {
   optional = true
 }
 base64 = "0.22"
-batlehub-config = { path = "../config" }
 batlehub-core = { path = "../core" }
 bytes.workspace = true
 chrono.workspace = true

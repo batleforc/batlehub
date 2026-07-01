@@ -628,6 +628,53 @@ async fn run_lru_size_cap_evicts_until_under_cap() {
 }
 
 #[tokio::test]
+async fn run_lru_size_cap_evicts_across_multiple_batches() {
+    // `list_lru` truncates each call to 256 candidates. Seed more than one
+    // batch's worth (300, size 1 each) and require evicting down to a cap that
+    // a single 256-item batch cannot reach on its own, to confirm the loop
+    // keeps fetching further batches instead of giving up after the first.
+    let meta = InMemArtifactMeta::arc();
+    let storage = InMemStorage::arc();
+
+    for i in 0..300u64 {
+        let key = format!("artifact:npm/p{i}:1.0");
+        meta.seed(make_meta(
+            &key,
+            "npm",
+            &format!("p{i}"),
+            "1.0",
+            1,
+            Duration::seconds(300 - i as i64),
+            Duration::seconds(300 - i as i64),
+        ));
+        storage.seed(&key, b"x");
+    }
+
+    let count = svc(
+        meta.clone(),
+        storage.clone(),
+        EvictionConfig {
+            max_size_bytes: Some(10),
+            registry: "npm".to_owned(),
+            ..Default::default()
+        },
+    )
+    .run_lru_size_cap()
+    .await
+    .unwrap();
+
+    assert_eq!(count, 290, "must evict beyond the first 256-item batch");
+    assert_eq!(
+        meta.all()
+            .iter()
+            .map(|r| r.size_bytes.unwrap_or(0))
+            .sum::<u64>(),
+        10,
+        "total remaining size must converge to the cap, not stop mid-way"
+    );
+}
+
+#[tokio::test]
 async fn run_lru_size_cap_noop_when_under_cap() {
     let meta = InMemArtifactMeta::arc();
     let storage = InMemStorage::arc();

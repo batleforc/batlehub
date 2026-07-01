@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use batlehub_config::schema::KubernetesAuthConfig;
+use batlehub_core::ports::KubernetesAuthConfig;
 use batlehub_core::{
     entities::{Identity, Role},
     error::CoreError,

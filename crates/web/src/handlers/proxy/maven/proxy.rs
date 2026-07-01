@@ -156,13 +156,18 @@ pub async fn maven_put(
                 return Ok(HttpResponse::Created().finish());
             }
 
-            // .pom file: parse XML + run three-phase publish.
+            // .pom file: parse XML + run three-phase publish. The URL path is
+            // the canonical Maven coordinate (it's what a later GET uses), so
+            // a POM that declares a different version is rejected rather than
+            // silently publishing under whatever the body claims.
             let pom = parse_pom(&bytes)?;
-            let resolved_version = if pom.version.is_empty() {
-                version.clone()
-            } else {
-                pom.version.clone()
-            };
+            if !pom.version.is_empty() && pom.version != version {
+                return Err(AppError::bad_request(format!(
+                    "POM declares version '{}' but URL path specifies '{}'",
+                    pom.version, version
+                )));
+            }
+            let resolved_version = version.clone();
 
             let checksum = hex::encode(Sha256::digest(&bytes));
             let index_metadata = serde_json::json!({

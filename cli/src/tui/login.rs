@@ -268,10 +268,14 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Option<ShouldGoBack> {
         KeyCode::Char('1') => {
             app.login.method = LoginMethod::StaticToken;
             app.login.status = None;
+            app.login.token_input = Input::default();
+            app.login.path_input = Input::default();
         }
         KeyCode::Char('3') => {
             app.login.method = LoginMethod::Kubernetes;
             app.login.status = None;
+            app.login.token_input = Input::default();
+            app.login.path_input = Input::default();
         }
         KeyCode::Enter => {
             if app.login.save_to_config() {
@@ -375,6 +379,41 @@ mod tests {
         let result = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(result.is_none());
         assert_eq!(app.login.status.as_deref(), Some("Token cannot be empty."));
+    }
+
+    #[test]
+    fn module_handle_key_switching_tabs_clears_leftover_input() {
+        let mut app = make_app();
+        // Type a static token, then switch to Kubernetes — leftover text must
+        // not still be sitting in token_input/path_input for the new tab to
+        // pick up.
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.login.token_input.value(), "x");
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.login.method, LoginMethod::Kubernetes);
+        assert_eq!(app.login.token_input.value(), "");
+        assert_eq!(app.login.path_input.value(), "");
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.login.path_input.value(), "y");
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.login.method, LoginMethod::StaticToken);
+        assert_eq!(app.login.token_input.value(), "");
+        assert_eq!(app.login.path_input.value(), "");
     }
 
     #[test]

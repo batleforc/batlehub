@@ -1,5 +1,5 @@
 use super::{
-    append_signature_headers, base_url_from_req, get, require_registry_type,
+    append_signature_headers, base_url_from_req, get, require_local_mode, require_registry_type,
     terraform_versions_response, web, AppError, Arc, AuthIdentity, HttpRequest, HttpResponse,
     LocalRegistryService, ProxyService, RegistryMap, RegistryMode, RegistryModeMap, Responder,
     UpstreamMap,
@@ -167,9 +167,11 @@ pub async fn tf_module_artifact(
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, name, provider, version) = path.into_inner();
     require_registry_type(&registry, "terraform", &map)?;
+    require_local_mode(&registry, &mode_map)?;
 
     local_svc
         .check_prerelease_access(&registry, &version, &identity)

@@ -175,9 +175,13 @@ pub async fn resolve_token(
     };
 
     if let Some(path) = k8s_path {
-        return Ok(std::fs::read_to_string(&path)
-            .ok()
-            .map(|s| s.trim().to_string()));
+        return Ok(match std::fs::read_to_string(&path) {
+            Ok(s) => Some(s.trim().to_string()),
+            Err(e) => {
+                eprintln!("Warning: failed to read kubernetes token file: {e}");
+                None
+            }
+        });
     }
 
     if should_refresh {
@@ -507,6 +511,23 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(token.as_deref(), Some("k8s-token-value"));
+    }
+
+    #[tokio::test]
+    async fn resolve_token_returns_none_when_kubernetes_token_file_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let token_file = dir.path().join("does-not-exist");
+
+        let mut cfg = ConfigFile::default();
+        cfg.default.kubernetes_token_path = Some(token_file.to_str().unwrap().to_string());
+
+        // Must surface as "no token" (not an error, not a stale success value)
+        // rather than silently returning whatever the previous `.ok()` swallow
+        // happened to produce.
+        let token = resolve_token("http://localhost", None, &mut cfg)
+            .await
+            .unwrap();
+        assert_eq!(token, None);
     }
 
     #[tokio::test]

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use futures::StreamExt;
 
 use crate::entities::{
     AccessAction, AccessEvent, AccessResult, ArtifactVulnerability, EventFilter, ExploreEntry,
@@ -11,6 +12,11 @@ use crate::ports::{PackageRepository, VulnerabilityRepository};
 use crate::services::explore_cache::{
     packages_cache_key, packages_entry_registries, stats_cache_key, ExploreCache,
 };
+
+/// Cap on simultaneous in-flight operations for a single bulk admin action, to
+/// avoid a large selection (thousands of packages) opening more concurrent DB
+/// connections than the pool can serve.
+const BULK_ACTION_CONCURRENCY: usize = 16;
 
 pub struct BulkBlockItem {
     pub package_id: PackageId,
@@ -133,17 +139,25 @@ impl AdminService {
         items: Vec<BulkBlockItem>,
         by_identity: &Identity,
     ) -> BulkActionResult {
+        let results: Vec<_> = futures::stream::iter(items)
+            .map(|item| async move {
+                let outcome = self
+                    .block_package(&item.package_id, item.reason, by_identity)
+                    .await;
+                (item.package_id, outcome)
+            })
+            .buffer_unordered(BULK_ACTION_CONCURRENCY)
+            .collect()
+            .await;
+
         let mut result = BulkActionResult {
             succeeded: vec![],
             failed: vec![],
         };
-        for item in items {
-            match self
-                .block_package(&item.package_id, item.reason, by_identity)
-                .await
-            {
-                Ok(()) => result.succeeded.push(item.package_id),
-                Err(e) => result.failed.push((item.package_id, e.to_string())),
+        for (pkg, outcome) in results {
+            match outcome {
+                Ok(()) => result.succeeded.push(pkg),
+                Err(e) => result.failed.push((pkg, e.to_string())),
             }
         }
         result
@@ -154,12 +168,18 @@ impl AdminService {
         items: Vec<PackageId>,
         by_identity: &Identity,
     ) -> BulkActionResult {
+        let results: Vec<_> = futures::stream::iter(items)
+            .map(|pkg| async move { (pkg.clone(), self.unblock_package(&pkg, by_identity).await) })
+            .buffer_unordered(BULK_ACTION_CONCURRENCY)
+            .collect()
+            .await;
+
         let mut result = BulkActionResult {
             succeeded: vec![],
             failed: vec![],
         };
-        for pkg in items {
-            match self.unblock_package(&pkg, by_identity).await {
+        for (pkg, outcome) in results {
+            match outcome {
                 Ok(()) => result.succeeded.push(pkg),
                 Err(e) => result.failed.push((pkg, e.to_string())),
             }
@@ -202,12 +222,18 @@ impl AdminService {
         items: Vec<PackageId>,
         by_identity: &Identity,
     ) -> BulkActionResult {
+        let results: Vec<_> = futures::stream::iter(items)
+            .map(|pkg| async move { (pkg.clone(), self.delete_package(&pkg, by_identity).await) })
+            .buffer_unordered(BULK_ACTION_CONCURRENCY)
+            .collect()
+            .await;
+
         let mut result = BulkActionResult {
             succeeded: vec![],
             failed: vec![],
         };
-        for pkg in items {
-            match self.delete_package(&pkg, by_identity).await {
+        for (pkg, outcome) in results {
+            match outcome {
                 Ok(true) => result.succeeded.push(pkg),
                 Ok(false) => result.failed.push((pkg, "package not found".to_string())),
                 Err(e) => result.failed.push((pkg, e.to_string())),
@@ -248,7 +274,11 @@ impl AdminService {
         &self,
         filter: ExploreFilter,
     ) -> Result<(Vec<ExploreEntry>, bool), CoreError> {
-        let key = packages_cache_key(&filter);
+        // Namespaced so an items-lookup and a count-lookup can never collide on
+        // the same cache entry, even if a future caller passes matching
+        // limit/offset filters to both (each `set_packages` call only carries
+        // real data for the half it computed, and blindly overwrites the entry).
+        let key = format!("items:{}", packages_cache_key(&filter));
         if let Some((items, _count)) = self.explore_cache.get_packages(&key).await {
             return Ok((items, false));
         }
@@ -275,7 +305,7 @@ impl AdminService {
         &self,
         filter: ExploreFilter,
     ) -> Result<(u64, bool), CoreError> {
-        let key = packages_cache_key(&filter);
+        let key = format!("count:{}", packages_cache_key(&filter));
         if let Some((_items, count)) = self.explore_cache.get_packages(&key).await {
             return Ok((count, false));
         }
@@ -587,6 +617,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bulk_delete_reports_success_and_not_found() {
+        let repo = MemRepo::new();
+        let svc = AdminService::new(repo.clone());
+        let pkg_a = PackageId::new("npm", "a", "1.0.0");
+        let pkg_missing = PackageId::new("npm", "missing", "1.0.0");
+        svc.block_package(&pkg_a, "r".into(), &admin_identity("alice"))
+            .await
+            .unwrap();
+
+        let result = svc
+            .bulk_delete_packages(
+                vec![pkg_a.clone(), pkg_missing.clone()],
+                &admin_identity("alice"),
+            )
+            .await;
+        assert_eq!(result.succeeded, vec![pkg_a]);
+        assert_eq!(result.failed.len(), 1);
+        assert_eq!(result.failed[0].0, pkg_missing);
+        assert_eq!(result.failed[0].1, "package not found");
+    }
+
+    #[tokio::test]
+    async fn bulk_block_handles_more_items_than_the_concurrency_cap() {
+        // BULK_ACTION_CONCURRENCY is 16; exercise a batch larger than that to
+        // confirm the bounded-concurrency stream still processes every item
+        // (not just the first `buffer_unordered` window).
+        let repo = MemRepo::new();
+        let svc = AdminService::new(repo.clone());
+        let items: Vec<BulkBlockItem> = (0..40)
+            .map(|i| BulkBlockItem {
+                package_id: PackageId::new("npm", format!("pkg-{i}"), "1.0.0"),
+                reason: "bulk".into(),
+            })
+            .collect();
+
+        let result = svc
+            .bulk_block_packages(items, &admin_identity("alice"))
+            .await;
+        assert_eq!(result.succeeded.len(), 40);
+        assert_eq!(result.failed.len(), 0);
+        for i in 0..40 {
+            assert!(repo
+                .get_status(&PackageId::new("npm", format!("pkg-{i}"), "1.0.0"))
+                .await
+                .unwrap()
+                .is_blocked());
+        }
+    }
+
+    #[tokio::test]
     async fn bulk_unblock_succeeds_for_all_packages() {
         let repo = MemRepo::new();
         let svc = AdminService::new(repo.clone());
@@ -766,7 +846,10 @@ mod tests {
             .await;
 
         // Use the same key the service would compute
-        let key = crate::services::explore_cache::packages_cache_key(&filter);
+        let key = format!(
+            "items:{}",
+            crate::services::explore_cache::packages_cache_key(&filter)
+        );
         cache
             .set_packages(&key, vec![sample_entry()], 1, vec!["npm".into()])
             .await;
@@ -802,7 +885,10 @@ mod tests {
         // Use 0-TTL cache so the entry is immediately stale
         let cache = Arc::new(ExploreCache::with_ttl(Duration::ZERO));
         let filter = default_filter();
-        let key = crate::services::explore_cache::packages_cache_key(&filter);
+        let key = format!(
+            "items:{}",
+            crate::services::explore_cache::packages_cache_key(&filter)
+        );
         cache
             .set_packages(&key, vec![sample_entry()], 1, vec!["npm".into()])
             .await;
@@ -829,7 +915,10 @@ mod tests {
     async fn count_explore_packages_cache_hit_skips_repo() {
         let cache = Arc::new(ExploreCache::new());
         let filter = default_filter();
-        let key = crate::services::explore_cache::packages_cache_key(&filter);
+        let key = format!(
+            "count:{}",
+            crate::services::explore_cache::packages_cache_key(&filter)
+        );
         // set_packages stores the count too
         cache
             .set_packages(&key, vec![], 42, vec!["npm".into()])
@@ -854,7 +943,10 @@ mod tests {
     async fn count_explore_packages_db_fail_stale_returns_count() {
         let cache = Arc::new(ExploreCache::with_ttl(Duration::ZERO));
         let filter = default_filter();
-        let key = crate::services::explore_cache::packages_cache_key(&filter);
+        let key = format!(
+            "count:{}",
+            crate::services::explore_cache::packages_cache_key(&filter)
+        );
         cache
             .set_packages(&key, vec![], 7, vec!["npm".into()])
             .await;
@@ -863,6 +955,45 @@ mod tests {
         let (count, unavailable) = svc.count_explore_packages(filter).await.unwrap();
         assert!(!unavailable);
         assert_eq!(count, 7);
+    }
+
+    #[tokio::test]
+    async fn explore_and_count_do_not_clobber_each_other_with_matching_filters() {
+        // Same limit/offset (as would happen if a caller ever passed `per_page=0`
+        // to both the items and the count query) must not let one call's cached
+        // write stomp the other's, since each only carries real data for the
+        // half it computed (items+0, or empty-items+count).
+        let cache = Arc::new(ExploreCache::new());
+        let filter = ExploreFilter {
+            registry: Some("npm".into()),
+            registries: vec![],
+            limit: 0,
+            offset: 0,
+            ..ExploreFilter::default()
+        };
+        let repo = StubExploreRepo::arc(vec![sample_entry()], 42, vec![]);
+        let svc = make_svc_with_cache(repo, Arc::clone(&cache));
+
+        let (items, items_unavailable) = svc.explore_packages(filter.clone()).await.unwrap();
+        let (count, count_unavailable) = svc.count_explore_packages(filter.clone()).await.unwrap();
+        assert!(!items_unavailable && !count_unavailable);
+        assert_eq!(items.len(), 1);
+        assert_eq!(count, 42);
+
+        // Re-read both from cache (repo now fails) — neither should have been
+        // poisoned by the other's write.
+        let svc2 = make_svc_with_cache(FailingExploreRepo::arc(), Arc::clone(&cache));
+        let (cached_items, _) = svc2.explore_packages(filter.clone()).await.unwrap();
+        let (cached_count, _) = svc2.count_explore_packages(filter).await.unwrap();
+        assert_eq!(
+            cached_items.len(),
+            1,
+            "items must not be clobbered by the count write"
+        );
+        assert_eq!(
+            cached_count, 42,
+            "count must not be clobbered by the items write"
+        );
     }
 
     // ── registry_explore_stats ────────────────────────────────────────────────
@@ -930,7 +1061,10 @@ mod tests {
     async fn explore_cache_invalidation_clears_subsequent_reads() {
         let cache = Arc::new(ExploreCache::new());
         let filter = default_filter();
-        let key = crate::services::explore_cache::packages_cache_key(&filter);
+        let key = format!(
+            "items:{}",
+            crate::services::explore_cache::packages_cache_key(&filter)
+        );
         cache
             .set_packages(&key, vec![sample_entry()], 1, vec!["npm".into()])
             .await;

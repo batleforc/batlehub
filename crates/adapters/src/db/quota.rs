@@ -4,7 +4,7 @@ use sqlx::{PgPool, Row};
 
 use batlehub_core::{
     error::CoreError,
-    ports::{QuotaRepository, QuotaUsage},
+    ports::{QuotaOutcome, QuotaRepository, QuotaUsage},
 };
 
 pub struct PgQuotaRepository {
@@ -72,6 +72,77 @@ impl QuotaRepository for PgQuotaRepository {
         .await
         .db_err()?;
         Ok(())
+    }
+
+    async fn try_record_publish(
+        &self,
+        user_id: &str,
+        registry: &str,
+        bytes: u64,
+        max_bytes: Option<u64>,
+        max_packages: Option<u32>,
+    ) -> Result<QuotaOutcome, CoreError> {
+        let mut tx = self.pool.begin().await.db_err()?;
+
+        // Ensure the row exists, then lock it for the duration of the
+        // transaction so a concurrent `try_record_publish` for the same
+        // (user, registry) blocks until this one commits or rolls back —
+        // that's what makes the check-then-write atomic.
+        sqlx::query(
+            "INSERT INTO quota_usage (user_id, registry, bytes_published, packages_count, updated_at) \
+             VALUES ($1, $2, 0, 0, NOW()) \
+             ON CONFLICT (user_id, registry) DO NOTHING",
+        )
+        .bind(user_id)
+        .bind(registry)
+        .execute(&mut *tx)
+        .await
+        .db_err()?;
+
+        let row = sqlx::query(
+            "SELECT bytes_published, packages_count FROM quota_usage \
+             WHERE user_id = $1 AND registry = $2 FOR UPDATE",
+        )
+        .bind(user_id)
+        .bind(registry)
+        .fetch_one(&mut *tx)
+        .await
+        .db_err()?;
+
+        let current_bytes: i64 = row.try_get("bytes_published").unwrap_or(0);
+        let current_packages: i32 = row.try_get("packages_count").unwrap_or(0);
+        let new_bytes = current_bytes.max(0) as u64 + bytes;
+        let new_packages = current_packages.max(0) as u32 + 1;
+
+        let exceeded = max_bytes.is_some_and(|max| new_bytes > max)
+            || max_packages.is_some_and(|max| new_packages > max);
+
+        if exceeded {
+            tx.rollback().await.db_err()?;
+            return Ok(QuotaOutcome::Exceeded {
+                bytes_used: new_bytes,
+                packages_used: new_packages,
+            });
+        }
+
+        sqlx::query(
+            "UPDATE quota_usage SET bytes_published = $3, packages_count = $4, updated_at = NOW() \
+             WHERE user_id = $1 AND registry = $2",
+        )
+        .bind(user_id)
+        .bind(registry)
+        .bind(new_bytes as i64)
+        .bind(new_packages as i32)
+        .execute(&mut *tx)
+        .await
+        .db_err()?;
+
+        tx.commit().await.db_err()?;
+
+        Ok(QuotaOutcome::Recorded {
+            bytes_used: new_bytes,
+            packages_used: new_packages,
+        })
     }
 
     async fn revoke_publish(

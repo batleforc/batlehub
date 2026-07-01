@@ -16,6 +16,22 @@ mod tracking;
 
 pub use routing::route_key_to_backend;
 
+/// Escape `%`, `_`, and `\` in `prefix` and append a trailing `%`, so it can be
+/// bound to a `LIKE ... ESCAPE '\'` clause without literal wildcard characters
+/// in the prefix (e.g. from a package name/version) matching more broadly than
+/// intended.
+fn like_prefix_pattern(prefix: &str) -> String {
+    let mut escaped = String::with_capacity(prefix.len() + 1);
+    for c in prefix.chars() {
+        if c == '\\' || c == '%' || c == '_' {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    escaped.push('%');
+    escaped
+}
+
 /// Routes artifact storage operations across multiple named backends, with
 /// content-addressable deduplication via the `artifact_dedup_index` and
 /// `artifact_dedup_refs` tables.
@@ -440,12 +456,12 @@ impl StorageBackend for StorageRouter {
     /// content-addressed blobs under `blob/` prefixes).
     async fn stat_by_prefix(&self, prefix: &str) -> Result<(u64, u64), CoreError> {
         use sqlx::Row;
-        let like = format!("{prefix}%");
+        let like = like_prefix_pattern(prefix);
         let row = sqlx::query(
             r#"
             SELECT COUNT(*) AS cnt, COALESCE(SUM(size_bytes), 0) AS total
             FROM artifact_storage
-            WHERE storage_key LIKE $1
+            WHERE storage_key LIKE $1 ESCAPE '\'
             "#,
         )
         .bind(&like)

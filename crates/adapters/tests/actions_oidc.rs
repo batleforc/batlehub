@@ -1,8 +1,7 @@
 #![cfg(feature = "auth-actions-oidc")]
 
 use batlehub_adapters::auth::actions_oidc::ActionsOidcAuthProvider;
-use batlehub_config::schema::ActionsOidcAuthConfig;
-use batlehub_core::ports::{AuthProvider, RawAuthRequest};
+use batlehub_core::ports::{ActionsOidcAuthConfig, AuthProvider, RawAuthRequest};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
