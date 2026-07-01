@@ -253,7 +253,8 @@ Added user 'bob' as maintainer on internal/Serilog
 ## 8. Commands — publish
 
 ```
-batlehub-cli publish <file> [--registry <r>] [--name <n>] [--version <v>]
+batlehub-cli publish <file> [--registry <r>] [--name <n>] [--version <v>] [--type <t>]
+                             [--distribution <d>] [--component <c>] [--platform <p>]
 ```
 
 Upload an artifact to a local or hybrid registry. The CLI auto-detects the registry type and package metadata from the file:
@@ -263,15 +264,35 @@ Upload an artifact to a local or hybrid registry. The CLI auto-detects the regis
 | `.nupkg` | nuget | embedded `.nuspec` |
 | `.whl` | pypi | filename (`name-version-*.whl`) |
 | `.gem` | rubygems | filename (`name-version.gem`) |
+| `.pkg.tar.{zst,xz,gz}` | pacman | filename (`name-pkgver-pkgrel-arch.pkg.tar.*`) |
+| `.tgz` | npm | filename (`name-version.tgz`, as produced by `npm pack`) |
+| `.crate` | cargo | filename (`name-version.crate`, as produced by `cargo package`) |
+| `.vsix` | openvsx | filename (`extension_id-version.vsix`) |
+| `.deb` | deb | server-side, from the package's control file — requires `--distribution` and `--component` |
+| `.rpm` | rpm | server-side, from the package's header |
+| `.tar.bz2` / `.conda` | conda | server-side, from the package's own `info/index.json` (`--platform` is only a fallback) |
 
-If auto-detection fails or the registry type is not yet natively supported, use your existing tooling (`dotnet nuget push`, `twine upload`, `cargo publish`, …) configured to point at the BatleHub endpoint. See [`docs/publishing.md`](publishing.md) for per-registry setup instructions.
+Composer ZIPs share the generic `.zip` extension with other formats and are not auto-detected — pass `--type composer` explicitly. Composer, like conda/deb/rpm, parses name/version server-side from `composer.json`, so no `--name`/`--version` is needed (an optional `--version` overrides the archive's own version).
+
+Use `--type` to override auto-detection entirely — useful for ambiguous extensions or when a file doesn't follow the expected naming convention.
+
+Maven (separate jar+pom+checksum files), Terraform (providers need shasums/signature files; modules need a packaging step), and Go modules (need an `.info`/`.mod`/`.zip` triad) don't fit this command's single-file model by design. Use your existing tooling (`mvn deploy`, Terraform registry publishing conventions, `go mod`) configured to point at the BatleHub endpoint — see [`docs/publishing.md`](publishing.md) for per-registry setup instructions.
 
 ```bash
 # NuGet
 batlehub-cli publish Serilog.3.1.1.nupkg --registry internal
 
 # Override detected metadata
-batlehub-cli publish dist/mylib-1.2.3.tar.gz --registry pypi --name mylib --version 1.2.3
+batlehub-cli publish dist/mylib-1.2.3.tar.gz --type pypi --name mylib --version 1.2.3
+
+# Composer (ambiguous .zip extension — type must be explicit)
+batlehub-cli publish acme-widget.zip --type composer --registry internal
+
+# Debian (distribution/component aren't in the filename)
+batlehub-cli publish hello_1.0-1_amd64.deb --registry internal --distribution stable --component main
+
+# Conda (platform is only a fallback for packages with no embedded subdir)
+batlehub-cli publish numpy-1.26.0-py311h0.conda --registry internal --platform linux-64
 ```
 
 ---

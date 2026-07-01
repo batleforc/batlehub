@@ -37,6 +37,10 @@ tui-input = "0.15"
 dirs = "6"
 # Pretty table output for plain CLI mode
 comfy-table = "7"
+# Publish payload encoding (npm attachments, checksums)
+base64 = { workspace = true }
+sha2 = "0.11"
+hex = "0.4"
 
 [dev-dependencies]
 batlehub-web      = { path = "../crates/web" }

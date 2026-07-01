@@ -145,7 +145,9 @@ fn expand_env_vars(raw: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::schema::{AppConfig, AuthConfig, StorageBackendConfig, StoragesConfig};
+    use crate::schema::{
+        AppConfig, AuthConfig, StorageBackendConfig, StoragesConfig, CURRENT_CONFIG_VERSION,
+    };
     use crate::{expand_env_vars, load};
 
     fn parse(toml: &str) -> AppConfig {
@@ -347,6 +349,56 @@ mod tests {
             config.validate().is_err(),
             "jetbrains + local mode should fail validation"
         );
+    }
+
+    #[test]
+    fn config_version_absent_defaults_to_none_and_passes_validation() {
+        let cfg = parse(minimal());
+        assert_eq!(cfg.config_version, None);
+    }
+
+    #[test]
+    fn config_version_at_current_passes_validation() {
+        let toml = format!("config_version = {}\n{}", CURRENT_CONFIG_VERSION, minimal());
+        let cfg = parse(&toml);
+        assert_eq!(cfg.config_version, Some(CURRENT_CONFIG_VERSION));
+    }
+
+    #[test]
+    fn config_version_newer_than_supported_is_rejected() {
+        let toml = format!(
+            "config_version = {}\n{}",
+            CURRENT_CONFIG_VERSION + 1,
+            minimal()
+        );
+        let cfg: AppConfig = toml::from_str(&toml).expect("parse failed");
+        let err = cfg
+            .validate()
+            .expect_err("a config_version newer than supported should fail validation");
+        assert!(err.to_string().contains("config_version"));
+    }
+
+    #[test]
+    fn require_signed_release_enabled_passes_validation() {
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [[registries]]
+        type = "github"
+        name = "my-gh"
+
+        [[registries.rules]]
+        kind = "require_signed_release"
+        enabled = true
+        bypass_roles = ["admin"]
+        deny_missing_signature = true
+        "#
+        );
+        let config: AppConfig = toml::from_str(&toml).unwrap();
+        config
+            .validate()
+            .expect("require_signed_release rule must be accepted");
     }
 
     #[test]

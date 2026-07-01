@@ -89,10 +89,24 @@ fn default_min_age() -> u64 {
     3600
 }
 
+/// Gate downloads on the upstream's best-effort signature signal
+/// (`PackageMetadata::is_signed`) — e.g. a `.asc`/`.sig` release asset on
+/// GitHub/Forgejo, or a signature blob in an OpenVSX/VS Code extension.
+/// This is *not* cryptographic verification: registries with no such signal
+/// for their ecosystem (npm, PyPI, crates.io, Maven, …) report `is_signed =
+/// None`, which this rule allows through by default (see
+/// `deny_missing_signature`).
 #[derive(Debug, Deserialize)]
 pub struct RequireSignedReleaseConfig {
     #[serde(default)]
     pub enabled: bool,
+    /// Roles that may bypass the signature requirement (e.g. `["admin"]`).
+    #[serde(default)]
+    pub bypass_roles: Vec<String>,
+    /// When `true`, deny releases from registries that report no signature
+    /// signal at all (`is_signed == None`), instead of skipping the check.
+    #[serde(default)]
+    pub deny_missing_signature: bool,
 }
 
 #[derive(Debug, Deserialize)]

@@ -112,11 +112,25 @@ curl -H "Authorization: Bearer my-admin-token" http://localhost:8080/...
 
 1. The TOML file at the path given to `--config` is parsed (default: `config.toml` in the working directory).
 2. Environment variables matching `PROXY_CACHE__<SECTION>__<FIELD>` are applied on top of the file values.
-3. The config is validated: registry names must not be empty and registry types must be one of `github`, `npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, `rubygems`, `composer`, `pypi`, `conda`.
+3. The config is validated: `config_version` (if set) must not exceed what this binary supports, registry names must not be empty, and registry types must be one of `github`, `npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, `rubygems`, `composer`, `pypi`, `conda`.
 
 ### Auth evaluation order
 
 The `[[auth]]` array is tried in declaration order. The first provider that recognises a credential wins and the request proceeds with that identity. If no provider matches, the request is treated as `anonymous`. Putting a token provider before OIDC means static tokens are checked first, which is slightly more efficient.
+
+### Config versioning
+
+A top-level, optional `config_version` field pins a config file to a schema version:
+
+```toml
+config_version = 1   # optional; absent means "current"
+```
+
+- **Absent is always accepted** and treated as the binary's current schema version, so every existing config file keeps working unchanged across upgrades.
+- **An explicit value newer than what the running binary supports** fails validation at startup with an upgrade-path message, instead of silently ignoring fields it doesn't understand yet.
+- **An explicit value older than current** is currently accepted (there is no migration engine yet) — this field exists so a future breaking change has somewhere to hang a version check, not to enable time-travel to old behavior today.
+
+What requires bumping `CURRENT_CONFIG_VERSION` (in `crates/config/src/schema/mod.rs`) when it eventually happens: removing or renaming an existing field, or changing what an existing field's default means. What does **not** require a bump: adding a new optional field (the common case for this codebase's evolution so far — see `CHANGELOG.md` for what changed in each release).
 
 ---
 
@@ -1110,7 +1124,11 @@ BatleHub stores physical artifact bytes at a content-addressed key (`blob/{sha25
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `kind` | string | — | Must be `"require_signed_release"` |
-| `enabled` | bool | `false` | When true, blocks releases that do not have a verified signature |
+| `enabled` | bool | `false` | When true, blocks releases with no signature signal (subject to `deny_missing_signature` below) |
+| `bypass_roles` | string[] | `[]` | Roles that skip the gate entirely (e.g. `["admin"]`). |
+| `deny_missing_signature` | bool | `false` | When `true`, deny releases from registries that report no signature signal at all, instead of skipping the check and allowing the download. |
+
+> This checks `PackageMetadata.is_signed`, a best-effort signal populated per registry adapter — not full cryptographic signature verification. GitHub, Forgejo, GitLab, OpenVSX, and VS Code Marketplace populate it (presence of a `.asc`/`.sig` release asset or an extension signature blob); registries with no signing concept in their ecosystem (npm, PyPI, crates.io, Maven, RubyGems, Conda, Composer, Go, Terraform, NuGet, deb/rpm/pacman) report `None` and are allowed through unless `deny_missing_signature = true`.
 
 **`[[registries.rules]]` — Deny latest:**
 

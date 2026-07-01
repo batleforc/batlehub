@@ -1,6 +1,12 @@
 # batlehub — example configuration
 # Copy this file to config.toml and edit as needed.
 
+# Optional: pins this file to a config schema version. Absent means "current"
+# (whatever this binary's default schema is), so existing configs keep working
+# unchanged after an upgrade. Only set this if you need to pin against future
+# schema changes; see "Config versioning" in docs/configuration.md.
+# config_version = 1
+
 [server]
 host = "0.0.0.0"
 port = 8080
@@ -266,10 +272,16 @@ kind = "release_age_gate"
 min_age_secs = 3600
 bypass_roles = ["admin"]
 
-# Signed-release gate (disabled by default):
+# Signed-release gate (disabled by default). Checks the upstream's best-effort
+# signature signal (e.g. a .asc/.sig release asset on GitHub/Forgejo); it is
+# not cryptographic verification, and registries with no such signal for their
+# ecosystem (npm, PyPI, crates.io, Maven, ...) are allowed through unless
+# deny_missing_signature is set.
 # [[registries.rules]]
 # kind = "require_signed_release"
 # enabled = true
+# bypass_roles = ["admin"]
+# deny_missing_signature = false
 
 # Deny "latest" version tag: force consumers to pin explicit versions.
 # Admins (or any listed role) may still use "latest".

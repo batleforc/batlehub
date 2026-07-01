@@ -88,8 +88,10 @@ jobs:
           buildah push $IMAGE_TAG_BRANCH
       # Harbor scans every push automatically (project-level "scan on push") and
       # generates its own SBOM accessory, so don't redo that work locally. Poll
-      # its API for up to ~1 minute for the vulnerability report on the digest we
-      # just pushed.
+      # its API for up to ~5 minutes for the vulnerability report on the digest
+      # we just pushed. Shipping without a verdict is worse than a slower
+      # pipeline, so a still-pending/errored scan fails the build below rather
+      # than being treated as a pass (see "Gate on Harbor scan availability").
       - name: Wait for Harbor scan result
         id: harbor_scan
         run: |
@@ -99,12 +101,12 @@ jobs:
           API="https://${{ env.REGISTRY }}/api/v2.0/projects/${PROJECT}/repositories/${REPO}/artifacts/${GITHUB_SHA}?with_scan_overview=true"
           AUTH="${{ steps.vault.outputs.REGISTRY_USER }}:${{ steps.vault.outputs.REGISTRY_PAT }}"
           STATUS="Pending"
-          for _ in $(seq 1 12); do
+          for _ in $(seq 1 30); do
             STATUS=$(curl -s -u "$AUTH" "$API" | jq -r '.scan_overview["application/vnd.security.vulnerability.report; version=1.1"].scan_status // "Pending"') || STATUS="Pending"
             if [ "$STATUS" = "Success" ] || [ "$STATUS" = "Error" ]; then
               break
             fi
-            sleep 5
+            sleep 10
           done
           echo "status=$STATUS" >> "$GITHUB_OUTPUT"
       # Gate: fail the build on any fixable HIGH/CRITICAL CVE in Harbor's report.
@@ -125,9 +127,11 @@ jobs:
             echo "::error::Harbor reported fixable HIGH/CRITICAL vulnerabilities for $IMAGE_TAG"
             exit 1
           fi
-      # Best-effort gate only: if Harbor hasn't finished scanning within the
-      # 1-minute window, don't block the build — warn and move on.
-      - name: Harbor scan not ready
+      # A scan that's still pending after 5 minutes, or that errored out in
+      # Harbor, means we have no vulnerability verdict for this digest — fail
+      # closed rather than shipping an unscanned image.
+      - name: Gate on Harbor scan availability
         if: steps.harbor_scan.outputs.status != 'Success'
         run: |
-          echo "::warning::Harbor scan result not ready within 1 minute for $IMAGE_TAG (status: ${{ steps.harbor_scan.outputs.status }}); skipping vulnerability gate"
+          echo "::error::Harbor scan result not available for $IMAGE_TAG after 5 minutes (status: ${{ steps.harbor_scan.outputs.status }}); refusing to ship without a vulnerability verdict"
+          exit 1

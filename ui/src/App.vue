@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { RouterView, RouterLink, useRoute, useRouter } from "vue-router";
 import {
   AlertTriangle,
@@ -27,13 +27,26 @@ import {
 } from "radix-vue";
 import { useAuth } from "@/composables/useAuth";
 import { useBanner } from "@/composables/useBanner";
-import { DOCS_URL } from "@/config";
+import { API_BASE_URL, DOCS_URL, REPORT_BUG_URL, REPORT_SECURITY_URL } from "@/config";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import ThemeToggle from "@/components/ThemeToggle.vue";
 
 const { identity, isAdmin, isAuthenticated, logout } = useAuth();
 const { banner } = useBanner();
+const appVersion = ref<string | null>(null);
+
+onMounted(async () => {
+  try {
+    const res = await fetch(`${API_BASE_URL}/healthz`);
+    if (res.ok) {
+      const data = (await res.json()) as { version?: string };
+      appVersion.value = data.version ?? null;
+    }
+  } catch {
+    // Best-effort only — the footer just omits the version if unreachable.
+  }
+});
 const route = useRoute();
 const router = useRouter();
 const mobileOpen = ref(false);
@@ -337,5 +350,32 @@ function isActive(to: string) {
     <main class="container mx-auto px-4 py-6">
       <RouterView />
     </main>
+
+    <footer class="border-t border-border/60 mt-8">
+      <div
+        class="container mx-auto flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-xs font-mono text-muted-foreground"
+      >
+        <span v-if="appVersion">BatleHub v{{ appVersion }}</span>
+        <span v-else />
+        <div class="flex items-center gap-3">
+          <a
+            :href="REPORT_BUG_URL"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="hover:text-accent-foreground transition-colors"
+          >
+            Report a bug
+          </a>
+          <a
+            :href="REPORT_SECURITY_URL"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="hover:text-accent-foreground transition-colors"
+          >
+            Report a security issue
+          </a>
+        </div>
+      </div>
+    </footer>
   </div>
 </template>

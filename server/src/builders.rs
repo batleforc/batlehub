@@ -18,7 +18,7 @@ use batlehub_core::{
     ports::VulnerabilityRepository,
     rules::{
         BlockListRule, CveGateRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule,
-        TrustedPublisherRule, VersionGateRule,
+        RequireSignedReleaseRule, TrustedPublisherRule, VersionGateRule,
     },
     services::{QuotaEnforcement, QuotaService, RegistryPolicy, RegistryQuotaConfig},
 };
@@ -226,9 +226,12 @@ pub(super) fn build_policy(
             }
             RuleConfig::RequireSignedRelease(cfg) => {
                 if cfg.enabled {
-                    tracing::warn!(
-                        "require_signed_release rule is configured but not yet implemented"
-                    );
+                    let bypass: Vec<Role> =
+                        cfg.bypass_roles.iter().map(|r| parse_role(r)).collect();
+                    rules.push(Box::new(
+                        RequireSignedReleaseRule::new(bypass)
+                            .with_deny_missing_signature(cfg.deny_missing_signature),
+                    ));
                 }
             }
             RuleConfig::DenyLatest(cfg) => {
@@ -535,7 +538,13 @@ mod tests {
         let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
         assert_eq!(
             names,
-            vec!["rbac", "block_list", "release_age_gate", "deny_latest"]
+            vec![
+                "rbac",
+                "block_list",
+                "release_age_gate",
+                "deny_latest",
+                "require_signed_release"
+            ]
         );
         assert!(policy.firewall_only);
         assert!(!policy.serve_stale_metadata);

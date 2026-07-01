@@ -64,9 +64,16 @@ struct TestServer {
 
 impl TestServer {
     fn start() -> Self {
+        Self::start_with(&[(REGISTRY, "nuget")])
+    }
+
+    /// Like `start()`, but with an arbitrary set of `(name, registry_type)`
+    /// local-mode registries instead of the single hardcoded nuget one.
+    fn start_with(registries: &[(&str, &str)]) -> Self {
         let registry_map = RegistryMap::from(
-            [(REGISTRY.to_owned(), "nuget".to_owned())]
-                .into_iter()
+            registries
+                .iter()
+                .map(|(n, t)| (n.to_string(), t.to_string()))
                 .collect::<HashMap<String, String>>(),
         );
         let registry_names: Vec<String> = registry_map.keys();
@@ -662,6 +669,78 @@ fn publish_nuget_via_cli() {
         AUTH_TOKEN,
     );
     assert!(ok, "publish should succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("Published successfully"),
+        "expected success message in stdout, got: {stdout}"
+    );
+}
+
+#[test]
+fn publish_npm_via_cli() {
+    let srv = TestServer::start_with(&[("test-npm", "npm")]);
+    let tmp = tempfile::tempdir().unwrap();
+    let tgz_path = tmp.path().join("left-pad-1.3.0.tgz");
+    std::fs::write(&tgz_path, b"fake-tarball-content").unwrap();
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "publish",
+            tgz_path.to_str().unwrap(),
+            "--registry",
+            "test-npm",
+        ],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "npm publish should succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("Published successfully"),
+        "expected success message in stdout, got: {stdout}"
+    );
+}
+
+#[test]
+fn publish_pypi_via_cli() {
+    let srv = TestServer::start_with(&[("test-pypi", "pypi")]);
+    let tmp = tempfile::tempdir().unwrap();
+    let whl_path = tmp.path().join("my_pkg-1.0.0-py3-none-any.whl");
+    std::fs::write(&whl_path, b"fake-wheel-content").unwrap();
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "publish",
+            whl_path.to_str().unwrap(),
+            "--registry",
+            "test-pypi",
+        ],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "pypi publish should succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("Published successfully"),
+        "expected success message in stdout, got: {stdout}"
+    );
+}
+
+#[test]
+fn publish_cargo_via_cli() {
+    let srv = TestServer::start_with(&[("test-cargo", "cargo")]);
+    let tmp = tempfile::tempdir().unwrap();
+    let crate_path = tmp.path().join("my-crate-0.1.0.crate");
+    std::fs::write(&crate_path, b"fake-crate-content").unwrap();
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "publish",
+            crate_path.to_str().unwrap(),
+            "--registry",
+            "test-cargo",
+        ],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "cargo publish should succeed; stderr: {stderr}");
     assert!(
         stdout.contains("Published successfully"),
         "expected success message in stdout, got: {stdout}"

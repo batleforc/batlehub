@@ -113,6 +113,20 @@ impl BatleHubClient {
         expect_no_content(resp).await
     }
 
+    /// POST a raw binary body (e.g. a package upload) and expect a 2xx response.
+    pub async fn post_bytes(&self, path: &str, body: Vec<u8>) -> Result<()> {
+        let mut req = self
+            .inner
+            .request(Method::POST, self.url(path))
+            .header("Content-Type", "application/octet-stream")
+            .body(body);
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+        let resp = req.send().await?;
+        expect_no_content(resp).await
+    }
+
     pub async fn delete(&self, path: &str) -> Result<()> {
         let mut req = self.inner.request(Method::DELETE, self.url(path));
         if let Some(auth) = self.auth_header() {
@@ -185,6 +199,22 @@ impl BatleHubClient {
         let mut req = self
             .inner
             .request(Method::PUT, self.url(path))
+            .multipart(form);
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+        let resp = req.send().await?;
+        expect_no_content(resp).await
+    }
+
+    pub async fn post_multipart_void(
+        &self,
+        path: &str,
+        form: reqwest::multipart::Form,
+    ) -> Result<()> {
+        let mut req = self
+            .inner
+            .request(Method::POST, self.url(path))
             .multipart(form);
         if let Some(auth) = self.auth_header() {
             req = req.header("Authorization", auth);

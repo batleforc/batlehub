@@ -19,8 +19,20 @@ use serde::Deserialize;
 
 // ── Top-level ─────────────────────────────────────────────────────────────────
 
+/// The current config schema version this binary understands. Bump this only
+/// for changes that would silently break an existing config file if applied
+/// unchanged (removing/renaming a field, changing a default's meaning) — see
+/// "Config versioning" in `docs/configuration.md`.
+pub const CURRENT_CONFIG_VERSION: u32 = 1;
+
 #[derive(Debug, Deserialize)]
 pub struct AppConfig {
+    /// Config schema version. Optional; absent is treated as
+    /// [`CURRENT_CONFIG_VERSION`] so every existing config file keeps working
+    /// unchanged. An explicit value newer than this binary supports is
+    /// rejected at startup rather than silently misbehaving.
+    #[serde(default)]
+    pub config_version: Option<u32>,
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     #[serde(default)]
@@ -105,6 +117,15 @@ pub struct LimitsConfig {
 
 impl AppConfig {
     pub fn validate(&self) -> Result<()> {
+        if let Some(v) = self.config_version {
+            if v > CURRENT_CONFIG_VERSION {
+                bail!(
+                    "config_version {v} is newer than this binary supports (max {CURRENT_CONFIG_VERSION}); \
+                     upgrade batlehub-server, or lower config_version if you intended to target an \
+                     older schema"
+                );
+            }
+        }
         for registry in &self.registries {
             if registry.name.is_empty() {
                 bail!("registry is missing a 'name' field");

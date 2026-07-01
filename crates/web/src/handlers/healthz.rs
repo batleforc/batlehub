@@ -15,10 +15,14 @@ struct HealthResponse {
     ok: bool,
     db: &'static str,
     storage: &'static str,
+    /// The running server's version (`CARGO_PKG_VERSION`), so operators and
+    /// the UI can surface what's deployed without a separate authenticated call.
+    version: &'static str,
 }
 
-/// Infrastructure health check — verifies DB and storage connectivity.
-/// Unauthenticated; intended for Kubernetes liveness/readiness probes.
+/// Infrastructure health check — verifies DB and storage connectivity, and
+/// reports the running version. Unauthenticated; intended for Kubernetes
+/// liveness/readiness probes as well as UI/CLI version display.
 #[get("/healthz")]
 pub async fn healthz(
     pool: Option<web::Data<PgPool>>,
@@ -50,5 +54,10 @@ pub async fn healthz(
         StatusCode::SERVICE_UNAVAILABLE
     };
 
-    HttpResponse::build(status).json(HealthResponse { ok, db, storage })
+    HttpResponse::build(status).json(HealthResponse {
+        ok,
+        db,
+        storage,
+        version: env!("CARGO_PKG_VERSION"),
+    })
 }

@@ -1,6 +1,8 @@
 use std::path::Path;
 
 use anyhow::Result;
+use base64::Engine as _;
+use sha2::{Digest, Sha256};
 
 use super::BatleHubClient;
 
@@ -34,6 +36,30 @@ pub fn detect_meta(path: &Path) -> Option<ArtifactMeta> {
             });
         }
         return None;
+    }
+
+    // conda packages are `<name>-<version>-<build>.tar.bz2` (legacy) or `.conda`
+    // (newer format); the server derives the real subdir/platform from the
+    // archive's own metadata, so name/version here are cosmetic only.
+    if file_name.ends_with(".tar.bz2") || file_name.ends_with(".conda") {
+        let stem = file_name
+            .strip_suffix(".tar.bz2")
+            .or_else(|| file_name.strip_suffix(".conda"))
+            .unwrap_or(file_name);
+        let parts: Vec<&str> = stem.rsplitn(3, '-').collect(); // [build, version, name]
+        return Some(if parts.len() == 3 {
+            ArtifactMeta {
+                registry_type: "conda".into(),
+                name: parts[2].to_string(),
+                version: parts[1].to_string(),
+            }
+        } else {
+            ArtifactMeta {
+                registry_type: "conda".into(),
+                name: stem.to_string(),
+                version: String::new(),
+            }
+        });
     }
 
     match ext {
@@ -77,6 +103,50 @@ pub fn detect_meta(path: &Path) -> Option<ArtifactMeta> {
                 version: stem[dash + 1..].to_string(),
             })
         }
+        "tgz" => {
+            // filename: <name>-<version>.tgz (as produced by `npm pack`).
+            let stem = file_name.strip_suffix(".tgz")?;
+            let dash = stem.rfind('-')?;
+            Some(ArtifactMeta {
+                registry_type: "npm".into(),
+                name: stem[..dash].to_string(),
+                version: stem[dash + 1..].to_string(),
+            })
+        }
+        "crate" => {
+            // filename: <name>-<version>.crate (as produced by `cargo package`).
+            let stem = file_name.strip_suffix(".crate")?;
+            let dash = stem.rfind('-')?;
+            Some(ArtifactMeta {
+                registry_type: "cargo".into(),
+                name: stem[..dash].to_string(),
+                version: stem[dash + 1..].to_string(),
+            })
+        }
+        "vsix" => {
+            // filename: <extension_id>-<version>.vsix; extension_id is ideally
+            // `publisher.name` but the version PUT path accepts whatever string
+            // was detected here (or --name), so a missing publisher prefix is
+            // not a hard failure.
+            let stem = file_name.strip_suffix(".vsix")?;
+            let dash = stem.rfind('-')?;
+            Some(ArtifactMeta {
+                registry_type: "openvsx".into(),
+                name: stem[..dash].to_string(),
+                version: stem[dash + 1..].to_string(),
+            })
+        }
+        "deb" | "rpm" => {
+            // The server reads name/version straight from the package's own
+            // control/header data, not from the CLI request, so these are
+            // cosmetic only — always succeed so registry-type dispatch works
+            // even when the filename doesn't follow a recognisable convention.
+            Some(ArtifactMeta {
+                registry_type: ext.to_string(),
+                name: file_name.to_string(),
+                version: String::new(),
+            })
+        }
         _ => None,
     }
 }
@@ -106,6 +176,180 @@ impl BatleHubClient {
     pub async fn publish_pacman(&self, registry: &str, file_path: &Path) -> Result<()> {
         let bytes = std::fs::read(file_path)?;
         self.put_bytes(&format!("/proxy/{registry}/pacman/upload"), bytes)
+            .await
+    }
+
+    /// Upload a Python distribution (`.whl`/`.tar.gz`) to a PyPI local/hybrid
+    /// registry, using the same `multipart/form-data` fields as `twine upload`.
+    /// `name` and `version` are required top-level fields, not derived from
+    /// the file's own contents server-side.
+    pub async fn publish_pypi(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        file_path: &Path,
+    ) -> Result<()> {
+        let bytes = std::fs::read(file_path)?;
+        let file_name = file_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("package.whl")
+            .to_string();
+        let sha2_hex = hex::encode(Sha256::digest(&bytes));
+
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(file_name)
+            .mime_str("application/octet-stream")?;
+        let form = reqwest::multipart::Form::new()
+            .text(":action", "file_upload")
+            .text("name", name.to_string())
+            .text("version", version.to_string())
+            .text("sha2", sha2_hex)
+            .part("content", part);
+
+        self.post_multipart_void(&format!("/proxy/{registry}/legacy/"), form)
+            .await
+    }
+
+    /// Upload a `.gem` artifact to a RubyGems local/hybrid registry (`gem push`).
+    /// The server reads name/version/platform from the gem's own metadata, so
+    /// the raw bytes are POSTed directly to the upload endpoint.
+    pub async fn publish_rubygems(&self, registry: &str, file_path: &Path) -> Result<()> {
+        let bytes = std::fs::read(file_path)?;
+        self.post_bytes(&format!("/proxy/{registry}/api/v1/gems"), bytes)
+            .await
+    }
+
+    /// Upload an npm tarball (`npm publish`'s wire format): a JSON envelope
+    /// with the package metadata under `versions` and the base64-encoded
+    /// tarball under `_attachments`.
+    pub async fn publish_npm(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        file_path: &Path,
+    ) -> Result<()> {
+        let bytes = std::fs::read(file_path)?;
+        let file_name = file_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("package.tgz")
+            .to_string();
+        let length = bytes.len();
+        let data_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+
+        let body = serde_json::json!({
+            "name": name,
+            "versions": {
+                version: { "name": name, "version": version },
+            },
+            "_attachments": {
+                file_name: {
+                    "content_type": "application/octet-stream",
+                    "data": data_b64,
+                    "length": length,
+                },
+            },
+        });
+
+        self.put(&format!("/proxy/{registry}/{name}"), &body).await
+    }
+
+    /// Upload a `.crate` artifact using the `cargo publish` binary wire format:
+    /// a `u32` little-endian metadata length, the metadata JSON, a `u32`
+    /// little-endian crate length, then the crate bytes.
+    pub async fn publish_cargo(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        file_path: &Path,
+    ) -> Result<()> {
+        let crate_bytes = std::fs::read(file_path)?;
+        let metadata = serde_json::json!({ "name": name, "vers": version });
+        let metadata_bytes = serde_json::to_vec(&metadata)?;
+
+        let mut body = Vec::with_capacity(8 + metadata_bytes.len() + crate_bytes.len());
+        body.extend_from_slice(&(metadata_bytes.len() as u32).to_le_bytes());
+        body.extend_from_slice(&metadata_bytes);
+        body.extend_from_slice(&(crate_bytes.len() as u32).to_le_bytes());
+        body.extend_from_slice(&crate_bytes);
+
+        self.put_bytes(&format!("/proxy/{registry}/api/v1/crates/new"), body)
+            .await
+    }
+
+    /// Upload a Composer package ZIP. The server parses `composer.json` from
+    /// the archive itself for name/version; `version_override` maps to the
+    /// endpoint's optional `?version=` query parameter.
+    pub async fn publish_composer(
+        &self,
+        registry: &str,
+        file_path: &Path,
+        version_override: Option<&str>,
+    ) -> Result<()> {
+        let bytes = std::fs::read(file_path)?;
+        let path = match version_override {
+            Some(v) => format!("/proxy/{registry}/api/upload?version={v}"),
+            None => format!("/proxy/{registry}/api/upload"),
+        };
+        self.post_bytes(&path, bytes).await
+    }
+
+    /// Upload a conda package (`.tar.bz2` or `.conda`). `platform` is only a
+    /// fallback subdir — the server prefers the `subdir` embedded in the
+    /// archive's own `info/index.json` when present.
+    pub async fn publish_conda(
+        &self,
+        registry: &str,
+        platform: &str,
+        file_path: &Path,
+    ) -> Result<()> {
+        let bytes = std::fs::read(file_path)?;
+        self.post_bytes(&format!("/proxy/{registry}/{platform}/"), bytes)
+            .await
+    }
+
+    /// Upload a VS Code/OpenVSX extension `.vsix` package.
+    pub async fn publish_openvsx(
+        &self,
+        registry: &str,
+        extension_id: &str,
+        version: &str,
+        file_path: &Path,
+    ) -> Result<()> {
+        let bytes = std::fs::read(file_path)?;
+        self.put_bytes(
+            &format!("/proxy/{registry}/{extension_id}/{version}/vsix"),
+            bytes,
+        )
+        .await
+    }
+
+    /// Upload a `.deb` package into a suite/component pool. The server reads
+    /// name/version/architecture from the package's own control file.
+    pub async fn publish_deb(
+        &self,
+        registry: &str,
+        distribution: &str,
+        component: &str,
+        file_path: &Path,
+    ) -> Result<()> {
+        let bytes = std::fs::read(file_path)?;
+        self.put_bytes(
+            &format!("/proxy/{registry}/deb/pool/{distribution}/{component}/upload"),
+            bytes,
+        )
+        .await
+    }
+
+    /// Upload a `.rpm` package. The server reads name/version/architecture
+    /// from the package's own header.
+    pub async fn publish_rpm(&self, registry: &str, file_path: &Path) -> Result<()> {
+        let bytes = std::fs::read(file_path)?;
+        self.put_bytes(&format!("/proxy/{registry}/rpm/upload"), bytes)
             .await
     }
 }
@@ -138,5 +382,57 @@ mod tests {
         assert_eq!(meta.registry_type, "nuget");
         assert_eq!(meta.name, "Newtonsoft.Json");
         assert_eq!(meta.version, "13.0.3");
+    }
+
+    #[test]
+    fn detect_meta_npm_tarball() {
+        let meta = detect_meta(&PathBuf::from("left-pad-1.3.0.tgz")).expect("detected");
+        assert_eq!(meta.registry_type, "npm");
+        assert_eq!(meta.name, "left-pad");
+        assert_eq!(meta.version, "1.3.0");
+    }
+
+    #[test]
+    fn detect_meta_cargo_crate() {
+        let meta = detect_meta(&PathBuf::from("serde-1.0.200.crate")).expect("detected");
+        assert_eq!(meta.registry_type, "cargo");
+        assert_eq!(meta.name, "serde");
+        assert_eq!(meta.version, "1.0.200");
+    }
+
+    #[test]
+    fn detect_meta_openvsx_vsix() {
+        let meta = detect_meta(&PathBuf::from("my-org.my-ext-2.1.0.vsix")).expect("detected");
+        assert_eq!(meta.registry_type, "openvsx");
+        assert_eq!(meta.name, "my-org.my-ext");
+        assert_eq!(meta.version, "2.1.0");
+    }
+
+    #[test]
+    fn detect_meta_deb_is_cosmetic_but_always_detects() {
+        let meta = detect_meta(&PathBuf::from("hello_1.0-1_amd64.deb")).expect("detected");
+        assert_eq!(meta.registry_type, "deb");
+    }
+
+    #[test]
+    fn detect_meta_rpm_is_cosmetic_but_always_detects() {
+        let meta = detect_meta(&PathBuf::from("hello-1.0-1.x86_64.rpm")).expect("detected");
+        assert_eq!(meta.registry_type, "rpm");
+    }
+
+    #[test]
+    fn detect_meta_conda_tar_bz2() {
+        let meta = detect_meta(&PathBuf::from("numpy-1.26.0-py311h0.tar.bz2")).expect("detected");
+        assert_eq!(meta.registry_type, "conda");
+        assert_eq!(meta.name, "numpy");
+        assert_eq!(meta.version, "1.26.0");
+    }
+
+    #[test]
+    fn detect_meta_conda_new_format() {
+        let meta = detect_meta(&PathBuf::from("numpy-1.26.0-py311h0.conda")).expect("detected");
+        assert_eq!(meta.registry_type, "conda");
+        assert_eq!(meta.name, "numpy");
+        assert_eq!(meta.version, "1.26.0");
     }
 }

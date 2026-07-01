@@ -3,6 +3,7 @@ pub mod cve_gate;
 pub mod deny_latest;
 pub mod rbac;
 pub mod release_age;
+pub mod signed_release;
 pub mod trusted_publisher;
 pub mod version_gate;
 
@@ -11,6 +12,7 @@ pub use cve_gate::CveGateRule;
 pub use deny_latest::DenyLatestRule;
 pub use rbac::RbacRule;
 pub use release_age::ReleaseAgeGateRule;
+pub use signed_release::RequireSignedReleaseRule;
 pub use trusted_publisher::TrustedPublisherRule;
 pub use version_gate::VersionGateRule;
 
