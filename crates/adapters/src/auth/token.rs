@@ -24,6 +24,23 @@ fn is_argon2_hash(s: &str) -> bool {
     s.starts_with("$argon2id$") || s.starts_with("$argon2i$") || s.starts_with("$argon2d$")
 }
 
+/// Constant-time byte comparison for secret values. Unlike `==`, this never
+/// short-circuits on the first differing byte, so it doesn't leak how much of
+/// a guessed token matches a real one through response timing. Lengths are
+/// compared up front (a standard, accepted leak — see Go's
+/// `subtle.ConstantTimeCompare` — since it reveals far less than a per-byte
+/// timing oracle would).
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 /// Hash a plain-text token with Argon2id. Use the output as the `value` in
 /// `[[auth.tokens]]` to avoid storing credentials in plain text.
 pub fn hash_static_token(plain: &str) -> String {
@@ -37,10 +54,13 @@ pub fn hash_static_token(plain: &str) -> String {
 /// Authenticates requests via static Bearer tokens configured in `config.toml`.
 ///
 /// Tokens may be stored as plain text **or** as Argon2 PHC strings (the output
-/// of `batlehub hash-token`).  Plain-text tokens are looked up in O(1); hashed
-/// tokens require a CPU-bound Argon2 verify for each configured hash entry.
+/// of `batlehub hash-token`).  Plain-text tokens are checked with a
+/// constant-time comparison against every configured entry (O(n) in the
+/// number of static tokens, which is config-driven and expected to be small);
+/// hashed tokens require a CPU-bound Argon2 verify for each configured hash
+/// entry.
 pub struct StaticTokenAuthProvider {
-    /// Plain-text tokens → O(1) lookup.
+    /// Plain-text tokens, scanned in full on every request (see `constant_time_eq`).
     plain: HashMap<String, TokenRecord>,
     /// Argon2-hashed tokens → linear scan, verified off the async thread.
     hashed: Vec<(String, TokenRecord)>,
@@ -128,8 +148,17 @@ impl AuthProvider for StaticTokenAuthProvider {
             return Ok(None);
         };
 
-        // Fast path: plain-text lookup.
-        if let Some(record) = self.plain.get(token.as_str()) {
+        // Plain-text tokens: compare against every entry in constant time,
+        // never short-circuiting on the first match, so a request's timing
+        // can't reveal how close a guessed token is to a real one or which
+        // entry (if any) it matched.
+        let mut plain_match: Option<&TokenRecord> = None;
+        for (candidate, record) in self.plain.iter() {
+            if constant_time_eq(token.as_bytes(), candidate.as_bytes()) {
+                plain_match = Some(record);
+            }
+        }
+        if let Some(record) = plain_match {
             return Ok(Some(to_identity(record)));
         }
 
@@ -329,5 +358,27 @@ mod tests {
     fn hash_token_produces_argon2_phc_string() {
         let h = hash_static_token("sometoken");
         assert!(is_argon2_hash(&h), "expected argon2 PHC string, got: {h}");
+    }
+
+    // ── constant_time_eq ──────────────────────────────────────────────────────
+
+    #[test]
+    fn constant_time_eq_equal_values() {
+        assert!(constant_time_eq(b"secret-token", b"secret-token"));
+    }
+
+    #[test]
+    fn constant_time_eq_different_values_same_length() {
+        assert!(!constant_time_eq(b"secret-token", b"secret-tokeX"));
+    }
+
+    #[test]
+    fn constant_time_eq_different_lengths() {
+        assert!(!constant_time_eq(b"short", b"much-longer-value"));
+    }
+
+    #[test]
+    fn constant_time_eq_empty_values() {
+        assert!(constant_time_eq(b"", b""));
     }
 }

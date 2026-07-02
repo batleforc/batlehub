@@ -85,6 +85,13 @@ pub trait Rule: Send + Sync {
 }
 
 /// Evaluate a list of rules in order. Returns the first `Deny`, or `Allow`.
+///
+/// An empty rule list allows: tests and library consumers rely on this to
+/// exercise `ProxyService` without RBAC noise. The real invariant this
+/// depends on — that `build_policy` always puts `RbacRule` first for every
+/// configured registry, so production policies are never actually empty — is
+/// guarded by `build_policy_default_has_rbac_and_block_list_rules` in
+/// `server/src/builders.rs`.
 pub async fn evaluate_rules(rules: &[Box<dyn Rule>], ctx: &RuleContext<'_>) -> RuleDecision {
     for rule in rules {
         let decision = rule.evaluate(ctx).await.resolve(ctx.identity);

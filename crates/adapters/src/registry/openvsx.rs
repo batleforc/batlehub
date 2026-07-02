@@ -11,7 +11,8 @@ use batlehub_core::{
 };
 
 use super::http_client::{
-    apply_upstream_options, basic_auth_get, cache_control, percent_encode, UpstreamHttpOptions,
+    apply_upstream_options, basic_auth_get, cache_control, ensure_same_origin, percent_encode,
+    UpstreamHttpOptions,
 };
 
 /// OpenVSX registry client (open-vsx.org or compatible).
@@ -157,6 +158,7 @@ impl RegistryClient for OpenVsxRegistryClient {
             ))
         })?;
 
+        ensure_same_origin(&download_url, &self.base_url)?;
         tracing::debug!(url = %download_url, "fetching OpenVSX VSIX");
 
         let response = self
@@ -631,6 +633,26 @@ mod tests {
         let _mock_dl = server
             .mock("GET", dl_path)
             .with_status(500)
+            .create_async()
+            .await;
+
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let result = client
+            .fetch_artifact(&pkg("ms-python.python", "2023.20.0"))
+            .await;
+
+        assert!(matches!(result, Err(CoreError::Registry(_))));
+    }
+
+    #[tokio::test]
+    async fn fetch_artifact_rejects_cross_origin_download_url() {
+        let mut server = Server::new_async().await;
+        let body = r#"{"namespace":"ms-python","name":"python","version":"2023.20.0","files":{"download":"http://evil.example.com/ext.vsix"}}"#;
+        let _mock = server
+            .mock("GET", "/api/ms-python/python/2023.20.0")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
             .create_async()
             .await;
 

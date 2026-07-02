@@ -11,7 +11,8 @@ use batlehub_core::{
 };
 
 use super::http_client::{
-    apply_upstream_options, basic_auth_get, cache_control, percent_encode, UpstreamHttpOptions,
+    apply_upstream_options, basic_auth_get, cache_control, ensure_same_origin, percent_encode,
+    UpstreamHttpOptions,
 };
 
 /// npm registry client (registry.npmjs.org or compatible).
@@ -156,6 +157,7 @@ impl RegistryClient for NpmRegistryClient {
         })?;
 
         let tarball_url = &version_meta.dist.tarball;
+        ensure_same_origin(tarball_url, &self.base_url)?;
         tracing::debug!(url = %tarball_url, "fetching npm tarball");
 
         let response = self
@@ -331,5 +333,33 @@ mod tests {
             shasum: String::new(),
         };
         assert!(pick_checksum(&dist).is_none());
+    }
+
+    #[tokio::test]
+    async fn fetch_artifact_rejects_cross_origin_tarball_url() {
+        let mut server = mockito::Server::new_async().await;
+        let body = r#"{
+            "dist-tags": {"latest": "1.0.0"},
+            "versions": {
+                "1.0.0": {
+                    "version": "1.0.0",
+                    "dist": {"tarball": "https://evil.example.com/lodash-1.0.0.tgz"}
+                }
+            }
+        }"#;
+        let _mock = server
+            .mock("GET", "/lodash")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = NpmRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let result = client
+            .fetch_artifact(&PackageId::new("npm", "lodash", "1.0.0").with_artifact("tarball"))
+            .await;
+
+        assert!(matches!(result, Err(CoreError::Registry(_))));
     }
 }

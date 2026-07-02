@@ -1,3 +1,4 @@
+use batlehub_core::error::CoreError;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION};
 
 /// Options that control how a registry client's upstream HTTP client is built.
@@ -150,6 +151,33 @@ pub fn parse_http_date(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
         .map(|dt| dt.with_timezone(&chrono::Utc))
 }
 
+/// Validates that `url` shares its scheme and host with `base_url`, rejecting
+/// any cross-origin URL.
+///
+/// Some upstream registries (npm, OpenVSX) return an absolute download URL in
+/// their own metadata response rather than a path relative to the configured
+/// upstream. A malicious or compromised upstream could point that URL at an
+/// internal address (SSRF), so callers that fetch such a URL must check it
+/// against the configured host first instead of trusting it verbatim.
+pub fn ensure_same_origin(url: &str, base_url: &str) -> Result<(), CoreError> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| CoreError::Registry(format!("invalid upstream URL '{url}': {e}")))?;
+    let base = reqwest::Url::parse(base_url)
+        .map_err(|e| CoreError::Registry(format!("invalid base URL '{base_url}': {e}")))?;
+
+    let same_scheme = parsed.scheme() == base.scheme();
+    let same_host = parsed.host_str() == base.host_str();
+    let same_port = parsed.port_or_known_default() == base.port_or_known_default();
+
+    if same_scheme && same_host && same_port {
+        Ok(())
+    } else {
+        Err(CoreError::Registry(format!(
+            "refusing to fetch cross-origin upstream URL '{url}' (expected origin of '{base_url}')"
+        )))
+    }
+}
+
 /// Percent-encode a query string value, encoding all characters except
 /// unreserved ones (letters, digits, `-`, `_`, `.`, `~`).
 pub fn percent_encode(s: &str) -> String {
@@ -193,6 +221,48 @@ mod tests {
     #[test]
     fn parse_http_date_invalid_returns_none() {
         assert!(parse_http_date("not-a-date").is_none());
+    }
+
+    #[test]
+    fn ensure_same_origin_matching_origin_ok() {
+        assert!(ensure_same_origin(
+            "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",
+            "https://registry.npmjs.org"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn ensure_same_origin_different_host_rejected() {
+        let err = ensure_same_origin(
+            "https://evil.example.com/payload.tgz",
+            "https://registry.npmjs.org",
+        )
+        .unwrap_err();
+        assert!(matches!(err, CoreError::Registry(_)));
+    }
+
+    #[test]
+    fn ensure_same_origin_different_scheme_rejected() {
+        assert!(ensure_same_origin(
+            "http://registry.npmjs.org/lodash.tgz",
+            "https://registry.npmjs.org"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn ensure_same_origin_different_port_rejected() {
+        assert!(ensure_same_origin(
+            "https://registry.npmjs.org:8443/lodash.tgz",
+            "https://registry.npmjs.org"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn ensure_same_origin_invalid_url_rejected() {
+        assert!(ensure_same_origin("not a url", "https://registry.npmjs.org").is_err());
     }
 
     fn empty_opts() -> UpstreamHttpOptions {
