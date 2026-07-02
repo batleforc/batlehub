@@ -12,7 +12,7 @@ use batlehub_core::{
 
 use super::http_client::{
     apply_upstream_options, basic_auth_get, cache_control, ensure_same_origin, percent_encode,
-    UpstreamHttpOptions,
+    to_registry_error, UpstreamHttpOptions,
 };
 
 /// npm registry client (registry.npmjs.org or compatible).
@@ -164,15 +164,13 @@ impl RegistryClient for NpmRegistryClient {
             .get(tarball_url)
             .send()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .map_err(to_registry_error)?
             .error_for_status()
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+            .map_err(to_registry_error)?;
 
         let cache_control = cache_control(&response);
 
-        let stream = response
-            .bytes_stream()
-            .map_err(|e| CoreError::Registry(e.to_string()));
+        let stream = response.bytes_stream().map_err(to_registry_error);
 
         Ok(FetchedArtifact {
             stream: Box::pin(stream),
@@ -206,20 +204,13 @@ impl RegistryClient for NpmRegistryClient {
             percent_encode(query),
             limit.min(50),
         );
-        let res = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let res = self.get(&url).send().await.map_err(to_registry_error)?;
 
         if !res.status().is_success() {
             return Ok(vec![]);
         }
 
-        let body: SearchResponse = res
-            .json()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let body: SearchResponse = res.json().await.map_err(to_registry_error)?;
 
         Ok(body
             .objects
@@ -268,17 +259,17 @@ impl NpmRegistryClient {
             .header("Accept", "application/json")
             .send()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+            .map_err(to_registry_error)?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(CoreError::NotFound(format!("npm package {name} not found")));
         }
 
         resp.error_for_status()
-            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .map_err(to_registry_error)?
             .json::<NpmPackument>()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))
+            .map_err(to_registry_error)
     }
 }
 

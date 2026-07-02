@@ -8,7 +8,7 @@ use batlehub_core::{
     ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
 };
 
-use super::super::http_client::{cache_control, percent_encode};
+use super::super::http_client::{cache_control, percent_encode, to_registry_error};
 use super::client::NugetRegistryClient;
 
 // ── Pure helper functions ─────────────────────────────────────────────────────
@@ -129,9 +129,7 @@ impl RegistryClient for NugetRegistryClient {
 
         let cache_control = cache_control(&resp);
 
-        let stream = resp
-            .bytes_stream()
-            .map_err(|e| CoreError::Registry(e.to_string()));
+        let stream = resp.bytes_stream().map_err(to_registry_error);
 
         Ok(FetchedArtifact {
             stream: Box::pin(stream),
@@ -173,20 +171,13 @@ impl RegistryClient for NugetRegistryClient {
             limit.min(100),
         );
 
-        let resp = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let resp = self.get(&url).send().await.map_err(to_registry_error)?;
 
         if !resp.status().is_success() {
             return Ok(vec![]);
         }
 
-        let body: SearchResponse = resp
-            .json()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let body: SearchResponse = resp.json().await.map_err(to_registry_error)?;
 
         Ok(body
             .data

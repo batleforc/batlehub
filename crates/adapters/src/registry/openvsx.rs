@@ -12,7 +12,7 @@ use batlehub_core::{
 
 use super::http_client::{
     apply_upstream_options, basic_auth_get, cache_control, ensure_same_origin, percent_encode,
-    UpstreamHttpOptions,
+    to_registry_error, UpstreamHttpOptions,
 };
 
 /// OpenVSX registry client (open-vsx.org or compatible).
@@ -165,15 +165,13 @@ impl RegistryClient for OpenVsxRegistryClient {
             .get(&download_url)
             .send()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .map_err(to_registry_error)?
             .error_for_status()
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+            .map_err(to_registry_error)?;
 
         let cache_control = cache_control(&response);
 
-        let stream = response
-            .bytes_stream()
-            .map_err(|e| CoreError::Registry(e.to_string()));
+        let stream = response.bytes_stream().map_err(to_registry_error);
 
         Ok(FetchedArtifact {
             stream: Box::pin(stream),
@@ -213,20 +211,13 @@ impl RegistryClient for OpenVsxRegistryClient {
             limit.min(50),
         );
 
-        let res = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let res = self.get(&url).send().await.map_err(to_registry_error)?;
 
         if !res.status().is_success() {
             return Ok(vec![]);
         }
 
-        let body: SearchResponse = res
-            .json()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let body: SearchResponse = res.json().await.map_err(to_registry_error)?;
 
         Ok(body
             .extensions
@@ -254,11 +245,7 @@ impl OpenVsxRegistryClient {
             format!("{}/api/{}/{}/{}", self.base_url, publisher, name, version)
         };
 
-        let resp = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let resp = self.get(&url).send().await.map_err(to_registry_error)?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(CoreError::NotFound(format!(
@@ -267,10 +254,10 @@ impl OpenVsxRegistryClient {
         }
 
         resp.error_for_status()
-            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .map_err(to_registry_error)?
             .json::<OpenVsxExtension>()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))
+            .map_err(to_registry_error)
     }
 }
 

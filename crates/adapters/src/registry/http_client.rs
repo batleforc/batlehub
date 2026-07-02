@@ -159,6 +159,14 @@ pub fn parse_http_date(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
 /// upstream. A malicious or compromised upstream could point that URL at an
 /// internal address (SSRF), so callers that fetch such a URL must check it
 /// against the configured host first instead of trusting it verbatim.
+/// Map a `reqwest::Error` to `CoreError::Registry`. Shared by every registry
+/// adapter's `.map_err(...)` call site (both on `Result` and on
+/// `Stream::map_err`, e.g. `bytes_stream()`), which otherwise repeat this
+/// closure verbatim at each fallible HTTP step.
+pub fn to_registry_error(e: reqwest::Error) -> CoreError {
+    CoreError::Registry(e.to_string())
+}
+
 pub fn ensure_same_origin(url: &str, base_url: &str) -> Result<(), CoreError> {
     let parsed = reqwest::Url::parse(url)
         .map_err(|e| CoreError::Registry(format!("invalid upstream URL '{url}': {e}")))?;

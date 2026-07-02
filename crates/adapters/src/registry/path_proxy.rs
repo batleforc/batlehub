@@ -17,7 +17,9 @@ use batlehub_core::{
     ports::{FetchedArtifact, RegistryClient},
 };
 
-use super::http_client::{apply_upstream_options, basic_auth_get, UpstreamHttpOptions};
+use super::http_client::{
+    apply_upstream_options, basic_auth_get, to_registry_error, UpstreamHttpOptions,
+};
 
 pub struct PathProxyRegistryClient {
     registry_type: String,
@@ -78,14 +80,12 @@ impl RegistryClient for PathProxyRegistryClient {
         let resp = basic_auth_get(&self.http, &self.basic_auth, &url)
             .send()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+            .map_err(to_registry_error)?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(CoreError::NotFound(format!("{path} not found upstream")));
         }
-        let resp = resp
-            .error_for_status()
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let resp = resp.error_for_status().map_err(to_registry_error)?;
 
         let cache_control = resp
             .headers()
@@ -93,9 +93,7 @@ impl RegistryClient for PathProxyRegistryClient {
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
 
-        let stream = resp
-            .bytes_stream()
-            .map_err(|e| CoreError::Registry(e.to_string()));
+        let stream = resp.bytes_stream().map_err(to_registry_error);
         Ok(FetchedArtifact {
             stream: Box::pin(stream),
             cache_control,

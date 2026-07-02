@@ -9,7 +9,7 @@ use batlehub_core::{
 };
 
 use super::http_client::{
-    apply_upstream_options, basic_auth_get, cache_control, UpstreamHttpOptions,
+    apply_upstream_options, basic_auth_get, cache_control, to_registry_error, UpstreamHttpOptions,
 };
 // percent_encode not needed for PyPI (uses normalize_name for exact lookup)
 
@@ -89,10 +89,7 @@ impl RegistryClient for PypiRegistryClient {
 
         let cache_control = cache_control(&resp);
 
-        let body = resp
-            .bytes()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let body = resp.bytes().await.map_err(to_registry_error)?;
 
         let version_json: PypiVersionJson = serde_json::from_slice(&body)
             .map_err(|e| CoreError::Registry(format!("pypi: parse version JSON: {e}")))?;
@@ -158,10 +155,7 @@ impl RegistryClient for PypiRegistryClient {
             )));
         }
 
-        let body = api_resp
-            .bytes()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let body = api_resp.bytes().await.map_err(to_registry_error)?;
 
         let version_json: PypiVersionJson = serde_json::from_slice(&body)
             .map_err(|e| CoreError::Registry(format!("pypi: parse version JSON: {e}")))?;
@@ -183,7 +177,7 @@ impl RegistryClient for PypiRegistryClient {
             .get(&file.url)
             .send()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+            .map_err(to_registry_error)?;
 
         if !dl_resp.status().is_success() {
             return Err(CoreError::Registry(format!(
@@ -195,9 +189,7 @@ impl RegistryClient for PypiRegistryClient {
 
         let cache_control = cache_control(&dl_resp);
 
-        let stream = dl_resp
-            .bytes_stream()
-            .map_err(|e| CoreError::Registry(e.to_string()));
+        let stream = dl_resp.bytes_stream().map_err(to_registry_error);
 
         Ok(FetchedArtifact {
             stream: Box::pin(stream),
@@ -210,11 +202,7 @@ impl RegistryClient for PypiRegistryClient {
         let name = normalize_name(package);
         let url = format!("{base}/pypi/{name}/json");
 
-        let resp = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let resp = self.get(&url).send().await.map_err(to_registry_error)?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(vec![]);
@@ -226,10 +214,7 @@ impl RegistryClient for PypiRegistryClient {
             )));
         }
 
-        let body = resp
-            .bytes()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let body = resp.bytes().await.map_err(to_registry_error)?;
 
         let pkg_json: PypiPackageJson = serde_json::from_slice(&body)
             .map_err(|e| CoreError::Registry(format!("pypi: parse package JSON: {e}")))?;
@@ -248,20 +233,13 @@ impl RegistryClient for PypiRegistryClient {
     ) -> Result<Vec<UpstreamPackage>, CoreError> {
         let base = self.base_url.trim_end_matches('/');
         let url = format!("{base}/pypi/{}/json", normalize_name(query));
-        let res = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let res = self.get(&url).send().await.map_err(to_registry_error)?;
 
         if !res.status().is_success() {
             return Ok(vec![]);
         }
 
-        let body: PypiSearchInfo = res
-            .json()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let body: PypiSearchInfo = res.json().await.map_err(to_registry_error)?;
 
         Ok(vec![UpstreamPackage {
             name: body.info.name,

@@ -1,3 +1,4 @@
+use super::super::http_client::to_registry_error;
 use super::{cache_control, models, CondaRegistryClient, CoreError, PackageId, PackageMetadata};
 use models::{CondaIndexJson, CondaPackageInfo, CondaRepodata};
 
@@ -58,10 +59,7 @@ impl CondaRegistryClient {
             )));
         }
         let cache_control = cache_control(&resp);
-        let body = resp
-            .bytes()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let body = resp.bytes().await.map_err(to_registry_error)?;
         let repodata: CondaRepodata = serde_json::from_slice(&body)
             .map_err(|e| CoreError::Registry(format!("conda: parse repodata: {e}")))?;
         let entry = repodata

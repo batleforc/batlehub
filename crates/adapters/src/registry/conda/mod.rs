@@ -9,7 +9,7 @@ use batlehub_core::{
 };
 
 use super::http_client::{
-    apply_upstream_options, basic_auth_get, cache_control, UpstreamHttpOptions,
+    apply_upstream_options, basic_auth_get, cache_control, to_registry_error, UpstreamHttpOptions,
 };
 
 mod client;
@@ -147,11 +147,7 @@ impl RegistryClient for CondaRegistryClient {
 
         tracing::debug!(url = %url, "fetching conda artifact");
 
-        let resp = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let resp = self.get(&url).send().await.map_err(to_registry_error)?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(CoreError::NotFound(format!(
@@ -169,9 +165,7 @@ impl RegistryClient for CondaRegistryClient {
 
         let cache_control = cache_control(&resp);
 
-        let stream = resp
-            .bytes_stream()
-            .map_err(|e| CoreError::Registry(e.to_string()));
+        let stream = resp.bytes_stream().map_err(to_registry_error);
 
         Ok(FetchedArtifact {
             stream: Box::pin(stream),

@@ -9,6 +9,7 @@ use batlehub_core::{
     ports::{FetchedArtifact, RegistryClient},
 };
 
+use super::super::http_client::to_registry_error;
 use super::client::{is_release_signed, source_format, GitlabRegistryClient};
 
 // ── Serde types for GitLab API responses ──────────────────────────────────────
@@ -208,9 +209,9 @@ impl RegistryClient for GitlabRegistryClient {
             .get(&download_url)
             .send()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .map_err(to_registry_error)?
             .error_for_status()
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+            .map_err(to_registry_error)?;
 
         let cache_control = response
             .headers()
@@ -218,9 +219,7 @@ impl RegistryClient for GitlabRegistryClient {
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
 
-        let stream = response
-            .bytes_stream()
-            .map_err(|e| CoreError::Registry(e.to_string()));
+        let stream = response.bytes_stream().map_err(to_registry_error);
 
         Ok(FetchedArtifact {
             stream: Box::pin(stream),

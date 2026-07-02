@@ -9,7 +9,8 @@ use batlehub_core::{
 };
 
 use super::http_client::{
-    apply_upstream_options, basic_auth_get, cache_control, percent_encode, UpstreamHttpOptions,
+    apply_upstream_options, basic_auth_get, cache_control, percent_encode, to_registry_error,
+    UpstreamHttpOptions,
 };
 
 mod client;
@@ -129,10 +130,7 @@ impl RegistryClient for RubyGemsRegistryClient {
 
         // Parse published_at and checksum from the gem info JSON when available.
         if pkg.artifact.is_none() && pkg.name != "_index" {
-            let body = resp
-                .bytes()
-                .await
-                .map_err(|e| CoreError::Registry(e.to_string()))?;
+            let body = resp.bytes().await.map_err(to_registry_error)?;
             if let Ok(info) = serde_json::from_slice::<GemInfo>(&body) {
                 let published_at = info.created_at.as_deref().and_then(|s| {
                     chrono::DateTime::parse_from_rfc3339(s)
@@ -167,11 +165,7 @@ impl RegistryClient for RubyGemsRegistryClient {
 
         tracing::debug!(url = %url, "fetching RubyGems artifact");
 
-        let response = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let response = self.get(&url).send().await.map_err(to_registry_error)?;
 
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(CoreError::NotFound(format!(
@@ -189,9 +183,7 @@ impl RegistryClient for RubyGemsRegistryClient {
 
         let cache_control = cache_control(&response);
 
-        let stream = response
-            .bytes_stream()
-            .map_err(|e| CoreError::Registry(e.to_string()));
+        let stream = response.bytes_stream().map_err(to_registry_error);
 
         Ok(FetchedArtifact {
             stream: Box::pin(stream),
@@ -203,11 +195,7 @@ impl RegistryClient for RubyGemsRegistryClient {
         let base = self.base_url.trim_end_matches('/');
         let url = format!("{base}/api/v1/versions/{package}.json");
 
-        let resp = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let resp = self.get(&url).send().await.map_err(to_registry_error)?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(vec![]);
@@ -215,10 +203,10 @@ impl RegistryClient for RubyGemsRegistryClient {
 
         let body = resp
             .error_for_status()
-            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .map_err(to_registry_error)?
             .bytes()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+            .map_err(to_registry_error)?;
 
         let versions: Vec<GemVersion> = serde_json::from_slice(&body)
             .map_err(|e| CoreError::Registry(format!("rubygems: parse versions: {e}")))?;
@@ -246,20 +234,13 @@ impl RegistryClient for RubyGemsRegistryClient {
             self.base_url,
             percent_encode(query),
         );
-        let res = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let res = self.get(&url).send().await.map_err(to_registry_error)?;
 
         if !res.status().is_success() {
             return Ok(vec![]);
         }
 
-        let gems: Vec<GemSearchResult> = res
-            .json()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let gems: Vec<GemSearchResult> = res.json().await.map_err(to_registry_error)?;
 
         Ok(gems
             .into_iter()

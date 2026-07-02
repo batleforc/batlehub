@@ -1,3 +1,4 @@
+use super::super::http_client::to_registry_error;
 use super::CoreError;
 
 // ── PEP 503 name normalisation ────────────────────────────────────────────────
@@ -68,10 +69,7 @@ pub async fn fetch_simple_page(
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
 
-    let body = resp
-        .bytes()
-        .await
-        .map_err(|e| CoreError::Registry(e.to_string()))?;
+    let body = resp.bytes().await.map_err(to_registry_error)?;
 
     Ok((body, content_type))
 }

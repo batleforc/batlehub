@@ -10,7 +10,8 @@ use batlehub_core::{
 };
 
 use super::http_client::{
-    apply_upstream_options, basic_auth_get, cache_control, percent_encode, UpstreamHttpOptions,
+    apply_upstream_options, basic_auth_get, cache_control, percent_encode, to_registry_error,
+    UpstreamHttpOptions,
 };
 
 use batlehub_core::ports::UpstreamPackage;
@@ -217,11 +218,7 @@ impl RegistryClient for GoProxyRegistryClient {
 
     async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
         let url = format!("{}/@v/list", self.module_base(package));
-        let resp = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let resp = self.get(&url).send().await.map_err(to_registry_error)?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(vec![]);
@@ -229,10 +226,10 @@ impl RegistryClient for GoProxyRegistryClient {
 
         let text = resp
             .error_for_status()
-            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .map_err(to_registry_error)?
             .text()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+            .map_err(to_registry_error)?;
 
         Ok(text
             .lines()
@@ -267,11 +264,7 @@ impl RegistryClient for GoProxyRegistryClient {
 
         tracing::debug!(url = %url, "fetching Go module artifact");
 
-        let response = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let response = self.get(&url).send().await.map_err(to_registry_error)?;
 
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(CoreError::NotFound(format!(
@@ -280,15 +273,11 @@ impl RegistryClient for GoProxyRegistryClient {
             )));
         }
 
-        let response = response
-            .error_for_status()
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let response = response.error_for_status().map_err(to_registry_error)?;
 
         let cache_control = cache_control(&response);
 
-        let stream = response
-            .bytes_stream()
-            .map_err(|e| CoreError::Registry(e.to_string()));
+        let stream = response.bytes_stream().map_err(to_registry_error);
 
         Ok(FetchedArtifact {
             stream: Box::pin(stream),
@@ -323,10 +312,7 @@ impl RegistryClient for GoProxyRegistryClient {
             // rather than failing the whole multi-registry explore search.
             _ => return Ok(vec![]),
         };
-        let html = resp
-            .text()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let html = resp.text().await.map_err(to_registry_error)?;
         Ok(parse_pkg_go_dev_search(&html, limit))
     }
 }
@@ -357,11 +343,7 @@ impl GoProxyRegistryClient {
         module: &str,
         version: &str,
     ) -> Result<GoVersionInfo, CoreError> {
-        let resp = self
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let resp = self.get(url).send().await.map_err(to_registry_error)?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(CoreError::NotFound(format!(
@@ -370,10 +352,10 @@ impl GoProxyRegistryClient {
         }
 
         resp.error_for_status()
-            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .map_err(to_registry_error)?
             .json::<GoVersionInfo>()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))
+            .map_err(to_registry_error)
     }
 }
 

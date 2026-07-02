@@ -5,9 +5,7 @@ use clap::Subcommand;
 use comfy_table::Table;
 
 use crate::api::{
-    auth::{
-        get_oidc_login_url, list_oidc_providers, oidc_refresh, parse_oidc_paste, CreateTokenRequest,
-    },
+    auth::{get_oidc_login_url, oidc_refresh, parse_oidc_paste, CreateTokenRequest},
     BatleHubClient,
 };
 use crate::config::ConfigFile;
@@ -198,7 +196,7 @@ async fn handle_auth_login(
         return Ok(());
     }
 
-    let providers = list_oidc_providers(client).await.unwrap_or_default();
+    let providers = client.list_oidc_providers().await.unwrap_or_default();
     if providers.is_empty() {
         anyhow::bail!(
             "OIDC is not configured on this server. \

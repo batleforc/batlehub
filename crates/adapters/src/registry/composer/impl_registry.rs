@@ -10,7 +10,7 @@ use batlehub_core::{
 };
 
 use super::client::ComposerRegistryClient;
-use super::http_client::percent_encode;
+use super::http_client::{percent_encode, to_registry_error};
 
 // ── RegistryClient impl ───────────────────────────────────────────────────────
 
@@ -135,7 +135,7 @@ impl RegistryClient for ComposerRegistryClient {
             .get(&dist_url)
             .send()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+            .map_err(to_registry_error)?;
 
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(CoreError::NotFound(format!(
@@ -158,9 +158,7 @@ impl RegistryClient for ComposerRegistryClient {
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
 
-        let stream = response
-            .bytes_stream()
-            .map_err(|e| CoreError::Registry(e.to_string()));
+        let stream = response.bytes_stream().map_err(to_registry_error);
 
         Ok(FetchedArtifact {
             stream: Box::pin(stream),
@@ -202,20 +200,13 @@ impl RegistryClient for ComposerRegistryClient {
             percent_encode(query),
             limit.min(50),
         );
-        let res = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let res = self.get(&url).send().await.map_err(to_registry_error)?;
 
         if !res.status().is_success() {
             return Ok(vec![]);
         }
 
-        let body: SearchResponse = res
-            .json()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let body: SearchResponse = res.json().await.map_err(to_registry_error)?;
 
         // Packagist search doesn't include the latest version; use "latest" as a
         // placeholder — the proxy resolves the real version on first access.

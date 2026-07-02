@@ -1,5 +1,6 @@
 use super::super::http_client::{
-    apply_upstream_tls, basic_auth_get, upstream_auth_headers, UpstreamHttpOptions,
+    apply_upstream_tls, basic_auth_get, to_registry_error, upstream_auth_headers,
+    UpstreamHttpOptions,
 };
 use super::models::{FjAsset, FjRelease};
 use batlehub_core::error::CoreError;
@@ -81,11 +82,7 @@ impl ForgejoRegistryClient {
         );
         let mut all = Vec::new();
         for page in 0..20 {
-            let resp = self
-                .get(&url)
-                .send()
-                .await
-                .map_err(|e| CoreError::Registry(e.to_string()))?;
+            let resp = self.get(&url).send().await.map_err(to_registry_error)?;
             if resp.status() == reqwest::StatusCode::NOT_FOUND {
                 if page == 0 {
                     return Err(CoreError::NotFound(format!("{owner_repo} not found")));
@@ -99,10 +96,7 @@ impl ForgejoRegistryClient {
                 )));
             }
             let next = next_link(resp.headers());
-            let releases: Vec<FjRelease> = resp
-                .json()
-                .await
-                .map_err(|e| CoreError::Registry(e.to_string()))?;
+            let releases: Vec<FjRelease> = resp.json().await.map_err(to_registry_error)?;
             all.extend(releases);
             match next {
                 Some(n) => url = n,
@@ -121,21 +115,17 @@ impl ForgejoRegistryClient {
             "{}/repos/{}/releases/tags/{}",
             self.api_base_url, owner_repo, tag
         );
-        let resp = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let resp = self.get(&url).send().await.map_err(to_registry_error)?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(CoreError::NotFound(format!("{owner_repo}@{tag} not found")));
         }
 
         resp.error_for_status()
-            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .map_err(to_registry_error)?
             .json::<FjRelease>()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))
+            .map_err(to_registry_error)
     }
 }
 

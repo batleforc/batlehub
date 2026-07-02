@@ -7,7 +7,7 @@ use batlehub_core::{
     ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
 };
 
-use super::super::http_client::{cache_control, percent_encode};
+use super::super::http_client::{cache_control, percent_encode, to_registry_error};
 use super::client::MavenRegistryClient;
 
 // ── XML / HTTP helpers ────────────────────────────────────────────────────────
@@ -118,9 +118,7 @@ impl RegistryClient for MavenRegistryClient {
 
         let cache_control = cache_control(&resp);
 
-        let stream = resp
-            .bytes_stream()
-            .map_err(|e| CoreError::Registry(e.to_string()));
+        let stream = resp.bytes_stream().map_err(to_registry_error);
 
         Ok(FetchedArtifact {
             stream: Box::pin(stream),
@@ -173,20 +171,13 @@ impl RegistryClient for MavenRegistryClient {
             percent_encode(query),
             limit.min(50),
         );
-        let res = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let res = self.get(&url).send().await.map_err(to_registry_error)?;
 
         if !res.status().is_success() {
             return Ok(vec![]);
         }
 
-        let body: SearchResponse = res
-            .json()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let body: SearchResponse = res.json().await.map_err(to_registry_error)?;
 
         Ok(body
             .response

@@ -1,5 +1,6 @@
 use super::super::http_client::{
-    apply_upstream_tls, basic_auth_get, percent_encode, upstream_auth_headers, UpstreamHttpOptions,
+    apply_upstream_tls, basic_auth_get, percent_encode, to_registry_error, upstream_auth_headers,
+    UpstreamHttpOptions,
 };
 use super::models::{GlLink, GlRelease};
 use batlehub_core::error::CoreError;
@@ -85,11 +86,7 @@ impl GitlabRegistryClient {
         );
         let mut all = Vec::new();
         for page in 0..20 {
-            let resp = self
-                .get(&url)
-                .send()
-                .await
-                .map_err(|e| CoreError::Registry(e.to_string()))?;
+            let resp = self.get(&url).send().await.map_err(to_registry_error)?;
             if resp.status() == reqwest::StatusCode::NOT_FOUND {
                 if page == 0 {
                     return Err(CoreError::NotFound(format!("{project} not found")));
@@ -103,10 +100,7 @@ impl GitlabRegistryClient {
                 )));
             }
             let next = next_link(resp.headers());
-            let releases: Vec<GlRelease> = resp
-                .json()
-                .await
-                .map_err(|e| CoreError::Registry(e.to_string()))?;
+            let releases: Vec<GlRelease> = resp.json().await.map_err(to_registry_error)?;
             all.extend(releases);
             match next {
                 Some(n) => url = n,
@@ -145,21 +139,17 @@ impl GitlabRegistryClient {
             Self::project_selector(project),
             percent_encode(tag),
         );
-        let resp = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let resp = self.get(&url).send().await.map_err(to_registry_error)?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(CoreError::NotFound(format!("{project}@{tag} not found")));
         }
 
         resp.error_for_status()
-            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .map_err(to_registry_error)?
             .json::<GlRelease>()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))
+            .map_err(to_registry_error)
     }
 
     /// Source-archive download URL via the repository archive endpoint.

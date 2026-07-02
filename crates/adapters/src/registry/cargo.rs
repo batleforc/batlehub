@@ -10,7 +10,8 @@ use batlehub_core::{
 };
 
 use super::http_client::{
-    apply_upstream_options, basic_auth_get, cache_control, percent_encode, UpstreamHttpOptions,
+    apply_upstream_options, basic_auth_get, cache_control, percent_encode, to_registry_error,
+    UpstreamHttpOptions,
 };
 
 /// crates.io (or compatible) registry client.
@@ -136,15 +137,13 @@ impl RegistryClient for CargoRegistryClient {
             .get(&url)
             .send()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .map_err(to_registry_error)?
             .error_for_status()
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+            .map_err(to_registry_error)?;
 
         let cache_control = cache_control(&response);
 
-        let stream = response
-            .bytes_stream()
-            .map_err(|e| CoreError::Registry(e.to_string()));
+        let stream = response.bytes_stream().map_err(to_registry_error);
 
         Ok(FetchedArtifact {
             stream: Box::pin(stream),
@@ -174,20 +173,13 @@ impl RegistryClient for CargoRegistryClient {
             percent_encode(query),
             limit.min(100),
         );
-        let res = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let res = self.get(&url).send().await.map_err(to_registry_error)?;
 
         if !res.status().is_success() {
             return Ok(vec![]);
         }
 
-        let body: SearchResponse = res
-            .json()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let body: SearchResponse = res.json().await.map_err(to_registry_error)?;
 
         Ok(body
             .crates
@@ -224,21 +216,17 @@ impl CargoRegistryClient {
 
     async fn fetch_crate_info(&self, name: &str) -> Result<CratesIoResponse, CoreError> {
         let url = format!("{}/api/v1/crates/{}", self.base_url, name);
-        let resp = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let resp = self.get(&url).send().await.map_err(to_registry_error)?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(CoreError::NotFound(format!("crate {name} not found")));
         }
 
         resp.error_for_status()
-            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .map_err(to_registry_error)?
             .json::<CratesIoResponse>()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))
+            .map_err(to_registry_error)
     }
 }
 

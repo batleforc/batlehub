@@ -9,6 +9,7 @@ use batlehub_core::{
     ports::{FetchedArtifact, RegistryClient},
 };
 
+use super::super::http_client::to_registry_error;
 use super::client::{is_release_signed, next_link, static_artifact_url, GithubRegistryClient};
 
 // ── Serde types for GitHub API responses ─────────────────────────────────────
@@ -63,11 +64,7 @@ impl RegistryClient for GithubRegistryClient {
         match pkg.version.as_str() {
             "releases" => {
                 let url = format!("{}/repos/{}/releases", self.base_url, owner_repo);
-                let resp = self
-                    .get(&url)
-                    .send()
-                    .await
-                    .map_err(|e| CoreError::Registry(e.to_string()))?;
+                let resp = self.get(&url).send().await.map_err(to_registry_error)?;
 
                 if resp.status() == reqwest::StatusCode::NOT_FOUND {
                     return Err(CoreError::NotFound(format!("{owner_repo} not found")));
@@ -75,10 +72,10 @@ impl RegistryClient for GithubRegistryClient {
 
                 let releases: Vec<GhRelease> = resp
                     .error_for_status()
-                    .map_err(|e| CoreError::Registry(e.to_string()))?
+                    .map_err(to_registry_error)?
                     .json()
                     .await
-                    .map_err(|e| CoreError::Registry(e.to_string()))?;
+                    .map_err(to_registry_error)?;
 
                 let extra = serde_json::to_value(releases.iter().map(|r| {
                     serde_json::json!({ "id": r.id, "tag_name": r.tag_name, "published_at": r.published_at })
@@ -183,11 +180,7 @@ impl RegistryClient for GithubRegistryClient {
                     "{}/repos/{}/releases/assets/{}",
                     self.base_url, owner_repo, asset_id
                 );
-                let resp = self
-                    .get(&url)
-                    .send()
-                    .await
-                    .map_err(|e| CoreError::Registry(e.to_string()))?;
+                let resp = self.get(&url).send().await.map_err(to_registry_error)?;
 
                 if resp.status() == reqwest::StatusCode::NOT_FOUND {
                     return Err(CoreError::NotFound(format!("asset {asset_id} not found")));
@@ -195,10 +188,10 @@ impl RegistryClient for GithubRegistryClient {
 
                 let asset: GhAsset = resp
                     .error_for_status()
-                    .map_err(|e| CoreError::Registry(e.to_string()))?
+                    .map_err(to_registry_error)?
                     .json()
                     .await
-                    .map_err(|e| CoreError::Registry(e.to_string()))?;
+                    .map_err(to_registry_error)?;
                 asset.browser_download_url
             }
         } else {
@@ -213,9 +206,9 @@ impl RegistryClient for GithubRegistryClient {
             .get(&download_url)
             .send()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .map_err(to_registry_error)?
             .error_for_status()
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+            .map_err(to_registry_error)?;
 
         let cache_control = response
             .headers()
@@ -223,9 +216,7 @@ impl RegistryClient for GithubRegistryClient {
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
 
-        let stream = response
-            .bytes_stream()
-            .map_err(|e| CoreError::Registry(e.to_string()));
+        let stream = response.bytes_stream().map_err(to_registry_error);
 
         Ok(FetchedArtifact {
             stream: Box::pin(stream),
@@ -238,11 +229,7 @@ impl RegistryClient for GithubRegistryClient {
         let mut versions = Vec::new();
 
         for _ in 0..10 {
-            let resp = self
-                .get(&url)
-                .send()
-                .await
-                .map_err(|e| CoreError::Registry(e.to_string()))?;
+            let resp = self.get(&url).send().await.map_err(to_registry_error)?;
 
             if resp.status() == reqwest::StatusCode::NOT_FOUND {
                 return Ok(vec![]);
@@ -256,10 +243,7 @@ impl RegistryClient for GithubRegistryClient {
 
             let next_url = next_link(resp.headers());
 
-            let releases: Vec<GhRelease> = resp
-                .json()
-                .await
-                .map_err(|e| CoreError::Registry(e.to_string()))?;
+            let releases: Vec<GhRelease> = resp.json().await.map_err(to_registry_error)?;
 
             for r in releases {
                 versions.push(r.tag_name);

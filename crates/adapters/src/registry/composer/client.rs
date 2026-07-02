@@ -1,4 +1,6 @@
-use super::http_client::{apply_upstream_options, basic_auth_get, UpstreamHttpOptions};
+use super::http_client::{
+    apply_upstream_options, basic_auth_get, to_registry_error, UpstreamHttpOptions,
+};
 use super::models::PackagistV2Response;
 use batlehub_core::error::CoreError;
 
@@ -114,10 +116,7 @@ impl ComposerRegistryClient {
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
 
-        let body = resp
-            .bytes()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let body = resp.bytes().await.map_err(to_registry_error)?;
 
         Ok((body, cache_control))
     }

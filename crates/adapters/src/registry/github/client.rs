@@ -1,5 +1,6 @@
 use super::super::http_client::{
-    apply_upstream_tls, basic_auth_get, upstream_auth_headers, UpstreamHttpOptions,
+    apply_upstream_tls, basic_auth_get, to_registry_error, upstream_auth_headers,
+    UpstreamHttpOptions,
 };
 use super::models::{GhAsset, GhRelease};
 use batlehub_core::error::CoreError;
@@ -86,21 +87,17 @@ impl GithubRegistryClient {
             "{}/repos/{}/releases/tags/{}",
             self.base_url, owner_repo, tag
         );
-        let resp = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let resp = self.get(&url).send().await.map_err(to_registry_error)?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(CoreError::NotFound(format!("{owner_repo}@{tag} not found")));
         }
 
         resp.error_for_status()
-            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .map_err(to_registry_error)?
             .json::<GhRelease>()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))
+            .map_err(to_registry_error)
     }
 }
 

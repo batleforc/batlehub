@@ -8,7 +8,7 @@ use batlehub_core::{
     ports::{FetchedArtifact, RegistryClient},
 };
 
-use super::super::http_client::{apply_upstream_options, UpstreamHttpOptions};
+use super::super::http_client::{apply_upstream_options, to_registry_error, UpstreamHttpOptions};
 use super::models::{
     ExtensionQueryCriteria, ExtensionQueryFilter, ExtensionQueryRequest, ExtensionQueryResponse,
     ResolvedExtension, FILTER_EXTENSION_NAME, FILTER_VERSION, FLAG_INCLUDE_ASSET_URI,
@@ -95,7 +95,7 @@ impl VsCodeMarketplaceRegistryClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+            .map_err(to_registry_error)?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(CoreError::NotFound(format!(
@@ -105,10 +105,10 @@ impl VsCodeMarketplaceRegistryClient {
 
         let query_resp = resp
             .error_for_status()
-            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .map_err(to_registry_error)?
             .json::<ExtensionQueryResponse>()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+            .map_err(to_registry_error)?;
 
         // The API returns 200 with empty results for missing extensions
         let ext = query_resp
@@ -207,7 +207,7 @@ impl RegistryClient for VsCodeMarketplaceRegistryClient {
             .get(&url)
             .send()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+            .map_err(to_registry_error)?;
 
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(CoreError::NotFound(format!(
@@ -216,9 +216,7 @@ impl RegistryClient for VsCodeMarketplaceRegistryClient {
             )));
         }
 
-        let response = response
-            .error_for_status()
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let response = response.error_for_status().map_err(to_registry_error)?;
 
         let cache_control = response
             .headers()
@@ -226,9 +224,7 @@ impl RegistryClient for VsCodeMarketplaceRegistryClient {
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
 
-        let stream = response
-            .bytes_stream()
-            .map_err(|e| CoreError::Registry(e.to_string()));
+        let stream = response.bytes_stream().map_err(to_registry_error);
 
         Ok(FetchedArtifact {
             stream: Box::pin(stream),
@@ -258,7 +254,7 @@ impl RegistryClient for VsCodeMarketplaceRegistryClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+            .map_err(to_registry_error)?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(vec![]);
@@ -270,10 +266,7 @@ impl RegistryClient for VsCodeMarketplaceRegistryClient {
             )));
         }
 
-        let query_resp: ExtensionQueryResponse = resp
-            .json()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let query_resp: ExtensionQueryResponse = resp.json().await.map_err(to_registry_error)?;
 
         let versions = query_resp
             .results

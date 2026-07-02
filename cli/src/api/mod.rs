@@ -8,7 +8,7 @@ pub mod setup;
 pub mod version;
 
 use anyhow::{bail, Result};
-use reqwest::{Method, StatusCode};
+use reqwest::{Method, RequestBuilder, Response, StatusCode};
 use serde::{de::DeserializeOwned, Serialize};
 
 #[derive(Clone)]
@@ -38,12 +38,22 @@ impl BatleHubClient {
         self.token.as_ref().map(|t| format!("Bearer {t}"))
     }
 
-    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        let mut req = self.inner.request(Method::GET, self.url(path));
+    fn request(&self, method: Method, path: &str) -> RequestBuilder {
+        self.inner.request(method, self.url(path))
+    }
+
+    /// Attach the auth header (if any) and send. Every HTTP-verb method funnels
+    /// through here so the auth-attach step exists in exactly one place.
+    async fn send(&self, req: RequestBuilder) -> Result<Response> {
+        let mut req = req;
         if let Some(auth) = self.auth_header() {
             req = req.header("Authorization", auth);
         }
-        let resp = req.send().await?;
+        Ok(req.send().await?)
+    }
+
+    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+        let resp = self.send(self.request(Method::GET, path)).await?;
         expect_ok(resp).await
     }
 
@@ -52,87 +62,56 @@ impl BatleHubClient {
         path: &str,
         params: &P,
     ) -> Result<T> {
-        let mut req = self
-            .inner
-            .request(Method::GET, self.url(path))
-            .query(params);
-        if let Some(auth) = self.auth_header() {
-            req = req.header("Authorization", auth);
-        }
-        let resp = req.send().await?;
+        let req = self.request(Method::GET, path).query(params);
+        let resp = self.send(req).await?;
         expect_ok(resp).await
     }
 
     pub async fn post<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T> {
-        let mut req = self.inner.request(Method::POST, self.url(path)).json(body);
-        if let Some(auth) = self.auth_header() {
-            req = req.header("Authorization", auth);
-        }
-        let resp = req.send().await?;
+        let req = self.request(Method::POST, path).json(body);
+        let resp = self.send(req).await?;
         expect_ok(resp).await
     }
 
     pub async fn post_no_body(&self, path: &str) -> Result<()> {
-        let mut req = self.inner.request(Method::POST, self.url(path));
-        if let Some(auth) = self.auth_header() {
-            req = req.header("Authorization", auth);
-        }
-        let resp = req.send().await?;
+        let resp = self.send(self.request(Method::POST, path)).await?;
         expect_no_content(resp).await
     }
 
     pub async fn post_void<B: Serialize>(&self, path: &str, body: &B) -> Result<()> {
-        let mut req = self.inner.request(Method::POST, self.url(path)).json(body);
-        if let Some(auth) = self.auth_header() {
-            req = req.header("Authorization", auth);
-        }
-        let resp = req.send().await?;
+        let req = self.request(Method::POST, path).json(body);
+        let resp = self.send(req).await?;
         expect_no_content(resp).await
     }
 
     pub async fn put<B: Serialize>(&self, path: &str, body: &B) -> Result<()> {
-        let mut req = self.inner.request(Method::PUT, self.url(path)).json(body);
-        if let Some(auth) = self.auth_header() {
-            req = req.header("Authorization", auth);
-        }
-        let resp = req.send().await?;
+        let req = self.request(Method::PUT, path).json(body);
+        let resp = self.send(req).await?;
         expect_no_content(resp).await
     }
 
     /// PUT a raw binary body (e.g. a package upload) and expect a 2xx response.
     pub async fn put_bytes(&self, path: &str, body: Vec<u8>) -> Result<()> {
-        let mut req = self
-            .inner
-            .request(Method::PUT, self.url(path))
+        let req = self
+            .request(Method::PUT, path)
             .header("Content-Type", "application/octet-stream")
             .body(body);
-        if let Some(auth) = self.auth_header() {
-            req = req.header("Authorization", auth);
-        }
-        let resp = req.send().await?;
+        let resp = self.send(req).await?;
         expect_no_content(resp).await
     }
 
     /// POST a raw binary body (e.g. a package upload) and expect a 2xx response.
     pub async fn post_bytes(&self, path: &str, body: Vec<u8>) -> Result<()> {
-        let mut req = self
-            .inner
-            .request(Method::POST, self.url(path))
+        let req = self
+            .request(Method::POST, path)
             .header("Content-Type", "application/octet-stream")
             .body(body);
-        if let Some(auth) = self.auth_header() {
-            req = req.header("Authorization", auth);
-        }
-        let resp = req.send().await?;
+        let resp = self.send(req).await?;
         expect_no_content(resp).await
     }
 
     pub async fn delete(&self, path: &str) -> Result<()> {
-        let mut req = self.inner.request(Method::DELETE, self.url(path));
-        if let Some(auth) = self.auth_header() {
-            req = req.header("Authorization", auth);
-        }
-        let resp = req.send().await?;
+        let resp = self.send(self.request(Method::DELETE, path)).await?;
         expect_no_content(resp).await
     }
 
@@ -141,14 +120,8 @@ impl BatleHubClient {
         path: &str,
         params: &P,
     ) -> Result<T> {
-        let mut req = self
-            .inner
-            .request(Method::DELETE, self.url(path))
-            .query(params);
-        if let Some(auth) = self.auth_header() {
-            req = req.header("Authorization", auth);
-        }
-        let resp = req.send().await?;
+        let req = self.request(Method::DELETE, path).query(params);
+        let resp = self.send(req).await?;
         expect_ok(resp).await
     }
 
@@ -170,11 +143,7 @@ impl BatleHubClient {
             self.url(&format!("/{path_or_url}"))
         };
 
-        let mut req = self.inner.request(Method::GET, url);
-        if let Some(auth) = self.auth_header() {
-            req = req.header("Authorization", auth);
-        }
-        let resp = req.send().await?;
+        let resp = self.send(self.inner.request(Method::GET, url)).await?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
@@ -196,14 +165,8 @@ impl BatleHubClient {
         path: &str,
         form: reqwest::multipart::Form,
     ) -> Result<()> {
-        let mut req = self
-            .inner
-            .request(Method::PUT, self.url(path))
-            .multipart(form);
-        if let Some(auth) = self.auth_header() {
-            req = req.header("Authorization", auth);
-        }
-        let resp = req.send().await?;
+        let req = self.request(Method::PUT, path).multipart(form);
+        let resp = self.send(req).await?;
         expect_no_content(resp).await
     }
 
@@ -212,14 +175,8 @@ impl BatleHubClient {
         path: &str,
         form: reqwest::multipart::Form,
     ) -> Result<()> {
-        let mut req = self
-            .inner
-            .request(Method::POST, self.url(path))
-            .multipart(form);
-        if let Some(auth) = self.auth_header() {
-            req = req.header("Authorization", auth);
-        }
-        let resp = req.send().await?;
+        let req = self.request(Method::POST, path).multipart(form);
+        let resp = self.send(req).await?;
         expect_no_content(resp).await
     }
 }

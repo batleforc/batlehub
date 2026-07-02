@@ -19,4 +19,5 @@ semgrep = "latest"                  # static analysis (Rust / TS / secrets rules
 "cargo:cargo-cyclonedx" = "latest"  # CycloneDX SBOM of the Rust workspace
 uv = "latest"
 "cargo:cargo-audit" = "latest"
+python = "latest"
 #"github:batleforc/batlehub" = { version = "latest", asset_pattern = "batlehub-cli-*" }

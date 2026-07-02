@@ -57,6 +57,16 @@ impl BatleHubClient {
     pub async fn revoke_token(&self, id: Uuid) -> Result<()> {
         self.delete(&format!("/api/v1/auth/tokens/{id}")).await
     }
+
+    /// List OIDC provider names that have browser SSO enabled.
+    pub async fn list_oidc_providers(&self) -> Result<Vec<String>> {
+        #[derive(Deserialize)]
+        struct Provider {
+            name: String,
+        }
+        let providers: Vec<Provider> = self.get("/api/v1/auth/oidc/providers").await?;
+        Ok(providers.into_iter().map(|p| p.name).collect())
+    }
 }
 
 // ── OIDC helpers ───────────────────────────────────────────────────────────────
@@ -100,16 +110,6 @@ pub async fn get_oidc_login_url(
         .to_string();
 
     Ok(location)
-}
-
-/// List OIDC provider names that have browser SSO enabled.
-pub async fn list_oidc_providers(client: &BatleHubClient) -> Result<Vec<String>> {
-    #[derive(Deserialize)]
-    struct Provider {
-        name: String,
-    }
-    let providers: Vec<Provider> = client.get("/api/v1/auth/oidc/providers").await?;
-    Ok(providers.into_iter().map(|p| p.name).collect())
 }
 
 /// Exchange a refresh token for a new access token via the server's OIDC refresh proxy.
@@ -479,7 +479,7 @@ mod tests {
             .await;
 
         let client = BatleHubClient::new(&server.url(), None).unwrap();
-        let providers = list_oidc_providers(&client).await.unwrap();
+        let providers = client.list_oidc_providers().await.unwrap();
         assert_eq!(providers, vec!["google".to_string(), "github".to_string()]);
     }
 

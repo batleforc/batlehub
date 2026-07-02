@@ -10,7 +10,8 @@ use batlehub_core::{
 };
 
 use super::http_client::{
-    apply_upstream_options, basic_auth_get, cache_control, percent_encode, UpstreamHttpOptions,
+    apply_upstream_options, basic_auth_get, cache_control, percent_encode, to_registry_error,
+    UpstreamHttpOptions,
 };
 
 mod models;
@@ -201,11 +202,7 @@ impl RegistryClient for TerraformRegistryClient {
 
         tracing::debug!(url = %url, "fetching Terraform artifact");
 
-        let response = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let response = self.get(&url).send().await.map_err(to_registry_error)?;
 
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(CoreError::NotFound(format!(
@@ -223,9 +220,7 @@ impl RegistryClient for TerraformRegistryClient {
 
         let cache_control = cache_control(&response);
 
-        let stream = response
-            .bytes_stream()
-            .map_err(|e| CoreError::Registry(e.to_string()));
+        let stream = response.bytes_stream().map_err(to_registry_error);
 
         Ok(FetchedArtifact {
             stream: Box::pin(stream),
@@ -237,11 +232,7 @@ impl RegistryClient for TerraformRegistryClient {
         let base = self.base_url.trim_end_matches('/');
         let url = format!("{base}/v1/{package}/versions");
 
-        let resp = self
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+        let resp = self.get(&url).send().await.map_err(to_registry_error)?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(vec![]);
@@ -249,10 +240,10 @@ impl RegistryClient for TerraformRegistryClient {
 
         let body = resp
             .error_for_status()
-            .map_err(|e| CoreError::Registry(e.to_string()))?
+            .map_err(to_registry_error)?
             .bytes()
             .await
-            .map_err(|e| CoreError::Registry(e.to_string()))?;
+            .map_err(to_registry_error)?;
 
         modules::parse_versions(package, &body)
     }
