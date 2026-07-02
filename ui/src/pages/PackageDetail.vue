@@ -11,6 +11,7 @@ import type {
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
 import { useUpstreamUrl } from "@/composables/useUpstreamUrl";
+import { formatDate as fmtDate } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -105,11 +106,6 @@ const notFound = computed(
   () =>
     !loading.value && !error.value && (isAdmin.value ? !versionDetail.value : !publicSummary.value),
 );
-
-function fmtDate(iso: string | null | undefined) {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleString();
-}
 
 function fmtAction(action: string) {
   return (

@@ -3,6 +3,8 @@ import { ref, computed } from "vue";
 import { Terminal, Download, Package, AlertCircle } from "@lucide/vue";
 import { useAuth } from "@/composables/useAuth";
 import { API_BASE_URL } from "@/config";
+import { PageHeader } from "@/components/ui/page-header";
+import { CopyButton } from "@/components/ui/copy-button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -49,18 +51,6 @@ async function triggerDownload() {
   } finally {
     downloading.value = false;
   }
-}
-
-// ── Copy helper ───────────────────────────────────────────────────────────────
-
-const copied = ref<string | null>(null);
-
-async function copy(key: string, text: string) {
-  await navigator.clipboard.writeText(text);
-  copied.value = key;
-  setTimeout(() => {
-    if (copied.value === key) copied.value = null;
-  }, 2000);
 }
 
 // ── Snippet templates ─────────────────────────────────────────────────────────
@@ -168,13 +158,12 @@ const usageSnippets = [
   <div class="space-y-6 max-w-3xl">
     <!-- Header -->
     <div class="flex items-center gap-3">
-      <Terminal class="h-6 w-6 text-primary" />
-      <div>
-        <h1 class="text-xl font-semibold font-mono">CLI</h1>
-        <p class="text-sm text-muted-foreground">
+      <Terminal class="h-6 w-6 text-primary shrink-0" />
+      <PageHeader title="CLI" class="flex-1">
+        <template #description>
           Download and configure <code class="font-mono text-xs">batlehub-cli</code>
-        </p>
-      </div>
+        </template>
+      </PageHeader>
     </div>
 
     <!-- Download card -->
@@ -225,14 +214,12 @@ const usageSnippets = [
                 class="p-4 text-xs font-mono overflow-x-auto text-foreground/90 leading-relaxed"
                 >{{ s.code }}</pre
               >
-              <Button
+              <CopyButton
+                :text="s.code"
                 size="sm"
                 variant="ghost"
                 class="absolute top-2 right-2 font-mono text-xs h-7 px-2"
-                @click="copy(key, s.code)"
-              >
-                {{ copied === key ? "Copied!" : "Copy" }}
-              </Button>
+              />
             </div>
           </TabsContent>
         </Tabs>
@@ -256,14 +243,12 @@ const usageSnippets = [
           <pre class="p-4 text-xs font-mono overflow-x-auto text-foreground/90 leading-relaxed">{{
             configSnippet
           }}</pre>
-          <Button
+          <CopyButton
+            :text="configSnippet"
             size="sm"
             variant="ghost"
             class="absolute top-2 right-2 font-mono text-xs h-7 px-2"
-            @click="copy('config', configSnippet)"
-          >
-            {{ copied === "config" ? "Copied!" : "Copy" }}
-          </Button>
+          />
         </div>
 
         <p class="text-xs text-muted-foreground">
@@ -297,14 +282,12 @@ const usageSnippets = [
             <pre class="px-3 pb-3 pt-1 text-xs font-mono text-foreground/90 leading-relaxed">{{
               s.code
             }}</pre>
-            <Button
+            <CopyButton
+              :text="s.code"
               size="sm"
               variant="ghost"
               class="absolute top-1 right-2 font-mono text-xs h-7 px-2"
-              @click="copy(s.key, s.code)"
-            >
-              {{ copied === s.key ? "Copied!" : "Copy" }}
-            </Button>
+            />
           </div>
         </div>
       </CardContent>

@@ -17,6 +17,10 @@ import type {
 } from "@/client/types.gen";
 import { useApi, extractMessage } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
+import { formatDate as fmtTs } from "@/lib/format";
+import { eventBadgeVariant } from "@/lib/badge-variants";
+import { PageHeader } from "@/components/ui/page-header";
+import { AsyncState } from "@/components/ui/async-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -32,6 +36,7 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import Dialog from "@/components/ui/dialog/Dialog.vue";
+import ConfirmDialog from "@/components/ConfirmDialog.vue";
 
 const { token } = useAuth();
 
@@ -222,33 +227,14 @@ async function testSubscription(id: string) {
     testLoading.value = null;
   }
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function fmtTs(ts: string) {
-  return new Date(ts).toLocaleString();
-}
-
-function eventBadgeVariant(
-  et: NotificationEventType,
-): "default" | "secondary" | "destructive" | "outline" {
-  if (et === "package_published") return "default";
-  if (et === "package_yanked") return "destructive";
-  if (et === "package_unyanked") return "secondary";
-  return "outline";
-}
 </script>
 
 <template>
   <div class="space-y-6">
-    <div class="flex items-center justify-between">
-      <div>
-        <h1 class="text-2xl font-semibold">Webhooks &amp; Notifications</h1>
-        <p class="text-sm text-muted-foreground mt-0.5">
-          Manage outbound notification subscriptions and monitor inbound webhook events.
-        </p>
-      </div>
-    </div>
+    <PageHeader
+      title="Webhooks &amp; Notifications"
+      description="Manage outbound notification subscriptions and monitor inbound webhook events."
+    />
 
     <!-- Tab switcher -->
     <div class="flex gap-1 border-b">
@@ -275,69 +261,68 @@ function eventBadgeVariant(
         <Button size="sm" @click="openCreate"> New Subscription </Button>
       </div>
 
-      <p v-if="subsLoading && !subscriptions" class="text-sm text-muted-foreground">Loading…</p>
-      <p v-else-if="subsError" class="text-sm text-destructive">{{ subsError }}</p>
-
-      <Card v-else>
-        <CardContent class="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Registry</TableHead>
-                <TableHead>Package</TableHead>
-                <TableHead>Events</TableHead>
-                <TableHead>Channel</TableHead>
-                <TableHead>Enabled</TableHead>
-                <TableHead class="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              <TableRow v-for="sub in subscriptions" :key="sub.id">
-                <TableCell class="font-mono text-sm">{{ sub.registry ?? "*" }}</TableCell>
-                <TableCell class="font-mono text-sm">{{ sub.package_name ?? "*" }}</TableCell>
-                <TableCell>
-                  <div class="flex flex-wrap gap-1">
-                    <Badge
-                      v-for="et in sub.event_types"
-                      :key="et"
-                      :variant="eventBadgeVariant(et)"
-                      class="text-xs"
-                    >
-                      {{ et.replace("package_", "") }}
-                    </Badge>
-                  </div>
-                </TableCell>
-                <TableCell class="font-mono text-sm">{{ sub.channel_name }}</TableCell>
-                <TableCell>
-                  <Switch :model-value="sub.enabled" @update:model-value="toggleEnabled(sub)" />
-                </TableCell>
-                <TableCell class="text-right">
-                  <div class="flex justify-end gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      :disabled="testLoading === sub.id"
-                      @click="testSubscription(sub.id)"
-                    >
-                      {{ testLoading === sub.id ? "…" : "Test" }}
-                    </Button>
-                    <Button variant="outline" size="sm" @click="openEdit(sub)">Edit</Button>
-                    <Button variant="destructive" size="sm" @click="deleteTarget = sub.id"
-                      >Delete</Button
-                    >
-                  </div>
-                </TableCell>
-              </TableRow>
-            </TableBody>
-          </Table>
-          <p
-            v-if="!subscriptions || subscriptions.length === 0"
-            class="p-6 text-sm text-muted-foreground text-center"
-          >
-            No subscriptions configured.
-          </p>
-        </CardContent>
-      </Card>
+      <AsyncState :loading="subsLoading && !subscriptions" :error="subsError">
+        <Card>
+          <CardContent class="p-0">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Registry</TableHead>
+                  <TableHead>Package</TableHead>
+                  <TableHead>Events</TableHead>
+                  <TableHead>Channel</TableHead>
+                  <TableHead>Enabled</TableHead>
+                  <TableHead class="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <TableRow v-for="sub in subscriptions" :key="sub.id">
+                  <TableCell class="font-mono text-sm">{{ sub.registry ?? "*" }}</TableCell>
+                  <TableCell class="font-mono text-sm">{{ sub.package_name ?? "*" }}</TableCell>
+                  <TableCell>
+                    <div class="flex flex-wrap gap-1">
+                      <Badge
+                        v-for="et in sub.event_types"
+                        :key="et"
+                        :variant="eventBadgeVariant(et)"
+                        class="text-xs"
+                      >
+                        {{ et.replace("package_", "") }}
+                      </Badge>
+                    </div>
+                  </TableCell>
+                  <TableCell class="font-mono text-sm">{{ sub.channel_name }}</TableCell>
+                  <TableCell>
+                    <Switch :model-value="sub.enabled" @update:model-value="toggleEnabled(sub)" />
+                  </TableCell>
+                  <TableCell class="text-right">
+                    <div class="flex justify-end gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        :disabled="testLoading === sub.id"
+                        @click="testSubscription(sub.id)"
+                      >
+                        {{ testLoading === sub.id ? "…" : "Test" }}
+                      </Button>
+                      <Button variant="outline" size="sm" @click="openEdit(sub)">Edit</Button>
+                      <Button variant="destructive" size="sm" @click="deleteTarget = sub.id"
+                        >Delete</Button
+                      >
+                    </div>
+                  </TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+            <p
+              v-if="!subscriptions || subscriptions.length === 0"
+              class="p-6 text-sm text-muted-foreground text-center"
+            >
+              No subscriptions configured.
+            </p>
+          </CardContent>
+        </Card>
+      </AsyncState>
 
       <p v-if="toggleError" class="text-sm text-destructive">{{ toggleError }}</p>
       <p
@@ -351,28 +336,28 @@ function eventBadgeVariant(
 
     <!-- ── Channels tab ── -->
     <div v-if="activeTab === 'channels'" class="space-y-4">
-      <p v-if="channelsLoading && !channelsResp" class="text-sm text-muted-foreground">Loading…</p>
-      <p v-else-if="channelsError" class="text-sm text-destructive">{{ channelsError }}</p>
-      <Card v-else>
-        <CardHeader>
-          <CardTitle class="text-base">Configured Channels</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p class="text-xs text-muted-foreground mb-4">
-            Channels are defined in <code class="font-mono text-xs">config.toml</code> under
-            <code class="font-mono text-xs">[[notifications.channels]]</code>. URLs and secrets are
-            not displayed here.
-          </p>
-          <div v-if="channels.length === 0" class="text-sm text-muted-foreground">
-            No channels configured. Add
-            <code class="font-mono text-xs">[[notifications.channels]]</code> entries to
-            config.toml.
-          </div>
-          <div v-else class="flex flex-wrap gap-2">
-            <Badge v-for="ch in channels" :key="ch.name" variant="outline">{{ ch.name }}</Badge>
-          </div>
-        </CardContent>
-      </Card>
+      <AsyncState :loading="channelsLoading && !channelsResp" :error="channelsError">
+        <Card>
+          <CardHeader>
+            <CardTitle class="text-base">Configured Channels</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p class="text-xs text-muted-foreground mb-4">
+              Channels are defined in <code class="font-mono text-xs">config.toml</code> under
+              <code class="font-mono text-xs">[[notifications.channels]]</code>. URLs and secrets
+              are not displayed here.
+            </p>
+            <div v-if="channels.length === 0" class="text-sm text-muted-foreground">
+              No channels configured. Add
+              <code class="font-mono text-xs">[[notifications.channels]]</code> entries to
+              config.toml.
+            </div>
+            <div v-else class="flex flex-wrap gap-2">
+              <Badge v-for="ch in channels" :key="ch.name" variant="outline">{{ ch.name }}</Badge>
+            </div>
+          </CardContent>
+        </Card>
+      </AsyncState>
     </div>
 
     <!-- ── Inbound Events tab ── -->
@@ -383,48 +368,47 @@ function eventBadgeVariant(
         </Button>
       </div>
 
-      <p v-if="inboundLoading && !inboundResp" class="text-sm text-muted-foreground">Loading…</p>
-      <p v-else-if="inboundError" class="text-sm text-destructive">{{ inboundError }}</p>
-
-      <Card v-else>
-        <CardContent class="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Webhook</TableHead>
-                <TableHead>Received at</TableHead>
-                <TableHead>Source IP</TableHead>
-                <TableHead>Signature</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              <TableRow v-for="ev in inboundEvents" :key="ev.id">
-                <TableCell class="font-mono text-sm">{{ ev.webhook_name }}</TableCell>
-                <TableCell class="text-xs">{{ fmtTs(ev.received_at) }}</TableCell>
-                <TableCell class="font-mono text-xs">{{ ev.source_ip ?? "—" }}</TableCell>
-                <TableCell>
-                  <Badge v-if="ev.signature_valid === true" variant="default" class="text-xs"
-                    >Valid</Badge
-                  >
-                  <Badge
-                    v-else-if="ev.signature_valid === false"
-                    variant="destructive"
-                    class="text-xs"
-                    >Invalid</Badge
-                  >
-                  <span v-else class="text-xs text-muted-foreground">—</span>
-                </TableCell>
-              </TableRow>
-            </TableBody>
-          </Table>
-          <p
-            v-if="inboundEvents.length === 0"
-            class="p-6 text-sm text-muted-foreground text-center"
-          >
-            No inbound events received yet.
-          </p>
-        </CardContent>
-      </Card>
+      <AsyncState :loading="inboundLoading && !inboundResp" :error="inboundError">
+        <Card>
+          <CardContent class="p-0">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Webhook</TableHead>
+                  <TableHead>Received at</TableHead>
+                  <TableHead>Source IP</TableHead>
+                  <TableHead>Signature</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <TableRow v-for="ev in inboundEvents" :key="ev.id">
+                  <TableCell class="font-mono text-sm">{{ ev.webhook_name }}</TableCell>
+                  <TableCell class="text-xs">{{ fmtTs(ev.received_at) }}</TableCell>
+                  <TableCell class="font-mono text-xs">{{ ev.source_ip ?? "—" }}</TableCell>
+                  <TableCell>
+                    <Badge v-if="ev.signature_valid === true" variant="default" class="text-xs"
+                      >Valid</Badge
+                    >
+                    <Badge
+                      v-else-if="ev.signature_valid === false"
+                      variant="destructive"
+                      class="text-xs"
+                      >Invalid</Badge
+                    >
+                    <span v-else class="text-xs text-muted-foreground">—</span>
+                  </TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+            <p
+              v-if="inboundEvents.length === 0"
+              class="p-6 text-sm text-muted-foreground text-center"
+            >
+              No inbound events received yet.
+            </p>
+          </CardContent>
+        </Card>
+      </AsyncState>
     </div>
   </div>
 
@@ -523,8 +507,15 @@ function eventBadgeVariant(
   </Dialog>
 
   <!-- Delete confirmation -->
-  <Dialog
+  <ConfirmDialog
     :open="deleteTarget !== null"
+    title="Delete subscription?"
+    description="This action cannot be undone."
+    confirm-label="Delete"
+    loading-label="Deleting…"
+    destructive
+    :loading="deleteLoading"
+    :error="deleteError"
     @update:open="
       (v) => {
         if (!v) {
@@ -533,19 +524,6 @@ function eventBadgeVariant(
         }
       }
     "
-  >
-    <template #title>Delete subscription?</template>
-    <template #description>This action cannot be undone.</template>
-    <div class="space-y-4">
-      <p v-if="deleteError" class="text-sm text-destructive">{{ deleteError }}</p>
-      <div class="flex justify-end gap-2">
-        <Button variant="outline" size="sm" :disabled="deleteLoading" @click="deleteTarget = null"
-          >Cancel</Button
-        >
-        <Button variant="destructive" size="sm" :disabled="deleteLoading" @click="confirmDelete">
-          {{ deleteLoading ? "Deleting…" : "Delete" }}
-        </Button>
-      </div>
-    </div>
-  </Dialog>
+    @confirm="confirmDelete"
+  />
 </template>

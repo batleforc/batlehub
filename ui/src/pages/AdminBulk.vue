@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
 import { Upload, CheckCircle2, XCircle } from "@lucide/vue";
+import SectionTabs from "@/components/admin/SectionTabs.vue";
+import { PACKAGES_TABS } from "@/config/adminSections";
+import { PageHeader } from "@/components/ui/page-header";
 import { bulkBlockPackages, bulkUnblockPackages } from "@/client/sdk.gen";
 import type {
   BulkActionResponse,
@@ -136,12 +139,12 @@ function reset() {
 
 <template>
   <div class="space-y-6 max-w-4xl">
-    <div>
-      <h1 class="font-mono text-xl font-bold cyber-text-glow">Bulk Import</h1>
-      <p class="text-sm text-muted-foreground mt-1">
-        Block or unblock multiple packages at once by pasting or uploading a CSV file.
-      </p>
-    </div>
+    <SectionTabs :tabs="PACKAGES_TABS" />
+    <PageHeader
+      title="Bulk Import"
+      description="Block or unblock multiple packages at once by pasting or uploading a CSV file."
+      variant="glow"
+    />
 
     <!-- Format reference -->
     <Card>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { PackageEventDto } from "@/client/types.gen";
+import { formatDate as fmtDate } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import {
@@ -12,10 +13,6 @@ import {
 } from "@/components/ui/table";
 
 defineProps<{ events: PackageEventDto[] }>();
-
-function fmtDate(iso: string) {
-  return new Date(iso).toLocaleString();
-}
 
 const ACTION_LABELS: Record<string, string> = {
   download: "Download",

@@ -5,6 +5,7 @@ import type { RegistryInfo } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
 import type { TeamNamespaceDto } from "@/lib/registry-types";
+import { PageHeader } from "@/components/ui/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
 import {
@@ -46,12 +47,11 @@ function selectNamespace(ns: TeamNamespaceDto) {
 
 <template>
   <div class="space-y-6 max-w-4xl">
-    <div>
-      <h1 class="font-mono text-2xl font-bold cyber-text-glow">Team Namespace</h1>
-      <p class="text-sm text-muted-foreground mt-0.5">
-        View and manage the packages and namespaces owned by your groups.
-      </p>
-    </div>
+    <PageHeader
+      title="Team Namespace"
+      description="View and manage the packages and namespaces owned by your groups."
+      variant="glow"
+    />
 
     <Card v-if="!hasGroups">
       <CardContent class="pt-6">

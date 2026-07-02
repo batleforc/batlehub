@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { useAuthFetch } from "@/composables/useAuthFetch";
+import { extractMessage } from "@/composables/useApi";
 import { API_BASE_URL } from "@/config";
+import SectionTabs from "@/components/admin/SectionTabs.vue";
+import { OPERATIONS_TABS } from "@/config/adminSections";
+import { PageHeader } from "@/components/ui/page-header";
+import { AsyncState } from "@/components/ui/async-state";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,7 +47,7 @@ async function loadStatus() {
     const body = (await res.json()) as { registries: WarmableRegistry[] };
     registries.value = body.registries;
   } catch (e) {
-    loadError.value = e instanceof Error ? e.message : "Failed to load";
+    loadError.value = extractMessage(e);
   } finally {
     loading.value = false;
   }
@@ -56,8 +61,18 @@ async function triggerWarm(name: string) {
   const pkgRaw = (packageInputs.value[name] ?? "").trim();
   const pathRaw = (pathInputs.value[name] ?? "").trim();
 
-  const packages = pkgRaw ? pkgRaw.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean) : [];
-  const paths = pathRaw ? pathRaw.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean) : [];
+  const packages = pkgRaw
+    ? pkgRaw
+        .split(/[\n,]+/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
+  const paths = pathRaw
+    ? pathRaw
+        .split(/[\n,]+/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
 
   if (packages.length === 0 && paths.length === 0) {
     errors.value[name] = "Specify at least one package or path.";
@@ -80,7 +95,7 @@ async function triggerWarm(name: string) {
     }
     results.value[name] = (await res.json()) as WarmResult;
   } catch (e) {
-    errors.value[name] = e instanceof Error ? e.message : "Unknown error";
+    errors.value[name] = extractMessage(e);
   } finally {
     warming.value[name] = false;
   }
@@ -131,7 +146,7 @@ async function triggerDelete() {
     if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
     deleteResult.value = { deleted: json.deleted ?? false, artifact_key: json.artifact_key ?? "" };
   } catch (e) {
-    deleteError.value = e instanceof Error ? e.message : "Unknown error";
+    deleteError.value = extractMessage(e);
   } finally {
     deleting.value = false;
   }
@@ -142,85 +157,94 @@ onMounted(() => void loadStatus());
 
 <template>
   <div class="space-y-6">
-    <div class="flex items-center justify-between">
-      <div>
-        <h1 class="text-2xl font-semibold">Cache Warming</h1>
-        <p class="text-sm text-muted-foreground mt-0.5">
-          Registries with warming configured. Trigger a warm run to pre-fetch artifacts into the
-          local cache.
+    <SectionTabs :tabs="OPERATIONS_TABS" />
+    <PageHeader
+      title="Cache Warming"
+      description="Registries with warming configured. Trigger a warm run to pre-fetch artifacts into the local cache."
+    >
+      <template #actions>
+        <Button variant="outline" size="sm" :disabled="loading" @click="loadStatus">
+          {{ loading ? "Loading…" : "Refresh" }}
+        </Button>
+      </template>
+    </PageHeader>
+
+    <AsyncState
+      :loading="loading && registries.length === 0"
+      :error="loadError"
+      :empty="registries.length === 0"
+    >
+      <template #empty>
+        <p class="text-sm text-muted-foreground">
+          No registries have warming configured. Add <code>warm_packages</code> or
+          <code>warm_paths</code> to a registry in your config.
         </p>
+      </template>
+
+      <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <Card v-for="reg in registries" :key="reg.name">
+          <CardHeader class="pb-2">
+            <CardTitle class="text-base font-mono">{{ reg.name }}</CardTitle>
+            <div class="flex gap-2 text-xs text-muted-foreground mt-1">
+              <span>latest_n: {{ reg.latest_n }}</span>
+              <span>·</span>
+              <span>concurrency: {{ reg.concurrency }}</span>
+            </div>
+          </CardHeader>
+          <CardContent class="space-y-3">
+            <div class="space-y-1.5">
+              <Label :for="`pkg-${reg.name}`" class="text-xs">Packages</Label>
+              <Input
+                :id="`pkg-${reg.name}`"
+                v-model="packageInputs[reg.name]"
+                placeholder="lodash, react@18.0.0"
+                class="font-mono text-xs"
+              />
+              <p class="text-[11px] text-muted-foreground">
+                Comma-separated. Omit version to warm latest_n.
+              </p>
+            </div>
+            <div class="space-y-1.5">
+              <Label :for="`path-${reg.name}`" class="text-xs">Paths</Label>
+              <Input
+                :id="`path-${reg.name}`"
+                v-model="pathInputs[reg.name]"
+                placeholder="idea/ideaIC-2024.1.4.tar.gz"
+                class="font-mono text-xs"
+              />
+              <p class="text-[11px] text-muted-foreground">
+                Comma-separated. For path-addressed registries.
+              </p>
+            </div>
+
+            <p v-if="errors[reg.name]" class="text-xs text-destructive">{{ errors[reg.name] }}</p>
+
+            <div v-if="results[reg.name]" class="flex gap-2 flex-wrap">
+              <Badge class="bg-primary/10 text-primary text-xs">
+                {{ results[reg.name].warmed }} warmed
+              </Badge>
+              <Badge class="bg-muted text-muted-foreground text-xs">
+                {{ results[reg.name].skipped }} skipped
+              </Badge>
+              <Badge
+                :class="
+                  results[reg.name].errors > 0
+                    ? 'bg-destructive/10 text-destructive'
+                    : 'bg-muted text-muted-foreground'
+                "
+                class="text-xs"
+              >
+                {{ results[reg.name].errors }} errors
+              </Badge>
+            </div>
+
+            <Button size="sm" :disabled="warming[reg.name]" @click="triggerWarm(reg.name)">
+              {{ warming[reg.name] ? "Warming…" : "Warm Now" }}
+            </Button>
+          </CardContent>
+        </Card>
       </div>
-      <Button variant="outline" size="sm" :disabled="loading" @click="loadStatus">
-        {{ loading ? "Loading…" : "Refresh" }}
-      </Button>
-    </div>
-
-    <p v-if="loadError" class="text-sm text-destructive">{{ loadError }}</p>
-
-    <p v-else-if="loading && registries.length === 0" class="text-sm text-muted-foreground">
-      Loading…
-    </p>
-
-    <p v-else-if="registries.length === 0" class="text-sm text-muted-foreground">
-      No registries have warming configured. Add <code>warm_packages</code> or
-      <code>warm_paths</code> to a registry in your config.
-    </p>
-
-    <div v-else class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-      <Card v-for="reg in registries" :key="reg.name">
-        <CardHeader class="pb-2">
-          <CardTitle class="text-base font-mono">{{ reg.name }}</CardTitle>
-          <div class="flex gap-2 text-xs text-muted-foreground mt-1">
-            <span>latest_n: {{ reg.latest_n }}</span>
-            <span>·</span>
-            <span>concurrency: {{ reg.concurrency }}</span>
-          </div>
-        </CardHeader>
-        <CardContent class="space-y-3">
-          <div class="space-y-1.5">
-            <Label :for="`pkg-${reg.name}`" class="text-xs">Packages</Label>
-            <Input
-              :id="`pkg-${reg.name}`"
-              v-model="packageInputs[reg.name]"
-              placeholder="lodash, react@18.0.0"
-              class="font-mono text-xs"
-            />
-            <p class="text-[11px] text-muted-foreground">Comma-separated. Omit version to warm latest_n.</p>
-          </div>
-          <div class="space-y-1.5">
-            <Label :for="`path-${reg.name}`" class="text-xs">Paths</Label>
-            <Input
-              :id="`path-${reg.name}`"
-              v-model="pathInputs[reg.name]"
-              placeholder="idea/ideaIC-2024.1.4.tar.gz"
-              class="font-mono text-xs"
-            />
-            <p class="text-[11px] text-muted-foreground">Comma-separated. For path-addressed registries.</p>
-          </div>
-
-          <p v-if="errors[reg.name]" class="text-xs text-destructive">{{ errors[reg.name] }}</p>
-
-          <div v-if="results[reg.name]" class="flex gap-2 flex-wrap">
-            <Badge class="bg-primary/10 text-primary text-xs">
-              {{ results[reg.name].warmed }} warmed
-            </Badge>
-            <Badge class="bg-muted text-muted-foreground text-xs">
-              {{ results[reg.name].skipped }} skipped
-            </Badge>
-            <Badge
-              :class="results[reg.name].errors > 0 ? 'bg-destructive/10 text-destructive' : 'bg-muted text-muted-foreground'"
-              class="text-xs"
-            >
-              {{ results[reg.name].errors }} errors
-            </Badge>
-          </div>
-
-          <Button size="sm" :disabled="warming[reg.name]" @click="triggerWarm(reg.name)">
-            {{ warming[reg.name] ? "Warming…" : "Warm Now" }}
-          </Button>
-        </CardContent>
-      </Card>
-    </div>
+    </AsyncState>
 
     <!-- Delete cached artifact -->
     <Card>
@@ -307,7 +331,9 @@ onMounted(() => void loadStatus());
         <p v-if="deleteError" class="text-xs text-destructive">{{ deleteError }}</p>
         <div v-if="deleteResult" class="space-y-1">
           <Badge
-            :class="deleteResult.deleted ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'"
+            :class="
+              deleteResult.deleted ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
+            "
             class="text-xs"
           >
             {{ deleteResult.deleted ? "Deleted" : "Not cached — nothing to remove" }}

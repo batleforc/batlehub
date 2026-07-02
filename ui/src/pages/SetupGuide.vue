@@ -6,6 +6,7 @@ import { listRegistries } from "@/client/sdk.gen";
 import type { RegistryInfo } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
+import { PageHeader } from "@/components/ui/page-header";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import Select from "@/components/ui/select/Select.vue";
@@ -133,13 +134,11 @@ async function copy(key: string, text: string) {
 
 <template>
   <div class="max-w-7xl space-y-8">
-    <div>
-      <h1 class="font-mono text-2xl font-bold cyber-text-glow">Setup Guide</h1>
-      <p class="text-sm text-muted-foreground mt-1">
-        Configure your tools to route package downloads through this proxy. Snippets are pre-filled
-        with this server's address and your configured registries.
-      </p>
-    </div>
+    <PageHeader
+      title="Setup Guide"
+      description="Configure your tools to route package downloads through this proxy. Snippets are pre-filled with this server's address and your configured registries."
+      variant="glow"
+    />
 
     <!-- Loading state -->
     <div v-if="loading" class="text-sm text-muted-foreground">Loading registries…</div>

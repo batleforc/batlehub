@@ -4,6 +4,8 @@ import { adminStats, registryHealth } from "@/client/sdk.gen";
 import type { StatsResponse, RegistryHealthDto } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
+import { formatBytes as fmtBytes, formatCount } from "@/lib/format";
+import { PageHeader } from "@/components/ui/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import {
@@ -17,7 +19,11 @@ import {
 
 const { token } = useAuth();
 
-const { data: stats, loading: statsLoading, error: statsError } = useApi<StatsResponse>(
+const {
+  data: stats,
+  loading: statsLoading,
+  error: statsError,
+} = useApi<StatsResponse>(
   () => adminStats() as Promise<{ data?: unknown; error?: unknown }>,
   [token],
 );
@@ -27,26 +33,20 @@ const { data: health, loading: healthLoading } = useApi<RegistryHealthDto[]>(
   [token],
 );
 
-function fmtBytes(n: number | null | undefined): string {
-  if (n == null) return "—";
-  if (n >= 1_073_741_824) return (n / 1_073_741_824).toFixed(1) + " GiB";
-  if (n >= 1_048_576) return (n / 1_048_576).toFixed(1) + " MiB";
-  if (n >= 1_024) return (n / 1_024).toFixed(1) + " KiB";
-  return n + " B";
-}
-
 function fmtPct(n: number | null | undefined): string {
   if (n == null) return "—";
   return (n * 100).toFixed(1) + "%";
 }
 
-const healthyCount = computed(() => health.value?.filter((h) => h.recent_errors?.length === 0).length ?? 0);
+const healthyCount = computed(
+  () => health.value?.filter((h) => h.recent_errors?.length === 0).length ?? 0,
+);
 const totalCount = computed(() => health.value?.length ?? 0);
 </script>
 
 <template>
   <div class="space-y-6">
-    <h1 class="text-lg font-semibold font-mono">Admin Dashboard</h1>
+    <PageHeader title="Admin Dashboard" />
 
     <!-- Summary cards -->
     <div v-if="statsLoading" class="text-sm text-muted-foreground">Loading stats…</div>
@@ -71,8 +71,12 @@ const totalCount = computed(() => health.value?.length ?? 0);
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <p class="text-2xl font-semibold font-mono">{{ stats.aggregate.artifact_hits.toLocaleString() }}</p>
-          <p class="text-xs text-muted-foreground mt-1">since {{ new Date(stats.since_startup).toLocaleDateString() }}</p>
+          <p class="text-2xl font-semibold font-mono">
+            {{ formatCount(stats.aggregate.artifact_hits) }}
+          </p>
+          <p class="text-xs text-muted-foreground mt-1">
+            since {{ new Date(stats.since_startup).toLocaleDateString() }}
+          </p>
         </CardContent>
       </Card>
 
@@ -83,7 +87,9 @@ const totalCount = computed(() => health.value?.length ?? 0);
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <p class="text-2xl font-semibold font-mono">{{ stats.aggregate.artifact_misses.toLocaleString() }}</p>
+          <p class="text-2xl font-semibold font-mono">
+            {{ formatCount(stats.aggregate.artifact_misses) }}
+          </p>
           <p class="text-xs text-muted-foreground mt-1">fetched from upstream</p>
         </CardContent>
       </Card>
@@ -95,7 +101,9 @@ const totalCount = computed(() => health.value?.length ?? 0);
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <p class="text-2xl font-semibold font-mono">{{ fmtBytes(stats.aggregate.cached_bytes) }}</p>
+          <p class="text-2xl font-semibold font-mono">
+            {{ fmtBytes(stats.aggregate.cached_bytes) }}
+          </p>
           <p class="text-xs text-muted-foreground mt-1">stored in backend</p>
         </CardContent>
       </Card>
@@ -134,9 +142,15 @@ const totalCount = computed(() => health.value?.length ?? 0);
             <TableRow v-for="r in stats.per_registry" :key="r.registry">
               <TableCell class="font-mono text-xs">{{ r.registry }}</TableCell>
               <TableCell class="text-right font-mono text-xs">{{ fmtPct(r.hit_rate) }}</TableCell>
-              <TableCell class="text-right font-mono text-xs">{{ r.artifact_hits.toLocaleString() }}</TableCell>
-              <TableCell class="text-right font-mono text-xs">{{ r.artifact_misses.toLocaleString() }}</TableCell>
-              <TableCell class="text-right font-mono text-xs">{{ fmtBytes(r.cached_bytes) }}</TableCell>
+              <TableCell class="text-right font-mono text-xs">{{
+                formatCount(r.artifact_hits)
+              }}</TableCell>
+              <TableCell class="text-right font-mono text-xs">{{
+                formatCount(r.artifact_misses)
+              }}</TableCell>
+              <TableCell class="text-right font-mono text-xs">{{
+                fmtBytes(r.cached_bytes)
+              }}</TableCell>
             </TableRow>
           </TableBody>
         </Table>

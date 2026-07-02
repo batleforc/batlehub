@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
+import { createRouter, createMemoryHistory } from "vue-router";
 
 // --- Mocks (must be hoisted before imports) ----------------------------------
 
@@ -49,7 +50,16 @@ function noContent(): Response {
 }
 
 async function mountPage(): Promise<VueWrapper> {
-  const wrapper = mount(AdminUsers, { attachTo: document.body });
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: "/admin/security/users", component: { template: "<div />" } }],
+  });
+  await router.push("/admin/security/users");
+  await router.isReady();
+  const wrapper = mount(AdminUsers, {
+    attachTo: document.body,
+    global: { plugins: [router] },
+  });
   await flushPromises();
   return wrapper;
 }
@@ -116,9 +126,9 @@ describe("AdminUsers", () => {
 
   it("calls POST /api/v1/admin/users/{id}/block on submit", async () => {
     fetchMock
-      .mockResolvedValueOnce(okJson([]))   // initial list load
-      .mockResolvedValueOnce(noContent())  // block request
-      .mockResolvedValueOnce(okJson([]));  // list refresh after block
+      .mockResolvedValueOnce(okJson([])) // initial list load
+      .mockResolvedValueOnce(noContent()) // block request
+      .mockResolvedValueOnce(okJson([])); // list refresh after block
 
     const wrapper = await mountPage();
 
@@ -143,9 +153,9 @@ describe("AdminUsers", () => {
 
   it("calls DELETE /api/v1/admin/users/{id}/block on unblock confirm", async () => {
     fetchMock
-      .mockResolvedValueOnce(okJson([blockedUser()]))  // initial list
-      .mockResolvedValueOnce(noContent())              // unblock request
-      .mockResolvedValueOnce(okJson([]));              // list refresh
+      .mockResolvedValueOnce(okJson([blockedUser()])) // initial list
+      .mockResolvedValueOnce(noContent()) // unblock request
+      .mockResolvedValueOnce(okJson([])); // list refresh
 
     const wrapper = await mountPage();
 

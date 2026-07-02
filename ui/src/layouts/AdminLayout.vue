@@ -2,21 +2,13 @@
 import { RouterView, RouterLink, useRoute } from "vue-router";
 import {
   ShieldCheck,
-  ShieldQuestion,
   LayoutDashboard,
   Package,
   RefreshCw,
-  Upload,
-  ScrollText,
   HeartPulse,
   Shield,
-  Users,
-  FlaskConical,
   FolderKey,
-  FileJson,
-  DatabaseZap,
   Bell,
-  Flame,
 } from "@lucide/vue";
 
 const route = useRoute();
@@ -24,19 +16,11 @@ const route = useRoute();
 const adminLinks = [
   { to: "/admin/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/admin/packages", label: "Packages", icon: Package },
-  { to: "/admin/bulk", label: "Bulk Import", icon: Upload },
-  { to: "/admin/audit-log", label: "Audit Log", icon: ScrollText },
-  { to: "/admin/health", label: "Health", icon: HeartPulse },
-  { to: "/admin/sbom", label: "SBOM Export", icon: FileJson },
-  { to: "/admin/ip-blocks", label: "IP Blocks", icon: Shield },
-  { to: "/admin/users", label: "Users", icon: Users },
-  { to: "/admin/beta-channel", label: "Beta Channel", icon: FlaskConical },
-  { to: "/admin/team-namespaces", label: "Team Namespaces", icon: FolderKey },
-  { to: "/admin/config-reload", label: "Config Reload", icon: RefreshCw },
-  { to: "/admin/warming", label: "Warming", icon: Flame },
-  { to: "/admin/explore-cache", label: "Explore Cache", icon: DatabaseZap },
+  { to: "/admin/security", label: "Security & Access", icon: Shield },
+  { to: "/admin/namespaces", label: "Namespaces & Channels", icon: FolderKey },
+  { to: "/admin/operations", label: "Operations", icon: RefreshCw },
+  { to: "/admin/observability", label: "Observability", icon: HeartPulse },
   { to: "/admin/notifications", label: "Notifications", icon: Bell },
-  { to: "/admin/access-check", label: "Access Check", icon: ShieldQuestion },
 ];
 
 function isActive(to: string) {

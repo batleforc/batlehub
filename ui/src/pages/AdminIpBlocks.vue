@@ -4,6 +4,9 @@ import { listBlockedIps, blockIp, unblockIp } from "@/client/sdk.gen";
 import type { BlockedIpDto } from "@/lib/registry-types";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
+import SectionTabs from "@/components/admin/SectionTabs.vue";
+import { SECURITY_TABS } from "@/config/adminSections";
+import { PageHeader } from "@/components/ui/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -86,20 +89,18 @@ function isExpired(unblock_at: number): boolean {
 
 <template>
   <div class="space-y-6">
-    <div class="flex items-center justify-between">
-      <div>
-        <h1 class="text-2xl font-semibold">IP Blocks</h1>
-        <p class="text-sm text-muted-foreground mt-0.5">
-          Manage manually blocked IP addresses. Blocked IPs receive 403 responses on all requests.
-        </p>
-      </div>
-      <div class="flex items-center gap-2">
+    <SectionTabs :tabs="SECURITY_TABS" />
+    <PageHeader
+      title="IP Blocks"
+      description="Manage manually blocked IP addresses. Blocked IPs receive 403 responses on all requests."
+    >
+      <template #actions>
         <Button variant="outline" size="sm" :disabled="loading" @click="reload">
           {{ loading ? "Refreshing…" : "Refresh" }}
         </Button>
         <Button size="sm" @click="blockDialogOpen = true"> Block IP </Button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <p v-if="loading && !data" class="text-sm text-muted-foreground">Loading…</p>
     <p v-else-if="error" class="text-sm text-destructive">
@@ -242,7 +243,10 @@ function isExpired(unblock_at: number): boolean {
       }
     "
   >
-    <template #title>Unblock <span class="font-mono">{{ unblockTarget }}</span>?</template>
+    <template #title
+      >Unblock <span class="font-mono">{{ unblockTarget }}</span
+      >?</template
+    >
     <template #description>This IP will be immediately allowed to send requests again.</template>
     <div class="space-y-4">
       <p v-if="unblockError" class="text-sm text-destructive">

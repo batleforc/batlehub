@@ -2,6 +2,9 @@
 import { ref } from "vue";
 import { useAuthFetch } from "@/composables/useAuthFetch";
 import { API_BASE_URL } from "@/config";
+import SectionTabs from "@/components/admin/SectionTabs.vue";
+import { OBSERVABILITY_TABS } from "@/config/adminSections";
+import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -64,7 +67,8 @@ async function exportSbom() {
 
 <template>
   <div class="space-y-6">
-    <h1 class="font-mono text-2xl font-bold cyber-text-glow">SBOM Export</h1>
+    <SectionTabs :tabs="OBSERVABILITY_TABS" />
+    <PageHeader title="SBOM Export" variant="glow" />
 
     <!-- Feedback -->
     <div

@@ -2,6 +2,9 @@
 import { listNamespaces, claimNamespace, releaseNamespace } from "@/client/sdk.gen";
 import type { TeamNamespaceDto } from "@/lib/registry-types";
 import { useAdminCrudList } from "@/composables/useAdminCrudList";
+import SectionTabs from "@/components/admin/SectionTabs.vue";
+import { NAMESPACES_TABS } from "@/config/adminSections";
+import { PageHeader } from "@/components/ui/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -64,19 +67,17 @@ const {
 
 <template>
   <div class="space-y-6">
-    <!-- Header -->
-    <div class="flex items-center justify-between">
-      <div>
-        <h1 class="text-2xl font-semibold">Team Namespaces</h1>
-        <p class="text-sm text-muted-foreground mt-0.5">
-          Assign package name prefixes to auth-provider groups to control who may publish within
-          them.
-        </p>
-      </div>
-      <Button size="sm" :disabled="!selectedRegistry" @click="claimDialogOpen = true">
-        Claim namespace
-      </Button>
-    </div>
+    <SectionTabs :tabs="NAMESPACES_TABS" />
+    <PageHeader
+      title="Team Namespaces"
+      description="Assign package name prefixes to auth-provider groups to control who may publish within them."
+    >
+      <template #actions>
+        <Button size="sm" :disabled="!selectedRegistry" @click="claimDialogOpen = true">
+          Claim namespace
+        </Button>
+      </template>
+    </PageHeader>
 
     <!-- Registry selector -->
     <div class="space-y-1.5 max-w-xs">
@@ -249,8 +250,8 @@ const {
     <template #title>Release namespace claim?</template>
     <template #description>
       The prefix <span class="font-mono">{{ releaseTarget?.prefix }}</span> will no longer be
-      restricted to group <span class="font-mono">{{ releaseTarget?.group_id }}</span>.
-      Any authenticated user will be able to publish packages under this prefix.
+      restricted to group <span class="font-mono">{{ releaseTarget?.group_id }}</span
+      >. Any authenticated user will be able to publish packages under this prefix.
     </template>
     <div class="space-y-4">
       <p v-if="releaseError" class="text-sm text-destructive">

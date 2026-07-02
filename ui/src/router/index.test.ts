@@ -122,12 +122,44 @@ describe("router navigation guards (integration)", () => {
 
   it("redirects a non-admin away from an admin route", async () => {
     await setAuth(USER, "tok");
-    expect(await go("/admin/health")).toBe("/login");
+    expect(await go("/admin/observability/health")).toBe("/login");
   });
 
   it("lets an admin reach an admin route", async () => {
     await setAuth(ADMIN, "tok");
-    expect(await go("/admin/health")).toBe("/admin/health");
+    expect(await go("/admin/observability/health")).toBe("/admin/observability/health");
+  });
+
+  // ── Admin nav regrouping: old flat paths redirect to their new section ─────
+
+  it.each([
+    ["/admin/packages", "/admin/packages/all"],
+    ["/admin/bulk", "/admin/packages/bulk"],
+    ["/admin/users", "/admin/security/users"],
+    ["/admin/ip-blocks", "/admin/security/ip-blocks"],
+    ["/admin/access-check", "/admin/security/access-check"],
+    ["/admin/team-namespaces", "/admin/namespaces/team-namespaces"],
+    ["/admin/beta-channel", "/admin/namespaces/beta-channel"],
+    ["/admin/config-reload", "/admin/operations/config-reload"],
+    ["/admin/warming", "/admin/operations/warming"],
+    ["/admin/explore-cache", "/admin/operations/explore-cache"],
+    ["/admin/health", "/admin/observability/health"],
+    ["/admin/sbom", "/admin/observability/sbom"],
+    ["/admin/audit-log", "/admin/observability/audit-log"],
+  ])("redirects the old admin path %s to %s", async (oldPath, newPath) => {
+    await setAuth(ADMIN, "tok");
+    expect(await go(oldPath)).toBe(newPath);
+  });
+
+  it.each([
+    ["/admin", "/admin/dashboard"],
+    ["/admin/security", "/admin/security/users"],
+    ["/admin/namespaces", "/admin/namespaces/team-namespaces"],
+    ["/admin/operations", "/admin/operations/config-reload"],
+    ["/admin/observability", "/admin/observability/health"],
+  ])("redirects the section base path %s to its first tab %s", async (basePath, firstTab) => {
+    await setAuth(ADMIN, "tok");
+    expect(await go(basePath)).toBe(firstTab);
   });
 
   // ── OIDC callback handling ──────────────────────────────────────────────────
@@ -204,17 +236,21 @@ describe("router navigation guards (integration)", () => {
       "/profile",
       "/my-namespace",
       "/cli",
-      "/admin/packages",
+      "/admin/dashboard",
+      "/admin/packages/all",
+      "/admin/packages/bulk",
       "/admin/packages/detail",
-      "/admin/bulk",
-      "/admin/audit-log",
-      "/admin/health",
-      "/admin/sbom",
-      "/admin/ip-blocks",
-      "/admin/beta-channel",
-      "/admin/team-namespaces",
-      "/admin/config-reload",
-      "/admin/explore-cache",
+      "/admin/security/users",
+      "/admin/security/ip-blocks",
+      "/admin/security/access-check",
+      "/admin/namespaces/team-namespaces",
+      "/admin/namespaces/beta-channel",
+      "/admin/operations/config-reload",
+      "/admin/operations/warming",
+      "/admin/operations/explore-cache",
+      "/admin/observability/health",
+      "/admin/observability/sbom",
+      "/admin/observability/audit-log",
       "/admin/notifications",
     ];
 

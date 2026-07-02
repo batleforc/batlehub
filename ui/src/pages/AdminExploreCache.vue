@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { registryHealth, invalidateExploreCache } from "@/client/sdk.gen";
+import SectionTabs from "@/components/admin/SectionTabs.vue";
+import { OPERATIONS_TABS } from "@/config/adminSections";
+import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -78,15 +81,15 @@ onMounted(fetchRegistries);
 
 <template>
   <div class="space-y-6">
-    <div>
-      <h1 class="text-2xl font-bold">Explore Cache</h1>
-      <p class="text-sm text-muted-foreground mt-1">
+    <SectionTabs :tabs="OPERATIONS_TABS" />
+    <PageHeader title="Explore Cache">
+      <template #description>
         The package explorer caches database query results for
         <Badge variant="outline" class="font-mono text-xs">10 min</Badge>
         to avoid expensive scans on large registries. Stale entries are kept and served if the
         database becomes unreachable.
-      </p>
-    </div>
+      </template>
+    </PageHeader>
 
     <!-- Feedback -->
     <div

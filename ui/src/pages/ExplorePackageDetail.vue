@@ -16,8 +16,10 @@ import { explorePackageDetail, listRegistries } from "@/client/sdk.gen";
 import type { ExplorePackageDetailResponse, FirewallDto, RegistryInfo } from "@/client/types.gen";
 import { useAuth } from "@/composables/useAuth";
 import { useAuthFetch } from "@/composables/useAuthFetch";
-import { useApi } from "@/composables/useApi";
+import { useApi, extractMessage } from "@/composables/useApi";
 import { API_BASE_URL } from "@/config";
+import { formatCount } from "@/lib/format";
+import { firewallVariant, severityVariant } from "@/lib/badge-variants";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -97,7 +99,7 @@ async function fetchDetail() {
     if (apiErr) throw new Error(`HTTP error`);
     data.value = res as ExplorePackageDetailResponse;
   } catch (e) {
-    error.value = e instanceof Error ? e.message : "Failed to load package detail";
+    error.value = extractMessage(e);
   } finally {
     loading.value = false;
   }
@@ -108,15 +110,6 @@ function goBack() {
     path: "/explore",
     query: { registry: registry.value },
   });
-}
-
-function firewallVariant(
-  fw: FirewallDto | undefined,
-): "default" | "destructive" | "secondary" | "outline" {
-  if (!fw) return "outline";
-  if (fw.status === "blocked") return "destructive";
-  if (fw.status === "yanked") return "secondary";
-  return "outline";
 }
 
 function firewallLabel(fw: FirewallDto) {
@@ -132,18 +125,6 @@ function formatDate(iso: string | null) {
     month: "short",
     day: "numeric",
   });
-}
-
-function severityVariant(severity: string): "default" | "destructive" | "secondary" | "outline" {
-  switch (severity) {
-    case "critical":
-    case "high":
-      return "destructive";
-    case "medium":
-      return "default";
-    default:
-      return "secondary";
-  }
 }
 
 // ── Download URL construction ──────────────────────────────────────────────────
@@ -331,12 +312,12 @@ onMounted(fetchDetail);
                       <strong>At:</strong> {{ formatDate((ver.firewall as any).blocked_at) }}
                     </span>
                   </span>
-                  <Badge v-else :variant="firewallVariant(ver.firewall)" class="text-xs">
+                  <Badge v-else :variant="firewallVariant(ver.firewall?.status)" class="text-xs">
                     {{ firewallLabel(ver.firewall) }}
                   </Badge>
                 </TableCell>
                 <TableCell class="text-right text-sm text-muted-foreground">
-                  {{ ver.download_count.toLocaleString() }}
+                  {{ formatCount(ver.download_count) }}
                 </TableCell>
                 <TableCell class="text-sm text-muted-foreground">
                   {{ formatDate(ver.last_accessed ?? null) }}
@@ -427,10 +408,7 @@ onMounted(fetchDetail);
                 </TableCell>
               </TableRow>
               <TableRow v-if="data.versions.length === 0">
-                <TableCell
-                  :colspan="token ? 9 : 8"
-                  class="text-center text-muted-foreground py-6"
-                >
+                <TableCell :colspan="token ? 9 : 8" class="text-center text-muted-foreground py-6">
                   No versions found
                 </TableCell>
               </TableRow>

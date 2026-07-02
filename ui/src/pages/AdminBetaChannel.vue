@@ -2,6 +2,9 @@
 import { listBetaMembers, addBetaMember, removeBetaMember } from "@/client/sdk.gen";
 import type { BetaChannelMemberDto } from "@/lib/registry-types";
 import { useAdminCrudList } from "@/composables/useAdminCrudList";
+import SectionTabs from "@/components/admin/SectionTabs.vue";
+import { NAMESPACES_TABS } from "@/config/adminSections";
+import { PageHeader } from "@/components/ui/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -68,17 +71,17 @@ const principalTypeOptions = [
 
 <template>
   <div class="space-y-6">
-    <div class="flex items-center justify-between">
-      <div>
-        <h1 class="text-2xl font-semibold">Beta Channel</h1>
-        <p class="text-sm text-muted-foreground mt-0.5">
-          Manage who can access pre-release versions in each registry.
-        </p>
-      </div>
-      <Button size="sm" :disabled="!selectedRegistry" @click="addDialogOpen = true">
-        Add member
-      </Button>
-    </div>
+    <SectionTabs :tabs="NAMESPACES_TABS" />
+    <PageHeader
+      title="Beta Channel"
+      description="Manage who can access pre-release versions in each registry."
+    >
+      <template #actions>
+        <Button size="sm" :disabled="!selectedRegistry" @click="addDialogOpen = true">
+          Add member
+        </Button>
+      </template>
+    </PageHeader>
 
     <!-- Registry selector -->
     <div class="space-y-1.5 max-w-xs">
@@ -170,7 +173,8 @@ const principalTypeOptions = [
     <template #title>Add beta channel member</template>
     <template #description>
       Add a user or group to the beta channel for
-      <span class="font-mono">{{ selectedRegistry }}</span>.
+      <span class="font-mono">{{ selectedRegistry }}</span
+      >.
     </template>
     <div class="space-y-4">
       <div class="space-y-3">
@@ -240,7 +244,8 @@ const principalTypeOptions = [
     <template #description>
       <span class="font-mono">{{ removeTarget?.principal_id }}</span>
       will lose access to pre-release versions in
-      <span class="font-mono">{{ selectedRegistry }}</span>.
+      <span class="font-mono">{{ selectedRegistry }}</span
+      >.
     </template>
     <div class="space-y-4">
       <p v-if="removeError" class="text-sm text-destructive">

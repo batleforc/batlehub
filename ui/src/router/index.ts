@@ -126,23 +126,67 @@ export const router = createRouter({
       component: () => import("@/layouts/AdminLayout.vue"),
       meta: { requiresAdmin: true },
       children: [
-        { path: "", redirect: "dashboard" },
+        { path: "", redirect: "/admin/dashboard" },
         { path: "dashboard", component: () => import("@/pages/AdminDashboard.vue") },
-        { path: "packages", component: () => import("@/pages/AdminPackages.vue") },
+
+        // Packages
+        { path: "packages", redirect: "/admin/packages/all" },
+        { path: "packages/all", component: () => import("@/pages/AdminPackages.vue") },
+        { path: "packages/bulk", component: () => import("@/pages/AdminBulk.vue") },
         { path: "packages/detail", component: () => import("@/pages/AdminPackageDetail.vue") },
-        { path: "bulk", component: () => import("@/pages/AdminBulk.vue") },
-        { path: "audit-log", component: () => import("@/pages/AuditLog.vue") },
-        { path: "health", component: () => import("@/pages/AdminHealth.vue") },
-        { path: "sbom", component: () => import("@/pages/AdminSbom.vue") },
-        { path: "ip-blocks", component: () => import("@/pages/AdminIpBlocks.vue") },
-        { path: "users", component: () => import("@/pages/AdminUsers.vue") },
-        { path: "beta-channel", component: () => import("@/pages/AdminBetaChannel.vue") },
-        { path: "team-namespaces", component: () => import("@/pages/AdminTeamNamespaces.vue") },
-        { path: "config-reload", component: () => import("@/pages/AdminConfigReload.vue") },
-        { path: "warming", component: () => import("@/pages/AdminWarming.vue") },
-        { path: "explore-cache", component: () => import("@/pages/AdminExploreCache.vue") },
+        { path: "bulk", redirect: "/admin/packages/bulk" },
+
+        // Security & Access
+        { path: "security", redirect: "/admin/security/users" },
+        { path: "security/users", component: () => import("@/pages/AdminUsers.vue") },
+        { path: "security/ip-blocks", component: () => import("@/pages/AdminIpBlocks.vue") },
+        {
+          path: "security/access-check",
+          component: () => import("@/pages/AdminAccessCheck.vue"),
+        },
+        { path: "users", redirect: "/admin/security/users" },
+        { path: "ip-blocks", redirect: "/admin/security/ip-blocks" },
+        { path: "access-check", redirect: "/admin/security/access-check" },
+
+        // Namespaces & Channels
+        { path: "namespaces", redirect: "/admin/namespaces/team-namespaces" },
+        {
+          path: "namespaces/team-namespaces",
+          component: () => import("@/pages/AdminTeamNamespaces.vue"),
+        },
+        {
+          path: "namespaces/beta-channel",
+          component: () => import("@/pages/AdminBetaChannel.vue"),
+        },
+        { path: "team-namespaces", redirect: "/admin/namespaces/team-namespaces" },
+        { path: "beta-channel", redirect: "/admin/namespaces/beta-channel" },
+
+        // Operations
+        { path: "operations", redirect: "/admin/operations/config-reload" },
+        {
+          path: "operations/config-reload",
+          component: () => import("@/pages/AdminConfigReload.vue"),
+        },
+        { path: "operations/warming", component: () => import("@/pages/AdminWarming.vue") },
+        {
+          path: "operations/explore-cache",
+          component: () => import("@/pages/AdminExploreCache.vue"),
+        },
+        { path: "config-reload", redirect: "/admin/operations/config-reload" },
+        { path: "warming", redirect: "/admin/operations/warming" },
+        { path: "explore-cache", redirect: "/admin/operations/explore-cache" },
+
+        // Observability
+        { path: "observability", redirect: "/admin/observability/health" },
+        { path: "observability/health", component: () => import("@/pages/AdminHealth.vue") },
+        { path: "observability/sbom", component: () => import("@/pages/AdminSbom.vue") },
+        { path: "observability/audit-log", component: () => import("@/pages/AuditLog.vue") },
+        { path: "health", redirect: "/admin/observability/health" },
+        { path: "sbom", redirect: "/admin/observability/sbom" },
+        { path: "audit-log", redirect: "/admin/observability/audit-log" },
+
+        // Notifications
         { path: "notifications", component: () => import("@/pages/AdminNotifications.vue") },
-        { path: "access-check", component: () => import("@/pages/AdminAccessCheck.vue") },
       ],
     },
   ],

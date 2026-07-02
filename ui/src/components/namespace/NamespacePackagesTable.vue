@@ -5,6 +5,7 @@ import type { Visibility, TeamNamespaceDto, NamespacePackageDto } from "@/lib/re
 import { VISIBILITY_OPTIONS } from "@/lib/registry-types";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
+import { Pagination } from "@/components/ui/pagination";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -44,13 +45,6 @@ const {
 watch(nsRef, () => {
   page.value = 0;
 });
-
-function prevPage() {
-  if (page.value > 0) page.value--;
-}
-function nextPage() {
-  if ((pkgsData.value?.length ?? 0) >= PAGE_SIZE) page.value++;
-}
 
 // ── Inline visibility editing ─────────────────────────────────────────────────
 
@@ -191,16 +185,11 @@ function formatDate(iso: string) {
         </TableRow>
       </TableBody>
     </Table>
-    <div class="flex items-center justify-between mt-3">
-      <Button variant="outline" size="sm" :disabled="page === 0" @click="prevPage">Previous</Button>
-      <span class="text-xs text-muted-foreground">Page {{ page + 1 }}</span>
-      <Button
-        variant="outline"
-        size="sm"
-        :disabled="(pkgsData?.length ?? 0) < PAGE_SIZE"
-        @click="nextPage"
-        >Next</Button
-      >
-    </div>
+    <Pagination
+      class="mt-3"
+      :page="page"
+      :has-next="(pkgsData?.length ?? 0) >= PAGE_SIZE"
+      @update:page="page = $event"
+    />
   </template>
 </template>

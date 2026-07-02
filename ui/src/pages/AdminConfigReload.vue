@@ -10,8 +10,13 @@ import {
 } from "@/client/sdk.gen";
 import type { PendingReloadSnapshot, ConfigChangeRow } from "@/client/types.gen";
 import { useAuthFetch } from "@/composables/useAuthFetch";
+import { extractMessage } from "@/composables/useApi";
 import { useBanner } from "@/composables/useBanner";
+import { formatDate } from "@/lib/format";
 import { API_BASE_URL } from "@/config";
+import SectionTabs from "@/components/admin/SectionTabs.vue";
+import { OPERATIONS_TABS } from "@/config/adminSections";
+import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -67,7 +72,7 @@ async function loadConfigContent() {
     configContent.value = body.content;
     configReadonly.value = body.is_readonly;
   } catch (e) {
-    configLoadError.value = e instanceof Error ? e.message : "Failed to load config";
+    configLoadError.value = extractMessage(e);
   }
 }
 
@@ -87,9 +92,9 @@ async function validateConfigContent() {
       throw new Error(body.error ?? `HTTP ${res.status}`);
     }
     validatedContent.value = configContent.value;
-    editorSuccess.value = "Config is valid. Click \"Create Pending Reload\" to stage it for apply.";
+    editorSuccess.value = 'Config is valid. Click "Create Pending Reload" to stage it for apply.';
   } catch (e) {
-    editorError.value = e instanceof Error ? e.message : "Validation failed";
+    editorError.value = extractMessage(e);
   } finally {
     editorValidating.value = false;
   }
@@ -113,19 +118,13 @@ async function createPendingFromContent() {
     editorSuccess.value = "Pending reload created. Review it below, then apply.";
     await fetchPending();
   } catch (e) {
-    editorError.value = e instanceof Error ? e.message : "Failed to create pending reload";
+    editorError.value = extractMessage(e);
   } finally {
     editorCreating.value = false;
   }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function sdkErrMsg(err: unknown): string {
-  if (!err) return "API error";
-  const e = err as { message?: string };
-  return e.message ?? String(err);
-}
 
 async function fetchPending() {
   loadingPending.value = true;
@@ -163,14 +162,14 @@ async function forceReload() {
   successMsg.value = null;
   try {
     const { data, error: apiErr } = await reloadConfig();
-    if (apiErr) throw new Error(sdkErrMsg(apiErr));
+    if (apiErr) throw new Error(extractMessage(apiErr));
     const diff = (data as { diff?: { added_registries: string[]; removed_registries: string[] } })
       ?.diff;
     successMsg.value = `Reloaded: +${diff?.added_registries.length ?? 0} -${diff?.removed_registries.length ?? 0} registries`;
     await fetchPending();
     await fetchHistory();
   } catch (e: unknown) {
-    errorMsg.value = e instanceof Error ? e.message : String(e);
+    errorMsg.value = extractMessage(e);
   } finally {
     loadingForce.value = false;
   }
@@ -182,14 +181,14 @@ async function applyPending() {
   successMsg.value = null;
   try {
     const { data, error: apiErr } = await applyPendingReload();
-    if (apiErr) throw new Error(sdkErrMsg(apiErr));
+    if (apiErr) throw new Error(extractMessage(apiErr));
     const diff = (data as { diff?: { added_registries: string[]; removed_registries: string[] } })
       ?.diff;
     successMsg.value = `Applied: +${diff?.added_registries.length ?? 0} -${diff?.removed_registries.length ?? 0} registries`;
     pendingReload.value = null;
     await fetchHistory();
   } catch (e: unknown) {
-    errorMsg.value = e instanceof Error ? e.message : String(e);
+    errorMsg.value = extractMessage(e);
   } finally {
     loadingApply.value = false;
   }
@@ -200,10 +199,10 @@ async function discardPending() {
   errorMsg.value = null;
   try {
     const { error: apiErr } = await discardPendingReload();
-    if (apiErr) throw new Error(sdkErrMsg(apiErr));
+    if (apiErr) throw new Error(extractMessage(apiErr));
     pendingReload.value = null;
   } catch (e: unknown) {
-    errorMsg.value = e instanceof Error ? e.message : String(e);
+    errorMsg.value = extractMessage(e);
   } finally {
     loadingDiscard.value = false;
   }
@@ -217,11 +216,11 @@ async function setBannerAction() {
     const { error: apiErr } = await setBanner({
       body: { message: bannerMessage.value, level: bannerLevel.value },
     });
-    if (apiErr) throw new Error(sdkErrMsg(apiErr));
+    if (apiErr) throw new Error(extractMessage(apiErr));
     successMsg.value = "Banner set";
     bannerMessage.value = "";
   } catch (e: unknown) {
-    errorMsg.value = e instanceof Error ? e.message : String(e);
+    errorMsg.value = extractMessage(e);
   } finally {
     loadingSetBanner.value = false;
   }
@@ -232,10 +231,10 @@ async function clearBannerAction() {
   errorMsg.value = null;
   try {
     const { error: apiErr } = await clearBanner();
-    if (apiErr) throw new Error(sdkErrMsg(apiErr));
+    if (apiErr) throw new Error(extractMessage(apiErr));
     successMsg.value = "Banner cleared";
   } catch (e: unknown) {
-    errorMsg.value = e instanceof Error ? e.message : String(e);
+    errorMsg.value = extractMessage(e);
   } finally {
     loadingClearBanner.value = false;
   }
@@ -262,7 +261,8 @@ onUnmounted(() => {
 
 <template>
   <div class="space-y-6">
-    <h1 class="text-2xl font-bold">Config Reload</h1>
+    <SectionTabs :tabs="OPERATIONS_TABS" />
+    <PageHeader title="Config Reload" />
 
     <!-- Config Editor -->
     <Card>
@@ -301,13 +301,21 @@ onUnmounted(() => {
         </div>
         <div class="flex gap-2 flex-wrap">
           <Button
-            :disabled="editorValidating || editorCreating || configReadonly || hotReloadEnabled === false"
+            :disabled="
+              editorValidating || editorCreating || configReadonly || hotReloadEnabled === false
+            "
             @click="validateConfigContent"
           >
             {{ editorValidating ? "Validating…" : "Validate" }}
           </Button>
           <Button
-            :disabled="editorCreating || editorValidating || !validatedContent || configReadonly || hotReloadEnabled === false"
+            :disabled="
+              editorCreating ||
+              editorValidating ||
+              !validatedContent ||
+              configReadonly ||
+              hotReloadEnabled === false
+            "
             @click="createPendingFromContent"
           >
             {{ editorCreating ? "Creating…" : "Create Pending Reload" }}
@@ -356,10 +364,7 @@ onUnmounted(() => {
         <div v-else class="space-y-3">
           <div class="flex gap-4 text-sm">
             <span><strong>Source:</strong> {{ pendingReload.source }}</span>
-            <span
-              ><strong>Created:</strong>
-              {{ new Date(pendingReload.created_at).toLocaleString() }}</span
-            >
+            <span><strong>Created:</strong> {{ formatDate(pendingReload.created_at) }}</span>
             <span><strong>Expires in:</strong> {{ expiresIn }}</span>
           </div>
           <div class="flex gap-2 flex-wrap">
@@ -483,7 +488,7 @@ onUnmounted(() => {
                 class="border-b cursor-pointer hover:bg-muted/30"
                 @click="expandedRow = expandedRow === row.id ? null : row.id"
               >
-                <td class="py-2 pr-4">{{ new Date(row.triggered_at).toLocaleString() }}</td>
+                <td class="py-2 pr-4">{{ formatDate(row.triggered_at) }}</td>
                 <td class="py-2 pr-4">{{ row.triggered_by }}</td>
                 <td class="py-2 pr-4">
                   <Badge

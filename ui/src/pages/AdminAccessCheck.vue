@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useAuth } from "@/composables/useAuth";
+import SectionTabs from "@/components/admin/SectionTabs.vue";
+import { SECURITY_TABS } from "@/config/adminSections";
+import { PageHeader } from "@/components/ui/page-header";
 
 const { token } = useAuth();
 
@@ -16,12 +19,7 @@ const result = ref<null | { decision: string; reason?: string; rule_matched?: st
 const loading = ref(false);
 const error = ref<string | null>(null);
 
-const RESOURCE_TYPES = [
-  "releases:read",
-  "source:read",
-  "releases:write",
-  "source:write",
-];
+const RESOURCE_TYPES = ["releases:read", "source:read", "releases:write", "source:write"];
 
 async function simulate() {
   loading.value = true;
@@ -62,13 +60,11 @@ async function simulate() {
 
 <template>
   <div class="space-y-6">
-    <div>
-      <h1 class="text-xl font-semibold">RBAC Access Check</h1>
-      <p class="text-sm text-muted-foreground mt-1">
-        Simulate whether an identity would be allowed to access a package resource under the
-        current registry policy — without making a real request.
-      </p>
-    </div>
+    <SectionTabs :tabs="SECURITY_TABS" />
+    <PageHeader
+      title="RBAC Access Check"
+      description="Simulate whether an identity would be allowed to access a package resource under the current registry policy — without making a real request."
+    />
 
     <form @submit.prevent="simulate" class="space-y-4 max-w-lg">
       <div class="grid grid-cols-2 gap-4">
@@ -134,7 +130,9 @@ async function simulate() {
           </select>
         </div>
         <div class="space-y-1">
-          <label for="aac-user-id" class="text-sm font-medium">User ID <span class="text-muted-foreground">(optional)</span></label>
+          <label for="aac-user-id" class="text-sm font-medium"
+            >User ID <span class="text-muted-foreground">(optional)</span></label
+          >
           <input
             id="aac-user-id"
             v-model="userId"
@@ -143,7 +141,9 @@ async function simulate() {
           />
         </div>
         <div class="col-span-2 space-y-1">
-          <label for="aac-groups" class="text-sm font-medium">Groups <span class="text-muted-foreground">(comma-separated)</span></label>
+          <label for="aac-groups" class="text-sm font-medium"
+            >Groups <span class="text-muted-foreground">(comma-separated)</span></label
+          >
           <input
             id="aac-groups"
             v-model="groups"
@@ -162,16 +162,36 @@ async function simulate() {
       </button>
     </form>
 
-    <div v-if="error" class="rounded border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+    <div
+      v-if="error"
+      class="rounded border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+    >
       {{ error }}
     </div>
 
-    <div v-if="result" class="rounded border px-4 py-3 space-y-1" :class="result.decision === 'allow' ? 'border-green-500/50 bg-green-500/10' : 'border-red-500/50 bg-red-500/10'">
-      <p class="font-semibold text-sm" :class="result.decision === 'allow' ? 'text-green-700 dark:text-green-400' : 'text-red-700 dark:text-red-400'">
-        {{ result.decision === 'allow' ? '✓ ALLOW' : '✗ DENY' }}
+    <div
+      v-if="result"
+      class="rounded border px-4 py-3 space-y-1"
+      :class="
+        result.decision === 'allow'
+          ? 'border-green-500/50 bg-green-500/10'
+          : 'border-red-500/50 bg-red-500/10'
+      "
+    >
+      <p
+        class="font-semibold text-sm"
+        :class="
+          result.decision === 'allow'
+            ? 'text-green-700 dark:text-green-400'
+            : 'text-red-700 dark:text-red-400'
+        "
+      >
+        {{ result.decision === "allow" ? "✓ ALLOW" : "✗ DENY" }}
       </p>
       <p v-if="result.reason" class="text-sm text-muted-foreground">{{ result.reason }}</p>
-      <p v-if="result.rule_matched" class="text-xs text-muted-foreground">Rule: {{ result.rule_matched }}</p>
+      <p v-if="result.rule_matched" class="text-xs text-muted-foreground">
+        Rule: {{ result.rule_matched }}
+      </p>
     </div>
   </div>
 </template>

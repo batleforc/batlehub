@@ -9,6 +9,7 @@ import {
   invalidatePackage,
 } from "@/client/sdk.gen";
 import type { PackageVersionDetail } from "@/client/types.gen";
+import { formatDate as fmtDate } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -35,11 +36,6 @@ const router = useRouter();
 
 function isPreRelease(v: string) {
   return v.includes("-");
-}
-
-function fmtDate(iso: string | null | undefined) {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleString();
 }
 
 function severityVariant(severity: string): "default" | "destructive" | "secondary" | "outline" {

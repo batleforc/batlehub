@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { useAuthFetch } from "@/composables/useAuthFetch";
+import { formatDate as fmtDate } from "@/lib/format";
+import SectionTabs from "@/components/admin/SectionTabs.vue";
+import { PageHeader } from "@/components/ui/page-header";
+import { SECURITY_TABS } from "@/config/adminSections";
 import { API_BASE_URL } from "@/config";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -56,11 +60,14 @@ async function submitBlock() {
   blockLoading.value = true;
   blockError.value = null;
   try {
-    const res = await authFetch(`${API_BASE_URL}/api/v1/admin/users/${encodeURIComponent(uid)}/block`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reason: blockForm.value.reason.trim() || null }),
-    });
+    const res = await authFetch(
+      `${API_BASE_URL}/api/v1/admin/users/${encodeURIComponent(uid)}/block`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: blockForm.value.reason.trim() || null }),
+      },
+    );
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -100,10 +107,6 @@ async function confirmUnblock() {
   }
 }
 
-function fmtDate(iso: string): string {
-  return new Date(iso).toLocaleString();
-}
-
 onMounted(() => {
   void loadBlockedUsers();
 });
@@ -111,20 +114,18 @@ onMounted(() => {
 
 <template>
   <div class="space-y-6">
-    <div class="flex items-center justify-between">
-      <div>
-        <h1 class="text-2xl font-semibold">User Blocks</h1>
-        <p class="text-sm text-muted-foreground mt-0.5">
-          Block user accounts. Blocked users receive 401 responses on all authenticated requests.
-        </p>
-      </div>
-      <div class="flex items-center gap-2">
+    <SectionTabs :tabs="SECURITY_TABS" />
+    <PageHeader
+      title="User Blocks"
+      description="Block user accounts. Blocked users receive 401 responses on all authenticated requests."
+    >
+      <template #actions>
         <Button variant="outline" size="sm" :disabled="listLoading" @click="loadBlockedUsers">
           {{ listLoading ? "Refreshing…" : "Refresh" }}
         </Button>
         <Button size="sm" @click="blockDialogOpen = true"> Block User </Button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <p v-if="listLoading && blockedUsers.length === 0" class="text-sm text-muted-foreground">
       Loading…
@@ -165,10 +166,7 @@ onMounted(() => {
             </TableRow>
           </TableBody>
         </Table>
-        <p
-          v-if="blockedUsers.length === 0"
-          class="p-6 text-sm text-muted-foreground text-center"
-        >
+        <p v-if="blockedUsers.length === 0" class="p-6 text-sm text-muted-foreground text-center">
           No users are currently blocked.
         </p>
       </CardContent>
@@ -204,11 +202,7 @@ onMounted(() => {
         </div>
         <div class="space-y-1.5">
           <Label for="userblock-reason">Reason</Label>
-          <Input
-            id="userblock-reason"
-            v-model="blockForm.reason"
-            placeholder="Optional reason"
-          />
+          <Input id="userblock-reason" v-model="blockForm.reason" placeholder="Optional reason" />
         </div>
       </div>
       <p v-if="blockError" class="text-sm text-destructive">{{ blockError }}</p>
@@ -248,7 +242,10 @@ onMounted(() => {
       }
     "
   >
-    <template #title>Unblock <span class="font-mono">{{ unblockTarget }}</span>?</template>
+    <template #title
+      >Unblock <span class="font-mono">{{ unblockTarget }}</span
+      >?</template
+    >
     <template #description>This user will be immediately allowed to authenticate again.</template>
     <div class="space-y-4">
       <p v-if="unblockError" class="text-sm text-destructive">{{ unblockError }}</p>

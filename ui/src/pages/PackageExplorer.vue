@@ -2,6 +2,11 @@
 import { ref, computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { useExploreCache } from "@/composables/useExploreCache";
+import { extractMessage } from "@/composables/useApi";
+import { formatCount } from "@/lib/format";
+import { sourceVariant } from "@/lib/badge-variants";
+import { PageHeader } from "@/components/ui/page-header";
+import { Pagination } from "@/components/ui/pagination";
 import { Search, Package, RefreshCw } from "@lucide/vue";
 import {
   listRegistries,
@@ -92,12 +97,6 @@ function sourceLabel(source: string) {
   return "Proxied";
 }
 
-function sourceVariant(source: string): "default" | "secondary" | "outline" {
-  if (source === "local") return "secondary";
-  if (source === "both") return "default";
-  return "outline";
-}
-
 // ── Cache ─────────────────────────────────────────────────────────────────────
 
 interface PageResult {
@@ -160,7 +159,7 @@ async function fetchPackages() {
     total.value = body.total;
     exploreCache.set(reg, p, s, q, { items: body.items, total: body.total });
   } catch (e) {
-    error.value = e instanceof Error ? e.message : "Failed to load packages";
+    error.value = extractMessage(e);
   } finally {
     loading.value = false;
   }
@@ -223,17 +222,9 @@ function goToDetail(row: ExploreRow) {
   });
 }
 
-function prevPage() {
-  if (page.value > 0) {
-    page.value--;
-    void fetchPackages();
-  }
-}
-function nextPage() {
-  if (page.value < totalPages.value - 1) {
-    page.value++;
-    void fetchPackages();
-  }
+function goToPage(p: number) {
+  page.value = p;
+  void fetchPackages();
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
@@ -291,28 +282,28 @@ onMounted(() => {
     <!-- Main content -->
     <div class="flex-1 min-w-0 space-y-4">
       <!-- Header -->
-      <div class="flex items-center justify-between gap-4 flex-wrap">
-        <h1
-          class="font-mono text-xl font-bold flex items-center gap-2 text-foreground cyber-text-glow"
-        >
+      <PageHeader variant="glow">
+        <template #title>
           <Package class="h-5 w-5 text-primary" />
           Package Explorer
-        </h1>
-        <Button
-          variant="outline"
-          size="sm"
-          @click="
-            () => {
-              exploreCache.invalidate(selectedRegistry ?? undefined);
-              void fetchPackages();
-              if (search.trim().length >= 2) void fetchUpstream();
-            }
-          "
-        >
-          <RefreshCw class="h-4 w-4 mr-1" />
-          Refresh
-        </Button>
-      </div>
+        </template>
+        <template #actions>
+          <Button
+            variant="outline"
+            size="sm"
+            @click="
+              () => {
+                exploreCache.invalidate(selectedRegistry ?? undefined);
+                void fetchPackages();
+                if (search.trim().length >= 2) void fetchUpstream();
+              }
+            "
+          >
+            <RefreshCw class="h-4 w-4 mr-1" />
+            Refresh
+          </Button>
+        </template>
+      </PageHeader>
 
       <!-- Search + sort bar -->
       <div class="flex gap-2 flex-wrap">
@@ -393,7 +384,7 @@ onMounted(() => {
                 <!-- Downloads column -->
                 <TableCell class="text-right text-sm text-muted-foreground">
                   <template v-if="row.kind === 'cached'">
-                    {{ row.total_downloads.toLocaleString() }}
+                    {{ formatCount(row.total_downloads) }}
                   </template>
                   <span v-else>—</span>
                 </TableCell>
@@ -452,15 +443,7 @@ onMounted(() => {
         class="flex items-center justify-between text-sm text-muted-foreground"
       >
         <span>{{ total }} cached packages total</span>
-        <div class="flex items-center gap-2">
-          <Button variant="outline" size="sm" :disabled="page === 0" @click="prevPage">
-            Previous
-          </Button>
-          <span>Page {{ page + 1 }} / {{ totalPages }}</span>
-          <Button variant="outline" size="sm" :disabled="page >= totalPages - 1" @click="nextPage">
-            Next
-          </Button>
-        </div>
+        <Pagination :page="page" :total-pages="totalPages" @update:page="goToPage" />
       </div>
     </div>
   </div>

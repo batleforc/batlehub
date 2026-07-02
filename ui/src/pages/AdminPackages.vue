@@ -2,6 +2,8 @@
 import { ref, computed, watch } from "vue";
 import { useRouter } from "vue-router";
 import { Package } from "@lucide/vue";
+import SectionTabs from "@/components/admin/SectionTabs.vue";
+import { PACKAGES_TABS } from "@/config/adminSections";
 import {
   listPackages,
   listRegistries,
@@ -11,10 +13,12 @@ import {
   bulkUnblockPackages,
 } from "@/client/sdk.gen";
 import type { RegistryInfo } from "@/client/types.gen";
-import { useApi } from "@/composables/useApi";
+import { useApi, extractMessage } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
 import { useAuthFetch } from "@/composables/useAuthFetch";
+import { formatDate as fmtDate } from "@/lib/format";
 import { API_BASE_URL } from "@/config";
+import { AsyncState } from "@/components/ui/async-state";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -103,7 +107,7 @@ async function block(pkg: AdminPackageSummary) {
     });
     reload();
   } catch (e: unknown) {
-    actionError.value = e instanceof Error ? e.message : "Failed to block package.";
+    actionError.value = extractMessage(e);
   }
 }
 
@@ -120,12 +124,17 @@ async function unblock(pkg: AdminPackageSummary) {
     });
     reload();
   } catch (e: unknown) {
-    actionError.value = e instanceof Error ? e.message : "Failed to unblock package.";
+    actionError.value = extractMessage(e);
   }
 }
 
 async function deletePkg(pkg: AdminPackageSummary) {
-  if (!confirm(`Delete package record and purge cached artifact for "${pkg.package_id.name}@${pkg.package_id.version}"? This cannot be undone.`)) return;
+  if (
+    !confirm(
+      `Delete package record and purge cached artifact for "${pkg.package_id.name}@${pkg.package_id.version}"? This cannot be undone.`,
+    )
+  )
+    return;
   actionError.value = null;
   try {
     const res = await authFetch(`${API_BASE_URL}/api/v1/admin/packages/delete`, {
@@ -144,7 +153,7 @@ async function deletePkg(pkg: AdminPackageSummary) {
     }
     reload();
   } catch (e: unknown) {
-    actionError.value = e instanceof Error ? e.message : "Failed to delete package.";
+    actionError.value = extractMessage(e);
   }
 }
 
@@ -153,11 +162,6 @@ async function deletePkg(pkg: AdminPackageSummary) {
 const selected = ref<Set<string>>(new Set());
 const bulkLoading = ref(false);
 const bulkResultMsg = ref<string | null>(null);
-
-function fmtDate(iso: string | null) {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleString();
-}
 
 function pkgKey(pkg: AdminPackageSummary) {
   return `${pkg.package_id.registry}:${pkg.package_id.name}:${pkg.package_id.version}:${pkg.package_id.artifact ?? ""}`;
@@ -246,7 +250,12 @@ async function bulkUnblock() {
 }
 
 async function bulkDelete() {
-  if (!confirm(`Delete ${selected.value.size} selected package record(s) and purge their cached artifacts? This cannot be undone.`)) return;
+  if (
+    !confirm(
+      `Delete ${selected.value.size} selected package record(s) and purge their cached artifacts? This cannot be undone.`,
+    )
+  )
+    return;
   bulkLoading.value = true;
   bulkResultMsg.value = null;
   try {
@@ -269,7 +278,7 @@ async function bulkDelete() {
     const failSuffix = json.failed_count ? `, ${json.failed_count} failed` : "";
     bulkResultMsg.value = `Deleted ${json.succeeded_count ?? 0} package(s)${failSuffix}.`;
   } catch (e) {
-    bulkResultMsg.value = e instanceof Error ? e.message : "Bulk delete failed.";
+    bulkResultMsg.value = extractMessage(e);
   } finally {
     bulkLoading.value = false;
     selected.value = new Set();
@@ -324,7 +333,7 @@ async function submitPreBlock() {
     showPreBlock.value = false;
     reload();
   } catch (e: unknown) {
-    preBlockError.value = e instanceof Error ? e.message : "Failed to block package.";
+    preBlockError.value = extractMessage(e);
   } finally {
     preBlockLoading.value = false;
   }
@@ -333,6 +342,7 @@ async function submitPreBlock() {
 
 <template>
   <div class="space-y-4">
+    <SectionTabs :tabs="PACKAGES_TABS" />
     <!-- Pre-block form -->
     <Card>
       <CardHeader class="flex flex-row items-center justify-between space-y-0 pb-3">
@@ -458,152 +468,158 @@ async function submitPreBlock() {
         <p v-if="actionError" class="px-6 pt-4 text-sm text-destructive">
           {{ actionError }}
         </p>
-        <p v-if="loading" class="p-6 text-sm text-muted-foreground">Loading…</p>
-        <p v-else-if="error" class="p-6 text-sm text-destructive">
-          {{ error }}
-        </p>
+        <AsyncState :loading="loading" :error="error" :empty="!filteredPackages.length">
+          <template #empty>
+            <div class="py-12 text-center space-y-2">
+              <Package class="h-8 w-8 mx-auto text-muted-foreground/50" />
+              <p class="text-sm text-muted-foreground">
+                {{ search ? "No packages match your filter." : "No packages yet." }}
+              </p>
+              <p v-if="search" class="text-xs text-muted-foreground">Try clearing the filter.</p>
+            </div>
+          </template>
 
-        <Table v-else-if="filteredPackages.length">
-          <TableHeader>
-            <TableRow>
-              <TableHead class="w-8">
-                <input
-                  type="checkbox"
-                  aria-label="Select all packages"
-                  :checked="allSelected"
-                  class="cursor-pointer"
-                  @change="toggleAll"
-                />
-              </TableHead>
-              <TableHead>Registry</TableHead>
-              <TableHead>Name</TableHead>
-              <TableHead>Version</TableHead>
-              <TableHead>Artifact</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Last pulled</TableHead>
-              <TableHead>Last pulled by</TableHead>
-              <TableHead class="text-right"> Downloads </TableHead>
-              <TableHead />
-              <TableHead class="text-right"> Actions </TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            <TableRow
-              v-for="(pkg, i) in filteredPackages"
-              :key="i"
-              :class="pkg.status.status === 'blocked' ? 'bg-destructive/5' : ''"
-            >
-              <TableCell class="w-8">
-                <input
-                  type="checkbox"
-                  :aria-label="`Select ${pkg.package_id.name}`"
-                  :checked="selected.has(pkgKey(pkg))"
-                  class="cursor-pointer"
-                  @change="toggleOne(pkg)"
-                />
-              </TableCell>
-              <TableCell class="font-mono text-xs">
-                {{ pkg.package_id.registry }}
-              </TableCell>
-              <TableCell class="font-medium">
-                {{ pkg.package_id.name }}
-              </TableCell>
-              <TableCell class="font-mono text-xs">
-                {{ pkg.package_id.version }}
-              </TableCell>
-              <TableCell class="text-muted-foreground text-xs font-mono">
-                {{ pkg.package_id.artifact ?? "—" }}
-              </TableCell>
-              <TableCell>
-                <div class="space-y-0.5">
-                  <Badge :variant="pkg.status.status === 'blocked' ? 'destructive' : 'secondary'">
-                    {{ pkg.status.status === "blocked" ? "Blocked" : "Available" }}
-                  </Badge>
-                  <p v-if="pkg.status.status === 'blocked'" class="text-xs text-muted-foreground">
-                    {{ pkg.status.reason }}
-                  </p>
-                </div>
-              </TableCell>
-              <TableCell class="text-xs tabular-nums whitespace-nowrap">
-                {{ fmtDate(pkg.last_accessed) }}
-              </TableCell>
-              <TableCell class="text-sm">
-                <span v-if="pkg.last_accessed_by" class="font-medium">{{
-                  pkg.last_accessed_by
-                }}</span>
-                <span v-else-if="pkg.access_count > 0" class="text-muted-foreground italic"
-                  >anonymous</span
-                >
-                <span v-else class="text-muted-foreground">—</span>
-              </TableCell>
-              <TableCell class="text-right tabular-nums">
-                {{ pkg.access_count }}
-              </TableCell>
-              <TableCell>
-                <div class="flex gap-1">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    @click="
-                      router.push({
-                        path: '/admin/packages/detail',
-                        query: {
-                          registry: pkg.package_id.registry,
-                          name: pkg.package_id.name,
-                        },
-                      })
-                    "
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead class="w-8">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all packages"
+                    :checked="allSelected"
+                    class="cursor-pointer"
+                    @change="toggleAll"
+                  />
+                </TableHead>
+                <TableHead>Registry</TableHead>
+                <TableHead>Name</TableHead>
+                <TableHead>Version</TableHead>
+                <TableHead>Artifact</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Last pulled</TableHead>
+                <TableHead>Last pulled by</TableHead>
+                <TableHead class="text-right"> Downloads </TableHead>
+                <TableHead />
+                <TableHead class="text-right"> Actions </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <TableRow
+                v-for="(pkg, i) in filteredPackages"
+                :key="i"
+                :class="pkg.status.status === 'blocked' ? 'bg-destructive/5' : ''"
+              >
+                <TableCell class="w-8">
+                  <input
+                    type="checkbox"
+                    :aria-label="`Select ${pkg.package_id.name}`"
+                    :checked="selected.has(pkgKey(pkg))"
+                    class="cursor-pointer"
+                    @change="toggleOne(pkg)"
+                  />
+                </TableCell>
+                <TableCell class="font-mono text-xs">
+                  {{ pkg.package_id.registry }}
+                </TableCell>
+                <TableCell class="font-medium">
+                  {{ pkg.package_id.name }}
+                </TableCell>
+                <TableCell class="font-mono text-xs">
+                  {{ pkg.package_id.version }}
+                </TableCell>
+                <TableCell class="text-muted-foreground text-xs font-mono">
+                  {{ pkg.package_id.artifact ?? "—" }}
+                </TableCell>
+                <TableCell>
+                  <div class="space-y-0.5">
+                    <Badge :variant="pkg.status.status === 'blocked' ? 'destructive' : 'secondary'">
+                      {{ pkg.status.status === "blocked" ? "Blocked" : "Available" }}
+                    </Badge>
+                    <p v-if="pkg.status.status === 'blocked'" class="text-xs text-muted-foreground">
+                      {{ pkg.status.reason }}
+                    </p>
+                  </div>
+                </TableCell>
+                <TableCell class="text-xs tabular-nums whitespace-nowrap">
+                  {{ fmtDate(pkg.last_accessed) }}
+                </TableCell>
+                <TableCell class="text-sm">
+                  <span v-if="pkg.last_accessed_by" class="font-medium">{{
+                    pkg.last_accessed_by
+                  }}</span>
+                  <span v-else-if="pkg.access_count > 0" class="text-muted-foreground italic"
+                    >anonymous</span
                   >
-                    Details
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    @click="
-                      router.push({
-                        path: '/packages/detail',
-                        query: {
-                          registry: pkg.package_id.registry,
-                          name: pkg.package_id.name,
-                          version: pkg.package_id.version,
-                          ...(pkg.package_id.artifact ? { artifact: pkg.package_id.artifact } : {}),
-                        },
-                      })
-                    "
-                  >
-                    Artifact
-                  </Button>
-                </div>
-              </TableCell>
-              <TableCell class="text-right">
-                <div class="flex gap-1 justify-end">
-                  <Button
-                    v-if="pkg.status.status === 'blocked'"
-                    variant="outline"
-                    size="sm"
-                    @click="unblock(pkg)"
-                  >
-                    Unblock
-                  </Button>
-                  <Button v-else variant="destructive" size="sm" @click="block(pkg)">
-                    Block
-                  </Button>
-                  <Button variant="ghost" size="sm" class="text-destructive hover:text-destructive hover:bg-destructive/10" @click="deletePkg(pkg)">
-                    Delete
-                  </Button>
-                </div>
-              </TableCell>
-            </TableRow>
-          </TableBody>
-        </Table>
-
-        <div v-else class="py-12 text-center space-y-2">
-          <Package class="h-8 w-8 mx-auto text-muted-foreground/50" />
-          <p class="text-sm text-muted-foreground">
-            {{ search ? "No packages match your filter." : "No packages yet." }}
-          </p>
-          <p v-if="search" class="text-xs text-muted-foreground">Try clearing the filter.</p>
-        </div>
+                  <span v-else class="text-muted-foreground">—</span>
+                </TableCell>
+                <TableCell class="text-right tabular-nums">
+                  {{ pkg.access_count }}
+                </TableCell>
+                <TableCell>
+                  <div class="flex gap-1">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      @click="
+                        router.push({
+                          path: '/admin/packages/detail',
+                          query: {
+                            registry: pkg.package_id.registry,
+                            name: pkg.package_id.name,
+                          },
+                        })
+                      "
+                    >
+                      Details
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      @click="
+                        router.push({
+                          path: '/packages/detail',
+                          query: {
+                            registry: pkg.package_id.registry,
+                            name: pkg.package_id.name,
+                            version: pkg.package_id.version,
+                            ...(pkg.package_id.artifact
+                              ? { artifact: pkg.package_id.artifact }
+                              : {}),
+                          },
+                        })
+                      "
+                    >
+                      Artifact
+                    </Button>
+                  </div>
+                </TableCell>
+                <TableCell class="text-right">
+                  <div class="flex gap-1 justify-end">
+                    <Button
+                      v-if="pkg.status.status === 'blocked'"
+                      variant="outline"
+                      size="sm"
+                      @click="unblock(pkg)"
+                    >
+                      Unblock
+                    </Button>
+                    <Button v-else variant="destructive" size="sm" @click="block(pkg)">
+                      Block
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      class="text-destructive hover:text-destructive hover:bg-destructive/10"
+                      @click="deletePkg(pkg)"
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            </TableBody>
+          </Table>
+        </AsyncState>
       </CardContent>
     </Card>
   </div>
