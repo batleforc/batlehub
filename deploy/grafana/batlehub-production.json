@@ -139,16 +139,16 @@
     },
     {
       "id": 12,
-      "title": "Cache Bytes Stored",
+      "title": "Cache Write Throughput",
       "type": "timeseries",
       "gridPos": { "x": 12, "y": 18, "w": 12, "h": 8 },
       "targets": [
         {
-          "expr": "batlehub_cached_bytes_total",
-          "legendFormat": "total cached"
+          "expr": "sum(rate(batlehub_cached_bytes_total[5m])) by (registry)",
+          "legendFormat": "{{registry}}"
         }
       ],
-      "fieldConfig": { "defaults": { "unit": "bytes" } }
+      "fieldConfig": { "defaults": { "unit": "Bps" } }
     },
     {
       "id": 13,
@@ -314,6 +314,55 @@
           }
         }
       }
+    },
+
+    {
+      "id": 50,
+      "title": "Upstream Health",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": { "x": 0, "y": 61, "w": 24, "h": 1 }
+    },
+    {
+      "id": 51,
+      "title": "Upstream P95 Latency by Registry",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 62, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(batlehub_upstream_request_duration_seconds_bucket[5m])) by (le, registry))",
+          "legendFormat": "{{registry}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 2 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 52,
+      "title": "Upstream Latency by Operation (P50/P95)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 62, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum(rate(batlehub_upstream_request_duration_seconds_bucket[5m])) by (le, operation))",
+          "legendFormat": "{{operation}} p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(batlehub_upstream_request_duration_seconds_bucket[5m])) by (le, operation))",
+          "legendFormat": "{{operation}} p95"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
     }
   ]
 }

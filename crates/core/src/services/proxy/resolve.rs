@@ -27,7 +27,13 @@ impl ProxyService {
         }
         tracing::debug!(key = %cache_key, "metadata cache miss, fetching from upstream");
         metrics::counter!("batlehub_metadata_cache_misses_total", "registry" => Arc::clone(registry_label)).increment(1);
-        let meta = match client.resolve_metadata(&req.package_id).await {
+        let meta = match super::time_upstream_call(
+            registry_label,
+            "resolve_metadata",
+            client.resolve_metadata(&req.package_id),
+        )
+        .await
+        {
             Ok(m) => m,
             Err(e) => {
                 let serve_stale = policy

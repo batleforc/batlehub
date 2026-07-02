@@ -34,9 +34,9 @@ groups:
       - alert: BatleHubCacheMissRateHigh
         expr: |
           (
-            rate(batlehub_cache_misses_total[5m])
+            rate(batlehub_artifact_cache_misses_total[5m])
             /
-            (rate(batlehub_cache_hits_total[5m]) + rate(batlehub_cache_misses_total[5m]))
+            (rate(batlehub_artifact_cache_hits_total[5m]) + rate(batlehub_artifact_cache_misses_total[5m]))
           ) > 0.80
         for: 10m
         labels:
@@ -61,6 +61,22 @@ groups:
           description: >
             More than 0.1 upstream errors/sec for registry {{ $labels.registry }}.
             Upstream may be rate-limiting or unavailable.
+
+      - alert: BatleHubUpstreamDegraded
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(batlehub_upstream_request_duration_seconds_bucket[5m])) by (le, registry)
+          ) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BatleHub upstream registry {{ $labels.registry }} responding slowly"
+          description: >
+            P95 upstream response time for registry {{ $labels.registry }} is
+            {{ $value | humanizeDuration }} (threshold 5s). The upstream registry
+            may be degraded even though it is not yet erroring outright.
 
       # ── Storage / quota ───────────────────────────────────────────────────────
 

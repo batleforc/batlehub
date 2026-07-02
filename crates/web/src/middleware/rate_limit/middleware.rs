@@ -136,41 +136,53 @@ where
                     );
                     Ok(res)
                 }
-                Some(Err((wait, limit, enforcement, reset_unix))) => match enforcement {
-                    RateLimitEnforcement::Block => {
-                        let retry_after = wait.as_secs().max(1);
+                Some(Err((wait, limit, enforcement, reset_unix))) => {
+                    let enforcement_label = match &enforcement {
+                        RateLimitEnforcement::Block => "block",
+                        RateLimitEnforcement::Warn => "warn",
+                    };
+                    metrics::counter!(
+                        "batlehub_rate_limit_hits_total",
+                        "registry" => registry,
+                        "enforcement" => enforcement_label
+                    )
+                    .increment(1);
+                    match enforcement {
+                        RateLimitEnforcement::Block => {
+                            let retry_after = wait.as_secs().max(1);
 
-                        let body = serde_json::json!({
-                            "error": "Too Many Requests",
-                            "message": format!("rate limit exceeded; retry after {retry_after}s"),
-                        });
-                        let http_res = HttpResponse::build(StatusCode::TOO_MANY_REQUESTS)
-                            .insert_header(("Retry-After", retry_after.to_string()))
-                            .insert_header(("X-RateLimit-Limit", limit.to_string()))
-                            .insert_header(("X-RateLimit-Reset", reset_unix.to_string()))
-                            .content_type("application/json")
-                            .body(serde_json::to_string(&body).unwrap_or_default());
+                            let body = serde_json::json!({
+                                "error": "Too Many Requests",
+                                "message": format!("rate limit exceeded; retry after {retry_after}s"),
+                            });
+                            let http_res = HttpResponse::build(StatusCode::TOO_MANY_REQUESTS)
+                                .insert_header(("Retry-After", retry_after.to_string()))
+                                .insert_header(("X-RateLimit-Limit", limit.to_string()))
+                                .insert_header(("X-RateLimit-Reset", reset_unix.to_string()))
+                                .content_type("application/json")
+                                .body(serde_json::to_string(&body).unwrap_or_default());
 
-                        Ok(req.into_response(http_res).map_into_right_body())
+                            Ok(req.into_response(http_res).map_into_right_body())
+                        }
+                        RateLimitEnforcement::Warn => {
+                            let retry_after = wait.as_secs().max(1);
+                            let mut res = service.call(req).await?.map_into_left_body();
+                            res.headers_mut().insert(
+                                header_name("x-ratelimit-warning"),
+                                header_value("rate-limit-exceeded"),
+                            );
+                            res.headers_mut().insert(
+                                header_name("x-ratelimit-limit"),
+                                header_value(&limit.to_string()),
+                            );
+                            res.headers_mut().insert(
+                                header_name("retry-after"),
+                                header_value(&retry_after.to_string()),
+                            );
+                            Ok(res)
+                        }
                     }
-                    RateLimitEnforcement::Warn => {
-                        let retry_after = wait.as_secs().max(1);
-                        let mut res = service.call(req).await?.map_into_left_body();
-                        res.headers_mut().insert(
-                            header_name("x-ratelimit-warning"),
-                            header_value("rate-limit-exceeded"),
-                        );
-                        res.headers_mut().insert(
-                            header_name("x-ratelimit-limit"),
-                            header_value(&limit.to_string()),
-                        );
-                        res.headers_mut().insert(
-                            header_name("retry-after"),
-                            header_value(&retry_after.to_string()),
-                        );
-                        Ok(res)
-                    }
-                },
+                }
             }
         })
     }

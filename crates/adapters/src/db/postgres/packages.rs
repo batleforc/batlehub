@@ -11,7 +11,7 @@ pub(super) async fn record_access_impl(pool: &PgPool, event: AccessEvent) -> Res
         AccessResult::ProxyError { reason } => ("error", Some(reason.clone())),
     };
 
-    sqlx::query(
+    let query = sqlx::query(
         r#"
         INSERT INTO access_events
             (id, user_id, user_role, registry, package_name, package_version,
@@ -33,9 +33,10 @@ pub(super) async fn record_access_impl(pool: &PgPool, event: AccessEvent) -> Res
     .bind(event.timestamp)
     .bind(&event.ip_address)
     .bind(&event.user_agent)
-    .execute(pool)
-    .await
-    .db_err()?;
+    .execute(pool);
+    crate::db::timed_query("record_access", query)
+        .await
+        .db_err()?;
 
     // Ensure the package appears in list_packages by creating an 'available' status
     // row on first access. DO NOTHING preserves any existing blocked status.

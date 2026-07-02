@@ -29,13 +29,20 @@ pub async fn healthz(
     proxy_svc: web::Data<Arc<ProxyService>>,
 ) -> impl Responder {
     let db: &'static str = match pool {
-        Some(p) => match sqlx::query("SELECT 1").execute(p.get_ref()).await {
-            Ok(_) => STATUS_OK,
-            Err(e) => {
-                tracing::warn!(error = %e, "healthz: database check failed");
-                STATUS_ERROR
+        Some(p) => {
+            let result = batlehub_adapters::db::timed_query(
+                "healthz_ping",
+                sqlx::query("SELECT 1").execute(p.get_ref()),
+            )
+            .await;
+            match result {
+                Ok(_) => STATUS_OK,
+                Err(e) => {
+                    tracing::warn!(error = %e, "healthz: database check failed");
+                    STATUS_ERROR
+                }
             }
-        },
+        }
         None => STATUS_UNCONFIGURED,
     };
 

@@ -257,9 +257,11 @@ impl ProxyService {
         tracing::debug!(key = %artifact_key, "artifact not cached, fetching from upstream");
         metrics::counter!("batlehub_artifact_cache_misses_total", "registry" => registry_label.clone()).increment(1);
         self.metrics.record_artifact_miss(registry_name);
-        let upstream = match client.fetch_artifact(&req.package_id).await {
+        let upstream_start = Instant::now();
+        let mut upstream = match client.fetch_artifact(&req.package_id).await {
             Ok(s) => s,
             Err(e) => {
+                super::record_upstream_duration(&registry_label, "fetch_artifact", upstream_start);
                 metrics::counter!("batlehub_upstream_errors_total", "registry" => registry_label.clone()).increment(1);
                 super::warn_if_audit_failed(
                     self.repo
@@ -275,6 +277,14 @@ impl ProxyService {
                 return Err(e);
             }
         };
+        // Times the whole body transfer (not just time-to-headers) — see
+        // `time_upstream_stream` for why.
+        upstream.stream = super::time_upstream_stream(
+            Arc::clone(&registry_label),
+            "fetch_artifact",
+            upstream_start,
+            upstream.stream,
+        );
 
         let skip_artifact_cache = upstream
             .cache_control
@@ -370,6 +380,13 @@ impl ProxyService {
             start,
         )
         .await?;
+
+        // Only now — verified (or warn-only), never evicted — do the bytes count
+        // as actually cached. Counting earlier (right after `store_streaming`)
+        // would overstate the metric on a blocked checksum mismatch, since
+        // `enforce_verify_outcome` above can still evict everything just written.
+        metrics::counter!("batlehub_cached_bytes_total", "registry" => registry_label.clone())
+            .increment(store_outcome.size);
 
         // Verified (or warn-only): promote a staged blob to the real key now —
         // after verification — so the artifact only becomes visible to concurrent

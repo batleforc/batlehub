@@ -85,6 +85,11 @@ where
                     }
                     Ok(None) => {} // provider did not recognise the credentials
                     Err(e) => {
+                        // Only genuine provider-level failures land here (e.g. malformed
+                        // JWT, unknown signing key) — a wrong static token or an expired
+                        // JWT returns `Ok(None)` per the `AuthProvider` contract, so this
+                        // counter deliberately does not cover "all failed logins".
+                        metrics::counter!("batlehub_auth_failures_total", "provider" => provider.name().to_string()).increment(1);
                         tracing::warn!(provider = provider.name(), error = %e, "auth provider error");
                     }
                 }

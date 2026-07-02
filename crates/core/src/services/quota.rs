@@ -220,6 +220,13 @@ impl QuotaService {
     pub async fn reset(&self, user_id: &str, registry: &str) -> Result<(), CoreError> {
         self.repo.reset_usage(user_id, registry).await
     }
+
+    /// The configured storage limit (bytes per user) for a registry, or
+    /// `None` if the registry has no quota configured, or no storage limit
+    /// within its quota config.
+    pub fn max_storage_bytes(&self, registry: &str) -> Option<u64> {
+        self.configs.get(registry)?.max_storage_bytes_per_user
+    }
 }
 
 fn is_warning(used: u64, limit: Option<u64>, threshold: f64) -> bool {
@@ -483,5 +490,33 @@ mod tests {
         let usage = svc.get_usage("alice", "cargo").await.unwrap();
         assert_eq!(usage.bytes_published, 0);
         assert_eq!(usage.packages_count, 0);
+    }
+
+    #[test]
+    fn max_storage_bytes_returns_configured_limit() {
+        let svc = svc_with(block_config(1_000_000, 100), 0, 0);
+        assert_eq!(svc.max_storage_bytes("cargo"), Some(1_000_000));
+    }
+
+    #[test]
+    fn max_storage_bytes_none_for_unconfigured_registry() {
+        let svc = svc_with(block_config(1_000_000, 100), 0, 0);
+        assert_eq!(svc.max_storage_bytes("npm"), None);
+    }
+
+    #[test]
+    fn max_storage_bytes_none_when_only_package_limit_configured() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            "cargo".to_owned(),
+            RegistryQuotaConfig {
+                max_storage_bytes_per_user: None,
+                max_packages_per_user: Some(100),
+                warn_threshold: 0.8,
+                enforcement: QuotaEnforcement::Block,
+            },
+        );
+        let svc = QuotaService::new(MockQuotaRepo::new(0, 0), configs);
+        assert_eq!(svc.max_storage_bytes("cargo"), None);
     }
 }

@@ -990,6 +990,7 @@ dependencies = [
  "jsonwebtoken",
  "lzma-rs",
  "md-5",
+ "metrics",
  "mockito",
  "quick-xml",
  "rand 0.10.1",

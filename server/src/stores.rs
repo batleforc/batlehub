@@ -24,7 +24,7 @@ use batlehub_core::ports::{
     BannerPort, CacheStore, IpBlockStore, NotificationPort, RateLimitStore, SbomRepository,
     UserBlockRepository,
 };
-use batlehub_core::services::SbomService;
+use batlehub_core::services::{QuotaService, SbomService};
 
 pub(super) const DEFAULT_REDIS_URL: &str = "redis://127.0.0.1:6379";
 
@@ -56,6 +56,94 @@ pub(super) fn spawn_pending_publish_cleanup(backend: Arc<PostgresLocalRegistry>)
                 Ok(n) => tracing::info!(deleted = n, "cleaned up orphaned pending publish rows"),
                 Err(e) => tracing::warn!(error = %e, "pending publish cleanup failed"),
             }
+        }
+    });
+}
+
+/// How often quota usage/limit gauges are re-sampled. Usage changes only on
+/// publish/revoke, much less often than pool stats, so a longer interval is fine.
+const QUOTA_GAUGE_INTERVAL_SECS: u64 = 60;
+
+/// Periodically sample every (user, registry) quota row into
+/// `batlehub_quota_bytes_used`/`batlehub_quota_bytes_limit` gauges.
+///
+/// Per-user granularity is deliberate — the "Quota Usage (top users)" and "Quota
+/// Utilisation %" Grafana panels drill into individual users via `topk(...)`, so
+/// the label set must stay per-`(registry, user)`, not collapsed to per-registry.
+/// The tradeoff is that the `metrics` facade never removes a label set once
+/// created, so a `(registry, user)` pair that drops out of `list_usage` (usage
+/// reset, user deleted) is explicitly zeroed on the tick it disappears, rather
+/// than left frozen at its last non-zero value forever.
+pub(super) fn spawn_quota_gauge_sampler(quota_svc: Arc<QuotaService>) {
+    tokio::spawn(async move {
+        let mut ticker =
+            tokio::time::interval(std::time::Duration::from_secs(QUOTA_GAUGE_INTERVAL_SECS));
+        let mut previous_keys: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+        loop {
+            ticker.tick().await;
+            let usages = match quota_svc.list_usage(None).await {
+                Ok(usages) => usages,
+                Err(e) => {
+                    tracing::warn!(error = %e, "quota gauge sampler: list_usage failed");
+                    continue;
+                }
+            };
+
+            let current_keys: std::collections::HashSet<(String, String)> = usages
+                .iter()
+                .map(|u| (u.registry.clone(), u.user_id.clone()))
+                .collect();
+            for (registry, user_id) in previous_keys.difference(&current_keys) {
+                metrics::gauge!(
+                    "batlehub_quota_bytes_used",
+                    "registry" => registry.clone(),
+                    "user" => user_id.clone()
+                )
+                .set(0.0);
+                metrics::gauge!(
+                    "batlehub_quota_bytes_limit",
+                    "registry" => registry.clone(),
+                    "user" => user_id.clone()
+                )
+                .set(0.0);
+            }
+
+            for usage in usages {
+                metrics::gauge!(
+                    "batlehub_quota_bytes_used",
+                    "registry" => usage.registry.clone(),
+                    "user" => usage.user_id.clone()
+                )
+                .set(usage.bytes_published as f64);
+                if let Some(limit) = quota_svc.max_storage_bytes(&usage.registry) {
+                    metrics::gauge!(
+                        "batlehub_quota_bytes_limit",
+                        "registry" => usage.registry,
+                        "user" => usage.user_id
+                    )
+                    .set(limit as f64);
+                }
+            }
+            previous_keys = current_keys;
+        }
+    });
+}
+
+/// How often the DB connection pool gauges are re-sampled.
+const DB_POOL_GAUGE_INTERVAL_SECS: u64 = 15;
+
+/// Periodically sample the DB connection pool's size and idle-connection count
+/// into Prometheus gauges. `sqlx::Pool::size`/`num_idle` are cheap, in-memory
+/// reads, so a short interval is fine.
+pub(super) fn spawn_db_pool_gauge_sampler(pool: sqlx::PgPool) {
+    tokio::spawn(async move {
+        let mut ticker =
+            tokio::time::interval(std::time::Duration::from_secs(DB_POOL_GAUGE_INTERVAL_SECS));
+        loop {
+            ticker.tick().await;
+            metrics::gauge!("batlehub_db_pool_size").set(pool.size() as f64);
+            metrics::gauge!("batlehub_db_pool_available_connections").set(pool.num_idle() as f64);
         }
     });
 }

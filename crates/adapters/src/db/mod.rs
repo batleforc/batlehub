@@ -13,6 +13,28 @@ impl<T> DbResultExt<T> for Result<T, sqlx::Error> {
     }
 }
 
+/// Time a DB call and record it under `batlehub_db_query_duration_seconds`.
+///
+/// This is applied at a small, deliberately partial set of hot-path call
+/// sites (the highest-traffic write and a cheap health-check read), not
+/// exhaustively across every `sqlx::query` call in the codebase — there is no
+/// existing chokepoint that all ~120 call sites funnel through, so full
+/// coverage would require a much larger refactor. Extend coverage here
+/// incrementally as more paths turn out to matter. `pub` (not `pub(crate)`) so
+/// `crates/web`'s `/healthz` handler can share it instead of re-implementing
+/// the same start/await/record sequence.
+#[cfg(feature = "db-postgres")]
+pub async fn timed_query<T>(
+    query_name: &'static str,
+    fut: impl std::future::Future<Output = T>,
+) -> T {
+    let start = std::time::Instant::now();
+    let result = fut.await;
+    metrics::histogram!("batlehub_db_query_duration_seconds", "query" => query_name)
+        .record(start.elapsed().as_secs_f64());
+    result
+}
+
 #[cfg(feature = "db-postgres")]
 pub mod artifact_meta;
 

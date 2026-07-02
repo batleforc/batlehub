@@ -129,9 +129,16 @@ async fn warm_one_version_inner(
         }
     }
 
-    let fetched = match client.fetch_artifact(&pkg).await {
+    let registry_label: Arc<str> = Arc::from(registry_name);
+    let upstream_start = std::time::Instant::now();
+    let mut fetched = match client.fetch_artifact(&pkg).await {
         Ok(f) => f,
         Err(e) => {
+            super::proxy::record_upstream_duration(
+                &registry_label,
+                "fetch_artifact",
+                upstream_start,
+            );
             tracing::warn!(
                 registry = %registry_name, package = %name,
                 version = %version, error = %e,
@@ -143,6 +150,15 @@ async fn warm_one_version_inner(
             };
         }
     };
+    // Times the whole body transfer, not just time-to-headers — warming issues
+    // real upstream load, so it must feed the same degradation signal as the
+    // proxy read path instead of silently going untimed.
+    fetched.stream = super::proxy::time_upstream_stream(
+        Arc::clone(&registry_label),
+        "fetch_artifact",
+        upstream_start,
+        fetched.stream,
+    );
 
     // Stream directly to storage without buffering the full artifact in memory.
     // `store_streaming` implementations (filesystem, S3) write incrementally so

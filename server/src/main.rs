@@ -102,6 +102,7 @@ async fn main() -> Result<()> {
         .context("connecting to database")?,
     );
     repo.run_migrations().await.context("running migrations")?;
+    stores::spawn_db_pool_gauge_sampler(repo.pool());
 
     let storage = setup::initialize_storage(&config, repo.pool()).await?;
     let (mut auth_providers, oidc_sso_flows) = setup::initialize_auth_providers(&config).await?;
@@ -134,6 +135,7 @@ async fn main() -> Result<()> {
         repo.pool(),
         &config.registries,
     ));
+    stores::spawn_quota_gauge_sampler(Arc::clone(&quota_svc));
     let ownership_store = Arc::new(PgOwnershipStore::new(repo.pool()))
         as Arc<dyn batlehub_core::ports::OwnershipPort>;
     let beta_channel_store: Arc<dyn BetaChannelPort> =

@@ -98,9 +98,15 @@ impl ProxyService {
 
         if firewall_only {
             tracing::debug!(registry = %registry_name, "firewall-only mode, streaming from upstream");
-            let upstream = match client.fetch_artifact(&req.package_id).await {
+            let upstream_start = Instant::now();
+            let mut upstream = match client.fetch_artifact(&req.package_id).await {
                 Ok(s) => s,
                 Err(e) => {
+                    super::record_upstream_duration(
+                        &registry_label,
+                        "fetch_artifact",
+                        upstream_start,
+                    );
                     super::warn_if_audit_failed(
                         self.repo
                             .record_access(AccessEvent::proxy_error(
@@ -115,6 +121,15 @@ impl ProxyService {
                     return Err(e);
                 }
             };
+            // Times the whole body transfer, not just time-to-headers — this is the
+            // only latency signal firewall-only registries get, since they never hit
+            // the artifact cache path.
+            upstream.stream = super::time_upstream_stream(
+                Arc::clone(&registry_label),
+                "fetch_artifact",
+                upstream_start,
+                upstream.stream,
+            );
             super::warn_if_audit_failed(
                 self.repo
                     .record_access(AccessEvent::allowed_download(
