@@ -94,7 +94,7 @@ impl AdminService {
                 id: uuid::Uuid::new_v4(),
                 user_id: by_identity.user_id.clone(),
                 user_role: by_identity.role.clone(),
-                package_id: pkg.clone(),
+                package_id: Some(pkg.clone()),
                 action: crate::entities::AccessAction::Block,
                 result: AccessResult::Allowed,
                 timestamp: Utc::now(),
@@ -120,7 +120,7 @@ impl AdminService {
                 id: uuid::Uuid::new_v4(),
                 user_id: by_identity.user_id.clone(),
                 user_role: by_identity.role.clone(),
-                package_id: pkg.clone(),
+                package_id: Some(pkg.clone()),
                 action: crate::entities::AccessAction::Unblock,
                 result: AccessResult::Allowed,
                 timestamp: Utc::now(),
@@ -132,6 +132,54 @@ impl AdminService {
 
         tracing::info!(package = %pkg, "package unblocked");
         Ok(())
+    }
+
+    /// Shared audit-write path for admin actions that don't otherwise touch
+    /// `PackageRepository` (ownership/visibility edits go through their own
+    /// ports, account/network-wide actions have no package at all). Mirrors
+    /// the fail-open behaviour of `block_package`/`unblock_package`/
+    /// `delete_package`: an audit-write failure is logged but never fails the
+    /// calling admin action.
+    async fn record_admin_action(
+        &self,
+        package_id: Option<PackageId>,
+        action: AccessAction,
+        by_identity: &Identity,
+    ) {
+        self.repo
+            .record_access(AccessEvent {
+                id: uuid::Uuid::new_v4(),
+                user_id: by_identity.user_id.clone(),
+                user_role: by_identity.role.clone(),
+                package_id,
+                action,
+                result: AccessResult::Allowed,
+                timestamp: Utc::now(),
+                ip_address: None,
+                user_agent: None,
+            })
+            .await
+            .unwrap_or_else(|e| tracing::warn!(error = %e, "failed to record admin action"));
+    }
+
+    /// Record an audit event for a package-scoped admin action performed
+    /// through a port other than `PackageRepository` (e.g. ownership grants,
+    /// visibility changes).
+    pub async fn record_package_action(
+        &self,
+        pkg: &PackageId,
+        action: AccessAction,
+        by_identity: &Identity,
+    ) {
+        self.record_admin_action(Some(pkg.clone()), action, by_identity)
+            .await;
+    }
+
+    /// Record an audit event for an account-wide or network-wide admin
+    /// action that is not scoped to any specific package (user block/unblock,
+    /// IP block/unblock).
+    pub async fn record_account_action(&self, action: AccessAction, by_identity: &Identity) {
+        self.record_admin_action(None, action, by_identity).await;
     }
 
     pub async fn bulk_block_packages(
@@ -203,7 +251,7 @@ impl AdminService {
                     id: uuid::Uuid::new_v4(),
                     user_id: by_identity.user_id.clone(),
                     user_role: by_identity.role.clone(),
-                    package_id: pkg.clone(),
+                    package_id: Some(pkg.clone()),
                     action: AccessAction::Delete,
                     result: AccessResult::Allowed,
                     timestamp: Utc::now(),
@@ -514,6 +562,49 @@ mod tests {
         let events = repo.events();
         assert_eq!(events.len(), 1, "one event expected");
         assert!(matches!(events[0].result, AccessResult::Allowed));
+    }
+
+    #[tokio::test]
+    async fn record_package_action_records_package_scoped_event() {
+        let repo = MemRepo::new();
+        let svc = AdminService::new(repo.clone());
+        let pkg = PackageId::new("npm", "left-pad", "1.0.0");
+
+        svc.record_package_action(
+            &pkg,
+            crate::entities::AccessAction::AddOwner,
+            &admin_identity("alice"),
+        )
+        .await;
+
+        let events = repo.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].package_id, Some(pkg));
+        assert!(matches!(
+            events[0].action,
+            crate::entities::AccessAction::AddOwner
+        ));
+        assert!(matches!(events[0].result, AccessResult::Allowed));
+    }
+
+    #[tokio::test]
+    async fn record_account_action_records_event_with_no_package() {
+        let repo = MemRepo::new();
+        let svc = AdminService::new(repo.clone());
+
+        svc.record_account_action(
+            crate::entities::AccessAction::BlockUser,
+            &admin_identity("alice"),
+        )
+        .await;
+
+        let events = repo.events();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].package_id.is_none());
+        assert!(matches!(
+            events[0].action,
+            crate::entities::AccessAction::BlockUser
+        ));
     }
 
     #[tokio::test]

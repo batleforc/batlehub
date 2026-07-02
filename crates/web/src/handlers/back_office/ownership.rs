@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use batlehub_core::{
+    entities::{AccessAction, PackageId},
     ports::{OwnerEntry, OwnershipPort},
-    services::LocalRegistryService,
+    services::{AdminService, LocalRegistryService},
 };
 
 use super::require_admin;
@@ -174,6 +175,7 @@ pub async fn add_package_owner(
     body: web::Json<AddOwnerRequest>,
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
+    admin_svc: web::Data<Arc<AdminService>>,
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
     let (registry, name) = path.into_inner();
@@ -191,6 +193,20 @@ pub async fn add_package_owner(
         )
         .await
         .map_err(AppError::from)?;
+
+    // Ownership is not version-scoped, so the audit event carries an empty
+    // version to indicate "the package as a whole" (see `record_package_action`
+    // callers in visibility.rs for the same convention).
+    let pkg = PackageId {
+        registry,
+        name,
+        version: String::new(),
+        artifact: None,
+    };
+    admin_svc
+        .record_package_action(&pkg, AccessAction::AddOwner, &identity.0)
+        .await;
+
     Ok(HttpResponse::NoContent().finish())
 }
 
@@ -219,6 +235,7 @@ pub async fn remove_package_owner(
     path: web::Path<(String, String, String, String)>,
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
+    admin_svc: web::Data<Arc<AdminService>>,
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
     let (registry, name, principal_type, principal_id) = path.into_inner();
@@ -227,5 +244,16 @@ pub async fn remove_package_owner(
         .remove_owner(&registry, &name, &principal_type, &principal_id)
         .await
         .map_err(AppError::from)?;
+
+    let pkg = PackageId {
+        registry,
+        name,
+        version: String::new(),
+        artifact: None,
+    };
+    admin_svc
+        .record_package_action(&pkg, AccessAction::RemoveOwner, &identity.0)
+        .await;
+
     Ok(HttpResponse::NoContent().finish())
 }

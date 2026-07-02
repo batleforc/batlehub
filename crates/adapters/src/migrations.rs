@@ -111,6 +111,11 @@ pub fn embedded_migrator() -> Migrator {
         ),
         mig!(28, "user blocks", "../migrations/028_user_blocks.sql"),
         mig!(29, "audit ip ua", "../migrations/029_audit_ip_ua.sql"),
+        mig!(
+            30,
+            "access events nullable target",
+            "../migrations/030_access_events_nullable_target.sql"
+        ),
     ])
 }
 

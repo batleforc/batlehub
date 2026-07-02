@@ -36,21 +36,35 @@ impl InMemoryPackageRepository {
 #[async_trait]
 impl PackageRepository for InMemoryPackageRepository {
     async fn record_access(&self, event: AccessEvent) -> Result<(), CoreError> {
-        let key = event.package_id.cache_key();
-        // Delete events must not recreate the row that was just removed.
-        if !matches!(event.action, AccessAction::Delete) {
-            let mut sums = self.summaries.write().await;
-            let entry = sums.entry(key).or_insert_with(|| PackageSummary {
-                id: Uuid::new_v4(),
-                package_id: event.package_id.clone(),
-                status: PackageStatus::Available,
-                last_accessed: None,
-                last_accessed_by: None,
-                access_count: 0,
-            });
-            entry.access_count += 1;
-            entry.last_accessed = Some(event.timestamp);
-            entry.last_accessed_by = event.user_id.clone();
+        // Only actions that always carry a real, version-specific package
+        // coordinate should create/update a `PackageSummary` row. Ownership,
+        // visibility, and account-wide actions (package_id: None, or Delete
+        // which just removed the row) must not spuriously create one — this
+        // mirrors the Postgres adapter's `creates_status_row` guard.
+        let updates_summary = matches!(
+            event.action,
+            AccessAction::Download
+                | AccessAction::ViewMetadata
+                | AccessAction::Block
+                | AccessAction::Unblock
+        );
+        if updates_summary {
+            if let Some(pkg) = &event.package_id {
+                let mut sums = self.summaries.write().await;
+                let entry = sums
+                    .entry(pkg.cache_key())
+                    .or_insert_with(|| PackageSummary {
+                        id: Uuid::new_v4(),
+                        package_id: pkg.clone(),
+                        status: PackageStatus::Available,
+                        last_accessed: None,
+                        last_accessed_by: None,
+                        access_count: 0,
+                    });
+                entry.access_count += 1;
+                entry.last_accessed = Some(event.timestamp);
+                entry.last_accessed_by = event.user_id.clone();
+            }
         }
         self.events.write().await.push(event);
         Ok(())
@@ -145,11 +159,11 @@ impl PackageRepository for InMemoryPackageRepository {
                 filter
                     .registry
                     .as_ref()
-                    .is_none_or(|r| e.package_id.registry == *r)
+                    .is_none_or(|r| e.package_id.as_ref().is_some_and(|p| p.registry == *r))
                     && filter
                         .package_name
                         .as_ref()
-                        .is_none_or(|n| e.package_id.name == *n)
+                        .is_none_or(|n| e.package_id.as_ref().is_some_and(|p| p.name == *n))
                     && filter
                         .user_id
                         .as_ref()
@@ -323,7 +337,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(events.len(), 3);
-        assert!(events.iter().all(|e| e.package_id.name == "foo"));
+        assert!(events
+            .iter()
+            .all(|e| e.package_id.as_ref().is_some_and(|p| p.name == "foo")));
     }
 
     #[tokio::test]
@@ -342,5 +358,73 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(page.len(), 2);
+    }
+
+    // ── account-wide events (package_id: None) ────────────────────────────────
+
+    use batlehub_core::entities::AccessAction;
+
+    fn account_event(action: AccessAction) -> AccessEvent {
+        AccessEvent {
+            id: uuid::Uuid::new_v4(),
+            user_id: Some("admin".to_owned()),
+            user_role: Role::Admin,
+            package_id: None,
+            action,
+            result: batlehub_core::entities::AccessResult::Allowed,
+            timestamp: Utc::now(),
+            ip_address: None,
+            user_agent: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn record_access_accepts_account_wide_event_with_no_package() {
+        let repo = InMemoryPackageRepository::new();
+        repo.record_access(account_event(AccessAction::BlockUser))
+            .await
+            .unwrap();
+
+        let events = repo.list_events(EventFilter::new()).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].package_id.is_none());
+        assert!(matches!(events[0].action, AccessAction::BlockUser));
+    }
+
+    #[tokio::test]
+    async fn account_wide_event_does_not_create_a_package_summary() {
+        let repo = InMemoryPackageRepository::new();
+        repo.record_access(account_event(AccessAction::BlockIp))
+            .await
+            .unwrap();
+
+        let pkgs = repo.list_packages(PackageFilter::new()).await.unwrap();
+        assert!(
+            pkgs.is_empty(),
+            "an account-wide event must not fabricate a package_statuses row"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_events_with_registry_filter_excludes_account_wide_events() {
+        let repo = InMemoryPackageRepository::new();
+        repo.record_access(allow_event("reg", "foo")).await.unwrap();
+        repo.record_access(account_event(AccessAction::UnblockUser))
+            .await
+            .unwrap();
+
+        let events = repo
+            .list_events(EventFilter {
+                registry: Some("reg".to_owned()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "account-wide event has no registry to match"
+        );
+        assert!(events[0].package_id.is_some());
     }
 }

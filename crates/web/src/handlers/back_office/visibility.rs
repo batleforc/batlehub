@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use batlehub_core::{
-    entities::{Role, Visibility},
+    entities::{AccessAction, PackageId, Role, Visibility},
     ports::TeamNamespacePort,
+    services::AdminService,
 };
 
 use crate::{error::AppError, extractors::AuthIdentity};
@@ -118,6 +119,7 @@ pub async fn set_package_visibility(
     body: web::Json<SetVisibilityRequest>,
     identity: AuthIdentity,
     store: web::Data<Arc<dyn TeamNamespacePort>>,
+    admin_svc: web::Data<Arc<AdminService>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, name) = path.into_inner();
     require_admin_or_namespace_member(&identity, &store, &registry, &name).await?;
@@ -129,5 +131,18 @@ pub async fn set_package_visibility(
         .set_visibility(&registry, &name, vis)
         .await
         .map_err(AppError::from)?;
+
+    // Visibility applies to all versions at once, so — like ownership — the
+    // audit event carries an empty version to mean "the package as a whole".
+    let pkg = PackageId {
+        registry,
+        name,
+        version: String::new(),
+        artifact: None,
+    };
+    admin_svc
+        .record_package_action(&pkg, AccessAction::SetVisibility, &identity.0)
+        .await;
+
     Ok(HttpResponse::NoContent().finish())
 }

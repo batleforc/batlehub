@@ -151,10 +151,19 @@ pub async fn export_audit_log(
                 e.timestamp.to_rfc3339(),
                 e.user_id.as_deref().unwrap_or(""),
                 e.user_role,
-                e.package_id.registry,
-                e.package_id.name,
-                e.package_id.version,
-                e.package_id.artifact.as_deref().unwrap_or(""),
+                e.package_id
+                    .as_ref()
+                    .map(|p| p.registry.as_str())
+                    .unwrap_or(""),
+                e.package_id.as_ref().map(|p| p.name.as_str()).unwrap_or(""),
+                e.package_id
+                    .as_ref()
+                    .map(|p| p.version.as_str())
+                    .unwrap_or(""),
+                e.package_id
+                    .as_ref()
+                    .and_then(|p| p.artifact.as_deref())
+                    .unwrap_or(""),
                 format!("{:?}", e.action).to_lowercase(),
                 outcome,
                 deny_reason,

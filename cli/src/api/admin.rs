@@ -1,5 +1,7 @@
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use super::BatleHubClient;
 
@@ -104,6 +106,217 @@ pub struct AuditQuery {
     pub per_page: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PurgeAuditLogResponse {
+    pub deleted: u64,
+}
+
+// ── Stats ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryStatsEntry {
+    pub registry: String,
+    pub artifact_hits: u64,
+    pub artifact_misses: u64,
+    /// Artifact hit rate in [0, 1], or null if no requests yet.
+    pub hit_rate: Option<f64>,
+    /// Total bytes cached in storage for this registry (from storage backend).
+    pub cached_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AggregateStats {
+    pub artifact_hits: u64,
+    pub artifact_misses: u64,
+    pub hit_rate: Option<f64>,
+    pub cached_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatsResponse {
+    /// When the server process started (counters reset on restart).
+    pub since_startup: DateTime<Utc>,
+    pub aggregate: AggregateStats,
+    pub per_registry: Vec<RegistryStatsEntry>,
+}
+
+// ── Health ────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryAccessInfo {
+    pub roles: Vec<String>,
+    pub groups: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentErrorEntry {
+    pub timestamp: DateTime<Utc>,
+    pub user_id: Option<String>,
+    pub package_name: String,
+    pub version: String,
+    /// "denied" (blocked / RBAC) or "error" (upstream proxy failure).
+    pub error_type: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryHealthEntry {
+    pub registry: String,
+    pub registry_type: String,
+    pub package_count: i64,
+    pub cached_artifact_count: i64,
+    pub total_size_bytes: Option<i64>,
+    pub last_pull_at: Option<DateTime<Utc>>,
+    pub pulls_last_hour: i64,
+    pub pulls_last_day: i64,
+    pub recent_errors: Vec<RecentErrorEntry>,
+    pub access: RegistryAccessInfo,
+}
+
+// ── Package visibility ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VisibilityResponse {
+    pub visibility: String,
+}
+
+// ── Team namespaces ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeamNamespaceEntry {
+    pub registry: String,
+    pub prefix: String,
+    pub group_id: String,
+    pub claimed_by: Option<String>,
+}
+
+// ── User blocks ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockedUserEntry {
+    pub user_id: String,
+    pub blocked_at: DateTime<Utc>,
+    pub blocked_by: String,
+    pub reason: Option<String>,
+}
+
+// ── Notifications ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationChannelEntry {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[allow(clippy::enum_variant_names)] // mirrors batlehub_core::entities::NotificationEventType
+pub enum NotificationEventTypeEntry {
+    PackagePublished,
+    PackageYanked,
+    PackageUnyanked,
+    PackageDeleted,
+}
+
+impl std::fmt::Display for NotificationEventTypeEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::PackagePublished => "package_published",
+            Self::PackageYanked => "package_yanked",
+            Self::PackageUnyanked => "package_unyanked",
+            Self::PackageDeleted => "package_deleted",
+        };
+        f.write_str(s)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationSubscriptionEntry {
+    pub id: Uuid,
+    /// `None` matches all registries.
+    pub registry: Option<String>,
+    /// `None` matches all packages in the selected registries.
+    pub package_name: Option<String>,
+    pub event_types: Vec<NotificationEventTypeEntry>,
+    pub channel_name: String,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub enabled: bool,
+}
+
+// ── Bulk operations ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkPackageFailureEntry {
+    pub name: String,
+    pub version: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkPackageResult {
+    pub processed: usize,
+    pub succeeded: usize,
+    pub failed: Vec<BulkPackageFailureEntry>,
+}
+
+// ── Config content ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigContentResponse {
+    pub content: String,
+    /// True when hot reload is disabled (e.g. Kubernetes ConfigMap mount).
+    pub is_readonly: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangedRegistryEntry {
+    pub name: String,
+    pub fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReloadDiff {
+    pub added_registries: Vec<String>,
+    pub removed_registries: Vec<String>,
+    pub changed_registries: Vec<ChangedRegistryEntry>,
+    pub access_config_changed: bool,
+    pub limits_changed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReloadResponse {
+    pub diff: ReloadDiff,
+}
+
+// ── Access check ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SimulateAccessRequest {
+    pub registry: String,
+    pub package_name: String,
+    pub version: String,
+    pub resource_type: String,
+    /// Simulated user id (optional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    /// Simulated role: "anonymous", "user", or "admin". Defaults to "anonymous".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// Simulated OIDC groups the identity belongs to.
+    #[serde(default)]
+    pub groups: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessSimulationResponse {
+    /// "allow" or "deny".
+    pub decision: String,
+    /// Present when decision is "deny".
+    pub reason: Option<String>,
+    /// Name of the rule that triggered the deny, if any.
+    pub rule_matched: Option<String>,
+}
+
 impl BatleHubClient {
     // ── Quota ──────────────────────────────────────────────────────────────────
 
@@ -191,7 +404,7 @@ impl BatleHubClient {
             .await
     }
 
-    pub async fn purge_audit_log(&self, before: &str) -> Result<serde_json::Value> {
+    pub async fn purge_audit_log(&self, before: &str) -> Result<PurgeAuditLogResponse> {
         #[derive(serde::Serialize)]
         struct Q<'a> {
             before: &'a str,
@@ -202,19 +415,19 @@ impl BatleHubClient {
 
     // ── Stats ──────────────────────────────────────────────────────────────────
 
-    pub async fn admin_stats(&self) -> Result<serde_json::Value> {
+    pub async fn admin_stats(&self) -> Result<StatsResponse> {
         self.get("/api/v1/admin/stats").await
     }
 
     // ── Health ─────────────────────────────────────────────────────────────────
 
-    pub async fn registry_health(&self) -> Result<serde_json::Value> {
+    pub async fn registry_health(&self) -> Result<Vec<RegistryHealthEntry>> {
         self.get("/api/v1/admin/health").await
     }
 
     // ── Visibility ─────────────────────────────────────────────────────────────
 
-    pub async fn get_visibility(&self, registry: &str, name: &str) -> Result<serde_json::Value> {
+    pub async fn get_visibility(&self, registry: &str, name: &str) -> Result<VisibilityResponse> {
         self.get(&format!(
             "/api/v1/admin/registries/{registry}/packages/{name}/visibility"
         ))
@@ -235,7 +448,7 @@ impl BatleHubClient {
 
     // ── Team namespaces ────────────────────────────────────────────────────────
 
-    pub async fn list_namespaces(&self, registry: &str) -> Result<serde_json::Value> {
+    pub async fn list_namespaces(&self, registry: &str) -> Result<Vec<TeamNamespaceEntry>> {
         self.get(&format!("/api/v1/admin/registries/{registry}/namespaces"))
             .await
     }
@@ -245,13 +458,13 @@ impl BatleHubClient {
         registry: &str,
         prefix: &str,
         group_id: &str,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<()> {
         #[derive(serde::Serialize)]
         struct Body<'a> {
             prefix: &'a str,
             group_id: &'a str,
         }
-        self.post(
+        self.post_void(
             &format!("/api/v1/admin/registries/{registry}/namespaces"),
             &Body { prefix, group_id },
         )
@@ -267,7 +480,7 @@ impl BatleHubClient {
 
     // ── User blocks ────────────────────────────────────────────────────────────
 
-    pub async fn list_blocked_users(&self) -> Result<serde_json::Value> {
+    pub async fn list_blocked_users(&self) -> Result<Vec<BlockedUserEntry>> {
         self.get("/api/v1/admin/users/blocked").await
     }
 
@@ -290,6 +503,12 @@ impl BatleHubClient {
     }
 
     // ── SBOM ───────────────────────────────────────────────────────────────────
+    //
+    // The server serializes the raw SBOM document (`s.document` in
+    // `crates/web/src/handlers/back_office/sbom.rs`), whose shape is SPDX or
+    // CycloneDX JSON depending on the requested `format` — genuinely dynamic,
+    // not a fixed server-side struct. `serde_json::Value` is the correct type
+    // here rather than a DTO that would misrepresent one arbitrary schema.
 
     pub async fn get_sbom(
         &self,
@@ -340,11 +559,18 @@ impl BatleHubClient {
 
     // ── Notifications ──────────────────────────────────────────────────────────
 
-    pub async fn list_notification_channels(&self) -> Result<serde_json::Value> {
-        self.get("/api/v1/admin/notifications/channels").await
+    pub async fn list_notification_channels(&self) -> Result<Vec<NotificationChannelEntry>> {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            channels: Vec<NotificationChannelEntry>,
+        }
+        let w: Wrapper = self.get("/api/v1/admin/notifications/channels").await?;
+        Ok(w.channels)
     }
 
-    pub async fn list_notification_subscriptions(&self) -> Result<serde_json::Value> {
+    pub async fn list_notification_subscriptions(
+        &self,
+    ) -> Result<Vec<NotificationSubscriptionEntry>> {
         self.get("/api/v1/admin/notifications/subscriptions").await
     }
 
@@ -359,7 +585,7 @@ impl BatleHubClient {
         &self,
         registry: &str,
         packages: Vec<(String, String)>,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<BulkPackageResult> {
         self.bulk_operation(registry, "bulk-yank", packages).await
     }
 
@@ -367,7 +593,7 @@ impl BatleHubClient {
         &self,
         registry: &str,
         packages: Vec<(String, String)>,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<BulkPackageResult> {
         self.bulk_operation(registry, "bulk-unyank", packages).await
     }
 
@@ -375,7 +601,7 @@ impl BatleHubClient {
         &self,
         registry: &str,
         packages: Vec<(String, String)>,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<BulkPackageResult> {
         self.bulk_operation(registry, "bulk-delete", packages).await
     }
 
@@ -384,7 +610,7 @@ impl BatleHubClient {
         registry: &str,
         op: &str,
         packages: Vec<(String, String)>,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<BulkPackageResult> {
         #[derive(serde::Serialize)]
         struct PkgRef {
             name: String,
@@ -406,11 +632,11 @@ impl BatleHubClient {
 
     // ── Config content ─────────────────────────────────────────────────────────
 
-    pub async fn config_content(&self) -> Result<serde_json::Value> {
+    pub async fn config_content(&self) -> Result<ConfigContentResponse> {
         self.get("/api/v1/admin/config/content").await
     }
 
-    pub async fn config_validate(&self, content: &str) -> Result<serde_json::Value> {
+    pub async fn config_validate(&self, content: &str) -> Result<ReloadResponse> {
         #[derive(serde::Serialize)]
         struct Body<'a> {
             content: &'a str,
@@ -419,7 +645,7 @@ impl BatleHubClient {
             .await
     }
 
-    pub async fn config_from_content(&self, content: &str) -> Result<serde_json::Value> {
+    pub async fn config_from_content(&self, content: &str) -> Result<ReloadResponse> {
         #[derive(serde::Serialize)]
         struct Body<'a> {
             content: &'a str,
@@ -499,42 +725,11 @@ impl BatleHubClient {
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn simulate_access(
         &self,
-        registry: &str,
-        package_name: &str,
-        version: &str,
-        resource_type: &str,
-        user_id: Option<&str>,
-        role: Option<&str>,
-        groups: &[String],
-    ) -> Result<serde_json::Value> {
-        #[derive(serde::Serialize)]
-        struct Body<'a> {
-            registry: &'a str,
-            package_name: &'a str,
-            version: &'a str,
-            resource_type: &'a str,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            user_id: Option<&'a str>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            role: Option<&'a str>,
-            groups: &'a [String],
-        }
-        self.post(
-            "/api/v1/admin/access-check",
-            &Body {
-                registry,
-                package_name,
-                version,
-                resource_type,
-                user_id,
-                role,
-                groups,
-            },
-        )
-        .await
+        req: &SimulateAccessRequest,
+    ) -> Result<AccessSimulationResponse> {
+        self.post("/api/v1/admin/access-check", req).await
     }
 
     pub async fn export_audit_log(
@@ -556,19 +751,15 @@ impl BatleHubClient {
             registry: Option<&'a str>,
             format: &'a str,
         }
-        let mut req = self
-            .inner
-            .request(Method::GET, self.url("/api/v1/admin/audit-log/export"))
+        let req = self
+            .request(Method::GET, "/api/v1/admin/audit-log/export")
             .query(&Params {
                 from,
                 to,
                 registry,
                 format,
             });
-        if let Some(auth) = self.auth_header() {
-            req = req.header("Authorization", auth);
-        }
-        let resp = req.send().await?;
+        let resp = self.send(req).await?;
         let status = resp.status();
         if status.is_success() {
             Ok(resp.text().await?)

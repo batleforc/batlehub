@@ -5,12 +5,13 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
     Frame,
 };
-use serde_json::Value;
+
+use crate::api::admin::StatsResponse;
 
 use super::App;
 
 pub struct AdminStatsWidget {
-    pub data: Option<Value>,
+    pub data: Option<StatsResponse>,
     pub loading: bool,
     pub error: Option<String>,
     pub table_state: TableState,
@@ -26,7 +27,7 @@ impl AdminStatsWidget {
         }
     }
 
-    pub fn set_data(&mut self, v: Value) {
+    pub fn set_data(&mut self, v: StatsResponse) {
         self.data = Some(v);
         self.loading = false;
         self.error = None;
@@ -39,8 +40,8 @@ impl AdminStatsWidget {
     }
 }
 
-fn fmt_bytes(n: Option<&Value>) -> String {
-    match n.and_then(|v| v.as_f64()) {
+fn fmt_bytes(n: Option<u64>) -> String {
+    match n.map(|b| b as f64) {
         None => "—".to_string(),
         Some(b) if b >= 1_073_741_824.0 => format!("{:.1} GiB", b / 1_073_741_824.0),
         Some(b) if b >= 1_048_576.0 => format!("{:.1} MiB", b / 1_048_576.0),
@@ -49,8 +50,8 @@ fn fmt_bytes(n: Option<&Value>) -> String {
     }
 }
 
-fn fmt_pct(n: Option<&Value>) -> String {
-    match n.and_then(|v| v.as_f64()) {
+fn fmt_pct(n: Option<f64>) -> String {
+    match n {
         None => "—".to_string(),
         Some(p) => format!("{:.1}%", p * 100.0),
     }
@@ -98,23 +99,12 @@ pub fn render(f: &mut Frame, app: &App) {
     };
 
     // Aggregate stats row
-    let agg = data.get("aggregate");
-    let hit_rate = fmt_pct(agg.and_then(|a| a.get("hit_rate")));
-    let hits = agg
-        .and_then(|a| a.get("artifact_hits"))
-        .and_then(|v| v.as_u64())
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| "—".to_string());
-    let misses = agg
-        .and_then(|a| a.get("artifact_misses"))
-        .and_then(|v| v.as_u64())
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| "—".to_string());
-    let cached = fmt_bytes(agg.and_then(|a| a.get("cached_bytes")));
-    let since = data
-        .get("since_startup")
-        .and_then(|v| v.as_str())
-        .unwrap_or("—");
+    let agg = &data.aggregate;
+    let hit_rate = fmt_pct(agg.hit_rate);
+    let hits = agg.artifact_hits.to_string();
+    let misses = agg.artifact_misses.to_string();
+    let cached = fmt_bytes(Some(agg.cached_bytes));
+    let since = data.since_startup.to_rfc3339();
 
     let summary = vec![
         Line::from(vec![
@@ -150,32 +140,18 @@ pub fn render(f: &mut Frame, app: &App) {
         .style(Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED));
 
     let rows: Vec<Row> = data
-        .get("per_registry")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .map(|r| {
-                    Row::new(vec![
-                        Cell::from(r.get("registry").and_then(|v| v.as_str()).unwrap_or("—")),
-                        Cell::from(fmt_pct(r.get("hit_rate"))),
-                        Cell::from(
-                            r.get("artifact_hits")
-                                .and_then(|v| v.as_u64())
-                                .map(|n| n.to_string())
-                                .unwrap_or_else(|| "—".to_string()),
-                        ),
-                        Cell::from(
-                            r.get("artifact_misses")
-                                .and_then(|v| v.as_u64())
-                                .map(|n| n.to_string())
-                                .unwrap_or_else(|| "—".to_string()),
-                        ),
-                        Cell::from(fmt_bytes(r.get("cached_bytes"))),
-                    ])
-                })
-                .collect()
+        .per_registry
+        .iter()
+        .map(|r| {
+            Row::new(vec![
+                Cell::from(r.registry.clone()),
+                Cell::from(fmt_pct(r.hit_rate)),
+                Cell::from(r.artifact_hits.to_string()),
+                Cell::from(r.artifact_misses.to_string()),
+                Cell::from(fmt_bytes(r.cached_bytes)),
+            ])
         })
-        .unwrap_or_default();
+        .collect();
 
     let table = Table::new(
         rows,

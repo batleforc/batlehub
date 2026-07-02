@@ -250,13 +250,27 @@ pub async fn package_detail(
                 AccessAction::Block => "block",
                 AccessAction::Unblock => "unblock",
                 AccessAction::Delete => "delete",
+                AccessAction::AddOwner => "add_owner",
+                AccessAction::RemoveOwner => "remove_owner",
+                AccessAction::SetVisibility => "set_visibility",
+                AccessAction::BlockUser => "block_user",
+                AccessAction::UnblockUser => "unblock_user",
+                AccessAction::BlockIp => "block_ip",
+                AccessAction::UnblockIp => "unblock_ip",
+            };
+            // `event_filter` above always sets `registry`/`package_name`, so any
+            // event matching it has a package coordinate; the fallback only
+            // matters if that invariant ever changes.
+            let (version, artifact) = match e.package_id {
+                Some(pkg) => (pkg.version, pkg.artifact),
+                None => (String::new(), None),
             };
             PackageEventDto {
                 id: e.id,
                 user_id: e.user_id,
                 user_role: e.user_role.to_string(),
-                version: e.package_id.version,
-                artifact: e.package_id.artifact,
+                version,
+                artifact,
                 action: action.to_string(),
                 outcome,
                 deny_reason,

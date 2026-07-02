@@ -118,6 +118,13 @@ pub(super) fn action_to_str(action: &AccessAction) -> &'static str {
         AccessAction::Block => "block",
         AccessAction::Unblock => "unblock",
         AccessAction::Delete => "delete",
+        AccessAction::AddOwner => "add_owner",
+        AccessAction::RemoveOwner => "remove_owner",
+        AccessAction::SetVisibility => "set_visibility",
+        AccessAction::BlockUser => "block_user",
+        AccessAction::UnblockUser => "unblock_user",
+        AccessAction::BlockIp => "block_ip",
+        AccessAction::UnblockIp => "unblock_ip",
     }
 }
 
@@ -128,6 +135,13 @@ pub(super) fn str_to_action(s: &str) -> AccessAction {
         "block" => AccessAction::Block,
         "unblock" => AccessAction::Unblock,
         "delete" => AccessAction::Delete,
+        "add_owner" => AccessAction::AddOwner,
+        "remove_owner" => AccessAction::RemoveOwner,
+        "set_visibility" => AccessAction::SetVisibility,
+        "block_user" => AccessAction::BlockUser,
+        "unblock_user" => AccessAction::UnblockUser,
+        "block_ip" => AccessAction::BlockIp,
+        "unblock_ip" => AccessAction::UnblockIp,
         _ => AccessAction::Download,
     }
 }

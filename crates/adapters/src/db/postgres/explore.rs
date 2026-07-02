@@ -43,16 +43,27 @@ pub(super) async fn list_events_impl(
         .into_iter()
         .map(|r| {
             let outcome: String = r.get("outcome");
+            // Account-wide/network-wide events store NULL in all three coordinate
+            // columns (see migration 030); only build a `PackageId` when the row
+            // actually has one.
+            let registry: Option<String> = r.get("registry");
+            let package_name: Option<String> = r.get("package_name");
+            let package_version: Option<String> = r.get("package_version");
+            let package_artifact: Option<String> = r.get("package_artifact");
+            let package_id = match (registry, package_name, package_version) {
+                (Some(registry), Some(name), Some(version)) => Some(PackageId {
+                    registry,
+                    name,
+                    version,
+                    artifact: package_artifact,
+                }),
+                _ => None,
+            };
             AccessEvent {
                 id: r.get("id"),
                 user_id: r.get("user_id"),
                 user_role: str_to_role(r.get::<&str, _>("user_role")),
-                package_id: PackageId {
-                    registry: r.get("registry"),
-                    name: r.get("package_name"),
-                    version: r.get("package_version"),
-                    artifact: r.get("package_artifact"),
-                },
+                package_id,
                 action: str_to_action(r.get::<&str, _>("action")),
                 result: match outcome.as_str() {
                     "denied" => AccessResult::Denied {

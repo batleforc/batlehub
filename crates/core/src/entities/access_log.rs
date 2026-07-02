@@ -12,6 +12,20 @@ pub enum AccessAction {
     Block,
     Unblock,
     Delete,
+    /// A principal (user or group) was granted ownership of a package.
+    AddOwner,
+    /// A principal (user or group) had ownership of a package revoked.
+    RemoveOwner,
+    /// A package's visibility (public/internal/team) was changed.
+    SetVisibility,
+    /// An account-wide action: a user was blocked from authenticating.
+    BlockUser,
+    /// An account-wide action: a previously blocked user was unblocked.
+    UnblockUser,
+    /// A network-wide action: an IP address was blocked.
+    BlockIp,
+    /// A network-wide action: a previously blocked IP address was unblocked.
+    UnblockIp,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,7 +52,11 @@ pub struct AccessEvent {
     pub id: Uuid,
     pub user_id: Option<String>,
     pub user_role: Role,
-    pub package_id: PackageId,
+    /// The package coordinate this event is about, when applicable.
+    ///
+    /// `None` for account-wide/network-wide admin actions that are not scoped
+    /// to a specific package (e.g. blocking a user or an IP address).
+    pub package_id: Option<PackageId>,
     pub action: AccessAction,
     pub result: AccessResult,
     pub timestamp: DateTime<Utc>,
@@ -60,7 +78,7 @@ impl AccessEvent {
             id: Uuid::new_v4(),
             user_id,
             user_role,
-            package_id,
+            package_id: Some(package_id),
             action: AccessAction::Download,
             result: AccessResult::Allowed,
             timestamp: Utc::now(),
@@ -79,7 +97,7 @@ impl AccessEvent {
             id: Uuid::new_v4(),
             user_id,
             user_role,
-            package_id,
+            package_id: Some(package_id),
             action: AccessAction::Download,
             result: AccessResult::Denied { reason },
             timestamp: Utc::now(),
@@ -98,7 +116,7 @@ impl AccessEvent {
             id: Uuid::new_v4(),
             user_id,
             user_role,
-            package_id,
+            package_id: Some(package_id),
             action: AccessAction::Download,
             result: AccessResult::ProxyError { reason },
             timestamp: Utc::now(),

@@ -5,7 +5,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use batlehub_core::ports::{UserBlock, UserBlockRepository};
+use batlehub_core::{
+    entities::AccessAction,
+    ports::{UserBlock, UserBlockRepository},
+    services::AdminService,
+};
 
 use super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity};
@@ -81,6 +85,7 @@ pub async fn block_user(
     body: web::Json<BlockUserRequest>,
     identity: AuthIdentity,
     repo: web::Data<Arc<dyn UserBlockRepository>>,
+    admin_svc: web::Data<Arc<AdminService>>,
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
     let (raw_id,) = path.into_inner();
@@ -92,6 +97,11 @@ pub async fn block_user(
     repo.block(&user_id, blocked_by, body.reason.as_deref())
         .await
         .map_err(AppError::from)?;
+
+    admin_svc
+        .record_account_action(AccessAction::BlockUser, &identity.0)
+        .await;
+
     Ok(HttpResponse::NoContent().finish())
 }
 
@@ -112,6 +122,7 @@ pub async fn unblock_user(
     path: web::Path<(String,)>,
     identity: AuthIdentity,
     repo: web::Data<Arc<dyn UserBlockRepository>>,
+    admin_svc: web::Data<Arc<AdminService>>,
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
     let (raw_id,) = path.into_inner();
@@ -120,6 +131,11 @@ pub async fn unblock_user(
         return Err(AppError::bad_request("user_id cannot be empty"));
     }
     repo.unblock(&user_id).await.map_err(AppError::from)?;
+
+    admin_svc
+        .record_account_action(AccessAction::UnblockUser, &identity.0)
+        .await;
+
     Ok(HttpResponse::NoContent().finish())
 }
 

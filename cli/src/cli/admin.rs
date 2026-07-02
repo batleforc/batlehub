@@ -3,7 +3,11 @@ use clap::Subcommand;
 use comfy_table::Table;
 
 use crate::api::{
-    admin::{AuditEntry, AuditQuery},
+    admin::{
+        AccessSimulationResponse, AuditEntry, AuditQuery, BlockedUserEntry, BulkPackageResult,
+        NotificationChannelEntry, NotificationSubscriptionEntry, RegistryHealthEntry,
+        SimulateAccessRequest, StatsResponse, TeamNamespaceEntry,
+    },
     BatleHubClient,
 };
 
@@ -376,7 +380,7 @@ pub async fn run(cmd: AdminCommand, client: &BatleHubClient, json: bool) -> Resu
             if json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
-                print_json_value_table("Stats", &resp);
+                print_stats(&resp);
             }
         }
         AdminCommand::Health => {
@@ -384,7 +388,7 @@ pub async fn run(cmd: AdminCommand, client: &BatleHubClient, json: bool) -> Resu
             if json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
-                print_json_value_table("Health", &resp);
+                print_health_table(&resp);
             }
         }
         AdminCommand::Visibility { cmd } => handle_visibility(cmd, client, json).await?,
@@ -440,15 +444,15 @@ pub async fn run(cmd: AdminCommand, client: &BatleHubClient, json: bool) -> Resu
             groups,
         } => {
             let resp = client
-                .simulate_access(
-                    &registry,
-                    &package,
-                    &version,
-                    &resource,
-                    user.as_deref(),
-                    role.as_deref(),
-                    &groups,
-                )
+                .simulate_access(&SimulateAccessRequest {
+                    registry,
+                    package_name: package,
+                    version,
+                    resource_type: resource,
+                    user_id: user,
+                    role,
+                    groups,
+                })
                 .await?;
             print_access_check(json, &resp)?;
         }
@@ -491,8 +495,10 @@ async fn handle_audit_log(client: &BatleHubClient, json: bool, args: AuditLogArg
         if json {
             println!("{}", serde_json::to_string_pretty(&resp)?);
         } else {
-            let deleted = resp.get("deleted").and_then(|v| v.as_u64()).unwrap_or(0);
-            println!("Deleted {deleted} audit-log row(s) older than {before}");
+            println!(
+                "Deleted {} audit-log row(s) older than {before}",
+                resp.deleted
+            );
         }
         return Ok(());
     }
@@ -516,22 +522,18 @@ async fn handle_audit_log(client: &BatleHubClient, json: bool, args: AuditLogArg
     Ok(())
 }
 
-fn print_access_check(json: bool, resp: &serde_json::Value) -> Result<()> {
+fn print_access_check(json: bool, resp: &AccessSimulationResponse) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(resp)?);
         return Ok(());
     }
-    let decision = resp.get("decision").and_then(|v| v.as_str()).unwrap_or("?");
-    if decision == "allow" {
+    if resp.decision == "allow" {
         println!("ALLOW");
     } else {
-        let reason = resp
-            .get("reason")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
+        let reason = resp.reason.as_deref().unwrap_or("unknown");
         let rule = resp
-            .get("rule_matched")
-            .and_then(|v| v.as_str())
+            .rule_matched
+            .as_deref()
             .map(|r| format!("  (rule: {r})"))
             .unwrap_or_default();
         println!("DENY: {reason}{rule}");
@@ -618,11 +620,7 @@ async fn handle_config_admin(
             if json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
-                let content = resp
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_else(|| resp.as_str().unwrap_or("(empty)"));
-                println!("{content}");
+                println!("{}", resp.content);
             }
         }
         ConfigAdminCommand::Validate { file } => {
@@ -632,7 +630,7 @@ async fn handle_config_admin(
             if json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
-                print_config_validation(&file, &resp);
+                println!("{file}: valid");
             }
         }
         ConfigAdminCommand::FromFile { file } => {
@@ -661,20 +659,6 @@ fn print_config_changes_table(changes: &[crate::api::admin::ConfigChangeEntry]) 
         ]);
     }
     println!("{table}");
-}
-
-fn print_config_validation(file: &str, resp: &serde_json::Value) {
-    let ok = resp.get("valid").and_then(|v| v.as_bool()).unwrap_or(true);
-    if ok {
-        println!("{file}: valid");
-    } else {
-        let msg = resp
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("validation failed");
-        eprintln!("{file}: {msg}");
-        std::process::exit(1);
-    }
 }
 
 async fn handle_cache(cmd: CacheCommand, client: &BatleHubClient) -> Result<()> {
@@ -733,11 +717,7 @@ async fn handle_visibility(
             if json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
-                let vis = resp
-                    .get("visibility")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                println!("{registry}/{name}: {vis}");
+                println!("{registry}/{name}: {}", resp.visibility);
             }
         }
         VisibilityCommand::Set {
@@ -763,7 +743,7 @@ async fn handle_namespace(
             if json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
-                print_json_value_table("Namespaces", &resp);
+                print_namespaces_table(&resp);
             }
         }
         NamespaceCommand::Claim {
@@ -771,16 +751,10 @@ async fn handle_namespace(
             prefix,
             group_id,
         } => {
-            let resp = client
+            client
                 .claim_namespace(&registry, &prefix, &group_id)
                 .await?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&resp)?);
-            } else {
-                println!(
-                    "Claimed namespace prefix '{prefix}' for group '{group_id}' in {registry}"
-                );
-            }
+            println!("Claimed namespace prefix '{prefix}' for group '{group_id}' in {registry}");
         }
         NamespaceCommand::Release { registry, prefix } => {
             client.release_namespace(&registry, &prefix).await?;
@@ -797,7 +771,7 @@ async fn handle_users(cmd: UsersCommand, client: &BatleHubClient, json: bool) ->
             if json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
-                print_json_value_table("Blocked Users", &resp);
+                print_blocked_users_table(&resp);
             }
         }
         UsersCommand::Block { user_id, reason } => {
@@ -856,7 +830,7 @@ async fn handle_notifications(
             if json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
-                print_json_value_table("Notification Channels", &resp);
+                print_notification_channels_table(&resp);
             }
         }
         NotificationsCommand::List => {
@@ -864,7 +838,7 @@ async fn handle_notifications(
             if json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
-                print_json_value_table("Subscriptions", &resp);
+                print_notification_subscriptions_table(&resp);
             }
         }
         NotificationsCommand::Delete { id } => {
@@ -905,57 +879,162 @@ async fn handle_bulk(cmd: BulkCommand, client: &BatleHubClient, json: bool) -> R
     Ok(())
 }
 
-fn print_bulk_result(json: bool, resp: &serde_json::Value) -> Result<()> {
+fn print_bulk_result(json: bool, resp: &BulkPackageResult) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(resp)?);
     } else {
-        let processed = resp.get("processed").and_then(|v| v.as_u64()).unwrap_or(0);
-        let succeeded = resp.get("succeeded").and_then(|v| v.as_u64()).unwrap_or(0);
-        let failed = resp.get("failed").and_then(|v| v.as_u64()).unwrap_or(0);
-        println!("processed={processed} succeeded={succeeded} failed={failed}");
+        println!(
+            "processed={} succeeded={} failed={}",
+            resp.processed,
+            resp.succeeded,
+            resp.failed.len()
+        );
+        for f in &resp.failed {
+            println!("  FAILED {}@{}: {}", f.name, f.version, f.error);
+        }
     }
     Ok(())
 }
 
-/// Render a JSON scalar as a plain string (without the surrounding quotes a
-/// `to_string()` would add to a `String`).
-fn json_cell(v: &serde_json::Value) -> String {
-    match v {
-        serde_json::Value::String(s) => s.clone(),
-        other => other.to_string(),
+fn fmt_hit_rate(rate: Option<f64>) -> String {
+    match rate {
+        Some(r) => format!("{:.1}%", r * 100.0),
+        None => "-".to_string(),
     }
 }
 
-fn print_json_array_table(label: &str, arr: &[serde_json::Value]) {
-    if arr.is_empty() {
-        println!("(no {label})");
-        return;
+fn fmt_opt_bytes(bytes: Option<u64>) -> String {
+    match bytes {
+        Some(b) => b.to_string(),
+        None => "-".to_string(),
     }
+}
+
+fn print_stats(resp: &StatsResponse) {
+    println!("Since startup: {}", resp.since_startup);
+    println!(
+        "Aggregate: hits={} misses={} hit_rate={} cached_bytes={}",
+        resp.aggregate.artifact_hits,
+        resp.aggregate.artifact_misses,
+        fmt_hit_rate(resp.aggregate.hit_rate),
+        resp.aggregate.cached_bytes
+    );
     let mut table = Table::new();
-    if let Some(serde_json::Value::Object(first)) = arr.first() {
-        table.set_header(first.keys().collect::<Vec<_>>());
-        for item in arr {
-            if let serde_json::Value::Object(obj) = item {
-                table.add_row(obj.values().map(json_cell).collect::<Vec<_>>());
-            }
-        }
+    table.set_header(["Registry", "Hits", "Misses", "Hit Rate", "Cached Bytes"]);
+    for r in &resp.per_registry {
+        table.add_row([
+            r.registry.clone(),
+            r.artifact_hits.to_string(),
+            r.artifact_misses.to_string(),
+            fmt_hit_rate(r.hit_rate),
+            fmt_opt_bytes(r.cached_bytes),
+        ]);
     }
     println!("{table}");
 }
 
-fn print_json_value_table(label: &str, value: &serde_json::Value) {
-    match value {
-        serde_json::Value::Array(arr) => print_json_array_table(label, arr),
-        serde_json::Value::Object(obj) => {
-            let mut table = Table::new();
-            table.set_header(["Key", "Value"]);
-            for (k, v) in obj {
-                table.add_row([k.clone(), json_cell(v)]);
-            }
-            println!("{table}");
-        }
-        other => println!("{other}"),
+fn print_health_table(entries: &[RegistryHealthEntry]) {
+    if entries.is_empty() {
+        println!("(no registries)");
+        return;
     }
+    let mut table = Table::new();
+    table.set_header([
+        "Registry",
+        "Type",
+        "Packages",
+        "Cached Artifacts",
+        "Pulls (1h)",
+        "Pulls (24h)",
+        "Recent Errors",
+    ]);
+    for e in entries {
+        table.add_row([
+            e.registry.clone(),
+            e.registry_type.clone(),
+            e.package_count.to_string(),
+            e.cached_artifact_count.to_string(),
+            e.pulls_last_hour.to_string(),
+            e.pulls_last_day.to_string(),
+            e.recent_errors.len().to_string(),
+        ]);
+    }
+    println!("{table}");
+}
+
+fn print_namespaces_table(entries: &[TeamNamespaceEntry]) {
+    if entries.is_empty() {
+        println!("(no namespaces)");
+        return;
+    }
+    let mut table = Table::new();
+    table.set_header(["Registry", "Prefix", "Group", "Claimed By"]);
+    for e in entries {
+        table.add_row([
+            e.registry.as_str(),
+            e.prefix.as_str(),
+            e.group_id.as_str(),
+            e.claimed_by.as_deref().unwrap_or("-"),
+        ]);
+    }
+    println!("{table}");
+}
+
+fn print_blocked_users_table(entries: &[BlockedUserEntry]) {
+    if entries.is_empty() {
+        println!("(no blocked users)");
+        return;
+    }
+    let mut table = Table::new();
+    table.set_header(["User", "Blocked At", "Blocked By", "Reason"]);
+    for e in entries {
+        table.add_row([
+            e.user_id.as_str(),
+            &e.blocked_at.to_rfc3339(),
+            e.blocked_by.as_str(),
+            e.reason.as_deref().unwrap_or("-"),
+        ]);
+    }
+    println!("{table}");
+}
+
+fn print_notification_channels_table(entries: &[NotificationChannelEntry]) {
+    if entries.is_empty() {
+        println!("(no notification channels configured)");
+        return;
+    }
+    let mut table = Table::new();
+    table.set_header(["Channel"]);
+    for e in entries {
+        table.add_row([e.name.as_str()]);
+    }
+    println!("{table}");
+}
+
+fn print_notification_subscriptions_table(entries: &[NotificationSubscriptionEntry]) {
+    if entries.is_empty() {
+        println!("(no subscriptions)");
+        return;
+    }
+    let mut table = Table::new();
+    table.set_header(["ID", "Registry", "Package", "Events", "Channel", "Enabled"]);
+    for e in entries {
+        let events = e
+            .event_types
+            .iter()
+            .map(|t| t.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        table.add_row([
+            e.id.to_string(),
+            e.registry.clone().unwrap_or_else(|| "*".to_string()),
+            e.package_name.clone().unwrap_or_else(|| "*".to_string()),
+            events,
+            e.channel_name.clone(),
+            e.enabled.to_string(),
+        ]);
+    }
+    println!("{table}");
 }
 
 fn print_audit_log_table(entries: &[AuditEntry]) {

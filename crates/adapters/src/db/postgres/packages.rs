@@ -11,6 +11,17 @@ pub(super) async fn record_access_impl(pool: &PgPool, event: AccessEvent) -> Res
         AccessResult::ProxyError { reason } => ("error", Some(reason.clone())),
     };
 
+    // Account-wide/network-wide actions (e.g. block_user, block_ip) carry no
+    // package coordinate; the columns are nullable to allow this (migration
+    // 030_access_events_nullable_target.sql).
+    let registry = event.package_id.as_ref().map(|p| p.registry.as_str());
+    let package_name = event.package_id.as_ref().map(|p| p.name.as_str());
+    let package_version = event.package_id.as_ref().map(|p| p.version.as_str());
+    let package_artifact = event
+        .package_id
+        .as_ref()
+        .and_then(|p| p.artifact.as_deref());
+
     let query = sqlx::query(
         r#"
         INSERT INTO access_events
@@ -23,10 +34,10 @@ pub(super) async fn record_access_impl(pool: &PgPool, event: AccessEvent) -> Res
     .bind(event.id)
     .bind(&event.user_id)
     .bind(role_to_str(&event.user_role))
-    .bind(&event.package_id.registry)
-    .bind(&event.package_id.name)
-    .bind(&event.package_id.version)
-    .bind(&event.package_id.artifact)
+    .bind(registry)
+    .bind(package_name)
+    .bind(package_version)
+    .bind(package_artifact)
     .bind(action_to_str(&event.action))
     .bind(outcome)
     .bind(deny_reason)
@@ -40,28 +51,38 @@ pub(super) async fn record_access_impl(pool: &PgPool, event: AccessEvent) -> Res
 
     // Ensure the package appears in list_packages by creating an 'available' status
     // row on first access. DO NOTHING preserves any existing blocked status.
-    // Skip for Delete actions — the row was just removed and must not be recreated.
-    if matches!(event.result, AccessResult::Allowed)
-        && !matches!(event.action, AccessAction::Delete)
-    {
-        sqlx::query(
-            r#"
-            INSERT INTO package_statuses
-                (id, registry, package_name, package_version, package_artifact,
-                 status, updated_at)
-            VALUES ($1, $2, $3, $4, $5, 'available', NOW())
-            ON CONFLICT (registry, package_name, package_version, COALESCE(package_artifact, ''))
-            DO NOTHING
-            "#,
-        )
-        .bind(Uuid::new_v4())
-        .bind(&event.package_id.registry)
-        .bind(&event.package_id.name)
-        .bind(&event.package_id.version)
-        .bind(&event.package_id.artifact)
-        .execute(pool)
-        .await
-        .db_err()?;
+    // Restricted to the actions that always carry a real, version-specific
+    // package coordinate — ownership/visibility/account-wide actions must not
+    // spuriously create (or reuse an empty-version) package_statuses row.
+    let creates_status_row = matches!(event.result, AccessResult::Allowed)
+        && matches!(
+            event.action,
+            AccessAction::Download
+                | AccessAction::ViewMetadata
+                | AccessAction::Block
+                | AccessAction::Unblock
+        );
+    if creates_status_row {
+        if let Some(pkg) = &event.package_id {
+            sqlx::query(
+                r#"
+                INSERT INTO package_statuses
+                    (id, registry, package_name, package_version, package_artifact,
+                     status, updated_at)
+                VALUES ($1, $2, $3, $4, $5, 'available', NOW())
+                ON CONFLICT (registry, package_name, package_version, COALESCE(package_artifact, ''))
+                DO NOTHING
+                "#,
+            )
+            .bind(Uuid::new_v4())
+            .bind(&pkg.registry)
+            .bind(&pkg.name)
+            .bind(&pkg.version)
+            .bind(&pkg.artifact)
+            .execute(pool)
+            .await
+            .db_err()?;
+        }
     }
 
     Ok(())

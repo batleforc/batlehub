@@ -6,7 +6,11 @@ use actix_web::{delete, get, post, web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use batlehub_core::ports::{BlockedIpInfo, IpBlockStore};
+use batlehub_core::{
+    entities::AccessAction,
+    ports::{BlockedIpInfo, IpBlockStore},
+    services::AdminService,
+};
 
 use super::{now_unix, require_admin};
 use crate::{error::AppError, extractors::AuthIdentity};
@@ -85,6 +89,7 @@ pub async fn block_ip(
     body: web::Json<BlockIpRequest>,
     identity: AuthIdentity,
     store: web::Data<Arc<dyn IpBlockStore>>,
+    admin_svc: web::Data<Arc<AdminService>>,
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
     IpAddr::from_str(&body.ip)
@@ -103,6 +108,11 @@ pub async fn block_ip(
         .block_ip(&body.ip, unblock_at, reason)
         .await
         .map_err(AppError::from)?;
+
+    admin_svc
+        .record_account_action(AccessAction::BlockIp, &identity.0)
+        .await;
+
     Ok(HttpResponse::NoContent().finish())
 }
 
@@ -123,12 +133,18 @@ pub async fn unblock_ip(
     path: web::Path<(String,)>,
     identity: AuthIdentity,
     store: web::Data<Arc<dyn IpBlockStore>>,
+    admin_svc: web::Data<Arc<AdminService>>,
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
     let (ip,) = path.into_inner();
     IpAddr::from_str(&ip)
         .map_err(|_| AppError::bad_request(format!("'{}' is not a valid IP address", ip)))?;
     store.unblock_ip(&ip).await.map_err(AppError::from)?;
+
+    admin_svc
+        .record_account_action(AccessAction::UnblockIp, &identity.0)
+        .await;
+
     Ok(HttpResponse::NoContent().finish())
 }
 
