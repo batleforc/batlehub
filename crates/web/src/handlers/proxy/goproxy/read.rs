@@ -138,7 +138,7 @@ pub async fn goproxy_latest(
         svc,
         pkg,
         identity,
-        "releases:read",
+        batlehub_core::rules::resource_type::RELEASES_READ,
         Some("application/json"),
     )
     .await
@@ -191,7 +191,14 @@ pub async fn goproxy_list(
     }
 
     let pkg = PackageId::new(&registry, module, "latest").with_artifact("list");
-    proxy_stream(svc, pkg, identity, "releases:read", Some("text/plain")).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        batlehub_core::rules::resource_type::RELEASES_READ,
+        Some("text/plain"),
+    )
+    .await
 }
 
 /// Fetch a versioned Go module file: `.info`, `.mod`, or `.zip`.
@@ -243,17 +250,17 @@ pub async fn goproxy_file(
         "info" => (
             PackageId::new(&registry, module, version),
             "application/json",
-            "releases:read",
+            batlehub_core::rules::resource_type::RELEASES_READ,
         ),
         "mod" => (
             PackageId::new(&registry, module, version).with_artifact("mod"),
             "text/plain",
-            "releases:read",
+            batlehub_core::rules::resource_type::RELEASES_READ,
         ),
         "zip" => (
             PackageId::new(&registry, module, version).with_artifact("zip"),
             "application/zip",
-            "source:read",
+            batlehub_core::rules::resource_type::SOURCE_READ,
         ),
         _ => {
             return Err(AppError::not_found(format!(

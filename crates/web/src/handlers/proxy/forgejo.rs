@@ -56,5 +56,12 @@ pub async fn fj_packages(
     batlehub_core::services::validate_path_safe("path", &api_path).map_err(AppError::from)?;
     let pkg = PackageId::new(&registry, "_packages", "_")
         .with_artifact(format!("pkgpath/api/packages/{api_path}"));
-    proxy_stream(svc, pkg, identity, "releases:read", None).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        batlehub_core::rules::resource_type::RELEASES_READ,
+        None,
+    )
+    .await
 }

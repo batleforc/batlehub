@@ -51,7 +51,7 @@ pub async fn gem_download(
             artifact_suffix: "gem",
             local_content_type: "application/octet-stream",
             proxy_content_type: Some("application/octet-stream"),
-            resource_type: "releases:read",
+            resource_type: batlehub_core::rules::resource_type::RELEASES_READ,
             check_prerelease: true,
             append_signature: true,
         },
@@ -108,7 +108,7 @@ pub async fn gem_info(
         svc,
         pkg,
         identity,
-        "releases:read",
+        batlehub_core::rules::resource_type::RELEASES_READ,
         Some("application/json"),
     )
     .await
@@ -163,7 +163,7 @@ pub async fn gem_versions(
         svc,
         pkg,
         identity,
-        "releases:read",
+        batlehub_core::rules::resource_type::RELEASES_READ,
         Some("application/json"),
     )
     .await
@@ -209,7 +209,7 @@ pub async fn gem_gemspec(
         svc,
         pkg,
         identity,
-        "releases:read",
+        batlehub_core::rules::resource_type::RELEASES_READ,
         Some("application/octet-stream"),
     )
     .await

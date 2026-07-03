@@ -1,4 +1,5 @@
 use super::*;
+use batlehub_core::ports::RegistryClient;
 use client::{parse_gem_yaml, split_gem_stem};
 use futures::TryStreamExt;
 use mockito::Server;

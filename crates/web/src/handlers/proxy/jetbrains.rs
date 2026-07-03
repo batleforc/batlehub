@@ -59,7 +59,7 @@ pub async fn jetbrains_get(
         svc,
         pkg,
         identity,
-        "releases:read",
+        batlehub_core::rules::resource_type::RELEASES_READ,
         Some("application/octet-stream"),
     )
     .await

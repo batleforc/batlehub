@@ -1,4 +1,7 @@
 use super::*;
+use batlehub_core::entities::PackageId;
+use batlehub_core::error::CoreError;
+use batlehub_core::ports::RegistryClient;
 use client::{rewrite_simple_html, rewrite_simple_json};
 
 #[test]

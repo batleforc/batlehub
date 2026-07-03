@@ -74,7 +74,7 @@ pub async fn conda_repodata(
             .handle(batlehub_core::services::ProxyRequest {
                 package_id: pkg,
                 identity: identity.0.clone(),
-                resource_type: "releases:read".to_owned(),
+                resource_type: batlehub_core::rules::resource_type::RELEASES_READ.to_owned(),
                 ip_address: None,
                 user_agent: None,
             })
@@ -118,7 +118,7 @@ pub async fn conda_repodata(
         svc,
         pkg,
         identity,
-        "releases:read",
+        batlehub_core::rules::resource_type::RELEASES_READ,
         Some("application/json"),
     )
     .await
@@ -186,7 +186,7 @@ pub async fn conda_current_repodata(
         svc,
         pkg,
         identity,
-        "releases:read",
+        batlehub_core::rules::resource_type::RELEASES_READ,
         Some("application/json"),
     )
     .await
@@ -272,7 +272,7 @@ pub async fn conda_file_download(
         svc,
         pkg,
         identity,
-        "releases:read",
+        batlehub_core::rules::resource_type::RELEASES_READ,
         Some("application/octet-stream"),
     )
     .await

@@ -58,7 +58,14 @@ pub async fn get_packument(
     }
 
     let pkg = PackageId::new(&registry, &package, "latest");
-    proxy_stream(svc, pkg, identity, "releases:read", None).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        batlehub_core::rules::resource_type::RELEASES_READ,
+        None,
+    )
+    .await
 }
 
 /// Fetch package version metadata.
@@ -111,7 +118,14 @@ pub async fn get_version(
     }
 
     let pkg = PackageId::new(&registry, &package, &version);
-    proxy_stream(svc, pkg, identity, "releases:read", None).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        batlehub_core::rules::resource_type::RELEASES_READ,
+        None,
+    )
+    .await
 }
 
 /// Download npm package tarball for a specific version.
@@ -155,7 +169,7 @@ pub async fn download_tarball(
             artifact_suffix: "tarball",
             local_content_type: "application/octet-stream",
             proxy_content_type: None,
-            resource_type: "source:read",
+            resource_type: batlehub_core::rules::resource_type::SOURCE_READ,
             check_prerelease: true,
             append_signature: false,
         },

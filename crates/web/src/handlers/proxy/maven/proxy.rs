@@ -72,7 +72,7 @@ pub async fn maven_get(
         svc,
         pkg,
         identity,
-        "releases:read",
+        batlehub_core::rules::resource_type::RELEASES_READ,
         Some(content_type_for(filename)),
     )
     .await

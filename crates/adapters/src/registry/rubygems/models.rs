@@ -1,4 +1,4 @@
-use super::Deserialize;
+use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct GemInfo {

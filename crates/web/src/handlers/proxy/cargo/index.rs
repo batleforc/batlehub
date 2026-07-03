@@ -197,7 +197,7 @@ pub async fn download_crate(
             artifact_suffix: "dl",
             local_content_type: "application/octet-stream",
             proxy_content_type: None,
-            resource_type: "source:read",
+            resource_type: batlehub_core::rules::resource_type::SOURCE_READ,
             check_prerelease: true,
             append_signature: true,
         },

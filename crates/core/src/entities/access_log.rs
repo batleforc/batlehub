@@ -26,6 +26,8 @@ pub enum AccessAction {
     BlockIp,
     /// A network-wide action: a previously blocked IP address was unblocked.
     UnblockIp,
+    /// The access-audit trail itself was purged up to a cutoff timestamp.
+    AuditPurge,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

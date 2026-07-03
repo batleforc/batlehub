@@ -103,7 +103,7 @@ pub async fn tf_provider_download(
         svc,
         pkg,
         identity,
-        "releases:read",
+        batlehub_core::rules::resource_type::RELEASES_READ,
         Some("application/json"),
     )
     .await

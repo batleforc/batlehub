@@ -27,34 +27,6 @@ impl LocalRegistryService {
         Ok(())
     }
 
-    async fn check_namespace_publish_access(
-        &self,
-        registry: &str,
-        name: &str,
-        publisher: &Identity,
-    ) -> Result<(), CoreError> {
-        let Some(ref ns_port) = self.team_namespace else {
-            return Ok(());
-        };
-        let Some(ns) = ns_port.find_namespace(registry, name).await? else {
-            return Ok(());
-        };
-        let norm_id = ns.group_id.replace(' ', "");
-        let ok = publisher.is_admin()
-            || publisher
-                .groups
-                .iter()
-                .any(|g| g.replace(' ', "") == norm_id);
-        if !ok {
-            return Err(CoreError::AccessDenied(format!(
-                "namespace '{}' in registry '{}' is owned by group '{}'; \
-                 you are not a member",
-                ns.prefix, registry, ns.group_id
-            )));
-        }
-        Ok(())
-    }
-
     /// Returns `true` when the package is new (no existing version).
     async fn check_ownership_publish_access(
         &self,
@@ -129,7 +101,7 @@ impl LocalRegistryService {
         }
 
         // Namespace enforcement.
-        self.check_namespace_publish_access(registry, name, publisher)
+        self.check_namespace_membership(registry, name, publisher)
             .await?;
 
         // Ownership check.

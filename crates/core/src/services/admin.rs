@@ -305,8 +305,26 @@ impl AdminService {
         self.repo.list_events(filter).await
     }
 
-    pub async fn purge_events_before(&self, before: DateTime<Utc>) -> Result<u64, CoreError> {
-        self.repo.purge_events_before(before).await
+    /// Purge access-audit rows older than `before`. Records one `AuditPurge`
+    /// event capturing who ran the purge and the resulting row count, so the
+    /// compliance trail survives even though the purge itself removes history.
+    pub async fn purge_events_before(
+        &self,
+        before: DateTime<Utc>,
+        by_identity: &Identity,
+    ) -> Result<u64, CoreError> {
+        let deleted = self.repo.purge_events_before(before).await?;
+
+        self.record_account_action(AccessAction::AuditPurge, by_identity)
+            .await;
+
+        tracing::info!(
+            user_id = by_identity.user_id.as_deref().unwrap_or(""),
+            cutoff = %before,
+            deleted,
+            "access-audit log purged"
+        );
+        Ok(deleted)
     }
 
     pub async fn get_package_status(&self, pkg: &PackageId) -> Result<PackageStatus, CoreError> {
@@ -605,6 +623,23 @@ mod tests {
             events[0].action,
             crate::entities::AccessAction::BlockUser
         ));
+    }
+
+    #[tokio::test]
+    async fn purge_events_before_records_audit_purge_event() {
+        let repo = MemRepo::new();
+        let svc = AdminService::new(repo.clone());
+
+        svc.purge_events_before(Utc::now(), &admin_identity("alice"))
+            .await
+            .unwrap();
+
+        let events = repo.events();
+        assert_eq!(events.len(), 1, "purge itself must leave an audit trail");
+        assert!(events[0].package_id.is_none());
+        assert_eq!(events[0].user_id.as_deref(), Some("alice"));
+        assert!(matches!(events[0].action, AccessAction::AuditPurge));
+        assert!(matches!(events[0].result, AccessResult::Allowed));
     }
 
     #[tokio::test]

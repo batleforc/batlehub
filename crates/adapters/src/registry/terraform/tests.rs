@@ -1,4 +1,5 @@
 use super::*;
+use batlehub_core::ports::RegistryClient;
 use futures::TryStreamExt;
 use mockito::Server;
 

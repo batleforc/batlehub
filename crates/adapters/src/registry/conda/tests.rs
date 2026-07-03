@@ -1,4 +1,6 @@
 use super::*;
+use batlehub_core::error::CoreError;
+use batlehub_core::ports::RegistryClient;
 
 #[tokio::test]
 async fn resolve_metadata_repodata_returns_download_url() {

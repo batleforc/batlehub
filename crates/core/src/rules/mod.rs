@@ -21,6 +21,18 @@ use async_trait::async_trait;
 use crate::entities::{Identity, PackageMetadata, Role};
 use crate::ports::CacheEntry;
 
+/// Well-known values for [`RuleContext::resource_type`] (and the matching
+/// `resource_type` param threaded through `proxy_stream`/`ProxyStreamOptions`
+/// in `batlehub-web`), defined once instead of repeated as string literals
+/// across every registry handler.
+pub mod resource_type {
+    /// Downloading a release artifact (the published package bytes).
+    pub const RELEASES_READ: &str = "releases:read";
+    /// Reading package/source metadata (index pages, manifests, packuments)
+    /// without downloading the artifact itself.
+    pub const SOURCE_READ: &str = "source:read";
+}
+
 pub struct RuleContext<'a> {
     /// The caller making the request.
     pub identity: &'a Identity,

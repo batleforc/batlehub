@@ -122,7 +122,7 @@ pub async fn nuget_registration(
         svc,
         PackageId::new(&registry, &id, "__registration__"),
         identity,
-        "releases:read",
+        batlehub_core::rules::resource_type::RELEASES_READ,
         Some("application/json"),
     )
     .await

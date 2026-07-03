@@ -80,7 +80,7 @@ pub async fn nuget_flat_versions(
         svc,
         PackageId::new(&registry, &id, "__index__"),
         identity,
-        "releases:read",
+        batlehub_core::rules::resource_type::RELEASES_READ,
         Some("application/json"),
     )
     .await
@@ -162,7 +162,7 @@ pub async fn nuget_flat_download(
         svc,
         PackageId::new(&registry, &id, &version).with_artifact(&filename),
         identity,
-        "releases:read",
+        batlehub_core::rules::resource_type::RELEASES_READ,
         Some(content_type_for(&filename)),
     )
     .await

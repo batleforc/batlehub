@@ -41,7 +41,14 @@ pub async fn pypi_simple_root(
 
     // Represent the root index as a special sentinel PackageId.
     let pkg = PackageId::new(&registry, "__simple__", "__root__");
-    proxy_stream(svc, pkg, identity, "releases:read", Some("text/html")).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        batlehub_core::rules::resource_type::RELEASES_READ,
+        Some("text/html"),
+    )
+    .await
 }
 
 /// Proxy the PyPI Simple Repository API for a specific package, rewriting file
@@ -186,7 +193,7 @@ pub async fn pypi_file_download(
             artifact_suffix: &filename,
             local_content_type: "application/octet-stream",
             proxy_content_type: Some("application/octet-stream"),
-            resource_type: "releases:read",
+            resource_type: batlehub_core::rules::resource_type::RELEASES_READ,
             check_prerelease: false,
             append_signature: false,
         },

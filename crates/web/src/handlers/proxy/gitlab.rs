@@ -88,7 +88,7 @@ pub async fn gl_list_releases(
         project,
         "releases",
         None,
-        "releases:read",
+        batlehub_core::rules::resource_type::RELEASES_READ,
         svc,
         identity,
         &map,
@@ -126,7 +126,7 @@ pub async fn gl_get_release(
         project,
         tag,
         None,
-        "releases:read",
+        batlehub_core::rules::resource_type::RELEASES_READ,
         svc,
         identity,
         &map,
@@ -165,7 +165,7 @@ pub async fn gl_download_link(
         project,
         tag,
         Some(format!("link/{name}")),
-        "releases:read",
+        batlehub_core::rules::resource_type::RELEASES_READ,
         svc,
         identity,
         &map,
@@ -205,7 +205,7 @@ pub async fn gl_download_archive(
         project,
         tag,
         Some(format!("source/{format}")),
-        "source:read",
+        batlehub_core::rules::resource_type::SOURCE_READ,
         svc,
         identity,
         &map,
@@ -244,7 +244,7 @@ pub async fn gl_download_raw(
         project,
         git_ref.clone(),
         Some(format!("rawfile/{git_ref}/{file_path}")),
-        "source:read",
+        batlehub_core::rules::resource_type::SOURCE_READ,
         svc,
         identity,
         &map,
@@ -285,5 +285,12 @@ pub async fn gl_packages(
     batlehub_core::services::validate_path_safe("path", &api_path).map_err(AppError::from)?;
     let pkg = PackageId::new(&registry, "_packages", "_")
         .with_artifact(format!("pkgpath/api/v4/{api_path}"));
-    proxy_stream(svc, pkg, identity, "releases:read", None).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        batlehub_core::rules::resource_type::RELEASES_READ,
+        None,
+    )
+    .await
 }

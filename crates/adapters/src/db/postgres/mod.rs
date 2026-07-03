@@ -125,6 +125,7 @@ pub(super) fn action_to_str(action: &AccessAction) -> &'static str {
         AccessAction::UnblockUser => "unblock_user",
         AccessAction::BlockIp => "block_ip",
         AccessAction::UnblockIp => "unblock_ip",
+        AccessAction::AuditPurge => "audit_purge",
     }
 }
 
@@ -142,6 +143,7 @@ pub(super) fn str_to_action(s: &str) -> AccessAction {
         "unblock_user" => AccessAction::UnblockUser,
         "block_ip" => AccessAction::BlockIp,
         "unblock_ip" => AccessAction::UnblockIp,
+        "audit_purge" => AccessAction::AuditPurge,
         _ => AccessAction::Download,
     }
 }

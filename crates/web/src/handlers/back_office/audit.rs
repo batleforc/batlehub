@@ -215,7 +215,7 @@ pub async fn purge_audit_log(
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
     let deleted = admin_svc
-        .purge_events_before(query.before)
+        .purge_events_before(query.before, &identity.0)
         .await
         .map_err(AppError::from)?;
     Ok(web::Json(PurgeResponse { deleted }))

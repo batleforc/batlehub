@@ -146,7 +146,7 @@ pub async fn composer_p2_metadata(
         svc,
         pkg,
         identity,
-        "releases:read",
+        batlehub_core::rules::resource_type::RELEASES_READ,
         Some("application/json"),
     )
     .await
@@ -198,7 +198,7 @@ pub async fn composer_dist(
             artifact_suffix: "dist",
             local_content_type: "application/zip",
             proxy_content_type: Some("application/zip"),
-            resource_type: "releases:read",
+            resource_type: batlehub_core::rules::resource_type::RELEASES_READ,
             check_prerelease: true,
             append_signature: false,
         },

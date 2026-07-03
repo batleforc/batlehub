@@ -98,7 +98,14 @@ pub async fn download_vsix(
     }
 
     let pkg = PackageId::new(&registry, &extension_id, &version).with_artifact("vsix");
-    proxy_stream(svc, pkg, identity, "source:read", None).await
+    proxy_stream(
+        svc,
+        pkg,
+        identity,
+        batlehub_core::rules::resource_type::SOURCE_READ,
+        None,
+    )
+    .await
 }
 
 /// Upload a VS Code extension VSIX package.

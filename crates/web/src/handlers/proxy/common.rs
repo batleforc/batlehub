@@ -190,7 +190,7 @@ pub async fn proxy_gem_specs(
         svc,
         pkg,
         identity,
-        "releases:read",
+        batlehub_core::rules::resource_type::RELEASES_READ,
         Some("application/octet-stream"),
     )
     .await

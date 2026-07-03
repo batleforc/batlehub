@@ -1,9 +1,17 @@
-use batlehub_core::{entities::PackageId, error::CoreError};
+use async_trait::async_trait;
+use futures::TryStreamExt;
+
+use batlehub_core::{
+    entities::{PackageId, PackageMetadata},
+    error::CoreError,
+    ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
+};
 
 use super::super::http_client::{
-    apply_upstream_options, basic_auth_get, cache_control, parse_http_date, UpstreamHttpOptions,
+    apply_upstream_options, basic_auth_get, cache_control, parse_http_date, percent_encode,
+    to_registry_error, UpstreamHttpOptions,
 };
-use super::models::decode_name;
+use super::models::{decode_name, extract_all_xml_tags, extract_xml_tag, parse_last_updated};
 
 /// Maven Central-compatible registry client.
 ///
@@ -146,5 +154,142 @@ impl MavenRegistryClient {
             .map_err(|e| CoreError::Registry(format!("reading Maven metadata: {e}")))?;
 
         Ok((body, cache_control))
+    }
+}
+
+// ── RegistryClient impl ───────────────────────────────────────────────────────
+
+#[async_trait]
+impl RegistryClient for MavenRegistryClient {
+    fn registry_type(&self) -> &str {
+        "maven"
+    }
+
+    async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
+        let (xml, cache_control) = self.fetch_metadata_xml(pkg).await?;
+
+        let latest_version = extract_xml_tag(&xml, "release")
+            .or_else(|| extract_xml_tag(&xml, "latest"))
+            .unwrap_or_default()
+            .to_owned();
+
+        // For specific versions, HEAD the .pom file to get a per-version Last-Modified
+        // timestamp (more accurate than the artifact-collection <lastUpdated>).
+        // Fall back to <lastUpdated> if the HEAD request fails or returns no date.
+        let published_at = if pkg.version != "maven-metadata.xml" {
+            self.head_pom_last_modified(pkg)
+                .await
+                .or_else(|| extract_xml_tag(&xml, "lastUpdated").and_then(parse_last_updated))
+        } else {
+            extract_xml_tag(&xml, "lastUpdated").and_then(parse_last_updated)
+        };
+
+        Ok(PackageMetadata {
+            id: pkg.clone(),
+            published_at,
+            download_url: None,
+            checksum: None,
+            is_signed: None,
+            extra: serde_json::json!({ "latest_version": latest_version }),
+            cache_control,
+        })
+    }
+
+    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
+        let url = self.artifact_url(pkg)?;
+
+        let resp = self
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| CoreError::Registry(format!("Maven artifact request failed: {e}")))?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(CoreError::NotFound(format!(
+                "Maven artifact not found: {}",
+                pkg.cache_key()
+            )));
+        }
+        if !resp.status().is_success() {
+            return Err(CoreError::Registry(format!(
+                "Maven artifact request returned {} for {}",
+                resp.status(),
+                pkg.cache_key()
+            )));
+        }
+
+        let cache_control = cache_control(&resp);
+
+        let stream = resp.bytes_stream().map_err(to_registry_error);
+
+        Ok(FetchedArtifact {
+            stream: Box::pin(stream),
+            cache_control,
+        })
+    }
+
+    async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
+        let pkg = PackageId::new("", package, "maven-metadata.xml");
+        let (xml, _) = self.fetch_metadata_xml(&pkg).await?;
+
+        let mut versions: Vec<String> = extract_all_xml_tags(&xml, "version")
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+
+        // Maven metadata lists versions in ascending order by convention,
+        // but some repositories serve them in arbitrary order; sort them.
+        versions.sort();
+        Ok(versions)
+    }
+
+    async fn search_packages(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<UpstreamPackage>, CoreError> {
+        #[derive(serde::Deserialize)]
+        struct SearchResponse {
+            response: SolrResponse,
+        }
+        #[derive(serde::Deserialize)]
+        struct SolrResponse {
+            docs: Vec<SolrDoc>,
+        }
+        #[derive(serde::Deserialize)]
+        struct SolrDoc {
+            // "g:a" combined identifier
+            id: String,
+            #[serde(rename = "latestVersion")]
+            latest_version: Option<String>,
+        }
+
+        let Some(ref search_base) = self.search_base else {
+            return Ok(vec![]);
+        };
+        let url = format!(
+            "{}/solrsearch/select?q={}&rows={}&wt=json",
+            search_base,
+            percent_encode(query),
+            limit.min(50),
+        );
+        let res = self.get(&url).send().await.map_err(to_registry_error)?;
+
+        if !res.status().is_success() {
+            return Ok(vec![]);
+        }
+
+        let body: SearchResponse = res.json().await.map_err(to_registry_error)?;
+
+        Ok(body
+            .response
+            .docs
+            .into_iter()
+            .map(|d| UpstreamPackage {
+                name: d.id,
+                latest_version: d.latest_version.unwrap_or_else(|| "unknown".to_string()),
+                description: None,
+            })
+            .collect())
     }
 }

@@ -1,5 +1,13 @@
-use super::super::http_client::to_registry_error;
-use super::{cache_control, models, CondaRegistryClient, CoreError, PackageId, PackageMetadata};
+use async_trait::async_trait;
+use futures::TryStreamExt;
+
+use super::super::http_client::{cache_control, to_registry_error};
+use super::{models, CondaRegistryClient};
+use batlehub_core::{
+    entities::{PackageId, PackageMetadata},
+    error::CoreError,
+    ports::{FetchedArtifact, RegistryClient},
+};
 use models::{CondaIndexJson, CondaPackageInfo, CondaRepodata};
 
 impl CondaRegistryClient {
@@ -87,6 +95,110 @@ impl CondaRegistryClient {
             }),
             cache_control,
         })
+    }
+}
+
+// ── RegistryClient impl ───────────────────────────────────────────────────────
+
+#[async_trait]
+impl RegistryClient for CondaRegistryClient {
+    fn registry_type(&self) -> &str {
+        "conda"
+    }
+
+    async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
+        let base = self.base_url.trim_end_matches('/');
+        let platform = &pkg.version;
+
+        // For specific package files, look them up in repodata.json.
+        if pkg.name != "repodata" {
+            if let Some(filename) = &pkg.artifact {
+                return self
+                    .lookup_file_in_repodata(base, platform, filename, pkg)
+                    .await;
+            }
+        }
+
+        // For repodata.json itself, return the URL as the download URL.
+        let url = self.artifact_url(pkg);
+        let resp = self
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| CoreError::Registry(format!("conda metadata request failed: {e}")))?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(CoreError::NotFound(format!(
+                "conda resource not found: {}",
+                pkg.cache_key()
+            )));
+        }
+        if !resp.status().is_success() {
+            return Err(CoreError::Registry(format!(
+                "conda upstream returned {} for {}",
+                resp.status(),
+                pkg.cache_key()
+            )));
+        }
+
+        let cache_control = cache_control(&resp);
+
+        Ok(PackageMetadata {
+            id: pkg.clone(),
+            published_at: None,
+            download_url: Some(url),
+            checksum: None,
+            is_signed: None,
+            extra: serde_json::Value::Null,
+            cache_control,
+        })
+    }
+
+    async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
+        let url = self.artifact_url(pkg);
+
+        tracing::debug!(url = %url, "fetching conda artifact");
+
+        let resp = self.get(&url).send().await.map_err(to_registry_error)?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(CoreError::NotFound(format!(
+                "conda artifact not found: {}",
+                pkg.cache_key()
+            )));
+        }
+        if !resp.status().is_success() {
+            return Err(CoreError::Registry(format!(
+                "conda upstream returned {} for {}",
+                resp.status(),
+                pkg.cache_key()
+            )));
+        }
+
+        let cache_control = cache_control(&resp);
+
+        let stream = resp.bytes_stream().map_err(to_registry_error);
+
+        Ok(FetchedArtifact {
+            stream: Box::pin(stream),
+            cache_control,
+        })
+    }
+
+    /// Synthesise a version list by scanning `repodata.json` for each of the
+    /// configured `list_platforms`.  Platforms that return a 404 or network
+    /// error are silently skipped so a missing platform never blocks warming.
+    /// Versions are collected into a sorted, deduplicated list.
+    async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
+        let base = self.base_url.trim_end_matches('/');
+        let mut versions: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+        for platform in &self.list_platforms {
+            let platform_versions = self.fetch_platform_versions(base, platform, package).await;
+            versions.extend(platform_versions);
+        }
+
+        Ok(versions.into_iter().collect())
     }
 }
 

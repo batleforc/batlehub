@@ -257,6 +257,7 @@ pub async fn package_detail(
                 AccessAction::UnblockUser => "unblock_user",
                 AccessAction::BlockIp => "block_ip",
                 AccessAction::UnblockIp => "unblock_ip",
+                AccessAction::AuditPurge => "audit_purge",
             };
             // `event_filter` above always sets `registry`/`package_name`, so any
             // event matching it has a package coordinate; the fallback only

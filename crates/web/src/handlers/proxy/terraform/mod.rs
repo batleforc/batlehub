@@ -117,7 +117,7 @@ pub(super) async fn terraform_versions_response(
         svc,
         pkg,
         identity,
-        "releases:read",
+        batlehub_core::rules::resource_type::RELEASES_READ,
         Some("application/json"),
     )
     .await
