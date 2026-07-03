@@ -204,6 +204,7 @@ impl TestServer {
             None,
             Arc::new(InMemoryNotificationStore::new()),
             None,
+            None, // storage_admin_repo
         );
 
         let rt = tokio::runtime::Runtime::new().unwrap();

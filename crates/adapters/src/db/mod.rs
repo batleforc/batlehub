@@ -48,7 +48,13 @@ pub mod banner_pg;
 pub mod beta_channel;
 
 #[cfg(feature = "db-postgres")]
+pub mod config_change;
+
+#[cfg(feature = "db-postgres")]
 pub mod ownership;
+
+#[cfg(feature = "db-postgres")]
+pub mod storage_admin;
 
 #[cfg(feature = "db-postgres")]
 pub mod postgres;
@@ -78,7 +84,13 @@ pub use banner_pg::PgBannerStore;
 pub use beta_channel::PgBetaChannelStore;
 
 #[cfg(feature = "db-postgres")]
+pub use config_change::PgConfigChangeRepository;
+
+#[cfg(feature = "db-postgres")]
 pub use ownership::PgOwnershipStore;
+
+#[cfg(feature = "db-postgres")]
+pub use storage_admin::PgStorageAdminRepository;
 
 #[cfg(feature = "db-postgres")]
 pub use postgres::PgPackageRepository;

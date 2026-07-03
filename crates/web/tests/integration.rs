@@ -278,6 +278,7 @@ fn configure_test_app(
         defaults.notification_svc,
         defaults.notification_store,
         defaults.notifications_config,
+        None, // storage_admin_repo
     )
 }
 
@@ -4617,8 +4618,12 @@ async fn health_non_admin_returns_403() {
 }
 
 #[actix_web::test]
-async fn health_no_db_returns_empty_list() {
-    // make_app passes pool=None, so the handler returns [] immediately.
+async fn health_without_activity_returns_zeroed_stats() {
+    // The health handler now sources package/event stats from the
+    // `PackageRepository` port (backed by `InMemoryRepo` in tests) instead of
+    // a raw `PgPool`, so — unlike the old raw-SQL handler, which special-cased
+    // "no pool" into an early `[]` — it always returns one entry per
+    // configured registry, with zeroed stats when nothing has been recorded.
     let app = make_app(InMemoryRepo::new()).await;
     let req = TestRequest::get()
         .uri("/api/v1/admin/health")
@@ -4627,7 +4632,16 @@ async fn health_no_db_returns_empty_list() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
-    assert_eq!(body, serde_json::json!([]));
+    let entries = body.as_array().expect("array response");
+    assert!(!entries.is_empty(), "expected one entry per registry");
+    for entry in entries {
+        assert_eq!(entry["package_count"], serde_json::json!(0));
+        assert_eq!(entry["cached_artifact_count"], serde_json::json!(0));
+        assert_eq!(entry["pulls_last_hour"], serde_json::json!(0));
+        assert_eq!(entry["pulls_last_day"], serde_json::json!(0));
+        assert_eq!(entry["recent_errors"], serde_json::json!([]));
+        assert!(entry["last_pull_at"].is_null());
+    }
 }
 
 // ── /api/v1/admin/registries/{registry}/clear-cache ──────────────────────────

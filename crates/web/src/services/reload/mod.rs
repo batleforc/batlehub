@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use batlehub_core::ports::ConfigChangeRepository;
 use batlehub_core::services::{HotConfig, HotConfigLock};
-use sqlx::PgPool;
 
 use crate::{
     services::banner::BannerService, AccessConfig, AccessConfigLock, CargoIndexMap, RegistryMap,
@@ -104,7 +104,7 @@ pub struct ConfigReloadService {
     pub(super) repo_signer_map: RepoSignerMap,
     pub(super) vuln_db_map: VulnDbMap,
     pub(super) config_path: String,
-    pub(super) pool: Option<PgPool>,
+    pub(super) config_change_repo: Option<Arc<dyn ConfigChangeRepository>>,
     pub hot_reload_enabled: bool,
     pub(super) pending: Mutex<Option<PendingReload>>,
     pub(super) builder: HotConfigBuilder,
@@ -123,7 +123,7 @@ impl ConfigReloadService {
         repo_signer_map: RepoSignerMap,
         vuln_db_map: VulnDbMap,
         config_path: String,
-        pool: Option<PgPool>,
+        config_change_repo: Option<Arc<dyn ConfigChangeRepository>>,
         hot_reload_enabled: bool,
         builder: HotConfigBuilder,
         banner: Option<Arc<BannerService>>,
@@ -138,7 +138,7 @@ impl ConfigReloadService {
             repo_signer_map,
             vuln_db_map,
             config_path,
-            pool,
+            config_change_repo,
             hot_reload_enabled,
             pending: Mutex::new(None),
             builder,

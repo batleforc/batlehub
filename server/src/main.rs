@@ -17,8 +17,8 @@ use clap::{Parser, Subcommand};
 use metrics_exporter_prometheus::PrometheusBuilder;
 
 use batlehub_adapters::db::{
-    PgArtifactMetaRepository, PgBetaChannelStore, PgOwnershipStore, PgPackageRepository,
-    PgTeamNamespaceStore, PgVulnerabilityRepository,
+    PgArtifactMetaRepository, PgBetaChannelStore, PgConfigChangeRepository, PgOwnershipStore,
+    PgPackageRepository, PgStorageAdminRepository, PgTeamNamespaceStore, PgVulnerabilityRepository,
 };
 use batlehub_adapters::local_registry::PostgresLocalRegistry;
 use batlehub_adapters::vulnerability::OsvScanner;
@@ -210,6 +210,10 @@ async fn main() -> Result<()> {
     // Built once here so the same instance is shared with the reload service (for
     // hot-swapping) and registered as actix app_data below.
     let repo_signer_map = builders::build_repo_signer_map(&config)?;
+    let config_change_repo: Arc<dyn batlehub_core::ports::ConfigChangeRepository> =
+        Arc::new(PgConfigChangeRepository::new(repo.pool()));
+    let storage_admin_repo: Arc<dyn batlehub_core::ports::StorageAdminRepository> =
+        Arc::new(PgStorageAdminRepository::new(repo.pool()));
     let reload_svc = Arc::new(ConfigReloadService::new(
         Arc::clone(&hot),
         Arc::clone(&access_config),
@@ -220,7 +224,7 @@ async fn main() -> Result<()> {
         repo_signer_map.clone(),
         vuln_db_map.clone(),
         config_path.clone(),
-        Some(repo.pool()),
+        Some(Arc::clone(&config_change_repo)),
         hot_reload_enabled,
         hot_builder,
         Some(Arc::clone(&banner_svc)),
@@ -303,6 +307,7 @@ async fn main() -> Result<()> {
         auth_providers,
         reload_svc,
         banner_svc,
+        storage_admin_repo,
     })
     .await
 }

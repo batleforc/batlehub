@@ -1,5 +1,15 @@
 use super::{Buf, Bytes, CargoDep, CargoIndexEntry};
 
+// ── Sparse index proxy ────────────────────────────────────────────────────────
+
+/// HTTP client + upstream index URL for one cargo sparse index.
+#[derive(Clone)]
+pub struct CargoIndexProxy {
+    pub http: reqwest::Client,
+    /// Base URL of the upstream sparse index, e.g. `https://index.crates.io`.
+    pub index_url: String,
+}
+
 /// Parse the Cargo publish wire format:
 /// `[4B LE u32 meta_len][JSON][4B LE u32 crate_len][.crate bytes]`
 pub(super) fn parse_publish_body(mut body: Bytes) -> Result<(serde_json::Value, Bytes), String> {

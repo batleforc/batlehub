@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use actix_web::{post, web, Responder};
-use sqlx::PgPool;
 
+use batlehub_core::ports::StorageAdminRepository;
 use batlehub_core::services::ProxyService;
 
 use crate::handlers::back_office::require_admin;
@@ -30,7 +30,7 @@ pub async fn clear_registry_cache(
     identity: AuthIdentity,
     path: web::Path<String>,
     registry_map: web::Data<RegistryMap>,
-    pool: Option<web::Data<PgPool>>,
+    storage_admin_repo: Option<web::Data<Arc<dyn StorageAdminRepository>>>,
     proxy_svc: web::Data<Arc<ProxyService>>,
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
@@ -56,11 +56,8 @@ pub async fn clear_registry_cache(
     tracing::info!(registry = %registry, cleared, "clear_registry_cache: done");
 
     // Clean up any remaining artifact_storage records.
-    if let Some(p) = pool {
-        let _ = sqlx::query("DELETE FROM artifact_storage WHERE storage_key LIKE $1")
-            .bind(format!("{prefix}%"))
-            .execute(p.get_ref())
-            .await;
+    if let Some(repo) = storage_admin_repo {
+        let _ = repo.delete_by_prefix(&prefix).await;
     }
 
     Ok(web::Json(ClearCacheResponse { cleared }))

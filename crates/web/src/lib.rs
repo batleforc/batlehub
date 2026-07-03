@@ -554,7 +554,7 @@ use sqlx::PgPool;
 
 use batlehub_adapters::auth::OidcSsoFlow;
 use batlehub_core::{
-    ports::UserTokenRepository,
+    ports::{StorageAdminRepository, UserTokenRepository},
     services::{AdminService, ProxyMetrics, ProxyService, SbomService},
 };
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -995,6 +995,7 @@ pub fn configure_app(
     notification_svc: Option<Arc<services::NotificationService>>,
     notification_store: Arc<dyn batlehub_core::ports::NotificationPort + 'static>,
     notifications_config: Option<batlehub_config::schema::NotificationsConfig>,
+    storage_admin_repo: Option<Arc<dyn StorageAdminRepository>>,
 ) -> impl Fn(&mut UtoipaServiceConfig) + Clone + 'static {
     let audit_client = reqwest::Client::builder()
         .user_agent("batlehub/0.1")
@@ -1025,6 +1026,9 @@ pub fn configure_app(
         cfg.app_data(web::Data::new(notification_svc.clone()));
         cfg.app_data(web::Data::new(notification_store.clone()));
         cfg.app_data(web::Data::new(notifications_config.clone()));
+        if let Some(ref r) = storage_admin_repo {
+            cfg.app_data(web::Data::new(r.clone()));
+        }
         collect_routes(cfg);
     }
 }

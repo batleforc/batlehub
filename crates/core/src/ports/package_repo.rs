@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
@@ -6,6 +8,19 @@ use crate::entities::{
     PackageSummary, RegistryStat,
 };
 use crate::error::CoreError;
+
+/// A single row from the `access_events` "recent errors" query surfaced on the
+/// admin health dashboard: a denied or upstream-error event for a registry.
+#[derive(Debug, Clone)]
+pub struct RecentErrorRecord {
+    pub created_at: DateTime<Utc>,
+    pub user_id: Option<String>,
+    pub package_name: String,
+    pub package_version: String,
+    /// "denied" or "error".
+    pub outcome: String,
+    pub deny_reason: Option<String>,
+}
 
 /// Persistent store for package statuses and access audit logs.
 ///
@@ -63,5 +78,37 @@ pub trait PackageRepository: Send + Sync {
     ) -> Result<Vec<RegistryStat>, CoreError> {
         let _ = accessible_registries;
         Ok(vec![])
+    }
+
+    /// Admin health dashboard: distinct package counts per registry, keyed by
+    /// registry name. Registries with no packages are simply absent from the map.
+    async fn registry_package_counts(
+        &self,
+        registries: &[String],
+    ) -> Result<HashMap<String, i64>, CoreError> {
+        let _ = registries;
+        Ok(HashMap::new())
+    }
+
+    /// Admin health dashboard: per-registry download stats — last successful
+    /// pull time, pulls in the last hour, and pulls in the last day. Keyed by
+    /// registry name; registries with no matching events are absent from the map.
+    async fn registry_event_stats(
+        &self,
+        registries: &[String],
+    ) -> Result<HashMap<String, (Option<DateTime<Utc>>, i64, i64)>, CoreError> {
+        let _ = registries;
+        Ok(HashMap::new())
+    }
+
+    /// Admin health dashboard: most recent denied/error access events for a
+    /// single registry within the last 24 hours, newest first, capped at `limit`.
+    async fn recent_registry_errors(
+        &self,
+        registry: &str,
+        limit: i64,
+    ) -> Result<Vec<RecentErrorRecord>, CoreError> {
+        let _ = (registry, limit);
+        Ok(Vec::new())
     }
 }

@@ -93,6 +93,7 @@ pub(super) struct ServerParams {
     pub auth_providers: Vec<Arc<dyn AuthProvider>>,
     pub reload_svc: Arc<ConfigReloadService>,
     pub banner_svc: Arc<BannerService>,
+    pub storage_admin_repo: Arc<dyn batlehub_core::ports::StorageAdminRepository>,
 }
 
 // ── HTTP server ───────────────────────────────────────────────────────────────
@@ -134,6 +135,7 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
         auth_providers,
         reload_svc,
         banner_svc,
+        storage_admin_repo,
     } = p;
 
     let notification_svc_for_shutdown = notification_svc.clone();
@@ -156,6 +158,7 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
             notification_svc.clone(),
             Arc::clone(&notification_store),
             notifications_config.clone(),
+            Some(Arc::clone(&storage_admin_repo)),
         );
         let static_dir_inner = static_dir.clone();
         let cli_binary_path_inner = cli_binary_path.clone();

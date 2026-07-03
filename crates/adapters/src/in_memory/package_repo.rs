@@ -8,11 +8,11 @@ use uuid::Uuid;
 
 use batlehub_core::{
     entities::{
-        AccessAction, AccessEvent, EventFilter, PackageFilter, PackageId, PackageStatus,
-        PackageSummary,
+        AccessAction, AccessEvent, AccessResult, EventFilter, PackageFilter, PackageId,
+        PackageStatus, PackageSummary,
     },
     error::CoreError,
-    ports::PackageRepository,
+    ports::{PackageRepository, RecentErrorRecord},
 };
 
 /// In-memory [`PackageRepository`].
@@ -186,6 +186,104 @@ impl PackageRepository for InMemoryPackageRepository {
         }
 
         Ok(result)
+    }
+
+    async fn registry_package_counts(
+        &self,
+        registries: &[String],
+    ) -> Result<HashMap<String, i64>, CoreError> {
+        let sums = self.summaries.read().await;
+        let mut counts: HashMap<String, i64> = HashMap::new();
+        for s in sums.values() {
+            if registries.contains(&s.package_id.registry) {
+                *counts.entry(s.package_id.registry.clone()).or_insert(0) += 1;
+            }
+        }
+        Ok(counts)
+    }
+
+    async fn registry_event_stats(
+        &self,
+        registries: &[String],
+    ) -> Result<HashMap<String, (Option<DateTime<Utc>>, i64, i64)>, CoreError> {
+        let events = self.events.read().await;
+        let now = Utc::now();
+        let mut stats: HashMap<String, (Option<DateTime<Utc>>, i64, i64)> = HashMap::new();
+        for e in events.iter() {
+            if !matches!(e.action, AccessAction::Download)
+                || !matches!(e.result, AccessResult::Allowed)
+            {
+                continue;
+            }
+            let Some(registry) = e.package_id.as_ref().map(|p| p.registry.clone()) else {
+                continue;
+            };
+            if !registries.contains(&registry) {
+                continue;
+            }
+            let entry = stats.entry(registry).or_insert((None, 0, 0));
+            entry.0 = Some(entry.0.map_or(e.timestamp, |cur| cur.max(e.timestamp)));
+            if now - e.timestamp <= chrono::Duration::hours(1) {
+                entry.1 += 1;
+            }
+            if now - e.timestamp <= chrono::Duration::days(1) {
+                entry.2 += 1;
+            }
+        }
+        Ok(stats)
+    }
+
+    async fn recent_registry_errors(
+        &self,
+        registry: &str,
+        limit: i64,
+    ) -> Result<Vec<RecentErrorRecord>, CoreError> {
+        let events = self.events.read().await;
+        let now = Utc::now();
+        let mut errors: Vec<RecentErrorRecord> = events
+            .iter()
+            .filter(|e| {
+                e.package_id
+                    .as_ref()
+                    .is_some_and(|p| p.registry == registry)
+                    && matches!(
+                        e.result,
+                        AccessResult::Denied { .. } | AccessResult::ProxyError { .. }
+                    )
+                    && now - e.timestamp <= chrono::Duration::hours(24)
+            })
+            .map(|e| {
+                let (outcome, deny_reason) = match &e.result {
+                    AccessResult::Denied { reason } => ("denied".to_owned(), Some(reason.clone())),
+                    AccessResult::ProxyError { reason } => {
+                        ("error".to_owned(), Some(reason.clone()))
+                    }
+                    AccessResult::Allowed => unreachable!("filtered out above"),
+                };
+                RecentErrorRecord {
+                    created_at: e.timestamp,
+                    user_id: e.user_id.clone(),
+                    package_name: e
+                        .package_id
+                        .as_ref()
+                        .map(|p| p.name.clone())
+                        .unwrap_or_default(),
+                    package_version: e
+                        .package_id
+                        .as_ref()
+                        .map(|p| p.version.clone())
+                        .unwrap_or_default(),
+                    outcome,
+                    deny_reason,
+                }
+            })
+            .collect();
+
+        errors.sort_by_key(|e| std::cmp::Reverse(e.created_at));
+        if limit >= 0 {
+            errors.truncate(limit as usize);
+        }
+        Ok(errors)
     }
 }
 

@@ -133,7 +133,17 @@ impl ConfigReloadService {
                 .await;
         }
 
-        // Atomic swap: replace HotConfig, AccessConfig, and all registry metadata maps.
+        // Replace HotConfig, AccessConfig, and all registry metadata maps.
+        //
+        // Each map below is swapped under its own lock, one after another — this is
+        // *not* a single atomic transition. A request handled concurrently with this
+        // method can observe the new HotConfig but an old registry_map (or any other
+        // in-between combination), for the brief window between these blocks. Every
+        // map converges to the new config by the time this function returns; the
+        // gap is a request-scoped skew, not a lost update. If a handler ever needs
+        // cross-map consistency within a single request, snapshot the specific maps
+        // it depends on once at the top of the request instead of assuming reload
+        // applies them all in one step.
         {
             let mut hot = self.hot.write().await;
             *hot = pending.new_hot;
@@ -252,38 +262,25 @@ impl ConfigReloadService {
         page: u64,
         per_page: u64,
     ) -> Result<Vec<ConfigChangeRow>, anyhow::Error> {
-        let pool = self
-            .pool
+        let repo = self
+            .config_change_repo
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("database not configured"))?;
-        let offset = (page * per_page) as i64;
-        let limit = per_page as i64;
-        let rows = sqlx::query(
-            "SELECT id, triggered_by, triggered_at, status, diff, summary, error_msg
-             FROM config_changes
-             ORDER BY triggered_at DESC
-             LIMIT $1 OFFSET $2",
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(pool)
-        .await?
-        .into_iter()
-        .map(|r| {
-            use sqlx::Row;
-            ConfigChangeRow {
-                id: r.get("id"),
-                triggered_by: r.get("triggered_by"),
-                triggered_at: r.get("triggered_at"),
-                status: r.get("status"),
-                diff: r
-                    .try_get::<serde_json::Value, _>("diff")
-                    .unwrap_or(serde_json::Value::Object(Default::default())),
-                summary: r.get("summary"),
-                error_msg: r.try_get("error_msg").ok(),
-            }
-        })
-        .collect();
-        Ok(rows)
+        let records = repo.list(page, per_page).await?;
+        Ok(records.into_iter().map(ConfigChangeRow::from).collect())
+    }
+}
+
+impl From<batlehub_core::ports::ConfigChangeRecord> for ConfigChangeRow {
+    fn from(r: batlehub_core::ports::ConfigChangeRecord) -> Self {
+        ConfigChangeRow {
+            id: r.id,
+            triggered_by: r.triggered_by,
+            triggered_at: r.triggered_at,
+            status: r.status,
+            diff: r.diff,
+            summary: r.summary,
+            error_msg: r.error_msg,
+        }
     }
 }

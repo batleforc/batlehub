@@ -5,9 +5,9 @@ use actix_web::{get, web, Responder};
 use chrono::{DateTime, Utc};
 use futures::future::join_all;
 use serde::Serialize;
-use sqlx::{PgPool, Row};
 use utoipa::ToSchema;
 
+use batlehub_core::ports::RecentErrorRecord;
 use batlehub_core::services::{AdminService, ProxyService};
 
 use crate::handlers::back_office::require_admin;
@@ -30,6 +30,19 @@ pub struct RecentErrorDto {
     /// "denied" (blocked / RBAC) or "error" (upstream proxy failure).
     pub error_type: String,
     pub reason: String,
+}
+
+impl From<RecentErrorRecord> for RecentErrorDto {
+    fn from(r: RecentErrorRecord) -> Self {
+        RecentErrorDto {
+            timestamp: r.created_at,
+            user_id: r.user_id,
+            package_name: r.package_name,
+            version: r.package_version,
+            error_type: r.outcome,
+            reason: r.deny_reason.unwrap_or_default(),
+        }
+    }
 }
 
 #[derive(Serialize, ToSchema)]
@@ -76,20 +89,12 @@ pub async fn registry_health(
     identity: AuthIdentity,
     registry_map: web::Data<RegistryMap>,
     access_config: web::Data<crate::AccessConfigLock>,
-    pool: Option<web::Data<PgPool>>,
-    _admin_svc: web::Data<Arc<AdminService>>,
+    admin_svc: web::Data<Arc<AdminService>>,
     proxy_svc: web::Data<Arc<ProxyService>>,
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
 
-    let pool = match pool {
-        Some(p) => p,
-        None => {
-            // No DB configured — return empty list
-            return Ok(web::Json(Vec::<RegistryHealthDto>::new()));
-        }
-    };
-    let pool = pool.get_ref();
+    let repo = &admin_svc.repo;
 
     let mut registries: Vec<(String, String)> = registry_map
         .0
@@ -118,63 +123,21 @@ pub async fn registry_health(
     };
 
     // ── Batch query 1: package counts for all registries in one round-trip ────
-    let pkg_rows = sqlx::query(
-        "SELECT registry, COUNT(DISTINCT package_name) AS cnt
-         FROM package_statuses
-         WHERE registry = ANY($1)
-         GROUP BY registry",
-    )
-    .bind(&registry_names)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| AppError::internal(format!("health query failed: {e}")))?;
-
-    let pkg_counts: HashMap<String, i64> = pkg_rows
-        .into_iter()
-        .map(|r| (r.get::<String, _>("registry"), r.get::<i64, _>("cnt")))
-        .collect();
+    let pkg_counts: HashMap<String, i64> = repo
+        .registry_package_counts(&registry_names)
+        .await
+        .map_err(|e| AppError::internal(format!("health query failed: {e}")))?;
 
     // ── Batch query 2: event stats for all registries in one round-trip ───────
-    let event_rows = sqlx::query(
-        r#"SELECT
-               registry,
-               MAX(created_at) FILTER (WHERE action = 'download' AND outcome = 'allowed')
-                   AS last_pull_at,
-               COUNT(*) FILTER (
-                   WHERE action = 'download' AND outcome = 'allowed'
-                   AND created_at > NOW() - INTERVAL '1 hour'
-               ) AS pulls_last_hour,
-               COUNT(*) FILTER (
-                   WHERE action = 'download' AND outcome = 'allowed'
-                   AND created_at > NOW() - INTERVAL '1 day'
-               ) AS pulls_last_day
-           FROM access_events
-           WHERE registry = ANY($1)
-           GROUP BY registry"#,
-    )
-    .bind(&registry_names)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| AppError::internal(format!("health query failed: {e}")))?;
-
-    let mut event_stats: HashMap<String, (Option<DateTime<Utc>>, i64, i64)> = event_rows
-        .into_iter()
-        .map(|r| {
-            (
-                r.get::<String, _>("registry"),
-                (
-                    r.try_get("last_pull_at").unwrap_or(None),
-                    r.try_get("pulls_last_hour").unwrap_or(0),
-                    r.try_get("pulls_last_day").unwrap_or(0),
-                ),
-            )
-        })
-        .collect();
+    let mut event_stats: HashMap<String, (Option<DateTime<Utc>>, i64, i64)> = repo
+        .registry_event_stats(&registry_names)
+        .await
+        .map_err(|e| AppError::internal(format!("health query failed: {e}")))?;
 
     // ── Per-registry: storage stats + recent errors — run all concurrently ────
     let per_reg_futures = registries.iter().map(|(registry, _)| {
-        let pool = pool.clone();
         let storage = Arc::clone(&proxy_svc.storage);
+        let repo = Arc::clone(repo);
         let registry = registry.clone();
         async move {
             let prefix = format!("artifact:{}/", registry);
@@ -187,30 +150,12 @@ pub async fn registry_health(
                 None => (0, None),
             };
 
-            let error_rows = sqlx::query(
-                r#"SELECT created_at, user_id, package_name, package_version, outcome, deny_reason
-                   FROM access_events
-                   WHERE registry = $1 AND outcome IN ('denied', 'error')
-                   AND created_at > NOW() - INTERVAL '24 hours'
-                   ORDER BY created_at DESC LIMIT 10"#,
-            )
-            .bind(&registry)
-            .fetch_all(&pool)
-            .await
-            .unwrap_or_default();
-
-            let recent_errors: Vec<RecentErrorDto> = error_rows
+            let recent_errors: Vec<RecentErrorDto> = repo
+                .recent_registry_errors(&registry, 10)
+                .await
+                .unwrap_or_default()
                 .into_iter()
-                .map(|r| RecentErrorDto {
-                    timestamp: r.get("created_at"),
-                    user_id: r.get("user_id"),
-                    package_name: r.get("package_name"),
-                    version: r.get("package_version"),
-                    error_type: r.get::<String, _>("outcome"),
-                    reason: r
-                        .get::<Option<String>, _>("deny_reason")
-                        .unwrap_or_default(),
-                })
+                .map(RecentErrorDto::from)
                 .collect();
 
             (

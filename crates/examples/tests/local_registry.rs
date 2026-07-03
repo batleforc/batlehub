@@ -179,6 +179,7 @@ impl LocalProxy {
             None,                                       // notification_svc
             Arc::new(InMemoryNotificationStore::new()), // notification_store
             None,                                       // notifications_config
+            None,                                       // storage_admin_repo
         );
 
         let rt = tokio::runtime::Runtime::new().unwrap();

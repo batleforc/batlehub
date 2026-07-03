@@ -2,6 +2,7 @@ use uuid::Uuid;
 
 use super::{ConfigReloadService, ReloadDiff};
 use crate::AccessConfig;
+use batlehub_core::ports::ConfigChangeRecord;
 use batlehub_core::services::HotConfig;
 
 impl ConfigReloadService {
@@ -52,8 +53,8 @@ impl ConfigReloadService {
         status: &str,
         error_msg: Option<&str>,
     ) {
-        let pool = match self.pool.as_ref() {
-            Some(p) => p,
+        let repo = match self.config_change_repo.as_ref() {
+            Some(r) => r,
             None => return,
         };
         let diff_json = match serde_json::to_value(diff) {
@@ -71,19 +72,16 @@ impl ConfigReloadService {
             if added == 1 { "y" } else { "ies" },
             removed
         );
-        let result = sqlx::query(
-            "INSERT INTO config_changes (id, triggered_by, triggered_at, status, diff, summary, error_msg)
-             VALUES ($1, $2, NOW(), $3, $4, $5, $6)",
-        )
-        .bind(Uuid::new_v4())
-        .bind(triggered_by)
-        .bind(status)
-        .bind(diff_json)
-        .bind(&summary)
-        .bind(error_msg)
-        .execute(pool)
-        .await;
-        if let Err(e) = result {
+        let record = ConfigChangeRecord {
+            id: Uuid::new_v4(),
+            triggered_by: triggered_by.to_owned(),
+            triggered_at: chrono::Utc::now(),
+            status: status.to_owned(),
+            diff: diff_json,
+            summary,
+            error_msg: error_msg.map(str::to_owned),
+        };
+        if let Err(e) = repo.insert(record).await {
             tracing::warn!(error = %e, "failed to persist config change audit row");
         }
     }

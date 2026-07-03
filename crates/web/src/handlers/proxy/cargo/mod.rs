@@ -21,16 +21,6 @@ use crate::{
 };
 use batlehub_core::entities::NotificationEventType;
 
-// ── Sparse index proxy ────────────────────────────────────────────────────────
-
-/// HTTP client + upstream index URL for one cargo sparse index.
-#[derive(Clone)]
-pub struct CargoIndexProxy {
-    pub http: reqwest::Client,
-    /// Base URL of the upstream sparse index, e.g. `https://index.crates.io`.
-    pub index_url: String,
-}
-
 pub(super) fn require_cargo(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry).as_deref() {
         Some("cargo") => Ok(()),
@@ -48,6 +38,7 @@ pub mod index;
 pub mod ownership;
 pub mod publish;
 
+pub use helpers::CargoIndexProxy;
 pub use index::*;
 pub use ownership::*;
 pub use publish::*;

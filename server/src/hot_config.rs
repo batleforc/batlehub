@@ -16,13 +16,29 @@ use batlehub_web::{
     VulnDbMap,
 };
 
-fn build_versioning_map(registries: &[RegistryConfig]) -> HashMap<String, VersioningPolicy> {
+/// Shared shape for the `build_*_map` functions below: an optional per-registry
+/// config sub-block (`extract`) becomes one map entry keyed by registry name
+/// (`build`), with registries where `extract` returns `None` simply absent
+/// from the result. Field-by-field mapping stays inline in each `build`
+/// closure rather than being hidden behind the helper.
+fn map_registries<T, U>(
+    registries: &[RegistryConfig],
+    extract: impl Fn(&RegistryConfig) -> Option<&T>,
+    build: impl Fn(&RegistryConfig, &T) -> U,
+) -> HashMap<String, U> {
     registries
         .iter()
-        .filter_map(|reg| {
-            reg.versioning.as_ref().map(|v| {
-                let pattern = v
-                    .version_pattern
+        .filter_map(|reg| extract(reg).map(|v| (reg.name.clone(), build(reg, v))))
+        .collect()
+}
+
+fn build_versioning_map(registries: &[RegistryConfig]) -> HashMap<String, VersioningPolicy> {
+    map_registries(
+        registries,
+        |reg| reg.versioning.as_ref(),
+        |reg, v| {
+            let pattern =
+                v.version_pattern
                     .as_deref()
                     .and_then(|pat| match regex::Regex::new(pat) {
                         Ok(re) => Some(re),
@@ -34,79 +50,57 @@ fn build_versioning_map(registries: &[RegistryConfig]) -> HashMap<String, Versio
                             None
                         }
                     });
-                (
-                    reg.name.clone(),
-                    VersioningPolicy {
-                        enforce_semver: v.enforce_semver,
-                        allow_prerelease: v.allow_prerelease,
-                        version_pattern: pattern,
-                    },
-                )
-            })
-        })
-        .collect()
+            VersioningPolicy {
+                enforce_semver: v.enforce_semver,
+                allow_prerelease: v.allow_prerelease,
+                version_pattern: pattern,
+            }
+        },
+    )
 }
 
 /// Build the per-registry integrity policy map. Only registries with an explicit
 /// `[registries.integrity]` block get an entry; the proxy applies
 /// [`IntegrityPolicy::default`] (verify + block-on-mismatch) to the rest.
 fn build_integrity_map(registries: &[RegistryConfig]) -> HashMap<String, IntegrityPolicy> {
-    registries
-        .iter()
-        .filter_map(|reg| {
-            reg.integrity.as_ref().map(|i| {
-                (
-                    reg.name.clone(),
-                    IntegrityPolicy {
-                        enabled: i.enabled,
-                        block_on_mismatch: i.block_on_mismatch,
-                        require_metadata: i.require_metadata,
-                        bypass_roles: i.bypass_roles.iter().map(|r| parse_role(r)).collect(),
-                        verify_on_serve: i.verify_on_serve,
-                    },
-                )
-            })
-        })
-        .collect()
+    map_registries(
+        registries,
+        |reg| reg.integrity.as_ref(),
+        |_reg, i| IntegrityPolicy {
+            enabled: i.enabled,
+            block_on_mismatch: i.block_on_mismatch,
+            require_metadata: i.require_metadata,
+            bypass_roles: i.bypass_roles.iter().map(|r| parse_role(r)).collect(),
+            verify_on_serve: i.verify_on_serve,
+        },
+    )
 }
 
 fn build_signing_map(registries: &[RegistryConfig]) -> HashMap<String, CoreSigningConfig> {
-    registries
-        .iter()
-        .filter_map(|reg| {
-            reg.signing.as_ref().map(|s| {
-                (
-                    reg.name.clone(),
-                    CoreSigningConfig {
-                        required: s.required,
-                        allowed_types: s.allowed_types.clone(),
-                        verify_on_download: s.verify_on_download,
-                        trusted_keys: s.trusted_keys.clone(),
-                    },
-                )
-            })
-        })
-        .collect()
+    map_registries(
+        registries,
+        |reg| reg.signing.as_ref(),
+        |_reg, s| CoreSigningConfig {
+            required: s.required,
+            allowed_types: s.allowed_types.clone(),
+            verify_on_download: s.verify_on_download,
+            trusted_keys: s.trusted_keys.clone(),
+        },
+    )
 }
 
 fn build_sbom_map(registries: &[RegistryConfig]) -> HashMap<String, HotSbomConfig> {
-    registries
-        .iter()
-        .filter_map(|reg| {
-            reg.sbom.as_ref().map(|s| {
-                (
-                    reg.name.clone(),
-                    HotSbomConfig {
-                        enabled: s.enabled,
-                        formats: s.formats.clone(),
-                        required: s.required,
-                        fetch_upstream: s.fetch_upstream,
-                        registry_type: reg.registry_type.clone(),
-                    },
-                )
-            })
-        })
-        .collect()
+    map_registries(
+        registries,
+        |reg| reg.sbom.as_ref(),
+        |reg, s| HotSbomConfig {
+            enabled: s.enabled,
+            formats: s.formats.clone(),
+            required: s.required,
+            fetch_upstream: s.fetch_upstream,
+            registry_type: reg.registry_type.clone(),
+        },
+    )
 }
 
 fn build_feature_flags_map(registries: &[RegistryConfig]) -> HashMap<String, FeatureFlags> {

@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -331,39 +332,65 @@ impl AdminService {
         self.repo.get_status(pkg).await
     }
 
-    /// Returns `(entries, upstream_unavailable)`.
+    /// Shared cache-first-then-repo-with-stale-fallback flow for
+    /// [`Self::explore_packages`] and [`Self::count_explore_packages`], which
+    /// both read/write the same `(items, count)`-shaped cache entry (each
+    /// caller only cares about one half; see `PackageEntry` — every
+    /// `set_packages` call carries real data for the half it computed and a
+    /// placeholder for the other, then blindly overwrites the entry).
     ///
-    /// `upstream_unavailable` is `true` only when the DB is unreachable **and** no
-    /// stale cache entry exists. When stale data is served the flag stays `false` so
-    /// callers can distinguish "stale but usable" from "nothing at all".
+    /// `upstream_unavailable` (third tuple element) is `true` only when the DB
+    /// is unreachable **and** no stale cache entry exists. When stale data is
+    /// served the flag stays `false` so callers can distinguish "stale but
+    /// usable" from "nothing at all".
+    ///
+    /// Not shared with [`Self::registry_explore_stats`]: that method reads a
+    /// differently-shaped cache entry (`Vec<RegistryStat>` via
+    /// `get_stats`/`set_stats`/`get_stale_stats`, no `(items, count)` pair), so
+    /// folding it into this helper too would mean genericizing over the cache
+    /// accessor methods as well as the fetch — not worth it for one call site.
+    async fn cached_packages_query(
+        &self,
+        key: &str,
+        filter: &ExploreFilter,
+        fetch: impl Future<Output = Result<(Vec<ExploreEntry>, u64), CoreError>>,
+    ) -> Result<(Vec<ExploreEntry>, u64, bool), CoreError> {
+        if let Some((items, count)) = self.explore_cache.get_packages(key).await {
+            return Ok((items, count, false));
+        }
+        match fetch.await {
+            Ok((items, count)) => {
+                let regs = packages_entry_registries(filter);
+                self.explore_cache
+                    .set_packages(key, items.clone(), count, regs)
+                    .await;
+                Ok((items, count, false))
+            }
+            Err(_) => {
+                if let Some((items, count)) = self.explore_cache.get_stale_packages(key).await {
+                    Ok((items, count, false))
+                } else {
+                    Ok((vec![], 0, true))
+                }
+            }
+        }
+    }
+
+    /// Returns `(entries, upstream_unavailable)`.
     pub async fn explore_packages(
         &self,
         filter: ExploreFilter,
     ) -> Result<(Vec<ExploreEntry>, bool), CoreError> {
         // Namespaced so an items-lookup and a count-lookup can never collide on
         // the same cache entry, even if a future caller passes matching
-        // limit/offset filters to both (each `set_packages` call only carries
-        // real data for the half it computed, and blindly overwrites the entry).
+        // limit/offset filters to both.
         let key = format!("items:{}", packages_cache_key(&filter));
-        if let Some((items, _count)) = self.explore_cache.get_packages(&key).await {
-            return Ok((items, false));
-        }
-        match self.repo.explore_packages(filter.clone()).await {
-            Ok(items) => {
-                let regs = packages_entry_registries(&filter);
-                self.explore_cache
-                    .set_packages(&key, items.clone(), 0, regs)
-                    .await;
-                Ok((items, false))
-            }
-            Err(_) => {
-                if let Some((items, _)) = self.explore_cache.get_stale_packages(&key).await {
-                    Ok((items, false))
-                } else {
-                    Ok((vec![], true))
-                }
-            }
-        }
+        let fetch = async {
+            let items = self.repo.explore_packages(filter.clone()).await?;
+            Ok((items, 0))
+        };
+        let (items, _count, unavailable) = self.cached_packages_query(&key, &filter, fetch).await?;
+        Ok((items, unavailable))
     }
 
     /// Returns `(count, upstream_unavailable)`.
@@ -372,25 +399,12 @@ impl AdminService {
         filter: ExploreFilter,
     ) -> Result<(u64, bool), CoreError> {
         let key = format!("count:{}", packages_cache_key(&filter));
-        if let Some((_items, count)) = self.explore_cache.get_packages(&key).await {
-            return Ok((count, false));
-        }
-        match self.repo.count_explore_packages(filter.clone()).await {
-            Ok(count) => {
-                let regs = packages_entry_registries(&filter);
-                self.explore_cache
-                    .set_packages(&key, vec![], count, regs)
-                    .await;
-                Ok((count, false))
-            }
-            Err(_) => {
-                if let Some((_, count)) = self.explore_cache.get_stale_packages(&key).await {
-                    Ok((count, false))
-                } else {
-                    Ok((0, true))
-                }
-            }
-        }
+        let fetch = async {
+            let count = self.repo.count_explore_packages(filter.clone()).await?;
+            Ok((vec![], count))
+        };
+        let (_items, count, unavailable) = self.cached_packages_query(&key, &filter, fetch).await?;
+        Ok((count, unavailable))
     }
 
     /// Returns `(stats, upstream_unavailable)`.

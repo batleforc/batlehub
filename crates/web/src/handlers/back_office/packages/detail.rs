@@ -3,7 +3,6 @@ use std::sync::Arc;
 use actix_web::{get, web, Responder};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, Row};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
@@ -12,6 +11,7 @@ use batlehub_core::{
         AccessAction, AccessResult, ArtifactVulnerability, EventFilter, PackageFilter,
         PackageStatus,
     },
+    ports::StorageAdminRepository,
     services::{AdminService, ProxyService},
 };
 
@@ -125,7 +125,7 @@ pub async fn package_detail(
     admin_svc: web::Data<Arc<AdminService>>,
     proxy_svc: web::Data<Arc<ProxyService>>,
     registry_map: web::Data<RegistryMap>,
-    pool: Option<web::Data<PgPool>>,
+    storage_admin_repo: Option<web::Data<Arc<dyn StorageAdminRepository>>>,
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
 
@@ -161,20 +161,12 @@ pub async fn package_detail(
             .exists(&storage_key)
             .await
             .unwrap_or(false);
-        let (storage_backend, cached_at) = if let Some(ref p) = pool {
-            let row = sqlx::query(
-                "SELECT backend_name, stored_at FROM artifact_storage WHERE storage_key = $1",
-            )
-            .bind(&storage_key)
-            .fetch_optional(p.get_ref())
-            .await
-            .ok()
-            .flatten();
-            let backend = row
-                .as_ref()
-                .and_then(|r| r.try_get::<String, _>("backend_name").ok());
-            let at = row.and_then(|r| r.try_get::<DateTime<Utc>, _>("stored_at").ok());
-            (backend, at)
+        let (storage_backend, cached_at) = if let Some(ref repo) = storage_admin_repo {
+            let record = repo.find_by_key(&storage_key).await.ok().flatten();
+            match record {
+                Some(r) => (Some(r.backend_name), Some(r.stored_at)),
+                None => (None, None),
+            }
         } else {
             (None, None)
         };

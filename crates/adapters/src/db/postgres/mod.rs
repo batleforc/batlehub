@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::db::DbResultExt;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -14,10 +16,11 @@ use batlehub_core::{
         RegistryStat, Role,
     },
     error::CoreError,
-    ports::PackageRepository,
+    ports::{PackageRepository, RecentErrorRecord},
 };
 
 pub mod explore;
+pub mod health;
 pub mod packages;
 
 pub(super) fn prepare_registries_param(registries: &[String]) -> Option<Vec<String>> {
@@ -236,5 +239,27 @@ impl PackageRepository for PgPackageRepository {
         accessible_registries: &[String],
     ) -> Result<Vec<RegistryStat>, CoreError> {
         explore::registry_explore_stats_impl(&self.pool, accessible_registries).await
+    }
+
+    async fn registry_package_counts(
+        &self,
+        registries: &[String],
+    ) -> Result<HashMap<String, i64>, CoreError> {
+        health::registry_package_counts_impl(&self.pool, registries).await
+    }
+
+    async fn registry_event_stats(
+        &self,
+        registries: &[String],
+    ) -> Result<HashMap<String, (Option<DateTime<Utc>>, i64, i64)>, CoreError> {
+        health::registry_event_stats_impl(&self.pool, registries).await
+    }
+
+    async fn recent_registry_errors(
+        &self,
+        registry: &str,
+        limit: i64,
+    ) -> Result<Vec<RecentErrorRecord>, CoreError> {
+        health::recent_registry_errors_impl(&self.pool, registry, limit).await
     }
 }

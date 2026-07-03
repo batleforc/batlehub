@@ -18,7 +18,7 @@ aws-sdk-s3 = {
   features = ["default-https-client", "http-1x", "rt-tokio", "sigv4a"],
   optional = true
 }
-base64 = "0.22"
+base64.workspace = true
 batlehub-core = { path = "../core" }
 bytes.workspace = true
 chrono.workspace = true
@@ -38,7 +38,7 @@ rpm = { version = "0.25", default-features = false, features = [
 ], optional = true }
 futures.workspace = true
 glob = { workspace = true, optional = true }
-hex = "0.4"
+hex.workspace = true
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"], optional = true }
 metrics.workspace = true
 rand = "0.10"
@@ -51,7 +51,7 @@ regex = { workspace = true, optional = true }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "0.11"
+sha2.workspace = true
 sqlx.workspace = true
 tar = { version = "0.4", optional = true }
 thiserror.workspace = true
@@ -59,7 +59,7 @@ tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 quick-xml = { workspace = true, optional = true }
-zip = { version = "8", optional = true }
+zip = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Building .deb/.rpm fixtures for unit tests and the apt/dnf interop generator

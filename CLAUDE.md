@@ -101,7 +101,8 @@ For **local/hybrid mode**, additionally implement `get_<name>_versions` (and rel
 
 ### Test patterns
 
-- **Unit tests**: `#[cfg(test)] mod tests` inside the same file. Registry adapter tests use `mockito::Server` to mock HTTP upstreams.
+- **Unit tests**: `#[cfg(test)] mod tests` inside the same file by default. Registry adapter tests use `mockito::Server` to mock HTTP upstreams.
+  - **Exception — standalone `<name>/tests.rs`**: use a sibling `tests.rs` (declared as `#[cfg(test)] mod tests;` in `mod.rs`) when the adapter's test suite exercises behavior that spans more than one sibling file — e.g. the `RegistryClient` impl in `client.rs` plus parsing helpers that also live in `client.rs` or `models.rs` (composer, conda, pypi, rubygems, terraform). A single `impl`'s own tests still belong inline next to that `impl` (forgejo, github, gitlab, maven, nuget, vscode_marketplace).
 - **Integration tests** (in-process): `crates/web/tests/integration.rs` — spins up a full actix-web app with `InMemoryPackageRepository`, `InMemoryStorageBackend`, `InMemoryCacheStore`, and `FixedRegistry`. Each registry type has a `make_local_<type>_app(mode: RegistryMode)` factory and a helper to build publish payloads.
 - **CLI integration tests**: `cli/tests/integration.rs` — builds the CLI binary then invokes it as a subprocess against an in-memory actix-web server (same pattern as the web tests). Uses `env!("CARGO_BIN_EXE_batlehub-cli")` so cargo builds the binary automatically before running. See architecture note below about in-memory store separation.
 - **External integration tests**: `crates/adapters/tests/pg_*.rs`, `s3_storage.rs` — require real Postgres/MinIO (run via `task test:pg-*` / `task test:s3`).
