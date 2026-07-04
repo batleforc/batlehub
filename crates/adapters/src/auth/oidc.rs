@@ -160,6 +160,11 @@ pub struct OidcAuthProvider {
 
 impl OidcAuthProvider {
     pub async fn new(cfg: &OidcAuthConfig) -> anyhow::Result<Self> {
+        for (claim_value, role) in &cfg.role_mappings {
+            role.parse::<Role>()
+                .map_err(|e| anyhow::anyhow!("role_mappings.{claim_value}: {e}"))?;
+        }
+
         let http = reqwest::Client::new();
 
         let discovery_url = format!(
@@ -251,12 +256,7 @@ impl OidcAuthProvider {
         candidates
             .into_iter()
             .filter_map(|s| self.role_mappings.get(s))
-            .filter_map(|mapped| match mapped.as_str() {
-                "admin" => Some(Role::Admin),
-                "user" => Some(Role::User),
-                "anonymous" => Some(Role::Anonymous),
-                _ => None,
-            })
+            .filter_map(|mapped| mapped.parse::<Role>().ok())
             .max()
             .unwrap_or(Role::Anonymous)
     }

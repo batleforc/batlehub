@@ -18,6 +18,8 @@ impl LocalRegistryService {
         }
         self.check_namespace_membership(registry, name, identity)
             .await?;
+        self.check_ownership_lifecycle_access(registry, name, identity)
+            .await?;
         self.backend.yank(registry, name, version).await?;
         self.record_lifecycle_action(registry, name, version, AccessAction::Yank, identity)
             .await;
@@ -37,6 +39,8 @@ impl LocalRegistryService {
             ));
         }
         self.check_namespace_membership(registry, name, identity)
+            .await?;
+        self.check_ownership_lifecycle_access(registry, name, identity)
             .await?;
         self.backend.unyank(registry, name, version).await?;
         self.record_lifecycle_action(registry, name, version, AccessAction::Unyank, identity)
@@ -58,6 +62,8 @@ impl LocalRegistryService {
             ));
         }
         self.check_namespace_membership(registry, name, identity)
+            .await?;
+        self.check_ownership_lifecycle_access(registry, name, identity)
             .await?;
         self.backend
             .deprecate(registry, name, version, message)
@@ -81,6 +87,8 @@ impl LocalRegistryService {
         }
         self.check_namespace_membership(registry, name, identity)
             .await?;
+        self.check_ownership_lifecycle_access(registry, name, identity)
+            .await?;
         self.backend.undeprecate(registry, name, version).await?;
         self.record_lifecycle_action(registry, name, version, AccessAction::Undeprecate, identity)
             .await;
@@ -101,6 +109,8 @@ impl LocalRegistryService {
         }
         self.check_namespace_membership(registry, name, identity)
             .await?;
+        self.check_ownership_lifecycle_access(registry, name, identity)
+            .await?;
         self.backend.unlist(registry, name, version).await?;
         self.record_lifecycle_action(registry, name, version, AccessAction::Unlist, identity)
             .await;
@@ -120,6 +130,8 @@ impl LocalRegistryService {
             ));
         }
         self.check_namespace_membership(registry, name, identity)
+            .await?;
+        self.check_ownership_lifecycle_access(registry, name, identity)
             .await?;
         self.backend.relist(registry, name, version).await?;
         self.record_lifecycle_action(registry, name, version, AccessAction::Relist, identity)

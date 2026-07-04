@@ -26,18 +26,6 @@ impl SetupWizardWidget {
         self.nav.set_items(items);
         self.cwd = cwd;
     }
-
-    pub fn next(&mut self) {
-        self.nav.next();
-    }
-
-    pub fn prev(&mut self) {
-        self.nav.prev();
-    }
-
-    pub fn selected(&self) -> Option<&ProjectDetection> {
-        self.nav.selected()
-    }
 }
 
 pub fn render(f: &mut Frame, app: &App) {
@@ -117,7 +105,7 @@ pub fn render(f: &mut Frame, app: &App) {
         f.render_stateful_widget(list, list_area, &mut app.setup_wizard.nav.state.clone());
 
         // Right: instructions for selected project
-        let detail_text = if let Some(det) = app.setup_wizard.selected() {
+        let detail_text = if let Some(det) = app.setup_wizard.nav.selected() {
             let lines: Vec<Line> = det
                 .instructions
                 .lines()
@@ -168,7 +156,7 @@ mod tests {
         );
         assert_eq!(w.nav.state.selected(), Some(0));
         assert_eq!(w.cwd, "/home/user/project");
-        assert_eq!(w.selected().unwrap().registry_type, "npm");
+        assert_eq!(w.nav.selected().unwrap().registry_type, "npm");
     }
 
     #[test]
@@ -176,7 +164,7 @@ mod tests {
         let mut w = SetupWizardWidget::new();
         w.set_items(vec![], "/tmp".to_owned());
         assert_eq!(w.nav.state.selected(), None);
-        assert!(w.selected().is_none());
+        assert!(w.nav.selected().is_none());
     }
 
     #[test]
@@ -191,22 +179,22 @@ mod tests {
             "/tmp".to_owned(),
         );
 
-        w.next();
+        w.nav.next();
         assert_eq!(w.nav.state.selected(), Some(1));
-        w.next();
+        w.nav.next();
         assert_eq!(w.nav.state.selected(), Some(2));
-        w.next();
+        w.nav.next();
         assert_eq!(w.nav.state.selected(), Some(0));
 
-        w.prev();
+        w.nav.prev();
         assert_eq!(w.nav.state.selected(), Some(2));
     }
 
     #[test]
     fn next_and_prev_on_empty_list_are_noops() {
         let mut w = SetupWizardWidget::new();
-        w.next();
-        w.prev();
+        w.nav.next();
+        w.nav.prev();
         assert_eq!(w.nav.state.selected(), None);
     }
 }

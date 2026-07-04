@@ -480,10 +480,11 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                 gem_specs_prerelease, gem_unyank, gem_versions, gem_yank,
             },
             terraform::{
-                tf_module_artifact, tf_module_download, tf_module_unyank, tf_module_upload,
-                tf_module_versions, tf_module_yank, tf_provider_artifact,
-                tf_provider_binary_upload, tf_provider_download, tf_provider_unyank,
-                tf_provider_upload, tf_provider_versions, tf_provider_yank,
+                terraform_module_artifact, terraform_module_download, terraform_module_unyank,
+                terraform_module_upload, terraform_module_versions, terraform_module_yank,
+                terraform_provider_artifact, terraform_provider_binary_upload,
+                terraform_provider_download, terraform_provider_unyank, terraform_provider_upload,
+                terraform_provider_versions, terraform_provider_yank,
             },
         },
     };
@@ -555,21 +556,21 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(nuget_search); // GET .../v3/query
     cfg.service(nuget_flat_download); // GET .../v3/flat/{id}/{version}/{filename}
                                       // Terraform modules — longer paths first (unyank > yank > artifact > upload > download > versions)
-    cfg.service(tf_module_unyank); // POST …/versions/{ver}/unyank
-    cfg.service(tf_module_yank); // DELETE …/versions/{ver}
-    cfg.service(tf_module_artifact); // GET …/{ver}/artifact
-    cfg.service(tf_module_upload); // POST …/{ver}
-    cfg.service(tf_module_download); // GET …/{ver}/download
-    cfg.service(tf_module_versions); // GET …/versions
-                                     // Terraform providers — binary PUT/GET before download, unyank/yank before upload/versions
-    cfg.service(tf_provider_unyank); // POST …/versions/{ver}/unyank
-    cfg.service(tf_provider_yank); // DELETE …/versions/{ver}
-    cfg.service(tf_provider_binary_upload); // PUT …/{ver}/artifact/{os}/{arch}
-    cfg.service(tf_provider_artifact); // GET …/{ver}/artifact/{os}/{arch}
-    cfg.service(tf_provider_download); // GET …/{ver}/download/{os}/{arch}
-    cfg.service(tf_provider_upload); // POST …/versions (write)
-    cfg.service(tf_provider_versions); // GET …/versions
-                                       // RubyGems — yank/unyank/publish before download (same /api/v1/gems prefix, different methods)
+    cfg.service(terraform_module_unyank); // POST …/versions/{ver}/unyank
+    cfg.service(terraform_module_yank); // DELETE …/versions/{ver}
+    cfg.service(terraform_module_artifact); // GET …/{ver}/artifact
+    cfg.service(terraform_module_upload); // POST …/{ver}
+    cfg.service(terraform_module_download); // GET …/{ver}/download
+    cfg.service(terraform_module_versions); // GET …/versions
+                                            // Terraform providers — binary PUT/GET before download, unyank/yank before upload/versions
+    cfg.service(terraform_provider_unyank); // POST …/versions/{ver}/unyank
+    cfg.service(terraform_provider_yank); // DELETE …/versions/{ver}
+    cfg.service(terraform_provider_binary_upload); // PUT …/{ver}/artifact/{os}/{arch}
+    cfg.service(terraform_provider_artifact); // GET …/{ver}/artifact/{os}/{arch}
+    cfg.service(terraform_provider_download); // GET …/{ver}/download/{os}/{arch}
+    cfg.service(terraform_provider_upload); // POST …/versions (write)
+    cfg.service(terraform_provider_versions); // GET …/versions
+                                              // RubyGems — yank/unyank/publish before download (same /api/v1/gems prefix, different methods)
     cfg.service(gem_yank);
     cfg.service(gem_unyank);
     cfg.service(gem_publish);

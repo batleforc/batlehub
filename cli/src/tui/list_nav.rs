@@ -79,3 +79,110 @@ impl<T> ListNav<T> {
         self.state.selected().and_then(|i| self.items.get(i))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn select_next_on_empty_list_is_noop() {
+        let mut state = ListState::default();
+        select_next(&mut state, 0);
+        assert_eq!(state.selected(), None);
+    }
+
+    #[test]
+    fn select_prev_on_empty_list_is_noop() {
+        let mut state = ListState::default();
+        select_prev(&mut state, 0);
+        assert_eq!(state.selected(), None);
+    }
+
+    #[test]
+    fn select_next_on_single_item_list_stays_at_zero() {
+        let mut state = ListState::default();
+        select_next(&mut state, 1);
+        assert_eq!(state.selected(), Some(0));
+        select_next(&mut state, 1);
+        assert_eq!(state.selected(), Some(0));
+    }
+
+    #[test]
+    fn select_prev_on_single_item_list_stays_at_zero() {
+        let mut state = ListState::default();
+        select_prev(&mut state, 1);
+        assert_eq!(state.selected(), Some(0));
+        select_prev(&mut state, 1);
+        assert_eq!(state.selected(), Some(0));
+    }
+
+    #[test]
+    fn select_next_wraps_forward_past_last_index() {
+        let mut state = ListState::default();
+        state.select(Some(2));
+        select_next(&mut state, 3);
+        assert_eq!(state.selected(), Some(0));
+    }
+
+    #[test]
+    fn select_prev_wraps_backward_past_first_index() {
+        let mut state = ListState::default();
+        state.select(Some(0));
+        select_prev(&mut state, 3);
+        assert_eq!(state.selected(), Some(2));
+    }
+
+    #[test]
+    fn select_next_from_no_selection_selects_first() {
+        let mut state = ListState::default();
+        select_next(&mut state, 3);
+        assert_eq!(state.selected(), Some(0));
+    }
+
+    #[test]
+    fn select_prev_from_no_selection_selects_first() {
+        let mut state = ListState::default();
+        select_prev(&mut state, 3);
+        assert_eq!(state.selected(), Some(0));
+    }
+
+    #[test]
+    fn select_first_or_none_selects_zero_when_non_empty() {
+        let mut state = ListState::default();
+        state.select(Some(5));
+        select_first_or_none(&mut state, 3);
+        assert_eq!(state.selected(), Some(0));
+    }
+
+    #[test]
+    fn select_first_or_none_clears_when_empty() {
+        let mut state = ListState::default();
+        state.select(Some(0));
+        select_first_or_none(&mut state, 0);
+        assert_eq!(state.selected(), None);
+    }
+
+    #[test]
+    fn list_nav_set_items_selects_first_and_next_prev_wrap() {
+        let mut nav: ListNav<i32> = ListNav::new();
+        assert_eq!(nav.selected(), None);
+
+        nav.set_items(vec![10, 20, 30]);
+        assert_eq!(nav.selected(), Some(&10));
+
+        nav.next();
+        assert_eq!(nav.selected(), Some(&20));
+        nav.prev();
+        assert_eq!(nav.selected(), Some(&10));
+        nav.prev();
+        assert_eq!(nav.selected(), Some(&30));
+    }
+
+    #[test]
+    fn list_nav_set_items_with_empty_vec_clears_selection() {
+        let mut nav: ListNav<i32> = ListNav::new();
+        nav.set_items(vec![1, 2]);
+        nav.set_items(vec![]);
+        assert_eq!(nav.selected(), None);
+    }
+}

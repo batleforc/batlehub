@@ -27,7 +27,7 @@ use batlehub_core::ports::{ConditionMatchType, RuleMatch};
 #[cfg(test)]
 use jsonwebtoken::jwk::JwkSet;
 #[cfg(test)]
-use rules::{detect_is_regex, parse_role, render_group_template, CompiledCondition};
+use rules::{detect_is_regex, render_group_template, CompiledCondition};
 
 #[cfg(test)]
 mod tests;

@@ -19,6 +19,19 @@ impl std::fmt::Display for Role {
     }
 }
 
+impl std::str::FromStr for Role {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "anonymous" => Ok(Role::Anonymous),
+            "user" => Ok(Role::User),
+            "admin" => Ok(Role::Admin),
+            other => Err(format!("unknown role: '{other}'")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Identity {
     pub user_id: Option<String>,
@@ -50,6 +63,19 @@ impl Identity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn role_from_str_round_trips_every_variant() {
+        for role in [Role::Anonymous, Role::User, Role::Admin] {
+            let s = role.to_string();
+            assert_eq!(s.parse::<Role>().unwrap(), role);
+        }
+    }
+
+    #[test]
+    fn role_from_str_rejects_unknown() {
+        assert!("not-a-real-role".parse::<Role>().is_err());
+    }
 
     #[test]
     fn is_admin_true_only_for_admin_role() {

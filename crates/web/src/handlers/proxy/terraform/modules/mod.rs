@@ -9,5 +9,5 @@ use super::{
 pub mod read;
 pub mod write;
 
-pub use read::{tf_module_artifact, tf_module_download, tf_module_versions};
-pub use write::{tf_module_unyank, tf_module_upload, tf_module_yank};
+pub use read::{terraform_module_artifact, terraform_module_download, terraform_module_versions};
+pub use write::{terraform_module_unyank, terraform_module_upload, terraform_module_yank};

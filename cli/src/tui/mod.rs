@@ -93,7 +93,7 @@ pub async fn run(client: BatleHubClient) -> Result<()> {
 
     // Load initial registry list
     match app.client.list_registries().await {
-        Ok(registries) => app.registry_list.set_items(registries),
+        Ok(registries) => app.registry_list.nav.set_items(registries),
         Err(e) => app.status_msg = Some(format!("Error loading registries: {e}")),
     }
 
@@ -178,10 +178,10 @@ async fn open_registry(app: &mut App, registry: String) {
 
 async fn handle_registry_list(app: &mut App, key: event::KeyEvent) {
     match key.code {
-        KeyCode::Up | KeyCode::Char('k') => app.registry_list.prev(),
-        KeyCode::Down | KeyCode::Char('j') => app.registry_list.next(),
+        KeyCode::Up | KeyCode::Char('k') => app.registry_list.nav.prev(),
+        KeyCode::Down | KeyCode::Char('j') => app.registry_list.nav.next(),
         KeyCode::Enter => {
-            if let Some(reg) = app.registry_list.selected() {
+            if let Some(reg) = app.registry_list.nav.selected() {
                 let registry = reg.name.clone();
                 open_registry(app, registry).await;
             }
@@ -253,7 +253,7 @@ async fn open_package_detail(app: &mut App, registry: String, name: String) {
                 .into_iter()
                 .filter(|p| p.name == name && p.registry == registry)
                 .collect();
-            app.package_detail.set_items(versions);
+            app.package_detail.nav.set_items(versions);
             app.prev_screen = Some(Screen::PackageList {
                 registry: registry.clone(),
             });
@@ -301,11 +301,11 @@ async fn handle_package_detail(
     name: String,
 ) {
     match key.code {
-        KeyCode::Up | KeyCode::Char('k') => app.package_detail.prev(),
-        KeyCode::Down | KeyCode::Char('j') => app.package_detail.next(),
+        KeyCode::Up | KeyCode::Char('k') => app.package_detail.nav.prev(),
+        KeyCode::Down | KeyCode::Char('j') => app.package_detail.nav.next(),
         KeyCode::Esc => app.go_back(),
         KeyCode::Char('y') => {
-            if let Some(pkg) = app.package_detail.selected() {
+            if let Some(pkg) = app.package_detail.nav.selected() {
                 let version = pkg.version.clone();
                 match app.client.yank_version(&registry, &name, &version).await {
                     Ok(()) => {
@@ -318,7 +318,7 @@ async fn handle_package_detail(
             }
         }
         KeyCode::Char('u') => {
-            if let Some(pkg) = app.package_detail.selected() {
+            if let Some(pkg) = app.package_detail.nav.selected() {
                 let version = pkg.version.clone();
                 match app.client.unyank_version(&registry, &name, &version).await {
                     Ok(()) => {
@@ -353,14 +353,14 @@ async fn refresh_detail(app: &mut App, registry: &str, name: &str) {
             .into_iter()
             .filter(|p| p.name == name && p.registry == registry)
             .collect();
-        app.package_detail.set_items(versions);
+        app.package_detail.nav.set_items(versions);
     }
 }
 
 fn handle_setup_wizard(app: &mut App, key: event::KeyEvent) {
     match key.code {
-        KeyCode::Up | KeyCode::Char('k') => app.setup_wizard.prev(),
-        KeyCode::Down | KeyCode::Char('j') => app.setup_wizard.next(),
+        KeyCode::Up | KeyCode::Char('k') => app.setup_wizard.nav.prev(),
+        KeyCode::Down | KeyCode::Char('j') => app.setup_wizard.nav.next(),
         KeyCode::Esc => app.go_back(),
         KeyCode::Char('?') => {
             app.prev_screen = Some(Screen::SetupWizard);

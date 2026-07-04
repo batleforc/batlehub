@@ -2,7 +2,7 @@ use super::{CoreError, Identity, LocalRegistryService, TerraformPlatform};
 
 impl LocalRegistryService {
     /// Build the Terraform module versions envelope from `local_packages`.
-    pub async fn get_tf_module_versions_response(
+    pub async fn get_terraform_module_versions_response(
         &self,
         registry: &str,
         name: &str,
@@ -20,7 +20,7 @@ impl LocalRegistryService {
     }
 
     /// Build the Terraform provider versions envelope from `local_packages`.
-    pub async fn get_tf_provider_versions_response(
+    pub async fn get_terraform_provider_versions_response(
         &self,
         registry: &str,
         name: &str,
@@ -65,7 +65,7 @@ impl LocalRegistryService {
 
     /// Build the Terraform provider download-info response for a specific version+platform.
     /// Rewrites `download_url` to point at `base_url`.
-    pub async fn get_tf_provider_download_response(
+    pub async fn get_terraform_provider_download_response(
         &self,
         registry: &str,
         name: &str,

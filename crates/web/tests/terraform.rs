@@ -130,7 +130,7 @@ async fn make_local_terraform_app_with_mode_map(
 }
 
 #[actix_web::test]
-async fn tf_provider_artifact_proxy_mode_rejects_previously_published_binary() {
+async fn terraform_provider_artifact_proxy_mode_rejects_previously_published_binary() {
     let (app, mode_map) = make_local_terraform_app_with_mode_map(RegistryMode::Local).await;
 
     let req = TestRequest::post()
@@ -166,7 +166,7 @@ async fn tf_provider_artifact_proxy_mode_rejects_previously_published_binary() {
 }
 
 #[actix_web::test]
-async fn tf_module_artifact_proxy_mode_rejects_previously_published_tarball() {
+async fn terraform_module_artifact_proxy_mode_rejects_previously_published_tarball() {
     let (app, mode_map) = make_local_terraform_app_with_mode_map(RegistryMode::Local).await;
     let payload = b"tarball-content-bytes";
 
@@ -667,7 +667,7 @@ async fn terraform_provider_upload_returns_quota_headers() {
 // ── Terraform provider read paths (versions/download/artifact) ──────────────
 
 #[actix_web::test]
-async fn tf_provider_versions_local_unknown_returns_404() {
+async fn terraform_provider_versions_local_unknown_returns_404() {
     let app = make_local_terraform_app(RegistryMode::Local).await;
 
     let req = TestRequest::get()
@@ -679,7 +679,7 @@ async fn tf_provider_versions_local_unknown_returns_404() {
 }
 
 #[actix_web::test]
-async fn tf_provider_versions_hybrid_falls_through_to_proxy() {
+async fn terraform_provider_versions_hybrid_falls_through_to_proxy() {
     let app = make_local_terraform_app(RegistryMode::Hybrid).await;
 
     // No upload, and no RegistryClient configured for "local-tf" — the Hybrid
@@ -694,7 +694,7 @@ async fn tf_provider_versions_hybrid_falls_through_to_proxy() {
 }
 
 #[actix_web::test]
-async fn tf_provider_versions_proxy_mode_goes_straight_to_proxy() {
+async fn terraform_provider_versions_proxy_mode_goes_straight_to_proxy() {
     let app = make_local_terraform_app(RegistryMode::Proxy).await;
 
     let req = TestRequest::get()
@@ -706,7 +706,7 @@ async fn tf_provider_versions_proxy_mode_goes_straight_to_proxy() {
 }
 
 #[actix_web::test]
-async fn tf_provider_download_local_unknown_returns_404() {
+async fn terraform_provider_download_local_unknown_returns_404() {
     let app = make_local_terraform_app(RegistryMode::Local).await;
 
     let req = TestRequest::get()
@@ -718,7 +718,7 @@ async fn tf_provider_download_local_unknown_returns_404() {
 }
 
 #[actix_web::test]
-async fn tf_provider_download_hybrid_falls_through_to_proxy() {
+async fn terraform_provider_download_hybrid_falls_through_to_proxy() {
     let app = make_local_terraform_app(RegistryMode::Hybrid).await;
 
     let req = TestRequest::get()
@@ -730,7 +730,7 @@ async fn tf_provider_download_hybrid_falls_through_to_proxy() {
 }
 
 #[actix_web::test]
-async fn tf_provider_artifact_path_traversal_returns_400() {
+async fn terraform_provider_artifact_path_traversal_returns_400() {
     let app = make_local_terraform_app(RegistryMode::Local).await;
 
     // `%2F..` decodes to a path segment containing "/.." — caught by
@@ -744,7 +744,7 @@ async fn tf_provider_artifact_path_traversal_returns_400() {
 }
 
 #[actix_web::test]
-async fn tf_provider_artifact_not_found_returns_404() {
+async fn terraform_provider_artifact_not_found_returns_404() {
     let app = make_local_terraform_app(RegistryMode::Local).await;
 
     let req = TestRequest::get()
@@ -756,7 +756,7 @@ async fn tf_provider_artifact_not_found_returns_404() {
 }
 
 #[actix_web::test]
-async fn tf_provider_artifact_returns_uploaded_binary() {
+async fn terraform_provider_artifact_returns_uploaded_binary() {
     let app = make_local_terraform_app(RegistryMode::Local).await;
 
     let req = TestRequest::post()

@@ -5,6 +5,6 @@ pub mod reload;
 pub use banner::BannerService;
 pub use notification::{verify_inbound_hmac, NotificationService};
 pub use reload::{
-    ConfigChangeRow, ConfigReloadService, HotConfigBuilder, PendingReloadSnapshot, ReloadDiff,
-    ReloadSource,
+    ConfigChangeRow, ConfigReloadService, HotConfigBuilder, PendingReloadSnapshot,
+    ReloadApplyError, ReloadDiff, ReloadSource,
 };

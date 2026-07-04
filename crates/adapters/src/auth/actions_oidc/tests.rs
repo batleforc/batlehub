@@ -622,14 +622,18 @@ fn compiled_rule_compile_error_neither_group_nor_template() {
     assert!(CompiledRule::compile(&rule_cfg).is_err());
 }
 
-// ── parse_role ────────────────────────────────────────────────────────────
+// ── role parsing ──────────────────────────────────────────────────────────
 
 #[test]
-fn parse_role_all_variants() {
-    assert_eq!(parse_role("admin"), Role::Admin);
-    assert_eq!(parse_role("user"), Role::User);
-    assert_eq!(parse_role("garbage"), Role::Anonymous);
-    assert_eq!(parse_role(""), Role::Anonymous);
+fn compiled_rule_compile_error_unknown_role() {
+    let rule_cfg = batlehub_core::ports::ActionsGroupRule {
+        group: Some("g".to_owned()),
+        group_template: None,
+        role: Some("superadmin".to_owned()),
+        conditions: vec![],
+        match_mode: batlehub_core::ports::RuleMatch::All,
+    };
+    assert!(CompiledRule::compile(&rule_cfg).is_err());
 }
 
 // ── user_id claim edge cases ──────────────────────────────────────────────

@@ -16,7 +16,8 @@ use crate::{
     error::AppError,
     extractors::AuthIdentity,
     services::{
-        BannerService, ConfigChangeRow, ConfigReloadService, PendingReloadSnapshot, ReloadDiff,
+        BannerService, ConfigChangeRow, ConfigReloadService, PendingReloadSnapshot,
+        ReloadApplyError, ReloadDiff,
     },
 };
 
@@ -116,13 +117,10 @@ pub async fn apply_pending_reload(
     require_hot_reload(&reload_svc)?;
     let user_id = identity.0.user_id.as_deref().unwrap_or("unknown");
     let diff = reload_svc.apply(user_id).await.map_err(|e| {
-        let msg = e.to_string();
-        if msg.contains("no pending") {
-            AppError::not_found(msg)
-        } else if msg.contains("expired") {
-            AppError::conflict(msg)
-        } else {
-            AppError::bad_request(msg)
+        match e.downcast_ref::<ReloadApplyError>() {
+            Some(ReloadApplyError::NoPendingReload) => AppError::not_found(e.to_string()),
+            Some(ReloadApplyError::Expired) => AppError::conflict(e.to_string()),
+            _ => AppError::bad_request(e.to_string()),
         }
     })?;
     Ok(web::Json(ReloadResponse { diff }))

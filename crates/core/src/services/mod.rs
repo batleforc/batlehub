@@ -23,7 +23,7 @@ pub use hot_config::{
 };
 pub use integrity::{verify as verify_checksum, ChecksumAlgo, IntegrityOutcome};
 pub use local_registry::{
-    artifact_storage_key, maven_artifact_storage_key, tf_provider_binary_storage_key,
+    artifact_storage_key, maven_artifact_storage_key, terraform_provider_binary_storage_key,
     validate_coordinate, validate_package_name, validate_path_safe, LocalRegistryService,
     PublishPolicyRequest, PublishRequest, TerraformPlatform,
 };

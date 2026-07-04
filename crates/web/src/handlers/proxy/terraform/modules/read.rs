@@ -26,7 +26,7 @@ use super::{
     security(("bearer_token" = [])),
 )]
 #[get("/proxy/{registry}/v1/modules/{namespace}/{name}/{provider}/versions")]
-pub async fn tf_module_versions(
+pub async fn terraform_module_versions(
     path: web::Path<(String, String, String, String)>,
     identity: AuthIdentity,
     svc: web::Data<Arc<ProxyService>>,
@@ -43,7 +43,7 @@ pub async fn tf_module_versions(
     let local_result = if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
         Some(
             local_svc
-                .get_tf_module_versions_response(&registry, &pkg_name, &identity)
+                .get_terraform_module_versions_response(&registry, &pkg_name, &identity)
                 .await,
         )
     } else {
@@ -76,7 +76,7 @@ pub async fn tf_module_versions(
     security(("bearer_token" = [])),
 )]
 #[get("/proxy/{registry}/v1/modules/{namespace}/{name}/{provider}/{version}/download")]
-pub async fn tf_module_download(
+pub async fn terraform_module_download(
     path: web::Path<(String, String, String, String, String)>,
     req: HttpRequest,
     map: web::Data<RegistryMap>,
@@ -145,7 +145,7 @@ pub async fn tf_module_download(
 
 /// Download the tarball for a locally-published Terraform module.
 ///
-/// This is the target of the `X-Terraform-Get` redirect issued by `tf_module_download`
+/// This is the target of the `X-Terraform-Get` redirect issued by `terraform_module_download`
 /// in local/hybrid mode. Returns `X-Artifact-Signature` and `X-Signature-Type` headers
 /// if the version was uploaded with a signature.
 #[utoipa::path(
@@ -166,7 +166,7 @@ pub async fn tf_module_download(
     security(("bearer_token" = [])),
 )]
 #[get("/proxy/{registry}/v1/modules/{namespace}/{name}/{provider}/{version}/artifact")]
-pub async fn tf_module_artifact(
+pub async fn terraform_module_artifact(
     path: web::Path<(String, String, String, String, String)>,
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,

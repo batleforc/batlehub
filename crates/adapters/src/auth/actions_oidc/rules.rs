@@ -82,7 +82,12 @@ impl CompiledRule {
         if rule.group.is_none() && rule.group_template.is_none() {
             anyhow::bail!("each rule must have at least one of 'group' or 'group_template'");
         }
-        let role = rule.role.as_deref().map(parse_role);
+        let role = rule
+            .role
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(|e: String| anyhow::anyhow!(e))?;
         let conditions = rule
             .conditions
             .iter()
@@ -120,14 +125,6 @@ impl CompiledRule {
             groups.push(render_group_template(t, provider_name, claims));
         }
         groups
-    }
-}
-
-pub(super) fn parse_role(s: &str) -> Role {
-    match s {
-        "admin" => Role::Admin,
-        "user" => Role::User,
-        _ => Role::Anonymous,
     }
 }
 

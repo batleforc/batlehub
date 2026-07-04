@@ -1,7 +1,7 @@
 use super::{
     collect_payload, delete, extract_signature_headers, post, put, require_local_mode,
-    require_registry_type, terraform_set_yanked, tf_provider_binary_storage_key, web, AppError,
-    Arc, AuthIdentity, Digest, HttpRequest, HttpResponse, LocalRegistryService,
+    require_registry_type, terraform_provider_binary_storage_key, terraform_set_yanked, web,
+    AppError, Arc, AuthIdentity, Digest, HttpRequest, HttpResponse, LocalRegistryService,
     NotificationService, PublishRequest, RegistryMap, RegistryModeMap, Responder, Sha256,
     StorageMeta,
 };
@@ -32,7 +32,7 @@ use super::{
 )]
 #[allow(clippy::too_many_arguments)]
 #[post("/proxy/{registry}/v1/providers/{namespace}/{ptype}/versions")]
-pub async fn tf_provider_upload(
+pub async fn terraform_provider_upload(
     req: HttpRequest,
     path: web::Path<(String, String, String)>,
     identity: AuthIdentity,
@@ -108,7 +108,7 @@ pub async fn tf_provider_upload(
     security(("bearer_token" = [])),
 )]
 #[put("/proxy/{registry}/v1/providers/{namespace}/{ptype}/{version}/artifact/{os}/{arch}")]
-pub async fn tf_provider_binary_upload(
+pub async fn terraform_provider_binary_upload(
     path: web::Path<(String, String, String, String, String, String)>,
     identity: AuthIdentity,
     payload: web::Payload,
@@ -134,7 +134,8 @@ pub async fn tf_provider_binary_upload(
     }
 
     let bytes = collect_payload(payload).await?;
-    let key = tf_provider_binary_storage_key(&registry, &namespace, &ptype, &version, &os, &arch);
+    let key =
+        terraform_provider_binary_storage_key(&registry, &namespace, &ptype, &version, &os, &arch);
     local_svc
         .storage
         .store(
@@ -174,7 +175,7 @@ pub async fn tf_provider_binary_upload(
     security(("bearer_token" = [])),
 )]
 #[delete("/proxy/{registry}/v1/providers/{namespace}/{ptype}/versions/{version}")]
-pub async fn tf_provider_yank(
+pub async fn terraform_provider_yank(
     path: web::Path<(String, String, String, String)>,
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
@@ -220,7 +221,7 @@ pub async fn tf_provider_yank(
     security(("bearer_token" = [])),
 )]
 #[post("/proxy/{registry}/v1/providers/{namespace}/{ptype}/versions/{version}/unyank")]
-pub async fn tf_provider_unyank(
+pub async fn terraform_provider_unyank(
     path: web::Path<(String, String, String, String)>,
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,

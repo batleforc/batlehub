@@ -56,12 +56,12 @@ Every request goes through `ProxyService::handle()`, which:
 - [ ] `crates/adapters/src/registry/myregistry.rs` — adapter struct + `RegistryClient` impl
 - [ ] `crates/adapters/src/registry/mod.rs` — `pub mod` + `pub use`
 - [ ] `crates/adapters/Cargo.toml` — feature declaration + default
-- [ ] `crates/config/src/schema.rs` — add type string to the validation match
+- [ ] `crates/core/src/entities/registry_kind.rs` — add the variant to `RegistryKind` and its `ALL` slice
 - [ ] `server/src/main.rs` — import + `make_one` arm + `urls` arm
 - [ ] `crates/web/src/handlers/proxy/myregistry.rs` — HTTP handler(s) *(if needed)*
 - [ ] `crates/web/src/handlers/proxy/mod.rs` — `pub mod`
 - [ ] `crates/web/src/lib.rs` — import handler, register route(s), update `ApiDoc` tags
-- [ ] `ui/src/pages/SetupGuide.vue` — registry name ref + computed snippets + tab
+- [ ] `ui/src/config/registryTypes.ts` — add a `RegistryTypeDef` entry
 
 ---
 
@@ -196,15 +196,7 @@ some-crate = { version = "1", optional = true }
 
 ## 6. Step 4 — Register the type in config validation
 
-`crates/config/src/schema.rs` rejects unknown registry types at startup. Add the new type string to the match guard:
-
-```rust
-// in AppConfig::validate()
-match registry.registry_type.as_str() {
-    "github" | "cargo" | "npm" | "openvsx" | "myregistry" | "pypi" | "composer" => {}
-    other => bail!("unknown registry type: '{other}'"),
-}
-```
+`crates/config/src/schema/mod.rs`'s `AppConfig::validate()` rejects unknown registry types at startup — but it does so generically, by parsing the configured string into `RegistryKind` (`registry.registry_type.parse::<RegistryKind>()?`). There's no per-type string list to edit here: add the new variant to the `RegistryKind` enum and its `ALL` slice in `crates/core/src/entities/registry_kind.rs`, and this validation (plus anything else that matches on `RegistryKind`, like `server/src/builders.rs`'s client-construction match) picks it up automatically — the compiler will point you at every match that needs a new arm.
 
 ---
 
@@ -374,71 +366,29 @@ pub struct ApiDoc;
 
 ## 10. Step 8 — Update the Setup Guide
 
-`ui/src/pages/SetupGuide.vue` — three changes.
+`SetupGuide.vue` is fully data-driven from `ui/src/config/registryTypes.ts` — you don't touch the `.vue` file at all. Add one `RegistryTypeDef` entry to the `REGISTRY_TYPE_DEFS` array:
 
-**Add a registry name ref and filter** (script section):
-
-```js
-const myregistryName = ref("myregistry");
-
-watch(registries, (regs) => {
-  ...
-  const mr = regs.find(r => r.type === "myregistry");
-  if (mr) myregistryName.value = mr.name;
-});
-
-const myregistryRegistries = computed(() =>
-  registries.value?.filter(r => r.type === "myregistry") ?? []
-);
+```ts
+{
+  id: "myregistry",
+  label: "MyRegistry",
+  fileHint: "myregistry.toml",
+  description: `Replaces the upstream MyRegistry index with the proxy.`,
+  snippets: [
+    {
+      key: "myregistry",
+      lang: "bash",
+      template: (ctx) => {
+        const b   = ctx.base;
+        const reg = ctx.registryName;
+        return `# example: download a package\ncurl ${b}/proxy/${reg}/my-package/1.0.0/myext -o pkg.myext`;
+      },
+    },
+  ],
+},
 ```
 
-**Add a computed snippet** (how clients should configure themselves):
-
-```js
-const myregistrySnippet = computed(() => {
-  const b   = base.value;
-  const reg = myregistryName.value || "myregistry";
-  return `# example: download a package\ncurl ${b}/proxy/${reg}/my-package/1.0.0/myext -o pkg.myext`;
-});
-```
-
-**Add the tab trigger and tab content** (template section):
-
-```html
-<!-- trigger -->
-<TabsTrigger value="myregistry">MyRegistry</TabsTrigger>
-
-<!-- content -->
-<TabsContent value="myregistry">
-  <Card>
-    <CardHeader>...</CardHeader>
-    <CardContent>
-      <div class="relative">
-        <pre class="bg-muted rounded-md p-4 text-xs font-mono overflow-x-auto">{{ myregistrySnippet }}</pre>
-        <Button size="sm" variant="ghost" class="absolute top-2 right-2 h-7 px-2 text-xs"
-          @click="copy('myregistry', myregistrySnippet)">
-          {{ copied === 'myregistry' ? 'Copied!' : 'Copy' }}
-        </Button>
-      </div>
-    </CardContent>
-  </Card>
-</TabsContent>
-```
-
-Also add the registry name input to the "Registry names" card:
-
-```html
-<div class="space-y-1">
-  <Label for="sg-myregistry">MyRegistry</Label>
-  <Input id="sg-myregistry" v-model="myregistryName"
-    list="sg-myregistry-list" placeholder="myregistry" class="font-mono text-sm" />
-  <datalist id="sg-myregistry-list">
-    <option v-for="r in myregistryRegistries" :key="r.name" :value="r.name" />
-  </datalist>
-</div>
-```
-
-Remember to update the `grid-cols-*` class on the registry names grid and the tabs list as you add more entries.
+`id` becomes the tab's value/key and, by default, the API `type` it activates for — set `apiTypes: [...]` instead when the tab should light up for more than one configured registry type (see the `mise` composite entry). `SetupGuide.vue` derives the tab trigger, tab content, registry-name input, and snippet copy button from this array automatically — see the `id: "nuget"` entry in `registryTypes.ts` for a fuller example with multiple snippets and a `note`.
 
 ---
 

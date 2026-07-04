@@ -33,7 +33,7 @@ use super::{
 )]
 #[allow(clippy::too_many_arguments)]
 #[post("/proxy/{registry}/v1/modules/{namespace}/{name}/{provider}/{version}")]
-pub async fn tf_module_upload(
+pub async fn terraform_module_upload(
     req: HttpRequest,
     path: web::Path<(String, String, String, String, String)>,
     identity: AuthIdentity,
@@ -104,7 +104,7 @@ pub async fn tf_module_upload(
     security(("bearer_token" = [])),
 )]
 #[delete("/proxy/{registry}/v1/modules/{namespace}/{name}/{provider}/versions/{version}")]
-pub async fn tf_module_yank(
+pub async fn terraform_module_yank(
     path: web::Path<(String, String, String, String, String)>,
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
@@ -151,7 +151,7 @@ pub async fn tf_module_yank(
     security(("bearer_token" = [])),
 )]
 #[post("/proxy/{registry}/v1/modules/{namespace}/{name}/{provider}/versions/{version}/unyank")]
-pub async fn tf_module_unyank(
+pub async fn terraform_module_unyank(
     path: web::Path<(String, String, String, String, String)>,
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,

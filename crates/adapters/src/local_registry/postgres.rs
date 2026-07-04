@@ -213,11 +213,13 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
         .await
         .map_err(|e| CoreError::Database(e.to_string()))?;
 
-        Ok(rows
-            .into_iter()
+        rows.into_iter()
             .map(|r| {
-                let vis = r.get::<String, _>("visibility").parse().unwrap_or_default();
-                PublishedPackage {
+                let vis = r
+                    .get::<String, _>("visibility")
+                    .parse()
+                    .map_err(|e| CoreError::Database(format!("invalid visibility in db: {e}")))?;
+                Ok(PublishedPackage {
                     registry: r.get("registry"),
                     name: r.get("name"),
                     version: r.get("version"),
@@ -232,9 +234,9 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
                     signature_bytes: r.get("signature_bytes"),
                     signature_type: r.get("signature_type"),
                     visibility: vis,
-                }
+                })
             })
-            .collect())
+            .collect()
     }
 
     async fn exists(&self, registry: &str, name: &str) -> Result<bool, CoreError> {

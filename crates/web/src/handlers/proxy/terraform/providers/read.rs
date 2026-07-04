@@ -1,7 +1,7 @@
 use super::{
     append_signature_headers, base_url_from_req, collect_storage_stream, get, proxy_stream,
-    require_local_mode, require_registry_type, terraform_versions_response,
-    tf_provider_binary_storage_key, web, AppError, Arc, AuthIdentity, HttpRequest, HttpResponse,
+    require_local_mode, require_registry_type, terraform_provider_binary_storage_key,
+    terraform_versions_response, web, AppError, Arc, AuthIdentity, HttpRequest, HttpResponse,
     LocalRegistryService, PackageId, ProxyService, RegistryMap, RegistryMode, RegistryModeMap,
     Responder, TerraformPlatform,
 };
@@ -24,7 +24,7 @@ use super::{
     security(("bearer_token" = [])),
 )]
 #[get("/proxy/{registry}/v1/providers/{namespace}/{ptype}/versions")]
-pub async fn tf_provider_versions(
+pub async fn terraform_provider_versions(
     path: web::Path<(String, String, String)>,
     identity: AuthIdentity,
     svc: web::Data<Arc<ProxyService>>,
@@ -41,7 +41,7 @@ pub async fn tf_provider_versions(
     let local_result = if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
         Some(
             local_svc
-                .get_tf_provider_versions_response(&registry, &name, &identity)
+                .get_terraform_provider_versions_response(&registry, &name, &identity)
                 .await,
         )
     } else {
@@ -72,7 +72,7 @@ pub async fn tf_provider_versions(
     security(("bearer_token" = [])),
 )]
 #[get("/proxy/{registry}/v1/providers/{namespace}/{ptype}/{version}/download/{os}/{arch}")]
-pub async fn tf_provider_download(
+pub async fn terraform_provider_download(
     path: web::Path<(String, String, String, String, String, String)>,
     req: HttpRequest,
     identity: AuthIdentity,
@@ -122,7 +122,7 @@ pub(super) async fn try_local_provider_download(
     mode: RegistryMode,
 ) -> Result<Option<HttpResponse>, AppError> {
     match local_svc
-        .get_tf_provider_download_response(
+        .get_terraform_provider_download_response(
             registry,
             name,
             version,
@@ -165,7 +165,7 @@ pub(super) async fn try_local_provider_download(
     security(("bearer_token" = [])),
 )]
 #[get("/proxy/{registry}/v1/providers/{namespace}/{ptype}/{version}/artifact/{os}/{arch}")]
-pub async fn tf_provider_artifact(
+pub async fn terraform_provider_artifact(
     path: web::Path<(String, String, String, String, String, String)>,
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
@@ -192,7 +192,8 @@ pub async fn tf_provider_artifact(
         .await
         .map_err(AppError::from)?;
 
-    let key = tf_provider_binary_storage_key(&registry, &namespace, &ptype, &version, &os, &arch);
+    let key =
+        terraform_provider_binary_storage_key(&registry, &namespace, &ptype, &version, &os, &arch);
     let artifact = local_svc
         .storage
         .retrieve(&key)

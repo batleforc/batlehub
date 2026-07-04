@@ -39,8 +39,7 @@ pub(super) async fn list_events_impl(
     .await
     .db_err()?;
 
-    let events = rows
-        .into_iter()
+    rows.into_iter()
         .map(|r| {
             let outcome: String = r.get("outcome");
             // Account-wide/network-wide events store NULL in all three coordinate
@@ -59,12 +58,12 @@ pub(super) async fn list_events_impl(
                 }),
                 _ => None,
             };
-            AccessEvent {
+            Ok(AccessEvent {
                 id: r.get("id"),
                 user_id: r.get("user_id"),
-                user_role: str_to_role(r.get::<&str, _>("user_role")),
+                user_role: str_to_role(r.get::<&str, _>("user_role"))?,
                 package_id,
-                action: str_to_action(r.get::<&str, _>("action")),
+                action: str_to_action(r.get::<&str, _>("action"))?,
                 result: match outcome.as_str() {
                     "denied" => AccessResult::Denied {
                         reason: r
@@ -76,16 +75,19 @@ pub(super) async fn list_events_impl(
                             .get::<Option<String>, _>("deny_reason")
                             .unwrap_or_default(),
                     },
-                    _ => AccessResult::Allowed,
+                    "allowed" => AccessResult::Allowed,
+                    other => {
+                        return Err(CoreError::Database(format!(
+                            "invalid access outcome in db: '{other}'"
+                        )))
+                    }
                 },
                 timestamp: r.get("created_at"),
                 ip_address: r.get("ip_address"),
                 user_agent: r.get("user_agent"),
-            }
+            })
         })
-        .collect();
-
-    Ok(events)
+        .collect()
 }
 
 pub(super) async fn explore_packages_impl(

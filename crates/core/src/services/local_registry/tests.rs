@@ -1190,6 +1190,34 @@ async fn yank_unclaimed_package_allows_any_user() {
 }
 
 #[tokio::test]
+async fn yank_rejects_non_owner_of_claimed_package() {
+    let backend = InMemBackend::arc();
+    backend.seed(pkg("npm", "pkg", "1.0.0"));
+    let mut s = svc(backend, None);
+    let ownership = MockOwnership::arc();
+    ownership.seed("npm", "pkg", "owner1");
+    s.ownership = Some(ownership);
+
+    let err = s.yank("npm", "pkg", "1.0.0", &user()).await.unwrap_err(); // user() is "u1", not an owner
+    assert!(
+        matches!(err, CoreError::AccessDenied(_)),
+        "yank by a non-owner of a claimed package must be denied, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn yank_allows_owner_of_claimed_package() {
+    let backend = InMemBackend::arc();
+    backend.seed(pkg("npm", "pkg", "1.0.0"));
+    let mut s = svc(backend, None);
+    let ownership = MockOwnership::arc();
+    ownership.seed("npm", "pkg", "u1");
+    s.ownership = Some(ownership);
+
+    assert!(s.yank("npm", "pkg", "1.0.0", &user()).await.is_ok());
+}
+
+#[tokio::test]
 async fn unyank_blocks_non_member_in_claimed_namespace() {
     let backend = InMemBackend::arc();
     backend.seed(pkg("reg", "frontend/utils", "1.0.0"));

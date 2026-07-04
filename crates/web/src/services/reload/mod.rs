@@ -16,7 +16,7 @@ pub(super) const PENDING_TTL_SECS: i64 = 600; // 10 minutes
 pub mod applier;
 pub mod validator;
 
-pub use applier::ConfigChangeRow;
+pub use applier::{ConfigChangeRow, ReloadApplyError};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct ChangedRegistry {

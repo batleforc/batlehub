@@ -50,6 +50,22 @@ fn pkg_key(registry: &str, name: &str) -> PackageKey {
     format!("{registry}:{}", name.to_lowercase())
 }
 
+/// Looks up `version` under `registry`/`name` and returns it only if it's in
+/// `Published` state — the shared lookup + status guard duplicated across
+/// yank/unyank/deprecate/undeprecate/unlist/relist below. Returns `None` for a
+/// missing package, missing version, or a still-`Pending` row, all of which
+/// those methods treat identically (silent no-op).
+fn published_mut<'a>(
+    map: &'a mut HashMap<PackageKey, HashMap<VersionKey, Record>>,
+    registry: &str,
+    name: &str,
+    version: &str,
+) -> Option<&'a mut Record> {
+    map.get_mut(&pkg_key(registry, name))
+        .and_then(|versions| versions.get_mut(version))
+        .filter(|r| r.status == RecordStatus::Published)
+}
+
 #[async_trait]
 impl LocalRegistryBackend for InMemoryLocalRegistry {
     /// Insert the version in *pending* state, invisible to `get_versions` /
@@ -101,14 +117,10 @@ impl LocalRegistryBackend for InMemoryLocalRegistry {
 
     async fn yank(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError> {
         let mut map = self.inner.write().await;
-        if let Some(versions) = map.get_mut(&pkg_key(registry, name)) {
-            if let Some(r) = versions.get_mut(version) {
-                if r.status == RecordStatus::Published {
-                    r.pkg.yanked = true;
-                    if let Some(obj) = r.pkg.index_metadata.as_object_mut() {
-                        obj.insert("yanked".to_owned(), serde_json::Value::Bool(true));
-                    }
-                }
+        if let Some(r) = published_mut(&mut map, registry, name, version) {
+            r.pkg.yanked = true;
+            if let Some(obj) = r.pkg.index_metadata.as_object_mut() {
+                obj.insert("yanked".to_owned(), serde_json::Value::Bool(true));
             }
         }
         Ok(())
@@ -116,14 +128,10 @@ impl LocalRegistryBackend for InMemoryLocalRegistry {
 
     async fn unyank(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError> {
         let mut map = self.inner.write().await;
-        if let Some(versions) = map.get_mut(&pkg_key(registry, name)) {
-            if let Some(r) = versions.get_mut(version) {
-                if r.status == RecordStatus::Published {
-                    r.pkg.yanked = false;
-                    if let Some(obj) = r.pkg.index_metadata.as_object_mut() {
-                        obj.insert("yanked".to_owned(), serde_json::Value::Bool(false));
-                    }
-                }
+        if let Some(r) = published_mut(&mut map, registry, name, version) {
+            r.pkg.yanked = false;
+            if let Some(obj) = r.pkg.index_metadata.as_object_mut() {
+                obj.insert("yanked".to_owned(), serde_json::Value::Bool(false));
             }
         }
         Ok(())
@@ -137,18 +145,14 @@ impl LocalRegistryBackend for InMemoryLocalRegistry {
         message: Option<&str>,
     ) -> Result<(), CoreError> {
         let mut map = self.inner.write().await;
-        if let Some(versions) = map.get_mut(&pkg_key(registry, name)) {
-            if let Some(r) = versions.get_mut(version) {
-                if r.status == RecordStatus::Published {
-                    r.pkg.deprecated = true;
-                    r.pkg.deprecation_message = message.map(str::to_owned);
-                    if let Some(obj) = r.pkg.index_metadata.as_object_mut() {
-                        obj.insert(
-                            "deprecated".to_owned(),
-                            serde_json::Value::String(message.unwrap_or("true").to_owned()),
-                        );
-                    }
-                }
+        if let Some(r) = published_mut(&mut map, registry, name, version) {
+            r.pkg.deprecated = true;
+            r.pkg.deprecation_message = message.map(str::to_owned);
+            if let Some(obj) = r.pkg.index_metadata.as_object_mut() {
+                obj.insert(
+                    "deprecated".to_owned(),
+                    serde_json::Value::String(message.unwrap_or("true").to_owned()),
+                );
             }
         }
         Ok(())
@@ -161,15 +165,11 @@ impl LocalRegistryBackend for InMemoryLocalRegistry {
         version: &str,
     ) -> Result<(), CoreError> {
         let mut map = self.inner.write().await;
-        if let Some(versions) = map.get_mut(&pkg_key(registry, name)) {
-            if let Some(r) = versions.get_mut(version) {
-                if r.status == RecordStatus::Published {
-                    r.pkg.deprecated = false;
-                    r.pkg.deprecation_message = None;
-                    if let Some(obj) = r.pkg.index_metadata.as_object_mut() {
-                        obj.remove("deprecated");
-                    }
-                }
+        if let Some(r) = published_mut(&mut map, registry, name, version) {
+            r.pkg.deprecated = false;
+            r.pkg.deprecation_message = None;
+            if let Some(obj) = r.pkg.index_metadata.as_object_mut() {
+                obj.remove("deprecated");
             }
         }
         Ok(())
@@ -177,24 +177,16 @@ impl LocalRegistryBackend for InMemoryLocalRegistry {
 
     async fn unlist(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError> {
         let mut map = self.inner.write().await;
-        if let Some(versions) = map.get_mut(&pkg_key(registry, name)) {
-            if let Some(r) = versions.get_mut(version) {
-                if r.status == RecordStatus::Published {
-                    r.pkg.unlisted = true;
-                }
-            }
+        if let Some(r) = published_mut(&mut map, registry, name, version) {
+            r.pkg.unlisted = true;
         }
         Ok(())
     }
 
     async fn relist(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError> {
         let mut map = self.inner.write().await;
-        if let Some(versions) = map.get_mut(&pkg_key(registry, name)) {
-            if let Some(r) = versions.get_mut(version) {
-                if r.status == RecordStatus::Published {
-                    r.pkg.unlisted = false;
-                }
-            }
+        if let Some(r) = published_mut(&mut map, registry, name, version) {
+            r.pkg.unlisted = false;
         }
         Ok(())
     }

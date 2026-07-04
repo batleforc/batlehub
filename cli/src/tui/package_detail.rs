@@ -20,22 +20,6 @@ impl PackageDetailWidget {
     pub fn new() -> Self {
         Self::default()
     }
-
-    pub fn set_items(&mut self, items: Vec<PackageSummary>) {
-        self.nav.set_items(items);
-    }
-
-    pub fn next(&mut self) {
-        self.nav.next();
-    }
-
-    pub fn prev(&mut self) {
-        self.nav.prev();
-    }
-
-    pub fn selected(&self) -> Option<&PackageSummary> {
-        self.nav.selected()
-    }
 }
 
 pub fn render(f: &mut Frame, app: &App, registry: &str, name: &str) {
@@ -120,29 +104,30 @@ mod tests {
     #[test]
     fn set_items_selects_first_when_non_empty() {
         let mut w = PackageDetailWidget::new();
-        w.set_items(vec![
+        w.nav.set_items(vec![
             version("1.0.0", PackageStatus::Available),
             version("1.1.0", PackageStatus::Available),
         ]);
         assert_eq!(w.nav.state.selected(), Some(0));
-        assert_eq!(w.selected().unwrap().version, "1.0.0");
+        assert_eq!(w.nav.selected().unwrap().version, "1.0.0");
     }
 
     #[test]
     fn set_items_empty_clears_selection() {
         let mut w = PackageDetailWidget::new();
-        w.set_items(vec![version("1.0.0", PackageStatus::Available)]);
+        w.nav
+            .set_items(vec![version("1.0.0", PackageStatus::Available)]);
         assert_eq!(w.nav.state.selected(), Some(0));
 
-        w.set_items(vec![]);
+        w.nav.set_items(vec![]);
         assert_eq!(w.nav.state.selected(), None);
-        assert!(w.selected().is_none());
+        assert!(w.nav.selected().is_none());
     }
 
     #[test]
     fn next_and_prev_wrap_around() {
         let mut w = PackageDetailWidget::new();
-        w.set_items(vec![
+        w.nav.set_items(vec![
             version("1.0.0", PackageStatus::Available),
             version(
                 "1.1.0",
@@ -152,20 +137,20 @@ mod tests {
             ),
         ]);
 
-        w.next();
+        w.nav.next();
         assert_eq!(w.nav.state.selected(), Some(1));
-        w.next();
+        w.nav.next();
         assert_eq!(w.nav.state.selected(), Some(0));
 
-        w.prev();
+        w.nav.prev();
         assert_eq!(w.nav.state.selected(), Some(1));
     }
 
     #[test]
     fn next_and_prev_on_empty_list_are_noops() {
         let mut w = PackageDetailWidget::new();
-        w.next();
-        w.prev();
+        w.nav.next();
+        w.nav.prev();
         assert_eq!(w.nav.state.selected(), None);
     }
 }

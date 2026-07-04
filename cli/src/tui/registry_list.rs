@@ -20,22 +20,6 @@ impl RegistryListWidget {
     pub fn new() -> Self {
         Self::default()
     }
-
-    pub fn set_items(&mut self, items: Vec<RegistryInfo>) {
-        self.nav.set_items(items);
-    }
-
-    pub fn next(&mut self) {
-        self.nav.next();
-    }
-
-    pub fn prev(&mut self) {
-        self.nav.prev();
-    }
-
-    pub fn selected(&self) -> Option<&RegistryInfo> {
-        self.nav.selected()
-    }
 }
 
 pub fn render(f: &mut Frame, app: &App) {
@@ -112,43 +96,44 @@ mod tests {
     #[test]
     fn set_items_selects_first_when_non_empty() {
         let mut w = RegistryListWidget::new();
-        w.set_items(vec![registry("a"), registry("b")]);
+        w.nav.set_items(vec![registry("a"), registry("b")]);
         assert_eq!(w.nav.state.selected(), Some(0));
-        assert_eq!(w.selected().unwrap().name, "a");
+        assert_eq!(w.nav.selected().unwrap().name, "a");
     }
 
     #[test]
     fn set_items_empty_leaves_selection_unset() {
         let mut w = RegistryListWidget::new();
-        w.set_items(vec![]);
+        w.nav.set_items(vec![]);
         assert_eq!(w.nav.state.selected(), None);
-        assert!(w.selected().is_none());
+        assert!(w.nav.selected().is_none());
     }
 
     #[test]
     fn next_and_prev_wrap_around() {
         let mut w = RegistryListWidget::new();
-        w.set_items(vec![registry("a"), registry("b"), registry("c")]);
+        w.nav
+            .set_items(vec![registry("a"), registry("b"), registry("c")]);
         assert_eq!(w.nav.state.selected(), Some(0));
 
-        w.next();
+        w.nav.next();
         assert_eq!(w.nav.state.selected(), Some(1));
-        w.next();
+        w.nav.next();
         assert_eq!(w.nav.state.selected(), Some(2));
-        w.next();
+        w.nav.next();
         assert_eq!(w.nav.state.selected(), Some(0));
 
-        w.prev();
+        w.nav.prev();
         assert_eq!(w.nav.state.selected(), Some(2));
-        w.prev();
+        w.nav.prev();
         assert_eq!(w.nav.state.selected(), Some(1));
     }
 
     #[test]
     fn next_and_prev_on_empty_list_are_noops() {
         let mut w = RegistryListWidget::new();
-        w.next();
-        w.prev();
+        w.nav.next();
+        w.nav.prev();
         assert_eq!(w.nav.state.selected(), None);
     }
 }

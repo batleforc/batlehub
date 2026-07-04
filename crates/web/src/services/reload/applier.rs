@@ -6,6 +6,20 @@ use batlehub_core::entities::{BannerLevel, GlobalBanner};
 
 use super::{ConfigReloadService, PendingReload, ReloadDiff, ReloadSource, PENDING_TTL_SECS};
 
+/// The 3 distinguishable failure modes of [`ConfigReloadService::apply`],
+/// wrapped into the `anyhow::Error` it returns so callers that need to tell
+/// them apart (e.g. `apply_pending_reload`'s HTTP status mapping) can
+/// `downcast_ref` instead of substring-matching the error's `Display` text.
+#[derive(Debug, thiserror::Error)]
+pub enum ReloadApplyError {
+    #[error("hot reload is disabled (BATLEHUB_DISABLE_HOT_RELOAD=1)")]
+    Disabled,
+    #[error("no pending reload")]
+    NoPendingReload,
+    #[error("pending reload expired")]
+    Expired,
+}
+
 /// A row from the `config_changes` audit table.
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct ConfigChangeRow {
@@ -108,17 +122,17 @@ impl ConfigReloadService {
     /// clears the pending state. Returns the diff that was applied.
     pub async fn apply(&self, triggered_by: &str) -> Result<ReloadDiff, anyhow::Error> {
         if !self.hot_reload_enabled {
-            anyhow::bail!("hot reload is disabled (BATLEHUB_DISABLE_HOT_RELOAD=1)");
+            return Err(ReloadApplyError::Disabled.into());
         }
         let pending = self
             .pending
             .lock()
             .expect("pending reload lock poisoned")
             .take()
-            .ok_or_else(|| anyhow::anyhow!("no pending reload"))?;
+            .ok_or(ReloadApplyError::NoPendingReload)?;
 
         if Utc::now() > pending.expires_at {
-            anyhow::bail!("pending reload expired");
+            return Err(ReloadApplyError::Expired.into());
         }
 
         // Set "reload in progress" banner while swapping.

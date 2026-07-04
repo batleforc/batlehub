@@ -106,12 +106,9 @@ pub(super) fn role_to_str(role: &Role) -> &'static str {
     }
 }
 
-pub(super) fn str_to_role(s: &str) -> Role {
-    match s {
-        "admin" => Role::Admin,
-        "user" => Role::User,
-        _ => Role::Anonymous,
-    }
+pub(super) fn str_to_role(s: &str) -> Result<Role, CoreError> {
+    s.parse()
+        .map_err(|e| CoreError::Database(format!("invalid role in db: {e}")))
 }
 
 pub(super) fn action_to_str(action: &AccessAction) -> &'static str {
@@ -138,28 +135,30 @@ pub(super) fn action_to_str(action: &AccessAction) -> &'static str {
     }
 }
 
-pub(super) fn str_to_action(s: &str) -> AccessAction {
+pub(super) fn str_to_action(s: &str) -> Result<AccessAction, CoreError> {
     match s {
-        "download" => AccessAction::Download,
-        "view_metadata" => AccessAction::ViewMetadata,
-        "block" => AccessAction::Block,
-        "unblock" => AccessAction::Unblock,
-        "delete" => AccessAction::Delete,
-        "add_owner" => AccessAction::AddOwner,
-        "remove_owner" => AccessAction::RemoveOwner,
-        "set_visibility" => AccessAction::SetVisibility,
-        "block_user" => AccessAction::BlockUser,
-        "unblock_user" => AccessAction::UnblockUser,
-        "block_ip" => AccessAction::BlockIp,
-        "unblock_ip" => AccessAction::UnblockIp,
-        "audit_purge" => AccessAction::AuditPurge,
-        "yank" => AccessAction::Yank,
-        "unyank" => AccessAction::Unyank,
-        "deprecate" => AccessAction::Deprecate,
-        "undeprecate" => AccessAction::Undeprecate,
-        "unlist" => AccessAction::Unlist,
-        "relist" => AccessAction::Relist,
-        _ => AccessAction::Download,
+        "download" => Ok(AccessAction::Download),
+        "view_metadata" => Ok(AccessAction::ViewMetadata),
+        "block" => Ok(AccessAction::Block),
+        "unblock" => Ok(AccessAction::Unblock),
+        "delete" => Ok(AccessAction::Delete),
+        "add_owner" => Ok(AccessAction::AddOwner),
+        "remove_owner" => Ok(AccessAction::RemoveOwner),
+        "set_visibility" => Ok(AccessAction::SetVisibility),
+        "block_user" => Ok(AccessAction::BlockUser),
+        "unblock_user" => Ok(AccessAction::UnblockUser),
+        "block_ip" => Ok(AccessAction::BlockIp),
+        "unblock_ip" => Ok(AccessAction::UnblockIp),
+        "audit_purge" => Ok(AccessAction::AuditPurge),
+        "yank" => Ok(AccessAction::Yank),
+        "unyank" => Ok(AccessAction::Unyank),
+        "deprecate" => Ok(AccessAction::Deprecate),
+        "undeprecate" => Ok(AccessAction::Undeprecate),
+        "unlist" => Ok(AccessAction::Unlist),
+        "relist" => Ok(AccessAction::Relist),
+        other => Err(CoreError::Database(format!(
+            "invalid access action in db: '{other}'"
+        ))),
     }
 }
 

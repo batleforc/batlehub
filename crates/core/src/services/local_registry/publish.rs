@@ -59,6 +59,30 @@ impl LocalRegistryService {
         Ok(!package_exists)
     }
 
+    /// Same ownership gate as [`Self::check_ownership_publish_access`], for
+    /// lifecycle mutations (yank/unyank/deprecate/undeprecate/unlist/relist)
+    /// on an already-published package rather than a new upload. `can_publish`
+    /// already returns `true` for a package with no recorded owners, so this
+    /// is a no-op both when ownership tracking is disabled and for unclaimed
+    /// packages — it only blocks a `User`-role identity that isn't an owner of
+    /// an already-claimed package.
+    pub(super) async fn check_ownership_lifecycle_access(
+        &self,
+        registry: &str,
+        name: &str,
+        identity: &Identity,
+    ) -> Result<(), CoreError> {
+        let Some(ref ownership) = self.ownership else {
+            return Ok(());
+        };
+        if !ownership.can_publish(registry, name, identity).await? {
+            return Err(CoreError::AccessDenied(format!(
+                "you are not an owner of '{name}' in registry '{registry}'"
+            )));
+        }
+        Ok(())
+    }
+
     /// Enforce the publish-time policy that every registry shares — role,
     /// name/version validation, versioning policy, signing policy, namespace,
     /// ownership, artifact size limit, and quota — *without* committing a

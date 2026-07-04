@@ -20,14 +20,6 @@ fn role_to_str(role: &Role) -> &'static str {
     }
 }
 
-fn str_to_role(s: &str) -> Role {
-    match s {
-        "admin" => Role::Admin,
-        "user" => Role::User,
-        _ => Role::Anonymous,
-    }
-}
-
 #[async_trait]
 impl UserTokenRepository for PgPackageRepository {
     async fn create_token(
@@ -67,7 +59,10 @@ impl UserTokenRepository for PgPackageRepository {
             id: row.get("id"),
             user_id: row.get("user_id"),
             name: row.get("name"),
-            role: str_to_role(row.get::<&str, _>("role")),
+            role: row
+                .get::<&str, _>("role")
+                .parse()
+                .map_err(|e| CoreError::Database(format!("invalid role in db: {e}")))?,
             expires_at: row.get("expires_at"),
             created_at: row.get("created_at"),
             revoked_at: row.get("revoked_at"),
@@ -87,15 +82,21 @@ impl UserTokenRepository for PgPackageRepository {
         .await
         .db_err()?;
 
-        Ok(row.map(|r| UserToken {
-            id: r.get("id"),
-            user_id: r.get("user_id"),
-            name: r.get("name"),
-            role: str_to_role(r.get::<&str, _>("role")),
-            expires_at: r.get("expires_at"),
-            created_at: r.get("created_at"),
-            revoked_at: r.get("revoked_at"),
-        }))
+        row.map(|r| {
+            Ok(UserToken {
+                id: r.get("id"),
+                user_id: r.get("user_id"),
+                name: r.get("name"),
+                role: r
+                    .get::<&str, _>("role")
+                    .parse()
+                    .map_err(|e| CoreError::Database(format!("invalid role in db: {e}")))?,
+                expires_at: r.get("expires_at"),
+                created_at: r.get("created_at"),
+                revoked_at: r.get("revoked_at"),
+            })
+        })
+        .transpose()
     }
 
     async fn list_for_user(&self, user_id: &str) -> Result<Vec<UserToken>, CoreError> {
@@ -112,18 +113,22 @@ impl UserTokenRepository for PgPackageRepository {
         .await
         .db_err()?;
 
-        Ok(rows
-            .into_iter()
-            .map(|r| UserToken {
-                id: r.get("id"),
-                user_id: r.get("user_id"),
-                name: r.get("name"),
-                role: str_to_role(r.get::<&str, _>("role")),
-                expires_at: r.get("expires_at"),
-                created_at: r.get("created_at"),
-                revoked_at: r.get("revoked_at"),
+        rows.into_iter()
+            .map(|r| {
+                Ok(UserToken {
+                    id: r.get("id"),
+                    user_id: r.get("user_id"),
+                    name: r.get("name"),
+                    role: r
+                        .get::<&str, _>("role")
+                        .parse()
+                        .map_err(|e| CoreError::Database(format!("invalid role in db: {e}")))?,
+                    expires_at: r.get("expires_at"),
+                    created_at: r.get("created_at"),
+                    revoked_at: r.get("revoked_at"),
+                })
             })
-            .collect())
+            .collect()
     }
 
     async fn revoke(&self, id: Uuid, user_id: &str) -> Result<bool, CoreError> {

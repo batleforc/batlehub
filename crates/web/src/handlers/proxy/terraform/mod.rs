@@ -8,7 +8,7 @@ use batlehub_core::{
     entities::PackageId,
     ports::StorageMeta,
     services::{
-        tf_provider_binary_storage_key, LocalRegistryService, ProxyService, PublishRequest,
+        terraform_provider_binary_storage_key, LocalRegistryService, ProxyService, PublishRequest,
         TerraformPlatform,
     },
 };
@@ -28,11 +28,12 @@ pub mod providers;
 mod shared;
 
 pub use modules::{
-    tf_module_artifact, tf_module_download, tf_module_unyank, tf_module_upload, tf_module_versions,
-    tf_module_yank,
+    terraform_module_artifact, terraform_module_download, terraform_module_unyank,
+    terraform_module_upload, terraform_module_versions, terraform_module_yank,
 };
 pub use providers::{
-    tf_provider_artifact, tf_provider_binary_upload, tf_provider_download, tf_provider_unyank,
-    tf_provider_upload, tf_provider_versions, tf_provider_yank,
+    terraform_provider_artifact, terraform_provider_binary_upload, terraform_provider_download,
+    terraform_provider_unyank, terraform_provider_upload, terraform_provider_versions,
+    terraform_provider_yank,
 };
 pub(super) use shared::{base_url_from_req, terraform_set_yanked, terraform_versions_response};

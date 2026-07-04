@@ -219,7 +219,7 @@ pub fn maven_artifact_storage_key(
 }
 
 /// Storage key for a Terraform provider platform binary.
-pub fn tf_provider_binary_storage_key(
+pub fn terraform_provider_binary_storage_key(
     registry: &str,
     namespace: &str,
     ptype: &str,
