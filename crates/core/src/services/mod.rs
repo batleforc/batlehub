@@ -30,6 +30,6 @@ pub use local_registry::{
 pub use metrics::ProxyMetrics;
 pub use proxy::{ProxyRequest, ProxyResponse, ProxyService};
 pub use quota::{QuotaCheck, QuotaEnforcement, QuotaService, RegistryQuotaConfig};
-pub use sbom::{SbomPublishOptions, SbomService};
+pub use sbom::{SbomProxiedOptions, SbomPublishOptions, SbomService};
 pub use vulnerability::{ScanReport, VulnerabilityScanService};
 pub use warming::{WarmingReport, WarmingService};

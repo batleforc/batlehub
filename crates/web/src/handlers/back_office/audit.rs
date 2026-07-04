@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::IntoParams;
 
-use batlehub_core::{entities::EventFilter, services::AdminService};
+use batlehub_core::{entities::EventFilter, error::CoreError, services::AdminService};
 
 use super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity};
@@ -177,7 +177,7 @@ pub async fn export_audit_log(
             .body(csv))
     } else {
         let body = serde_json::to_string(&events)
-            .map_err(|e| AppError::internal(format!("serialize: {e}")))?;
+            .map_err(|e| CoreError::Other(anyhow::anyhow!("serialize: {e}")))?;
         Ok(HttpResponse::Ok()
             .insert_header(disposition)
             .content_type("application/json")

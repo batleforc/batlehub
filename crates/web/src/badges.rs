@@ -1,17 +1,19 @@
 //! External badge/link helpers (the `socket_badge` feature flag).
 
-/// Map a registry adapter type to its [socket.dev](https://socket.dev) ecosystem
-/// slug, or `None` when socket.dev does not cover that ecosystem.
-fn socket_ecosystem(registry_type: &str) -> Option<&'static str> {
-    match registry_type {
-        "cargo" => Some("cargo"),
-        "npm" => Some("npm"),
-        "pypi" => Some("pypi"),
-        "maven" => Some("maven"),
-        "rubygems" => Some("gem"),
-        "goproxy" => Some("golang"),
-        "nuget" => Some("nuget"),
-        "composer" => Some("packagist"),
+use batlehub_core::entities::RegistryKind;
+
+/// Map a registry kind to its [socket.dev](https://socket.dev) ecosystem slug,
+/// or `None` when socket.dev does not cover that ecosystem.
+fn socket_ecosystem(kind: RegistryKind) -> Option<&'static str> {
+    match kind {
+        RegistryKind::Cargo => Some("cargo"),
+        RegistryKind::Npm => Some("npm"),
+        RegistryKind::Pypi => Some("pypi"),
+        RegistryKind::Maven => Some("maven"),
+        RegistryKind::Rubygems => Some("gem"),
+        RegistryKind::Goproxy => Some("golang"),
+        RegistryKind::Nuget => Some("nuget"),
+        RegistryKind::Composer => Some("packagist"),
         _ => None,
     }
 }
@@ -19,10 +21,12 @@ fn socket_ecosystem(registry_type: &str) -> Option<&'static str> {
 /// Build the socket.dev badge URL for a package version, e.g.
 /// `https://badge.socket.dev/cargo/package/yaml/0.3.0`.
 ///
-/// Returns `None` when the registry type is not covered by socket.dev. The caller
-/// is responsible for the per-registry `socket_badge` feature-flag check.
+/// Returns `None` when the registry type is unknown or not covered by
+/// socket.dev. The caller is responsible for the per-registry `socket_badge`
+/// feature-flag check.
 pub fn socket_badge_url(registry_type: &str, name: &str, version: &str) -> Option<String> {
-    let eco = socket_ecosystem(registry_type)?;
+    let kind: RegistryKind = registry_type.parse().ok()?;
+    let eco = socket_ecosystem(kind)?;
     Some(format!(
         "https://badge.socket.dev/{eco}/package/{name}/{version}"
     ))

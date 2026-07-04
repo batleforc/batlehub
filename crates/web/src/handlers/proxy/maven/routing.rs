@@ -1,3 +1,5 @@
+use batlehub_core::error::CoreError;
+
 use super::{AppError, BytesDecl, BytesEnd, BytesStart, BytesText, Event, Writer};
 
 /// Reject a resolved Maven coordinate component that would escape the storage root
@@ -109,20 +111,20 @@ pub fn build_metadata_xml(
     let mut w = Writer::new_with_indent(&mut buf, b' ', 2);
 
     w.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))
-        .map_err(|e| AppError::internal(format!("xml write: {e}")))?;
+        .map_err(|e| CoreError::Other(anyhow::anyhow!("xml write: {e}")))?;
 
     let metadata = BytesStart::new("metadata");
     w.write_event(Event::Start(metadata))
-        .map_err(|e| AppError::internal(format!("xml write: {e}")))?;
+        .map_err(|e| CoreError::Other(anyhow::anyhow!("xml write: {e}")))?;
 
     macro_rules! leaf {
         ($w:expr, $tag:expr, $val:expr) => {{
             $w.write_event(Event::Start(BytesStart::new($tag)))
-                .map_err(|e| AppError::internal(format!("xml write: {e}")))?;
+                .map_err(|e| CoreError::Other(anyhow::anyhow!("xml write: {e}")))?;
             $w.write_event(Event::Text(BytesText::new($val)))
-                .map_err(|e| AppError::internal(format!("xml write: {e}")))?;
+                .map_err(|e| CoreError::Other(anyhow::anyhow!("xml write: {e}")))?;
             $w.write_event(Event::End(BytesEnd::new($tag)))
-                .map_err(|e| AppError::internal(format!("xml write: {e}")))?;
+                .map_err(|e| CoreError::Other(anyhow::anyhow!("xml write: {e}")))?;
         }};
     }
 
@@ -130,28 +132,28 @@ pub fn build_metadata_xml(
     leaf!(w, "artifactId", artifact_id);
 
     w.write_event(Event::Start(BytesStart::new("versioning")))
-        .map_err(|e| AppError::internal(format!("xml write: {e}")))?;
+        .map_err(|e| CoreError::Other(anyhow::anyhow!("xml write: {e}")))?;
 
     leaf!(w, "release", release);
     leaf!(w, "latest", latest);
 
     w.write_event(Event::Start(BytesStart::new("versions")))
-        .map_err(|e| AppError::internal(format!("xml write: {e}")))?;
+        .map_err(|e| CoreError::Other(anyhow::anyhow!("xml write: {e}")))?;
     for v in &non_yanked {
         leaf!(w, "version", &v.version);
     }
     w.write_event(Event::End(BytesEnd::new("versions")))
-        .map_err(|e| AppError::internal(format!("xml write: {e}")))?;
+        .map_err(|e| CoreError::Other(anyhow::anyhow!("xml write: {e}")))?;
 
     leaf!(w, "lastUpdated", &last_updated);
 
     w.write_event(Event::End(BytesEnd::new("versioning")))
-        .map_err(|e| AppError::internal(format!("xml write: {e}")))?;
+        .map_err(|e| CoreError::Other(anyhow::anyhow!("xml write: {e}")))?;
 
     w.write_event(Event::End(BytesEnd::new("metadata")))
-        .map_err(|e| AppError::internal(format!("xml write: {e}")))?;
+        .map_err(|e| CoreError::Other(anyhow::anyhow!("xml write: {e}")))?;
 
-    String::from_utf8(buf).map_err(|e| AppError::internal(format!("xml encode: {e}")))
+    String::from_utf8(buf).map_err(|e| CoreError::Other(anyhow::anyhow!("xml encode: {e}")).into())
 }
 
 pub struct PomMetadata {

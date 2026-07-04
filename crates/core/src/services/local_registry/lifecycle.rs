@@ -1,5 +1,6 @@
 use super::{
-    CoreError, Identity, LocalRegistryService, PublishRequest, Role, SbomFormat, SbomPublishOptions,
+    AccessAction, AccessEvent, AccessResult, CoreError, Identity, LocalRegistryService, PackageId,
+    PublishRequest, Role, SbomFormat, SbomPublishOptions,
 };
 
 impl LocalRegistryService {
@@ -17,7 +18,10 @@ impl LocalRegistryService {
         }
         self.check_namespace_membership(registry, name, identity)
             .await?;
-        self.backend.yank(registry, name, version).await
+        self.backend.yank(registry, name, version).await?;
+        self.record_lifecycle_action(registry, name, version, AccessAction::Yank, identity)
+            .await;
+        Ok(())
     }
 
     pub async fn unyank(
@@ -34,7 +38,10 @@ impl LocalRegistryService {
         }
         self.check_namespace_membership(registry, name, identity)
             .await?;
-        self.backend.unyank(registry, name, version).await
+        self.backend.unyank(registry, name, version).await?;
+        self.record_lifecycle_action(registry, name, version, AccessAction::Unyank, identity)
+            .await;
+        Ok(())
     }
 
     pub async fn deprecate(
@@ -54,7 +61,10 @@ impl LocalRegistryService {
             .await?;
         self.backend
             .deprecate(registry, name, version, message)
-            .await
+            .await?;
+        self.record_lifecycle_action(registry, name, version, AccessAction::Deprecate, identity)
+            .await;
+        Ok(())
     }
 
     pub async fn undeprecate(
@@ -71,7 +81,10 @@ impl LocalRegistryService {
         }
         self.check_namespace_membership(registry, name, identity)
             .await?;
-        self.backend.undeprecate(registry, name, version).await
+        self.backend.undeprecate(registry, name, version).await?;
+        self.record_lifecycle_action(registry, name, version, AccessAction::Undeprecate, identity)
+            .await;
+        Ok(())
     }
 
     pub async fn unlist(
@@ -88,7 +101,10 @@ impl LocalRegistryService {
         }
         self.check_namespace_membership(registry, name, identity)
             .await?;
-        self.backend.unlist(registry, name, version).await
+        self.backend.unlist(registry, name, version).await?;
+        self.record_lifecycle_action(registry, name, version, AccessAction::Unlist, identity)
+            .await;
+        Ok(())
     }
 
     pub async fn relist(
@@ -105,7 +121,42 @@ impl LocalRegistryService {
         }
         self.check_namespace_membership(registry, name, identity)
             .await?;
-        self.backend.relist(registry, name, version).await
+        self.backend.relist(registry, name, version).await?;
+        self.record_lifecycle_action(registry, name, version, AccessAction::Relist, identity)
+            .await;
+        Ok(())
+    }
+
+    /// Record a successful lifecycle admin action (yank/unyank/deprecate/
+    /// undeprecate/unlist/relist) through `access_log`, when configured. Mirrors
+    /// `read.rs`'s `record_download` so these mutations aren't a silent audit
+    /// gap next to the package-block/visibility/ownership admin actions that
+    /// already go through `AdminService::record_admin_action`.
+    pub async fn record_lifecycle_action(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        action: AccessAction,
+        identity: &Identity,
+    ) {
+        let Some(repo) = self.access_log.as_ref() else {
+            return;
+        };
+        let event = AccessEvent {
+            id: uuid::Uuid::new_v4(),
+            user_id: identity.user_id.clone(),
+            user_role: identity.role.clone(),
+            package_id: Some(PackageId::new(registry, name, version)),
+            action,
+            result: AccessResult::Allowed,
+            timestamp: chrono::Utc::now(),
+            ip_address: None,
+            user_agent: None,
+        };
+        if let Err(e) = repo.record_access(event).await {
+            tracing::warn!(error = %e, "audit log write failed for local registry lifecycle action");
+        }
     }
 
     /// If a namespace claim covers `package` in `registry`, verify `identity` is

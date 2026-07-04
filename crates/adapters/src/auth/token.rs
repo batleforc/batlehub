@@ -71,16 +71,16 @@ impl StaticTokenAuthProvider {
         let mut plain = HashMap::new();
         let mut hashed = Vec::new();
         for (value, user_id, role) in entries {
-            let record = TokenRecord {
-                user_id,
-                role,
-                groups: vec![],
-            };
-            if is_argon2_hash(&value) {
-                hashed.push((value, record));
-            } else {
-                plain.insert(value, record);
-            }
+            Self::classify(
+                &mut plain,
+                &mut hashed,
+                value,
+                TokenRecord {
+                    user_id,
+                    role,
+                    groups: vec![],
+                },
+            );
         }
         Self { plain, hashed }
     }
@@ -91,18 +91,33 @@ impl StaticTokenAuthProvider {
         entries: impl IntoIterator<Item = (String, Option<String>, Role, Vec<String>)>,
     ) -> Self {
         for (value, user_id, role, groups) in entries {
-            let record = TokenRecord {
-                user_id,
-                role,
-                groups,
-            };
-            if is_argon2_hash(&value) {
-                self.hashed.push((value, record));
-            } else {
-                self.plain.insert(value, record);
-            }
+            Self::classify(
+                &mut self.plain,
+                &mut self.hashed,
+                value,
+                TokenRecord {
+                    user_id,
+                    role,
+                    groups,
+                },
+            );
         }
         self
+    }
+
+    /// Route a configured token into the plain or Argon2-hashed bucket, keyed
+    /// by its own PHC-string prefix, matching how `authenticate` later scans them.
+    fn classify(
+        plain: &mut HashMap<String, TokenRecord>,
+        hashed: &mut Vec<(String, TokenRecord)>,
+        value: String,
+        record: TokenRecord,
+    ) {
+        if is_argon2_hash(&value) {
+            hashed.push((value, record));
+        } else {
+            plain.insert(value, record);
+        }
     }
 }
 

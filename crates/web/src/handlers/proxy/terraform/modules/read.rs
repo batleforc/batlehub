@@ -1,3 +1,5 @@
+use batlehub_core::error::CoreError;
+
 use super::{
     append_signature_headers, base_url_from_req, get, require_local_mode, require_registry_type,
     terraform_versions_response, web, AppError, Arc, AuthIdentity, HttpRequest, HttpResponse,
@@ -109,7 +111,7 @@ pub async fn tf_module_download(
         .get(&url)
         .send()
         .await
-        .map_err(|e| AppError::internal(format!("terraform upstream request failed: {e}")))?;
+        .map_err(|e| CoreError::Registry(format!("terraform upstream request failed: {e}")))?;
 
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Err(AppError::not_found(format!(
@@ -120,7 +122,9 @@ pub async fn tf_module_download(
     if let Some(tf_get) = resp.headers().get("X-Terraform-Get") {
         let header_value = tf_get
             .to_str()
-            .map_err(|_| AppError::internal("invalid X-Terraform-Get header from upstream"))?
+            .map_err(|_| {
+                CoreError::Registry("invalid X-Terraform-Get header from upstream".to_string())
+            })?
             .to_owned();
         return Ok(HttpResponse::NoContent()
             .insert_header(("X-Terraform-Get", header_value))
@@ -132,7 +136,7 @@ pub async fn tf_module_download(
     let body = resp
         .bytes()
         .await
-        .map_err(|e| AppError::internal(format!("reading upstream response: {e}")))?;
+        .map_err(|e| CoreError::Registry(format!("reading upstream response: {e}")))?;
 
     Ok(HttpResponse::build(status)
         .content_type("application/json")

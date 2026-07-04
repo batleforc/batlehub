@@ -249,7 +249,7 @@ No external services are needed. These tests run offline and are included in `ta
 cargo test -p batlehub-web
 ```
 
-`crates/web/tests/integration.rs` (~6 000 lines) spins up a real actix-web application using `actix_web::test::init_service` and in-memory backends (no Postgres, no S3). It sends actual HTTP requests and asserts on status codes, headers, and JSON bodies.
+`crates/web/tests/*.rs` — one file per feature/registry area, sharing app-factory infrastructure from `crates/web/tests/common/mod.rs` — spin up a real actix-web application using `actix_web::test::init_service` and in-memory backends (no Postgres, no S3). They send actual HTTP requests and assert on status codes, headers, and JSON bodies.
 
 **What they validate:**
 - All proxy handlers across every registry type — correct URL routing, wire-format parsing, upstream passthrough, cache behaviour, and error mapping.

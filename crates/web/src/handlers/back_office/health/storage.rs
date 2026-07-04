@@ -57,7 +57,9 @@ pub async fn clear_registry_cache(
 
     // Clean up any remaining artifact_storage records.
     if let Some(repo) = storage_admin_repo {
-        let _ = repo.delete_by_prefix(&prefix).await;
+        let _ = repo.delete_by_prefix(&prefix).await.inspect_err(
+            |e| tracing::warn!(error = %e, prefix = %prefix, "failed to purge artifact_storage records"),
+        );
     }
 
     Ok(web::Json(ClearCacheResponse { cleared }))

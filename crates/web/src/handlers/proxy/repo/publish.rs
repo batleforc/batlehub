@@ -12,6 +12,7 @@ use actix_web::{put, web, HttpResponse, Responder};
 
 use batlehub_adapters::repo::{deb, gzip, pacman, rpm, OpenPgpSigner};
 use batlehub_core::{
+    error::CoreError,
     ports::{StorageBackend, StorageMeta},
     services::{LocalRegistryService, PublishPolicyRequest},
 };
@@ -230,7 +231,7 @@ async fn regenerate_deb(
             .collect();
         let packages = deb::generate_packages(&stanzas);
         let packages_bytes = packages.into_bytes();
-        let gz = gzip(&packages_bytes).map_err(|e| AppError::internal(e.to_string()))?;
+        let gz = gzip(&packages_bytes).map_err(|e| CoreError::Other(anyhow::anyhow!(e)))?;
 
         let rel_dir = format!("{component}/binary-{arch}");
         let pkg_path = format!("{rel_dir}/Packages");
@@ -377,7 +378,7 @@ pub async fn rpm_publish(
         .await?;
         // 2. Record a JSON sidecar for repodata regeneration.
         let sidecar = format!("local:{registry}/_index/rpm/{id}.json");
-        let json = serde_json::to_vec(&pkg).map_err(|e| AppError::internal(e.to_string()))?;
+        let json = serde_json::to_vec(&pkg).map_err(|e| CoreError::Other(anyhow::anyhow!(e)))?;
         store_bytes(storage, &sidecar, json).await?;
         // 3. Regenerate repodata.
         let signer = signers.get(&registry);
@@ -421,7 +422,7 @@ async fn regenerate_rpm(
         ("filelists", &filelists),
         ("other", &other),
     ] {
-        let gz = gzip(plain).map_err(|e| AppError::internal(e.to_string()))?;
+        let gz = gzip(plain).map_err(|e| CoreError::Other(anyhow::anyhow!(e)))?;
         let href = format!("repodata/{kind}.xml.gz");
         // Build the repomd entry (digests only) before moving the gz into storage.
         repomd_entries.push(rpm::RepoMdData::new(kind, &href, &gz, plain, timestamp));
@@ -563,7 +564,7 @@ pub async fn pacman_publish(
 
         // 3. Record a JSON sidecar, keyed by arch, for DB regeneration.
         let sidecar = format!("local:{registry}/_index/pacman/{arch}/{filename}.json");
-        let json = serde_json::to_vec(&pkg).map_err(|e| AppError::internal(e.to_string()))?;
+        let json = serde_json::to_vec(&pkg).map_err(|e| CoreError::Other(anyhow::anyhow!(e)))?;
         store_bytes(storage, &sidecar, json).await?;
 
         // 4. Regenerate the per-arch database.
@@ -611,7 +612,7 @@ async fn regenerate_pacman(
         .iter()
         .filter_map(|p| Some((pacman::db_dir_name(p)?, pacman::desc_entry(p))))
         .collect();
-    let db = pacman::generate_db(&entries).map_err(|e| AppError::internal(e.to_string()))?;
+    let db = pacman::generate_db(&entries).map_err(|e| CoreError::Other(anyhow::anyhow!(e)))?;
 
     // `<repo>.db`/`<repo>.files` are what `pacman -Sy` fetches; the `.tar.gz`
     // aliases match what `repo-add` writes, so tooling that expects either works.

@@ -6,6 +6,7 @@ use crate::entities::SbomFormat;
 use crate::error::CoreError;
 use crate::ports::CacheEntry;
 use crate::services::cache_control::parse_cache_control;
+use crate::services::sbom::SbomProxiedOptions;
 
 use super::{ProxyRequest, ProxyService};
 
@@ -169,9 +170,11 @@ impl ProxyService {
                     &meta_clone,
                     &key_clone,
                     &data,
-                    &formats,
-                    cfg.fetch_upstream,
-                    &registry_type,
+                    SbomProxiedOptions {
+                        registry_type: &registry_type,
+                        formats: &formats,
+                        fetch_upstream: cfg.fetch_upstream,
+                    },
                 )
                 .await
             {

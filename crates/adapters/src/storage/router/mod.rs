@@ -82,9 +82,8 @@ impl StorageRouter {
     /// Resolve the backend for a legacy (pre-dedup) artifact `key`: the backend
     /// recorded in `artifact_storage` when it exists, or the backend the
     /// routing rules currently assign the key to otherwise (never recorded, or
-    /// predates that bookkeeping). Shared by `retrieve`/`exists`'s legacy-path
-    /// fallback; `delete`'s dedup-vs-legacy branching is different enough
-    /// (ref-count bookkeeping via `delete_dedup_entry`) that it stays separate.
+    /// predates that bookkeeping). Shared by `retrieve`/`exists`/`delete`'s
+    /// legacy-path fallback.
     async fn legacy_backend_for(&self, key: &str) -> Arc<dyn StorageBackend> {
         match self.recorded_backend_for_key(key).await {
             Some(b) => b,
@@ -441,10 +440,7 @@ impl StorageBackend for StorageRouter {
             true
         } else {
             // ── Legacy path ───────────────────────────────────────────────────
-            let backend = match self.recorded_backend_for_key(key).await {
-                Some(b) => b,
-                None => self.resolve_backend(self.backend_name_for_key(key)).clone(),
-            };
+            let backend = self.legacy_backend_for(key).await;
             backend.delete(key).await?
         };
 

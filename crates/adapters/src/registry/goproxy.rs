@@ -10,7 +10,7 @@ use batlehub_core::{
 };
 
 use super::http_client::{
-    apply_upstream_options, basic_auth_get, cache_control, percent_encode, to_registry_error,
+    basic_auth_get, cache_control, new_http_client, percent_encode, to_registry_error,
     UpstreamHttpOptions,
 };
 
@@ -67,10 +67,7 @@ fn same_origin(a: &str, b: &str) -> bool {
 
 impl GoProxyRegistryClient {
     pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
-        let builder = reqwest::Client::builder()
-            .user_agent("batlehub/0.1")
-            .redirect(reqwest::redirect::Policy::limited(10));
-        let http = apply_upstream_options(builder, opts)?;
+        let http = new_http_client(Some(10), opts)?;
         let base_url = base_url.into();
         // search_url: None → built-in default; Some("") → disabled; Some(u) → override.
         let search_base = match opts.search_url.as_deref() {

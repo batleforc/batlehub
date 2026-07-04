@@ -78,7 +78,7 @@ pub async fn collect_payload(mut payload: web::Payload) -> Result<Bytes, AppErro
 pub async fn collect_storage_stream(mut stream: ByteStream) -> Result<Bytes, AppError> {
     let mut buf = Vec::new();
     while let Some(chunk) = stream.next().await {
-        buf.extend_from_slice(&chunk.map_err(|e| AppError::internal(e.to_string()))?);
+        buf.extend_from_slice(&chunk?);
     }
     Ok(Bytes::from(buf))
 }

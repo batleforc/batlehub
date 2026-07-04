@@ -206,12 +206,19 @@ pub async fn delete_package(
     let storage_key = format!("artifact:{}", pkg.cache_key());
     let meta_key = format!("meta:{}", pkg.cache_key());
     // Best-effort: purge cached artifact and metadata cache.
-    let _ = proxy_svc.storage.delete(&storage_key).await;
+    let _ = proxy_svc.storage.delete(&storage_key).await.inspect_err(
+        |e| tracing::warn!(error = %e, key = %storage_key, "failed to purge cached artifact"),
+    );
     let _ = proxy_svc
         .artifact_meta
         .delete_artifact_meta(&storage_key)
-        .await;
-    let _ = proxy_svc.cache.invalidate(&meta_key).await;
+        .await
+        .inspect_err(
+            |e| tracing::warn!(error = %e, key = %storage_key, "failed to purge artifact metadata"),
+        );
+    let _ = proxy_svc.cache.invalidate(&meta_key).await.inspect_err(
+        |e| tracing::warn!(error = %e, key = %meta_key, "failed to invalidate metadata cache"),
+    );
 
     Ok(web::Json(ActionResponse {
         success: true,

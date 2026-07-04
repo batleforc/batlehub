@@ -175,7 +175,10 @@ impl ConfigReloadService {
 
         // Clear the in-progress banner on success.
         if let Some(ref banner) = self.banner {
-            let _ = banner.clear().await;
+            let _ = banner
+                .clear()
+                .await
+                .inspect_err(|e| tracing::warn!(error = %e, "failed to clear reload banner"));
         }
 
         // Write editor-submitted content back to disk so the change survives a restart.

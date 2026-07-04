@@ -5,6 +5,7 @@ use utoipa::ToSchema;
 use batlehub_adapters::auth::OidcSsoFlow;
 
 use super::{spa_error_redirect, split_combined_state, url_encode, CallbackQuery, LoginQuery};
+use crate::error::AppError;
 
 // ── Provider list ──────────────────────────────────────────────────────────────
 
@@ -68,15 +69,16 @@ pub async fn list_oidc_providers(flows: web::Data<Vec<OidcSsoFlow>>) -> impl Res
 pub async fn oidc_login(
     flows: web::Data<Vec<OidcSsoFlow>>,
     query: web::Query<LoginQuery>,
-) -> impl Responder {
+) -> Result<impl Responder, AppError> {
     if flows.is_empty() {
-        return HttpResponse::ServiceUnavailable()
-            .json(serde_json::json!({ "error": "OIDC SSO is not configured on this server" }));
+        return Err(AppError::service_unavailable(
+            "OIDC SSO is not configured on this server",
+        ));
     }
 
     let Some(ref state) = query.state else {
         // Probe request — confirm the endpoint exists and OIDC is configured.
-        return HttpResponse::Ok().finish();
+        return Ok(HttpResponse::Ok().finish());
     };
 
     let sso = if let Some(ref name) = query.provider {
@@ -86,16 +88,15 @@ pub async fn oidc_login(
     };
 
     let Some(sso) = sso else {
-        return HttpResponse::NotFound()
-            .json(serde_json::json!({ "error": "OIDC provider not found" }));
+        return Err(AppError::not_found("OIDC provider not found"));
     };
 
     // Embed the provider name in the state so the callback can look up the right flow.
     let combined_state = format!("{}:{}", sso.name, state);
     let location = sso.authorization_url(&combined_state);
-    HttpResponse::Found()
+    Ok(HttpResponse::Found()
         .insert_header(("Location", location))
-        .finish()
+        .finish())
 }
 
 // ── Callback ───────────────────────────────────────────────────────────────────
@@ -181,8 +182,11 @@ pub async fn oidc_callback(
                 .finish()
         }
         Err(e) => {
+            // Log the full anyhow chain (which can include the upstream token
+            // endpoint URL) server-side only; the browser-visible redirect gets a
+            // generic message so it never leaks upstream connectivity details.
             tracing::warn!(error = %e, "OIDC token exchange failed");
-            spa_error_redirect(&base, &e.to_string())
+            spa_error_redirect(&base, "Failed to complete sign-in. Please try again.")
         }
     }
 }
@@ -223,10 +227,11 @@ pub struct RefreshResponse {
 pub async fn oidc_refresh(
     flows: web::Data<Vec<OidcSsoFlow>>,
     body: web::Json<RefreshRequest>,
-) -> impl Responder {
+) -> Result<impl Responder, AppError> {
     if flows.is_empty() {
-        return HttpResponse::ServiceUnavailable()
-            .json(serde_json::json!({ "error": "OIDC SSO is not configured on this server" }));
+        return Err(AppError::service_unavailable(
+            "OIDC SSO is not configured on this server",
+        ));
     }
 
     let sso = if let Some(ref name) = body.provider {
@@ -236,19 +241,18 @@ pub async fn oidc_refresh(
     };
 
     let Some(sso) = sso else {
-        return HttpResponse::NotFound()
-            .json(serde_json::json!({ "error": "OIDC provider not found" }));
+        return Err(AppError::not_found("OIDC provider not found"));
     };
 
     match sso.refresh(&body.refresh_token).await {
-        Ok(tokens) => HttpResponse::Ok().json(RefreshResponse {
+        Ok(tokens) => Ok(HttpResponse::Ok().json(RefreshResponse {
             access_token: tokens.access_token,
             refresh_token: tokens.refresh_token,
             expires_in: tokens.expires_in,
-        }),
+        })),
         Err(e) => {
             tracing::warn!(error = %e, "OIDC token refresh failed");
-            HttpResponse::BadRequest().json(serde_json::json!({ "error": e.to_string() }))
+            Err(AppError::bad_request("failed to refresh OIDC token"))
         }
     }
 }

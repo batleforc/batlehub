@@ -43,8 +43,12 @@ pub fn scan_project_types(
 fn read_dir_entries(dir: &Path, remaining_depth: usize) -> (Vec<String>, Vec<PathBuf>) {
     let mut file_names: Vec<String> = Vec::new();
     let mut subdirs: Vec<PathBuf> = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return (file_names, subdirs);
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            eprintln!("Warning: failed to read directory {}: {e}", dir.display());
+            return (file_names, subdirs);
+        }
     };
     for entry in entries.flatten() {
         match classify_entry(&entry, remaining_depth) {

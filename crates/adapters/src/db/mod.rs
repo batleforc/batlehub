@@ -57,7 +57,7 @@ pub mod ownership;
 pub mod storage_admin;
 
 #[cfg(feature = "db-postgres")]
-pub mod postgres;
+pub mod packages;
 
 #[cfg(feature = "db-postgres")]
 pub mod quota;
@@ -93,7 +93,7 @@ pub use ownership::PgOwnershipStore;
 pub use storage_admin::PgStorageAdminRepository;
 
 #[cfg(feature = "db-postgres")]
-pub use postgres::PgPackageRepository;
+pub use packages::PgPackageRepository;
 
 #[cfg(feature = "db-postgres")]
 pub use quota::PgQuotaRepository;

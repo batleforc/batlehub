@@ -214,18 +214,8 @@ impl ProxyService {
             "cached artifact failed re-serve integrity check for {}: {algo} digest mismatch (expected {expected}, got {actual})",
             req.package_id,
         );
-        super::warn_if_audit_failed(
-            self.repo
-                .record_access(AccessEvent::proxy_error(
-                    req.package_id.clone(),
-                    req.identity.user_id.clone(),
-                    req.identity.role.clone(),
-                    reason.clone(),
-                ))
-                .await,
-            "reserve integrity mismatch",
-        );
-        super::finish_request(&timing.registry_label, "integrity_failed", timing.start);
+        self.audit_integrity_failure(req, &reason, "reserve integrity mismatch", timing)
+            .await;
         CoreError::IntegrityFailure(reason)
     }
 
@@ -256,29 +246,9 @@ impl ProxyService {
         metrics::counter!("batlehub_artifact_cache_misses_total", "registry" => timing.registry_label.clone()).increment(1);
         self.metrics.record_artifact_miss(registry_name);
         let upstream_start = Instant::now();
-        let mut upstream = match client.fetch_artifact(&req.package_id).await {
-            Ok(s) => s,
-            Err(e) => {
-                super::record_upstream_duration(
-                    &timing.registry_label,
-                    "fetch_artifact",
-                    upstream_start,
-                );
-                metrics::counter!("batlehub_upstream_errors_total", "registry" => timing.registry_label.clone()).increment(1);
-                super::warn_if_audit_failed(
-                    self.repo
-                        .record_access(AccessEvent::proxy_error(
-                            req.package_id.clone(),
-                            req.identity.user_id.clone(),
-                            req.identity.role.clone(),
-                            e.to_string(),
-                        ))
-                        .await,
-                    "proxy error",
-                );
-                return Err(e);
-            }
-        };
+        let mut upstream = self
+            .fetch_artifact_or_record_error(&client, &req, &timing.registry_label, upstream_start)
+            .await?;
         // Times the whole body transfer (not just time-to-headers) — see
         // `time_upstream_stream` for why.
         upstream.stream = super::time_upstream_stream(
@@ -347,7 +317,9 @@ impl ProxyService {
                 // Backends clean up their own partial writes; drop the staging key
                 // too in case the backend committed a partial entry under it.
                 if must_stage {
-                    let _ = self.storage.delete(&store_key).await;
+                    if let Err(cleanup_err) = self.storage.delete(&store_key).await {
+                        tracing::warn!(key = %store_key, error = %cleanup_err, "failed to delete staging artifact after mid-stream failure");
+                    }
                 }
                 return Err(e);
             }
@@ -450,18 +422,8 @@ impl ProxyService {
                 "integrity policy requires checksum metadata, but upstream provided none for {}",
                 req.package_id,
             );
-            super::warn_if_audit_failed(
-                self.repo
-                    .record_access(AccessEvent::proxy_error(
-                        req.package_id.clone(),
-                        req.identity.user_id.clone(),
-                        req.identity.role.clone(),
-                        reason.clone(),
-                    ))
-                    .await,
-                "integrity missing metadata",
-            );
-            super::finish_request(&timing.registry_label, "integrity_failed", timing.start);
+            self.audit_integrity_failure(req, &reason, "integrity missing metadata", timing)
+                .await;
             return Err(CoreError::IntegrityFailure(reason));
         }
         tracing::debug!(registry = %registry_name, key = %artifact_key, "upstream provided no integrity metadata");
@@ -562,7 +524,9 @@ impl ProxyService {
             .store_streaming(artifact_key, staged.stream, StorageMeta::default())
             .await
         {
-            let _ = self.storage.delete(store_key).await;
+            if let Err(cleanup_err) = self.storage.delete(store_key).await {
+                tracing::warn!(key = %store_key, error = %cleanup_err, "failed to delete staging artifact after promotion failure");
+            }
             return Err(e);
         }
         if let Err(e) = self.storage.delete(store_key).await {
@@ -625,18 +589,8 @@ impl ProxyService {
                     &artifact_key,
                     &req.package_id,
                 ) {
-                    super::warn_if_audit_failed(
-                        self.repo
-                            .record_access(AccessEvent::proxy_error(
-                                req.package_id.clone(),
-                                req.identity.user_id.clone(),
-                                req.identity.role.clone(),
-                                reason.clone(),
-                            ))
-                            .await,
-                        "integrity mismatch",
-                    );
-                    super::finish_request(&timing.registry_label, "integrity_failed", timing.start);
+                    self.audit_integrity_failure(&req, &reason, "integrity mismatch", timing)
+                        .await;
                     return Err(CoreError::IntegrityFailure(reason));
                 }
             }

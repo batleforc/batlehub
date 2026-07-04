@@ -336,12 +336,14 @@ async fn stale_key_always_has_no_redis_expiry() {
 async fn redis_native_ttl_evicts_live_key_but_stale_persists() {
     let Some(url) = redis_url() else { return };
     let s = make_store(&url).await;
-    // Use a real 1-second TTL so Redis itself evicts the live key.
+    // Use a short real TTL so Redis itself evicts the live key; sleep 3x the
+    // TTL (rather than +200ms) so the assertion isn't racing wall-clock expiry
+    // under load.
     s.store
         .set(
             &s.key("k1"),
             fresh_entry("short-lived"),
-            Some(Duration::from_secs(1)),
+            Some(Duration::from_millis(300)),
         )
         .await
         .unwrap();
@@ -350,7 +352,7 @@ async fn redis_native_ttl_evicts_live_key_but_stale_persists() {
         "entry should be present immediately after set"
     );
 
-    tokio::time::sleep(Duration::from_millis(1200)).await;
+    tokio::time::sleep(Duration::from_millis(900)).await;
 
     assert!(
         s.store.get(&s.key("k1")).await.unwrap().is_none(),
@@ -370,11 +372,13 @@ async fn invalidate_after_ttl_expiry_removes_stale_shadow() {
         .set(
             &s.key("k1"),
             fresh_entry("pkg"),
-            Some(Duration::from_secs(1)),
+            Some(Duration::from_millis(300)),
         )
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(1200)).await;
+    // Sleep 3x the TTL (rather than +200ms) so this isn't racing wall-clock
+    // expiry under load.
+    tokio::time::sleep(Duration::from_millis(900)).await;
 
     assert!(
         s.store.get(&s.key("k1")).await.unwrap().is_none(),

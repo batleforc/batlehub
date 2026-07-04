@@ -5,10 +5,15 @@ pub mod notification;
 pub mod rate_limit;
 pub mod sbom;
 
-#[cfg(feature = "auth-token")]
+#[cfg(any(
+    feature = "auth-token",
+    feature = "auth-oidc",
+    feature = "auth-kubernetes",
+    feature = "auth-actions-oidc"
+))]
 pub mod auth;
 
-#[cfg(feature = "storage-fs")]
+#[cfg(any(feature = "storage-fs", feature = "storage-s3"))]
 pub mod storage;
 
 pub mod registry;

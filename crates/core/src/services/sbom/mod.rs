@@ -24,6 +24,14 @@ pub struct SbomPublishOptions<'a> {
     pub required: bool,
 }
 
+/// Options for recording an SBOM for a proxied (cached) artifact. Mirrors
+/// [`SbomPublishOptions`]'s grouping of the non-identity parameters.
+pub struct SbomProxiedOptions<'a> {
+    pub registry_type: &'a str,
+    pub formats: &'a [SbomFormat],
+    pub fetch_upstream: bool,
+}
+
 // ── SbomService implementation ────────────────────────────────────────────────
 
 impl SbomService {
@@ -52,10 +60,13 @@ impl SbomService {
         meta: &PackageMetadata,
         artifact_key: &str,
         data: &Bytes,
-        formats: &[SbomFormat],
-        fetch_upstream: bool,
-        registry_type: &str,
+        opts: SbomProxiedOptions<'_>,
     ) -> Result<(), CoreError> {
+        let SbomProxiedOptions {
+            registry_type,
+            formats,
+            fetch_upstream,
+        } = opts;
         // Try upstream SBOM (SPDX only — GitHub returns SPDX)
         let upstream_spdx = if fetch_upstream {
             if let Some(ref fetcher) = self.fetcher {
@@ -365,9 +376,11 @@ mod tests {
             &meta,
             "artifact:cargo/tokio/1.0.0",
             &Bytes::new(),
-            &[SbomFormat::Spdx, SbomFormat::CycloneDx],
-            true,
-            "cargo",
+            SbomProxiedOptions {
+                registry_type: "cargo",
+                formats: &[SbomFormat::Spdx, SbomFormat::CycloneDx],
+                fetch_upstream: true,
+            },
         )
         .await
         .unwrap();
@@ -390,9 +403,11 @@ mod tests {
             &meta,
             "artifact:npm/express/4.0.0",
             &Bytes::new(),
-            &[SbomFormat::Spdx],
-            false,
-            "npm",
+            SbomProxiedOptions {
+                registry_type: "npm",
+                formats: &[SbomFormat::Spdx],
+                fetch_upstream: false,
+            },
         )
         .await
         .unwrap();
@@ -417,9 +432,11 @@ mod tests {
             &meta,
             "artifact:rubygems/rails/7.0.0",
             &Bytes::new(),
-            &[SbomFormat::Spdx, SbomFormat::CycloneDx],
-            true,
-            "rubygems",
+            SbomProxiedOptions {
+                registry_type: "rubygems",
+                formats: &[SbomFormat::Spdx, SbomFormat::CycloneDx],
+                fetch_upstream: true,
+            },
         )
         .await
         .unwrap();
@@ -501,9 +518,11 @@ mod tests {
             &meta,
             "artifact:cargo/tokio/1.0.0",
             &Bytes::new(),
-            &[SbomFormat::Spdx, SbomFormat::CycloneDx],
-            false,
-            "cargo",
+            SbomProxiedOptions {
+                registry_type: "cargo",
+                formats: &[SbomFormat::Spdx, SbomFormat::CycloneDx],
+                fetch_upstream: false,
+            },
         )
         .await
         .unwrap();
@@ -533,9 +552,11 @@ mod tests {
             &meta,
             "artifact:cargo/tokio/1.0.0",
             &Bytes::new(),
-            &[SbomFormat::Spdx],
-            false,
-            "cargo",
+            SbomProxiedOptions {
+                registry_type: "cargo",
+                formats: &[SbomFormat::Spdx],
+                fetch_upstream: false,
+            },
         )
         .await
         .unwrap();

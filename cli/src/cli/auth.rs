@@ -5,7 +5,7 @@ use clap::Subcommand;
 use comfy_table::Table;
 
 use crate::api::{
-    auth::{get_oidc_login_url, oidc_refresh, parse_oidc_paste, CreateTokenRequest},
+    auth::{parse_oidc_paste, CreateTokenRequest},
     BatleHubClient,
 };
 use crate::config::ConfigFile;
@@ -206,7 +206,7 @@ async fn handle_auth_login(
     }
 
     let csrf = uuid::Uuid::new_v4().to_string();
-    let login_url = get_oidc_login_url(&client.base_url, &csrf, provider.as_deref()).await?;
+    let login_url = client.oidc_login_url(&csrf, provider.as_deref()).await?;
 
     println!("Open this URL in your browser:");
     println!();
@@ -269,8 +269,9 @@ async fn handle_auth_refresh(
             })?
     };
 
-    let (access_token, new_refresh, expires_in) =
-        oidc_refresh(&client.base_url, &refresh_token, provider.as_deref()).await?;
+    let (access_token, new_refresh, expires_in) = client
+        .oidc_refresh(&refresh_token, provider.as_deref())
+        .await?;
 
     let entry = match target_profile {
         Some(n) => cfg.profiles.entry(n.to_string()).or_default(),

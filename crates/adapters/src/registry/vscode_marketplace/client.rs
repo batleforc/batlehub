@@ -8,7 +8,7 @@ use batlehub_core::{
     ports::{FetchedArtifact, RegistryClient},
 };
 
-use super::super::http_client::{apply_upstream_options, to_registry_error, UpstreamHttpOptions};
+use super::super::http_client::{new_http_client, to_registry_error, UpstreamHttpOptions};
 use super::models::{
     ExtensionQueryCriteria, ExtensionQueryFilter, ExtensionQueryRequest, ExtensionQueryResponse,
     ResolvedExtension, FILTER_EXTENSION_NAME, FILTER_VERSION, FLAG_INCLUDE_ASSET_URI,
@@ -30,10 +30,7 @@ pub struct VsCodeMarketplaceRegistryClient {
 
 impl VsCodeMarketplaceRegistryClient {
     pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
-        let builder = reqwest::Client::builder()
-            .user_agent("batlehub/0.1")
-            .redirect(reqwest::redirect::Policy::limited(10));
-        let http = apply_upstream_options(builder, opts)?;
+        let http = new_http_client(Some(10), opts)?;
         Ok(Self {
             http,
             base_url: base_url.into(),

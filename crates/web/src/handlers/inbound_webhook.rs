@@ -102,10 +102,7 @@ pub async fn receive_inbound_webhook(
         signature_valid,
     };
 
-    notification_store
-        .record_inbound_event(event)
-        .await
-        .map_err(|e| AppError::internal(e.to_string()))?;
+    notification_store.record_inbound_event(event).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -134,9 +131,6 @@ pub async fn list_inbound_events(
     notification_store: web::Data<Arc<dyn NotificationPort>>,
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
-    let events = notification_store
-        .list_inbound_events(100)
-        .await
-        .map_err(|e| AppError::internal(e.to_string()))?;
+    let events = notification_store.list_inbound_events(100).await?;
     Ok(web::Json(InboundEventsResponse { events }))
 }

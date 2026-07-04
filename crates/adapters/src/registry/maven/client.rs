@@ -8,7 +8,7 @@ use batlehub_core::{
 };
 
 use super::super::http_client::{
-    apply_upstream_options, basic_auth_get, cache_control, parse_http_date, percent_encode,
+    basic_auth_get, cache_control, new_http_client, parse_http_date, percent_encode,
     to_registry_error, UpstreamHttpOptions,
 };
 use super::models::{decode_name, extract_all_xml_tags, extract_xml_tag, parse_last_updated};
@@ -39,10 +39,7 @@ pub struct MavenRegistryClient {
 
 impl MavenRegistryClient {
     pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
-        let builder = reqwest::Client::builder()
-            .user_agent("batlehub/0.1")
-            .redirect(reqwest::redirect::Policy::limited(10));
-        let http = apply_upstream_options(builder, opts)?;
+        let http = new_http_client(Some(10), opts)?;
 
         // Resolve the search base URL:
         //   - explicit empty string → disabled

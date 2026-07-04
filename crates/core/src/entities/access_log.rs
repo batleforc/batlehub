@@ -28,6 +28,18 @@ pub enum AccessAction {
     UnblockIp,
     /// The access-audit trail itself was purged up to a cutoff timestamp.
     AuditPurge,
+    /// A local/hybrid-mode version was yanked (hidden from install, still resolvable by exact pin).
+    Yank,
+    /// A previously yanked version was restored.
+    Unyank,
+    /// A local/hybrid-mode version was flagged deprecated.
+    Deprecate,
+    /// A deprecation was reversed.
+    Undeprecate,
+    /// A local/hybrid-mode version was hidden from registry-protocol listings.
+    Unlist,
+    /// An unlisted version was made visible in listings again.
+    Relist,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

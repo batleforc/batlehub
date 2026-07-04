@@ -379,7 +379,7 @@ async fn handle_login(app: &mut App, key: event::KeyEvent) {
         app.login.path_input = Input::default();
         if app.login.oidc_url.is_none() {
             let csrf = Uuid::new_v4().to_string();
-            match crate::api::auth::get_oidc_login_url(&app.client.base_url, &csrf, None).await {
+            match app.client.oidc_login_url(&csrf, None).await {
                 Ok(url) => app.login.oidc_url = Some(url),
                 Err(e) => app.login.status = Some(format!("OIDC unavailable: {e}")),
             }

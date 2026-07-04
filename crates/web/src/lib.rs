@@ -76,6 +76,11 @@ impl<V: Clone> LockedMap<V> {
     /// locks in turn. Used by the hot-reload applier to swap in a pending
     /// map's contents without replacing the `Arc` (and therefore without
     /// invalidating any clone already held by an in-flight request).
+    ///
+    /// This map's `replace_from` call is independent of every other hot-reload
+    /// map's — see `ConfigReloadApplier::apply`'s doc comment (`services/reload/
+    /// applier.rs`) for the resulting request-scoped skew window and what to do
+    /// if a handler ever needs two of these maps to agree within one request.
     fn replace_from(&self, other: &Self) {
         let snapshot = other.0.read().expect("locked map lock poisoned").clone();
         *self.0.write().expect("locked map lock poisoned") = snapshot;

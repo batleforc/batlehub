@@ -4,6 +4,7 @@ use std::sync::Arc;
 use anyhow::Context;
 
 use batlehub_config::schema::{AppConfig, RegistryConfig, RegistryMode};
+use batlehub_core::entities::RegistryKind;
 use batlehub_core::ports::{BetaChannelPort, PackageRepository, VulnerabilityRepository};
 use batlehub_core::services::{
     FeatureFlags, HotConfig, HotSbomConfig, IntegrityPolicy, SigningConfig as CoreSigningConfig,
@@ -66,11 +67,28 @@ fn build_integrity_map(registries: &[RegistryConfig]) -> HashMap<String, Integri
     map_registries(
         registries,
         |reg| reg.integrity.as_ref(),
-        |_reg, i| IntegrityPolicy {
+        |reg, i| IntegrityPolicy {
             enabled: i.enabled,
             block_on_mismatch: i.block_on_mismatch,
             require_metadata: i.require_metadata,
-            bypass_roles: i.bypass_roles.iter().map(|r| parse_role(r)).collect(),
+            // `map_registries`'s per-field builder can't fail the whole reload over
+            // one bad role, so — like `build_versioning_map`'s regex handling above
+            // — an unrecognized entry is dropped with a warning rather than
+            // silently coerced to `anonymous`.
+            bypass_roles: i
+                .bypass_roles
+                .iter()
+                .filter_map(|r| match parse_role(r) {
+                    Ok(role) => Some(role),
+                    Err(e) => {
+                        tracing::warn!(
+                            "invalid integrity bypass_roles entry for registry '{}': {e}",
+                            reg.name
+                        );
+                        None
+                    }
+                })
+                .collect(),
             verify_on_serve: i.verify_on_serve,
         },
     )
@@ -132,13 +150,14 @@ fn build_beta_channel_map(
 }
 
 pub(super) fn upstream_url_for(reg: &RegistryConfig) -> Option<String> {
-    let default_url = match reg.registry_type.as_str() {
-        "npm" => "https://registry.npmjs.org",
-        "terraform" => "https://registry.terraform.io",
-        "pypi" => "https://pypi.org",
-        "conda" => "https://conda.anaconda.org",
-        "nuget" => "https://api.nuget.org",
-        "composer" => "https://packagist.org",
+    let kind: RegistryKind = reg.registry_type.parse().ok()?;
+    let default_url = match kind {
+        RegistryKind::Npm => "https://registry.npmjs.org",
+        RegistryKind::Terraform => "https://registry.terraform.io",
+        RegistryKind::Pypi => "https://pypi.org",
+        RegistryKind::Conda => "https://conda.anaconda.org",
+        RegistryKind::Nuget => "https://api.nuget.org",
+        RegistryKind::Composer => "https://packagist.org",
         _ => return None,
     };
     Some(
@@ -153,7 +172,7 @@ fn build_vuln_db_map(registries: &[RegistryConfig]) -> VulnDbMap {
     const DEFAULT: &str = "https://vuln.go.dev";
     let urls = registries
         .iter()
-        .filter(|r| r.registry_type == "goproxy")
+        .filter(|r| r.registry_type == RegistryKind::Goproxy.as_str())
         .filter_map(|r| match r.vuln_db_url.as_deref() {
             Some("") => None,
             Some(url) => Some((r.name.clone(), url.trim_end_matches('/').to_owned())),
@@ -188,14 +207,9 @@ pub(super) fn build_hot_bundle(
         let client = crate::builders::build_registry_client(reg, cfg.proxy.as_ref())
             .with_context(|| format!("building registry client for '{}'", reg.name))?;
         reg_clients.insert(reg.name.clone(), client);
-        reg_policies.insert(
-            reg.name.clone(),
-            Arc::new(crate::builders::build_policy(
-                reg,
-                Arc::clone(repo),
-                Arc::clone(vuln_repo),
-            )),
-        );
+        let policy = crate::builders::build_policy(reg, Arc::clone(repo), Arc::clone(vuln_repo))
+            .with_context(|| format!("building policy for '{}'", reg.name))?;
+        reg_policies.insert(reg.name.clone(), Arc::new(policy));
         reg_type_map.insert(reg.name.clone(), reg.registry_type.clone());
         reg_mode_map.insert(reg.name.clone(), reg.mode.clone());
         if let Some(url) = upstream_url_for(reg) {

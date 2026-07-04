@@ -19,9 +19,9 @@ use batlehub_core::{
     ports::{PackageRepository, RecentErrorRecord},
 };
 
+pub mod crud;
 pub mod explore;
 pub mod health;
-pub mod packages;
 
 pub(super) fn prepare_registries_param(registries: &[String]) -> Option<Vec<String>> {
     if registries.is_empty() {
@@ -129,6 +129,12 @@ pub(super) fn action_to_str(action: &AccessAction) -> &'static str {
         AccessAction::BlockIp => "block_ip",
         AccessAction::UnblockIp => "unblock_ip",
         AccessAction::AuditPurge => "audit_purge",
+        AccessAction::Yank => "yank",
+        AccessAction::Unyank => "unyank",
+        AccessAction::Deprecate => "deprecate",
+        AccessAction::Undeprecate => "undeprecate",
+        AccessAction::Unlist => "unlist",
+        AccessAction::Relist => "relist",
     }
 }
 
@@ -147,6 +153,12 @@ pub(super) fn str_to_action(s: &str) -> AccessAction {
         "block_ip" => AccessAction::BlockIp,
         "unblock_ip" => AccessAction::UnblockIp,
         "audit_purge" => AccessAction::AuditPurge,
+        "yank" => AccessAction::Yank,
+        "unyank" => AccessAction::Unyank,
+        "deprecate" => AccessAction::Deprecate,
+        "undeprecate" => AccessAction::Undeprecate,
+        "unlist" => AccessAction::Unlist,
+        "relist" => AccessAction::Relist,
         _ => AccessAction::Download,
     }
 }
@@ -192,27 +204,27 @@ impl PgPackageRepository {
 #[async_trait]
 impl PackageRepository for PgPackageRepository {
     async fn record_access(&self, event: AccessEvent) -> Result<(), CoreError> {
-        packages::record_access_impl(&self.pool, event).await
+        crud::record_access_impl(&self.pool, event).await
     }
 
     async fn get_status(&self, pkg: &PackageId) -> Result<PackageStatus, CoreError> {
-        packages::get_status_impl(&self.pool, pkg).await
+        crud::get_status_impl(&self.pool, pkg).await
     }
 
     async fn set_status(&self, pkg: &PackageId, status: PackageStatus) -> Result<(), CoreError> {
-        packages::set_status_impl(&self.pool, pkg, status).await
+        crud::set_status_impl(&self.pool, pkg, status).await
     }
 
     async fn delete_package(&self, pkg: &PackageId) -> Result<bool, CoreError> {
-        packages::delete_package_impl(&self.pool, pkg).await
+        crud::delete_package_impl(&self.pool, pkg).await
     }
 
     async fn list_packages(&self, filter: PackageFilter) -> Result<Vec<PackageSummary>, CoreError> {
-        packages::list_packages_impl(&self.pool, filter).await
+        crud::list_packages_impl(&self.pool, filter).await
     }
 
     async fn count_packages(&self, filter: PackageFilter) -> Result<u64, CoreError> {
-        packages::count_packages_impl(&self.pool, filter).await
+        crud::count_packages_impl(&self.pool, filter).await
     }
 
     async fn list_events(&self, filter: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {

@@ -491,7 +491,7 @@ mod tests {
 
 ### Integration test
 
-Add a case to `crates/web/tests/integration.rs` using the existing `FixedRegistry` and `InMemoryRepo` infrastructure. Search for `proxy_npm_tarball_accessible_by_user` as a template — the pattern is:
+Add a case to the relevant file under `crates/web/tests/` (one file per feature/registry area; shared app-factory infrastructure like `FixedRegistry` and `InMemoryRepo` lives in `crates/web/tests/common/mod.rs`). Search for `proxy_npm_tarball_accessible_by_user` (in `cargo_and_downloads.rs`) as a template — the pattern is:
 
 1. Build a `RegistryMap` with `"myregistry"` as the type.
 2. Send a `TestRequest::get()` to the new URL.

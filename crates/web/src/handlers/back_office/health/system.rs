@@ -117,16 +117,11 @@ pub async fn registry_health(
     };
 
     // ── Batch query 1: package counts for all registries in one round-trip ────
-    let pkg_counts: HashMap<String, i64> = repo
-        .registry_package_counts(&registry_names)
-        .await
-        .map_err(|e| AppError::internal(format!("health query failed: {e}")))?;
+    let pkg_counts: HashMap<String, i64> = repo.registry_package_counts(&registry_names).await?;
 
     // ── Batch query 2: event stats for all registries in one round-trip ───────
-    let mut event_stats: HashMap<String, (Option<DateTime<Utc>>, i64, i64)> = repo
-        .registry_event_stats(&registry_names)
-        .await
-        .map_err(|e| AppError::internal(format!("health query failed: {e}")))?;
+    let mut event_stats: HashMap<String, (Option<DateTime<Utc>>, i64, i64)> =
+        repo.registry_event_stats(&registry_names).await?;
 
     // ── Per-registry: storage stats + recent errors — run all concurrently ────
     let per_reg_futures = registries.iter().map(|(registry, _)| {

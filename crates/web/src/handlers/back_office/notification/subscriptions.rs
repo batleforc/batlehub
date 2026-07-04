@@ -10,8 +10,7 @@ use crate::handlers::back_office::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity, services::NotificationService};
 
 use super::{
-    require_notifications, ChannelInfo, ChannelListResponse, CreateSubscriptionRequest,
-    UpdateSubscriptionRequest,
+    require_notifications, ChannelInfo, CreateSubscriptionRequest, UpdateSubscriptionRequest,
 };
 
 /// List configured notification channels (names only — no secrets).
@@ -20,7 +19,7 @@ use super::{
     path = "/api/v1/admin/notifications/channels",
     tag = "back-office",
     responses(
-        (status = 200, description = "Channel list", body = ChannelListResponse),
+        (status = 200, description = "Channel list", body = Vec<ChannelInfo>),
         (status = 403, description = "Admin role required"),
         (status = 503, description = "Notifications not configured"),
     ),
@@ -33,12 +32,12 @@ pub async fn list_notification_channels(
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
     let svc = require_notifications(&notification_svc)?;
-    let channels = svc
+    let channels: Vec<ChannelInfo> = svc
         .channel_names()
         .into_iter()
         .map(|name| ChannelInfo { name })
         .collect();
-    Ok(web::Json(ChannelListResponse { channels }))
+    Ok(web::Json(channels))
 }
 
 /// List all notification subscriptions.
@@ -60,10 +59,7 @@ pub async fn list_subscriptions(
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
     let svc = require_notifications(&notification_svc)?;
-    let subs = svc
-        .list_subscriptions()
-        .await
-        .map_err(|e| AppError::internal(e.to_string()))?;
+    let subs = svc.list_subscriptions().await?;
     Ok(web::Json(subs))
 }
 
@@ -113,9 +109,7 @@ pub async fn create_subscription(
         created_at: Utc::now(),
         enabled: true,
     };
-    svc.add_subscription(sub.clone())
-        .await
-        .map_err(|e| AppError::internal(e.to_string()))?;
+    svc.add_subscription(sub.clone()).await?;
     Ok(HttpResponse::Created().json(sub))
 }
 
@@ -144,8 +138,7 @@ pub async fn get_subscription(
     let id = path.into_inner();
     let sub = svc
         .get_subscription(id)
-        .await
-        .map_err(|e| AppError::internal(e.to_string()))?
+        .await?
         .ok_or_else(|| AppError::not_found(format!("subscription {id}")))?;
     Ok(web::Json(sub))
 }
@@ -189,8 +182,7 @@ pub async fn update_subscription(
     // Fetch existing to preserve immutable fields.
     let existing = svc
         .get_subscription(id)
-        .await
-        .map_err(|e| AppError::internal(e.to_string()))?
+        .await?
         .ok_or_else(|| AppError::not_found(format!("subscription {id}")))?;
 
     let updated = NotificationSubscription {
@@ -201,9 +193,7 @@ pub async fn update_subscription(
         enabled: body.enabled,
         ..existing
     };
-    svc.update_subscription(updated.clone())
-        .await
-        .map_err(|e| AppError::internal(e.to_string()))?;
+    svc.update_subscription(updated.clone()).await?;
     Ok(web::Json(updated))
 }
 
@@ -231,12 +221,9 @@ pub async fn delete_subscription(
     let svc = require_notifications(&notification_svc)?;
     let id = path.into_inner();
     svc.get_subscription(id)
-        .await
-        .map_err(|e| AppError::internal(e.to_string()))?
+        .await?
         .ok_or_else(|| AppError::not_found(format!("subscription {id}")))?;
-    svc.remove_subscription(id)
-        .await
-        .map_err(|e| AppError::internal(e.to_string()))?;
+    svc.remove_subscription(id).await?;
     Ok(HttpResponse::NoContent().finish())
 }
 
@@ -266,8 +253,7 @@ pub async fn test_subscription(
     let id = path.into_inner();
     let sub = svc
         .get_subscription(id)
-        .await
-        .map_err(|e| AppError::internal(e.to_string()))?
+        .await?
         .ok_or_else(|| AppError::not_found(format!("subscription {id}")))?;
     svc.test_subscription(&sub).await.map_err(|e| {
         tracing::warn!(

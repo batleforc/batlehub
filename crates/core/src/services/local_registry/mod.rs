@@ -1,7 +1,7 @@
 mod eco_composer_conda_pypi;
-mod eco_gem_mvn_nuget;
 mod eco_go;
-mod eco_tf;
+mod eco_rubygems_maven_nuget;
+mod eco_terraform;
 mod lifecycle;
 mod publish;
 mod read;
@@ -14,7 +14,10 @@ use bytes::Bytes;
 use futures::StreamExt;
 
 use crate::{
-    entities::{AccessEvent, Identity, PackageId, PublishedPackage, Role, SbomFormat, Visibility},
+    entities::{
+        AccessAction, AccessEvent, AccessResult, Identity, PackageId, PublishedPackage, Role,
+        SbomFormat, Visibility,
+    },
     error::CoreError,
     ports::{
         LocalRegistryBackend, OwnershipPort, PackageRepository, StorageBackend, StorageMeta,

@@ -36,11 +36,6 @@ pub struct UpdateSubscriptionRequest {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct ChannelListResponse {
-    pub channels: Vec<ChannelInfo>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
 pub struct ChannelInfo {
     pub name: String,
 }

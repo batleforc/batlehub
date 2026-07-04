@@ -4,7 +4,11 @@ use actix_web::{post, web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use batlehub_core::{ports::BulkResult, services::LocalRegistryService};
+use batlehub_core::{
+    entities::{AccessAction, Identity},
+    ports::BulkResult,
+    services::LocalRegistryService,
+};
 
 use super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity};
@@ -17,6 +21,34 @@ fn bulk_items(body: web::Json<BulkPackageRequest>) -> Vec<(String, String)> {
         .into_iter()
         .map(|p| (p.name, p.version))
         .collect()
+}
+
+/// Record one lifecycle audit event per item that `result` reports as
+/// succeeded. `LocalRegistryBackend::bulk_*` only returns a success *count*,
+/// not which coordinates succeeded, so the succeeded set is `items` minus the
+/// ones `result.failed` names — mirrors the single-item yank/unyank/deprecate/
+/// unlist handlers, which already audit through `LocalRegistryService::record_lifecycle_action`.
+async fn record_bulk_lifecycle_audit(
+    local_svc: &LocalRegistryService,
+    registry: &str,
+    items: &[(String, String)],
+    result: &BulkResult,
+    action: AccessAction,
+    identity: &Identity,
+) {
+    let failed: std::collections::HashSet<(&str, &str)> = result
+        .failed
+        .iter()
+        .map(|(name, version, _)| (name.as_str(), version.as_str()))
+        .collect();
+    for (name, version) in items {
+        if failed.contains(&(name.as_str(), version.as_str())) {
+            continue;
+        }
+        local_svc
+            .record_lifecycle_action(registry, name, version, action.clone(), identity)
+            .await;
+    }
 }
 
 /// Convert a `BulkResult` into the API response DTO.
@@ -120,6 +152,15 @@ pub async fn bulk_yank(
         .bulk_yank(&registry, &items)
         .await
         .map_err(AppError::from)?;
+    record_bulk_lifecycle_audit(
+        &local_svc,
+        &registry,
+        &items,
+        &result,
+        AccessAction::Yank,
+        &identity.0,
+    )
+    .await;
     Ok(HttpResponse::Ok().json(bulk_response(result)))
 }
 
@@ -151,6 +192,15 @@ pub async fn bulk_unyank(
         .bulk_unyank(&registry, &items)
         .await
         .map_err(AppError::from)?;
+    record_bulk_lifecycle_audit(
+        &local_svc,
+        &registry,
+        &items,
+        &result,
+        AccessAction::Unyank,
+        &identity.0,
+    )
+    .await;
     Ok(HttpResponse::Ok().json(bulk_response(result)))
 }
 
@@ -182,6 +232,15 @@ pub async fn bulk_delete(
         .bulk_remove_versions(&registry, &items)
         .await
         .map_err(AppError::from)?;
+    record_bulk_lifecycle_audit(
+        &local_svc,
+        &registry,
+        &items,
+        &result,
+        AccessAction::Delete,
+        &identity.0,
+    )
+    .await;
     Ok(HttpResponse::Ok().json(bulk_response(result)))
 }
 

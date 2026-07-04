@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use actix_files::NamedFile;
 use actix_web::{get, web, Responder};
 
+use batlehub_core::error::CoreError;
+
 use crate::error::AppError;
 
 /// Registered path to the `batlehub-cli` binary.
@@ -53,12 +55,14 @@ pub async fn download_cli(
     let path_buf = path.0.clone();
     let file = actix_web::web::block(move || NamedFile::open(&path_buf))
         .await
-        .map_err(|e| AppError::internal(format!("Failed to open CLI binary: {e}")))?
+        .map_err(|e| CoreError::Other(anyhow::anyhow!("Failed to open CLI binary: {e}")))?
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 AppError::not_found("CLI binary path is configured but the file does not exist")
             } else {
-                AppError::internal(format!("Failed to open CLI binary: {e}"))
+                AppError::from(CoreError::Other(anyhow::anyhow!(
+                    "Failed to open CLI binary: {e}"
+                )))
             }
         })?;
 

@@ -10,7 +10,7 @@ use batlehub_core::{
     ports::{UserToken, UserTokenRepository},
 };
 
-use super::postgres::PgPackageRepository;
+use super::packages::PgPackageRepository;
 
 fn role_to_str(role: &Role) -> &'static str {
     match role {

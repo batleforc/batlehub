@@ -7,9 +7,11 @@ use std::time::Instant;
 
 use futures::{stream, StreamExt};
 
+use crate::entities::AccessEvent;
 use crate::error::CoreError;
 use crate::ports::{
-    ArtifactCacheMeta, ArtifactStream, CacheStore, PackageRepository, StorageBackend,
+    ArtifactCacheMeta, ArtifactStream, CacheStore, FetchedArtifact, PackageRepository,
+    RegistryClient, StorageBackend,
 };
 use crate::services::hot_config::HotConfigLock;
 use crate::services::metrics::ProxyMetrics;
@@ -52,6 +54,43 @@ pub struct ProxyService {
 pub(super) fn warn_if_audit_failed(r: Result<(), CoreError>, ctx: &str) {
     if let Err(e) = r {
         tracing::warn!(error = %e, ctx, "audit log write failed");
+    }
+}
+
+impl ProxyService {
+    /// Fetch an artifact from upstream, recording upstream latency, the
+    /// `batlehub_upstream_errors_total` counter, and a `proxy_error` audit event
+    /// on failure. Shared by `handle`'s firewall-only path and
+    /// `cache::fetch_and_cache`'s cache-miss path — the only two callers of
+    /// `RegistryClient::fetch_artifact`. `start` should be captured immediately
+    /// before this call so the caller can reuse it for `time_upstream_stream`
+    /// on the success path.
+    pub(super) async fn fetch_artifact_or_record_error(
+        &self,
+        client: &Arc<dyn RegistryClient>,
+        req: &ProxyRequest,
+        registry_label: &Arc<str>,
+        start: Instant,
+    ) -> Result<FetchedArtifact, CoreError> {
+        match client.fetch_artifact(&req.package_id).await {
+            Ok(artifact) => Ok(artifact),
+            Err(e) => {
+                record_upstream_duration(registry_label, "fetch_artifact", start);
+                metrics::counter!("batlehub_upstream_errors_total", "registry" => Arc::clone(registry_label)).increment(1);
+                warn_if_audit_failed(
+                    self.repo
+                        .record_access(AccessEvent::proxy_error(
+                            req.package_id.clone(),
+                            req.identity.user_id.clone(),
+                            req.identity.role.clone(),
+                            e.to_string(),
+                        ))
+                        .await,
+                    "proxy error",
+                );
+                Err(e)
+            }
+        }
     }
 }
 

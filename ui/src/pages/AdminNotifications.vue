@@ -12,7 +12,7 @@ import {
 import type {
   NotificationSubscription,
   NotificationEventType,
-  ChannelListResponse,
+  ChannelInfo,
   InboundEventsResponse,
 } from "@/client/types.gen";
 import { useApi, extractMessage } from "@/composables/useApi";
@@ -57,7 +57,7 @@ const {
   data: channelsResp,
   error: channelsError,
   loading: channelsLoading,
-} = useApi<ChannelListResponse>(() => listNotificationChannels(), [token]);
+} = useApi<ChannelInfo[]>(() => listNotificationChannels(), [token]);
 
 const {
   data: inboundResp,
@@ -66,7 +66,7 @@ const {
   reload: reloadInbound,
 } = useApi<InboundEventsResponse>(() => listInboundEvents(), [token]);
 
-const channels = computed(() => channelsResp.value?.channels ?? []);
+const channels = computed(() => channelsResp.value ?? []);
 const inboundEvents = computed(() => inboundResp.value?.events ?? []);
 
 // ── Create / edit dialog ──────────────────────────────────────────────────────

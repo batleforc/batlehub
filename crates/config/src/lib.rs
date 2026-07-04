@@ -145,10 +145,18 @@ fn expand_env_vars(raw: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use crate::schema::{
         AppConfig, AuthConfig, StorageBackendConfig, StoragesConfig, CURRENT_CONFIG_VERSION,
     };
     use crate::{expand_env_vars, load};
+
+    /// `cargo test` runs this crate's unit tests multi-threaded by default, but
+    /// `std::env::set_var`/`remove_var` mutate the single process-wide
+    /// environment table. Every test below that touches env vars acquires this
+    /// lock first so their set/read/remove sequences never interleave.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn parse(toml: &str) -> AppConfig {
         let config: AppConfig = toml::from_str(toml).expect("parse failed");
@@ -444,6 +452,7 @@ mod tests {
 
     #[test]
     fn env_override_replaces_database_url() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let mut cfg: AppConfig = toml::from_str(minimal()).unwrap();
         std::env::set_var("PROXY_CACHE__DATABASE__URL", "postgresql://env-host/env-db");
         cfg.apply_env_overrides();
@@ -453,6 +462,7 @@ mod tests {
 
     #[test]
     fn env_override_replaces_server_port() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let mut cfg: AppConfig = toml::from_str(minimal()).unwrap();
         std::env::set_var("PROXY_CACHE__SERVER__PORT", "9090");
         cfg.apply_env_overrides();
@@ -603,6 +613,7 @@ mod tests {
 
     #[test]
     fn env_override_filesystem_storage_path() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let mut cfg: AppConfig = toml::from_str(minimal()).unwrap();
         std::env::set_var("PROXY_CACHE__STORAGE__PATH", "/new/path");
         cfg.apply_env_overrides();
@@ -616,6 +627,7 @@ mod tests {
 
     #[test]
     fn env_override_s3_storage_fields() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let toml = r#"
         [server]
         host = "0.0.0.0"
@@ -649,6 +661,7 @@ mod tests {
 
     #[test]
     fn env_override_otel_creates_section_when_absent() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let mut cfg: AppConfig = toml::from_str(minimal()).unwrap();
         assert!(cfg.otel.is_none());
         std::env::set_var("PROXY_CACHE__OTEL__ENDPOINT", "http://otel:4317");
@@ -660,6 +673,7 @@ mod tests {
 
     #[test]
     fn env_override_otel_service_name_when_section_present() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let toml = format!(
             "{}\n{}",
             minimal(),
@@ -678,6 +692,7 @@ mod tests {
 
     #[test]
     fn env_override_static_dir() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let mut cfg: AppConfig = toml::from_str(minimal()).unwrap();
         std::env::set_var("PROXY_CACHE__SERVER__STATIC_DIR", "/var/www");
         cfg.apply_env_overrides();
@@ -687,6 +702,7 @@ mod tests {
 
     #[test]
     fn env_override_database_max_connections() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let mut cfg: AppConfig = toml::from_str(minimal()).unwrap();
         std::env::set_var("PROXY_CACHE__DATABASE__MAX_CONNECTIONS", "25");
         cfg.apply_env_overrides();
@@ -703,6 +719,7 @@ mod tests {
 
     #[test]
     fn env_override_database_min_connections() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let mut cfg: AppConfig = toml::from_str(minimal()).unwrap();
         std::env::set_var("PROXY_CACHE__DATABASE__MIN_CONNECTIONS", "3");
         cfg.apply_env_overrides();
@@ -712,6 +729,7 @@ mod tests {
 
     #[test]
     fn env_override_database_acquire_timeout_secs() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let mut cfg: AppConfig = toml::from_str(minimal()).unwrap();
         std::env::set_var("PROXY_CACHE__DATABASE__ACQUIRE_TIMEOUT_SECS", "5");
         cfg.apply_env_overrides();
@@ -723,6 +741,7 @@ mod tests {
 
     #[test]
     fn env_interpolation_basic() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("_TEST_EXPAND_BASIC", "hello");
         let result = expand_env_vars("value = \"${_TEST_EXPAND_BASIC}\"").unwrap();
         std::env::remove_var("_TEST_EXPAND_BASIC");
@@ -731,6 +750,7 @@ mod tests {
 
     #[test]
     fn env_interpolation_missing_var_errors() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("_TEST_EXPAND_MISSING");
         let err = expand_env_vars("x = \"${_TEST_EXPAND_MISSING}\"").unwrap_err();
         assert!(err.to_string().contains("_TEST_EXPAND_MISSING"));
@@ -750,6 +770,7 @@ mod tests {
 
     #[test]
     fn env_interpolation_oidc_client_secret() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("_TEST_OIDC_SECRET", "super-secret");
         let toml = format!(
             "{}\n{}",
@@ -774,6 +795,7 @@ mod tests {
 
     #[test]
     fn env_interpolation_upstream_bearer_token() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("_TEST_BEARER_TOKEN", "tok-abcdef");
         let toml = format!(
             "{}\n{}",
@@ -798,6 +820,7 @@ mod tests {
 
     #[test]
     fn env_interpolation_upstream_basic_password() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("_TEST_BASIC_PASS", "s3cr3t");
         let toml = format!(
             "{}\n{}",
@@ -823,6 +846,7 @@ mod tests {
 
     #[test]
     fn env_interpolation_multiple_vars_in_one_file() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("_TEST_MULTI_A", "val-a");
         std::env::set_var("_TEST_MULTI_B", "val-b");
         let result = expand_env_vars("a = \"${_TEST_MULTI_A}\"\nb = \"${_TEST_MULTI_B}\"").unwrap();
@@ -833,6 +857,7 @@ mod tests {
 
     #[test]
     fn env_interpolation_skips_commented_placeholder() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("_TEST_COMMENTED_UNSET");
         let result = expand_env_vars(
             "# token = \"${_TEST_COMMENTED_UNSET}\"   # export _TEST_COMMENTED_UNSET=tok\n",
@@ -846,6 +871,7 @@ mod tests {
 
     #[test]
     fn env_interpolation_trailing_comment_after_value() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("_TEST_TRAILING_COMMENT", "real-value");
         let result =
             expand_env_vars("x = \"${_TEST_TRAILING_COMMENT}\" # uses ${_TEST_TRAILING_COMMENT}\n")
@@ -859,6 +885,7 @@ mod tests {
 
     #[test]
     fn env_interpolation_two_vars_in_same_value() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("_TEST_CONCAT_USER", "admin");
         std::env::set_var("_TEST_CONCAT_PASS", "s3cr3t");
         let result =
@@ -870,6 +897,7 @@ mod tests {
 
     #[test]
     fn env_interpolation_value_with_special_chars() {
+        let _guard = ENV_LOCK.lock().unwrap();
         // Real-world passwords contain @, /, =, :, !, +
         std::env::set_var("_TEST_SPECIAL_CHARS", "P@ss/w=rd:1!+x");
         let result = expand_env_vars("password = \"${_TEST_SPECIAL_CHARS}\"").unwrap();
@@ -899,6 +927,7 @@ mod tests {
 
     #[test]
     fn env_interpolation_substituted_value_is_not_re_expanded() {
+        let _guard = ENV_LOCK.lock().unwrap();
         // The substituted value itself may contain ${...} — it must NOT be re-expanded.
         std::env::set_var("_TEST_NO_REEXPAND", "${_TEST_EXPAND_BASIC}");
         let result = expand_env_vars("x = \"${_TEST_NO_REEXPAND}\"").unwrap();
@@ -908,6 +937,7 @@ mod tests {
 
     #[test]
     fn env_interpolation_upstream_header_value() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("_TEST_API_KEY", "my-api-key-xyz");
         let toml = format!(
             "{}\n{}",
@@ -933,6 +963,7 @@ mod tests {
 
     #[test]
     fn env_interpolation_database_url_via_load() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let path = std::env::temp_dir().join("_batlehub_test_load_expand.toml");
         std::fs::write(
             &path,

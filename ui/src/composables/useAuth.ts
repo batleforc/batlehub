@@ -9,11 +9,14 @@ const EXPIRES_AT_KEY = "batlehub_token_expires_at"; // unix ms
 const OIDC_PROVIDER_KEY = "batlehub_oidc_provider";
 
 // ── Singleton state ────────────────────────────────────────────────────────────
+//
+// Refs start empty; `initAuth()` populates them from `localStorage` and kicks off
+// the initial identity fetch. Nothing here runs at import time — see `initAuth`.
 
-const token = ref<string>(localStorage.getItem(ACCESS_TOKEN_KEY) ?? "");
-const refreshToken = ref<string>(localStorage.getItem(REFRESH_TOKEN_KEY) ?? "");
-const expiresAt = ref<number>(Number(localStorage.getItem(EXPIRES_AT_KEY) ?? "0"));
-const oidcProvider = ref<string>(localStorage.getItem(OIDC_PROVIDER_KEY) ?? "");
+const token = ref<string>("");
+const refreshToken = ref<string>("");
+const expiresAt = ref<number>(0);
+const oidcProvider = ref<string>("");
 const identity = ref<MeResponse | null>(null);
 const identityReady = ref(false);
 
@@ -52,10 +55,6 @@ async function refreshIdentity() {
   }
   identityReady.value = true;
 }
-
-// Run on startup.
-client.setConfig({ auth: token.value || undefined });
-void refreshIdentity();
 
 // Re-fetch identity whenever the access token changes.
 watch(token, () => refreshIdentity());
@@ -122,8 +121,36 @@ export function storeTokens(
   }
 }
 
-// Schedule refresh on startup if we already have tokens with a known expiry.
-scheduleRefresh();
+// ── Startup ────────────────────────────────────────────────────────────────────
+
+let initialized = false;
+
+/**
+ * Load persisted tokens from `localStorage`, point the API client at them, kick
+ * off the initial identity fetch, and schedule an automatic refresh if needed.
+ *
+ * Must be called exactly once, after the API client's `baseUrl` is configured
+ * (see `clientInit.ts`) and before any component reads `useAuth()` state. A no-op
+ * on repeat calls.
+ */
+export function initAuth() {
+  if (initialized) return;
+  initialized = true;
+
+  const storedToken = localStorage.getItem(ACCESS_TOKEN_KEY) ?? "";
+  refreshToken.value = localStorage.getItem(REFRESH_TOKEN_KEY) ?? "";
+  expiresAt.value = Number(localStorage.getItem(EXPIRES_AT_KEY) ?? "0");
+  oidcProvider.value = localStorage.getItem(OIDC_PROVIDER_KEY) ?? "";
+
+  client.setConfig({ auth: storedToken || undefined });
+  token.value = storedToken;
+  // Assigning `token` above only re-triggers `refreshIdentity` (via the `watch`
+  // below) when the stored value differs from the ref's initial "" — i.e. when
+  // there was a token to restore. An empty store needs an explicit kick so
+  // `identity`/`identityReady` still settle for anonymous visitors.
+  if (!storedToken) void refreshIdentity();
+  scheduleRefresh();
+}
 
 // ── Logout ─────────────────────────────────────────────────────────────────────
 

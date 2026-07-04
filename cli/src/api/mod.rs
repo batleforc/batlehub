@@ -181,7 +181,7 @@ impl BatleHubClient {
     }
 }
 
-async fn expect_ok<T: DeserializeOwned>(resp: reqwest::Response) -> Result<T> {
+pub(crate) async fn expect_ok<T: DeserializeOwned>(resp: reqwest::Response) -> Result<T> {
     let status = resp.status();
     if status.is_success() {
         Ok(resp.json::<T>().await?)

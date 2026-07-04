@@ -67,6 +67,24 @@ impl BatleHubClient {
         let providers: Vec<Provider> = self.get("/api/v1/auth/oidc/providers").await?;
         Ok(providers.into_iter().map(|p| p.name).collect())
     }
+
+    /// Fetch the IdP authorization URL for browser-based OIDC login. Unlike
+    /// every other method on this client, this deliberately does not attach the
+    /// profile's bearer token — there is no session yet, this call *starts* one.
+    pub async fn oidc_login_url(&self, csrf: &str, provider: Option<&str>) -> Result<String> {
+        get_oidc_login_url(&self.base_url, csrf, provider).await
+    }
+
+    /// Exchange a refresh token for a new access token via the server's OIDC
+    /// refresh proxy. Returns `(access_token, refresh_token, expires_in_seconds)`.
+    /// Also deliberately unauthenticated — see `oidc_login_url`.
+    pub async fn oidc_refresh(
+        &self,
+        refresh_token: &str,
+        provider: Option<&str>,
+    ) -> Result<(String, Option<String>, Option<u64>)> {
+        oidc_refresh(&self.base_url, refresh_token, provider).await
+    }
 }
 
 // ── OIDC helpers ───────────────────────────────────────────────────────────────
@@ -141,12 +159,7 @@ pub async fn oidc_refresh(
         .send()
         .await?;
 
-    if !resp.status().is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("OIDC refresh failed: {body}");
-    }
-
-    let r: Resp = resp.json().await?;
+    let r: Resp = super::expect_ok(resp).await?;
     Ok((r.access_token, r.refresh_token, r.expires_in))
 }
 

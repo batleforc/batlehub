@@ -92,7 +92,7 @@ async fn main() -> Result<()> {
     let repo = Arc::new(
         PgPackageRepository::new(
             &config.database.url,
-            batlehub_adapters::db::postgres::PoolOptions {
+            batlehub_adapters::db::packages::PoolOptions {
                 max_connections: config.database.max_connections,
                 min_connections: config.database.min_connections,
                 acquire_timeout_secs: config.database.acquire_timeout_secs,

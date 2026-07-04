@@ -20,7 +20,12 @@ vi.mock("@/client/client.gen", () => ({
 }));
 
 import { router, generateOidcState } from "./index";
-import { useAuth } from "@/composables/useAuth";
+import { initAuth, useAuth } from "@/composables/useAuth";
+
+// `useAuth` no longer initializes itself at import time (see `initAuth`'s doc
+// comment) — call it once here, mirroring what `clientInit.ts` does in the app,
+// so the singleton's initial identity fetch actually runs against the mocks above.
+initAuth();
 
 const ANON: MeResponse = { role: "anonymous", groups: [], has_registry_access: true };
 const ANON_NO_ACCESS: MeResponse = { role: "anonymous", groups: [], has_registry_access: false };

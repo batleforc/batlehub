@@ -1,32 +1,46 @@
 use async_trait::async_trait;
 
-use crate::entities::Role;
+use crate::entities::{RegistryKind, Role};
 use crate::rules::{Rule, RuleContext, RuleDecision};
 
 /// Derive a normalized "publisher" identifier for a package from data already
 /// resolved onto `PackageMetadata` — no extra network calls.
 ///
-/// - `github` / `gitlab` / `forgejo`: the first `/`-separated segment of the
+/// `kind` is the registry's *protocol type* (`RegistryKind::Github`, etc.), not
+/// its configured instance name — a config with `type = "github", name =
+/// "github2"` must still match here, so this must never key off
+/// `PackageId.registry` (the instance name) directly.
+///
+/// - `Github` / `Gitlab` / `Forgejo`: the first `/`-separated segment of the
 ///   package name (`"owner/repo"` or `"group/subgroup/project"`) — present for
 ///   every artifact type these adapters serve, including the raw/tarball/zipball
 ///   paths that otherwise resolve minimal metadata.
-/// - `npm`: the scope (`"@scope/name"` → `"scope"`) when scoped; otherwise the
+/// - `Npm`: the scope (`"@scope/name"` → `"scope"`) when scoped; otherwise the
 ///   publishing user recorded in `extra.publisher`.
-/// - `openvsx` / `vscode-marketplace`: the first `.`-separated segment of the
+/// - `Openvsx` / `VscodeMarketplace`: the first `.`-separated segment of the
 ///   extension id (`"{publisher}.{extension}"`).
-/// - anything else (including `cargo`, where ownership isn't in the sparse
-///   index and would need a separate crates.io API call): `None`.
-fn derive_publisher(registry: &str, name: &str, extra: &serde_json::Value) -> Option<String> {
-    match registry {
-        "github" | "gitlab" | "forgejo" => name.split('/').next().map(str::to_owned),
-        "npm" => {
+/// - anything else (including `Cargo`, where ownership isn't in the sparse
+///   index and would need a separate crates.io API call, and `None` for a
+///   registry type this rule couldn't resolve): `None`.
+fn derive_publisher(
+    kind: Option<RegistryKind>,
+    name: &str,
+    extra: &serde_json::Value,
+) -> Option<String> {
+    match kind? {
+        RegistryKind::Github | RegistryKind::Gitlab | RegistryKind::Forgejo => {
+            name.split('/').next().map(str::to_owned)
+        }
+        RegistryKind::Npm => {
             if let Some(scope) = name.strip_prefix('@').and_then(|s| s.split('/').next()) {
                 Some(scope.to_owned())
             } else {
                 extra.get("publisher")?.as_str().map(str::to_owned)
             }
         }
-        "openvsx" | "vscode-marketplace" => name.split('.').next().map(str::to_owned),
+        RegistryKind::Openvsx | RegistryKind::VscodeMarketplace => {
+            name.split('.').next().map(str::to_owned)
+        }
         _ => None,
     }
 }
@@ -52,13 +66,22 @@ fn derive_publisher(registry: &str, name: &str, extra: &serde_json::Value) -> Op
 pub struct TrustedPublisherRule {
     allow: Vec<String>,
     bypass_roles: Vec<Role>,
+    /// The registry's protocol type, resolved once at construction time from
+    /// `RegistryConfig.registry_type` — see `derive_publisher`'s doc comment
+    /// for why this must not be re-derived from `PackageId.registry`.
+    registry_kind: Option<RegistryKind>,
 }
 
 impl TrustedPublisherRule {
-    pub fn new(allow: &[String], bypass_roles: Vec<Role>) -> Self {
+    pub fn new(
+        allow: &[String],
+        bypass_roles: Vec<Role>,
+        registry_kind: Option<RegistryKind>,
+    ) -> Self {
         Self {
             allow: allow.iter().map(|s| s.to_lowercase()).collect(),
             bypass_roles,
+            registry_kind,
         }
     }
 
@@ -85,7 +108,8 @@ impl Rule for TrustedPublisherRule {
         }
 
         let id = &ctx.package.id;
-        let Some(publisher) = derive_publisher(&id.registry, &id.name, &ctx.package.extra) else {
+        let Some(publisher) = derive_publisher(self.registry_kind, &id.name, &ctx.package.extra)
+        else {
             return self.gate(format!(
                 "cannot verify the publisher of {} on registry '{}'; trusted_publisher requires \
                  a supported registry type",
@@ -146,7 +170,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_allowlist_allows_everything() {
-        let rule = TrustedPublisherRule::new(&[], vec![]);
+        let rule = TrustedPublisherRule::new(&[], vec![], Some(RegistryKind::Cargo));
         let m = meta("cargo", "serde", serde_json::Value::Null);
         let id = identity(Role::Anonymous);
         assert!(matches!(
@@ -157,7 +181,8 @@ mod tests {
 
     #[tokio::test]
     async fn github_owner_match_allows() {
-        let rule = TrustedPublisherRule::new(&strings(&["my-org"]), vec![]);
+        let rule =
+            TrustedPublisherRule::new(&strings(&["my-org"]), vec![], Some(RegistryKind::Github));
         let m = meta("github", "my-org/my-repo", serde_json::Value::Null);
         let id = identity(Role::Anonymous);
         assert!(matches!(
@@ -168,7 +193,8 @@ mod tests {
 
     #[tokio::test]
     async fn github_owner_mismatch_denies() {
-        let rule = TrustedPublisherRule::new(&strings(&["my-org"]), vec![]);
+        let rule =
+            TrustedPublisherRule::new(&strings(&["my-org"]), vec![], Some(RegistryKind::Github));
         let m = meta("github", "other-org/my-repo", serde_json::Value::Null);
         let id = identity(Role::Anonymous);
         assert!(matches!(
@@ -179,7 +205,8 @@ mod tests {
 
     #[tokio::test]
     async fn github_match_is_case_insensitive() {
-        let rule = TrustedPublisherRule::new(&strings(&["My-Org"]), vec![]);
+        let rule =
+            TrustedPublisherRule::new(&strings(&["My-Org"]), vec![], Some(RegistryKind::Github));
         let m = meta("github", "my-org/my-repo", serde_json::Value::Null);
         let id = identity(Role::Anonymous);
         assert!(matches!(
@@ -190,7 +217,8 @@ mod tests {
 
     #[tokio::test]
     async fn gitlab_nested_group_uses_top_level_group() {
-        let rule = TrustedPublisherRule::new(&strings(&["group"]), vec![]);
+        let rule =
+            TrustedPublisherRule::new(&strings(&["group"]), vec![], Some(RegistryKind::Gitlab));
         let m = meta("gitlab", "group/subgroup/project", serde_json::Value::Null);
         let id = identity(Role::Anonymous);
         assert!(matches!(
@@ -201,7 +229,8 @@ mod tests {
 
     #[tokio::test]
     async fn forgejo_owner_match_allows() {
-        let rule = TrustedPublisherRule::new(&strings(&["owner"]), vec![]);
+        let rule =
+            TrustedPublisherRule::new(&strings(&["owner"]), vec![], Some(RegistryKind::Forgejo));
         let m = meta("forgejo", "owner/repo", serde_json::Value::Null);
         let id = identity(Role::Anonymous);
         assert!(matches!(
@@ -212,7 +241,8 @@ mod tests {
 
     #[tokio::test]
     async fn npm_scoped_package_matches_scope() {
-        let rule = TrustedPublisherRule::new(&strings(&["myscope"]), vec![]);
+        let rule =
+            TrustedPublisherRule::new(&strings(&["myscope"]), vec![], Some(RegistryKind::Npm));
         let m = meta("npm", "@myscope/pkg", serde_json::Value::Null);
         let id = identity(Role::Anonymous);
         assert!(matches!(
@@ -223,7 +253,7 @@ mod tests {
 
     #[tokio::test]
     async fn npm_unscoped_package_falls_back_to_publisher_field() {
-        let rule = TrustedPublisherRule::new(&strings(&["alice"]), vec![]);
+        let rule = TrustedPublisherRule::new(&strings(&["alice"]), vec![], Some(RegistryKind::Npm));
         let m = meta("npm", "lodash", serde_json::json!({"publisher": "alice"}));
         let id = identity(Role::Anonymous);
         assert!(matches!(
@@ -234,7 +264,7 @@ mod tests {
 
     #[tokio::test]
     async fn npm_unscoped_package_with_no_publisher_field_denies() {
-        let rule = TrustedPublisherRule::new(&strings(&["alice"]), vec![]);
+        let rule = TrustedPublisherRule::new(&strings(&["alice"]), vec![], Some(RegistryKind::Npm));
         let m = meta("npm", "lodash", serde_json::Value::Null);
         let id = identity(Role::Anonymous);
         assert!(matches!(
@@ -245,7 +275,8 @@ mod tests {
 
     #[tokio::test]
     async fn openvsx_publisher_match_allows() {
-        let rule = TrustedPublisherRule::new(&strings(&["redhat"]), vec![]);
+        let rule =
+            TrustedPublisherRule::new(&strings(&["redhat"]), vec![], Some(RegistryKind::Openvsx));
         let m = meta("openvsx", "redhat.java", serde_json::Value::Null);
         let id = identity(Role::Anonymous);
         assert!(matches!(
@@ -256,7 +287,11 @@ mod tests {
 
     #[tokio::test]
     async fn vscode_marketplace_publisher_match_allows() {
-        let rule = TrustedPublisherRule::new(&strings(&["ms-python"]), vec![]);
+        let rule = TrustedPublisherRule::new(
+            &strings(&["ms-python"]),
+            vec![],
+            Some(RegistryKind::VscodeMarketplace),
+        );
         let m = meta(
             "vscode-marketplace",
             "ms-python.python",
@@ -271,7 +306,8 @@ mod tests {
 
     #[tokio::test]
     async fn unsupported_registry_fails_closed() {
-        let rule = TrustedPublisherRule::new(&strings(&["anyone"]), vec![]);
+        let rule =
+            TrustedPublisherRule::new(&strings(&["anyone"]), vec![], Some(RegistryKind::Cargo));
         let m = meta("cargo", "serde", serde_json::Value::Null);
         let id = identity(Role::Anonymous);
         assert!(matches!(
@@ -282,7 +318,11 @@ mod tests {
 
     #[tokio::test]
     async fn bypass_role_resolves_to_allow_for_admin() {
-        let rule = TrustedPublisherRule::new(&strings(&["trusted-org"]), vec![Role::Admin]);
+        let rule = TrustedPublisherRule::new(
+            &strings(&["trusted-org"]),
+            vec![Role::Admin],
+            Some(RegistryKind::Github),
+        );
         let m = meta("github", "other-org/repo", serde_json::Value::Null);
         let admin = identity(Role::Admin);
         let decision = rule.evaluate(&ctx(&m, &admin)).await.resolve(&admin);
@@ -291,10 +331,30 @@ mod tests {
 
     #[tokio::test]
     async fn bypass_role_resolves_to_deny_for_anonymous() {
-        let rule = TrustedPublisherRule::new(&strings(&["trusted-org"]), vec![Role::Admin]);
+        let rule = TrustedPublisherRule::new(
+            &strings(&["trusted-org"]),
+            vec![Role::Admin],
+            Some(RegistryKind::Github),
+        );
         let m = meta("github", "other-org/repo", serde_json::Value::Null);
         let anon = identity(Role::Anonymous);
         let decision = rule.evaluate(&ctx(&m, &anon)).await.resolve(&anon);
         assert!(matches!(decision, RuleDecision::Deny { .. }));
+    }
+
+    /// Regression test: a second GitHub instance configured with a different
+    /// `name` (e.g. `type = "github", name = "github2"`) must still match on
+    /// `RegistryKind::Github`, since `PackageId.registry` carries the instance
+    /// name ("github2"), not the protocol type.
+    #[tokio::test]
+    async fn renamed_registry_instance_still_matches_by_kind() {
+        let rule =
+            TrustedPublisherRule::new(&strings(&["my-org"]), vec![], Some(RegistryKind::Github));
+        let m = meta("github2", "my-org/my-repo", serde_json::Value::Null);
+        let id = identity(Role::Anonymous);
+        assert!(matches!(
+            rule.evaluate(&ctx(&m, &id)).await,
+            RuleDecision::Allow
+        ));
     }
 }

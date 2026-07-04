@@ -32,7 +32,6 @@ function init(): Promise<HighlighterCore> {
   return _promise;
 }
 
-void init();
 function highlight(code: string, lang: string): string {
   if (!_highlighter) return "";
   try {
@@ -46,5 +45,6 @@ function highlight(code: string, lang: string): string {
   }
 }
 export function useShiki() {
+  void init();
   return { highlight, ready: _ready };
 }

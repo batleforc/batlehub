@@ -3,9 +3,7 @@ use tracing as log;
 
 use batlehub_core::{entities::PackageId, error::CoreError, ports::UpstreamPackage};
 
-use super::http_client::{
-    apply_upstream_options, basic_auth_get, percent_encode, UpstreamHttpOptions,
-};
+use super::http_client::{basic_auth_get, new_http_client, percent_encode, UpstreamHttpOptions};
 
 mod client;
 mod models;
@@ -33,10 +31,7 @@ pub struct TerraformRegistryClient {
 
 impl TerraformRegistryClient {
     pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
-        let builder = reqwest::Client::builder()
-            .user_agent("batlehub/0.1")
-            .redirect(reqwest::redirect::Policy::limited(10));
-        let http = apply_upstream_options(builder, opts)?;
+        let http = new_http_client(Some(10), opts)?;
         let base_url = base_url.into();
 
         // Terraform search API endpoints use /v1/modules/search and /v1/providers/{ns}.

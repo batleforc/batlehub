@@ -101,6 +101,23 @@ pub fn apply_upstream_options(
     Ok(builder.build()?)
 }
 
+/// Builds a `reqwest::Client` with the shared `batlehub/0.1` user agent, an
+/// optional redirect-following limit, and `opts`'s TLS/proxy/auth settings
+/// applied — the common preamble every registry adapter's constructor repeats.
+/// Adapters with their own extra default headers (e.g. GitHub) should build
+/// their own `reqwest::ClientBuilder` and call `apply_upstream_options` directly
+/// instead of this helper.
+pub fn new_http_client(
+    redirect_limit: Option<usize>,
+    opts: &UpstreamHttpOptions,
+) -> anyhow::Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder().user_agent("batlehub/0.1");
+    if let Some(limit) = redirect_limit {
+        builder = builder.redirect(reqwest::redirect::Policy::limited(limit));
+    }
+    apply_upstream_options(builder, opts)
+}
+
 /// Builds a GET request, applying HTTP Basic auth credentials if configured.
 pub fn basic_auth_get(
     http: &reqwest::Client,

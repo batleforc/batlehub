@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 use std::io;
 use utoipa::{IntoParams, ToSchema};
 
-use batlehub_core::entities::{BannerLevel, GlobalBanner};
+use batlehub_core::{
+    entities::{BannerLevel, GlobalBanner},
+    error::CoreError,
+};
 
 use super::require_admin;
 use crate::{
@@ -192,7 +195,7 @@ pub async fn list_config_changes(
     let items = reload_svc
         .list_changes(query.page, query.per_page)
         .await
-        .map_err(|e| AppError::internal(e.to_string()))?;
+        .map_err(CoreError::Other)?;
     Ok(web::Json(ConfigChangesResponse {
         items,
         page: query.page,
@@ -233,7 +236,9 @@ pub async fn get_config_content(
         .await
         .map_err(|e| match e.kind() {
             io::ErrorKind::NotFound => AppError::not_found("config file not found"),
-            _ => AppError::internal(format!("reading config file: {e}")),
+            _ => AppError::from(CoreError::Other(anyhow::anyhow!(
+                "reading config file: {e}"
+            ))),
         })?;
     Ok(web::Json(ConfigContentResponse {
         content,

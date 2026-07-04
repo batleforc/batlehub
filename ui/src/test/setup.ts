@@ -4,8 +4,7 @@ import { vi } from "vitest";
 // --localstorage-file is passed) and jsdom's own storage implementation are
 // both unreliable in this environment, so provide a minimal in-memory Storage
 // polyfill and install it on `globalThis` (same object as `window` under
-// jsdom). `useAuth.ts` reads `localStorage` at module scope, so this must run
-// before any test module imports it.
+// jsdom), before any test reads or writes it (e.g. via `useAuth`'s `initAuth`).
 class MemoryStorage implements Storage {
   readonly #store = new Map<string, string>();
 

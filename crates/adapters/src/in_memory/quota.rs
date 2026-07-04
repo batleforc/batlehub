@@ -24,6 +24,15 @@ impl InMemoryQuotaRepository {
     }
 }
 
+fn zero_usage(user_id: &str, registry: &str) -> QuotaUsage {
+    QuotaUsage {
+        user_id: user_id.to_owned(),
+        registry: registry.to_owned(),
+        bytes_published: 0,
+        packages_count: 0,
+    }
+}
+
 #[async_trait]
 impl QuotaRepository for InMemoryQuotaRepository {
     async fn get_usage(&self, user_id: &str, registry: &str) -> Result<QuotaUsage, CoreError> {
@@ -31,12 +40,7 @@ impl QuotaRepository for InMemoryQuotaRepository {
         Ok(map
             .get(&(user_id.to_owned(), registry.to_owned()))
             .cloned()
-            .unwrap_or_else(|| QuotaUsage {
-                user_id: user_id.to_owned(),
-                registry: registry.to_owned(),
-                bytes_published: 0,
-                packages_count: 0,
-            }))
+            .unwrap_or_else(|| zero_usage(user_id, registry)))
     }
 
     async fn record_publish(
@@ -48,12 +52,7 @@ impl QuotaRepository for InMemoryQuotaRepository {
         let mut map = self.data.write().await;
         let entry = map
             .entry((user_id.to_owned(), registry.to_owned()))
-            .or_insert_with(|| QuotaUsage {
-                user_id: user_id.to_owned(),
-                registry: registry.to_owned(),
-                bytes_published: 0,
-                packages_count: 0,
-            });
+            .or_insert_with(|| zero_usage(user_id, registry));
         entry.bytes_published = entry.bytes_published.saturating_add(bytes);
         entry.packages_count = entry.packages_count.saturating_add(1);
         Ok(())
@@ -73,12 +72,7 @@ impl QuotaRepository for InMemoryQuotaRepository {
         let mut map = self.data.write().await;
         let entry = map
             .entry((user_id.to_owned(), registry.to_owned()))
-            .or_insert_with(|| QuotaUsage {
-                user_id: user_id.to_owned(),
-                registry: registry.to_owned(),
-                bytes_published: 0,
-                packages_count: 0,
-            });
+            .or_insert_with(|| zero_usage(user_id, registry));
 
         let new_bytes = entry.bytes_published.saturating_add(bytes);
         let new_packages = entry.packages_count.saturating_add(1);
@@ -111,12 +105,7 @@ impl QuotaRepository for InMemoryQuotaRepository {
         let mut map = self.data.write().await;
         let entry = map
             .entry((user_id.to_owned(), registry.to_owned()))
-            .or_insert_with(|| QuotaUsage {
-                user_id: user_id.to_owned(),
-                registry: registry.to_owned(),
-                bytes_published: 0,
-                packages_count: 0,
-            });
+            .or_insert_with(|| zero_usage(user_id, registry));
         entry.bytes_published = entry.bytes_published.saturating_sub(bytes);
         entry.packages_count = entry.packages_count.saturating_sub(1);
         Ok(())
@@ -126,12 +115,7 @@ impl QuotaRepository for InMemoryQuotaRepository {
         let mut map = self.data.write().await;
         map.insert(
             (user_id.to_owned(), registry.to_owned()),
-            QuotaUsage {
-                user_id: user_id.to_owned(),
-                registry: registry.to_owned(),
-                bytes_published: 0,
-                packages_count: 0,
-            },
+            zero_usage(user_id, registry),
         );
         Ok(())
     }

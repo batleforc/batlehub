@@ -24,11 +24,16 @@ use batlehub_core::{
 };
 use batlehub_web::CargoIndexProxy;
 
-pub(super) fn parse_role(s: &str) -> Role {
+/// Parse a config-file role string. Fails on anything but the 3 recognized
+/// values instead of silently treating a typo as `anonymous` — a config that
+/// meant to grant a bypass/permission to a real role must not silently end up
+/// granting (or denying) it to nobody.
+pub(super) fn parse_role(s: &str) -> anyhow::Result<Role> {
     match s {
-        "admin" => Role::Admin,
-        "user" => Role::User,
-        _ => Role::Anonymous,
+        "admin" => Ok(Role::Admin),
+        "user" => Ok(Role::User),
+        "anonymous" => Ok(Role::Anonymous),
+        other => anyhow::bail!("unknown role '{other}' (expected admin, user, or anonymous)"),
     }
 }
 
@@ -202,11 +207,22 @@ pub(super) fn build_registry_client(
     }
 }
 
+/// Parse a rule's `bypass_roles` list, failing loudly on the first unrecognized
+/// entry rather than silently dropping it to `anonymous` (see `parse_role`).
+fn parse_bypass_roles(roles: &[String]) -> anyhow::Result<Vec<Role>> {
+    roles.iter().map(|r| parse_role(r)).collect()
+}
+
 pub(super) fn build_policy(
     reg: &RegistryConfig,
     repo: Arc<dyn batlehub_core::ports::PackageRepository>,
     vuln_repo: Arc<dyn VulnerabilityRepository>,
-) -> RegistryPolicy {
+) -> anyhow::Result<RegistryPolicy> {
+    // Best-effort: an unrecognized `registry_type` is already rejected by config
+    // validation before this runs, but rules that need the kind (e.g.
+    // TrustedPublisherRule) degrade to their fail-closed default rather than
+    // panicking if this ever sees one anyway.
+    let registry_kind: Option<RegistryKind> = reg.registry_type.parse().ok();
     let mut rules: Vec<Box<dyn batlehub_core::rules::Rule>> = Vec::new();
     let rbac_perms = HashMap::from([
         (Role::Anonymous, reg.rbac.anonymous.clone()),
@@ -220,7 +236,7 @@ pub(super) fn build_policy(
     for rule_cfg in &reg.rules {
         match rule_cfg {
             RuleConfig::ReleaseAgeGate(cfg) => {
-                let bypass: Vec<Role> = cfg.bypass_roles.iter().map(|r| parse_role(r)).collect();
+                let bypass = parse_bypass_roles(&cfg.bypass_roles)?;
                 rules.push(Box::new(
                     ReleaseAgeGateRule::new(Duration::from_secs(cfg.min_age_secs), bypass)
                         .with_deny_missing_timestamp(cfg.deny_missing_timestamp),
@@ -228,8 +244,7 @@ pub(super) fn build_policy(
             }
             RuleConfig::RequireSignedRelease(cfg) => {
                 if cfg.enabled {
-                    let bypass: Vec<Role> =
-                        cfg.bypass_roles.iter().map(|r| parse_role(r)).collect();
+                    let bypass = parse_bypass_roles(&cfg.bypass_roles)?;
                     rules.push(Box::new(
                         RequireSignedReleaseRule::new(bypass)
                             .with_deny_missing_signature(cfg.deny_missing_signature),
@@ -237,12 +252,17 @@ pub(super) fn build_policy(
                 }
             }
             RuleConfig::DenyLatest(cfg) => {
-                let bypass: Vec<Role> = cfg.bypass_roles.iter().map(|r| parse_role(r)).collect();
+                let bypass = parse_bypass_roles(&cfg.bypass_roles)?;
                 rules.push(Box::new(DenyLatestRule::new(bypass)));
             }
             RuleConfig::CveGate(cfg) => {
-                let bypass: Vec<Role> = cfg.bypass_roles.iter().map(|r| parse_role(r)).collect();
-                let min_severity = Severity::parse(&cfg.min_severity).unwrap_or(Severity::High);
+                let bypass = parse_bypass_roles(&cfg.bypass_roles)?;
+                let min_severity = Severity::parse(&cfg.min_severity).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "unknown min_severity '{}' (expected unknown, low, medium, high, or critical)",
+                        cfg.min_severity
+                    )
+                })?;
                 rules.push(Box::new(CveGateRule::new(
                     Arc::clone(&vuln_repo),
                     min_severity,
@@ -251,24 +271,28 @@ pub(super) fn build_policy(
                 )));
             }
             RuleConfig::VersionGate(cfg) => {
-                let bypass: Vec<Role> = cfg.bypass_roles.iter().map(|r| parse_role(r)).collect();
+                let bypass = parse_bypass_roles(&cfg.bypass_roles)?;
                 rules.push(Box::new(VersionGateRule::new(
                     &cfg.allow, &cfg.block, bypass,
                 )));
             }
             RuleConfig::TrustedPublisher(cfg) => {
-                let bypass: Vec<Role> = cfg.bypass_roles.iter().map(|r| parse_role(r)).collect();
-                rules.push(Box::new(TrustedPublisherRule::new(&cfg.allow, bypass)));
+                let bypass = parse_bypass_roles(&cfg.bypass_roles)?;
+                rules.push(Box::new(TrustedPublisherRule::new(
+                    &cfg.allow,
+                    bypass,
+                    registry_kind,
+                )));
             }
         }
     }
-    RegistryPolicy {
+    Ok(RegistryPolicy {
         metadata_ttl: Some(Duration::from_secs(reg.cache.metadata_ttl_secs)),
         firewall_only: reg.firewall_only,
         serve_stale_metadata: reg.cache.serve_stale,
         artifact_ttl: reg.cache.artifact_ttl_secs.map(Duration::from_secs),
         rules,
-    }
+    })
 }
 
 pub(super) fn build_quota_service(
@@ -326,10 +350,14 @@ mod tests {
 
     #[test]
     fn parse_role_variants() {
-        assert_eq!(parse_role("admin"), Role::Admin);
-        assert_eq!(parse_role("user"), Role::User);
-        assert_eq!(parse_role("anonymous"), Role::Anonymous);
-        assert_eq!(parse_role("anything-else"), Role::Anonymous);
+        assert_eq!(parse_role("admin").unwrap(), Role::Admin);
+        assert_eq!(parse_role("user").unwrap(), Role::User);
+        assert_eq!(parse_role("anonymous").unwrap(), Role::Anonymous);
+    }
+
+    #[test]
+    fn parse_role_unknown_value_errors() {
+        assert!(parse_role("anything-else").is_err());
     }
 
     #[test]
@@ -498,7 +526,7 @@ mod tests {
         let r = make_registry("npm", "reg", "");
         let repo: Arc<dyn batlehub_core::ports::PackageRepository> =
             InMemoryPackageRepository::new();
-        let policy = build_policy(&r, repo, InMemoryVulnerabilityRepository::arc());
+        let policy = build_policy(&r, repo, InMemoryVulnerabilityRepository::arc()).unwrap();
         let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
         assert_eq!(names, vec!["rbac", "block_list"]);
         assert!(!policy.firewall_only);
@@ -536,7 +564,7 @@ mod tests {
         );
         let repo: Arc<dyn batlehub_core::ports::PackageRepository> =
             InMemoryPackageRepository::new();
-        let policy = build_policy(&r, repo, InMemoryVulnerabilityRepository::arc());
+        let policy = build_policy(&r, repo, InMemoryVulnerabilityRepository::arc()).unwrap();
         let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
         assert_eq!(
             names,
@@ -569,7 +597,7 @@ mod tests {
         );
         let repo: Arc<dyn batlehub_core::ports::PackageRepository> =
             InMemoryPackageRepository::new();
-        let policy = build_policy(&r, repo, InMemoryVulnerabilityRepository::arc());
+        let policy = build_policy(&r, repo, InMemoryVulnerabilityRepository::arc()).unwrap();
         let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
         assert_eq!(names, vec!["rbac", "block_list", "cve_gate"]);
     }
@@ -588,7 +616,7 @@ mod tests {
         );
         let repo: Arc<dyn batlehub_core::ports::PackageRepository> =
             InMemoryPackageRepository::new();
-        let policy = build_policy(&r, repo, InMemoryVulnerabilityRepository::arc());
+        let policy = build_policy(&r, repo, InMemoryVulnerabilityRepository::arc()).unwrap();
         let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
         assert_eq!(names, vec!["rbac", "block_list", "trusted_publisher"]);
     }

@@ -560,12 +560,7 @@ impl BatleHubClient {
     // ── Notifications ──────────────────────────────────────────────────────────
 
     pub async fn list_notification_channels(&self) -> Result<Vec<NotificationChannelEntry>> {
-        #[derive(Deserialize)]
-        struct Wrapper {
-            channels: Vec<NotificationChannelEntry>,
-        }
-        let w: Wrapper = self.get("/api/v1/admin/notifications/channels").await?;
-        Ok(w.channels)
+        self.get("/api/v1/admin/notifications/channels").await
     }
 
     pub async fn list_notification_subscriptions(

@@ -98,10 +98,17 @@ pub(super) async fn initialize_auth_providers(
     for auth_cfg in &config.auth {
         match auth_cfg {
             AuthConfig::Token(tok) => {
-                let entries = tok.tokens.iter().map(|t| {
-                    let role = parse_role(&t.role);
-                    (t.value.clone(), t.user_id.clone(), role)
-                });
+                let entries = tok
+                    .tokens
+                    .iter()
+                    .map(|t| {
+                        Ok::<_, anyhow::Error>((
+                            t.value.clone(),
+                            t.user_id.clone(),
+                            parse_role(&t.role)?,
+                        ))
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?;
                 auth_providers.push(Arc::new(StaticTokenAuthProvider::new(entries)));
                 info!("configured static token auth provider");
             }

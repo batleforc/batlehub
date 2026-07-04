@@ -250,6 +250,12 @@ pub async fn package_detail(
                 AccessAction::BlockIp => "block_ip",
                 AccessAction::UnblockIp => "unblock_ip",
                 AccessAction::AuditPurge => "audit_purge",
+                AccessAction::Yank => "yank",
+                AccessAction::Unyank => "unyank",
+                AccessAction::Deprecate => "deprecate",
+                AccessAction::Undeprecate => "undeprecate",
+                AccessAction::Unlist => "unlist",
+                AccessAction::Relist => "relist",
             };
             // `event_filter` above always sets `registry`/`package_name`, so any
             // event matching it has a package coordinate; the fallback only
