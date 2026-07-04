@@ -6,13 +6,33 @@ pub mod rules;
 pub mod server;
 pub mod storage;
 
-pub use auth::*;
-pub use network::*;
-pub use notifications::*;
-pub use registry::*;
-pub use rules::*;
-pub use server::*;
-pub use storage::*;
+pub use auth::{
+    ActionsGroupRule, ActionsOidcAuthConfig, AuthConfig, Condition, ConditionMatchType,
+    KubernetesAuthConfig, OidcAuthConfig, RuleMatch, TokenAuthConfig, TokenEntry,
+};
+pub use network::{
+    BasicAuthConfig, BearerAuthConfig, GroupRateLimitConfig, HeaderAuthConfig, IpBlockingConfig,
+    RateLimitConfig, RateLimitEnforcement, UpstreamAuthConfig, UpstreamProxyConfig,
+    UpstreamTlsConfig,
+};
+pub use notifications::{
+    EmailChannelConfig, InboundWebhookConfig, NotificationChannelConfig, NotificationsConfig,
+    SlackChannelConfig, TeamsChannelConfig, WebhookChannelConfig,
+};
+pub use registry::{
+    default_true, BetaChannelConfig, CachePolicy, FeatureFlagsConfig, IntegrityConfig, QuotaConfig,
+    QuotaEnforcement, RegistryConfig, RegistryMode, RepoSigningConfig, SbomConfig, SigningConfig,
+    VersioningPolicy,
+};
+pub use rules::{
+    CveGateConfig, DenyLatestConfig, ExploreRbacConfig, RbacConfig, ReleaseAgeGateConfig,
+    RequireSignedReleaseConfig, RuleConfig, TrustedPublisherConfig, VersionGateConfig,
+};
+pub use server::{default_service_name, CacheConfig, DatabaseConfig, OtelConfig, ServerConfig};
+pub use storage::{
+    FilesystemStorageConfig, MultiStorageConfig, NamedStorageConfig, S3StorageConfig,
+    StorageBackendConfig, StoragesConfig,
+};
 
 use anyhow::{bail, Result};
 use serde::Deserialize;
@@ -130,35 +150,15 @@ impl AppConfig {
             if registry.name.is_empty() {
                 bail!("registry is missing a 'name' field");
             }
-            match registry.registry_type.as_str() {
-                "github" | "forgejo" | "gitlab" | "cargo" | "npm" | "openvsx" | "goproxy"
-                | "pypi" | "conda" | "composer" | "vscode-marketplace" | "maven" | "terraform"
-                | "rubygems" | "nuget" | "deb" | "rpm" | "pacman" | "jetbrains" => {}
-                other => bail!("unknown registry type: '{other}'"),
-            }
+            let kind: batlehub_core::entities::RegistryKind =
+                registry.registry_type.parse().map_err(anyhow::Error::msg)?;
             if matches!(registry.mode, RegistryMode::Local | RegistryMode::Hybrid)
-                && !matches!(
-                    registry.registry_type.as_str(),
-                    "cargo"
-                        | "npm"
-                        | "openvsx"
-                        | "vscode-marketplace"
-                        | "goproxy"
-                        | "rubygems"
-                        | "maven"
-                        | "terraform"
-                        | "composer"
-                        | "pypi"
-                        | "conda"
-                        | "nuget"
-                        | "deb"
-                        | "rpm"
-                        | "pacman"
-                )
+                && !kind.supports_local_mode()
             {
                 bail!(
-                    "registry '{}': mode 'local'/'hybrid' is only supported for cargo, npm, openvsx, vscode-marketplace, goproxy, rubygems, maven, terraform, composer, pypi, conda, nuget, deb, rpm, and pacman registries",
-                    registry.name
+                    "registry '{}': mode 'local'/'hybrid' is not supported for {} registries (no local publish model)",
+                    registry.name,
+                    kind
                 );
             }
             if registry.mode == RegistryMode::Hybrid && registry.upstreams.is_empty() {
@@ -172,12 +172,12 @@ impl AppConfig {
             // explicit upstream. Caught at startup instead of every fetch failing.
             if registry.mode == RegistryMode::Proxy
                 && registry.upstreams.is_empty()
-                && matches!(registry.registry_type.as_str(), "deb" | "rpm")
+                && kind.requires_explicit_upstream_in_proxy_mode()
             {
                 bail!(
                     "registry '{}': {} proxy mode requires at least one upstream URL (no default upstream exists)",
                     registry.name,
-                    registry.registry_type
+                    kind
                 );
             }
         }

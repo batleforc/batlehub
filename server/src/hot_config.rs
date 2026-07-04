@@ -227,6 +227,19 @@ pub(super) fn build_hot_bundle(
 
 pub(super) fn build_access_config(config: &AppConfig) -> AccessConfig {
     let mut group_access: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut anonymous = HashSet::new();
+    let mut user = HashSet::new();
+    let mut admin = HashSet::new();
+    let mut explore_anonymous = HashSet::new();
+    let mut explore_user = HashSet::new();
+    let mut explore_admin = HashSet::new();
+
+    // Each registry's proxy-access tier is cumulative (admin implies user implies
+    // anonymous — an admin-only registry is still "admin accessible" even with an
+    // empty `rbac.anonymous`/`rbac.user`), and explore access is gated by both the
+    // matching proxy tier and its own `rbac.explore.*` flag. Computed once per
+    // registry in a single pass instead of six independent filter/map/collect
+    // passes each restating the same cumulative conditions.
     for r in &config.registries {
         for group_name in r.rbac.groups.keys() {
             group_access
@@ -234,54 +247,39 @@ pub(super) fn build_access_config(config: &AppConfig) -> AccessConfig {
                 .or_default()
                 .insert(r.name.clone());
         }
+
+        let has_anonymous = !r.rbac.anonymous.is_empty();
+        let has_user = has_anonymous || !r.rbac.user.is_empty();
+        let has_admin = has_user || !r.rbac.admin.is_empty();
+
+        if has_anonymous {
+            anonymous.insert(r.name.clone());
+        }
+        if has_user {
+            user.insert(r.name.clone());
+        }
+        if has_admin {
+            admin.insert(r.name.clone());
+        }
+        if has_anonymous && r.rbac.explore.anonymous {
+            explore_anonymous.insert(r.name.clone());
+        }
+        if has_user && r.rbac.explore.user {
+            explore_user.insert(r.name.clone());
+        }
+        if has_admin && r.rbac.explore.admin {
+            explore_admin.insert(r.name.clone());
+        }
     }
+
     AccessConfig {
-        anonymous: config
-            .registries
-            .iter()
-            .filter(|r| !r.rbac.anonymous.is_empty())
-            .map(|r| r.name.clone())
-            .collect(),
-        user: config
-            .registries
-            .iter()
-            .filter(|r| !r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty())
-            .map(|r| r.name.clone())
-            .collect(),
-        admin: config
-            .registries
-            .iter()
-            .filter(|r| {
-                !r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty() || !r.rbac.admin.is_empty()
-            })
-            .map(|r| r.name.clone())
-            .collect(),
+        anonymous,
+        user,
+        admin,
         groups: group_access,
-        explore_anonymous: config
-            .registries
-            .iter()
-            .filter(|r| !r.rbac.anonymous.is_empty() && r.rbac.explore.anonymous)
-            .map(|r| r.name.clone())
-            .collect(),
-        explore_user: config
-            .registries
-            .iter()
-            .filter(|r| {
-                (!r.rbac.anonymous.is_empty() || !r.rbac.user.is_empty()) && r.rbac.explore.user
-            })
-            .map(|r| r.name.clone())
-            .collect(),
-        explore_admin: config
-            .registries
-            .iter()
-            .filter(|r| {
-                (!r.rbac.anonymous.is_empty()
-                    || !r.rbac.user.is_empty()
-                    || !r.rbac.admin.is_empty())
-                    && r.rbac.explore.admin
-            })
-            .map(|r| r.name.clone())
-            .collect(),
+        explore_anonymous,
+        explore_user,
+        explore_admin,
     }
 }
 

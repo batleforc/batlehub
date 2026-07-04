@@ -2,48 +2,41 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
     Frame,
 };
 
 use crate::api::setup::ProjectDetection;
 
-use super::list_nav::{select_next, select_prev};
+use super::list_nav::ListNav;
 use super::App;
 
+#[derive(Default)]
 pub struct SetupWizardWidget {
-    pub items: Vec<ProjectDetection>,
-    pub state: ListState,
+    pub nav: ListNav<ProjectDetection>,
     pub cwd: String,
 }
 
 impl SetupWizardWidget {
     pub fn new() -> Self {
-        Self {
-            items: vec![],
-            state: ListState::default(),
-            cwd: String::new(),
-        }
+        Self::default()
     }
 
     pub fn set_items(&mut self, items: Vec<ProjectDetection>, cwd: String) {
-        self.items = items;
+        self.nav.set_items(items);
         self.cwd = cwd;
-        if !self.items.is_empty() {
-            self.state.select(Some(0));
-        }
     }
 
     pub fn next(&mut self) {
-        select_next(&mut self.state, self.items.len());
+        self.nav.next();
     }
 
     pub fn prev(&mut self) {
-        select_prev(&mut self.state, self.items.len());
+        self.nav.prev();
     }
 
     pub fn selected(&self) -> Option<&ProjectDetection> {
-        self.state.selected().and_then(|i| self.items.get(i))
+        self.nav.selected()
     }
 }
 
@@ -56,7 +49,7 @@ pub fn render(f: &mut Frame, app: &App) {
     let main_area = chunks[0];
     let footer_area = chunks[1];
 
-    if app.setup_wizard.items.is_empty() {
+    if app.setup_wizard.nav.items.is_empty() {
         let msg = Paragraph::new(vec![
             Line::from(""),
             Line::from(Span::styled(
@@ -90,6 +83,7 @@ pub fn render(f: &mut Frame, app: &App) {
         // Left: project list
         let items: Vec<ListItem> = app
             .setup_wizard
+            .nav
             .items
             .iter()
             .map(|d| {
@@ -120,7 +114,7 @@ pub fn render(f: &mut Frame, app: &App) {
             )
             .highlight_symbol("> ");
 
-        f.render_stateful_widget(list, list_area, &mut app.setup_wizard.state.clone());
+        f.render_stateful_widget(list, list_area, &mut app.setup_wizard.nav.state.clone());
 
         // Right: instructions for selected project
         let detail_text = if let Some(det) = app.setup_wizard.selected() {
@@ -172,7 +166,7 @@ mod tests {
             vec![detection("npm", Some("left-pad")), detection("cargo", None)],
             "/home/user/project".to_owned(),
         );
-        assert_eq!(w.state.selected(), Some(0));
+        assert_eq!(w.nav.state.selected(), Some(0));
         assert_eq!(w.cwd, "/home/user/project");
         assert_eq!(w.selected().unwrap().registry_type, "npm");
     }
@@ -181,7 +175,7 @@ mod tests {
     fn set_items_empty_leaves_selection_unset() {
         let mut w = SetupWizardWidget::new();
         w.set_items(vec![], "/tmp".to_owned());
-        assert_eq!(w.state.selected(), None);
+        assert_eq!(w.nav.state.selected(), None);
         assert!(w.selected().is_none());
     }
 
@@ -198,14 +192,14 @@ mod tests {
         );
 
         w.next();
-        assert_eq!(w.state.selected(), Some(1));
+        assert_eq!(w.nav.state.selected(), Some(1));
         w.next();
-        assert_eq!(w.state.selected(), Some(2));
+        assert_eq!(w.nav.state.selected(), Some(2));
         w.next();
-        assert_eq!(w.state.selected(), Some(0));
+        assert_eq!(w.nav.state.selected(), Some(0));
 
         w.prev();
-        assert_eq!(w.state.selected(), Some(2));
+        assert_eq!(w.nav.state.selected(), Some(2));
     }
 
     #[test]
@@ -213,6 +207,6 @@ mod tests {
         let mut w = SetupWizardWidget::new();
         w.next();
         w.prev();
-        assert_eq!(w.state.selected(), None);
+        assert_eq!(w.nav.state.selected(), None);
     }
 }

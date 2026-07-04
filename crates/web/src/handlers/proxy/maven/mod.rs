@@ -25,12 +25,13 @@ use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
     RegistryModeMap,
 };
-use batlehub_core::entities::NotificationEventType;
 
 pub mod local;
 pub mod proxy;
 pub mod routing;
 
-pub use local::*;
-pub use proxy::*;
-pub use routing::*;
+pub use local::{handle_maven_artifact, handle_maven_metadata, maven_local_response};
+pub use proxy::{maven_get, maven_put};
+pub use routing::{
+    build_metadata_xml, content_type_for, parse_maven_path, parse_pom, MavenPathKind, PomMetadata,
+};

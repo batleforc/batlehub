@@ -124,7 +124,7 @@ where
             let ip = extract_client_ip(&req, &config.trusted_proxies);
 
             // Check if the IP is already blocked.
-            match store.is_blocked(&ip).await {
+            match store.blocked_until(&ip).await {
                 Ok(Some(unblock_at)) => {
                     let body = serde_json::json!({
                         "error": "Forbidden",
@@ -348,7 +348,7 @@ mod tests {
         }
 
         // Now the IP should be auto-blocked.
-        assert!(store.is_blocked("10.0.0.1").await.unwrap().is_some());
+        assert!(store.blocked_until("10.0.0.1").await.unwrap().is_some());
 
         // Next request returns 403, not 429.
         let req = TestRequest::get()
@@ -376,7 +376,7 @@ mod tests {
             .to_request();
         test::call_service(&app, req).await;
 
-        assert!(store.is_blocked("10.0.0.2").await.unwrap().is_none());
+        assert!(store.blocked_until("10.0.0.2").await.unwrap().is_none());
     }
 
     #[actix_web::test]

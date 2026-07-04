@@ -2,8 +2,8 @@ use super::{
     collect_payload, content_type_for, get, maven_artifact_storage_key, maven_local_response,
     parse_maven_path, parse_pom, proxy_stream, put, require_local_mode, require_registry_type, web,
     AppError, Arc, AuthIdentity, Digest, HttpResponse, LocalRegistryService, MavenPathKind,
-    NotificationEventType, NotificationService, PackageId, ProxyService, PublishRequest,
-    RegistryMap, RegistryMode, RegistryModeMap, Responder, Sha256, StorageMeta,
+    NotificationService, PackageId, ProxyService, PublishRequest, RegistryMap, RegistryMode,
+    RegistryModeMap, Responder, Sha256, StorageMeta,
 };
 
 /// Proxy or serve a Maven repository request.
@@ -180,10 +180,10 @@ pub async fn maven_put(
                 "yanked": false,
             });
 
-            let actor = identity.0.user_id.clone().unwrap_or_default();
-
-            let quota_check = local_svc
-                .publish(PublishRequest {
+            super::super::common::publish_and_respond(
+                &local_svc,
+                &notification_svc,
+                PublishRequest {
                     registry: registry.clone(),
                     name: name.clone(),
                     version: resolved_version.clone(),
@@ -193,25 +193,13 @@ pub async fn maven_put(
                     publisher: identity.0,
                     signature_bytes: None,
                     signature_type: None,
-                })
-                .await
-                .map_err(AppError::from)?;
-
-            super::super::common::dispatch_notification(
-                &notification_svc,
-                NotificationEventType::PackagePublished,
-                &registry,
-                &name,
-                Some(resolved_version),
-                &actor,
-            );
-
-            let mut resp = HttpResponse::Created();
-            if let Some(limit) = quota_check.bytes_limit {
-                resp.insert_header(("X-Quota-Used-Bytes", quota_check.bytes_used.to_string()));
-                resp.insert_header(("X-Quota-Limit-Bytes", limit.to_string()));
-            }
-            Ok(resp.finish())
+                },
+                actix_web::http::StatusCode::CREATED,
+                serde_json::json!({
+                    "message": format!("Successfully published {name} {resolved_version}")
+                }),
+            )
+            .await
         }
     }
 }

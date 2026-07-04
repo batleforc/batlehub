@@ -90,7 +90,9 @@ impl SbomService {
                 SbomFormat::Spdx => upstream_spdx
                     .clone()
                     .unwrap_or_else(|| generate::generate_spdx(meta, artifact_key, &deps)),
-                SbomFormat::CycloneDx => generate::generate_cyclonedx(meta, artifact_key, &deps),
+                SbomFormat::CycloneDx => {
+                    generate::generate_cyclonedx(meta, artifact_key, &deps, registry_type)
+                }
             };
 
             self.repo
@@ -162,7 +164,7 @@ impl SbomService {
             let document = match format {
                 SbomFormat::Spdx => generate::generate_spdx(&fake_meta, artifact_key, &deps),
                 SbomFormat::CycloneDx => {
-                    generate::generate_cyclonedx(&fake_meta, artifact_key, &deps)
+                    generate::generate_cyclonedx(&fake_meta, artifact_key, &deps, registry_type)
                 }
             };
 

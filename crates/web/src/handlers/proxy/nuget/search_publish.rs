@@ -13,7 +13,8 @@ use batlehub_core::{
 };
 
 use super::super::common::{
-    dispatch_notification, extract_signature_headers, require_local_mode, require_registry_type,
+    dispatch_notification, extract_signature_headers, publish_and_respond, require_local_mode,
+    require_registry_type,
 };
 use super::nuspec::{extract_nuspec_from_nupkg, parse_nuspec};
 use crate::{
@@ -191,10 +192,11 @@ pub async fn nuget_publish(
     });
 
     let (signature_bytes, signature_type) = extract_signature_headers(&req);
-    let actor = identity.0.user_id.clone().unwrap_or_default();
 
-    let quota_check = local_svc
-        .publish(PublishRequest {
+    publish_and_respond(
+        &local_svc,
+        &notification_svc,
+        PublishRequest {
             registry: registry.clone(),
             name: id_lower.clone(),
             version: version.clone(),
@@ -204,25 +206,13 @@ pub async fn nuget_publish(
             publisher: identity.0,
             signature_bytes,
             signature_type,
-        })
-        .await
-        .map_err(AppError::from)?;
-
-    dispatch_notification(
-        &notification_svc,
-        NotificationEventType::PackagePublished,
-        &registry,
-        &nuspec.id,
-        Some(version),
-        &actor,
-    );
-
-    let mut resp = HttpResponse::Created();
-    if let Some(limit) = quota_check.bytes_limit {
-        resp.insert_header(("X-Quota-Used-Bytes", quota_check.bytes_used.to_string()));
-        resp.insert_header(("X-Quota-Limit-Bytes", limit.to_string()));
-    }
-    Ok(resp.finish())
+        },
+        actix_web::http::StatusCode::CREATED,
+        serde_json::json!({
+            "message": format!("Successfully published {id_lower} {version}")
+        }),
+    )
+    .await
 }
 
 // ── Yank ──────────────────────────────────────────────────────────────────────

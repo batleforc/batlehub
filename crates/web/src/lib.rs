@@ -1,3 +1,4 @@
+pub mod access;
 pub mod badges;
 pub mod error;
 pub mod extractors;
@@ -5,332 +6,105 @@ pub mod handlers;
 pub mod middleware;
 pub mod services;
 
-use std::collections::{HashMap, HashSet};
+pub use access::{new_access_lock, AccessConfig, AccessConfigLock};
+
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use batlehub_config::schema::RegistryMode;
-use batlehub_core::entities::{Identity, Role};
 
-/// Shared, hot-reloadable access config — updated atomically on config reload.
-pub type AccessConfigLock = Arc<tokio::sync::RwLock<AccessConfig>>;
-
-/// Convenience constructor for `AccessConfigLock`.
-pub fn new_access_lock(cfg: AccessConfig) -> AccessConfigLock {
-    Arc::new(tokio::sync::RwLock::new(cfg))
-}
-
-/// Maps each role (and each dynamic group) to the set of registry names it can access.
+/// A registry-name-keyed `HashMap` behind `Arc<RwLock<>>`, reused by every
+/// lookup table below so hot-reload can swap entries without restarting actix
+/// workers. `Clone` shares the same lock (all clones see the same data).
 ///
-/// Role inheritance: user inherits anonymous, admin inherits both.
-/// Groups are additive — a user sees the union of their role's registries and each group's registries.
+/// The six domain types below (`RegistryMap`, `RegistryModeMap`, `RepoSignerMap`,
+/// `UpstreamMap`, `VulnDbMap`, `CargoIndexMap`) each wrap one of these plus only
+/// their own domain-specific accessor methods (`type_of`, `upstream_for`, …) —
+/// no downstream call site needs to change, since those six public type names
+/// and methods stay the same; only their formerly-duplicated lock/clone
+/// boilerplate moves here.
 #[derive(Clone)]
-pub struct AccessConfig {
-    pub anonymous: HashSet<String>,
-    pub user: HashSet<String>,
-    pub admin: HashSet<String>,
-    /// Dynamic group → registry names. Populated from `[registries.rbac.groups]`.
-    pub groups: HashMap<String, HashSet<String>>,
-    /// Registries where each role can browse/search in the package explorer.
-    /// Always a subset of the corresponding proxy-access set.
-    pub explore_anonymous: HashSet<String>,
-    pub explore_user: HashSet<String>,
-    pub explore_admin: HashSet<String>,
-}
+struct LockedMap<V>(Arc<std::sync::RwLock<HashMap<String, V>>>);
 
-impl AccessConfig {
-    pub fn accessible_registries(&self, role: &Role) -> &HashSet<String> {
-        match role {
-            Role::Admin => &self.admin,
-            Role::User => &self.user,
-            Role::Anonymous => &self.anonymous,
-        }
+impl<V: Clone> LockedMap<V> {
+    fn new(map: HashMap<String, V>) -> Self {
+        Self(Arc::new(std::sync::RwLock::new(map)))
     }
 
-    /// Returns the union of registries accessible via the caller's role and group memberships.
-    /// Supports wildcard keys: `"*:team-a"` in the groups map matches `"oidc1:team-a"`,
-    /// `"oidc2:team-a"`, `"kubernetes:team-a"`, etc.
-    pub fn accessible_registries_for(&self, identity: &Identity) -> HashSet<String> {
-        let mut result = self.accessible_registries(&identity.role).clone();
-        for group in &identity.groups {
-            // Exact match
-            if let Some(registries) = self.groups.get(group) {
-                result.extend(registries.iter().cloned());
-            }
-            // Wildcard match: "*:local-name" covers any provider prefix
-            if let Some((_, local_name)) = group.split_once(':') {
-                let wildcard = format!("*:{local_name}");
-                if let Some(registries) = self.groups.get(&wildcard) {
-                    result.extend(registries.iter().cloned());
-                }
-            }
-        }
-        result
+    fn get(&self, key: &str) -> Option<V> {
+        self.0
+            .read()
+            .expect("locked map lock poisoned")
+            .get(key)
+            .cloned()
     }
 
-    pub fn has_registry_access(&self, identity: &Identity) -> bool {
-        !self.accessible_registries_for(identity).is_empty()
+    fn contains(&self, key: &str) -> bool {
+        self.0
+            .read()
+            .expect("locked map lock poisoned")
+            .contains_key(key)
     }
 
-    fn explore_registries(&self, role: &Role) -> &HashSet<String> {
-        match role {
-            Role::Admin => &self.explore_admin,
-            Role::User => &self.explore_user,
-            Role::Anonymous => &self.explore_anonymous,
-        }
+    fn keys(&self) -> Vec<String> {
+        self.0
+            .read()
+            .expect("locked map lock poisoned")
+            .keys()
+            .cloned()
+            .collect()
     }
 
-    /// Returns the set of registries the caller can browse/search in the package explorer.
-    /// Groups inherit their proxy access for explore (no separate group-level explore restriction).
-    pub fn explore_accessible_registries_for(&self, identity: &Identity) -> HashSet<String> {
-        let proxy = self.accessible_registries_for(identity);
-        let explore = self.explore_registries(&identity.role);
-        proxy.intersection(explore).cloned().collect()
-    }
-}
-
-#[cfg(test)]
-mod access_config_tests {
-    use super::*;
-    use batlehub_core::entities::Identity;
-
-    fn make_config() -> AccessConfig {
-        let regs: HashSet<String> = [
-            "public",
-            "user-only",
-            "admin-only",
-            "group-a-reg",
-            "group-b-reg",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-        AccessConfig {
-            anonymous: ["public"].iter().map(|s| s.to_string()).collect(),
-            user: ["public", "user-only"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            admin: ["public", "user-only", "admin-only"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            groups: [
-                (
-                    "team-a".to_owned(),
-                    ["group-a-reg"].iter().map(|s| s.to_string()).collect(),
-                ),
-                (
-                    "team-b".to_owned(),
-                    ["group-b-reg", "public"]
-                        .iter()
-                        .map(|s| s.to_string())
-                        .collect(),
-                ),
-            ]
-            .into_iter()
-            .collect(),
-            explore_anonymous: regs.clone(),
-            explore_user: regs.clone(),
-            explore_admin: regs,
-        }
+    fn insert(&self, key: String, value: V) {
+        self.0
+            .write()
+            .expect("locked map lock poisoned")
+            .insert(key, value);
     }
 
-    fn identity(role: Role, groups: Vec<&str>) -> Identity {
-        Identity {
-            user_id: None,
-            role,
-            auth_provider: None,
-            groups: groups.into_iter().map(str::to_owned).collect(),
-        }
-    }
-
-    #[test]
-    fn role_only_access_unchanged() {
-        let cfg = make_config();
-        let id = identity(Role::User, vec![]);
-        let accessible = cfg.accessible_registries_for(&id);
-        assert!(accessible.contains("public"));
-        assert!(accessible.contains("user-only"));
-        assert!(!accessible.contains("admin-only"));
-        assert!(!accessible.contains("group-a-reg"));
-    }
-
-    #[test]
-    fn group_membership_adds_group_registries() {
-        let cfg = make_config();
-        let id = identity(Role::Anonymous, vec!["team-a"]);
-        let accessible = cfg.accessible_registries_for(&id);
-        assert!(
-            accessible.contains("group-a-reg"),
-            "team-a should see group-a-reg"
-        );
-        assert!(
-            accessible.contains("public"),
-            "anonymous role still applies"
-        );
-        assert!(
-            !accessible.contains("group-b-reg"),
-            "team-a should not see group-b-reg"
-        );
-    }
-
-    #[test]
-    fn multiple_groups_union() {
-        let cfg = make_config();
-        let id = identity(Role::Anonymous, vec!["team-a", "team-b"]);
-        let accessible = cfg.accessible_registries_for(&id);
-        assert!(accessible.contains("group-a-reg"));
-        assert!(accessible.contains("group-b-reg"));
-        assert!(accessible.contains("public"));
-    }
-
-    #[test]
-    fn has_registry_access_via_group_only() {
-        // No role-based registries for anonymous, but group-a-reg is accessible via team-a.
-        let anon_cfg = AccessConfig {
-            anonymous: [].iter().cloned().collect(),
-            user: [].iter().cloned().collect(),
-            admin: [].iter().cloned().collect(),
-            groups: [(
-                "team-a".to_owned(),
-                ["group-a-reg".to_string()].into_iter().collect(),
-            )]
-            .into_iter()
-            .collect(),
-            explore_anonymous: HashSet::new(),
-            explore_user: HashSet::new(),
-            explore_admin: HashSet::new(),
-        };
-        let id = identity(Role::Anonymous, vec!["team-a"]);
-        assert!(anon_cfg.has_registry_access(&id));
-    }
-
-    #[test]
-    fn has_registry_access_false_without_role_or_group_match() {
-        let cfg = make_config();
-        let id = identity(Role::Anonymous, vec!["team-c"]);
-        let accessible = cfg.accessible_registries_for(&id);
-        assert!(accessible.contains("public"));
-        assert!(!accessible.contains("group-a-reg"));
-        assert!(!accessible.contains("group-b-reg"));
-    }
-
-    #[test]
-    fn group_overlap_with_role_no_duplicates() {
-        // team-b includes "public", which anonymous role already grants — no issue.
-        let cfg = make_config();
-        let id = identity(Role::Anonymous, vec!["team-b"]);
-        let accessible = cfg.accessible_registries_for(&id);
-        assert_eq!(accessible.iter().filter(|r| *r == "public").count(), 1);
-        assert!(accessible.contains("group-b-reg"));
-    }
-
-    fn make_wildcard_config() -> AccessConfig {
-        let all: HashSet<String> = ["all-reg", "shared-reg", "oidc2-reg"]
+    /// A cloned snapshot of every `(key, value)` pair.
+    fn entries(&self) -> Vec<(String, V)> {
+        self.0
+            .read()
+            .expect("locked map lock poisoned")
             .iter()
-            .map(|s| s.to_string())
-            .collect();
-        AccessConfig {
-            anonymous: HashSet::new(),
-            user: HashSet::new(),
-            admin: ["all-reg".to_owned()].into_iter().collect(),
-            groups: [
-                // Wildcard: any provider's "team-a" gets "shared-reg"
-                (
-                    "*:team-a".to_owned(),
-                    ["shared-reg".to_owned()].into_iter().collect(),
-                ),
-                // Exact: only oidc2's "team-b" gets "oidc2-reg"
-                (
-                    "oidc2:team-b".to_owned(),
-                    ["oidc2-reg".to_owned()].into_iter().collect(),
-                ),
-            ]
-            .into_iter()
-            .collect(),
-            explore_anonymous: all.clone(),
-            explore_user: all.clone(),
-            explore_admin: all,
-        }
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 
-    #[test]
-    fn wildcard_matches_any_provider_prefix() {
-        let cfg = make_wildcard_config();
-        for group in &["oidc1:team-a", "oidc2:team-a", "kubernetes:team-a"] {
-            let id = identity(Role::Anonymous, vec![group]);
-            let accessible = cfg.accessible_registries_for(&id);
-            assert!(
-                accessible.contains("shared-reg"),
-                "{group} should match *:team-a and access shared-reg"
-            );
-        }
+    /// Replace this map's contents with a snapshot of `other`'s, under both
+    /// locks in turn. Used by the hot-reload applier to swap in a pending
+    /// map's contents without replacing the `Arc` (and therefore without
+    /// invalidating any clone already held by an in-flight request).
+    fn replace_from(&self, other: &Self) {
+        let snapshot = other.0.read().expect("locked map lock poisoned").clone();
+        *self.0.write().expect("locked map lock poisoned") = snapshot;
     }
+}
 
-    #[test]
-    fn exact_entry_not_matched_by_wrong_provider() {
-        let cfg = make_wildcard_config();
-        let id = identity(Role::Anonymous, vec!["oidc1:team-b"]);
-        let accessible = cfg.accessible_registries_for(&id);
-        assert!(
-            !accessible.contains("oidc2-reg"),
-            "oidc1:team-b should not match oidc2:team-b"
-        );
+impl<V: Clone> Default for LockedMap<V> {
+    fn default() -> Self {
+        Self::new(HashMap::new())
     }
+}
 
-    #[test]
-    fn exact_entry_matched_by_correct_provider() {
-        let cfg = make_wildcard_config();
-        let id = identity(Role::Anonymous, vec!["oidc2:team-b"]);
-        let accessible = cfg.accessible_registries_for(&id);
-        assert!(accessible.contains("oidc2-reg"));
-    }
-
-    #[test]
-    fn group_without_colon_skips_wildcard_lookup_safely() {
-        let cfg = make_wildcard_config();
-        let id = identity(Role::Anonymous, vec!["raw-group"]);
-        let accessible = cfg.accessible_registries_for(&id);
-        assert!(
-            !accessible.contains("shared-reg"),
-            "bare group name should not match wildcards"
-        );
-    }
-
-    #[test]
-    fn multi_provider_user_gets_union_via_wildcard() {
-        let cfg = make_wildcard_config();
-        let id = identity(Role::Anonymous, vec!["oidc1:team-a", "oidc2:team-b"]);
-        let accessible = cfg.accessible_registries_for(&id);
-        assert!(
-            accessible.contains("shared-reg"),
-            "wildcard match for oidc1:team-a"
-        );
-        assert!(
-            accessible.contains("oidc2-reg"),
-            "exact match for oidc2:team-b"
-        );
+impl<V: Clone> From<HashMap<String, V>> for LockedMap<V> {
+    fn from(map: HashMap<String, V>) -> Self {
+        Self::new(map)
     }
 }
 
 /// Maps registry name → registry type (e.g. `"github1"` → `"github"`).
-///
-/// The inner `HashMap` is behind `Arc<RwLock<>>` so the hot-reload path can swap
-/// registry metadata without restarting actix workers. `Clone` shares the same lock.
-#[derive(Clone)]
-pub struct RegistryMap(pub Arc<std::sync::RwLock<HashMap<String, String>>>);
+#[derive(Clone, Default)]
+pub struct RegistryMap(LockedMap<String>);
 
 impl RegistryMap {
     pub fn new(map: HashMap<String, String>) -> Self {
-        Self(Arc::new(std::sync::RwLock::new(map)))
+        Self(LockedMap::new(map))
     }
 
     pub fn type_of(&self, name: &str) -> Option<String> {
-        self.0
-            .read()
-            .expect("registry map lock poisoned")
-            .get(name)
-            .cloned()
+        self.0.get(name)
     }
 
     pub fn is_type(&self, name: &str, expected: &str) -> bool {
@@ -338,30 +112,30 @@ impl RegistryMap {
     }
 
     pub fn contains(&self, name: &str) -> bool {
-        self.0
-            .read()
-            .expect("registry map lock poisoned")
-            .contains_key(name)
+        self.0.contains(name)
     }
 
     pub fn keys(&self) -> Vec<String> {
-        self.0
-            .read()
-            .expect("registry map lock poisoned")
-            .keys()
-            .cloned()
-            .collect()
+        self.0.keys()
+    }
+
+    /// A cloned snapshot of every `(registry name, registry type)` pair.
+    pub fn entries(&self) -> Vec<(String, String)> {
+        self.0.entries()
     }
 
     /// Registry names with the given type.
     pub fn names_of_type(&self, registry_type: &str) -> Vec<String> {
-        self.0
-            .read()
-            .expect("registry map lock poisoned")
-            .iter()
-            .filter(|(_, t)| t.as_str() == registry_type)
-            .map(|(n, _)| n.clone())
+        self.entries()
+            .into_iter()
+            .filter(|(_, t)| t == registry_type)
+            .map(|(n, _)| n)
             .collect()
+    }
+
+    /// Replace this map's contents with `other`'s (called by the hot-reload applier).
+    pub fn replace_from(&self, other: &Self) {
+        self.0.replace_from(&other.0);
     }
 }
 
@@ -372,36 +146,25 @@ impl From<HashMap<String, String>> for RegistryMap {
 }
 
 /// Maps registry name → configured `RegistryMode` (proxy / local / hybrid).
-///
-/// Inner `HashMap` is behind `Arc<RwLock<>>` for the same hot-reload reason as [`RegistryMap`].
-#[derive(Clone)]
-pub struct RegistryModeMap(pub Arc<std::sync::RwLock<HashMap<String, RegistryMode>>>);
+#[derive(Clone, Default)]
+pub struct RegistryModeMap(LockedMap<RegistryMode>);
 
 impl RegistryModeMap {
     pub fn new(map: HashMap<String, RegistryMode>) -> Self {
-        Self(Arc::new(std::sync::RwLock::new(map)))
+        Self(LockedMap::new(map))
     }
 
     pub fn get(&self, name: &str) -> RegistryMode {
-        self.0
-            .read()
-            .expect("registry mode map lock poisoned")
-            .get(name)
-            .cloned()
-            .unwrap_or_default()
+        self.0.get(name).unwrap_or_default()
     }
 
     pub fn insert(&self, name: String, mode: RegistryMode) {
-        self.0
-            .write()
-            .expect("registry mode map lock poisoned")
-            .insert(name, mode);
+        self.0.insert(name, mode);
     }
-}
 
-impl Default for RegistryModeMap {
-    fn default() -> Self {
-        Self::new(HashMap::new())
+    /// Replace this map's contents with `other`'s (called by the hot-reload applier).
+    pub fn replace_from(&self, other: &Self) {
+        self.0.replace_from(&other.0);
     }
 }
 
@@ -414,52 +177,42 @@ impl From<HashMap<String, RegistryMode>> for RegistryModeMap {
 /// Maps a `deb`/`rpm` registry name → its repository-metadata signing key, when
 /// configured. Registries absent from the map host **unsigned** repositories
 /// (clients must use `[trusted=yes]` / `gpgcheck=0`).
-///
-/// Inner `HashMap` is behind `Arc<RwLock<>>` for the same hot-reload reason as [`RegistryMap`].
 #[derive(Clone, Default)]
-pub struct RepoSignerMap(
-    pub Arc<std::sync::RwLock<HashMap<String, Arc<batlehub_adapters::repo::OpenPgpSigner>>>>,
-);
+pub struct RepoSignerMap(LockedMap<Arc<batlehub_adapters::repo::OpenPgpSigner>>);
 
 impl RepoSignerMap {
     pub fn get(&self, name: &str) -> Option<Arc<batlehub_adapters::repo::OpenPgpSigner>> {
-        self.0
-            .read()
-            .expect("repo signer map lock poisoned")
-            .get(name)
-            .cloned()
+        self.0.get(name)
+    }
+
+    /// Replace this map's contents with `other`'s (called by the hot-reload applier).
+    pub fn replace_from(&self, other: &Self) {
+        self.0.replace_from(&other.0);
     }
 }
 
 impl From<HashMap<String, Arc<batlehub_adapters::repo::OpenPgpSigner>>> for RepoSignerMap {
     fn from(map: HashMap<String, Arc<batlehub_adapters::repo::OpenPgpSigner>>) -> Self {
-        Self(Arc::new(std::sync::RwLock::new(map)))
+        Self(LockedMap::new(map))
     }
 }
 
 /// Maps npm/terraform/pypi/conda registry name → first upstream base URL (for audit pass-through).
-///
-/// Inner `HashMap` is behind `Arc<RwLock<>>` for the same hot-reload reason as [`RegistryMap`].
-#[derive(Clone)]
-pub struct UpstreamMap(pub Arc<std::sync::RwLock<HashMap<String, String>>>);
+#[derive(Clone, Default)]
+pub struct UpstreamMap(LockedMap<String>);
 
 impl UpstreamMap {
     pub fn new(map: HashMap<String, String>) -> Self {
-        Self(Arc::new(std::sync::RwLock::new(map)))
+        Self(LockedMap::new(map))
     }
 
     pub fn upstream_for(&self, name: &str) -> Option<String> {
-        self.0
-            .read()
-            .expect("upstream map lock poisoned")
-            .get(name)
-            .cloned()
+        self.0.get(name)
     }
-}
 
-impl Default for UpstreamMap {
-    fn default() -> Self {
-        Self::new(HashMap::new())
+    /// Replace this map's contents with `other`'s (called by the hot-reload applier).
+    pub fn replace_from(&self, other: &Self) {
+        self.0.replace_from(&other.0);
     }
 }
 
@@ -474,11 +227,10 @@ impl From<HashMap<String, String>> for UpstreamMap {
 /// the vuln DB passthrough disabled (`vuln_db_url = ""`).
 ///
 /// Holds a shared `reqwest::Client` so all registries reuse one connection pool.
-/// The URL map is behind `Arc<RwLock<>>` for hot-reload support.
 #[derive(Clone)]
 pub struct VulnDbMap {
     pub http: reqwest::Client,
-    pub urls: Arc<std::sync::RwLock<HashMap<String, String>>>,
+    urls: LockedMap<String>,
 }
 
 impl VulnDbMap {
@@ -490,21 +242,22 @@ impl VulnDbMap {
             .expect("building vuln DB HTTP client");
         Self {
             http,
-            urls: Arc::new(std::sync::RwLock::new(urls)),
+            urls: LockedMap::new(urls),
         }
     }
 
     pub fn url_for(&self, registry: &str) -> Option<String> {
-        self.urls
-            .read()
-            .expect("vuln db map lock poisoned")
-            .get(registry)
-            .cloned()
+        self.urls.get(registry)
     }
 
     /// Replace the URL map in place (called by the hot-reload applier).
     pub fn update(&self, urls: HashMap<String, String>) {
-        *self.urls.write().expect("vuln db map lock poisoned") = urls;
+        *self.urls.0.write().expect("locked map lock poisoned") = urls;
+    }
+
+    /// Replace this map's contents with `other`'s (called by the hot-reload applier).
+    pub fn replace_from(&self, other: &Self) {
+        self.urls.replace_from(&other.urls);
     }
 }
 
@@ -515,24 +268,22 @@ impl Default for VulnDbMap {
 }
 
 /// Maps Cargo registry name → [`CargoIndexProxy`] (sparse-index HTTP client + URL).
-///
-/// Inner `HashMap` is behind `Arc<RwLock<>>` so hot-reload can swap proxy settings
-/// without restarting actix workers. Clone shares the same lock.
 #[derive(Clone, Default)]
-pub struct CargoIndexMap(pub Arc<std::sync::RwLock<HashMap<String, CargoIndexProxy>>>);
+pub struct CargoIndexMap(LockedMap<CargoIndexProxy>);
 
 impl CargoIndexMap {
     pub fn new(map: HashMap<String, CargoIndexProxy>) -> Self {
-        Self(Arc::new(std::sync::RwLock::new(map)))
+        Self(LockedMap::new(map))
     }
 
     /// Clone the proxy for the given registry name, if configured.
     pub fn get(&self, name: &str) -> Option<CargoIndexProxy> {
-        self.0
-            .read()
-            .expect("cargo index map lock poisoned")
-            .get(name)
-            .cloned()
+        self.0.get(name)
+    }
+
+    /// Replace this map's contents with `other`'s (called by the hot-reload applier).
+    pub fn replace_from(&self, other: &Self) {
+        self.0.replace_from(&other.0);
     }
 }
 

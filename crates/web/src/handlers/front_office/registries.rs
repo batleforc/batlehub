@@ -31,20 +31,18 @@ pub async fn list_registries(
 ) -> impl Responder {
     let accessible = access.read().await.accessible_registries_for(&identity);
     let mut registries: Vec<RegistryInfo> = map
-        .0
-        .read()
-        .expect("registry map lock poisoned")
-        .iter()
+        .entries()
+        .into_iter()
         .filter(|(name, _)| accessible.contains(name.as_str()))
         .map(|(name, registry_type)| RegistryInfo {
-            name: name.clone(),
-            registry_type: registry_type.clone(),
-            mode: match modes.get(name) {
+            mode: match modes.get(&name) {
                 batlehub_config::schema::RegistryMode::Proxy => "proxy",
                 batlehub_config::schema::RegistryMode::Local => "local",
                 batlehub_config::schema::RegistryMode::Hybrid => "hybrid",
             }
             .to_string(),
+            name,
+            registry_type,
         })
         .collect();
     registries.sort_by(|a, b| a.name.cmp(&b.name));

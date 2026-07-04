@@ -7,7 +7,7 @@ use utoipa::IntoParams;
 
 use batlehub_core::{entities::SbomFormat, services::SbomService};
 
-use super::require_admin;
+use super::{require_admin, require_authenticated};
 use crate::{error::AppError, extractors::AuthIdentity};
 
 fn default_sbom_format() -> String {
@@ -50,11 +50,7 @@ pub async fn get_artifact_sbom(
     sbom_svc: web::Data<Arc<SbomService>>,
 ) -> Result<impl Responder, AppError> {
     // Requires at least an authenticated user (not anonymous).
-    if identity.role == batlehub_core::entities::Role::Anonymous {
-        return Err(AppError::forbidden(
-            "authentication required to access SBOMs",
-        ));
-    }
+    require_authenticated(&identity)?;
 
     let (registry, name, version) = path.into_inner();
 

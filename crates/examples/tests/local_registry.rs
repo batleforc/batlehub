@@ -116,6 +116,7 @@ impl LocalProxy {
             team_namespace: None,
             sbom: None,
             explore_cache: None,
+            access_log: None,
         });
 
         // No upstream registries — local mode only.

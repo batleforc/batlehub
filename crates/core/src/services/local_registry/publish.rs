@@ -4,11 +4,24 @@ use super::{
     StorageMeta, Visibility,
 };
 
+/// Everything [`LocalRegistryService::enforce_publish_policy`] needs to know about
+/// the artifact being published, grouped so the function takes one parameter for
+/// the artifact plus `publisher` (the acting principal, kept separate since it
+/// answers a different question — *who*, not *what*).
+pub struct PublishPolicyRequest<'a> {
+    pub registry: &'a str,
+    pub name: &'a str,
+    pub version: &'a str,
+    pub artifact_len: u64,
+    pub signature_bytes: Option<&'a [u8]>,
+    pub signature_type: Option<&'a str>,
+}
+
 impl LocalRegistryService {
     fn check_signing_policy(
         signing: &crate::services::hot_config::SigningConfig,
-        sig_bytes: Option<&Vec<u8>>,
-        sig_type: Option<&String>,
+        sig_bytes: Option<&[u8]>,
+        sig_type: Option<&str>,
     ) -> Result<(), CoreError> {
         if signing.required && sig_bytes.is_none() {
             return Err(CoreError::AccessDenied(
@@ -58,16 +71,10 @@ impl LocalRegistryService {
     ///
     /// Returns the post-publish [`QuotaCheck`] (for `X-Quota-*` headers) and
     /// whether this is the first time the package name is seen.
-    #[allow(clippy::too_many_arguments)]
     pub async fn enforce_publish_policy(
         &self,
-        registry: &str,
-        name: &str,
-        version: &str,
-        artifact_len: u64,
+        req: &PublishPolicyRequest<'_>,
         publisher: &Identity,
-        signature_bytes: Option<&Vec<u8>>,
-        signature_type: Option<&String>,
     ) -> Result<(QuotaCheck, bool), CoreError> {
         if !publisher.has_role_at_least(&Role::User) {
             return Err(CoreError::AccessDenied(
@@ -78,48 +85,49 @@ impl LocalRegistryService {
         // Reject names/versions that could escape the storage root via path
         // traversal once interpolated into the storage key. Runs unconditionally,
         // independent of the optional versioning policy below.
-        validate_package_name(name)?;
-        validate_path_safe("version", version)?;
+        validate_package_name(req.name)?;
+        validate_path_safe("version", req.version)?;
 
         // Snapshot hot-swappable policy (versioning, signing, size limit).
         let (versioning, signing, limit) = {
             let hot = self.hot.read().await;
-            let versioning = hot.versioning.get(registry).cloned();
-            let signing = hot.signing.get(registry).cloned();
+            let versioning = hot.versioning.get(req.registry).cloned();
+            let signing = hot.signing.get(req.registry).cloned();
             let limit = hot.max_artifact_size_bytes.unwrap_or(500 * 1024 * 1024);
             (versioning, signing, limit)
         };
 
         // Versioning policy check.
         if let Some(ref policy) = versioning {
-            validate_version(version, policy)?;
+            validate_version(req.version, policy)?;
         }
 
         // Signing check.
         if let Some(ref signing) = signing {
-            Self::check_signing_policy(signing, signature_bytes, signature_type)?;
+            Self::check_signing_policy(signing, req.signature_bytes, req.signature_type)?;
         }
 
         // Namespace enforcement.
-        self.check_namespace_membership(registry, name, publisher)
+        self.check_namespace_membership(req.registry, req.name, publisher)
             .await?;
 
         // Ownership check.
         let is_new_package = self
-            .check_ownership_publish_access(registry, name, publisher)
+            .check_ownership_publish_access(req.registry, req.name, publisher)
             .await?;
 
         // `limit` was extracted from hot config above.
-        if artifact_len > limit {
+        if req.artifact_len > limit {
             return Err(CoreError::PayloadTooLarge(format!(
-                "artifact is {artifact_len} bytes; limit is {limit}"
+                "artifact is {} bytes; limit is {limit}",
+                req.artifact_len
             )));
         }
 
         // Check and record quota before persisting. This may return QuotaExceeded.
         let quota_check = if let Some(quota_svc) = &self.quota {
             quota_svc
-                .check_and_record_publish(publisher, registry, artifact_len)
+                .check_and_record_publish(publisher, req.registry, req.artifact_len)
                 .await?
         } else {
             QuotaCheck::default()
@@ -136,13 +144,15 @@ impl LocalRegistryService {
     pub async fn publish(&self, req: PublishRequest) -> Result<QuotaCheck, CoreError> {
         let (quota_check, is_new_package) = self
             .enforce_publish_policy(
-                &req.registry,
-                &req.name,
-                &req.version,
-                req.artifact.len() as u64,
+                &PublishPolicyRequest {
+                    registry: &req.registry,
+                    name: &req.name,
+                    version: &req.version,
+                    artifact_len: req.artifact.len() as u64,
+                    signature_bytes: req.signature_bytes.as_deref(),
+                    signature_type: req.signature_type.as_deref(),
+                },
                 &req.publisher,
-                req.signature_bytes.as_ref(),
-                req.signature_type.as_ref(),
             )
             .await?;
 

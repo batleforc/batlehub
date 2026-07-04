@@ -75,7 +75,7 @@ impl IpBlockStore for RedisIpBlockStore {
         Ok((count, window_reset))
     }
 
-    async fn is_blocked(&self, ip: &str) -> Result<Option<u64>, CoreError> {
+    async fn blocked_until(&self, ip: &str) -> Result<Option<u64>, CoreError> {
         let key = Self::block_key(ip);
         let mut conn = self.conn.clone();
         let val: Option<String> = conn

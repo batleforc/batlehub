@@ -55,6 +55,18 @@ pub(super) fn warn_if_audit_failed(r: Result<(), CoreError>, ctx: &str) {
     }
 }
 
+/// The registry metrics label plus the request's start time — the pair every
+/// helper in `cache.rs`'s fetch/verify/evict/serve chain needs so it can label
+/// its own metrics and, on its return path, call [`finish_request`] with the
+/// same values [`ProxyService::handle`](super::ProxyService::handle) captured
+/// at the top of the request. Grouped into one value instead of two loose
+/// trailing parameters repeated across 8 functions.
+#[derive(Clone)]
+pub(super) struct RequestTiming {
+    pub(super) registry_label: Arc<str>,
+    pub(super) start: Instant,
+}
+
 /// Emit the terminal per-request metrics — the `batlehub_requests_total{outcome}`
 /// counter and the `batlehub_request_duration_seconds` histogram — at a request's
 /// exit point. Collapses the counter+histogram pair that every return path repeats.

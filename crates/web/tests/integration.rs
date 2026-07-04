@@ -201,6 +201,7 @@ fn make_local_svc(storage: Arc<dyn StorageBackend>) -> Arc<LocalRegistryService>
         team_namespace: None,
         sbom: None,
         explore_cache: None,
+        access_log: None,
     })
 }
 
@@ -1664,6 +1665,20 @@ async fn access_check_returns_false_for_blocked_package() {
     let body: Value = read_body_json(resp).await;
     assert_eq!(body["can_access"], false);
     assert_eq!(body["reason"], "security vulnerability");
+}
+
+#[actix_web::test]
+async fn access_check_returns_false_for_inaccessible_registry_without_leaking_block_status() {
+    // make_app doesn't register or grant access to "pypi" for any role.
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/packages/access?registry=pypi&name=evil-pkg&version=1.0.0")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["can_access"], false);
+    assert_eq!(body["reason"], "registry not accessible");
 }
 
 // ── /api/v1/admin/packages ────────────────────────────────────────────────────
@@ -8663,6 +8678,7 @@ async fn make_ns_cargo_app_with_backend(
         team_namespace: Some(Arc::clone(&ns_store)),
         sbom: None,
         explore_cache: None,
+        access_log: None,
     });
 
     let proxy_svc = Arc::new(ProxyService {
@@ -9557,6 +9573,7 @@ async fn make_ns_upload_app(
         team_namespace: Some(Arc::clone(&ns_store)),
         sbom: None,
         explore_cache: None,
+        access_log: None,
     });
 
     let proxy_svc = Arc::new(ProxyService {

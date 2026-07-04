@@ -25,7 +25,7 @@ pub use integrity::{verify as verify_checksum, ChecksumAlgo, IntegrityOutcome};
 pub use local_registry::{
     artifact_storage_key, maven_artifact_storage_key, tf_provider_binary_storage_key,
     validate_coordinate, validate_package_name, validate_path_safe, LocalRegistryService,
-    PublishRequest, TerraformPlatform,
+    PublishPolicyRequest, PublishRequest, TerraformPlatform,
 };
 pub use metrics::ProxyMetrics;
 pub use proxy::{ProxyRequest, ProxyResponse, ProxyService};

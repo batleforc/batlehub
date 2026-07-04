@@ -181,8 +181,9 @@ pub struct PackageIdentifierDto {
 #[get("/api/v1/packages/access")]
 pub async fn check_access(
     query: web::Query<AccessQuery>,
-    _identity: AuthIdentity,
+    identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
+    access: web::Data<crate::AccessConfigLock>,
 ) -> Result<impl Responder, AppError> {
     let pkg = PackageId {
         registry: query.registry.clone(),
@@ -190,6 +191,21 @@ pub async fn check_access(
         version: query.version.clone(),
         artifact: query.artifact.clone(),
     };
+
+    let accessible = access.read().await.accessible_registries_for(&identity);
+    if !accessible.contains(&pkg.registry) {
+        return Ok(web::Json(AccessCheckResponse {
+            package: PackageIdentifierDto {
+                registry: pkg.registry,
+                name: pkg.name,
+                version: pkg.version,
+                artifact: pkg.artifact,
+            },
+            can_access: false,
+            reason: Some("registry not accessible".to_string()),
+            proxy_url: None,
+        }));
+    }
 
     let status = admin_svc
         .get_package_status(&pkg)

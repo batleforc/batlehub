@@ -2,47 +2,39 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
 
 use crate::api::package::{PackageStatus, PackageSummary};
 
-use super::list_nav::{select_next, select_prev};
+use super::list_nav::ListNav;
 use super::App;
 
+#[derive(Default)]
 pub struct PackageDetailWidget {
-    pub items: Vec<PackageSummary>,
-    pub state: ListState,
+    pub nav: ListNav<PackageSummary>,
 }
 
 impl PackageDetailWidget {
     pub fn new() -> Self {
-        Self {
-            items: vec![],
-            state: ListState::default(),
-        }
+        Self::default()
     }
 
     pub fn set_items(&mut self, items: Vec<PackageSummary>) {
-        self.items = items;
-        if !self.items.is_empty() {
-            self.state.select(Some(0));
-        } else {
-            self.state.select(None);
-        }
+        self.nav.set_items(items);
     }
 
     pub fn next(&mut self) {
-        select_next(&mut self.state, self.items.len());
+        self.nav.next();
     }
 
     pub fn prev(&mut self) {
-        select_prev(&mut self.state, self.items.len());
+        self.nav.prev();
     }
 
     pub fn selected(&self) -> Option<&PackageSummary> {
-        self.state.selected().and_then(|i| self.items.get(i))
+        self.nav.selected()
     }
 }
 
@@ -57,6 +49,7 @@ pub fn render(f: &mut Frame, app: &App, registry: &str, name: &str) {
 
     let items: Vec<ListItem> = app
         .package_detail
+        .nav
         .items
         .iter()
         .map(|p| {
@@ -90,7 +83,7 @@ pub fn render(f: &mut Frame, app: &App, registry: &str, name: &str) {
 
     let title = format!(
         " {registry} > {name} — {} version(s) ",
-        app.package_detail.items.len()
+        app.package_detail.nav.items.len()
     );
     let list = List::new(items)
         .block(Block::default().title(title).borders(Borders::ALL))
@@ -102,7 +95,7 @@ pub fn render(f: &mut Frame, app: &App, registry: &str, name: &str) {
         )
         .highlight_symbol("> ");
 
-    f.render_stateful_widget(list, main_area, &mut app.package_detail.state.clone());
+    f.render_stateful_widget(list, main_area, &mut app.package_detail.nav.state.clone());
 
     let help = Paragraph::new(" Esc:back  ↑↓:navigate  y:yank  u:unyank  ?:help")
         .style(Style::default().fg(Color::DarkGray));
@@ -131,7 +124,7 @@ mod tests {
             version("1.0.0", PackageStatus::Available),
             version("1.1.0", PackageStatus::Available),
         ]);
-        assert_eq!(w.state.selected(), Some(0));
+        assert_eq!(w.nav.state.selected(), Some(0));
         assert_eq!(w.selected().unwrap().version, "1.0.0");
     }
 
@@ -139,10 +132,10 @@ mod tests {
     fn set_items_empty_clears_selection() {
         let mut w = PackageDetailWidget::new();
         w.set_items(vec![version("1.0.0", PackageStatus::Available)]);
-        assert_eq!(w.state.selected(), Some(0));
+        assert_eq!(w.nav.state.selected(), Some(0));
 
         w.set_items(vec![]);
-        assert_eq!(w.state.selected(), None);
+        assert_eq!(w.nav.state.selected(), None);
         assert!(w.selected().is_none());
     }
 
@@ -160,12 +153,12 @@ mod tests {
         ]);
 
         w.next();
-        assert_eq!(w.state.selected(), Some(1));
+        assert_eq!(w.nav.state.selected(), Some(1));
         w.next();
-        assert_eq!(w.state.selected(), Some(0));
+        assert_eq!(w.nav.state.selected(), Some(0));
 
         w.prev();
-        assert_eq!(w.state.selected(), Some(1));
+        assert_eq!(w.nav.state.selected(), Some(1));
     }
 
     #[test]
@@ -173,6 +166,6 @@ mod tests {
         let mut w = PackageDetailWidget::new();
         w.next();
         w.prev();
-        assert_eq!(w.state.selected(), None);
+        assert_eq!(w.nav.state.selected(), None);
     }
 }

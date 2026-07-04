@@ -23,6 +23,6 @@ pub mod download;
 pub mod publish;
 pub mod specs;
 
-pub use download::*;
-pub use publish::*;
-pub use specs::*;
+pub use download::{gem_download, gem_gemspec, gem_info, gem_versions};
+pub use publish::{gem_publish, gem_unyank, gem_yank, GemYankQuery};
+pub use specs::{gem_specs_full, gem_specs_latest, gem_specs_prerelease};

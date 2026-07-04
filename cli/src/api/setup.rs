@@ -120,202 +120,243 @@ fn detect_project_types_in(
 ) -> Vec<ProjectDetection> {
     let mut out = Vec::new();
 
-    // Cargo (Rust)
-    let cargo_toml = dir.join("Cargo.toml");
-    if cargo_toml.exists() {
-        let name = read_toml_field(&cargo_toml, &["package", "name"]);
-        let pkg = name.as_deref().unwrap_or("<package>").to_string();
-        out.push(ProjectDetection {
-            relative_path: String::new(),
-            registry_type: "cargo",
-            package_name: name,
-            instructions: format!(
-                "Registry type : cargo\n\
-                 Package       : {pkg}\n\
-                 \n\
-                 ~/.cargo/config.toml:\n\
-                 [registries]\n\
-                 batlehub = {{ index = \"sparse+{server_url}/proxy/<registry>/cargo/\" }}\n\
-                 \n\
-                 Publish:\n\
-                 cargo publish --registry batlehub"
-            ),
-        });
+    if let Some(det) = detect_cargo(dir, server_url) {
+        out.push(det);
     }
-
-    // Go modules
-    let go_mod = dir.join("go.mod");
-    if go_mod.exists() {
-        let name = read_gomod_module(&go_mod);
-        let pkg = name.as_deref().unwrap_or("<module>").to_string();
-        out.push(ProjectDetection {
-            relative_path: String::new(),
-            registry_type: "gomodules",
-            package_name: name,
-            instructions: format!(
-                "Registry type : gomodules\n\
-                 Module        : {pkg}\n\
-                 \n\
-                 Environment:\n\
-                 export GOPROXY={server_url}/proxy/<registry>/go,direct\n\
-                 \n\
-                 Use:\n\
-                 go get {pkg}"
-            ),
-        });
+    if let Some(det) = detect_gomodules(dir, server_url) {
+        out.push(det);
     }
-
-    // npm / Node.js
-    let pkg_json = dir.join("package.json");
-    if pkg_json.exists() {
-        let name = read_json_field(&pkg_json, "name");
-        let pkg = name.as_deref().unwrap_or("<package>").to_string();
-        out.push(ProjectDetection {
-            relative_path: String::new(),
-            registry_type: "npm",
-            package_name: name,
-            instructions: format!(
-                "Registry type : npm\n\
-                 Package       : {pkg}\n\
-                 \n\
-                 .npmrc:\n\
-                 registry={server_url}/proxy/<registry>/npm/\n\
-                 \n\
-                 Publish:\n\
-                 npm publish"
-            ),
-        });
+    if let Some(det) = detect_npm(dir, server_url) {
+        out.push(det);
     }
-
-    // PyPI (pyproject.toml / setup.py)
     if let Some(det) = detect_pypi(dir, server_url) {
         out.push(det);
     }
-
-    // Maven (pom.xml)
-    let pom_xml = dir.join("pom.xml");
-    if pom_xml.exists() {
-        let name = read_xml_tag(&pom_xml, "artifactId");
-        let pkg = name.as_deref().unwrap_or("<artifactId>").to_string();
-        out.push(ProjectDetection {
-            relative_path: String::new(),
-            registry_type: "maven",
-            package_name: name,
-            instructions: format!(
-                "Registry type : maven\n\
-                 Artifact      : {pkg}\n\
-                 \n\
-                 settings.xml:\n\
-                 <repository>\n\
-                   <id>batlehub</id>\n\
-                   <url>{server_url}/proxy/<registry>/maven/</url>\n\
-                 </repository>\n\
-                 \n\
-                 Publish:\n\
-                 mvn deploy"
-            ),
-        });
+    if let Some(det) = detect_maven(dir, server_url) {
+        out.push(det);
     }
-
-    // Composer (PHP)
-    let composer_json = dir.join("composer.json");
-    if composer_json.exists() {
-        let name = read_json_field(&composer_json, "name");
-        let pkg = name.as_deref().unwrap_or("<package>").to_string();
-        out.push(ProjectDetection {
-            relative_path: String::new(),
-            registry_type: "composer",
-            package_name: name,
-            instructions: format!(
-                "Registry type : composer\n\
-                 Package       : {pkg}\n\
-                 \n\
-                 composer.json:\n\
-                 \"repositories\": [{{\n\
-                   \"type\": \"composer\",\n\
-                   \"url\": \"{server_url}/proxy/<registry>/composer/\"\n\
-                 }}]"
-            ),
-        });
+    if let Some(det) = detect_composer(dir, server_url) {
+        out.push(det);
     }
-
-    // RubyGems
-    let has_gemspec = dir_names.iter().any(|n| n.ends_with(".gemspec"));
-    let has_gemfile = dir_names.iter().any(|n| n == "Gemfile");
-    if has_gemspec || has_gemfile {
-        let name = dir_names
-            .iter()
-            .find(|n| n.ends_with(".gemspec"))
-            .and_then(|n| n.strip_suffix(".gemspec"))
-            .map(str::to_string);
-        let pkg = name.as_deref().unwrap_or("<gem>").to_string();
-        out.push(ProjectDetection {
-            relative_path: String::new(),
-            registry_type: "rubygems",
-            package_name: name,
-            instructions: format!(
-                "Registry type : rubygems\n\
-                 Gem           : {pkg}\n\
-                 \n\
-                 ~/.gemrc:\n\
-                 :sources:\n\
-                 - {server_url}/proxy/<registry>/gems/\n\
-                 \n\
-                 Publish:\n\
-                 gem push *.gem --host {server_url}/proxy/<registry>/gems/"
-            ),
-        });
+    if let Some(det) = detect_rubygems(dir_names, server_url) {
+        out.push(det);
     }
-
-    // NuGet (.NET)
     if let Some(det) = detect_nuget(dir_names, server_url) {
         out.push(det);
     }
-
-    // Terraform
-    let has_tf = dir_names.iter().any(|n| n.ends_with(".tf"));
-    if has_tf {
-        out.push(ProjectDetection {
-            relative_path: String::new(),
-            registry_type: "terraform",
-            package_name: dir.file_name().and_then(|s| s.to_str()).map(str::to_string),
-            instructions: format!(
-                "Registry type : terraform\n\
-                 \n\
-                 ~/.terraformrc:\n\
-                 provider_installation {{\n\
-                   network_mirror {{\n\
-                     url = \"{server_url}/proxy/<registry>/terraform/\"\n\
-                   }}\n\
-                 }}"
-            ),
-        });
+    if let Some(det) = detect_terraform(dir, dir_names, server_url) {
+        out.push(det);
     }
-
-    // Conda
-    let env_yml = dir.join("environment.yml");
-    if env_yml.exists() {
-        let name = grep_key(&env_yml, "name:");
-        let pkg = name.as_deref().unwrap_or("<env>").to_string();
-        out.push(ProjectDetection {
-            relative_path: String::new(),
-            registry_type: "conda",
-            package_name: name,
-            instructions: format!(
-                "Registry type : conda\n\
-                 Environment   : {pkg}\n\
-                 \n\
-                 ~/.condarc:\n\
-                 channels:\n\
-                   - {server_url}/proxy/<registry>/conda/\n\
-                 \n\
-                 Publish:\n\
-                 batlehub-cli publish *.conda"
-            ),
-        });
+    if let Some(det) = detect_conda(dir, server_url) {
+        out.push(det);
     }
 
     out
+}
+
+fn detect_cargo(dir: &Path, server_url: &str) -> Option<ProjectDetection> {
+    let cargo_toml = dir.join("Cargo.toml");
+    if !cargo_toml.exists() {
+        return None;
+    }
+    let name = read_toml_field(&cargo_toml, &["package", "name"]);
+    let pkg = name.as_deref().unwrap_or("<package>").to_string();
+    Some(ProjectDetection {
+        relative_path: String::new(),
+        registry_type: "cargo",
+        package_name: name,
+        instructions: format!(
+            "Registry type : cargo\n\
+             Package       : {pkg}\n\
+             \n\
+             ~/.cargo/config.toml:\n\
+             [registries]\n\
+             batlehub = {{ index = \"sparse+{server_url}/proxy/<registry>/cargo/\" }}\n\
+             \n\
+             Publish:\n\
+             cargo publish --registry batlehub"
+        ),
+    })
+}
+
+fn detect_gomodules(dir: &Path, server_url: &str) -> Option<ProjectDetection> {
+    let go_mod = dir.join("go.mod");
+    if !go_mod.exists() {
+        return None;
+    }
+    let name = read_gomod_module(&go_mod);
+    let pkg = name.as_deref().unwrap_or("<module>").to_string();
+    Some(ProjectDetection {
+        relative_path: String::new(),
+        registry_type: "gomodules",
+        package_name: name,
+        instructions: format!(
+            "Registry type : gomodules\n\
+             Module        : {pkg}\n\
+             \n\
+             Environment:\n\
+             export GOPROXY={server_url}/proxy/<registry>/go,direct\n\
+             \n\
+             Use:\n\
+             go get {pkg}"
+        ),
+    })
+}
+
+fn detect_npm(dir: &Path, server_url: &str) -> Option<ProjectDetection> {
+    let pkg_json = dir.join("package.json");
+    if !pkg_json.exists() {
+        return None;
+    }
+    let name = read_json_field(&pkg_json, "name");
+    let pkg = name.as_deref().unwrap_or("<package>").to_string();
+    Some(ProjectDetection {
+        relative_path: String::new(),
+        registry_type: "npm",
+        package_name: name,
+        instructions: format!(
+            "Registry type : npm\n\
+             Package       : {pkg}\n\
+             \n\
+             .npmrc:\n\
+             registry={server_url}/proxy/<registry>/npm/\n\
+             \n\
+             Publish:\n\
+             npm publish"
+        ),
+    })
+}
+
+fn detect_maven(dir: &Path, server_url: &str) -> Option<ProjectDetection> {
+    let pom_xml = dir.join("pom.xml");
+    if !pom_xml.exists() {
+        return None;
+    }
+    let name = read_xml_tag(&pom_xml, "artifactId");
+    let pkg = name.as_deref().unwrap_or("<artifactId>").to_string();
+    Some(ProjectDetection {
+        relative_path: String::new(),
+        registry_type: "maven",
+        package_name: name,
+        instructions: format!(
+            "Registry type : maven\n\
+             Artifact      : {pkg}\n\
+             \n\
+             settings.xml:\n\
+             <repository>\n\
+               <id>batlehub</id>\n\
+               <url>{server_url}/proxy/<registry>/maven/</url>\n\
+             </repository>\n\
+             \n\
+             Publish:\n\
+             mvn deploy"
+        ),
+    })
+}
+
+fn detect_composer(dir: &Path, server_url: &str) -> Option<ProjectDetection> {
+    let composer_json = dir.join("composer.json");
+    if !composer_json.exists() {
+        return None;
+    }
+    let name = read_json_field(&composer_json, "name");
+    let pkg = name.as_deref().unwrap_or("<package>").to_string();
+    Some(ProjectDetection {
+        relative_path: String::new(),
+        registry_type: "composer",
+        package_name: name,
+        instructions: format!(
+            "Registry type : composer\n\
+             Package       : {pkg}\n\
+             \n\
+             composer.json:\n\
+             \"repositories\": [{{\n\
+               \"type\": \"composer\",\n\
+               \"url\": \"{server_url}/proxy/<registry>/composer/\"\n\
+             }}]"
+        ),
+    })
+}
+
+fn detect_rubygems(dir_names: &[String], server_url: &str) -> Option<ProjectDetection> {
+    let has_gemspec = dir_names.iter().any(|n| n.ends_with(".gemspec"));
+    let has_gemfile = dir_names.iter().any(|n| n == "Gemfile");
+    if !has_gemspec && !has_gemfile {
+        return None;
+    }
+    let name = dir_names
+        .iter()
+        .find(|n| n.ends_with(".gemspec"))
+        .and_then(|n| n.strip_suffix(".gemspec"))
+        .map(str::to_string);
+    let pkg = name.as_deref().unwrap_or("<gem>").to_string();
+    Some(ProjectDetection {
+        relative_path: String::new(),
+        registry_type: "rubygems",
+        package_name: name,
+        instructions: format!(
+            "Registry type : rubygems\n\
+             Gem           : {pkg}\n\
+             \n\
+             ~/.gemrc:\n\
+             :sources:\n\
+             - {server_url}/proxy/<registry>/gems/\n\
+             \n\
+             Publish:\n\
+             gem push *.gem --host {server_url}/proxy/<registry>/gems/"
+        ),
+    })
+}
+
+fn detect_terraform(
+    dir: &Path,
+    dir_names: &[String],
+    server_url: &str,
+) -> Option<ProjectDetection> {
+    let has_tf = dir_names.iter().any(|n| n.ends_with(".tf"));
+    if !has_tf {
+        return None;
+    }
+    Some(ProjectDetection {
+        relative_path: String::new(),
+        registry_type: "terraform",
+        package_name: dir.file_name().and_then(|s| s.to_str()).map(str::to_string),
+        instructions: format!(
+            "Registry type : terraform\n\
+             \n\
+             ~/.terraformrc:\n\
+             provider_installation {{\n\
+               network_mirror {{\n\
+                 url = \"{server_url}/proxy/<registry>/terraform/\"\n\
+               }}\n\
+             }}"
+        ),
+    })
+}
+
+fn detect_conda(dir: &Path, server_url: &str) -> Option<ProjectDetection> {
+    let env_yml = dir.join("environment.yml");
+    if !env_yml.exists() {
+        return None;
+    }
+    let name = grep_key(&env_yml, "name:");
+    let pkg = name.as_deref().unwrap_or("<env>").to_string();
+    Some(ProjectDetection {
+        relative_path: String::new(),
+        registry_type: "conda",
+        package_name: name,
+        instructions: format!(
+            "Registry type : conda\n\
+             Environment   : {pkg}\n\
+             \n\
+             ~/.condarc:\n\
+             channels:\n\
+               - {server_url}/proxy/<registry>/conda/\n\
+             \n\
+             Publish:\n\
+             batlehub-cli publish *.conda"
+        ),
+    })
 }
 
 fn detect_pypi(dir: &Path, server_url: &str) -> Option<ProjectDetection> {

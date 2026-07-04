@@ -734,9 +734,9 @@ impl BatleHubClient {
 
     pub async fn export_audit_log(
         &self,
+        registry: Option<&str>,
         from: Option<&str>,
         to: Option<&str>,
-        registry: Option<&str>,
         format: &str,
     ) -> Result<String> {
         use anyhow::bail;
@@ -744,19 +744,19 @@ impl BatleHubClient {
         #[derive(serde::Serialize)]
         struct Params<'a> {
             #[serde(skip_serializing_if = "Option::is_none")]
+            registry: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
             from: Option<&'a str>,
             #[serde(skip_serializing_if = "Option::is_none")]
             to: Option<&'a str>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            registry: Option<&'a str>,
             format: &'a str,
         }
         let req = self
             .request(Method::GET, "/api/v1/admin/audit-log/export")
             .query(&Params {
+                registry,
                 from,
                 to,
-                registry,
                 format,
             });
         let resp = self.send(req).await?;

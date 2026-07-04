@@ -13,14 +13,24 @@ fn extract_pypi_wheel(data: &Bytes) -> Option<Vec<SbomDependency>> {
     use zip::ZipArchive;
 
     let cursor = Cursor::new(data.as_ref());
-    let mut archive = ZipArchive::new(cursor).ok()?;
+    let Ok(mut archive) = ZipArchive::new(cursor) else {
+        tracing::warn!("sbom: failed to parse pypi wheel manifest, treating as no dependencies");
+        return None;
+    };
 
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i).ok()?;
+        let Ok(mut file) = archive.by_index(i) else {
+            continue;
+        };
         let name = file.name().to_owned();
         if name.ends_with(".dist-info/METADATA") {
             let mut content = String::new();
-            file.read_to_string(&mut content).ok()?;
+            if file.read_to_string(&mut content).is_err() {
+                tracing::warn!(
+                    "sbom: failed to parse pypi wheel manifest, treating as no dependencies"
+                );
+                return None;
+            }
             return Some(parse_pep_metadata(&content));
         }
     }
@@ -35,8 +45,14 @@ fn extract_pypi_sdist(data: &Bytes) -> Option<Vec<SbomDependency>> {
     let gz = GzDecoder::new(data.as_ref());
     let mut archive = Archive::new(gz);
 
-    for entry in archive.entries().ok()?.flatten() {
-        let path = entry.path().ok()?.into_owned();
+    let Ok(entries) = archive.entries() else {
+        tracing::warn!("sbom: failed to parse pypi sdist manifest, treating as no dependencies");
+        return None;
+    };
+
+    for entry in entries.flatten() {
+        let Ok(path) = entry.path() else { continue };
+        let path = path.into_owned();
         let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if fname == "PKG-INFO" || fname == "METADATA" {
             let mut reader = entry;

@@ -10,6 +10,7 @@ pub(super) fn extract_npm_deps(data: &Bytes) -> Vec<SbomDependency> {
     let mut archive = Archive::new(gz);
 
     let Ok(entries) = archive.entries() else {
+        tracing::warn!("sbom: failed to parse npm manifest, treating as no dependencies");
         return vec![];
     };
 
@@ -24,6 +25,7 @@ pub(super) fn extract_npm_deps(data: &Bytes) -> Vec<SbomDependency> {
             let mut reader = entry;
             let mut content = String::new();
             if reader.read_to_string(&mut content).is_err() {
+                tracing::warn!("sbom: failed to parse npm manifest, treating as no dependencies");
                 return vec![];
             }
             return parse_npm_package_json(&content);
@@ -34,6 +36,7 @@ pub(super) fn extract_npm_deps(data: &Bytes) -> Vec<SbomDependency> {
 
 fn parse_npm_package_json(content: &str) -> Vec<SbomDependency> {
     let Ok(val) = serde_json::from_str::<serde_json::Value>(content) else {
+        tracing::warn!("sbom: failed to parse npm manifest, treating as no dependencies");
         return vec![];
     };
 

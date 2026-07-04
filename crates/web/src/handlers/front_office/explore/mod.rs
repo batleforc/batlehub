@@ -16,9 +16,15 @@ pub mod detail;
 pub mod list;
 pub mod stats;
 
-pub use detail::*;
-pub use list::*;
-pub use stats::*;
+pub use detail::{
+    explore_package_detail, ExplorePackageDetailResponse, ExploreVersionDto, FirewallDto, GateDto,
+    PackageDetailPath,
+};
+pub use list::{explore_packages, ExploreEntryDto, ExplorePackageListResponse, ExploreQuery};
+pub use stats::{
+    explore_registry_stats, explore_upstream_search, ExploreRegistryStatsResponse, RegistryStatDto,
+    UpstreamPackageDto, UpstreamSearchQuery, UpstreamSearchResponse,
+};
 
 pub fn format_dt(dt: DateTime<Utc>) -> String {
     dt.to_rfc3339()

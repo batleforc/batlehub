@@ -50,7 +50,3 @@ pub enum CoreError {
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
-
-// Allow adapters to use anyhow for context
-pub use anyhow::anyhow;
-pub use anyhow::Context as AnyhowContext;

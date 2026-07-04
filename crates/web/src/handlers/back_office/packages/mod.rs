@@ -16,9 +16,19 @@ pub mod bulk;
 pub mod detail;
 pub mod list;
 
-pub use bulk::*;
-pub use detail::*;
-pub use list::*;
+pub use bulk::{
+    bulk_block_packages, bulk_delete_packages, bulk_unblock_packages, BulkBlockRequest,
+    BulkBlockRequestItem, BulkDeleteRequest, BulkDeleteRequestItem, BulkUnblockRequest,
+    BulkUnblockRequestItem,
+};
+pub use detail::{
+    package_detail, PackageDetailQuery, PackageDetailResponse, PackageEventDto,
+    PackageStatusDetail, PackageVersionDetail, VulnerabilityDto,
+};
+pub use list::{
+    block_package, delete_package, invalidate_package, list_packages, unblock_package,
+    AdminPackageQuery, BlockRequest, DeletePackageRequest, InvalidateRequest, UnblockRequest,
+};
 
 // ── Shared DTOs ───────────────────────────────────────────────────────────────
 

@@ -90,20 +90,8 @@ impl AdminService {
             )
             .await?;
 
-        self.repo
-            .record_access(AccessEvent {
-                id: uuid::Uuid::new_v4(),
-                user_id: by_identity.user_id.clone(),
-                user_role: by_identity.role.clone(),
-                package_id: Some(pkg.clone()),
-                action: crate::entities::AccessAction::Block,
-                result: AccessResult::Allowed,
-                timestamp: Utc::now(),
-                ip_address: None,
-                user_agent: None,
-            })
-            .await
-            .unwrap_or_else(|e| tracing::warn!(error = %e, "failed to record block action"));
+        self.record_admin_action(Some(pkg.clone()), AccessAction::Block, by_identity)
+            .await;
 
         tracing::info!(package = %pkg, blocked_by = %blocked_by, reason = %reason, "package blocked");
         Ok(())
@@ -116,20 +104,8 @@ impl AdminService {
     ) -> Result<(), CoreError> {
         self.repo.set_status(pkg, PackageStatus::Available).await?;
 
-        self.repo
-            .record_access(AccessEvent {
-                id: uuid::Uuid::new_v4(),
-                user_id: by_identity.user_id.clone(),
-                user_role: by_identity.role.clone(),
-                package_id: Some(pkg.clone()),
-                action: crate::entities::AccessAction::Unblock,
-                result: AccessResult::Allowed,
-                timestamp: Utc::now(),
-                ip_address: None,
-                user_agent: None,
-            })
-            .await
-            .unwrap_or_else(|e| tracing::warn!(error = %e, "failed to record unblock action"));
+        self.record_admin_action(Some(pkg.clone()), AccessAction::Unblock, by_identity)
+            .await;
 
         tracing::info!(package = %pkg, "package unblocked");
         Ok(())
@@ -183,18 +159,19 @@ impl AdminService {
         self.record_admin_action(None, action, by_identity).await;
     }
 
-    pub async fn bulk_block_packages(
-        &self,
-        items: Vec<BulkBlockItem>,
-        by_identity: &Identity,
-    ) -> BulkActionResult {
+    /// Shared fan-out path for bulk admin actions: runs `op` over `items` with
+    /// bounded concurrency and aggregates the per-item outcomes into a
+    /// [`BulkActionResult`]. `op` reports its own failure message (rather than
+    /// a `CoreError`) so callers can report domain-specific failures — e.g.
+    /// `bulk_delete_packages`'s "package not found" for a `false` return —
+    /// without forcing every bulk action through the same error type.
+    async fn run_bulk<T, F, Fut>(&self, items: Vec<T>, op: F) -> BulkActionResult
+    where
+        F: Fn(T) -> Fut,
+        Fut: Future<Output = (PackageId, Result<(), String>)>,
+    {
         let results: Vec<_> = futures::stream::iter(items)
-            .map(|item| async move {
-                let outcome = self
-                    .block_package(&item.package_id, item.reason, by_identity)
-                    .await;
-                (item.package_id, outcome)
-            })
+            .map(op)
             .buffer_unordered(BULK_ACTION_CONCURRENCY)
             .collect()
             .await;
@@ -206,10 +183,24 @@ impl AdminService {
         for (pkg, outcome) in results {
             match outcome {
                 Ok(()) => result.succeeded.push(pkg),
-                Err(e) => result.failed.push((pkg, e.to_string())),
+                Err(msg) => result.failed.push((pkg, msg)),
             }
         }
         result
+    }
+
+    pub async fn bulk_block_packages(
+        &self,
+        items: Vec<BulkBlockItem>,
+        by_identity: &Identity,
+    ) -> BulkActionResult {
+        self.run_bulk(items, |item| async move {
+            let outcome = self
+                .block_package(&item.package_id, item.reason, by_identity)
+                .await;
+            (item.package_id, outcome.map_err(|e| e.to_string()))
+        })
+        .await
     }
 
     pub async fn bulk_unblock_packages(
@@ -217,23 +208,11 @@ impl AdminService {
         items: Vec<PackageId>,
         by_identity: &Identity,
     ) -> BulkActionResult {
-        let results: Vec<_> = futures::stream::iter(items)
-            .map(|pkg| async move { (pkg.clone(), self.unblock_package(&pkg, by_identity).await) })
-            .buffer_unordered(BULK_ACTION_CONCURRENCY)
-            .collect()
-            .await;
-
-        let mut result = BulkActionResult {
-            succeeded: vec![],
-            failed: vec![],
-        };
-        for (pkg, outcome) in results {
-            match outcome {
-                Ok(()) => result.succeeded.push(pkg),
-                Err(e) => result.failed.push((pkg, e.to_string())),
-            }
-        }
-        result
+        self.run_bulk(items, |pkg| async move {
+            let outcome = self.unblock_package(&pkg, by_identity).await;
+            (pkg, outcome.map_err(|e| e.to_string()))
+        })
+        .await
     }
 
     /// Remove a package's administrative record.
@@ -247,20 +226,8 @@ impl AdminService {
     ) -> Result<bool, CoreError> {
         let deleted = self.repo.delete_package(pkg).await?;
         if deleted {
-            self.repo
-                .record_access(AccessEvent {
-                    id: uuid::Uuid::new_v4(),
-                    user_id: by_identity.user_id.clone(),
-                    user_role: by_identity.role.clone(),
-                    package_id: Some(pkg.clone()),
-                    action: AccessAction::Delete,
-                    result: AccessResult::Allowed,
-                    timestamp: Utc::now(),
-                    ip_address: None,
-                    user_agent: None,
-                })
-                .await
-                .unwrap_or_else(|e| tracing::warn!(error = %e, "failed to record delete action"));
+            self.record_admin_action(Some(pkg.clone()), AccessAction::Delete, by_identity)
+                .await;
             tracing::info!(package = %pkg, "package record deleted");
         }
         Ok(deleted)
@@ -271,24 +238,15 @@ impl AdminService {
         items: Vec<PackageId>,
         by_identity: &Identity,
     ) -> BulkActionResult {
-        let results: Vec<_> = futures::stream::iter(items)
-            .map(|pkg| async move { (pkg.clone(), self.delete_package(&pkg, by_identity).await) })
-            .buffer_unordered(BULK_ACTION_CONCURRENCY)
-            .collect()
-            .await;
-
-        let mut result = BulkActionResult {
-            succeeded: vec![],
-            failed: vec![],
-        };
-        for (pkg, outcome) in results {
-            match outcome {
-                Ok(true) => result.succeeded.push(pkg),
-                Ok(false) => result.failed.push((pkg, "package not found".to_string())),
-                Err(e) => result.failed.push((pkg, e.to_string())),
-            }
-        }
-        result
+        self.run_bulk(items, |pkg| async move {
+            let outcome = match self.delete_package(&pkg, by_identity).await {
+                Ok(true) => Ok(()),
+                Ok(false) => Err("package not found".to_string()),
+                Err(e) => Err(e.to_string()),
+            };
+            (pkg, outcome)
+        })
+        .await
     }
 
     pub async fn list_packages(

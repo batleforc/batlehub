@@ -18,7 +18,11 @@ pub trait IpBlockStore: Send + Sync {
     async fn record_violation(&self, ip: &str, window_secs: u32) -> Result<(u64, u64), CoreError>;
 
     /// Returns `Some(unblock_at_unix)` if the IP is currently blocked, `None` if allowed.
-    async fn is_blocked(&self, ip: &str) -> Result<Option<u64>, CoreError>;
+    ///
+    /// Named `blocked_until` (not `is_blocked`) because it returns block details,
+    /// not a plain boolean — distinct from `UserBlockRepository::is_blocked`,
+    /// which is a genuine `bool` and keeps that name.
+    async fn blocked_until(&self, ip: &str) -> Result<Option<u64>, CoreError>;
 
     /// Block `ip` until `unblock_at` (Unix seconds). `reason` is stored for auditing.
     async fn block_ip(&self, ip: &str, unblock_at: u64, reason: &str) -> Result<(), CoreError>;

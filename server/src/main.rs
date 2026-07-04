@@ -180,6 +180,7 @@ async fn main() -> Result<()> {
         team_namespace: Some(Arc::clone(&team_namespace_store)),
         sbom: Some(Arc::clone(&sbom_svc)),
         explore_cache: Some(Arc::clone(&admin_svc.explore_cache)),
+        access_log: Some(repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>),
     });
 
     let warm_coordinator = stores::create_warm_coordinator(&config).await?;

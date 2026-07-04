@@ -95,8 +95,13 @@ pub(super) fn generate_cyclonedx(
     meta: &PackageMetadata,
     artifact_key: &str,
     deps: &[SbomDependency],
+    registry_type: &str,
 ) -> serde_json::Value {
-    let purl = registry_to_purl(&meta.id.registry, &meta.id.name, &meta.id.version);
+    // `registry_type` (e.g. "maven") must come from the caller, not `meta.id.registry`:
+    // the latter is the user-configured registry *instance* name (e.g. "my-maven"),
+    // which silently falls through `registry_to_purl`'s match to "pkg:generic" whenever
+    // the instance name differs from its protocol type.
+    let purl = registry_to_purl(registry_type, &meta.id.name, &meta.id.version);
 
     let mut hashes = serde_json::json!([]);
     if let Some(ref ck) = meta.checksum {
@@ -116,7 +121,7 @@ pub(super) fn generate_cyclonedx(
         .iter()
         .map(|d| {
             let dep_purl = registry_to_purl(
-                &meta.id.registry,
+                registry_type,
                 &d.name,
                 d.version_req.as_deref().unwrap_or("*"),
             );
@@ -247,7 +252,7 @@ mod tests {
     #[test]
     fn generate_cyclonedx_required_fields() {
         let meta = make_meta("cargo", "serde", "1.0.0", Some("deadbeef"));
-        let doc = generate_cyclonedx(&meta, "k", &[]);
+        let doc = generate_cyclonedx(&meta, "k", &[], "cargo");
 
         assert_eq!(doc["bomFormat"], "CycloneDX");
         assert_eq!(doc["specVersion"], "1.4");
@@ -255,6 +260,18 @@ mod tests {
         assert_eq!(doc["components"][0]["version"], "1.0.0");
         assert_eq!(doc["components"][0]["purl"], "pkg:cargo/serde@1.0.0");
         assert_eq!(doc["components"][0]["hashes"][0]["alg"], "SHA-256");
+    }
+
+    #[test]
+    fn generate_cyclonedx_purl_uses_registry_type_not_instance_name() {
+        // A registry instance named "my-maven" (type "maven") must not silently
+        // fall through registry_to_purl's match to "pkg:generic".
+        let meta = make_meta("my-maven", "org.example:widget", "1.0.0", None);
+        let doc = generate_cyclonedx(&meta, "k", &[], "maven");
+        assert_eq!(
+            doc["components"][0]["purl"],
+            "pkg:maven/org.example:widget@1.0.0"
+        );
     }
 
     #[test]

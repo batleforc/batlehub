@@ -42,7 +42,7 @@ pub mod artifact_meta;
 pub mod sbom;
 
 #[cfg(feature = "db-postgres")]
-pub mod banner_pg;
+pub mod banner;
 
 #[cfg(feature = "db-postgres")]
 pub mod beta_channel;
@@ -78,7 +78,7 @@ pub mod vulnerability;
 pub use artifact_meta::PgArtifactMetaRepository;
 
 #[cfg(feature = "db-postgres")]
-pub use banner_pg::PgBannerStore;
+pub use banner::PgBannerStore;
 
 #[cfg(feature = "db-postgres")]
 pub use beta_channel::PgBetaChannelStore;

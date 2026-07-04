@@ -106,6 +106,11 @@ pub struct ConfigReloadService {
     pub(super) config_path: String,
     pub(super) config_change_repo: Option<Arc<dyn ConfigChangeRepository>>,
     pub hot_reload_enabled: bool,
+    /// Intentionally panics (`.expect(...)`) rather than recovers on poison, unlike
+    /// `notification::dispatch`'s `Mutex`, which favors availability and recovers via
+    /// `unwrap_or_else(|e| e.into_inner())`. A panic here means a reload panicked while
+    /// holding this lock, which can only mean a bug already corrupted in-flight config
+    /// state; serving a possibly-torn config swap after that is worse than crashing.
     pub(super) pending: Mutex<Option<PendingReload>>,
     pub(super) builder: HotConfigBuilder,
     pub(super) banner: Option<Arc<BannerService>>,

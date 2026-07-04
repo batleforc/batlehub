@@ -1,5 +1,5 @@
-//! Debian/RPM repository hosting primitives: package parsing, index generation,
-//! and Ed25519 OpenPGP signing.
+//! Debian/RPM/Arch pacman repository hosting primitives: package parsing, index
+//! generation, and Ed25519 OpenPGP signing.
 
 pub mod openpgp;
 

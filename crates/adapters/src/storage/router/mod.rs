@@ -79,9 +79,22 @@ impl StorageRouter {
             .expect("default storage backend must always be present")
     }
 
-    /// Run the dedup bookkeeping transaction for a logical `key` whose bytes
-    /// hash to `content_hash`, materializing the physical blob from `source`
-    /// only when this is its first reference.
+    /// Resolve the backend for a legacy (pre-dedup) artifact `key`: the backend
+    /// recorded in `artifact_storage` when it exists, or the backend the
+    /// routing rules currently assign the key to otherwise (never recorded, or
+    /// predates that bookkeeping). Shared by `retrieve`/`exists`'s legacy-path
+    /// fallback; `delete`'s dedup-vs-legacy branching is different enough
+    /// (ref-count bookkeeping via `delete_dedup_entry`) that it stays separate.
+    async fn legacy_backend_for(&self, key: &str) -> Arc<dyn StorageBackend> {
+        match self.recorded_backend_for_key(key).await {
+            Some(b) => b,
+            None => self.resolve_backend(self.backend_name_for_key(key)).clone(),
+        }
+    }
+
+    /// Run the dedup bookkeeping transaction for a logical `target.key` whose
+    /// bytes hash to `target.content_hash`, materializing the physical blob
+    /// from `source` only when this is its first reference.
     ///
     /// Shared by [`store`](StorageBackend::store) (bytes already in hand) and
     /// [`store_streaming`](StorageBackend::store_streaming) (bytes already
@@ -89,13 +102,9 @@ impl StorageRouter {
     /// transaction so a backend failure rolls the dedup rows back rather than
     /// leaving them pointing at a missing blob. Any staged blob that turns out
     /// to be redundant (identical re-store, or a dedup hit) is deleted.
-    #[allow(clippy::too_many_arguments)]
     async fn finalize_dedup(
         &self,
-        key: &str,
-        content_hash: &str,
-        content_key: &str,
-        size: Option<u64>,
+        target: &DedupTarget<'_>,
         backend_name: &str,
         backend: &Arc<dyn StorageBackend>,
         source: BlobSource,
@@ -111,29 +120,21 @@ impl StorageRouter {
         let existing_hash: Option<String> = sqlx::query_scalar(
             "SELECT content_hash FROM artifact_dedup_refs WHERE logical_key = $1 FOR UPDATE",
         )
-        .bind(key)
+        .bind(target.key)
         .fetch_optional(&mut *tx)
         .await
         .map_err(|e| CoreError::Storage(e.to_string()))?;
 
-        if existing_hash.as_deref() == Some(content_hash) {
-            Self::reuse_identical_blob(tx, content_key, backend, source).await?;
+        if existing_hash.as_deref() == Some(target.content_hash) {
+            Self::reuse_identical_blob(tx, target.content_key, backend, source).await?;
         } else {
-            self.commit_new_hash(
-                tx,
-                key,
-                content_hash,
-                content_key,
-                size,
-                backend,
-                existing_hash,
-                source,
-            )
-            .await?;
+            self.commit_new_hash(tx, target, backend, existing_hash, source)
+                .await?;
         }
 
         // Keep the legacy artifact_storage record for routing and size queries.
-        self.record_backend(key, backend_name, size).await;
+        self.record_backend(target.key, backend_name, target.size)
+            .await;
 
         Ok(())
     }
@@ -165,14 +166,10 @@ impl StorageRouter {
     /// logical key, decrement the replaced hash, materialize the blob on first
     /// reference, and commit. The blob is written *inside* the transaction so a
     /// backend failure rolls the dedup rows back.
-    #[allow(clippy::too_many_arguments)]
     async fn commit_new_hash(
         &self,
         mut tx: sqlx::Transaction<'_, sqlx::Postgres>,
-        key: &str,
-        content_hash: &str,
-        content_key: &str,
-        size: Option<u64>,
+        target: &DedupTarget<'_>,
         backend: &Arc<dyn StorageBackend>,
         existing_hash: Option<String>,
         source: BlobSource,
@@ -187,9 +184,9 @@ impl StorageRouter {
             RETURNING ref_count
             "#,
         )
-        .bind(content_hash)
-        .bind(content_key)
-        .bind(size.map(|s| s as i64))
+        .bind(target.content_hash)
+        .bind(target.content_key)
+        .bind(target.size.map(|s| s as i64))
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| CoreError::Storage(format!("dedup index upsert failed: {e}")))?;
@@ -205,8 +202,8 @@ impl StorageRouter {
             ON CONFLICT (logical_key) DO UPDATE SET content_hash = EXCLUDED.content_hash
             "#,
         )
-        .bind(key)
-        .bind(content_hash)
+        .bind(target.key)
+        .bind(target.content_hash)
         .execute(&mut *tx)
         .await
         .map_err(|e| CoreError::Storage(format!("dedup refs insert failed: {e}")))?;
@@ -235,7 +232,7 @@ impl StorageRouter {
         // this before commit ensures a backend failure causes a full rollback
         // rather than leaving orphaned dedup rows that point to a missing blob.
         if count == 1 {
-            if let Err(e) = source.materialize(backend, content_key).await {
+            if let Err(e) = source.materialize(backend, target.content_key).await {
                 let _ = tx.rollback().await;
                 source.discard_staged(backend).await;
                 return Err(e);
@@ -251,6 +248,22 @@ impl StorageRouter {
             .map_err(|e| CoreError::Storage(e.to_string()))?;
         Ok(())
     }
+}
+
+/// The logical/physical identity of one dedup transaction: which logical key
+/// is being stored, the content hash its bytes produced, the physical blob
+/// key that hash maps to, and the byte size (when known). Built once by
+/// `store`/`store_streaming` and threaded through [`StorageRouter::finalize_dedup`]
+/// and [`StorageRouter::commit_new_hash`] by reference.
+///
+/// Deliberately excludes `backend_name`/`backend`/`source`: those describe
+/// *where* the blob is written and *how* its bytes are obtained, a separate
+/// concern from *what* is being deduplicated.
+struct DedupTarget<'a> {
+    key: &'a str,
+    content_hash: &'a str,
+    content_key: &'a str,
+    size: Option<u64>,
 }
 
 /// How [`StorageRouter::finalize_dedup`] obtains the physical blob bytes when a
@@ -298,11 +311,14 @@ impl StorageBackend for StorageRouter {
         let backend_name = self.backend_name_for_key(key).to_owned();
         let backend = self.resolve_backend(&backend_name).clone();
 
-        self.finalize_dedup(
+        let target = DedupTarget {
             key,
-            &content_hash,
-            &content_key,
+            content_hash: &content_hash,
+            content_key: &content_key,
             size,
+        };
+        self.finalize_dedup(
+            &target,
             &backend_name,
             &backend,
             BlobSource::Inline(data, meta),
@@ -343,12 +359,15 @@ impl StorageBackend for StorageRouter {
         // paths, but its early DB-error returns do not. Keep the staging key here
         // and clean it up if finalize fails, so a transient DB error can never
         // leak an orphaned `blob/staging/<uuid>` (there is no staging GC sweep).
+        let target = DedupTarget {
+            key,
+            content_hash: &outcome.content_hash,
+            content_key: &content_key,
+            size,
+        };
         if let Err(e) = self
             .finalize_dedup(
-                key,
-                &outcome.content_hash,
-                &content_key,
-                size,
+                &target,
                 &backend_name,
                 &backend,
                 BlobSource::Staged(staging_key.clone()),
@@ -386,10 +405,7 @@ impl StorageBackend for StorageRouter {
         }
 
         // Legacy path: artifact was stored before dedup was enabled.
-        let backend = match self.recorded_backend_for_key(key).await {
-            Some(b) => b,
-            None => self.resolve_backend(self.backend_name_for_key(key)).clone(),
-        };
+        let backend = self.legacy_backend_for(key).await;
         let artifact = backend.retrieve(key).await?;
         if let Some(ref a) = artifact {
             if let Some(size) = a.meta.size {
@@ -406,14 +422,7 @@ impl StorageBackend for StorageRouter {
         }
 
         // Legacy path.
-        match self.recorded_backend_for_key(key).await {
-            Some(b) => b.exists(key).await,
-            None => {
-                self.resolve_backend(self.backend_name_for_key(key))
-                    .exists(key)
-                    .await
-            }
-        }
+        self.legacy_backend_for(key).await.exists(key).await
     }
 
     async fn delete(&self, key: &str) -> Result<bool, CoreError> {

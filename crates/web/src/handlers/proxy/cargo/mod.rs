@@ -39,6 +39,6 @@ pub mod ownership;
 pub mod publish;
 
 pub use helpers::CargoIndexProxy;
-pub use index::*;
-pub use ownership::*;
-pub use publish::*;
+pub use index::{cargo_registry_config, cargo_registry_index, download_crate};
+pub use ownership::cargo_owners;
+pub use publish::{cargo_publish, cargo_unyank, cargo_yank};

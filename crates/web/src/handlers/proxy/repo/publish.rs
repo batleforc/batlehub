@@ -13,13 +13,14 @@ use actix_web::{put, web, HttpResponse, Responder};
 use batlehub_adapters::repo::{deb, gzip, pacman, rpm, OpenPgpSigner};
 use batlehub_core::{
     ports::{StorageBackend, StorageMeta},
-    services::LocalRegistryService,
+    services::{LocalRegistryService, PublishPolicyRequest},
 };
 
 use super::super::common::{collect_payload, collect_storage_stream, require_registry_type};
 use super::repo_storage_key;
 use crate::{
-    error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, RepoSignerMap,
+    error::AppError, extractors::AuthIdentity, handlers::back_office::require_authenticated,
+    RegistryMap, RegistryModeMap, RepoSignerMap,
 };
 
 // ── Small storage helpers ───────────────────────────────────────────────────
@@ -58,18 +59,6 @@ async fn read_many(
         .try_filter_map(|opt| async move { Ok(opt) })
         .try_collect()
         .await
-}
-
-/// Reject anonymous callers. Publishing to a local deb/rpm repo requires an
-/// authenticated identity.
-fn require_authenticated(identity: &AuthIdentity) -> Result<(), AppError> {
-    use batlehub_core::entities::Role;
-    if identity.0.role == Role::Anonymous {
-        return Err(AppError::forbidden(
-            "publishing requires authentication".to_owned(),
-        ));
-    }
-    Ok(())
 }
 
 fn http_date() -> String {
@@ -148,13 +137,15 @@ pub async fn deb_publish(
     let artifact_len = bytes.len() as u64;
     local_svc
         .enforce_publish_policy(
-            &registry,
-            &name,
-            &version,
-            artifact_len,
+            &PublishPolicyRequest {
+                registry: &registry,
+                name: &name,
+                version: &version,
+                artifact_len,
+                signature_bytes: None,
+                signature_type: None,
+            },
             &identity.0,
-            None,
-            None,
         )
         .await
         .map_err(AppError::from)?;
@@ -361,13 +352,15 @@ pub async fn rpm_publish(
     let artifact_len = bytes.len() as u64;
     local_svc
         .enforce_publish_policy(
-            &registry,
-            &pkg.name,
-            &pkg.version,
-            artifact_len,
+            &PublishPolicyRequest {
+                registry: &registry,
+                name: &pkg.name,
+                version: &pkg.version,
+                artifact_len,
+                signature_bytes: None,
+                signature_type: None,
+            },
             &identity.0,
-            None,
-            None,
         )
         .await
         .map_err(AppError::from)?;
@@ -527,13 +520,15 @@ pub async fn pacman_publish(
     let artifact_len = bytes.len() as u64;
     local_svc
         .enforce_publish_policy(
-            &registry,
-            &name,
-            &version,
-            artifact_len,
+            &PublishPolicyRequest {
+                registry: &registry,
+                name: &name,
+                version: &version,
+                artifact_len,
+                signature_bytes: None,
+                signature_type: None,
+            },
             &identity.0,
-            None,
-            None,
         )
         .await
         .map_err(AppError::from)?;

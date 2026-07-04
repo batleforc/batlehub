@@ -96,13 +96,7 @@ pub async fn registry_health(
 
     let repo = &admin_svc.repo;
 
-    let mut registries: Vec<(String, String)> = registry_map
-        .0
-        .read()
-        .expect("registry map lock poisoned")
-        .iter()
-        .map(|(name, rtype)| (name.clone(), rtype.clone()))
-        .collect();
+    let mut registries: Vec<(String, String)> = registry_map.entries();
     registries.sort_by(|a, b| a.0.cmp(&b.0));
 
     if registries.is_empty() {

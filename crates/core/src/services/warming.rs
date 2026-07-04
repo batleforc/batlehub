@@ -37,6 +37,11 @@ impl std::ops::AddAssign for WarmingReport {
 
 /// Pre-fetches artifact versions from an upstream registry and stores them in
 /// the local cache so they are available with zero latency on first request.
+///
+/// `Clone` is derived so `warm_one_version`'s spawn sites can pass a single
+/// `self.clone()` (four cheap `Arc` bumps + a `String`/two `usize`s) instead of
+/// naming each field individually at every call site.
+#[derive(Clone)]
 pub struct WarmingService {
     pub client: Arc<dyn RegistryClient>,
     pub storage: Arc<dyn StorageBackend>,
@@ -53,24 +58,28 @@ pub struct WarmingService {
 }
 
 /// Fetch and store one artifact version. Returns a single-field `WarmingReport`.
-#[allow(clippy::too_many_arguments)]
+///
+/// Takes an owned `svc` (a cloned `WarmingService`) rather than its four
+/// `Arc` fields plus `registry_name` individually — every caller already has
+/// a `WarmingService` in hand, so `svc.clone()` at the spawn site replaces
+/// four separate `Arc::clone` calls with one.
 async fn warm_one_version(
-    client: Arc<dyn RegistryClient>,
-    storage: Arc<dyn StorageBackend>,
-    artifact_meta: Arc<dyn ArtifactCacheMeta>,
-    coordinator: Arc<dyn WarmCoordinator>,
+    svc: WarmingService,
     artifact_key: String,
     pkg: PackageId,
-    registry_name: String,
     name: String,
     version: String,
     sem: Arc<Semaphore>,
 ) -> WarmingReport {
     let _permit = sem.acquire_owned().await;
 
-    if !coordinator.try_claim(&artifact_key, WARM_CLAIM_TTL).await {
+    if !svc
+        .coordinator
+        .try_claim(&artifact_key, WARM_CLAIM_TTL)
+        .await
+    {
         tracing::debug!(
-            registry = %registry_name, package = %name,
+            registry = %svc.registry_name, package = %name,
             version = %version, key = %artifact_key,
             "warming: skipped — another replica is warming this artifact"
         );
@@ -80,34 +89,21 @@ async fn warm_one_version(
         };
     }
 
-    let report = warm_one_version_inner(
-        client,
-        storage,
-        artifact_meta,
-        &artifact_key,
-        pkg,
-        &registry_name,
-        &name,
-        &version,
-    )
-    .await;
+    let report = warm_one_version_inner(&svc, &artifact_key, pkg, &name, &version).await;
 
-    coordinator.release(&artifact_key).await;
+    svc.coordinator.release(&artifact_key).await;
     report
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn warm_one_version_inner(
-    client: Arc<dyn RegistryClient>,
-    storage: Arc<dyn StorageBackend>,
-    artifact_meta: Arc<dyn ArtifactCacheMeta>,
+    svc: &WarmingService,
     artifact_key: &str,
     pkg: PackageId,
-    registry_name: &str,
     name: &str,
     version: &str,
 ) -> WarmingReport {
-    match storage.exists(artifact_key).await {
+    let registry_name = svc.registry_name.as_str();
+    match svc.storage.exists(artifact_key).await {
         Ok(true) => {
             tracing::debug!(
                 registry = %registry_name, package = %name,
@@ -131,7 +127,7 @@ async fn warm_one_version_inner(
 
     let registry_label: Arc<str> = Arc::from(registry_name);
     let upstream_start = std::time::Instant::now();
-    let mut fetched = match client.fetch_artifact(&pkg).await {
+    let mut fetched = match svc.client.fetch_artifact(&pkg).await {
         Ok(f) => f,
         Err(e) => {
             super::proxy::record_upstream_duration(
@@ -163,7 +159,8 @@ async fn warm_one_version_inner(
     // Stream directly to storage without buffering the full artifact in memory.
     // `store_streaming` implementations (filesystem, S3) write incrementally so
     // peak memory is bounded to a single chunk regardless of artifact size.
-    let outcome = match storage
+    let outcome = match svc
+        .storage
         .store_streaming(artifact_key, fetched.stream, StorageMeta::default())
         .await
     {
@@ -179,7 +176,8 @@ async fn warm_one_version_inner(
     let size = outcome.size;
     let checksum = outcome.content_hash;
 
-    if let Err(e) = artifact_meta
+    if let Err(e) = svc
+        .artifact_meta
         .record_artifact(ArtifactMetaRecord {
             key: artifact_key,
             registry: registry_name,
@@ -209,13 +207,8 @@ impl WarmingService {
     /// Used by the admin API to honour a per-request version count override.
     pub fn with_latest_n(&self, n: usize) -> Self {
         Self {
-            client: Arc::clone(&self.client),
-            storage: Arc::clone(&self.storage),
-            artifact_meta: Arc::clone(&self.artifact_meta),
-            registry_name: self.registry_name.clone(),
             latest_n: n,
-            concurrency: self.concurrency,
-            coordinator: Arc::clone(&self.coordinator),
+            ..self.clone()
         }
     }
 
@@ -274,13 +267,9 @@ impl WarmingService {
             let artifact_key = format!("artifact:{}/{name}:{version}", self.registry_name);
             let pkg = PackageId::new(self.registry_name.clone(), name.to_owned(), version.clone());
             handles.push(tokio::spawn(warm_one_version(
-                Arc::clone(&self.client),
-                Arc::clone(&self.storage),
-                Arc::clone(&self.artifact_meta),
-                Arc::clone(&self.coordinator),
+                self.clone(),
                 artifact_key,
                 pkg,
-                self.registry_name.clone(),
                 name.to_owned(),
                 version,
                 Arc::clone(&sem),
@@ -334,13 +323,9 @@ impl WarmingService {
                 PackageId::new(self.registry_name.clone(), "repo", "_").with_artifact(path.clone());
             let artifact_key = format!("artifact:{}", pkg.cache_key());
             handles.push(tokio::spawn(warm_one_version(
-                Arc::clone(&self.client),
-                Arc::clone(&self.storage),
-                Arc::clone(&self.artifact_meta),
-                Arc::clone(&self.coordinator),
+                self.clone(),
                 artifact_key,
                 pkg,
-                self.registry_name.clone(),
                 path.clone(),
                 "_".to_owned(),
                 Arc::clone(&sem),

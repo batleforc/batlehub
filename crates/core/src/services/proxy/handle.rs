@@ -5,7 +5,7 @@ use crate::entities::AccessEvent;
 use crate::error::CoreError;
 use crate::rules::{evaluate_rules, RuleContext, RuleDecision};
 
-use super::{ProxyRequest, ProxyResponse, ProxyService};
+use super::{ProxyRequest, ProxyResponse, ProxyService, RequestTiming};
 
 /// Largest artifact that re-serve verification (`verify_on_serve`) will retain in
 /// memory so it can be hashed and served from the same buffer in a single read.
@@ -153,23 +153,22 @@ impl ProxyService {
 
         if cached_artifact_is_fresh {
             // ── 5a. Cache hit (see `cache::serve_cache_hit`) ──────────────────
+            let timing = RequestTiming {
+                registry_label,
+                start,
+            };
             return self
-                .serve_cache_hit(req, artifact_key, &integrity, registry_label, start)
+                .serve_cache_hit(req, artifact_key, &integrity, &timing)
                 .await;
         }
 
         // ── 5b. Cache miss: fetch + cache (see `cache::fetch_and_cache`) ───────
-        self.fetch_and_cache(
-            req,
-            client,
-            metadata,
-            artifact_key,
-            &integrity,
-            limit,
+        let timing = RequestTiming {
             registry_label,
             start,
-        )
-        .await
+        };
+        self.fetch_and_cache(req, client, metadata, &integrity, limit, &timing)
+            .await
     }
 
     /// Authorize a read against a registry's policy rules **without** resolving

@@ -154,83 +154,24 @@ impl ConfigReloadService {
         }
         // Swap the shared registry/mode/upstream maps in-place so all actix workers
         // immediately see the new registries without a process restart.
-        {
-            let mut rm = self
-                .registry_map
-                .0
-                .write()
-                .expect("registry map lock poisoned");
-            *rm = pending
-                .new_registry_map
-                .0
-                .read()
-                .expect("registry map lock poisoned")
-                .clone();
-        }
-        {
-            let mut mm = self
-                .registry_mode_map
-                .0
-                .write()
-                .expect("registry mode map lock poisoned");
-            *mm = pending
-                .new_registry_mode_map
-                .0
-                .read()
-                .expect("registry mode map lock poisoned")
-                .clone();
-        }
-        {
-            let mut um = self
-                .upstream_map
-                .0
-                .write()
-                .expect("upstream map lock poisoned");
-            *um = pending
-                .new_upstream_map
-                .0
-                .read()
-                .expect("upstream map lock poisoned")
-                .clone();
-        }
-        {
-            let mut cm = self
-                .cargo_index_map
-                .0
-                .write()
-                .expect("cargo index map lock poisoned");
-            *cm = pending
-                .new_cargo_index_map
-                .0
-                .read()
-                .expect("cargo index map lock poisoned")
-                .clone();
-        }
+        //
+        // Each `replace_from` call takes its own lock pair (read `pending`'s map,
+        // write this one) — deliberate, matching `ConfigReloadService::pending`'s
+        // policy (see its doc comment in `mod.rs`): a poisoned lock here means a
+        // reload already panicked mid-swap, so crashing is preferred over serving
+        // a torn config.
+        self.registry_map.replace_from(&pending.new_registry_map);
+        self.registry_mode_map
+            .replace_from(&pending.new_registry_mode_map);
+        self.upstream_map.replace_from(&pending.new_upstream_map);
+        self.cargo_index_map
+            .replace_from(&pending.new_cargo_index_map);
         // Swap the deb/rpm repo signing keys so a reload that adds/changes/removes
         // `[registries.repo_signing]` takes effect without a process restart.
-        {
-            let mut sm = self
-                .repo_signer_map
-                .0
-                .write()
-                .expect("repo signer map lock poisoned");
-            *sm = pending
-                .new_repo_signer_map
-                .0
-                .read()
-                .expect("repo signer map lock poisoned")
-                .clone();
-        }
+        self.repo_signer_map
+            .replace_from(&pending.new_repo_signer_map);
         // Swap the Go vuln DB URL map; reuse the existing HTTP client.
-        {
-            let new_urls = pending
-                .new_vuln_db_map
-                .urls
-                .read()
-                .expect("vuln db map lock poisoned")
-                .clone();
-            self.vuln_db_map.update(new_urls);
-        }
+        self.vuln_db_map.replace_from(&pending.new_vuln_db_map);
 
         // Clear the in-progress banner on success.
         if let Some(ref banner) = self.banner {

@@ -6,7 +6,7 @@ parent:
   components:
     - name: tools
       container:
-        memoryLimit: 10Gi
+        memoryLimit: 15Gi
         endpoints:
         - name: front
           targetPort: 5173

@@ -17,7 +17,15 @@ use crate::services::hot_config::IntegrityPolicy;
 use crate::services::integrity::{IntegrityOutcome, StreamingVerifier};
 
 use super::handle::RESERVE_VERIFY_BUFFER_LIMIT;
-use super::{ProxyRequest, ProxyResponse, ProxyService};
+use super::{ProxyRequest, ProxyResponse, ProxyService, RequestTiming};
+
+/// The artifact-cache storage key for `req`. A pure function of the package
+/// coordinate, so functions below recompute it instead of taking it as a
+/// parameter — `handle.rs` still holds its own copy for the `artifact_is_fresh`
+/// check that picks between the cache-hit and fetch-and-cache paths.
+fn artifact_key_for(req: &ProxyRequest) -> String {
+    format!("artifact:{}", req.package_id.cache_key())
+}
 
 impl ProxyService {
     /// Serve an artifact from a fresh cache hit. When `verify_on_serve` is set,
@@ -30,12 +38,11 @@ impl ProxyService {
         req: ProxyRequest,
         artifact_key: String,
         integrity: &IntegrityPolicy,
-        registry_label: Arc<str>,
-        start: Instant,
+        timing: &RequestTiming,
     ) -> Result<ProxyResponse, CoreError> {
         let registry_name = req.package_id.registry.as_str();
         tracing::debug!(key = %artifact_key, "artifact cache hit");
-        metrics::counter!("batlehub_artifact_cache_hits_total", "registry" => registry_label.clone()).increment(1);
+        metrics::counter!("batlehub_artifact_cache_hits_total", "registry" => timing.registry_label.clone()).increment(1);
         self.metrics.record_artifact_hit(registry_name);
         let artifact = self.storage.retrieve(&artifact_key).await?.ok_or_else(|| {
             CoreError::Registry(format!(
@@ -51,14 +58,8 @@ impl ProxyService {
         // `StreamingVerifier` (memory stays bounded regardless of artifact size);
         // a verified entry is then re-opened from storage to serve.
         let response_stream = if integrity.enabled && integrity.verify_on_serve {
-            self.reserve_verified_stream(
-                &req,
-                &artifact_key,
-                artifact.stream,
-                &registry_label,
-                start,
-            )
-            .await?
+            self.reserve_verified_stream(&req, &artifact_key, artifact.stream, timing)
+                .await?
         } else {
             artifact.stream
         };
@@ -81,7 +82,7 @@ impl ProxyService {
                 .await,
             "allowed download",
         );
-        super::finish_request(&registry_label, "allowed", start);
+        super::finish_request(&timing.registry_label, "allowed", timing.start);
         Ok(ProxyResponse::Stream(response_stream))
     }
 
@@ -97,8 +98,7 @@ impl ProxyService {
         req: &ProxyRequest,
         artifact_key: &str,
         stream: ByteStream,
-        registry_label: &Arc<str>,
-        start: Instant,
+        timing: &RequestTiming,
     ) -> Result<ByteStream, CoreError> {
         let registry_name = req.package_id.registry.as_str();
 
@@ -122,15 +122,15 @@ impl ProxyService {
                     req.package_id,
                 );
                 tracing::warn!(registry = %registry_name, key = %artifact_key, error = %e, "re-serve checksum lookup failed; failing closed");
-                metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "lookup_failed", "phase" => "reserve").increment(1);
-                super::finish_request(registry_label, "integrity_failed", start);
+                metrics::counter!("batlehub_integrity_checks_total", "registry" => timing.registry_label.clone(), "outcome" => "lookup_failed", "phase" => "reserve").increment(1);
+                super::finish_request(&timing.registry_label, "integrity_failed", timing.start);
                 return Err(CoreError::IntegrityFailure(reason));
             }
         };
 
         // A recorded checksum that cannot be parsed: serve as-is, same as missing.
         let Some(verifier) = StreamingVerifier::new(&expected) else {
-            metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "unparseable", "phase" => "reserve").increment(1);
+            metrics::counter!("batlehub_integrity_checks_total", "registry" => timing.registry_label.clone(), "outcome" => "unparseable", "phase" => "reserve").increment(1);
             tracing::warn!(registry = %registry_name, key = %artifact_key, "stored checksum could not be parsed; serving without re-verification");
             return Ok(stream);
         };
@@ -142,7 +142,7 @@ impl ProxyService {
         let (outcome, retained) = hash_stream_retaining(stream, verifier).await?;
         match outcome {
             IntegrityOutcome::Verified { algo } => {
-                metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "verified", "phase" => "reserve").increment(1);
+                metrics::counter!("batlehub_integrity_checks_total", "registry" => timing.registry_label.clone(), "outcome" => "verified", "phase" => "reserve").increment(1);
                 tracing::debug!(registry = %registry_name, key = %artifact_key, algo = algo.as_str(), "cached artifact re-verified on serve");
             }
             IntegrityOutcome::Mismatch {
@@ -154,11 +154,10 @@ impl ProxyService {
                     .evict_reserve_mismatch(
                         req,
                         artifact_key,
-                        registry_label,
+                        timing,
                         algo.as_str(),
                         &expected,
                         &actual,
-                        start,
                     )
                     .await);
             }
@@ -192,19 +191,17 @@ impl ProxyService {
 
     /// Evict a corrupt cached artifact (bytes + recorded meta), audit, finish the
     /// request, and build the `IntegrityFailure` for a re-serve digest mismatch.
-    #[allow(clippy::too_many_arguments)]
     async fn evict_reserve_mismatch(
         &self,
         req: &ProxyRequest,
         artifact_key: &str,
-        registry_label: &Arc<str>,
+        timing: &RequestTiming,
         algo: &str,
         expected: &str,
         actual: &str,
-        start: Instant,
     ) -> CoreError {
         let registry_name = req.package_id.registry.as_str();
-        metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "mismatch", "phase" => "reserve").increment(1);
+        metrics::counter!("batlehub_integrity_checks_total", "registry" => timing.registry_label.clone(), "outcome" => "mismatch", "phase" => "reserve").increment(1);
         tracing::warn!(registry = %registry_name, key = %artifact_key, algo, %expected, %actual, "cached artifact failed re-serve integrity check; evicting");
         // Drop the corrupt entry so a later request re-fetches clean bytes.
         if let Err(e) = self.storage.delete(artifact_key).await {
@@ -228,7 +225,7 @@ impl ProxyService {
                 .await,
             "reserve integrity mismatch",
         );
-        super::finish_request(registry_label, "integrity_failed", start);
+        super::finish_request(&timing.registry_label, "integrity_failed", timing.start);
         CoreError::IntegrityFailure(reason)
     }
 
@@ -241,28 +238,33 @@ impl ProxyService {
     /// upstream says `no-store`, falls back to a buffered serve-from-memory path
     /// (see [`Self::serve_no_store`]) since verify-before-serve has nothing to
     /// stream from.
-    #[allow(clippy::too_many_arguments)]
     pub(super) async fn fetch_and_cache(
         &self,
         req: ProxyRequest,
         client: Arc<dyn RegistryClient>,
         metadata: PackageMetadata,
-        artifact_key: String,
         integrity: &IntegrityPolicy,
         limit: u64,
-        registry_label: Arc<str>,
-        start: Instant,
+        timing: &RequestTiming,
     ) -> Result<ProxyResponse, CoreError> {
         let registry_name = req.package_id.registry.as_str();
+        // Pure function of `req`, cheap to recompute — the caller already holds its
+        // own copy (needed for the `artifact_is_fresh` check before choosing this
+        // path), so this isn't threaded through as a ninth parameter.
+        let artifact_key = artifact_key_for(&req);
         tracing::debug!(key = %artifact_key, "artifact not cached, fetching from upstream");
-        metrics::counter!("batlehub_artifact_cache_misses_total", "registry" => registry_label.clone()).increment(1);
+        metrics::counter!("batlehub_artifact_cache_misses_total", "registry" => timing.registry_label.clone()).increment(1);
         self.metrics.record_artifact_miss(registry_name);
         let upstream_start = Instant::now();
         let mut upstream = match client.fetch_artifact(&req.package_id).await {
             Ok(s) => s,
             Err(e) => {
-                super::record_upstream_duration(&registry_label, "fetch_artifact", upstream_start);
-                metrics::counter!("batlehub_upstream_errors_total", "registry" => registry_label.clone()).increment(1);
+                super::record_upstream_duration(
+                    &timing.registry_label,
+                    "fetch_artifact",
+                    upstream_start,
+                );
+                metrics::counter!("batlehub_upstream_errors_total", "registry" => timing.registry_label.clone()).increment(1);
                 super::warn_if_audit_failed(
                     self.repo
                         .record_access(AccessEvent::proxy_error(
@@ -280,7 +282,7 @@ impl ProxyService {
         // Times the whole body transfer (not just time-to-headers) — see
         // `time_upstream_stream` for why.
         upstream.stream = super::time_upstream_stream(
-            Arc::clone(&registry_label),
+            Arc::clone(&timing.registry_label),
             "fetch_artifact",
             upstream_start,
             upstream.stream,
@@ -295,29 +297,13 @@ impl ProxyService {
         // ── Missing-checksum gate (no artifact bytes needed) ───────────────────
         // Decided up front so it applies equally to the streaming and no-store
         // paths, and so we never start a transfer that policy will reject.
-        self.gate_missing_checksum(
-            &req,
-            &metadata,
-            integrity,
-            &artifact_key,
-            &registry_label,
-            start,
-        )
-        .await?;
+        self.gate_missing_checksum(&req, &metadata, integrity, &artifact_key, timing)
+            .await?;
 
         if skip_artifact_cache {
             tracing::debug!(key = %artifact_key, "upstream Cache-Control: no-store; skipping artifact cache");
             return self
-                .serve_no_store(
-                    req,
-                    upstream.stream,
-                    &metadata,
-                    &artifact_key,
-                    integrity,
-                    limit,
-                    registry_label,
-                    start,
-                )
+                .serve_no_store(req, upstream.stream, &metadata, integrity, limit, timing)
                 .await;
         }
 
@@ -327,7 +313,7 @@ impl ProxyService {
         let verifier = build_artifact_verifier(
             integrity,
             &metadata,
-            &registry_label,
+            &timing.registry_label,
             registry_name,
             &artifact_key,
         );
@@ -372,12 +358,10 @@ impl ProxyService {
         self.enforce_verify_outcome(
             &req,
             &store_key,
-            &artifact_key,
             had_verifier,
             verify_outcome,
             integrity,
-            &registry_label,
-            start,
+            timing,
         )
         .await?;
 
@@ -385,7 +369,7 @@ impl ProxyService {
         // as actually cached. Counting earlier (right after `store_streaming`)
         // would overstate the metric on a blocked checksum mismatch, since
         // `enforce_verify_outcome` above can still evict everything just written.
-        metrics::counter!("batlehub_cached_bytes_total", "registry" => registry_label.clone())
+        metrics::counter!("batlehub_cached_bytes_total", "registry" => timing.registry_label.clone())
             .increment(store_outcome.size);
 
         // Verified (or warn-only): promote a staged blob to the real key now —
@@ -440,7 +424,7 @@ impl ProxyService {
                 .await,
             "allowed download",
         );
-        super::finish_request(&registry_label, "allowed", start);
+        super::finish_request(&timing.registry_label, "allowed", timing.start);
         Ok(ProxyResponse::Stream(stored.stream))
     }
 
@@ -454,14 +438,13 @@ impl ProxyService {
         metadata: &PackageMetadata,
         integrity: &IntegrityPolicy,
         artifact_key: &str,
-        registry_label: &Arc<str>,
-        start: Instant,
+        timing: &RequestTiming,
     ) -> Result<(), CoreError> {
         if !(integrity.enabled && metadata.checksum.is_none()) {
             return Ok(());
         }
         let registry_name = req.package_id.registry.as_str();
-        metrics::counter!("batlehub_integrity_checks_total", "registry" => registry_label.clone(), "outcome" => "missing").increment(1);
+        metrics::counter!("batlehub_integrity_checks_total", "registry" => timing.registry_label.clone(), "outcome" => "missing").increment(1);
         if integrity.require_metadata && !integrity.bypass_roles.contains(&req.identity.role) {
             let reason = format!(
                 "integrity policy requires checksum metadata, but upstream provided none for {}",
@@ -478,7 +461,7 @@ impl ProxyService {
                     .await,
                 "integrity missing metadata",
             );
-            super::finish_request(registry_label, "integrity_failed", start);
+            super::finish_request(&timing.registry_label, "integrity_failed", timing.start);
             return Err(CoreError::IntegrityFailure(reason));
         }
         tracing::debug!(registry = %registry_name, key = %artifact_key, "upstream provided no integrity metadata");
@@ -489,19 +472,18 @@ impl ProxyService {
     /// required: a verifier that published no verdict (stream not consumed) or a
     /// blocking mismatch. In both cases the just-stored (staging) bytes are
     /// evicted so they are never promoted or served. `Ok(())` means proceed.
-    #[allow(clippy::too_many_arguments)]
     async fn enforce_verify_outcome(
         &self,
         req: &ProxyRequest,
         store_key: &str,
-        artifact_key: &str,
         had_verifier: bool,
         verify_outcome: Option<IntegrityOutcome>,
         integrity: &IntegrityPolicy,
-        registry_label: &Arc<str>,
-        start: Instant,
+        timing: &RequestTiming,
     ) -> Result<(), CoreError> {
         let registry_name = req.package_id.registry.as_str();
+        // Pure function of `req`; see `fetch_and_cache`'s matching comment.
+        let artifact_key = artifact_key_for(req);
 
         // Fail closed: a verifier was installed but published no verdict, which
         // means the stream was not consumed to completion. We cannot claim the
@@ -513,14 +495,8 @@ impl ProxyService {
                 "integrity verification did not complete for {}",
                 req.package_id,
             );
-            self.audit_integrity_failure(
-                req,
-                &reason,
-                "integrity incomplete",
-                registry_label,
-                start,
-            )
-            .await;
+            self.audit_integrity_failure(req, &reason, "integrity incomplete", timing)
+                .await;
             return Err(CoreError::IntegrityFailure(reason));
         }
 
@@ -528,21 +504,15 @@ impl ProxyService {
             if let Some(reason) = classify_integrity_outcome(
                 outcome,
                 integrity.block_on_mismatch,
-                registry_label,
+                &timing.registry_label,
                 registry_name,
-                artifact_key,
+                &artifact_key,
                 &req.package_id,
             ) {
                 self.evict_staged(store_key, "failed to evict mismatched artifact")
                     .await;
-                self.audit_integrity_failure(
-                    req,
-                    &reason,
-                    "integrity mismatch",
-                    registry_label,
-                    start,
-                )
-                .await;
+                self.audit_integrity_failure(req, &reason, "integrity mismatch", timing)
+                    .await;
                 return Err(CoreError::IntegrityFailure(reason));
             }
         }
@@ -562,8 +532,7 @@ impl ProxyService {
         req: &ProxyRequest,
         reason: &str,
         audit_label: &str,
-        registry_label: &Arc<str>,
-        start: Instant,
+        timing: &RequestTiming,
     ) {
         super::warn_if_audit_failed(
             self.repo
@@ -576,7 +545,7 @@ impl ProxyService {
                 .await,
             audit_label,
         );
-        super::finish_request(registry_label, "integrity_failed", start);
+        super::finish_request(&timing.registry_label, "integrity_failed", timing.start);
     }
 
     /// Promote verified staged bytes to the real artifact key, then drop the
@@ -607,19 +576,18 @@ impl ProxyService {
     /// one-shot integrity check to preserve the verify-before-serve guarantee,
     /// then serve from memory without persisting. Rare path; memory is not
     /// bounded here by design.
-    #[allow(clippy::too_many_arguments)]
     async fn serve_no_store(
         &self,
         req: ProxyRequest,
         mut stream: ByteStream,
         metadata: &PackageMetadata,
-        artifact_key: &str,
         integrity: &IntegrityPolicy,
         limit: u64,
-        registry_label: Arc<str>,
-        start: Instant,
+        timing: &RequestTiming,
     ) -> Result<ProxyResponse, CoreError> {
         let registry_name = req.package_id.registry.as_str();
+        // Pure function of `req`; see `fetch_and_cache`'s matching comment.
+        let artifact_key = artifact_key_for(&req);
         let mut buf: Vec<u8> = Vec::new();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
@@ -652,9 +620,9 @@ impl ProxyService {
                 if let Some(reason) = classify_integrity_outcome(
                     &outcome,
                     integrity.block_on_mismatch,
-                    &registry_label,
+                    &timing.registry_label,
                     registry_name,
-                    artifact_key,
+                    &artifact_key,
                     &req.package_id,
                 ) {
                     super::warn_if_audit_failed(
@@ -668,7 +636,7 @@ impl ProxyService {
                             .await,
                         "integrity mismatch",
                     );
-                    super::finish_request(&registry_label, "integrity_failed", start);
+                    super::finish_request(&timing.registry_label, "integrity_failed", timing.start);
                     return Err(CoreError::IntegrityFailure(reason));
                 }
             }
@@ -684,7 +652,7 @@ impl ProxyService {
                 .await,
             "allowed download",
         );
-        super::finish_request(&registry_label, "allowed", start);
+        super::finish_request(&timing.registry_label, "allowed", timing.start);
         Ok(ProxyResponse::Stream(Box::pin(stream::once(async move {
             Ok(data)
         }))))

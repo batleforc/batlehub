@@ -1,3 +1,5 @@
+use actix_web::http::StatusCode;
+
 use super::{
     get, require_cargo, serve_local_or_proxy_artifact, web, AppError, Arc, AuthIdentity,
     CargoIndexMap, CoreError, HttpRequest, HttpResponse, LocalOrProxyArtifactOpts,
@@ -23,10 +25,12 @@ pub async fn cargo_registry_config(
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
     req: HttpRequest,
-) -> HttpResponse {
+) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
     if !map.is_type(&registry, "cargo") {
-        return HttpResponse::NotFound().body(format!("unknown cargo registry '{registry}'"));
+        return Err(AppError::not_found(format!(
+            "unknown cargo registry '{registry}'"
+        )));
     }
 
     let mode = mode_map.get(&registry);
@@ -35,7 +39,7 @@ pub async fn cargo_registry_config(
     if matches!(mode, RegistryMode::Proxy | RegistryMode::Hybrid)
         && indexes.get(&registry).is_none()
     {
-        return HttpResponse::NotFound().body("no cargo index configured");
+        return Err(AppError::not_found("no cargo index configured"));
     }
 
     let (scheme, host) = {
@@ -50,9 +54,9 @@ pub async fn cargo_registry_config(
         resp["api"] = serde_json::Value::String(format!("{scheme}://{host}/proxy/{registry}"));
     }
 
-    HttpResponse::Ok()
+    Ok(HttpResponse::Ok()
         .content_type("application/json")
-        .json(resp)
+        .json(resp))
 }
 
 /// Cargo sparse registry index entries.
@@ -78,10 +82,12 @@ pub async fn cargo_registry_index(
     mode_map: web::Data<RegistryModeMap>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
     identity: AuthIdentity,
-) -> HttpResponse {
+) -> Result<impl Responder, AppError> {
     let (registry, index_path) = path.into_inner();
     if !map.is_type(&registry, "cargo") {
-        return HttpResponse::NotFound().body(format!("unknown cargo registry '{registry}'"));
+        return Err(AppError::not_found(format!(
+            "unknown cargo registry '{registry}'"
+        )));
     }
 
     let mode = mode_map.get(&registry);
@@ -91,11 +97,12 @@ pub async fn cargo_registry_index(
             serve_local_index(&local_svc, &registry, &index_path, &identity).await
         }
         RegistryMode::Hybrid => {
-            let local = serve_local_index(&local_svc, &registry, &index_path, &identity).await;
-            if local.status() != actix_web::http::StatusCode::NOT_FOUND {
-                return local;
+            match serve_local_index(&local_svc, &registry, &index_path, &identity).await {
+                Err(e) if e.status == StatusCode::NOT_FOUND => {
+                    proxy_upstream_index(&indexes, &registry, &index_path).await
+                }
+                other => other,
             }
-            proxy_upstream_index(&indexes, &registry, &index_path).await
         }
         RegistryMode::Proxy => proxy_upstream_index(&indexes, &registry, &index_path).await,
     }
@@ -106,7 +113,7 @@ async fn serve_local_index(
     registry: &str,
     index_path: &str,
     identity: &batlehub_core::entities::Identity,
-) -> HttpResponse {
+) -> Result<HttpResponse, AppError> {
     // The Cargo sparse index path format is "{prefix1}/{prefix2}/{name}" for
     // names ≥ 3 chars, or "{len}/{name}" for 1–2 char names.
     // `splitn(3, '/')` captures everything after the prefix segments as the
@@ -115,17 +122,13 @@ async fn serve_local_index(
     // intact as "scope/pkg" rather than being truncated to "pkg").
     let name = index_path.splitn(3, '/').last().unwrap_or(index_path);
     match local_svc.get_index(registry, name, identity).await {
-        Ok(content) => HttpResponse::Ok()
+        Ok(content) => Ok(HttpResponse::Ok()
             .content_type("text/plain; charset=utf-8")
-            .body(content),
-        Err(CoreError::NotFound(_)) => {
-            HttpResponse::NotFound().body(format!("crate '{name}' not found in local registry"))
-        }
-        Err(CoreError::AccessDenied(msg)) => HttpResponse::Forbidden().body(msg),
-        Err(e) => {
-            tracing::error!(error = %e, "local index lookup failed");
-            HttpResponse::InternalServerError().body(e.to_string())
-        }
+            .body(content)),
+        Err(CoreError::NotFound(_)) => Err(AppError::not_found(format!(
+            "crate '{name}' not found in local registry"
+        ))),
+        Err(e) => Err(AppError::from(e)),
     }
 }
 
@@ -133,9 +136,9 @@ async fn proxy_upstream_index(
     indexes: &CargoIndexMap,
     registry: &str,
     index_path: &str,
-) -> HttpResponse {
+) -> Result<HttpResponse, AppError> {
     let Some(index) = indexes.get(registry) else {
-        return HttpResponse::NotFound().body("no cargo registry configured");
+        return Err(AppError::not_found("no cargo registry configured"));
     };
     let url = format!("{}/{}", index.index_url.trim_end_matches('/'), index_path);
     tracing::debug!(url = %url, "fetching cargo sparse index entry");
@@ -143,16 +146,16 @@ async fn proxy_upstream_index(
         Ok(r) => r,
         Err(e) => {
             tracing::error!(url = %url, error = %e, "cargo index fetch failed");
-            return HttpResponse::BadGateway().body(e.to_string());
+            return Err(AppError::bad_gateway(e.to_string()));
         }
     };
-    let status = actix_web::http::StatusCode::from_u16(resp.status().as_u16())
-        .unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR);
+    let status =
+        StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     match resp.bytes().await {
-        Ok(bytes) => HttpResponse::build(status)
+        Ok(bytes) => Ok(HttpResponse::build(status)
             .content_type("text/plain; charset=utf-8")
-            .body(bytes),
-        Err(e) => HttpResponse::BadGateway().body(e.to_string()),
+            .body(bytes)),
+        Err(e) => Err(AppError::bad_gateway(e.to_string())),
     }
 }
 

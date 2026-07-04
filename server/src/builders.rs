@@ -14,7 +14,7 @@ use batlehub_config::schema::{
     QuotaEnforcement as ConfigQuotaEnforcement, RegistryConfig, RuleConfig, UpstreamAuthConfig,
 };
 use batlehub_core::{
-    entities::{Role, Severity},
+    entities::{RegistryKind, Role, Severity},
     ports::VulnerabilityRepository,
     rules::{
         BlockListRule, CveGateRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule,
@@ -121,77 +121,79 @@ pub(super) fn build_registry_client(
         }
     }
     fn make_one(
-        registry_type: &str,
+        kind: RegistryKind,
         url: &str,
         opts: &UpstreamHttpOptions,
     ) -> anyhow::Result<Arc<dyn batlehub_core::ports::RegistryClient>> {
-        let client: Arc<dyn batlehub_core::ports::RegistryClient> = match registry_type {
-            "github" => Arc::new(GithubRegistryClient::new(url, opts)?),
-            "forgejo" => Arc::new(ForgejoRegistryClient::new(url, opts)?),
-            "gitlab" => Arc::new(GitlabRegistryClient::new(url, opts)?),
-            "npm" => Arc::new(NpmRegistryClient::new(url, opts)?),
-            "cargo" => Arc::new(CargoRegistryClient::new(url, opts)?),
-            "nuget" => Arc::new(NugetRegistryClient::new(url, opts)?),
-            "openvsx" => Arc::new(OpenVsxRegistryClient::new(url, opts)?),
-            "goproxy" => Arc::new(GoProxyRegistryClient::new(url, opts)?),
-            "vscode-marketplace" => Arc::new(VsCodeMarketplaceRegistryClient::new(url, opts)?),
-            "maven" => Arc::new(MavenRegistryClient::new(url, opts)?),
-            "terraform" => Arc::new(TerraformRegistryClient::new(url, opts)?),
-            "rubygems" => Arc::new(RubyGemsRegistryClient::new(url, opts)?),
-            "composer" => Arc::new(ComposerRegistryClient::new(url, opts)?),
-            "pypi" => Arc::new(PypiRegistryClient::new(url, opts)?),
-            "conda" => Arc::new(CondaRegistryClient::new(url, opts)?),
-            "deb" => Arc::new(PathProxyRegistryClient::new("deb", url, opts)?),
-            "rpm" => Arc::new(PathProxyRegistryClient::new("rpm", url, opts)?),
-            "pacman" => Arc::new(PathProxyRegistryClient::new("pacman", url, opts)?),
-            "jetbrains" => Arc::new(PathProxyRegistryClient::new("jetbrains", url, opts)?),
-            other => {
-                anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in")
+        // Exhaustive match over `RegistryKind`: adding a new variant is a compile
+        // error here until an adapter arm is added, instead of silently falling
+        // through to a runtime "no adapter compiled in" bail.
+        let client: Arc<dyn batlehub_core::ports::RegistryClient> = match kind {
+            RegistryKind::Github => Arc::new(GithubRegistryClient::new(url, opts)?),
+            RegistryKind::Forgejo => Arc::new(ForgejoRegistryClient::new(url, opts)?),
+            RegistryKind::Gitlab => Arc::new(GitlabRegistryClient::new(url, opts)?),
+            RegistryKind::Npm => Arc::new(NpmRegistryClient::new(url, opts)?),
+            RegistryKind::Cargo => Arc::new(CargoRegistryClient::new(url, opts)?),
+            RegistryKind::Nuget => Arc::new(NugetRegistryClient::new(url, opts)?),
+            RegistryKind::Openvsx => Arc::new(OpenVsxRegistryClient::new(url, opts)?),
+            RegistryKind::Goproxy => Arc::new(GoProxyRegistryClient::new(url, opts)?),
+            RegistryKind::VscodeMarketplace => {
+                Arc::new(VsCodeMarketplaceRegistryClient::new(url, opts)?)
+            }
+            RegistryKind::Maven => Arc::new(MavenRegistryClient::new(url, opts)?),
+            RegistryKind::Terraform => Arc::new(TerraformRegistryClient::new(url, opts)?),
+            RegistryKind::Rubygems => Arc::new(RubyGemsRegistryClient::new(url, opts)?),
+            RegistryKind::Composer => Arc::new(ComposerRegistryClient::new(url, opts)?),
+            RegistryKind::Pypi => Arc::new(PypiRegistryClient::new(url, opts)?),
+            RegistryKind::Conda => Arc::new(CondaRegistryClient::new(url, opts)?),
+            RegistryKind::Deb => Arc::new(PathProxyRegistryClient::new("deb", url, opts)?),
+            RegistryKind::Rpm => Arc::new(PathProxyRegistryClient::new("rpm", url, opts)?),
+            RegistryKind::Pacman => Arc::new(PathProxyRegistryClient::new("pacman", url, opts)?),
+            RegistryKind::Jetbrains => {
+                Arc::new(PathProxyRegistryClient::new("jetbrains", url, opts)?)
             }
         };
         Ok(client)
     }
 
     let opts = upstream_options(reg, global_proxy);
-    let urls = match reg.registry_type.as_str() {
-        "github" => resolve_urls(&reg.upstreams, "https://api.github.com"),
-        "forgejo" => resolve_urls(&reg.upstreams, "https://codeberg.org"),
-        "gitlab" => resolve_urls(&reg.upstreams, "https://gitlab.com"),
-        "npm" => resolve_urls(&reg.upstreams, "https://registry.npmjs.org"),
-        "cargo" => resolve_urls(&reg.upstreams, "https://crates.io"),
-        "nuget" => resolve_urls(&reg.upstreams, "https://api.nuget.org"),
-        "openvsx" => resolve_urls(&reg.upstreams, "https://open-vsx.org"),
-        "goproxy" => resolve_urls(&reg.upstreams, "https://proxy.golang.org"),
-        "vscode-marketplace" => {
+    let kind: RegistryKind = reg.registry_type.parse().map_err(anyhow::Error::msg)?;
+    let urls = match kind {
+        RegistryKind::Github => resolve_urls(&reg.upstreams, "https://api.github.com"),
+        RegistryKind::Forgejo => resolve_urls(&reg.upstreams, "https://codeberg.org"),
+        RegistryKind::Gitlab => resolve_urls(&reg.upstreams, "https://gitlab.com"),
+        RegistryKind::Npm => resolve_urls(&reg.upstreams, "https://registry.npmjs.org"),
+        RegistryKind::Cargo => resolve_urls(&reg.upstreams, "https://crates.io"),
+        RegistryKind::Nuget => resolve_urls(&reg.upstreams, "https://api.nuget.org"),
+        RegistryKind::Openvsx => resolve_urls(&reg.upstreams, "https://open-vsx.org"),
+        RegistryKind::Goproxy => resolve_urls(&reg.upstreams, "https://proxy.golang.org"),
+        RegistryKind::VscodeMarketplace => {
             resolve_urls(&reg.upstreams, "https://marketplace.visualstudio.com")
         }
-        "maven" => resolve_urls(&reg.upstreams, "https://repo1.maven.org/maven2"),
-        "terraform" => resolve_urls(&reg.upstreams, "https://registry.terraform.io"),
-        "rubygems" => resolve_urls(&reg.upstreams, "https://rubygems.org"),
-        "composer" => resolve_urls(&reg.upstreams, "https://repo.packagist.org"),
-        "pypi" => resolve_urls(&reg.upstreams, "https://pypi.org"),
-        "conda" => resolve_urls(&reg.upstreams, "https://conda.anaconda.org"),
+        RegistryKind::Maven => resolve_urls(&reg.upstreams, "https://repo1.maven.org/maven2"),
+        RegistryKind::Terraform => resolve_urls(&reg.upstreams, "https://registry.terraform.io"),
+        RegistryKind::Rubygems => resolve_urls(&reg.upstreams, "https://rubygems.org"),
+        RegistryKind::Composer => resolve_urls(&reg.upstreams, "https://repo.packagist.org"),
+        RegistryKind::Pypi => resolve_urls(&reg.upstreams, "https://pypi.org"),
+        RegistryKind::Conda => resolve_urls(&reg.upstreams, "https://conda.anaconda.org"),
         // Deb/RPM have no universal default upstream; proxy/hybrid mode requires an
         // explicit `upstreams` entry. The placeholder keeps a client constructible
         // for local-only mode, where the upstream is never contacted.
-        "deb" => resolve_urls(&reg.upstreams, "https://deb.debian.org"),
-        "rpm" => resolve_urls(&reg.upstreams, "https://example.invalid/rpm"),
+        RegistryKind::Deb => resolve_urls(&reg.upstreams, "https://deb.debian.org"),
+        RegistryKind::Rpm => resolve_urls(&reg.upstreams, "https://example.invalid/rpm"),
         // Arch mirrors share a common layout (`$repo/os/$arch/…`); the geo CDN is a
         // sensible default, overridable via `upstreams`.
-        "pacman" => resolve_urls(&reg.upstreams, "https://geo.mirror.pkgbuild.com"),
+        RegistryKind::Pacman => resolve_urls(&reg.upstreams, "https://geo.mirror.pkgbuild.com"),
         // JetBrains IDE archives are served from a stable CDN, so it's a sensible
         // default; users can override `upstreams` (e.g. for plugins.jetbrains.com).
-        "jetbrains" => resolve_urls(&reg.upstreams, "https://download.jetbrains.com"),
-        other => {
-            anyhow::bail!("registry type '{other}' is configured but no adapter is compiled in")
-        }
+        RegistryKind::Jetbrains => resolve_urls(&reg.upstreams, "https://download.jetbrains.com"),
     };
     if urls.len() == 1 {
-        make_one(&reg.registry_type, &urls[0], &opts)
+        make_one(kind, &urls[0], &opts)
     } else {
         let clients = urls
             .iter()
-            .map(|u| make_one(&reg.registry_type, u, &opts))
+            .map(|u| make_one(kind, u, &opts))
             .collect::<anyhow::Result<Vec<_>>>()?;
         Ok(Arc::new(FanoutRegistryClient::new(
             &reg.registry_type,

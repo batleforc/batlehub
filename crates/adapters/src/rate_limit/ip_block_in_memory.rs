@@ -69,7 +69,7 @@ impl IpBlockStore for InMemoryIpBlockStore {
         Ok((entry.count, window_reset))
     }
 
-    async fn is_blocked(&self, ip: &str) -> Result<Option<u64>, CoreError> {
+    async fn blocked_until(&self, ip: &str) -> Result<Option<u64>, CoreError> {
         let now = now_unix();
         let guard = self.blocks.lock().await;
         Ok(guard.get(ip).and_then(|e| {
@@ -147,7 +147,7 @@ mod tests {
     #[tokio::test]
     async fn not_blocked_initially() {
         let store = InMemoryIpBlockStore::new();
-        assert!(store.is_blocked("1.2.3.4").await.unwrap().is_none());
+        assert!(store.blocked_until("1.2.3.4").await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -155,7 +155,7 @@ mod tests {
         let store = InMemoryIpBlockStore::new();
         let unblock_at = now() + 3600;
         store.block_ip("1.2.3.4", unblock_at, "test").await.unwrap();
-        let result = store.is_blocked("1.2.3.4").await.unwrap();
+        let result = store.blocked_until("1.2.3.4").await.unwrap();
         assert_eq!(result, Some(unblock_at));
     }
 
@@ -167,7 +167,7 @@ mod tests {
             .block_ip("1.2.3.4", now().saturating_sub(1), "old")
             .await
             .unwrap();
-        assert!(store.is_blocked("1.2.3.4").await.unwrap().is_none());
+        assert!(store.blocked_until("1.2.3.4").await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -178,7 +178,7 @@ mod tests {
             .await
             .unwrap();
         store.unblock_ip("1.2.3.4").await.unwrap();
-        assert!(store.is_blocked("1.2.3.4").await.unwrap().is_none());
+        assert!(store.blocked_until("1.2.3.4").await.unwrap().is_none());
     }
 
     #[tokio::test]

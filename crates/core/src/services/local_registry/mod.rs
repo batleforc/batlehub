@@ -1,10 +1,12 @@
-mod eco_gem_mvn;
+mod eco_composer_conda_pypi;
+mod eco_gem_mvn_nuget;
 mod eco_go;
-mod eco_pkg;
 mod eco_tf;
 mod lifecycle;
 mod publish;
 mod read;
+
+pub use publish::PublishPolicyRequest;
 
 use std::sync::Arc;
 
@@ -12,9 +14,12 @@ use bytes::Bytes;
 use futures::StreamExt;
 
 use crate::{
-    entities::{Identity, PublishedPackage, Role, SbomFormat, Visibility},
+    entities::{AccessEvent, Identity, PackageId, PublishedPackage, Role, SbomFormat, Visibility},
     error::CoreError,
-    ports::{LocalRegistryBackend, OwnershipPort, StorageBackend, StorageMeta, TeamNamespacePort},
+    ports::{
+        LocalRegistryBackend, OwnershipPort, PackageRepository, StorageBackend, StorageMeta,
+        TeamNamespacePort,
+    },
     services::{
         explore_cache::ExploreCache,
         hot_config::{HotConfigLock, VersioningPolicy},
@@ -178,6 +183,12 @@ pub struct LocalRegistryService {
     pub sbom: Option<Arc<SbomService>>,
     /// Optional explore cache; invalidated automatically on successful publish.
     pub explore_cache: Option<Arc<ExploreCache>>,
+    /// Optional access-log sink for local/hybrid downloads. When `None`, local
+    /// reads produce no audit trail (matches the pre-existing behavior); when
+    /// set, `get_artifact` records the same `AccessEvent::allowed_download`/
+    /// `denied_download` shape `ProxyService::handle` already records for the
+    /// proxy-fallback path, so Local-mode registries aren't a silent audit gap.
+    pub access_log: Option<Arc<dyn PackageRepository>>,
 }
 
 /// OS/architecture pair identifying a specific Terraform provider binary.

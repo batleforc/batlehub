@@ -172,6 +172,7 @@ fn svc(
         team_namespace: None,
         sbom: None,
         explore_cache: None,
+        access_log: None,
     }
 }
 
@@ -237,11 +238,22 @@ async fn publish_rejects_oversized_artifact() {
 // registries (deb/rpm) call directly, bypassing the standard package-version
 // `publish()`. These assert the limits still apply on that path.
 
+fn apt_policy_req(name: &str, artifact_len: u64) -> PublishPolicyRequest<'_> {
+    PublishPolicyRequest {
+        registry: "apt",
+        name,
+        version: "1.0",
+        artifact_len,
+        signature_bytes: None,
+        signature_type: None,
+    }
+}
+
 #[tokio::test]
 async fn enforce_publish_policy_rejects_oversized_artifact() {
     let s = svc(InMemBackend::arc(), Some(10)); // 10-byte limit
     let err = s
-        .enforce_publish_policy("apt", "hello", "1.0", 11, &user(), None, None)
+        .enforce_publish_policy(&apt_policy_req("hello", 11), &user())
         .await
         .unwrap_err();
     assert!(matches!(err, CoreError::PayloadTooLarge(_)));
@@ -251,7 +263,7 @@ async fn enforce_publish_policy_rejects_oversized_artifact() {
 async fn enforce_publish_policy_rejects_anonymous() {
     let s = svc(InMemBackend::arc(), None);
     let err = s
-        .enforce_publish_policy("apt", "hello", "1.0", 5, &anon(), None, None)
+        .enforce_publish_policy(&apt_policy_req("hello", 5), &anon())
         .await
         .unwrap_err();
     assert!(matches!(err, CoreError::AccessDenied(_)));
@@ -261,7 +273,7 @@ async fn enforce_publish_policy_rejects_anonymous() {
 async fn enforce_publish_policy_rejects_path_traversal_in_name() {
     let s = svc(InMemBackend::arc(), None);
     let err = s
-        .enforce_publish_policy("apt", "../../etc/evil", "1.0", 5, &user(), None, None)
+        .enforce_publish_policy(&apt_policy_req("../../etc/evil", 5), &user())
         .await
         .unwrap_err();
     assert!(matches!(err, CoreError::InvalidInput(_)));
@@ -270,7 +282,7 @@ async fn enforce_publish_policy_rejects_path_traversal_in_name() {
 #[tokio::test]
 async fn enforce_publish_policy_accepts_valid_user_publish() {
     let s = svc(InMemBackend::arc(), None);
-    s.enforce_publish_policy("apt", "hello", "1.0", 5, &user(), None, None)
+    s.enforce_publish_policy(&apt_policy_req("hello", 5), &user())
         .await
         .expect("valid publish should pass policy");
 }
@@ -547,6 +559,7 @@ fn svc_with_beta(
         team_namespace: None,
         sbom: None,
         explore_cache: None,
+        access_log: None,
     }
 }
 
@@ -875,6 +888,7 @@ fn svc_with_ns(backend: Arc<InMemBackend>, ns: Arc<dyn TeamNamespacePort>) -> Lo
         team_namespace: Some(ns),
         sbom: None,
         explore_cache: None,
+        access_log: None,
     }
 }
 
@@ -1283,6 +1297,16 @@ fn download_svc(
     integrity: Option<IntegrityPolicy>,
     signing: Option<SigningConfig>,
 ) -> LocalRegistryService {
+    download_svc_with_access_log(backend, storage, integrity, signing, None)
+}
+
+fn download_svc_with_access_log(
+    backend: Arc<InMemBackend>,
+    storage: Arc<MemStore>,
+    integrity: Option<IntegrityPolicy>,
+    signing: Option<SigningConfig>,
+    access_log: Option<Arc<dyn crate::ports::PackageRepository>>,
+) -> LocalRegistryService {
     let mut integrity_map = HashMap::new();
     if let Some(i) = integrity {
         integrity_map.insert("npm".to_owned(), i);
@@ -1304,6 +1328,68 @@ fn download_svc(
         team_namespace: None,
         sbom: None,
         explore_cache: None,
+        access_log,
+    }
+}
+
+/// Spies on `record_access` calls; used to verify `get_artifact` produces the
+/// same audit trail `ProxyService::handle` does (see [`SpyRepo`] in `proxy/tests.rs`
+/// for the sibling used on the proxy-fallback path).
+struct SpyRepo {
+    events: Mutex<Vec<AccessEvent>>,
+}
+
+impl SpyRepo {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            events: Mutex::new(vec![]),
+        })
+    }
+
+    fn events(&self) -> Vec<AccessEvent> {
+        self.events.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl crate::ports::PackageRepository for SpyRepo {
+    async fn record_access(&self, event: AccessEvent) -> Result<(), CoreError> {
+        self.events.lock().unwrap().push(event);
+        Ok(())
+    }
+    async fn get_status(
+        &self,
+        _pkg: &PackageId,
+    ) -> Result<crate::entities::PackageStatus, CoreError> {
+        Ok(crate::entities::PackageStatus::Available)
+    }
+    async fn set_status(
+        &self,
+        _pkg: &PackageId,
+        _status: crate::entities::PackageStatus,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
+    async fn list_packages(
+        &self,
+        _filter: crate::entities::PackageFilter,
+    ) -> Result<Vec<crate::entities::PackageSummary>, CoreError> {
+        Ok(vec![])
+    }
+    async fn count_packages(
+        &self,
+        _filter: crate::entities::PackageFilter,
+    ) -> Result<u64, CoreError> {
+        Ok(0)
+    }
+    async fn list_events(
+        &self,
+        _filter: crate::entities::EventFilter,
+    ) -> Result<Vec<AccessEvent>, CoreError> {
+        Ok(self.events.lock().unwrap().clone())
+    }
+    async fn delete_package(&self, _pkg: &PackageId) -> Result<bool, CoreError> {
+        Ok(false)
     }
 }
 
@@ -1852,4 +1938,99 @@ async fn publish_propagates_commit_failure_and_rolls_back() {
         matches!(err, CoreError::Database(_)),
         "commit failure during publish must propagate, got {err:?}"
     );
+}
+
+// ── get_artifact audit trail (local/hybrid reads must not skip access logging) ──
+
+#[tokio::test]
+async fn get_artifact_records_allowed_download_when_access_log_configured() {
+    let body: &[u8] = b"local-artifact-bytes";
+    let backend = InMemBackend::arc();
+    seed_version(
+        &backend,
+        &crate::services::integrity::sha256_hex(body),
+        None,
+        None,
+    );
+    let storage = MemStore::arc();
+    storage.put(
+        &artifact_storage_key("npm", "pkg", "1.0.0"),
+        Bytes::from_static(body),
+    );
+
+    let spy = SpyRepo::new();
+    let s = download_svc_with_access_log(backend, storage, None, None, Some(spy.clone()));
+    s.get_artifact("npm", "pkg", "1.0.0", &user())
+        .await
+        .unwrap();
+
+    let events = spy.events();
+    assert_eq!(events.len(), 1);
+    assert!(matches!(
+        events[0].result,
+        crate::entities::AccessResult::Allowed
+    ));
+    assert_eq!(events[0].package_id.as_ref().unwrap().name, "pkg");
+}
+
+#[tokio::test]
+async fn get_artifact_records_denied_download_when_visibility_check_fails() {
+    let backend = InMemBackend::arc();
+    let ns = MockTeamNamespace::with_visibility("npm", "pkg", Visibility::Internal);
+    let spy = SpyRepo::new();
+    let s = LocalRegistryService {
+        backend,
+        storage: Arc::new(NoopStorage),
+        hot: new_hot_lock(HotConfig {
+            registries: HashMap::new(),
+            policies: HashMap::new(),
+            ..Default::default()
+        }),
+        quota: None,
+        ownership: None,
+        team_namespace: Some(ns),
+        sbom: None,
+        explore_cache: None,
+        access_log: Some(spy.clone()),
+    };
+
+    // Anonymous identity can't see an `Internal` package.
+    let err = s
+        .get_artifact("npm", "pkg", "1.0.0", &anon())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, CoreError::AccessDenied(_)));
+
+    let events = spy.events();
+    assert_eq!(events.len(), 1);
+    assert!(matches!(
+        events[0].result,
+        crate::entities::AccessResult::Denied { .. }
+    ));
+}
+
+#[tokio::test]
+async fn get_artifact_is_a_noop_for_audit_when_access_log_is_none() {
+    // Default construction (access_log: None) must not panic or behave differently —
+    // audit logging is opt-in, matching the quota/ownership/sbom fields on this struct.
+    let body: &[u8] = b"local-artifact-bytes";
+    let backend = InMemBackend::arc();
+    seed_version(
+        &backend,
+        &crate::services::integrity::sha256_hex(body),
+        None,
+        None,
+    );
+    let storage = MemStore::arc();
+    storage.put(
+        &artifact_storage_key("npm", "pkg", "1.0.0"),
+        Bytes::from_static(body),
+    );
+
+    let s = download_svc(backend, storage, None, None);
+    let out = s
+        .get_artifact("npm", "pkg", "1.0.0", &user())
+        .await
+        .unwrap();
+    assert_eq!(out.as_ref(), body);
 }

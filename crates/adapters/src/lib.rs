@@ -13,9 +13,14 @@ pub mod storage;
 
 pub mod registry;
 
-/// Debian APT / RPM repository hosting: package parsing, index generation, and
-/// Ed25519 OpenPGP signing. Gated on the deb/rpm registry features.
-#[cfg(any(feature = "registry-deb", feature = "registry-rpm"))]
+/// Debian APT / RPM / Arch pacman repository hosting: package parsing, index
+/// generation, and Ed25519 OpenPGP signing. Gated on the deb/rpm/pacman registry
+/// features.
+#[cfg(any(
+    feature = "registry-deb",
+    feature = "registry-rpm",
+    feature = "registry-pacman"
+))]
 pub mod repo;
 
 #[cfg(feature = "vuln-scan")]

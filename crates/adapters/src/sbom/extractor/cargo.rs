@@ -10,6 +10,7 @@ pub(super) fn extract_cargo_deps(data: &Bytes) -> Vec<SbomDependency> {
     let mut archive = Archive::new(gz);
 
     let Ok(entries) = archive.entries() else {
+        tracing::warn!("sbom: failed to parse cargo manifest, treating as no dependencies");
         return vec![];
     };
 
@@ -19,6 +20,7 @@ pub(super) fn extract_cargo_deps(data: &Bytes) -> Vec<SbomDependency> {
             let mut reader = entry;
             let mut content = String::new();
             if reader.read_to_string(&mut content).is_err() {
+                tracing::warn!("sbom: failed to parse cargo manifest, treating as no dependencies");
                 return vec![];
             }
             return parse_cargo_toml_deps(&content);

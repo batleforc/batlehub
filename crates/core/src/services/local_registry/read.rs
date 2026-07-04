@@ -1,6 +1,6 @@
 use super::{
-    artifact_storage_key, check_team_visibility, Bytes, CoreError, Identity, LocalRegistryService,
-    PublishedPackage, Role, StreamExt, Visibility,
+    artifact_storage_key, check_team_visibility, AccessEvent, Bytes, CoreError, Identity,
+    LocalRegistryService, PackageId, PublishedPackage, Role, StreamExt, Visibility,
 };
 
 impl LocalRegistryService {
@@ -128,7 +128,11 @@ impl LocalRegistryService {
         identity: &Identity,
     ) -> Result<Bytes, CoreError> {
         super::validate_coordinate(name, version, None)?;
-        self.check_visibility(registry, name, identity).await?;
+        if let Err(e) = self.check_visibility(registry, name, identity).await {
+            self.record_download(registry, name, version, identity, Some(e.to_string()))
+                .await;
+            return Err(e);
+        }
         let key = artifact_storage_key(registry, name, version);
         let artifact = self.storage.retrieve(&key).await?.ok_or_else(|| {
             CoreError::NotFound(format!(
@@ -186,7 +190,43 @@ impl LocalRegistryService {
             }
         }
 
+        self.record_download(registry, name, version, identity, None)
+            .await;
         Ok(bytes)
+    }
+
+    /// Record a download attempt through `access_log`, when configured.
+    ///
+    /// Mirrors `ProxyService::handle`'s `AccessEvent::allowed_download`/`denied_download`
+    /// recording so Local/Hybrid-mode reads produce the same audit trail as the
+    /// proxy-fallback path, instead of the audit gap this closes: no-op when
+    /// `access_log` is `None` (audit logging is opt-in, matching `quota`/`ownership`).
+    async fn record_download(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        identity: &Identity,
+        denial_reason: Option<String>,
+    ) {
+        let Some(repo) = self.access_log.as_ref() else {
+            return;
+        };
+        let pkg = PackageId::new(registry, name, version);
+        let event = match denial_reason {
+            Some(reason) => AccessEvent::denied_download(
+                pkg,
+                identity.user_id.clone(),
+                identity.role.clone(),
+                reason,
+            ),
+            None => {
+                AccessEvent::allowed_download(pkg, identity.user_id.clone(), identity.role.clone())
+            }
+        };
+        if let Err(e) = repo.record_access(event).await {
+            tracing::warn!(error = %e, "audit log write failed for local registry download");
+        }
     }
 
     /// Re-verify stored bytes against the SHA-256 recorded at publish time.

@@ -2,45 +2,39 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
 
 use crate::api::registry::RegistryInfo;
 
-use super::list_nav::{select_next, select_prev};
+use super::list_nav::ListNav;
 use super::App;
 
+#[derive(Default)]
 pub struct RegistryListWidget {
-    pub items: Vec<RegistryInfo>,
-    pub state: ListState,
+    pub nav: ListNav<RegistryInfo>,
 }
 
 impl RegistryListWidget {
     pub fn new() -> Self {
-        Self {
-            items: vec![],
-            state: ListState::default(),
-        }
+        Self::default()
     }
 
     pub fn set_items(&mut self, items: Vec<RegistryInfo>) {
-        self.items = items;
-        if !self.items.is_empty() {
-            self.state.select(Some(0));
-        }
+        self.nav.set_items(items);
     }
 
     pub fn next(&mut self) {
-        select_next(&mut self.state, self.items.len());
+        self.nav.next();
     }
 
     pub fn prev(&mut self) {
-        select_prev(&mut self.state, self.items.len());
+        self.nav.prev();
     }
 
     pub fn selected(&self) -> Option<&RegistryInfo> {
-        self.state.selected().and_then(|i| self.items.get(i))
+        self.nav.selected()
     }
 }
 
@@ -55,6 +49,7 @@ pub fn render(f: &mut Frame, app: &App) {
 
     let items: Vec<ListItem> = app
         .registry_list
+        .nav
         .items
         .iter()
         .map(|r| {
@@ -93,7 +88,7 @@ pub fn render(f: &mut Frame, app: &App) {
         )
         .highlight_symbol("> ");
 
-    f.render_stateful_widget(list, main_area, &mut app.registry_list.state.clone());
+    f.render_stateful_widget(list, main_area, &mut app.registry_list.nav.state.clone());
 
     let help = Paragraph::new(
         " q:quit  ↑↓:navigate  Enter:select  p:publish  s:setup wizard  L:login  ?:help",
@@ -118,7 +113,7 @@ mod tests {
     fn set_items_selects_first_when_non_empty() {
         let mut w = RegistryListWidget::new();
         w.set_items(vec![registry("a"), registry("b")]);
-        assert_eq!(w.state.selected(), Some(0));
+        assert_eq!(w.nav.state.selected(), Some(0));
         assert_eq!(w.selected().unwrap().name, "a");
     }
 
@@ -126,7 +121,7 @@ mod tests {
     fn set_items_empty_leaves_selection_unset() {
         let mut w = RegistryListWidget::new();
         w.set_items(vec![]);
-        assert_eq!(w.state.selected(), None);
+        assert_eq!(w.nav.state.selected(), None);
         assert!(w.selected().is_none());
     }
 
@@ -134,19 +129,19 @@ mod tests {
     fn next_and_prev_wrap_around() {
         let mut w = RegistryListWidget::new();
         w.set_items(vec![registry("a"), registry("b"), registry("c")]);
-        assert_eq!(w.state.selected(), Some(0));
+        assert_eq!(w.nav.state.selected(), Some(0));
 
         w.next();
-        assert_eq!(w.state.selected(), Some(1));
+        assert_eq!(w.nav.state.selected(), Some(1));
         w.next();
-        assert_eq!(w.state.selected(), Some(2));
+        assert_eq!(w.nav.state.selected(), Some(2));
         w.next();
-        assert_eq!(w.state.selected(), Some(0));
+        assert_eq!(w.nav.state.selected(), Some(0));
 
         w.prev();
-        assert_eq!(w.state.selected(), Some(2));
+        assert_eq!(w.nav.state.selected(), Some(2));
         w.prev();
-        assert_eq!(w.state.selected(), Some(1));
+        assert_eq!(w.nav.state.selected(), Some(1));
     }
 
     #[test]
@@ -154,6 +149,6 @@ mod tests {
         let mut w = RegistryListWidget::new();
         w.next();
         w.prev();
-        assert_eq!(w.state.selected(), None);
+        assert_eq!(w.nav.state.selected(), None);
     }
 }

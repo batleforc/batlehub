@@ -58,7 +58,7 @@ impl IpBlockStore for PgIpBlockStore {
         Ok((count as u64, window_reset))
     }
 
-    async fn is_blocked(&self, ip: &str) -> Result<Option<u64>, CoreError> {
+    async fn blocked_until(&self, ip: &str) -> Result<Option<u64>, CoreError> {
         let now = now_unix() as i64;
         let row: Option<i64> = sqlx::query_scalar(
             "SELECT unblock_at FROM ip_blocks WHERE ip = $1 AND unblock_at > $2",
@@ -67,7 +67,7 @@ impl IpBlockStore for PgIpBlockStore {
         .bind(now)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| CoreError::Database(format!("ip_block is_blocked: {e}")))?;
+        .map_err(|e| CoreError::Database(format!("ip_block blocked_until: {e}")))?;
         Ok(row.map(|v| v as u64))
     }
 

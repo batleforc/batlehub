@@ -464,7 +464,7 @@ pub async fn run(cmd: AdminCommand, client: &BatleHubClient, json: bool) -> Resu
             output,
         } => {
             let text = client
-                .export_audit_log(from.as_deref(), to.as_deref(), registry.as_deref(), &format)
+                .export_audit_log(registry.as_deref(), from.as_deref(), to.as_deref(), &format)
                 .await?;
             match output {
                 Some(path) => {

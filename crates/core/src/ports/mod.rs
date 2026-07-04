@@ -1,50 +1,39 @@
-pub mod artifact_meta;
 pub mod auth;
-pub mod auth_config;
 pub mod banner;
-pub mod beta_channel;
-pub mod cache_store;
 pub mod config_change;
-pub mod ip_block_store;
-pub mod local_registry;
+pub mod governance;
 pub mod notification;
-pub mod ownership;
-pub mod package_repo;
-pub mod quota;
-pub mod rate_limit_store;
+pub mod ops;
 pub mod registry;
 pub mod sbom;
 pub mod storage;
-pub mod storage_admin;
-pub mod team_namespace;
-pub mod user_block;
-pub mod user_token_repo;
 pub mod vulnerability;
-pub mod warm_coordinator;
 
-pub use artifact_meta::*;
-pub use auth::*;
-pub use auth_config::{
-    ActionsGroupRule, ActionsOidcAuthConfig, Condition, ConditionMatchType, KubernetesAuthConfig,
-    OidcAuthConfig, RuleMatch,
+pub use auth::{
+    ActionsGroupRule, ActionsOidcAuthConfig, AuthProvider, Condition, ConditionMatchType,
+    KubernetesAuthConfig, OidcAuthConfig, RawAuthRequest, RuleMatch, UserToken,
+    UserTokenRepository,
 };
 pub use banner::BannerPort;
-pub use beta_channel::{BetaChannelEntry, BetaChannelPort};
-pub use cache_store::*;
 pub use config_change::{ConfigChangeRecord, ConfigChangeRepository};
-pub use ip_block_store::{BlockedIpInfo, IpBlockStore};
-pub use local_registry::{BulkResult, LocalRegistryBackend};
+pub use governance::{
+    BetaChannelEntry, BetaChannelPort, OwnerEntry, OwnershipPort, TeamNamespacePort, UserBlock,
+    UserBlockRepository,
+};
 pub use notification::NotificationPort;
-pub use ownership::{OwnerEntry, OwnershipPort};
-pub use package_repo::*;
-pub use quota::{QuotaOutcome, QuotaRepository, QuotaUsage};
-pub use rate_limit_store::RateLimitStore;
-pub use registry::{ArtifactStream, FetchedArtifact, RegistryClient, UpstreamPackage};
+pub use ops::{
+    BlockedIpInfo, IpBlockStore, NoopWarmCoordinator, QuotaOutcome, QuotaRepository, QuotaUsage,
+    RateLimitStore, WarmCoordinator,
+};
+pub use registry::{
+    ArtifactCacheMeta, ArtifactInventory, ArtifactMeta, ArtifactMetaRecord, ArtifactMetaRepository,
+    ArtifactStream, BulkResult, FetchedArtifact, LocalRegistryBackend, PackageRepository,
+    RecentErrorRecord, RegistryClient, UpstreamPackage,
+};
 pub use sbom::{SbomDependency, SbomExtractor, SbomRepository, UpstreamSbomFetcher};
-pub use storage::*;
-pub use storage_admin::{ArtifactStorageRecord, StorageAdminRepository};
-pub use team_namespace::TeamNamespacePort;
-pub use user_block::{UserBlock, UserBlockRepository};
-pub use user_token_repo::*;
+pub use storage::{
+    collect_byte_stream, ArtifactStorageRecord, ByteStream, CacheEntry, CacheStore,
+    S3StorageConfig, StorageAdminRepository, StorageBackend, StorageMeta, StoreOutcome,
+    StoredArtifact,
+};
 pub use vulnerability::{OsvMatch, VulnerabilityRepository, VulnerabilityScanner};
-pub use warm_coordinator::{NoopWarmCoordinator, WarmCoordinator};

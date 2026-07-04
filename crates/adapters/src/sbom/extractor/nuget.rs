@@ -7,6 +7,7 @@ pub(super) fn extract_nuget_deps(data: &Bytes) -> Vec<SbomDependency> {
 
     let cursor = Cursor::new(data.as_ref());
     let Ok(mut archive) = ZipArchive::new(cursor) else {
+        tracing::warn!("sbom: failed to parse nuget manifest, treating as no dependencies");
         return vec![];
     };
 
@@ -18,6 +19,7 @@ pub(super) fn extract_nuget_deps(data: &Bytes) -> Vec<SbomDependency> {
         if name.ends_with(".nuspec") {
             let mut content = String::new();
             if file.read_to_string(&mut content).is_err() {
+                tracing::warn!("sbom: failed to parse nuget manifest, treating as no dependencies");
                 return vec![];
             }
             return parse_nuspec_deps(&content);

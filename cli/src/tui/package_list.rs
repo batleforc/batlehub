@@ -3,19 +3,18 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
 use tui_input::Input;
 
 use crate::api::package::{PackageStatus, PackageSummary};
 
-use super::list_nav::{select_next, select_prev};
+use super::list_nav::{select_next, select_prev, ListNav};
 use super::App;
 
 pub struct PackageListWidget {
-    pub items: Vec<PackageSummary>,
-    pub state: ListState,
+    pub nav: ListNav<PackageSummary>,
     pub total: usize,
     pub search_active: bool,
     pub search_input: Input,
@@ -24,8 +23,7 @@ pub struct PackageListWidget {
 impl PackageListWidget {
     pub fn new() -> Self {
         Self {
-            items: vec![],
-            state: ListState::default(),
+            nav: ListNav::new(),
             total: 0,
             search_active: false,
             search_input: Input::default(),
@@ -33,36 +31,39 @@ impl PackageListWidget {
     }
 
     pub fn set_items(&mut self, items: Vec<PackageSummary>, total: usize) {
-        self.items = items;
+        self.nav.set_items(items);
         self.total = total;
-        if !self.items.is_empty() {
-            self.state.select(Some(0));
-        } else {
-            self.state.select(None);
-        }
     }
+
+    // `next`/`prev`/`selected` can't delegate to `ListNav`'s own methods: they
+    // navigate the search-filtered `visible_items()`, not the full `nav.items`,
+    // so they drive `nav.state` directly at the filtered length instead.
 
     pub fn next(&mut self) {
         let len = self.visible_items().len();
-        select_next(&mut self.state, len);
+        select_next(&mut self.nav.state, len);
     }
 
     pub fn prev(&mut self) {
         let len = self.visible_items().len();
-        select_prev(&mut self.state, len);
+        select_prev(&mut self.nav.state, len);
     }
 
     pub fn selected(&self) -> Option<&PackageSummary> {
         let visible = self.visible_items();
-        self.state.selected().and_then(|i| visible.get(i).copied())
+        self.nav
+            .state
+            .selected()
+            .and_then(|i| visible.get(i).copied())
     }
 
     pub fn visible_items(&self) -> Vec<&PackageSummary> {
         let query = self.search_input.value().to_lowercase();
         if query.is_empty() {
-            self.items.iter().collect()
+            self.nav.items.iter().collect()
         } else {
-            self.items
+            self.nav
+                .items
                 .iter()
                 .filter(|p| p.name.to_lowercase().contains(&query))
                 .collect()
@@ -149,7 +150,7 @@ pub fn render(f: &mut Frame, app: &App, registry: &str) {
         )
         .highlight_symbol("> ");
 
-    f.render_stateful_widget(list, main_area, &mut app.package_list.state.clone());
+    f.render_stateful_widget(list, main_area, &mut app.package_list.nav.state.clone());
 
     if app.package_list.search_active {
         let search_block = Block::default().title(" Search ").borders(Borders::ALL);
@@ -186,7 +187,7 @@ mod tests {
     fn set_items_selects_first_when_non_empty() {
         let mut w = PackageListWidget::new();
         w.set_items(vec![package("left-pad"), package("right-pad")], 2);
-        assert_eq!(w.state.selected(), Some(0));
+        assert_eq!(w.nav.state.selected(), Some(0));
         assert_eq!(w.total, 2);
         assert_eq!(w.selected().unwrap().name, "left-pad");
     }
@@ -195,10 +196,10 @@ mod tests {
     fn set_items_empty_clears_selection() {
         let mut w = PackageListWidget::new();
         w.set_items(vec![package("left-pad")], 1);
-        assert_eq!(w.state.selected(), Some(0));
+        assert_eq!(w.nav.state.selected(), Some(0));
 
         w.set_items(vec![], 0);
-        assert_eq!(w.state.selected(), None);
+        assert_eq!(w.nav.state.selected(), None);
         assert!(w.selected().is_none());
     }
 
@@ -208,12 +209,12 @@ mod tests {
         w.set_items(vec![package("left-pad"), package("right-pad")], 2);
 
         w.next();
-        assert_eq!(w.state.selected(), Some(1));
+        assert_eq!(w.nav.state.selected(), Some(1));
         w.next();
-        assert_eq!(w.state.selected(), Some(0));
+        assert_eq!(w.nav.state.selected(), Some(0));
 
         w.prev();
-        assert_eq!(w.state.selected(), Some(1));
+        assert_eq!(w.nav.state.selected(), Some(1));
     }
 
     #[test]
@@ -221,7 +222,7 @@ mod tests {
         let mut w = PackageListWidget::new();
         w.next();
         w.prev();
-        assert_eq!(w.state.selected(), None);
+        assert_eq!(w.nav.state.selected(), None);
     }
 
     #[test]
