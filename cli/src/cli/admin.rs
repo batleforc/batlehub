@@ -517,7 +517,7 @@ async fn handle_audit_log(client: &BatleHubClient, json: bool, args: AuditLogArg
     if json {
         println!("{}", serde_json::to_string_pretty(&resp)?);
     } else {
-        print_audit_log_table(&resp);
+        print_audit_log_table(&resp.items);
     }
     Ok(())
 }
@@ -1051,11 +1051,7 @@ fn print_audit_log_table(entries: &[AuditEntry]) {
             .as_ref()
             .map(|p| p.name.as_str())
             .unwrap_or("-");
-        let denied = e
-            .result
-            .as_ref()
-            .map(|r| r.outcome == "denied")
-            .unwrap_or(false);
+        let denied = e.result.as_ref().is_some_and(|r| r.is_denied());
         table.add_row([
             e.timestamp.as_deref().unwrap_or("-"),
             registry,

@@ -1114,7 +1114,8 @@ async fn me_namespace_packages_lists_published_packages() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
-    let pkgs = body.as_array().unwrap();
+    assert_eq!(body["total"], 2);
+    let pkgs = body["items"].as_array().unwrap();
     assert_eq!(pkgs.len(), 2);
     let names: Vec<&str> = pkgs.iter().map(|p| p["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"internal/lib-a"));
@@ -1169,7 +1170,8 @@ async fn me_namespace_packages_admin_can_query_any_namespace() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
-    assert_eq!(body.as_array().unwrap().len(), 1);
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
 }
 
 #[actix_web::test]
@@ -1199,14 +1201,9 @@ async fn me_namespace_packages_pagination() {
         .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
-    assert_eq!(
-        read_body_json::<Value, _>(resp)
-            .await
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["total"], 3);
+    assert_eq!(body["items"].as_array().unwrap().len(), 2);
 
     // Page 1, size 2 → 1 result.
     let req = TestRequest::get()
@@ -1215,12 +1212,7 @@ async fn me_namespace_packages_pagination() {
         .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
-    assert_eq!(
-        read_body_json::<Value, _>(resp)
-            .await
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["total"], 3);
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
 }

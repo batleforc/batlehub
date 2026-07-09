@@ -27,8 +27,8 @@ use super::system::ClearCacheResponse;
 )]
 #[post("/api/v1/admin/registries/{registry}/clear-cache")]
 pub async fn clear_registry_cache(
-    identity: AuthIdentity,
     path: web::Path<String>,
+    identity: AuthIdentity,
     registry_map: web::Data<RegistryMap>,
     storage_admin_repo: Option<web::Data<Arc<dyn StorageAdminRepository>>>,
     proxy_svc: web::Data<Arc<ProxyService>>,

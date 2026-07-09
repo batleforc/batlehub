@@ -15,6 +15,8 @@ use batlehub_core::{
     ports::{AuthProvider, RawAuthRequest},
 };
 
+use crate::registry::http_client::percent_encode;
+
 const JWKS_MIN_REFRESH: Duration = Duration::from_secs(300);
 
 #[derive(Deserialize)]
@@ -121,21 +123,6 @@ impl OidcSsoFlow {
             expires_in: resp["expires_in"].as_u64(),
         })
     }
-}
-
-fn percent_encode(s: &str) -> String {
-    s.chars()
-        .flat_map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
-                vec![c]
-            } else {
-                c.to_string()
-                    .bytes()
-                    .flat_map(|b| format!("%{b:02X}").chars().collect::<Vec<_>>())
-                    .collect()
-            }
-        })
-        .collect()
 }
 
 struct JwksCache {
@@ -309,19 +296,7 @@ impl AuthProvider for OidcAuthProvider {
     }
 
     async fn authenticate(&self, req: &RawAuthRequest) -> Result<Option<Identity>, CoreError> {
-        let auth_header = req
-            .headers
-            .get("authorization")
-            .or_else(|| req.headers.get("Authorization"));
-
-        let Some(value) = auth_header else {
-            return Ok(None);
-        };
-
-        let Some(token) = value
-            .strip_prefix("Bearer ")
-            .or_else(|| value.strip_prefix("bearer "))
-        else {
+        let Some(token) = req.bearer_token() else {
             return Ok(None);
         };
 
@@ -759,25 +734,6 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         };
         let id = p.authenticate(&req).await.unwrap().unwrap();
         assert_eq!(id.role, Role::Admin);
-    }
-
-    // ── percent_encode ────────────────────────────────────────────────────────
-
-    #[test]
-    fn percent_encode_alphanumeric_and_safe_chars_unchanged() {
-        assert_eq!(percent_encode("abc123-_.~"), "abc123-_.~");
-    }
-
-    #[test]
-    fn percent_encode_encodes_space_and_special_chars() {
-        let encoded = percent_encode("hello world+foo=bar");
-        assert!(encoded.contains("%20"), "space should be %20");
-        assert!(encoded.contains("%2B"), "plus should be %2B");
-        assert!(encoded.contains("%3D"), "equals should be %3D");
-        assert!(
-            !encoded.contains(' '),
-            "encoded string should have no raw spaces"
-        );
     }
 
     // ── OidcSsoFlow::authorization_url ────────────────────────────────────────

@@ -872,6 +872,10 @@ impl TeamNamespacePort for MockTeamNamespace {
     ) -> Result<Vec<crate::entities::NamespacePackage>, CoreError> {
         Ok(vec![])
     }
+
+    async fn count_packages_in_namespace(&self, _: &str, _: &str) -> Result<u64, CoreError> {
+        Ok(0)
+    }
 }
 
 fn svc_with_ns(backend: Arc<InMemBackend>, ns: Arc<dyn TeamNamespacePort>) -> LocalRegistryService {
@@ -1416,6 +1420,9 @@ impl crate::ports::PackageRepository for SpyRepo {
     ) -> Result<Vec<AccessEvent>, CoreError> {
         Ok(self.events.lock().unwrap().clone())
     }
+    async fn count_events(&self, _filter: crate::entities::EventFilter) -> Result<u64, CoreError> {
+        Ok(self.events.lock().unwrap().len() as u64)
+    }
     async fn delete_package(&self, _pkg: &PackageId) -> Result<bool, CoreError> {
         Ok(false)
     }
@@ -1445,7 +1452,7 @@ fn seed_version(
     });
 }
 
-fn reserve_policy(verify_on_serve: bool) -> IntegrityPolicy {
+fn reverify_policy(verify_on_serve: bool) -> IntegrityPolicy {
     IntegrityPolicy {
         enabled: true,
         block_on_mismatch: true,
@@ -1456,7 +1463,7 @@ fn reserve_policy(verify_on_serve: bool) -> IntegrityPolicy {
 }
 
 #[tokio::test]
-async fn get_artifact_reserve_verification_passes_when_bytes_match() {
+async fn get_artifact_reverify_passes_when_bytes_match() {
     let body: &[u8] = b"local-artifact-bytes";
     let backend = InMemBackend::arc();
     seed_version(
@@ -1471,7 +1478,7 @@ async fn get_artifact_reserve_verification_passes_when_bytes_match() {
         Bytes::from_static(body),
     );
 
-    let s = download_svc(backend, storage, Some(reserve_policy(true)), None);
+    let s = download_svc(backend, storage, Some(reverify_policy(true)), None);
     let out = s
         .get_artifact("npm", "pkg", "1.0.0", &user())
         .await
@@ -1480,7 +1487,7 @@ async fn get_artifact_reserve_verification_passes_when_bytes_match() {
 }
 
 #[tokio::test]
-async fn get_artifact_reserve_verification_detects_corruption() {
+async fn get_artifact_reverify_detects_corruption() {
     let body: &[u8] = b"local-artifact-bytes";
     let backend = InMemBackend::arc();
     // Recorded checksum is for the real bytes; stored bytes are corrupted.
@@ -1496,7 +1503,7 @@ async fn get_artifact_reserve_verification_detects_corruption() {
         Bytes::from_static(b"CORRUPTED"),
     );
 
-    let s = download_svc(backend, storage, Some(reserve_policy(true)), None);
+    let s = download_svc(backend, storage, Some(reverify_policy(true)), None);
     let err = s
         .get_artifact("npm", "pkg", "1.0.0", &user())
         .await
@@ -1508,7 +1515,7 @@ async fn get_artifact_reserve_verification_detects_corruption() {
 }
 
 #[tokio::test]
-async fn get_artifact_reserve_off_serves_corrupted_bytes() {
+async fn get_artifact_reverify_off_serves_corrupted_bytes() {
     let body: &[u8] = b"local-artifact-bytes";
     let backend = InMemBackend::arc();
     seed_version(
@@ -1523,12 +1530,12 @@ async fn get_artifact_reserve_off_serves_corrupted_bytes() {
         Bytes::from_static(b"CORRUPTED"),
     );
 
-    let s = download_svc(backend, storage, Some(reserve_policy(false)), None);
+    let s = download_svc(backend, storage, Some(reverify_policy(false)), None);
     assert!(s.get_artifact("npm", "pkg", "1.0.0", &user()).await.is_ok());
 }
 
 #[tokio::test]
-async fn get_artifact_reserve_fails_closed_when_metadata_row_missing() {
+async fn get_artifact_reverify_fails_closed_when_metadata_row_missing() {
     let body: &[u8] = b"local-artifact-bytes";
     // Bytes exist in storage, but no published-version metadata row was seeded
     // (an inconsistent state). With verify_on_serve on, we must refuse to serve
@@ -1540,7 +1547,7 @@ async fn get_artifact_reserve_fails_closed_when_metadata_row_missing() {
         Bytes::from_static(body),
     );
 
-    let s = download_svc(backend, storage, Some(reserve_policy(true)), None);
+    let s = download_svc(backend, storage, Some(reverify_policy(true)), None);
     let err = s
         .get_artifact("npm", "pkg", "1.0.0", &user())
         .await

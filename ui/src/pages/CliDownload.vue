@@ -8,7 +8,7 @@ import { CopyButton } from "@/components/ui/copy-button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import Alert from "@/components/ui/alert/Alert.vue";
+import { Alert } from "@/components/ui/alert";
 
 const { token } = useAuth();
 

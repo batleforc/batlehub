@@ -50,6 +50,9 @@ pub trait PackageRepository: Send + Sync {
     /// Query the access event log.
     async fn list_events(&self, filter: EventFilter) -> Result<Vec<AccessEvent>, CoreError>;
 
+    /// Count matching access events without applying `limit`/`offset`. Used for accurate pagination totals.
+    async fn count_events(&self, filter: EventFilter) -> Result<u64, CoreError>;
+
     /// Delete access-event rows older than `before`. Returns the number of rows deleted.
     async fn purge_events_before(&self, before: DateTime<Utc>) -> Result<u64, CoreError> {
         let _ = before;

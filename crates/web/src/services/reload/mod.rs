@@ -72,26 +72,27 @@ pub struct PendingReloadSnapshot {
     pub diff: ReloadDiff,
 }
 
+/// Named result of a [`HotConfigBuilder`] invocation, replacing an untyped
+/// 8-element tuple so adding/removing a field is a compile error at each
+/// construction/destructuring site instead of a silent positional shift.
+pub struct BuiltHotState {
+    pub hot: HotConfig,
+    pub access: AccessConfig,
+    pub registry_map: RegistryMap,
+    pub registry_mode_map: RegistryModeMap,
+    pub upstream_map: UpstreamMap,
+    pub cargo_index_map: CargoIndexMap,
+    pub repo_signer_map: RepoSignerMap,
+    pub vuln_db_map: VulnDbMap,
+}
+
 /// Builds a new hot-reloadable bundle from an `AppConfig`.
 ///
 /// Created in `server/src/main.rs` as a closure capturing `beta_channel_store`,
 /// `repo`, etc. Passed to `ConfigReloadService` so the service can rebuild state
 /// on reload without depending on adapter types directly.
-pub type HotConfigBuilder = Arc<
-    dyn Fn(
-            &batlehub_config::schema::AppConfig,
-        ) -> anyhow::Result<(
-            HotConfig,
-            AccessConfig,
-            RegistryMap,
-            RegistryModeMap,
-            UpstreamMap,
-            CargoIndexMap,
-            RepoSignerMap,
-            VulnDbMap,
-        )> + Send
-        + Sync,
->;
+pub type HotConfigBuilder =
+    Arc<dyn Fn(&batlehub_config::schema::AppConfig) -> anyhow::Result<BuiltHotState> + Send + Sync>;
 
 /// Service responsible for hot-reloading configuration at runtime.
 pub struct ConfigReloadService {

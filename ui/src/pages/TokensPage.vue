@@ -20,9 +20,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import Dialog from "@/components/ui/dialog/Dialog.vue";
-import Alert from "@/components/ui/alert/Alert.vue";
-import Select from "@/components/ui/select/Select.vue";
+import { Dialog } from "@/components/ui/dialog";
+import { Alert } from "@/components/ui/alert";
+import { Select } from "@/components/ui/select";
 import { useAuth } from "@/composables/useAuth";
 
 const { identity } = useAuth();

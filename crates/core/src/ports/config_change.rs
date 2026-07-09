@@ -25,4 +25,7 @@ pub trait ConfigChangeRepository: Send + Sync {
 
     /// List past reload audit rows, newest first, paginated by page/per_page.
     async fn list(&self, page: u64, per_page: u64) -> Result<Vec<ConfigChangeRecord>, CoreError>;
+
+    /// Total count of audit rows, ignoring pagination — backs `ConfigChangesResponse.total`.
+    async fn count(&self) -> Result<u64, CoreError>;
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import Dialog from "@/components/ui/dialog/Dialog.vue";
+import { Dialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 
 withDefaults(

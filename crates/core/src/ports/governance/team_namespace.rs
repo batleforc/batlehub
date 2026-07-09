@@ -71,4 +71,13 @@ pub trait TeamNamespacePort: Send + Sync {
         limit: u64,
         offset: u64,
     ) -> Result<Vec<NamespacePackage>, CoreError>;
+
+    /// Count published package versions matching the same criteria as
+    /// [`Self::list_packages_in_namespace`], without `limit`/`offset`. Used
+    /// for accurate pagination totals.
+    async fn count_packages_in_namespace(
+        &self,
+        registry: &str,
+        prefix: &str,
+    ) -> Result<u64, CoreError>;
 }

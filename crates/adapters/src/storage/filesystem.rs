@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -12,6 +12,51 @@ use batlehub_core::{
 };
 
 use super::read_chunked;
+
+/// Creates `path`'s parent directory (and any missing ancestors), if it has one.
+/// Shared by `store`/`store_streaming`/`move_key`, which each need their
+/// destination file's directory to exist before writing to it.
+async fn ensure_parent_dir(path: &Path) -> Result<(), CoreError> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| CoreError::Storage(format!("create dirs for {}: {e}", path.display())))?;
+    }
+    Ok(())
+}
+
+/// Recursively walks `dir` (depth-first via an explicit stack — async fns can't
+/// recurse without boxing) and returns every `.dat` file found. A missing or
+/// unreadable directory yields no entries, matching callers that tolerate a
+/// prefix that hasn't been written to yet.
+///
+/// Shared by `stat_by_prefix`/`list_keys`/`delete_by_prefix`, which otherwise
+/// each repeat this same traversal and differ only in what they do with a
+/// matched file (count + sum size, reconstruct its logical key, or just count).
+async fn walk_dat_files(dir: PathBuf) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut stack = vec![dir];
+    while let Some(d) = stack.pop() {
+        let mut rd = match tokio::fs::read_dir(&d).await {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let path = entry.path();
+            let Ok(ftype) = entry.file_type().await else {
+                continue;
+            };
+            if ftype.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) == Some("dat") {
+                files.push(path);
+            }
+        }
+    }
+    files
+}
 
 /// Stores cached artifacts on the local filesystem.
 ///
@@ -36,17 +81,22 @@ impl FilesystemStorageBackend {
         let rel = key.replace(':', "__");
         Ok(self.root.join(format!("{rel}.dat")))
     }
+
+    /// Resolve `prefix` (a logical key prefix, not a full key) to the
+    /// directory it maps to on disk. Shared by `stat_by_prefix`/`list_keys`/
+    /// `delete_by_prefix`, which otherwise each repeat this same conversion.
+    fn prefix_to_dir(&self, prefix: &str) -> Result<PathBuf, CoreError> {
+        crate::storage::ensure_safe_key(prefix)?;
+        let fs_rel = prefix.replace(':', "__");
+        Ok(self.root.join(fs_rel.trim_end_matches('/')))
+    }
 }
 
 #[async_trait]
 impl StorageBackend for FilesystemStorageBackend {
     async fn store(&self, key: &str, data: Bytes, _meta: StorageMeta) -> Result<(), CoreError> {
         let path = self.key_to_path(key)?;
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                CoreError::Storage(format!("create dirs for {}: {e}", path.display()))
-            })?;
-        }
+        ensure_parent_dir(&path).await?;
         let mut file = tokio::fs::File::create(&path)
             .await
             .map_err(|e| CoreError::Storage(format!("create file {}: {e}", path.display())))?;
@@ -66,11 +116,7 @@ impl StorageBackend for FilesystemStorageBackend {
         _meta: StorageMeta,
     ) -> Result<StoreOutcome, CoreError> {
         let path = self.key_to_path(key)?;
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                CoreError::Storage(format!("create dirs for {}: {e}", path.display()))
-            })?;
-        }
+        ensure_parent_dir(&path).await?;
         let mut file = tokio::fs::File::create(&path)
             .await
             .map_err(|e| CoreError::Storage(format!("create file {}: {e}", path.display())))?;
@@ -117,11 +163,7 @@ impl StorageBackend for FilesystemStorageBackend {
     async fn move_key(&self, from: &str, to: &str) -> Result<(), CoreError> {
         let from_path = self.key_to_path(from)?;
         let to_path = self.key_to_path(to)?;
-        if let Some(parent) = to_path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                CoreError::Storage(format!("create dirs for {}: {e}", to_path.display()))
-            })?;
-        }
+        ensure_parent_dir(&to_path).await?;
         tokio::fs::rename(&from_path, &to_path).await.map_err(|e| {
             CoreError::Storage(format!(
                 "rename {} -> {}: {e}",
@@ -180,110 +222,45 @@ impl StorageBackend for FilesystemStorageBackend {
     }
 
     async fn stat_by_prefix(&self, prefix: &str) -> Result<(u64, u64), CoreError> {
-        crate::storage::ensure_safe_key(prefix)?;
-        let fs_rel = prefix.replace(':', "__");
-        let dir = self.root.join(fs_rel.trim_end_matches('/'));
+        let dir = self.prefix_to_dir(prefix)?;
 
         let mut count = 0u64;
         let mut total_bytes = 0u64;
-        let mut stack = vec![dir];
-        while let Some(d) = stack.pop() {
-            let mut rd = match tokio::fs::read_dir(&d).await {
-                Ok(rd) => rd,
-                Err(_) => continue,
-            };
-            while let Ok(Some(entry)) = rd.next_entry().await {
-                let path = entry.path();
-                let Ok(ftype) = entry.file_type().await else {
-                    continue;
-                };
-                if ftype.is_dir() {
-                    stack.push(path);
-                    continue;
-                }
-                if path.extension().and_then(|e| e.to_str()) != Some("dat") {
-                    continue;
-                }
-                count += 1;
-                if let Ok(meta) = tokio::fs::metadata(&path).await {
-                    total_bytes += meta.len();
-                }
+        for path in walk_dat_files(dir).await {
+            count += 1;
+            if let Ok(meta) = tokio::fs::metadata(&path).await {
+                total_bytes += meta.len();
             }
         }
         Ok((count, total_bytes))
     }
 
     async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, CoreError> {
-        crate::storage::ensure_safe_key(prefix)?;
-        let fs_rel = prefix.replace(':', "__");
-        let dir = self.root.join(fs_rel.trim_end_matches('/'));
+        let dir = self.prefix_to_dir(prefix)?;
 
         let mut keys = Vec::new();
-        let mut stack = vec![dir];
-        while let Some(d) = stack.pop() {
-            let mut rd = match tokio::fs::read_dir(&d).await {
-                Ok(rd) => rd,
-                Err(_) => continue,
+        for path in walk_dat_files(dir).await {
+            // Reconstruct the logical key from the filesystem path.
+            let Ok(rel) = path.strip_prefix(&self.root) else {
+                continue;
             };
-            while let Ok(Some(entry)) = rd.next_entry().await {
-                let path = entry.path();
-                let Ok(ftype) = entry.file_type().await else {
-                    continue;
-                };
-                if ftype.is_dir() {
-                    stack.push(path);
-                    continue;
-                }
-                if path.extension().and_then(|e| e.to_str()) != Some("dat") {
-                    continue;
-                }
-                // Reconstruct the logical key from the filesystem path.
-                let Ok(rel) = path.strip_prefix(&self.root) else {
-                    continue;
-                };
-                let key = rel
-                    .to_string_lossy()
-                    .trim_end_matches(".dat")
-                    .replace("__", ":")
-                    .replace(std::path::MAIN_SEPARATOR, "/");
-                keys.push(key);
-            }
+            let key = rel
+                .to_string_lossy()
+                .trim_end_matches(".dat")
+                .replace("__", ":")
+                .replace(std::path::MAIN_SEPARATOR, "/");
+            keys.push(key);
         }
         Ok(keys)
     }
 
     async fn delete_by_prefix(&self, prefix: &str) -> Result<usize, CoreError> {
-        crate::storage::ensure_safe_key(prefix)?;
-        let fs_rel = prefix.replace(':', "__");
-        let dir = self.root.join(fs_rel.trim_end_matches('/'));
+        let dir = self.prefix_to_dir(prefix)?;
 
         tracing::info!(dir = %dir.display(), prefix = %prefix, "delete_by_prefix: scanning directory");
 
         // Count .dat files before removing so we can return a meaningful number.
-        let mut count = 0usize;
-        let mut stack = vec![dir.clone()];
-        while let Some(d) = stack.pop() {
-            let mut rd = match tokio::fs::read_dir(&d).await {
-                Ok(rd) => rd,
-                Err(e) => {
-                    tracing::warn!(dir = %d.display(), error = %e, "delete_by_prefix: read_dir failed");
-                    continue;
-                }
-            };
-            while let Ok(Some(entry)) = rd.next_entry().await {
-                let path = entry.path();
-                let Ok(ftype) = entry.file_type().await else {
-                    continue;
-                };
-                if ftype.is_dir() {
-                    stack.push(path);
-                    continue;
-                }
-                if path.extension().and_then(|e| e.to_str()) == Some("dat") {
-                    count += 1;
-                }
-            }
-        }
+        let count = walk_dat_files(dir.clone()).await.len();
 
         tracing::info!(dir = %dir.display(), count, "delete_by_prefix: removing directory");
 

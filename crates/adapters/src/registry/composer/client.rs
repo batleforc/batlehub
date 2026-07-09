@@ -28,7 +28,7 @@ pub struct ComposerRegistryClient {
 }
 
 impl ComposerRegistryClient {
-    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
+    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Result<Self, CoreError> {
         let builder = reqwest::Client::builder().user_agent("Composer/2.0 batlehub/0.1");
         let http = apply_upstream_options(builder, opts)?;
         let base_url = base_url.into().trim_end_matches('/').to_owned();

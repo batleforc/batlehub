@@ -180,6 +180,28 @@ async fn maven_put_jar_before_pom_is_accepted() {
 }
 
 #[actix_web::test]
+async fn maven_put_jar_anonymous_returns_403() {
+    let app = make_local_maven_app(RegistryMode::Local).await;
+
+    // No Authorization header at all — must be rejected by enforce_publish_policy
+    // the same way the .pom branch is, not silently stored.
+    let req = TestRequest::put()
+        .uri("/proxy/local-maven/maven2/com/example/mylib/1.0.0/mylib-1.0.0.jar")
+        .set_payload(b"fake-jar-bytes".as_slice())
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+
+    // Nothing must have been stored under that coordinate.
+    let req = TestRequest::get()
+        .uri("/proxy/local-maven/maven2/com/example/mylib/1.0.0/mylib-1.0.0.jar")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
 async fn maven_put_metadata_xml_is_silently_accepted() {
     let app = make_local_maven_app(RegistryMode::Local).await;
 

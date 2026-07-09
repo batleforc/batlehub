@@ -2,7 +2,7 @@ use super::{
     collect_payload, delete, extract_signature_headers, post, require_local_mode,
     require_registry_type, terraform_set_yanked, web, AppError, Arc, AuthIdentity, Digest,
     HttpRequest, LocalRegistryService, NotificationService, PublishRequest, RegistryMap,
-    RegistryModeMap, Responder, Sha256,
+    RegistryModeMap, Responder, Sha256, TerraformYankRequest,
 };
 
 /// Upload a Terraform module tarball to the local registry.
@@ -116,16 +116,18 @@ pub async fn terraform_module_yank(
     let pkg_name = format!("modules/{namespace}/{name}/{provider}");
     let display_name = format!("module {namespace}/{name}/{provider}");
     terraform_set_yanked(
-        &registry,
-        &map,
-        &mode_map,
-        &pkg_name,
-        &version,
-        &display_name,
+        TerraformYankRequest {
+            registry: &registry,
+            map: &map,
+            mode_map: &mode_map,
+            pkg_name: &pkg_name,
+            version: &version,
+            display_name: &display_name,
+            yanked: true,
+        },
         &identity,
         &local_svc,
         &notification_svc,
-        true,
     )
     .await
 }
@@ -163,16 +165,18 @@ pub async fn terraform_module_unyank(
     let pkg_name = format!("modules/{namespace}/{name}/{provider}");
     let display_name = format!("module {namespace}/{name}/{provider}");
     terraform_set_yanked(
-        &registry,
-        &map,
-        &mode_map,
-        &pkg_name,
-        &version,
-        &display_name,
+        TerraformYankRequest {
+            registry: &registry,
+            map: &map,
+            mode_map: &mode_map,
+            pkg_name: &pkg_name,
+            version: &version,
+            display_name: &display_name,
+            yanked: false,
+        },
         &identity,
         &local_svc,
         &notification_svc,
-        false,
     )
     .await
 }

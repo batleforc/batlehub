@@ -93,14 +93,15 @@ pub async fn list_packages(
         vec![]
     };
 
+    let (page, per_page) = crate::handlers::clamp_pagination(query.page, query.per_page);
     let filter = PackageFilter {
         registry: query.registry.clone(),
         registries: registries.clone(),
         name_contains: query.name.clone(),
         name_exact: None,
         blocked_only: false,
-        limit: query.per_page,
-        offset: query.page * query.per_page,
+        limit: per_page,
+        offset: page * per_page,
     };
 
     let count_filter = PackageFilter {

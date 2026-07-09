@@ -40,6 +40,16 @@ pub enum AccessAction {
     Unlist,
     /// An unlisted version was made visible in listings again.
     Relist,
+    /// A principal was added to a registry's beta channel.
+    AddBetaMember,
+    /// A principal was removed from a registry's beta channel.
+    RemoveBetaMember,
+    /// A team namespace was claimed by a principal.
+    ClaimNamespace,
+    /// A previously claimed team namespace was released.
+    ReleaseNamespace,
+    /// A user's publish/download quota usage was reset by an admin.
+    ResetQuota,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

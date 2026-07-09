@@ -10,7 +10,9 @@ use batlehub_core::{
     services::{LocalRegistryService, ProxyService},
 };
 
-use crate::handlers::proxy::common::{proxy_stream, require_registry_type};
+use crate::handlers::proxy::common::{
+    proxy_stream, require_registry_type, serve_local_or_proxy_json,
+};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 /// Dispatch a local/hybrid goproxy file request.
@@ -116,28 +118,22 @@ pub async fn goproxy_latest(
     let (registry, raw_module) = path.into_inner();
     require_registry_type(&registry, "goproxy", &map)?;
     let module = raw_module.trim_end_matches('/');
-    let mode = mode_map.get(&registry);
-
-    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        match local_svc.get_go_latest(&registry, module, &identity).await {
-            Ok(info) => {
-                return Ok(HttpResponse::Ok()
-                    .content_type("application/json")
-                    .json(info))
-            }
-            Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}
-            Err(CoreError::NotFound(_)) => {
-                return Err(AppError::not_found(format!("module '{module}' not found")));
-            }
-            Err(e) => return Err(AppError::from(e)),
-        }
-    }
 
     let pkg = PackageId::new(&registry, module, "latest");
-    proxy_stream(
+    let not_found_msg = format!("module '{module}' not found");
+    let (fetch_registry, fetch_module) = (registry.clone(), module.to_owned());
+    serve_local_or_proxy_json(
         svc,
-        pkg,
+        &mode_map,
+        &registry,
         identity,
+        move |identity: batlehub_core::entities::Identity| async move {
+            local_svc
+                .get_go_latest(&fetch_registry, &fetch_module, &identity)
+                .await
+        },
+        not_found_msg,
+        pkg,
         batlehub_core::rules::resource_type::RELEASES_READ,
         Some("application/json"),
     )

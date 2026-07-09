@@ -17,8 +17,8 @@ use batlehub_core::ports::{
 use batlehub_core::services::{
     AdminService, LocalRegistryService, ProxyMetrics, ProxyService, QuotaService, SbomService,
 };
-use batlehub_web::handlers::back_office::eviction::EvictionServiceMap;
-use batlehub_web::handlers::back_office::warming::WarmingServiceMap;
+use batlehub_web::handlers::back_office::ops::eviction::EvictionServiceMap;
+use batlehub_web::handlers::back_office::ops::warming::WarmingServiceMap;
 use batlehub_web::services::{BannerService, ConfigReloadService, NotificationService};
 use batlehub_web::{
     configure_app, healthz, prometheus_metrics, AccessConfigLock, ApiDoc, CargoIndexMap,

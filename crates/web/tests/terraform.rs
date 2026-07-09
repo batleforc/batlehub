@@ -349,6 +349,28 @@ async fn terraform_provider_binary_upload_returns_200() {
 }
 
 #[actix_web::test]
+async fn terraform_provider_binary_upload_anonymous_returns_403() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/versions")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("Content-Type", "application/json"))
+        .set_payload(PROVIDER_MANIFEST)
+        .to_request();
+    call_service(&app, req).await;
+
+    // No Authorization header at all — must be rejected by enforce_publish_policy
+    // the same way the manifest upload is, not silently stored.
+    let req = TestRequest::put()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/5.0.0/artifact/linux/amd64")
+        .set_payload(b"fake-zip-bytes".as_slice())
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
 async fn terraform_provider_versions_after_upload() {
     let app = make_local_terraform_app(RegistryMode::Local).await;
 

@@ -84,10 +84,10 @@ impl StorageRouter {
     /// routing rules currently assign the key to otherwise (never recorded, or
     /// predates that bookkeeping). Shared by `retrieve`/`exists`/`delete`'s
     /// legacy-path fallback.
-    async fn legacy_backend_for(&self, key: &str) -> Arc<dyn StorageBackend> {
-        match self.recorded_backend_for_key(key).await {
-            Some(b) => b,
-            None => self.resolve_backend(self.backend_name_for_key(key)).clone(),
+    async fn legacy_backend_for(&self, key: &str) -> Result<Arc<dyn StorageBackend>, CoreError> {
+        match self.recorded_backend_for_key(key).await? {
+            Some(b) => Ok(b),
+            None => Ok(self.resolve_backend(self.backend_name_for_key(key)).clone()),
         }
     }
 
@@ -395,7 +395,7 @@ impl StorageBackend for StorageRouter {
 
     async fn retrieve(&self, key: &str) -> Result<Option<StoredArtifact>, CoreError> {
         // Dedup path: resolve logical key → physical content key.
-        if let Some((content_key, backend)) = self.dedup_content_key(key).await {
+        if let Some((content_key, backend)) = self.dedup_content_key(key).await? {
             let artifact = backend.retrieve(&content_key).await?;
             if artifact.is_some() {
                 return Ok(artifact);
@@ -404,7 +404,7 @@ impl StorageBackend for StorageRouter {
         }
 
         // Legacy path: artifact was stored before dedup was enabled.
-        let backend = self.legacy_backend_for(key).await;
+        let backend = self.legacy_backend_for(key).await?;
         let artifact = backend.retrieve(key).await?;
         if let Some(ref a) = artifact {
             if let Some(size) = a.meta.size {
@@ -416,12 +416,12 @@ impl StorageBackend for StorageRouter {
 
     async fn exists(&self, key: &str) -> Result<bool, CoreError> {
         // Dedup path.
-        if let Some((content_key, backend)) = self.dedup_content_key(key).await {
+        if let Some((content_key, backend)) = self.dedup_content_key(key).await? {
             return backend.exists(&content_key).await;
         }
 
         // Legacy path.
-        self.legacy_backend_for(key).await.exists(key).await
+        self.legacy_backend_for(key).await?.exists(key).await
     }
 
     async fn delete(&self, key: &str) -> Result<bool, CoreError> {
@@ -440,7 +440,7 @@ impl StorageBackend for StorageRouter {
             true
         } else {
             // ── Legacy path ───────────────────────────────────────────────────
-            let backend = self.legacy_backend_for(key).await;
+            let backend = self.legacy_backend_for(key).await?;
             backend.delete(key).await?
         };
 

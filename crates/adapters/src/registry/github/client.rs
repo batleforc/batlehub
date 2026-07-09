@@ -34,7 +34,7 @@ pub struct GithubRegistryClient {
 }
 
 impl GithubRegistryClient {
-    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
+    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Result<Self, CoreError> {
         // GitHub-specific default headers merged with any auth headers from opts.
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
@@ -56,7 +56,7 @@ impl GithubRegistryClient {
             .user_agent("batlehub/0.1")
             .default_headers(headers);
         let builder = apply_upstream_tls(builder, opts)?;
-        let http = builder.build()?;
+        let http = builder.build().map_err(|e| CoreError::Other(e.into()))?;
 
         let base_url = base_url.into();
 
@@ -181,15 +181,10 @@ impl RegistryClient for GithubRegistryClient {
                 || artifact.starts_with("tarball/")
                 || artifact == "zipball"
             {
-                return Ok(PackageMetadata {
-                    id: pkg.clone(),
-                    published_at: None,
-                    download_url: None,
-                    checksum: None,
-                    is_signed: None,
-                    extra: serde_json::Value::Null,
-                    cache_control: None,
-                });
+                return Ok(PackageMetadata::minimal(
+                    pkg.clone(),
+                    serde_json::Value::Null,
+                ));
             }
         }
 
@@ -213,15 +208,7 @@ impl RegistryClient for GithubRegistryClient {
                     serde_json::json!({ "id": r.id, "tag_name": r.tag_name, "published_at": r.published_at })
                 }).collect::<Vec<_>>()).unwrap_or_default();
 
-                Ok(PackageMetadata {
-                    id: pkg.clone(),
-                    published_at: None,
-                    download_url: None,
-                    checksum: None,
-                    is_signed: None,
-                    extra,
-                    cache_control: None,
-                })
+                Ok(PackageMetadata::minimal(pkg.clone(), extra))
             }
 
             tag => {

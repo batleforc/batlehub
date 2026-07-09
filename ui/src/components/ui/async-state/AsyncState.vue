@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import Alert from "@/components/ui/alert/Alert.vue";
+import { Alert } from "@/components/ui/alert";
 
 withDefaults(
   defineProps<{

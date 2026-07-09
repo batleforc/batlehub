@@ -13,7 +13,7 @@ use super::{ProxyRequest, ProxyResponse, ProxyService, RequestTiming};
 /// then re-opened from storage to serve. 32 MiB comfortably covers typical
 /// package artifacts (npm tarballs, wheels, crates) while capping per-request
 /// memory for pathologically large ones.
-pub(crate) const RESERVE_VERIFY_BUFFER_LIMIT: usize = 32 * 1024 * 1024;
+pub(crate) const REVERIFY_BUFFER_LIMIT: usize = 32 * 1024 * 1024;
 
 impl ProxyService {
     pub async fn handle(&self, req: ProxyRequest) -> Result<ProxyResponse, CoreError> {

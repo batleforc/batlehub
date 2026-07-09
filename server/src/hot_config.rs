@@ -307,23 +307,25 @@ pub(super) fn make_hot_builder(
             build_hot_bundle(cfg, &beta_channel_store, &repo, &vuln_repo)?;
         let mut cargo_map: HashMap<String, CargoIndexProxy> = HashMap::new();
         for reg in &cfg.registries {
-            if reg.registry_type == "cargo" && !matches!(reg.mode, RegistryMode::Local) {
+            if reg.registry_type == RegistryKind::Cargo.as_str()
+                && !matches!(reg.mode, RegistryMode::Local)
+            {
                 let index = crate::builders::build_cargo_index(reg, cfg.proxy.as_ref())
                     .with_context(|| format!("building cargo index client for '{}'", reg.name))?;
                 cargo_map.insert(reg.name.clone(), index);
             }
         }
         let repo_signer_map = crate::builders::build_repo_signer_map(cfg)?;
-        Ok((
+        Ok(batlehub_web::services::BuiltHotState {
             hot,
             access,
-            rm,
-            rmm,
-            um,
-            CargoIndexMap::new(cargo_map),
+            registry_map: rm,
+            registry_mode_map: rmm,
+            upstream_map: um,
+            cargo_index_map: CargoIndexMap::new(cargo_map),
             repo_signer_map,
-            vuln_db,
-        ))
+            vuln_db_map: vuln_db,
+        })
     })
 }
 

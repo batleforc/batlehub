@@ -10,8 +10,8 @@ use batlehub_core::{
 };
 
 use super::http_client::{
-    basic_auth_get, cache_control, new_http_client, percent_encode, to_registry_error,
-    UpstreamHttpOptions,
+    basic_auth_get, cache_control, new_http_client, percent_encode,
+    same_origin as urls_same_origin, to_registry_error, UpstreamHttpOptions,
 };
 
 use batlehub_core::ports::UpstreamPackage;
@@ -56,17 +56,13 @@ pub struct GoProxyRegistryClient {
 /// True when `a` and `b` share scheme, host and (effective) port.
 fn same_origin(a: &str, b: &str) -> bool {
     match (reqwest::Url::parse(a), reqwest::Url::parse(b)) {
-        (Ok(x), Ok(y)) => {
-            x.scheme() == y.scheme()
-                && x.host_str() == y.host_str()
-                && x.port_or_known_default() == y.port_or_known_default()
-        }
+        (Ok(x), Ok(y)) => urls_same_origin(&x, &y),
         _ => false,
     }
 }
 
 impl GoProxyRegistryClient {
-    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
+    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Result<Self, CoreError> {
         let http = new_http_client(Some(10), opts)?;
         let base_url = base_url.into();
         // search_url: None → built-in default; Some("") → disabled; Some(u) → override.
@@ -85,7 +81,8 @@ impl GoProxyRegistryClient {
                 reqwest::Client::builder()
                     .user_agent("batlehub/0.1")
                     .redirect(reqwest::redirect::Policy::limited(10))
-                    .build()?,
+                    .build()
+                    .map_err(|e| CoreError::Other(e.into()))?,
             )
         } else {
             None

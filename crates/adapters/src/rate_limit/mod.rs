@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) fn now_unix() -> u64 {
@@ -15,6 +16,49 @@ pub(crate) fn violation_window(now: u64, window_secs: u32) -> (u64, u64) {
     let ws = window_secs as u64;
     let window_start = (now / ws) * ws;
     (window_start, window_start + ws)
+}
+
+/// A single window-counter entry, shared by the two in-memory stores
+/// (`InMemoryRateLimitStore`, `InMemoryIpBlockStore`) that each track a
+/// per-key request count within a rolling time window.
+pub(crate) struct WindowEntry {
+    pub(crate) window_start: u64,
+    pub(crate) count: u64,
+}
+
+/// Once an in-memory window-counter map exceeds this many entries, opportunistically
+/// drop everything from windows older than 2 periods to bound memory growth.
+const EVICTION_THRESHOLD: usize = 10_000;
+
+/// Increment `key`'s counter in `map` for the current window, resetting it to 1
+/// if the previous entry belongs to a stale window. Shared by
+/// `InMemoryRateLimitStore::increment` and `InMemoryIpBlockStore::record_violation`,
+/// which differ only in what they call the counted thing (rate-limit key vs. IP).
+///
+/// Callers must reject `window_secs == 0` themselves before calling this —
+/// [`violation_window`] divides by it.
+pub(crate) fn windowed_increment(
+    map: &mut HashMap<String, WindowEntry>,
+    key: String,
+    window_secs: u32,
+) -> (u64, u64) {
+    let (window_start, window_reset) = violation_window(now_unix(), window_secs);
+
+    if map.len() > EVICTION_THRESHOLD {
+        let cutoff = window_start.saturating_sub((window_secs as u64) * 2);
+        map.retain(|_, e| e.window_start >= cutoff);
+    }
+
+    let entry = map.entry(key).or_insert(WindowEntry {
+        window_start,
+        count: 0,
+    });
+    if entry.window_start != window_start {
+        entry.window_start = window_start;
+        entry.count = 0;
+    }
+    entry.count += 1;
+    (entry.count, window_reset)
 }
 
 #[cfg(test)]

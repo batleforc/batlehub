@@ -128,24 +128,13 @@ impl AuthProvider for StaticTokenAuthProvider {
     }
 
     async fn authenticate(&self, req: &RawAuthRequest) -> Result<Option<Identity>, CoreError> {
-        let auth_header = req
-            .headers
-            .get("authorization")
-            .or_else(|| req.headers.get("Authorization"));
-
-        let Some(value) = auth_header else {
-            return Ok(None);
-        };
-
-        let token = if let Some(t) = value
-            .strip_prefix("Bearer ")
-            .or_else(|| value.strip_prefix("bearer "))
-        {
+        let token = if let Some(t) = req.bearer_token() {
             t.to_owned()
-        } else if let Some(encoded) = value
-            .strip_prefix("Basic ")
-            .or_else(|| value.strip_prefix("basic "))
-        {
+        } else if let Some(encoded) = req.headers.get("authorization").and_then(|value| {
+            value
+                .strip_prefix("Basic ")
+                .or_else(|| value.strip_prefix("basic "))
+        }) {
             let decoded = base64::engine::general_purpose::STANDARD
                 .decode(encoded.trim())
                 .ok()

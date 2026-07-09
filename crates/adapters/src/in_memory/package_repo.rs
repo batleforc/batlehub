@@ -188,6 +188,15 @@ impl PackageRepository for InMemoryPackageRepository {
         Ok(result)
     }
 
+    async fn count_events(&self, filter: EventFilter) -> Result<u64, CoreError> {
+        let no_page = EventFilter {
+            limit: 0,
+            offset: 0,
+            ..filter
+        };
+        Ok(self.list_events(no_page).await?.len() as u64)
+    }
+
     async fn registry_package_counts(
         &self,
         registries: &[String],

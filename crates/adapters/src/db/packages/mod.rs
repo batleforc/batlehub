@@ -132,6 +132,11 @@ pub(super) fn action_to_str(action: &AccessAction) -> &'static str {
         AccessAction::Undeprecate => "undeprecate",
         AccessAction::Unlist => "unlist",
         AccessAction::Relist => "relist",
+        AccessAction::AddBetaMember => "add_beta_member",
+        AccessAction::RemoveBetaMember => "remove_beta_member",
+        AccessAction::ClaimNamespace => "claim_namespace",
+        AccessAction::ReleaseNamespace => "release_namespace",
+        AccessAction::ResetQuota => "reset_quota",
     }
 }
 
@@ -156,6 +161,11 @@ pub(super) fn str_to_action(s: &str) -> Result<AccessAction, CoreError> {
         "undeprecate" => Ok(AccessAction::Undeprecate),
         "unlist" => Ok(AccessAction::Unlist),
         "relist" => Ok(AccessAction::Relist),
+        "add_beta_member" => Ok(AccessAction::AddBetaMember),
+        "remove_beta_member" => Ok(AccessAction::RemoveBetaMember),
+        "claim_namespace" => Ok(AccessAction::ClaimNamespace),
+        "release_namespace" => Ok(AccessAction::ReleaseNamespace),
+        "reset_quota" => Ok(AccessAction::ResetQuota),
         other => Err(CoreError::Database(format!(
             "invalid access action in db: '{other}'"
         ))),
@@ -228,6 +238,10 @@ impl PackageRepository for PgPackageRepository {
 
     async fn list_events(&self, filter: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
         explore::list_events_impl(&self.pool, filter).await
+    }
+
+    async fn count_events(&self, filter: EventFilter) -> Result<u64, CoreError> {
+        explore::count_events_impl(&self.pool, filter).await
     }
 
     async fn purge_events_before(&self, before: DateTime<Utc>) -> Result<u64, CoreError> {

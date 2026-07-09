@@ -2,8 +2,8 @@ use super::{
     collect_payload, content_type_for, get, maven_artifact_storage_key, maven_local_response,
     parse_maven_path, parse_pom, proxy_stream, put, require_local_mode, require_registry_type, web,
     AppError, Arc, AuthIdentity, Digest, HttpResponse, LocalRegistryService, MavenPathKind,
-    NotificationService, PackageId, ProxyService, PublishRequest, RegistryMap, RegistryMode,
-    RegistryModeMap, Responder, Sha256, StorageMeta,
+    NotificationService, PackageId, ProxyService, PublishPolicyRequest, PublishRequest,
+    RegistryMap, RegistryMode, RegistryModeMap, Responder, Sha256, StorageMeta,
 };
 
 /// Proxy or serve a Maven repository request.
@@ -138,9 +138,28 @@ pub async fn maven_put(
             }
 
             if !filename.ends_with(".pom") {
-                // Non-POM artifact (jar, sources, checksums, etc.): store directly.
-                let storage_key = maven_artifact_storage_key(&registry, &name, &version, &filename);
+                // Non-POM artifact (jar, sources, checksums, etc.): stored directly
+                // rather than through the three-phase `publish()`, so it must go
+                // through the same policy gate (role, versioning, signing, quota,
+                // size limit) that the .pom branch gets via `publish_and_respond`.
+                let artifact_len = bytes.len() as u64;
                 local_svc
+                    .enforce_publish_policy(
+                        &PublishPolicyRequest {
+                            registry: &registry,
+                            name: &name,
+                            version: &version,
+                            artifact_len,
+                            signature_bytes: None,
+                            signature_type: None,
+                        },
+                        &identity.0,
+                    )
+                    .await
+                    .map_err(AppError::from)?;
+
+                let storage_key = maven_artifact_storage_key(&registry, &name, &version, &filename);
+                if let Err(e) = local_svc
                     .storage
                     .store(
                         &storage_key,
@@ -152,7 +171,12 @@ pub async fn maven_put(
                         },
                     )
                     .await
-                    .map_err(AppError::from)?;
+                {
+                    local_svc
+                        .revoke_publish_quota(&identity.0, &registry, artifact_len)
+                        .await;
+                    return Err(AppError::from(e));
+                }
                 return Ok(HttpResponse::Created().finish());
             }
 

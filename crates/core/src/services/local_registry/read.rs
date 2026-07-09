@@ -175,7 +175,7 @@ impl LocalRegistryService {
                     ))
                 })?;
             if verify_checksum {
-                self.verify_reserve_checksum(registry, name, version, &meta.checksum, &bytes)?;
+                self.reverify_checksum_on_serve(registry, name, version, &meta.checksum, &bytes)?;
             }
             if signing.verify_on_download {
                 Self::verify_download_signature(
@@ -231,7 +231,7 @@ impl LocalRegistryService {
 
     /// Re-verify stored bytes against the SHA-256 recorded at publish time.
     /// A mismatch means the stored artifact was corrupted or tampered with.
-    fn verify_reserve_checksum(
+    fn reverify_checksum_on_serve(
         &self,
         registry: &str,
         name: &str,

@@ -73,7 +73,7 @@ async fn bulk_unyank_returns_200() {
 
 use batlehub_adapters::in_memory::InMemoryQuotaRepository;
 use batlehub_core::ports::QuotaRepository;
-use batlehub_core::services::QuotaService;
+use batlehub_core::services::{AdminService, QuotaService};
 
 /// Minimal app wired with only the four quota endpoints and auth middleware.
 async fn make_quota_app(
@@ -83,11 +83,13 @@ async fn make_quota_app(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
-    use batlehub_web::handlers::back_office::quota::{
+    use batlehub_web::handlers::back_office::ops::quota::{
         get_quota_for_user, list_quota, list_quota_for_registry, reset_quota_for_user,
     };
+    let admin_svc = Arc::new(AdminService::new(InMemoryRepo::new()));
     let app = actix_web::App::new()
         .app_data(actix_web::web::Data::new(quota_svc))
+        .app_data(actix_web::web::Data::new(admin_svc))
         .service(list_quota)
         .service(list_quota_for_registry)
         .service(get_quota_for_user)

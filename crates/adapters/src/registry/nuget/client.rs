@@ -41,7 +41,7 @@ pub struct NugetRegistryClient {
 }
 
 impl NugetRegistryClient {
-    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
+    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Result<Self, CoreError> {
         let builder = reqwest::Client::builder()
             .user_agent("batlehub/0.1")
             .redirect(reqwest::redirect::Policy::limited(10));

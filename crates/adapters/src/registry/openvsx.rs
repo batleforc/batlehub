@@ -29,7 +29,7 @@ pub struct OpenVsxRegistryClient {
 }
 
 impl OpenVsxRegistryClient {
-    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
+    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Result<Self, CoreError> {
         let http = new_http_client(Some(10), opts)?;
         Ok(Self {
             http,

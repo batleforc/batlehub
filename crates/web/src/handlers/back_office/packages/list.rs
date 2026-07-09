@@ -18,6 +18,17 @@ pub struct AdminPackageQuery {
     pub per_page: u64,
 }
 
+/// Paginated envelope for `GET /api/v1/admin/packages`, matching the shape of
+/// its sibling list endpoints (`PackageListResponse`/`ExplorePackageListResponse`)
+/// instead of returning a bare array with no way to tell if more pages exist.
+#[derive(serde::Serialize)]
+pub struct AdminPackageListResponse {
+    pub items: Vec<batlehub_core::entities::PackageSummary>,
+    pub total: u64,
+    pub page: u64,
+    pub per_page: u64,
+}
+
 /// List all known packages (admin).
 #[utoipa::path(
     get,
@@ -25,7 +36,7 @@ pub struct AdminPackageQuery {
     tag = "back-office",
     params(AdminPackageQuery),
     responses(
-        (status = 200, description = "Full package listing with statuses"),
+        (status = 200, description = "Full package listing with statuses, paginated"),
         (status = 403, description = "Admin role required"),
     ),
     security(("bearer_token" = [])),
@@ -38,21 +49,38 @@ pub async fn list_packages(
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
 
+    let (page, per_page) = crate::handlers::clamp_pagination(query.page, query.per_page);
     let filter = PackageFilter {
         registry: query.registry.clone(),
         registries: vec![],
         name_contains: query.name.clone(),
         name_exact: None,
         blocked_only: query.blocked_only,
-        limit: query.per_page,
-        offset: query.page * query.per_page,
+        limit: per_page,
+        offset: page * per_page,
+    };
+    let count_filter = PackageFilter {
+        registry: query.registry.clone(),
+        registries: vec![],
+        name_contains: query.name.clone(),
+        name_exact: None,
+        blocked_only: query.blocked_only,
+        limit: 0,
+        offset: 0,
     };
 
-    let packages = admin_svc
-        .list_packages(filter)
-        .await
-        .map_err(AppError::from)?;
-    Ok(web::Json(packages))
+    let (items, total) = tokio::try_join!(
+        admin_svc.list_packages(filter),
+        admin_svc.count_packages(count_filter),
+    )
+    .map_err(AppError::from)?;
+
+    Ok(web::Json(AdminPackageListResponse {
+        items,
+        total,
+        page: query.page,
+        per_page: query.per_page,
+    }))
 }
 
 // ── Block / unblock ───────────────────────────────────────────────────────────

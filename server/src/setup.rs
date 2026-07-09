@@ -12,6 +12,7 @@ use batlehub_adapters::{
     storage::{FilesystemStorageBackend, StorageRouter},
 };
 use batlehub_config::schema::{AuthConfig, RegistryMode, StorageBackendConfig, StoragesConfig};
+use batlehub_core::entities::RegistryKind;
 use batlehub_core::ports::{AuthProvider, StorageBackend, UserTokenRepository};
 
 use crate::builders::parse_role;
@@ -168,7 +169,9 @@ pub(super) fn build_initial_cargo_index_map(
 ) -> Result<batlehub_web::CargoIndexMap> {
     let mut map: HashMap<String, batlehub_web::CargoIndexProxy> = HashMap::new();
     for reg in &config.registries {
-        if reg.registry_type == "cargo" && !matches!(reg.mode, RegistryMode::Local) {
+        if reg.registry_type == RegistryKind::Cargo.as_str()
+            && !matches!(reg.mode, RegistryMode::Local)
+        {
             let index = crate::builders::build_cargo_index(reg, config.proxy.as_ref())
                 .with_context(|| format!("building cargo index client for '{}'", reg.name))?;
             map.insert(reg.name.clone(), index);
@@ -185,12 +188,12 @@ pub(super) fn build_warming_map(
     storage: Arc<dyn StorageBackend>,
     pool: sqlx::PgPool,
     coordinator: Arc<dyn batlehub_core::ports::WarmCoordinator>,
-) -> batlehub_web::handlers::back_office::warming::WarmingServiceMap {
+) -> batlehub_web::handlers::back_office::ops::warming::WarmingServiceMap {
     use batlehub_adapters::db::PgArtifactMetaRepository;
     use batlehub_core::services::WarmingService;
     use std::collections::HashMap as HM;
 
-    let mut warming_map: batlehub_web::handlers::back_office::warming::WarmingServiceMap =
+    let mut warming_map: batlehub_web::handlers::back_office::ops::warming::WarmingServiceMap =
         HM::new();
     for reg in &config.registries {
         if let Some(client) = warming_clients.get(&reg.name) {
@@ -216,12 +219,12 @@ pub(super) fn build_eviction_map(
     config: &batlehub_config::schema::AppConfig,
     storage: Arc<dyn StorageBackend>,
     pool: sqlx::PgPool,
-) -> batlehub_web::handlers::back_office::eviction::EvictionServiceMap {
+) -> batlehub_web::handlers::back_office::ops::eviction::EvictionServiceMap {
     use batlehub_adapters::db::PgArtifactMetaRepository;
     use batlehub_core::services::{EvictionConfig, EvictionService};
     use std::collections::HashMap as HM;
 
-    let mut eviction_map: batlehub_web::handlers::back_office::eviction::EvictionServiceMap =
+    let mut eviction_map: batlehub_web::handlers::back_office::ops::eviction::EvictionServiceMap =
         HM::new();
     for reg in &config.registries {
         let cache = &reg.cache;

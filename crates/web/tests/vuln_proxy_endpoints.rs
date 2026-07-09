@@ -512,9 +512,10 @@ async fn build_goproxy_vuln_test_app(
 
 #[actix_web::test]
 async fn goproxy_vuln_index_disabled_returns_404() {
-    // An empty string URL disables the vuln DB proxy for the registry.
-    let vuln_db =
-        batlehub_web::VulnDbMap::new([("go".to_owned(), String::new())].into_iter().collect());
+    // An absent map entry disables the vuln DB proxy for the registry, matching
+    // how `build_vuln_db_map` (server/src/hot_config.rs) signals "disabled" by
+    // omitting the key entirely rather than inserting an empty string.
+    let vuln_db = batlehub_web::VulnDbMap::new(std::collections::HashMap::new());
     let app = build_goproxy_vuln_test_app(vuln_db).await;
     let req = TestRequest::get()
         .uri("/proxy/go/v1/index.json")

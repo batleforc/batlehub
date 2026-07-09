@@ -69,4 +69,12 @@ impl ConfigChangeRepository for PgConfigChangeRepository {
             })
             .collect())
     }
+
+    async fn count(&self) -> Result<u64, CoreError> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM config_changes")
+            .fetch_one(&self.pool)
+            .await
+            .db_err()?;
+        Ok(count as u64)
+    }
 }

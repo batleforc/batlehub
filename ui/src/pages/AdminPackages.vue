@@ -58,15 +58,28 @@ const { token } = useAuth();
 const { authFetch } = useAuthFetch();
 const router = useRouter();
 
+interface AdminPackageListResponse {
+  items: AdminPackageSummary[];
+  total: number;
+  page: number;
+  per_page: number;
+}
+
 const {
-  data: packages,
+  data: packagesResponse,
   error,
   loading,
   reload,
-} = useApi<AdminPackageSummary[]>(
-  () => listPackages() as Promise<{ data?: unknown; error?: unknown }>,
+} = useApi<AdminPackageListResponse>(
+  () =>
+    listPackages({ query: { per_page: 1000 } }) as Promise<{
+      data?: unknown;
+      error?: unknown;
+    }>,
   [token],
 );
+
+const packages = computed(() => packagesResponse.value?.items ?? null);
 
 const actionError = ref<string | null>(null);
 

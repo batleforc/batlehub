@@ -13,7 +13,7 @@ use batlehub_core::{
     ports::StorageMeta,
     services::{
         artifact_storage_key, maven_artifact_storage_key, LocalRegistryService, ProxyService,
-        PublishRequest,
+        PublishPolicyRequest, PublishRequest,
     },
 };
 

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use batlehub_core::entities::AccessResult;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -75,19 +76,22 @@ pub struct AuditPackageRef {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuditOutcome {
-    pub outcome: String,
-    #[serde(default)]
-    pub reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
     pub user_id: Option<String>,
     pub package_id: Option<AuditPackageRef>,
     pub action: Option<String>,
     pub timestamp: Option<String>,
-    pub result: Option<AuditOutcome>,
+    pub result: Option<AccessResult>,
+}
+
+/// Paginated envelope returned by `GET /api/v1/admin/audit-log`, mirroring the
+/// server's `AuditLogResponse`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditLogResponse {
+    pub items: Vec<AuditEntry>,
+    pub total: u64,
+    pub page: u64,
+    pub per_page: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -399,7 +403,7 @@ impl BatleHubClient {
 
     // ── Audit log ──────────────────────────────────────────────────────────────
 
-    pub async fn audit_log(&self, query: AuditQuery) -> Result<Vec<AuditEntry>> {
+    pub async fn audit_log(&self, query: AuditQuery) -> Result<AuditLogResponse> {
         self.get_with_params("/api/v1/admin/audit-log", &query)
             .await
     }

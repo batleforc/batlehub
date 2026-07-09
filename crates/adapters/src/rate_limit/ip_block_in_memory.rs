@@ -8,12 +8,7 @@ use tokio::sync::Mutex;
 use batlehub_core::error::CoreError;
 use batlehub_core::ports::{BlockedIpInfo, IpBlockStore};
 
-use super::now_unix;
-
-struct ViolationWindow {
-    window_start: u64,
-    count: u64,
-}
+use super::{now_unix, windowed_increment, WindowEntry};
 
 struct BlockEntry {
     blocked_at: u64,
@@ -27,7 +22,7 @@ struct BlockEntry {
 /// `RedisIpBlockStore` for multi-instance deployments.
 #[derive(Default)]
 pub struct InMemoryIpBlockStore {
-    violations: Mutex<HashMap<String, ViolationWindow>>,
+    violations: Mutex<HashMap<String, WindowEntry>>,
     blocks: Mutex<HashMap<String, BlockEntry>>,
 }
 
@@ -43,30 +38,8 @@ impl IpBlockStore for InMemoryIpBlockStore {
         if window_secs == 0 {
             return Err(CoreError::Cache("window_secs must be > 0".into()));
         }
-        let now = now_unix();
-        let ws = window_secs as u64;
-        let window_start = (now / ws) * ws;
-        let window_reset = window_start + ws;
-
         let mut guard = self.violations.lock().await;
-
-        // Opportunistic eviction: when the map exceeds 10 000 entries, drop all
-        // entries from windows older than 2 periods to bound memory growth.
-        if guard.len() > 10_000 {
-            let cutoff = window_start.saturating_sub(ws * 2);
-            guard.retain(|_, e| e.window_start >= cutoff);
-        }
-
-        let entry = guard.entry(ip.to_owned()).or_insert(ViolationWindow {
-            window_start,
-            count: 0,
-        });
-        if entry.window_start != window_start {
-            entry.window_start = window_start;
-            entry.count = 0;
-        }
-        entry.count += 1;
-        Ok((entry.count, window_reset))
+        Ok(windowed_increment(&mut guard, ip.to_owned(), window_secs))
     }
 
     async fn blocked_until(&self, ip: &str) -> Result<Option<u64>, CoreError> {

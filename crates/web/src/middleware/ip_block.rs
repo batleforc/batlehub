@@ -123,7 +123,6 @@ where
         Box::pin(async move {
             let ip = extract_client_ip(&req, &config.trusted_proxies);
 
-            // Check if the IP is already blocked.
             match store.blocked_until(&ip).await {
                 Ok(Some(unblock_at)) => {
                     let body = serde_json::json!({

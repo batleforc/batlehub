@@ -3,10 +3,19 @@ use std::sync::Arc;
 use actix_web::{delete, post, web, HttpResponse, Responder};
 use sha2::{Digest, Sha256};
 
-use batlehub_core::services::{LocalRegistryService, PublishRequest};
+use batlehub_core::{
+    entities::NotificationEventType,
+    services::{LocalRegistryService, PublishRequest},
+};
 
-use crate::handlers::proxy::common::{collect_payload, require_local_mode, require_registry_type};
-use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+use crate::handlers::proxy::common::{
+    collect_payload, dispatch_notification, publish_and_respond, require_local_mode,
+    require_registry_type,
+};
+use crate::{
+    error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
+    RegistryModeMap,
+};
 
 // ── Publish (local/hybrid only) ───────────────────────────────────────────────
 
@@ -31,6 +40,7 @@ use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryMode
     ),
     security(("bearer_token" = [])),
 )]
+#[allow(clippy::too_many_arguments)]
 #[post("/proxy/{registry}/api/upload")]
 pub async fn composer_upload(
     path: web::Path<String>,
@@ -40,6 +50,7 @@ pub async fn composer_upload(
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
     require_registry_type(&registry, "composer", &map)?;
@@ -63,9 +74,11 @@ pub async fn composer_upload(
     let name = meta.name.clone();
     let version = meta.version.clone();
 
-    let quota_check = local_svc
-        .publish(PublishRequest {
-            registry: registry.clone(),
+    publish_and_respond(
+        &local_svc,
+        &notification_svc,
+        PublishRequest {
+            registry,
             name: name.clone(),
             version: version.clone(),
             artifact: data,
@@ -74,19 +87,15 @@ pub async fn composer_upload(
             publisher: identity.0,
             signature_bytes: None,
             signature_type: None,
-        })
-        .await
-        .map_err(AppError::from)?;
-
-    let mut resp = HttpResponse::Ok();
-    for (header, value) in quota_check.headers() {
-        resp.insert_header((header, value));
-    }
-    Ok(resp.json(serde_json::json!({
-        "status": "success",
-        "name": name,
-        "version": version,
-    })))
+        },
+        actix_web::http::StatusCode::OK,
+        serde_json::json!({
+            "status": "success",
+            "name": name,
+            "version": version,
+        }),
+    )
+    .await
 }
 
 #[derive(serde::Deserialize)]
@@ -121,16 +130,27 @@ pub async fn composer_yank(
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, vendor, package, version) = path.into_inner();
     require_registry_type(&registry, "composer", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
     let name = format!("{vendor}/{package}");
+    let actor = identity.0.user_id.clone().unwrap_or_default();
     local_svc
         .yank(&registry, &name, &version, &identity.0)
         .await
         .map_err(AppError::from)?;
+
+    dispatch_notification(
+        &notification_svc,
+        NotificationEventType::PackageYanked,
+        &registry,
+        &name,
+        Some(version.clone()),
+        &actor,
+    );
 
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "message": format!("Successfully yanked {name} ({version})")

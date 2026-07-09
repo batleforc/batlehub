@@ -2,8 +2,8 @@ use super::{
     collect_payload, delete, extract_signature_headers, post, put, require_local_mode,
     require_registry_type, terraform_provider_binary_storage_key, terraform_set_yanked, web,
     AppError, Arc, AuthIdentity, Digest, HttpRequest, HttpResponse, LocalRegistryService,
-    NotificationService, PublishRequest, RegistryMap, RegistryModeMap, Responder, Sha256,
-    StorageMeta,
+    NotificationService, PublishPolicyRequest, PublishRequest, RegistryMap, RegistryModeMap,
+    Responder, Sha256, StorageMeta, TerraformYankRequest,
 };
 
 /// Upload a Terraform provider version manifest (JSON describing version + platforms).
@@ -119,7 +119,6 @@ pub async fn terraform_provider_binary_upload(
     let (registry, namespace, ptype, version, os, arch) = path.into_inner();
     require_registry_type(&registry, "terraform", &map)?;
     require_local_mode(&registry, &mode_map)?;
-    let _ = &identity; // auth presence validated by middleware
 
     // Edge chokepoint: this handler builds a storage key directly from the path
     // components, so reject any traversal attempt with a clean 400 first.
@@ -134,9 +133,31 @@ pub async fn terraform_provider_binary_upload(
     }
 
     let bytes = collect_payload(payload).await?;
+
+    // Stored directly rather than through the three-phase `publish()` (the
+    // manifest upload already created the version row), so it must still go
+    // through the same policy gate (role, namespace, ownership, quota, size
+    // limit) that `terraform_provider_upload` gets via `publish_and_respond`.
+    let name = format!("providers/{namespace}/{ptype}");
+    let artifact_len = bytes.len() as u64;
+    local_svc
+        .enforce_publish_policy(
+            &PublishPolicyRequest {
+                registry: &registry,
+                name: &name,
+                version: &version,
+                artifact_len,
+                signature_bytes: None,
+                signature_type: None,
+            },
+            &identity.0,
+        )
+        .await
+        .map_err(AppError::from)?;
+
     let key =
         terraform_provider_binary_storage_key(&registry, &namespace, &ptype, &version, &os, &arch);
-    local_svc
+    if let Err(e) = local_svc
         .storage
         .store(
             &key,
@@ -148,7 +169,12 @@ pub async fn terraform_provider_binary_upload(
             },
         )
         .await
-        .map_err(AppError::from)?;
+    {
+        local_svc
+            .revoke_publish_quota(&identity.0, &registry, artifact_len)
+            .await;
+        return Err(AppError::from(e));
+    }
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -187,16 +213,18 @@ pub async fn terraform_provider_yank(
     let pkg_name = format!("providers/{namespace}/{ptype}");
     let display_name = format!("provider {namespace}/{ptype}");
     terraform_set_yanked(
-        &registry,
-        &map,
-        &mode_map,
-        &pkg_name,
-        &version,
-        &display_name,
+        TerraformYankRequest {
+            registry: &registry,
+            map: &map,
+            mode_map: &mode_map,
+            pkg_name: &pkg_name,
+            version: &version,
+            display_name: &display_name,
+            yanked: true,
+        },
         &identity,
         &local_svc,
         &notification_svc,
-        true,
     )
     .await
 }
@@ -233,16 +261,18 @@ pub async fn terraform_provider_unyank(
     let pkg_name = format!("providers/{namespace}/{ptype}");
     let display_name = format!("provider {namespace}/{ptype}");
     terraform_set_yanked(
-        &registry,
-        &map,
-        &mode_map,
-        &pkg_name,
-        &version,
-        &display_name,
+        TerraformYankRequest {
+            registry: &registry,
+            map: &map,
+            mode_map: &mode_map,
+            pkg_name: &pkg_name,
+            version: &version,
+            display_name: &display_name,
+            yanked: false,
+        },
         &identity,
         &local_svc,
         &notification_svc,
-        false,
     )
     .await
 }

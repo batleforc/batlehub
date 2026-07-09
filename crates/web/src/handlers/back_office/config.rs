@@ -167,6 +167,7 @@ fn default_per_page() -> u64 {
 #[derive(Serialize, ToSchema)]
 pub struct ConfigChangesResponse {
     pub items: Vec<ConfigChangeRow>,
+    pub total: u64,
     pub page: u64,
     pub per_page: u64,
 }
@@ -190,14 +191,17 @@ pub async fn list_config_changes(
     reload_svc: web::Data<Arc<ConfigReloadService>>,
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
-    let items = reload_svc
-        .list_changes(query.page, query.per_page)
-        .await
-        .map_err(CoreError::Other)?;
+    let (page, per_page) = crate::handlers::clamp_pagination(query.page, query.per_page);
+    let (items, total) = tokio::try_join!(
+        reload_svc.list_changes(page, per_page),
+        reload_svc.count_changes(),
+    )
+    .map_err(CoreError::Other)?;
     Ok(web::Json(ConfigChangesResponse {
         items,
-        page: query.page,
-        per_page: query.per_page,
+        total,
+        page,
+        per_page,
     }))
 }
 

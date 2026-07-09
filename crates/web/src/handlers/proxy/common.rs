@@ -300,6 +300,42 @@ pub async fn serve_local_or_proxy_artifact(
     .await
 }
 
+/// Serve JSON metadata from local storage (Local/Hybrid mode) or fall back to
+/// streaming it from the upstream registry (Proxy mode, or a Hybrid miss).
+///
+/// This is the shared shape behind `get_packument`, `get_version`, `gem_info`,
+/// `gem_versions`, `goproxy_latest`, and `composer_p2_metadata`: check the
+/// registry mode, try `local_fetch` in Local/Hybrid mode, fall through to
+/// `proxy_stream` on a Hybrid miss (or directly in Proxy mode).
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_local_or_proxy_json<T, F, Fut>(
+    svc: web::Data<Arc<ProxyService>>,
+    mode_map: &RegistryModeMap,
+    registry: &str,
+    identity: AuthIdentity,
+    local_fetch: F,
+    not_found_msg: String,
+    pkg: PackageId,
+    resource_type: &str,
+    proxy_content_type: Option<&str>,
+) -> Result<HttpResponse, AppError>
+where
+    T: serde::Serialize,
+    F: FnOnce(batlehub_core::entities::Identity) -> Fut,
+    Fut: std::future::Future<Output = Result<T, CoreError>>,
+{
+    let mode = mode_map.get(registry);
+    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        match local_fetch(identity.0.clone()).await {
+            Ok(x) => return Ok(HttpResponse::Ok().content_type("application/json").json(x)),
+            Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}
+            Err(CoreError::NotFound(_)) => return Err(AppError::not_found(not_found_msg)),
+            Err(e) => return Err(AppError::from(e)),
+        }
+    }
+    proxy_stream(svc, pkg, identity, resource_type, proxy_content_type).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

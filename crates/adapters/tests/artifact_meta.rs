@@ -143,8 +143,9 @@ async fn touch_updates_last_accessed_at() {
         .unwrap()
         .last_accessed_at;
 
-    // Small sleep to ensure the timestamp advances
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    // Sleep long enough that the timestamp reliably advances despite DB write
+    // latency and clock resolution jitter (10ms was occasionally too tight).
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     t.repo.touch_artifact(&key).await.unwrap();
 
     let after = t.repo.list_artifacts("npm").await.unwrap();

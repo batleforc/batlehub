@@ -86,6 +86,40 @@ tasks:
       - until podman exec {{.PG_CONTAINER}} pg_isready -U postgres; do sleep 1; done
       - cargo test -p batlehub-adapters --test local_registry -- --nocapture
 
+  test:pg-storage-router:
+    desc: Run storage_router integration tests (starts a temporary Postgres container via Podman)
+    vars:
+      PG_CONTAINER: batlehub-test-pg
+      PG_PORT: "15432"
+      PG_PASSWORD: testpass
+      CONF_OVERRIDE: /tmp/batlehub-containers.conf
+    env:
+      CONTAINERS_CONF_OVERRIDE: "{{.CONF_OVERRIDE}}"
+      DATABASE_URL: "postgresql://postgres:{{.PG_PASSWORD}}@127.0.0.1:{{.PG_PORT}}/postgres"
+    cmds:
+      - printf '[network]\ndefault_rootless_network_cmd = "pasta"\n' > {{.CONF_OVERRIDE}}
+      - defer: podman rm -f {{.PG_CONTAINER}} 2>/dev/null || true
+      - podman run -d --name {{.PG_CONTAINER}} -p {{.PG_PORT}}:5432 -e POSTGRES_PASSWORD={{.PG_PASSWORD}} postgres:17-alpine
+      - until podman exec {{.PG_CONTAINER}} pg_isready -U postgres; do sleep 1; done
+      - cargo test -p batlehub-adapters --test storage_router -- --nocapture
+
+  test:pg-artifact-meta:
+    desc: Run artifact_meta integration tests (starts a temporary Postgres container via Podman)
+    vars:
+      PG_CONTAINER: batlehub-test-pg
+      PG_PORT: "15432"
+      PG_PASSWORD: testpass
+      CONF_OVERRIDE: /tmp/batlehub-containers.conf
+    env:
+      CONTAINERS_CONF_OVERRIDE: "{{.CONF_OVERRIDE}}"
+      DATABASE_URL: "postgresql://postgres:{{.PG_PASSWORD}}@127.0.0.1:{{.PG_PORT}}/postgres"
+    cmds:
+      - printf '[network]\ndefault_rootless_network_cmd = "pasta"\n' > {{.CONF_OVERRIDE}}
+      - defer: podman rm -f {{.PG_CONTAINER}} 2>/dev/null || true
+      - podman run -d --name {{.PG_CONTAINER}} -p {{.PG_PORT}}:5432 -e POSTGRES_PASSWORD={{.PG_PASSWORD}} postgres:17-alpine
+      - until podman exec {{.PG_CONTAINER}} pg_isready -U postgres; do sleep 1; done
+      - cargo test -p batlehub-adapters --test artifact_meta -- --nocapture
+
   test:s3:
     desc: Run S3 storage integration tests (starts a temporary MinIO container via Podman)
     vars:

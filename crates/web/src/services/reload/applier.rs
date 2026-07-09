@@ -51,8 +51,8 @@ impl ConfigReloadService {
             anyhow::bail!("hot reload is disabled (BATLEHUB_DISABLE_HOT_RELOAD=1)");
         }
         let new_config = load_config_from_str(content)?;
-        let (new_hot, new_access, ..) = (self.builder)(&new_config)?;
-        Ok(self.compute_diff(&new_hot, &new_access).await)
+        let built = (self.builder)(&new_config)?;
+        Ok(self.compute_diff(&built.hot, &built.access).await)
     }
 
     /// Same as `load_pending` but parses the config from a supplied TOML string
@@ -86,17 +86,8 @@ impl ConfigReloadService {
         new_config: batlehub_config::AppConfig,
         source: ReloadSource,
     ) -> Result<ReloadDiff, anyhow::Error> {
-        let (
-            new_hot,
-            new_access,
-            new_registry_map,
-            new_registry_mode_map,
-            new_upstream_map,
-            new_cargo_index_map,
-            new_repo_signer_map,
-            new_vuln_db_map,
-        ) = (self.builder)(&new_config)?;
-        let diff = self.compute_diff(&new_hot, &new_access).await;
+        let built = (self.builder)(&new_config)?;
+        let diff = self.compute_diff(&built.hot, &built.access).await;
         let now = Utc::now();
         let pending = PendingReload {
             id: Uuid::new_v4(),
@@ -105,14 +96,14 @@ impl ConfigReloadService {
             source,
             diff: diff.clone(),
             content: None, // set by load_pending_from_content when originating from the editor
-            new_hot,
-            new_access,
-            new_registry_map,
-            new_registry_mode_map,
-            new_upstream_map,
-            new_cargo_index_map,
-            new_repo_signer_map,
-            new_vuln_db_map,
+            new_hot: built.hot,
+            new_access: built.access,
+            new_registry_map: built.registry_map,
+            new_registry_mode_map: built.registry_mode_map,
+            new_upstream_map: built.upstream_map,
+            new_cargo_index_map: built.cargo_index_map,
+            new_repo_signer_map: built.repo_signer_map,
+            new_vuln_db_map: built.vuln_db_map,
         };
         *self.pending.lock().expect("pending reload lock poisoned") = Some(pending);
         Ok(diff)
@@ -226,6 +217,16 @@ impl ConfigReloadService {
             .ok_or_else(|| anyhow::anyhow!("database not configured"))?;
         let records = repo.list(page, per_page).await?;
         Ok(records.into_iter().map(ConfigChangeRow::from).collect())
+    }
+
+    /// Total count of `config_changes` rows, ignoring pagination — backs
+    /// `ConfigChangesResponse.total`.
+    pub async fn count_changes(&self) -> Result<u64, anyhow::Error> {
+        let repo = self
+            .config_change_repo
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("database not configured"))?;
+        Ok(repo.count().await?)
     }
 }
 

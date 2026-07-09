@@ -6,7 +6,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::IntoParams;
 
-use batlehub_core::{entities::EventFilter, error::CoreError, services::AdminService};
+use batlehub_core::{
+    entities::{AccessEvent, EventFilter},
+    error::CoreError,
+    services::AdminService,
+};
 
 use super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity};
@@ -26,6 +30,17 @@ pub struct AuditQuery {
 
 fn default_per_page() -> u64 {
     100
+}
+
+/// Paginated envelope for `GET /api/v1/admin/audit-log`, matching the shape of
+/// its sibling list endpoints (`AdminPackageListResponse`) instead of returning
+/// a bare array with no way to tell if more pages exist.
+#[derive(Serialize)]
+pub struct AuditLogResponse {
+    pub items: Vec<AccessEvent>,
+    pub total: u64,
+    pub page: u64,
+    pub per_page: u64,
 }
 
 /// Query the access audit log (admin).
@@ -48,6 +63,7 @@ pub async fn audit_log(
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
 
+    let (page, per_page) = crate::handlers::clamp_pagination(query.page, query.per_page);
     let filter = EventFilter {
         registry: query.registry.clone(),
         package_name: None,
@@ -55,15 +71,32 @@ pub async fn audit_log(
         from: query.from,
         to: query.to,
         denied_only: query.denied_only.unwrap_or(false),
-        limit: query.per_page,
-        offset: query.page * query.per_page,
+        limit: per_page,
+        offset: page * per_page,
+    };
+    let count_filter = EventFilter {
+        registry: query.registry.clone(),
+        package_name: None,
+        user_id: query.user_id.clone(),
+        from: query.from,
+        to: query.to,
+        denied_only: query.denied_only.unwrap_or(false),
+        limit: 0,
+        offset: 0,
     };
 
-    let events = admin_svc
-        .list_events(filter)
-        .await
-        .map_err(AppError::from)?;
-    Ok(web::Json(events))
+    let (items, total) = tokio::try_join!(
+        admin_svc.list_events(filter),
+        admin_svc.count_events(count_filter),
+    )
+    .map_err(AppError::from)?;
+
+    Ok(web::Json(AuditLogResponse {
+        items,
+        total,
+        page: query.page,
+        per_page: query.per_page,
+    }))
 }
 
 #[derive(Deserialize, IntoParams)]

@@ -37,7 +37,7 @@ pub struct RubyGemsRegistryClient {
 }
 
 impl RubyGemsRegistryClient {
-    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
+    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Result<Self, CoreError> {
         let http = new_http_client(None, opts)?;
         Ok(Self {
             http,

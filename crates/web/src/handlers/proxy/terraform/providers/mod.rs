@@ -4,8 +4,8 @@ use super::{
     require_registry_type, terraform_provider_binary_storage_key, terraform_set_yanked,
     terraform_versions_response, web, AppError, Arc, AuthIdentity, Digest, HttpRequest,
     HttpResponse, LocalRegistryService, NotificationService, PackageId, ProxyService,
-    PublishRequest, RegistryMap, RegistryMode, RegistryModeMap, Responder, Sha256, StorageMeta,
-    TerraformPlatform,
+    PublishPolicyRequest, PublishRequest, RegistryMap, RegistryMode, RegistryModeMap, Responder,
+    Sha256, StorageMeta, TerraformPlatform, TerraformYankRequest,
 };
 
 pub mod read;

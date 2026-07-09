@@ -34,7 +34,7 @@ impl PathProxyRegistryClient {
         registry_type: impl Into<String>,
         base_url: impl Into<String>,
         opts: &UpstreamHttpOptions,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, CoreError> {
         let http =
             apply_upstream_options(reqwest::Client::builder().user_agent("batlehub/0.1"), opts)?;
         Ok(Self {

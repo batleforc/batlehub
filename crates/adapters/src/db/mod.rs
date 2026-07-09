@@ -45,34 +45,29 @@ pub mod sbom;
 pub mod banner;
 
 #[cfg(feature = "db-postgres")]
-pub mod beta_channel;
-
-#[cfg(feature = "db-postgres")]
 pub mod config_change;
-
-#[cfg(feature = "db-postgres")]
-pub mod ownership;
-
-#[cfg(feature = "db-postgres")]
-pub mod storage_admin;
 
 #[cfg(feature = "db-postgres")]
 pub mod packages;
 
 #[cfg(feature = "db-postgres")]
-pub mod quota;
-
-#[cfg(feature = "db-postgres")]
-pub mod team_namespace;
-
-#[cfg(feature = "db-postgres")]
-pub mod user_block;
-
-#[cfg(feature = "db-postgres")]
-pub mod user_tokens;
-
-#[cfg(feature = "db-postgres")]
 pub mod vulnerability;
+
+// ── Domain subfolders, mirroring `batlehub_core::ports`'s auth/governance/ops/storage split ──
+// (registry-domain concerns stay flat above, as `packages`/`artifact_meta` already did before
+// this split — there was no separate `registry/` port module to mirror there.)
+
+#[cfg(feature = "db-postgres")]
+pub mod auth;
+
+#[cfg(feature = "db-postgres")]
+pub mod governance;
+
+#[cfg(feature = "db-postgres")]
+pub mod ops;
+
+#[cfg(feature = "db-postgres")]
+pub mod storage;
 
 #[cfg(feature = "db-postgres")]
 pub use artifact_meta::PgArtifactMetaRepository;
@@ -81,31 +76,31 @@ pub use artifact_meta::PgArtifactMetaRepository;
 pub use banner::PgBannerStore;
 
 #[cfg(feature = "db-postgres")]
-pub use beta_channel::PgBetaChannelStore;
-
-#[cfg(feature = "db-postgres")]
 pub use config_change::PgConfigChangeRepository;
 
 #[cfg(feature = "db-postgres")]
-pub use ownership::PgOwnershipStore;
+pub use governance::beta_channel::PgBetaChannelStore;
 
 #[cfg(feature = "db-postgres")]
-pub use storage_admin::PgStorageAdminRepository;
+pub use governance::ownership::PgOwnershipStore;
+
+#[cfg(feature = "db-postgres")]
+pub use governance::team_namespace::PgTeamNamespaceStore;
+
+#[cfg(feature = "db-postgres")]
+pub use governance::user_block::{InMemoryUserBlockRepository, PgUserBlockRepository};
+
+#[cfg(feature = "db-postgres")]
+pub use ops::quota::PgQuotaRepository;
 
 #[cfg(feature = "db-postgres")]
 pub use packages::PgPackageRepository;
 
 #[cfg(feature = "db-postgres")]
-pub use quota::PgQuotaRepository;
-
-#[cfg(feature = "db-postgres")]
 pub use sbom::PgSbomRepository;
 
 #[cfg(feature = "db-postgres")]
-pub use team_namespace::PgTeamNamespaceStore;
-
-#[cfg(feature = "db-postgres")]
-pub use user_block::{InMemoryUserBlockRepository, PgUserBlockRepository};
+pub use storage::storage_admin::PgStorageAdminRepository;
 
 #[cfg(feature = "db-postgres")]
 pub use vulnerability::PgVulnerabilityRepository;

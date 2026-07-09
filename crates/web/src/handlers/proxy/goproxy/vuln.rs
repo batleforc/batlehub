@@ -7,7 +7,16 @@ use crate::{
     RegistryMap, VulnDbMap,
 };
 
-const DEFAULT_VULN_DB: &str = "https://vuln.go.dev";
+/// Resolves the vuln DB base URL for `registry`, or a 404 if the map builder
+/// omitted it (its absence-means-disabled contract — see
+/// `server/src/hot_config.rs::build_vuln_db_map`).
+fn vuln_db_base_or_disabled(vuln_db: &VulnDbMap, registry: &str) -> Result<String, AppError> {
+    vuln_db.url_for(registry).ok_or_else(|| {
+        AppError::not_found(format!(
+            "vuln DB proxy is disabled for registry '{registry}'"
+        ))
+    })
+}
 
 /// Proxy the Go Vulnerability Database index.
 ///
@@ -37,14 +46,7 @@ pub async fn goproxy_vuln_index(
     let registry = path.into_inner();
     require_registry_type(&registry, "goproxy", &map)?;
 
-    let base = vuln_db
-        .url_for(&registry)
-        .unwrap_or_else(|| DEFAULT_VULN_DB.to_owned());
-    if base.is_empty() {
-        return Err(AppError::not_found(format!(
-            "vuln DB proxy is disabled for registry '{registry}'"
-        )));
-    }
+    let base = vuln_db_base_or_disabled(&vuln_db, &registry)?;
 
     let url = format!("{base}/v1/index.json");
     forward_get(&vuln_db.http, &url).await
@@ -87,14 +89,7 @@ pub async fn goproxy_vuln_entry(
         )));
     }
 
-    let base = vuln_db
-        .url_for(&registry)
-        .unwrap_or_else(|| DEFAULT_VULN_DB.to_owned());
-    if base.is_empty() {
-        return Err(AppError::not_found(format!(
-            "vuln DB proxy is disabled for registry '{registry}'"
-        )));
-    }
+    let base = vuln_db_base_or_disabled(&vuln_db, &registry)?;
 
     let url = format!("{base}/v1/ID/{id}.json");
     forward_get(&vuln_db.http, &url).await
@@ -132,14 +127,7 @@ pub async fn goproxy_vuln_query(
 
     let body = collect_payload(payload).await?;
 
-    let base = vuln_db
-        .url_for(&registry)
-        .unwrap_or_else(|| DEFAULT_VULN_DB.to_owned());
-    if base.is_empty() {
-        return Err(AppError::not_found(format!(
-            "vuln DB proxy is disabled for registry '{registry}'"
-        )));
-    }
+    let base = vuln_db_base_or_disabled(&vuln_db, &registry)?;
 
     let url = format!("{base}/v1/query");
     let resp = vuln_db

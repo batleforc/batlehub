@@ -88,6 +88,12 @@ jobs:
         run: cargo test -p batlehub-adapters --test local_registry -- --nocapture
       - name: Run pg_rate_limit integration tests
         run: cargo test -p batlehub-adapters --test pg_rate_limit -- --nocapture
+      - name: Run pg_vulnerability integration tests
+        run: cargo test -p batlehub-adapters --test pg_vulnerability -- --nocapture
+      - name: Run storage_router integration tests
+        run: cargo test -p batlehub-adapters --test storage_router -- --nocapture
+      - name: Run artifact_meta integration tests
+        run: cargo test -p batlehub-adapters --test artifact_meta -- --nocapture
   integration-s3:
     name: Integration tests (S3 / MinIO)
     runs-on: ubuntu-latest

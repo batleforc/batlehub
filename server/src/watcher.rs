@@ -8,7 +8,7 @@ use opentelemetry_sdk::{trace as sdktrace, Resource};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use batlehub_config::schema::{AppConfig, OtelConfig};
-use batlehub_web::handlers::back_office::warming::WarmingServiceMap;
+use batlehub_web::handlers::back_office::ops::warming::WarmingServiceMap;
 use batlehub_web::services::ConfigReloadService;
 
 // ── CORS ──────────────────────────────────────────────────────────────────────

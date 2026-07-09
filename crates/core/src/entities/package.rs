@@ -70,6 +70,24 @@ pub struct PackageMetadata {
     pub cache_control: Option<String>,
 }
 
+impl PackageMetadata {
+    /// `PackageMetadata` with `extra` set and every other field defaulted to
+    /// `None`. Shared by registry clients (forgejo/github/gitlab) whose
+    /// `resolve_metadata` only knows the package coordinate, not upstream
+    /// timestamps/checksums/signature status.
+    pub fn minimal(id: PackageId, extra: Value) -> Self {
+        Self {
+            id,
+            published_at: None,
+            download_url: None,
+            checksum: None,
+            is_signed: None,
+            extra,
+            cache_control: None,
+        }
+    }
+}
+
 /// Administrative status of a package in this proxy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "lowercase")]

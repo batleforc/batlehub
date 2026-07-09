@@ -6,23 +6,25 @@
 ///
 /// Re-exported at the crate root as `batlehub_adapters::in_memory::*`.
 pub mod artifact_meta;
-pub mod beta_channel;
-pub mod ownership;
 pub mod package_repo;
-pub mod quota;
 pub mod sbom;
-pub mod storage;
-pub mod team_namespace;
-pub mod user_tokens;
 pub mod vulnerability;
 
+// ── Domain subfolders, mirroring `batlehub_core::ports`'s auth/governance/ops/storage split ──
+// (registry-domain concerns stay flat above, as `package_repo`/`artifact_meta` already did
+// before this split — there was no separate `registry/` port module to mirror there.)
+pub mod auth;
+pub mod governance;
+pub mod ops;
+pub mod storage;
+
 pub use artifact_meta::NoopArtifactMetaRepository;
-pub use beta_channel::InMemoryBetaChannelStore;
-pub use ownership::InMemoryOwnershipStore;
+pub use auth::user_tokens::NullUserTokenRepository;
+pub use governance::beta_channel::InMemoryBetaChannelStore;
+pub use governance::ownership::InMemoryOwnershipStore;
+pub use governance::team_namespace::InMemoryTeamNamespaceStore;
+pub use ops::quota::InMemoryQuotaRepository;
 pub use package_repo::InMemoryPackageRepository;
-pub use quota::InMemoryQuotaRepository;
 pub use sbom::{InMemorySbomRepository, NoopSbomRepository};
-pub use storage::InMemoryStorageBackend;
-pub use team_namespace::InMemoryTeamNamespaceStore;
-pub use user_tokens::NullUserTokenRepository;
+pub use storage::backend::InMemoryStorageBackend;
 pub use vulnerability::InMemoryVulnerabilityRepository;

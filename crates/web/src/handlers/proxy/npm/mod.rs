@@ -2,14 +2,15 @@ use std::sync::Arc;
 
 use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder};
 
-use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
     entities::PackageId,
-    error::CoreError,
     services::{LocalRegistryService, ProxyService},
 };
 
-use super::common::{proxy_stream, serve_local_or_proxy_artifact, LocalOrProxyArtifactOpts};
+use super::common::{
+    proxy_stream, serve_local_or_proxy_artifact, serve_local_or_proxy_json,
+    LocalOrProxyArtifactOpts,
+};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
 
 pub mod read;

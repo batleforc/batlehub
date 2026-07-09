@@ -458,7 +458,7 @@ async fn admin_packages_list_blocked_only_filter() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
-    let items = body.as_array().unwrap();
+    let items = body["items"].as_array().unwrap();
     assert!(
         items.iter().all(|i| i["status"]["status"] == "blocked"),
         "only blocked packages expected"
@@ -486,8 +486,8 @@ async fn audit_log_denied_only_filter() {
         .to_request();
     let resp = call_service(&app, audit_req).await;
     assert_eq!(resp.status(), 200);
-    let events: Value = read_body_json(resp).await;
-    let events = events.as_array().unwrap();
+    let body: Value = read_body_json(resp).await;
+    let events = body["items"].as_array().unwrap();
     assert!(!events.is_empty(), "at least one denied event expected");
     assert!(
         events.iter().all(|e| e["result"]["outcome"] == "denied"),

@@ -413,8 +413,8 @@ async fn group_proxy_access_is_recorded_in_audit_log() {
         .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
         .to_request();
     let audit_resp = call_service(&app, audit_req).await;
-    let events: Value = read_body_json(audit_resp).await;
-    let events = events.as_array().unwrap();
+    let body: Value = read_body_json(audit_resp).await;
+    let events = body["items"].as_array().unwrap();
     assert!(!events.is_empty(), "group access event should be recorded");
     assert_eq!(events[0]["result"]["outcome"], "allowed");
     assert_eq!(events[0]["package_id"]["registry"], "github2");

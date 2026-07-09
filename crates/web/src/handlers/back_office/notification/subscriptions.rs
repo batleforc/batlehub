@@ -129,8 +129,8 @@ pub async fn create_subscription(
 )]
 #[get("/api/v1/admin/notifications/subscriptions/{id}")]
 pub async fn get_subscription(
-    identity: AuthIdentity,
     path: web::Path<Uuid>,
+    identity: AuthIdentity,
     notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
@@ -161,8 +161,8 @@ pub async fn get_subscription(
 )]
 #[put("/api/v1/admin/notifications/subscriptions/{id}")]
 pub async fn update_subscription(
-    identity: AuthIdentity,
     path: web::Path<Uuid>,
+    identity: AuthIdentity,
     body: web::Json<UpdateSubscriptionRequest>,
     notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
@@ -213,8 +213,8 @@ pub async fn update_subscription(
 )]
 #[delete("/api/v1/admin/notifications/subscriptions/{id}")]
 pub async fn delete_subscription(
-    identity: AuthIdentity,
     path: web::Path<Uuid>,
+    identity: AuthIdentity,
     notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
@@ -244,8 +244,8 @@ pub async fn delete_subscription(
 )]
 #[post("/api/v1/admin/notifications/subscriptions/{id}/test")]
 pub async fn test_subscription(
-    identity: AuthIdentity,
     path: web::Path<Uuid>,
+    identity: AuthIdentity,
     notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;

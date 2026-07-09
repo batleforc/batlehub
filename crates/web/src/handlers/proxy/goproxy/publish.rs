@@ -1,14 +1,18 @@
 use std::sync::Arc;
 
-use actix_web::{put, web, HttpRequest, HttpResponse, Responder};
+use actix_web::{put, web, HttpRequest, Responder};
 use sha2::{Digest, Sha256};
 
 use batlehub_core::services::{LocalRegistryService, PublishRequest};
 
 use crate::handlers::proxy::common::{
-    collect_payload, extract_signature_headers, require_local_mode, require_registry_type,
+    collect_payload, extract_signature_headers, publish_and_respond, require_local_mode,
+    require_registry_type,
 };
-use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+use crate::{
+    error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
+    RegistryModeMap,
+};
 
 use super::read::extract_go_mod;
 
@@ -39,6 +43,7 @@ use super::read::extract_go_mod;
     ),
     security(("bearer_token" = [])),
 )]
+#[allow(clippy::too_many_arguments)]
 #[put("/proxy/{registry}/{module:[^@]+}@v/{filename}")]
 pub async fn goproxy_publish(
     req: HttpRequest,
@@ -48,6 +53,7 @@ pub async fn goproxy_publish(
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, raw_module, filename) = path.into_inner();
     require_registry_type(&registry, "goproxy", &map)?;
@@ -76,24 +82,22 @@ pub async fn goproxy_publish(
 
     let (signature_bytes, signature_type) = extract_signature_headers(&req);
 
-    let quota = local_svc
-        .publish(PublishRequest {
+    publish_and_respond(
+        &local_svc,
+        &notification_svc,
+        PublishRequest {
             registry,
             name: module.to_owned(),
             version: version.to_owned(),
             artifact: zip_bytes,
             checksum,
             index_metadata,
-            publisher: identity.0.clone(),
+            publisher: identity.0,
             signature_bytes,
             signature_type,
-        })
-        .await
-        .map_err(AppError::from)?;
-
-    let mut resp = HttpResponse::Ok();
-    for (name, value) in quota.headers() {
-        resp.insert_header((name, value));
-    }
-    Ok(resp.json(serde_json::json!({ "ok": true })))
+        },
+        actix_web::http::StatusCode::OK,
+        serde_json::json!({ "ok": true }),
+    )
+    .await
 }

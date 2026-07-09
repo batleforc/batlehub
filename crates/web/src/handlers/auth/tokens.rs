@@ -173,9 +173,9 @@ pub async fn list_tokens(
 )]
 #[delete("/api/v1/auth/tokens/{id}")]
 pub async fn revoke_token(
+    path: web::Path<Uuid>,
     identity: AuthIdentity,
     repo: web::Data<Arc<dyn UserTokenRepository>>,
-    path: web::Path<Uuid>,
 ) -> Result<impl Responder, AppError> {
     let Some(ref user_id) = identity.user_id else {
         return Err(AppError::forbidden(

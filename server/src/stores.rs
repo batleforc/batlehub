@@ -28,6 +28,40 @@ use batlehub_core::services::{QuotaService, SbomService};
 
 pub(super) const DEFAULT_REDIS_URL: &str = "redis://127.0.0.1:6379";
 
+/// Backend selected via `[cache] type = "..."` in config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CacheBackend {
+    Memory,
+    Postgres,
+    Redis,
+}
+
+impl std::str::FromStr for CacheBackend {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "memory" => Ok(Self::Memory),
+            "postgres" => Ok(Self::Postgres),
+            "redis" => Ok(Self::Redis),
+            _ => Err(()),
+        }
+    }
+}
+
+/// Parse `config.cache.cache_type`, falling back to `Memory` with a startup
+/// warning on an unrecognized value. Used by every `create_*_store` function
+/// below so an unparseable `cache_type` produces the same warning and the
+/// same fallback everywhere, instead of the 3-way split (2 warn, 3 silent)
+/// the raw string match previously produced.
+fn cache_backend(config: &AppConfig) -> CacheBackend {
+    let raw = config.cache.cache_type.as_str();
+    raw.parse().unwrap_or_else(|()| {
+        tracing::warn!(cache_type = %raw, "unknown cache type, falling back to memory");
+        CacheBackend::Memory
+    })
+}
+
 /// How far back `prune_expired` reaches on each sweep. Generously larger than
 /// any realistic rate-limit window so a stale row is never pruned mid-window.
 const RATE_LIMIT_PRUNE_RETENTION_SECS: u64 = 24 * 60 * 60;
@@ -170,12 +204,12 @@ pub(super) async fn create_cache_store(
     config: &AppConfig,
     pool: sqlx::PgPool,
 ) -> Result<Arc<dyn CacheStore>> {
-    let store: Arc<dyn CacheStore> = match config.cache.cache_type.as_str() {
-        "postgres" => {
+    let store: Arc<dyn CacheStore> = match cache_backend(config) {
+        CacheBackend::Postgres => {
             tracing::info!("metadata cache: postgres");
             Arc::new(PgCacheStore::new(pool))
         }
-        "redis" => {
+        CacheBackend::Redis => {
             #[cfg(feature = "cache-redis")]
             {
                 let url = config.cache.url.as_deref().unwrap_or(DEFAULT_REDIS_URL);
@@ -194,16 +228,12 @@ pub(super) async fn create_cache_store(
                 Arc::new(InMemoryCacheStore::new())
             }
         }
-        other => {
-            if other != "memory" {
-                tracing::warn!(cache_type = %other, "unknown cache type, falling back to memory");
-            } else {
-                tracing::warn!(
-                    "metadata cache: in-memory — rate-limit, quota, and session state \
-                     are NOT shared between replicas; use [cache] type = \"postgres\" or \
-                     type = \"redis\" in multi-instance deployments"
-                );
-            }
+        CacheBackend::Memory => {
+            tracing::warn!(
+                "metadata cache: in-memory — rate-limit, quota, and session state \
+                 are NOT shared between replicas; use [cache] type = \"postgres\" or \
+                 type = \"redis\" in multi-instance deployments"
+            );
             Arc::new(InMemoryCacheStore::new())
         }
     };
@@ -214,14 +244,14 @@ pub(super) async fn create_rate_limit_store(
     config: &AppConfig,
     pool: sqlx::PgPool,
 ) -> Result<Arc<dyn RateLimitStore>> {
-    let store: Arc<dyn RateLimitStore> = match config.cache.cache_type.as_str() {
-        "postgres" => {
+    let store: Arc<dyn RateLimitStore> = match cache_backend(config) {
+        CacheBackend::Postgres => {
             tracing::info!("rate limit store: postgres");
             let store = Arc::new(PgRateLimitStore::new(pool));
             spawn_rate_limit_prune(Arc::clone(&store));
             store
         }
-        "redis" => {
+        CacheBackend::Redis => {
             #[cfg(feature = "cache-redis")]
             {
                 let url = config.cache.url.as_deref().unwrap_or(DEFAULT_REDIS_URL);
@@ -240,15 +270,7 @@ pub(super) async fn create_rate_limit_store(
                 Arc::new(InMemoryRateLimitStore::new())
             }
         }
-        other => {
-            if other != "memory" {
-                tracing::warn!(
-                    cache_type = %other,
-                    "unknown cache type for rate limit store, falling back to memory"
-                );
-            }
-            Arc::new(InMemoryRateLimitStore::new())
-        }
+        CacheBackend::Memory => Arc::new(InMemoryRateLimitStore::new()),
     };
     Ok(store)
 }
@@ -257,12 +279,12 @@ pub(super) async fn create_ip_block_store(
     config: &AppConfig,
     pool: sqlx::PgPool,
 ) -> Result<Arc<dyn IpBlockStore>> {
-    let store: Arc<dyn IpBlockStore> = match config.cache.cache_type.as_str() {
-        "postgres" => {
+    let store: Arc<dyn IpBlockStore> = match cache_backend(config) {
+        CacheBackend::Postgres => {
             tracing::info!("ip block store: postgres");
             Arc::new(PgIpBlockStore::new(pool))
         }
-        "redis" => {
+        CacheBackend::Redis => {
             #[cfg(feature = "cache-redis")]
             {
                 let url = config.cache.url.as_deref().unwrap_or(DEFAULT_REDIS_URL);
@@ -281,7 +303,7 @@ pub(super) async fn create_ip_block_store(
                 Arc::new(InMemoryIpBlockStore::new())
             }
         }
-        _ => Arc::new(InMemoryIpBlockStore::new()),
+        CacheBackend::Memory => Arc::new(InMemoryIpBlockStore::new()),
     };
     Ok(store)
 }
@@ -296,9 +318,9 @@ pub(super) async fn create_banner_store(
     config: &AppConfig,
     pool: sqlx::PgPool,
 ) -> Result<Arc<dyn BannerPort>> {
-    let store: Arc<dyn BannerPort> = match config.cache.cache_type.as_str() {
-        "postgres" => Arc::new(PgBannerStore::new(pool)),
-        "redis" => {
+    let store: Arc<dyn BannerPort> = match cache_backend(config) {
+        CacheBackend::Postgres => Arc::new(PgBannerStore::new(pool)),
+        CacheBackend::Redis => {
             #[cfg(feature = "cache-redis")]
             {
                 let url = config.cache.url.as_deref().unwrap_or(DEFAULT_REDIS_URL);
@@ -311,7 +333,7 @@ pub(super) async fn create_banner_store(
             #[cfg(not(feature = "cache-redis"))]
             Arc::new(InMemoryBannerStore::new())
         }
-        _ => Arc::new(InMemoryBannerStore::new()),
+        CacheBackend::Memory => Arc::new(InMemoryBannerStore::new()),
     };
     Ok(store)
 }
@@ -321,29 +343,28 @@ pub(super) async fn create_warm_coordinator(
 ) -> Result<Arc<dyn batlehub_core::ports::WarmCoordinator>> {
     use batlehub_core::ports::NoopWarmCoordinator;
 
-    let coordinator: Arc<dyn batlehub_core::ports::WarmCoordinator> =
-        match config.cache.cache_type.as_str() {
-            "redis" => {
-                #[cfg(feature = "cache-redis")]
-                {
-                    let url = config.cache.url.as_deref().unwrap_or(DEFAULT_REDIS_URL);
-                    tracing::info!(url, "warm-up coordinator: redis");
-                    Arc::new(
-                        batlehub_adapters::cache::RedisWarmCoordinator::new(url)
-                            .await
-                            .context("connecting to Redis warm coordinator")?,
-                    )
-                }
-                #[cfg(not(feature = "cache-redis"))]
-                {
-                    tracing::warn!(
-                        "compiled without cache-redis feature; warm-up coordination disabled"
-                    );
-                    Arc::new(NoopWarmCoordinator)
-                }
+    let coordinator: Arc<dyn batlehub_core::ports::WarmCoordinator> = match cache_backend(config) {
+        CacheBackend::Redis => {
+            #[cfg(feature = "cache-redis")]
+            {
+                let url = config.cache.url.as_deref().unwrap_or(DEFAULT_REDIS_URL);
+                tracing::info!(url, "warm-up coordinator: redis");
+                Arc::new(
+                    batlehub_adapters::cache::RedisWarmCoordinator::new(url)
+                        .await
+                        .context("connecting to Redis warm coordinator")?,
+                )
             }
-            _ => Arc::new(NoopWarmCoordinator),
-        };
+            #[cfg(not(feature = "cache-redis"))]
+            {
+                tracing::warn!(
+                    "compiled without cache-redis feature; warm-up coordination disabled"
+                );
+                Arc::new(NoopWarmCoordinator)
+            }
+        }
+        CacheBackend::Postgres | CacheBackend::Memory => Arc::new(NoopWarmCoordinator),
+    };
     Ok(coordinator)
 }
 
@@ -388,4 +409,23 @@ pub(super) fn build_sbom_service(pool: sqlx::PgPool) -> Result<Arc<SbomService>>
         sbom_extractor,
         Some(Arc::new(HttpSbomFetcher::new(sbom_http))),
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CacheBackend;
+
+    #[test]
+    fn cache_backend_parses_known_values() {
+        assert_eq!("memory".parse(), Ok(CacheBackend::Memory));
+        assert_eq!("postgres".parse(), Ok(CacheBackend::Postgres));
+        assert_eq!("redis".parse(), Ok(CacheBackend::Redis));
+    }
+
+    #[test]
+    fn cache_backend_rejects_unknown_values() {
+        assert_eq!("".parse::<CacheBackend>(), Err(()));
+        assert_eq!("Memory".parse::<CacheBackend>(), Err(()));
+        assert_eq!("postgresql".parse::<CacheBackend>(), Err(()));
+    }
 }

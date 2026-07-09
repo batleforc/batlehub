@@ -9,8 +9,8 @@ import { useAuth } from "@/composables/useAuth";
 import { PageHeader } from "@/components/ui/page-header";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import Select from "@/components/ui/select/Select.vue";
-import CodeBlock from "@/components/ui/code-block/CodeBlock.vue";
+import { Select } from "@/components/ui/select";
+import { CodeBlock } from "@/components/ui/code-block";
 import { Card, CardHeader, CardDescription, CardContent } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {

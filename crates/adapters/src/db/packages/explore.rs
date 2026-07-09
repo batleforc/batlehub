@@ -90,6 +90,36 @@ pub(super) async fn list_events_impl(
         .collect()
 }
 
+pub(super) async fn count_events_impl(
+    pool: &PgPool,
+    filter: EventFilter,
+) -> Result<u64, CoreError> {
+    let row = sqlx::query(
+        r#"
+        SELECT COUNT(*) AS total
+        FROM access_events
+        WHERE ($1::text IS NULL OR registry = $1)
+          AND ($2::text IS NULL OR user_id = $2)
+          AND ($3::timestamptz IS NULL OR created_at >= $3)
+          AND ($4::timestamptz IS NULL OR created_at <= $4)
+          AND ($5::boolean = false OR outcome = 'denied')
+          AND ($6::text IS NULL OR package_name = $6)
+        "#,
+    )
+    .bind(&filter.registry)
+    .bind(&filter.user_id)
+    .bind(filter.from)
+    .bind(filter.to)
+    .bind(filter.denied_only)
+    .bind(&filter.package_name)
+    .fetch_one(pool)
+    .await
+    .db_err()?;
+
+    let count: i64 = row.try_get("total").unwrap_or(0);
+    Ok(count as u64)
+}
+
 pub(super) async fn explore_packages_impl(
     pool: &PgPool,
     filter: ExploreFilter,

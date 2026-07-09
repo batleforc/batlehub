@@ -121,6 +121,9 @@ mod tests {
         async fn list_events(&self, _f: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
             Ok(vec![])
         }
+        async fn count_events(&self, _f: EventFilter) -> Result<u64, CoreError> {
+            Ok(0)
+        }
         async fn delete_package(&self, pkg: &PackageId) -> Result<bool, CoreError> {
             Ok(self
                 .statuses
@@ -156,6 +159,9 @@ mod tests {
         }
         async fn list_events(&self, _f: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
             Ok(vec![])
+        }
+        async fn count_events(&self, _f: EventFilter) -> Result<u64, CoreError> {
+            Ok(0)
         }
         async fn delete_package(&self, _: &PackageId) -> Result<bool, CoreError> {
             Ok(false)

@@ -30,7 +30,7 @@ pub struct TerraformRegistryClient {
 }
 
 impl TerraformRegistryClient {
-    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
+    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Result<Self, CoreError> {
         let http = new_http_client(Some(10), opts)?;
         let base_url = base_url.into();
 

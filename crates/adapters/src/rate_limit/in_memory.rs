@@ -2,17 +2,13 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 
 use batlehub_core::error::CoreError;
 use batlehub_core::ports::RateLimitStore;
 
-struct WindowEntry {
-    window_start: u64,
-    count: u64,
-}
+use super::{windowed_increment, WindowEntry};
 
 /// In-process rate-limit counter store backed by a `Mutex<HashMap>`.
 ///
@@ -29,13 +25,6 @@ impl InMemoryRateLimitStore {
     pub fn new() -> Self {
         Self::default()
     }
-
-    fn now_unix() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-    }
 }
 
 #[async_trait]
@@ -44,11 +33,6 @@ impl RateLimitStore for InMemoryRateLimitStore {
         if window_secs == 0 {
             return Err(CoreError::Cache("window_secs must be > 0".into()));
         }
-        let now = Self::now_unix();
-        let ws = window_secs as u64;
-        let window_start = (now / ws) * ws;
-        let window_reset = window_start + ws;
-
         // Include window_secs in the map key so two callers using the same logical
         // key with different window sizes get independent counters.
         let map_key = format!("{key}@{window_secs}");
@@ -56,25 +40,7 @@ impl RateLimitStore for InMemoryRateLimitStore {
             .inner
             .lock()
             .map_err(|_| CoreError::Cache("rate_limit lock poisoned".into()))?;
-
-        // Opportunistic eviction: when the map exceeds 10 000 entries, drop all
-        // entries from windows older than 2 periods to bound memory growth.
-        if map.len() > 10_000 {
-            let cutoff = window_start.saturating_sub(ws * 2);
-            map.retain(|_, e| e.window_start >= cutoff);
-        }
-
-        let entry = map.entry(map_key).or_insert(WindowEntry {
-            window_start,
-            count: 0,
-        });
-
-        if entry.window_start != window_start {
-            entry.window_start = window_start;
-            entry.count = 0;
-        }
-        entry.count += 1;
-        Ok((entry.count, window_reset))
+        Ok(windowed_increment(&mut map, map_key, window_secs))
     }
 }
 
@@ -98,6 +64,7 @@ impl InMemoryRateLimitStore {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[tokio::test]
     async fn increments_within_window() {

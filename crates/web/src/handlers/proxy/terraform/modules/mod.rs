@@ -3,7 +3,8 @@ use super::{
     extract_signature_headers, get, post, require_local_mode, require_registry_type,
     terraform_set_yanked, terraform_versions_response, web, AppError, Arc, AuthIdentity, Digest,
     HttpRequest, HttpResponse, LocalRegistryService, NotificationService, ProxyService,
-    PublishRequest, RegistryMap, RegistryMode, RegistryModeMap, Responder, Sha256, UpstreamMap,
+    PublishRequest, RegistryMap, RegistryMode, RegistryModeMap, Responder, Sha256,
+    TerraformYankRequest, UpstreamMap,
 };
 
 pub mod read;

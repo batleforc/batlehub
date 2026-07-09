@@ -37,7 +37,7 @@ pub struct GitlabRegistryClient {
 }
 
 impl GitlabRegistryClient {
-    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
+    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Result<Self, CoreError> {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             reqwest::header::ACCEPT,
@@ -52,7 +52,7 @@ impl GitlabRegistryClient {
             .user_agent("batlehub/0.1")
             .default_headers(headers);
         let builder = apply_upstream_tls(builder, opts)?;
-        let http = builder.build()?;
+        let http = builder.build().map_err(|e| CoreError::Other(e.into()))?;
 
         let root = base_url.into();
         let root = root.trim_end_matches('/');
@@ -203,15 +203,10 @@ impl RegistryClient for GitlabRegistryClient {
                 || artifact.starts_with("rawfile/")
                 || artifact.starts_with("pkgpath/")
             {
-                return Ok(PackageMetadata {
-                    id: pkg.clone(),
-                    published_at: None,
-                    download_url: None,
-                    checksum: None,
-                    is_signed: None,
-                    extra: serde_json::Value::Null,
-                    cache_control: None,
-                });
+                return Ok(PackageMetadata::minimal(
+                    pkg.clone(),
+                    serde_json::Value::Null,
+                ));
             }
         }
 
@@ -229,15 +224,7 @@ impl RegistryClient for GitlabRegistryClient {
                 )
                 .unwrap_or_default();
 
-                Ok(PackageMetadata {
-                    id: pkg.clone(),
-                    published_at: None,
-                    download_url: None,
-                    checksum: None,
-                    is_signed: None,
-                    extra,
-                    cache_control: None,
-                })
+                Ok(PackageMetadata::minimal(pkg.clone(), extra))
             }
 
             tag => {

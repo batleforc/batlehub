@@ -5,12 +5,12 @@ use actix_web::{get, web, HttpRequest, HttpResponse, Responder};
 use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
     entities::PackageId,
-    error::CoreError,
     services::{LocalRegistryService, ProxyService},
 };
 
 use crate::handlers::proxy::common::{
-    proxy_stream, require_registry_type, serve_local_or_proxy_artifact, LocalOrProxyArtifactOpts,
+    require_registry_type, serve_local_or_proxy_artifact, serve_local_or_proxy_json,
+    LocalOrProxyArtifactOpts,
 };
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
 
@@ -115,37 +115,29 @@ pub async fn composer_p2_metadata(
     let p2_artifact = if is_dev { "p2~dev" } else { "p2" };
 
     let base_url = build_base_url(&req);
-    let mode = mode_map.get(&registry);
 
-    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        match local_svc
-            .get_composer_p2_response(&registry, &package_name, &base_url, &identity.0)
-            .await
-        {
-            Ok(json) => {
-                return Ok(HttpResponse::Ok()
-                    .content_type("application/json")
-                    .json(json));
-            }
-            Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {
-                // fall through to proxy
-            }
-            Err(CoreError::NotFound(_)) => {
-                return Err(AppError::not_found(format!(
-                    "composer package '{package_name}' not found in local registry '{registry}'"
-                )));
-            }
-            Err(e) => return Err(AppError::from(e)),
-        }
-    }
-
-    // Proxy mode (or hybrid fallback): fetch from upstream via ProxyService.
     // Use version="_index" so the artifact key is stable; p2_artifact encodes the ~dev variant.
     let pkg = PackageId::new(&registry, &package_name, "_index").with_artifact(p2_artifact);
-    proxy_stream(
+    let not_found_msg =
+        format!("composer package '{package_name}' not found in local registry '{registry}'");
+    let (fetch_registry, fetch_package_name) = (registry.clone(), package_name.clone());
+    serve_local_or_proxy_json(
         svc,
-        pkg,
+        &mode_map,
+        &registry,
         identity,
+        move |identity: batlehub_core::entities::Identity| async move {
+            local_svc
+                .get_composer_p2_response(
+                    &fetch_registry,
+                    &fetch_package_name,
+                    &base_url,
+                    &identity,
+                )
+                .await
+        },
+        not_found_msg,
+        pkg,
         batlehub_core::rules::resource_type::RELEASES_READ,
         Some("application/json"),
     )

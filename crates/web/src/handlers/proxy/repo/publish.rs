@@ -12,16 +12,19 @@ use actix_web::{put, web, HttpResponse, Responder};
 
 use batlehub_adapters::repo::{deb, gzip, pacman, rpm, OpenPgpSigner};
 use batlehub_core::{
+    entities::NotificationEventType,
     error::CoreError,
     ports::{StorageBackend, StorageMeta},
     services::{LocalRegistryService, PublishPolicyRequest},
 };
 
-use super::super::common::{collect_payload, collect_storage_stream, require_registry_type};
+use super::super::common::{
+    collect_payload, collect_storage_stream, dispatch_notification, require_registry_type,
+};
 use super::repo_storage_key;
 use crate::{
     error::AppError, extractors::AuthIdentity, handlers::back_office::require_authenticated,
-    RegistryMap, RegistryModeMap, RepoSignerMap,
+    services::NotificationService, RegistryMap, RegistryModeMap, RepoSignerMap,
 };
 
 // ── Small storage helpers ───────────────────────────────────────────────────
@@ -41,6 +44,29 @@ async fn read_opt(storage: &dyn StorageBackend, key: &str) -> Result<Option<Vec<
     match storage.retrieve(key).await.map_err(AppError::from)? {
         Some(a) => Ok(Some(collect_storage_stream(a.stream).await?.to_vec())),
         None => Ok(None),
+    }
+}
+
+/// Runs `op` (the storage-write + index-regeneration steps of a publish) and,
+/// if it fails, revokes the publish quota that `enforce_publish_policy` already
+/// recorded — so a transient write error doesn't permanently charge the
+/// publisher for an artifact that never landed. Shared by deb/rpm/pacman's
+/// publish handlers, which otherwise each repeat this exact wrapper.
+async fn publish_with_quota_rollback<T>(
+    local_svc: &LocalRegistryService,
+    identity: &batlehub_core::entities::Identity,
+    registry: &str,
+    artifact_len: u64,
+    op: impl std::future::Future<Output = Result<T, AppError>>,
+) -> Result<T, AppError> {
+    match op.await {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            local_svc
+                .revoke_publish_quota(identity, registry, artifact_len)
+                .await;
+            Err(e)
+        }
     }
 }
 
@@ -88,6 +114,7 @@ fn http_date() -> String {
     ),
     security(("bearer_token" = [])),
 )]
+#[allow(clippy::too_many_arguments)]
 #[put("/proxy/{registry}/deb/pool/{distribution}/{component}/upload")]
 pub async fn deb_publish(
     path: web::Path<(String, String, String)>,
@@ -97,6 +124,7 @@ pub async fn deb_publish(
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
     signers: web::Data<RepoSignerMap>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, distribution, component) = path.into_inner();
     require_registry_type(&registry, "deb", &map)?;
@@ -151,10 +179,7 @@ pub async fn deb_publish(
         .await
         .map_err(AppError::from)?;
 
-    // `enforce_publish_policy` has already recorded quota; revoke it if any storage
-    // step below fails so a transient write error doesn't permanently charge the
-    // publisher for an artifact that never landed (mirrors `publish()`'s rollback).
-    let stored: Result<(), AppError> = async {
+    publish_with_quota_rollback(&local_svc, &identity.0, &registry, artifact_len, async {
         let storage = local_svc.storage.as_ref();
         let pool = deb::pool_path(&component, &pkg).map_err(AppError::from)?;
 
@@ -171,14 +196,17 @@ pub async fn deb_publish(
         // 3. Regenerate the suite indexes (Packages per component/arch + Release).
         let signer = signers.get(&registry);
         regenerate_deb(storage, &registry, &distribution, signer.as_deref()).await
-    }
-    .await;
-    if let Err(e) = stored {
-        local_svc
-            .revoke_publish_quota(&identity.0, &registry, artifact_len)
-            .await;
-        return Err(e);
-    }
+    })
+    .await?;
+
+    dispatch_notification(
+        &notification_svc,
+        NotificationEventType::PackagePublished,
+        &registry,
+        &name,
+        Some(version.clone()),
+        &identity.0.user_id.clone().unwrap_or_default(),
+    );
 
     Ok(HttpResponse::Created().body(format!("published {name} {version} ({arch})")))
 }
@@ -311,6 +339,7 @@ async fn regenerate_deb(
     ),
     security(("bearer_token" = [])),
 )]
+#[allow(clippy::too_many_arguments)]
 #[put("/proxy/{registry}/rpm/upload")]
 pub async fn rpm_publish(
     path: web::Path<String>,
@@ -320,6 +349,7 @@ pub async fn rpm_publish(
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
     signers: web::Data<RepoSignerMap>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
     require_registry_type(&registry, "rpm", &map)?;
@@ -367,7 +397,7 @@ pub async fn rpm_publish(
         .map_err(AppError::from)?;
 
     // Revoke the quota recorded above if any storage step fails (see `deb_publish`).
-    let stored: Result<(), AppError> = async {
+    publish_with_quota_rollback(&local_svc, &identity.0, &registry, artifact_len, async {
         let storage = local_svc.storage.as_ref();
         // 1. Store the .rpm (`Bytes` clone is a cheap refcount bump).
         store_bytes(
@@ -383,14 +413,17 @@ pub async fn rpm_publish(
         // 3. Regenerate repodata.
         let signer = signers.get(&registry);
         regenerate_rpm(storage, &registry, signer.as_deref()).await
-    }
-    .await;
-    if let Err(e) = stored {
-        local_svc
-            .revoke_publish_quota(&identity.0, &registry, artifact_len)
-            .await;
-        return Err(e);
-    }
+    })
+    .await?;
+
+    dispatch_notification(
+        &notification_svc,
+        NotificationEventType::PackagePublished,
+        &registry,
+        &pkg.name,
+        Some(pkg.version.clone()),
+        &identity.0.user_id.clone().unwrap_or_default(),
+    );
 
     Ok(HttpResponse::Created().body(format!("published {}", pkg.nevra())))
 }
@@ -471,6 +504,7 @@ async fn regenerate_rpm(
     ),
     security(("bearer_token" = [])),
 )]
+#[allow(clippy::too_many_arguments)]
 #[put("/proxy/{registry}/pacman/upload")]
 pub async fn pacman_publish(
     path: web::Path<String>,
@@ -480,6 +514,7 @@ pub async fn pacman_publish(
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
     signers: web::Data<RepoSignerMap>,
+    notification_svc: web::Data<Option<Arc<NotificationService>>>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
     require_registry_type(&registry, "pacman", &map)?;
@@ -535,7 +570,7 @@ pub async fn pacman_publish(
         .map_err(AppError::from)?;
 
     // Revoke the quota recorded above if any storage step fails (see `deb_publish`).
-    let stored: Result<(), AppError> = async {
+    publish_with_quota_rollback(&local_svc, &identity.0, &registry, artifact_len, async {
         let storage = local_svc.storage.as_ref();
         let signer = signers.get(&registry);
         let pkg_path = format!("{arch}/{filename}");
@@ -569,14 +604,17 @@ pub async fn pacman_publish(
 
         // 4. Regenerate the per-arch database.
         regenerate_pacman(storage, &registry, &arch, signer.as_deref()).await
-    }
-    .await;
-    if let Err(e) = stored {
-        local_svc
-            .revoke_publish_quota(&identity.0, &registry, artifact_len)
-            .await;
-        return Err(e);
-    }
+    })
+    .await?;
+
+    dispatch_notification(
+        &notification_svc,
+        NotificationEventType::PackagePublished,
+        &registry,
+        &name,
+        Some(version.clone()),
+        &identity.0.user_id.clone().unwrap_or_default(),
+    );
 
     Ok(HttpResponse::Created().body(format!("published {name} {version} ({arch})")))
 }

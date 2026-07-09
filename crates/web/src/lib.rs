@@ -299,8 +299,8 @@ impl From<HashMap<String, CargoIndexProxy>> for CargoIndexMap {
 }
 
 use actix_web::web;
-use handlers::back_office::eviction::EvictionServiceMap;
-use handlers::back_office::warming::WarmingServiceMap;
+use handlers::back_office::ops::eviction::EvictionServiceMap;
+use handlers::back_office::ops::warming::WarmingServiceMap;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::OpenApi;
 use utoipa_actix_web::{service_config::ServiceConfig as UtoipaServiceConfig, AppExt};
@@ -377,7 +377,6 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
         back_office::{
             access_check::admin_access_check,
             audit::{audit_log, export_audit_log, purge_audit_log},
-            beta_channel::{add_beta_member, list_beta_members, remove_beta_member},
             bulk::{
                 bulk_delete, bulk_unyank, bulk_yank as bulk_yank_handler, deprecate, relist,
                 undeprecate, unlist,
@@ -387,33 +386,38 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                 get_pending_reload, list_config_changes, load_config_from_content, reload_config,
                 set_banner, validate_config_content,
             },
-            eviction::{delete_cached_artifact, evict_registry},
             explore::invalidate_explore_cache,
+            governance::{
+                beta_channel::{add_beta_member, list_beta_members, remove_beta_member},
+                ownership::{add_package_owner, list_package_owners, remove_package_owner},
+                team_namespaces::{
+                    claim_namespace, list_namespaces, my_namespace_packages, my_namespaces,
+                    release_namespace,
+                },
+                user_block::{block_user, list_blocked_users, unblock_user},
+            },
             health::{clear_registry_cache, registry_health},
-            ip_blocks::{block_ip, list_blocked_ips, unblock_ip},
             notification::{
                 create_subscription, delete_subscription, get_subscription,
                 list_notification_channels, list_subscriptions, test_subscription,
                 update_subscription,
             },
-            ownership::{add_package_owner, list_package_owners, remove_package_owner},
+            ops::{
+                eviction::{delete_cached_artifact, evict_registry},
+                ip_blocks::{block_ip, list_blocked_ips, unblock_ip},
+                quota::{
+                    get_quota_for_user, list_quota, list_quota_for_registry, reset_quota_for_user,
+                },
+                warming::{get_warming_status, warm_registry},
+            },
             packages::{
                 block_package, bulk_block_packages, bulk_delete_packages, bulk_unblock_packages,
                 delete_package, invalidate_package, list_packages as admin_list_packages,
                 package_detail, unblock_package,
             },
-            quota::{
-                get_quota_for_user, list_quota, list_quota_for_registry, reset_quota_for_user,
-            },
             sbom::{export_org_sbom, get_artifact_sbom},
             stats::admin_stats,
-            team_namespaces::{
-                claim_namespace, list_namespaces, my_namespace_packages, my_namespaces,
-                release_namespace,
-            },
-            user_block::{block_user, list_blocked_users, unblock_user},
             visibility::{get_package_visibility, set_package_visibility},
-            warming::{get_warming_status, warm_registry},
         },
         front_office::{
             banner::get_banner,

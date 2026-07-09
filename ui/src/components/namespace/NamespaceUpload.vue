@@ -6,9 +6,9 @@ import { API_BASE_URL } from "@/config";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import Select from "@/components/ui/select/Select.vue";
+import { Select } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import CodeBlock from "@/components/ui/code-block/CodeBlock.vue";
+import { CodeBlock } from "@/components/ui/code-block";
 
 const props = defineProps<{ registries: RegistryInfo[] }>();
 

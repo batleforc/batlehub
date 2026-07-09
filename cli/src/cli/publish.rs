@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use anyhow::{bail, Result};
 use clap::Args;
 
+use batlehub_core::entities::RegistryKind;
+
 use crate::api::{publish::detect_meta, BatleHubClient};
 
 #[derive(Args)]
@@ -91,48 +93,57 @@ pub async fn run(
         registry_type, name, version, registry
     );
 
+    // Parse up front so a typo or undetected type ("?") gets a clear
+    // unknown-registry-type error instead of silently falling into the
+    // catch-all "not yet supported" message below, which is reserved for
+    // registry types that are real but don't fit this command's single-file
+    // publish model (maven, terraform, goproxy, ...).
+    let kind: RegistryKind = registry_type
+        .parse()
+        .map_err(|e: String| anyhow::anyhow!(e))?;
+
     // Dispatch by detected (or inferred) registry type
-    match registry_type.as_str() {
-        "nuget" => {
+    match kind {
+        RegistryKind::Nuget => {
             client.publish_nuget(&registry, &args.file).await?;
         }
-        "pacman" => {
+        RegistryKind::Pacman => {
             client.publish_pacman(&registry, &args.file).await?;
         }
-        "pypi" => {
+        RegistryKind::Pypi => {
             client
                 .publish_pypi(&registry, &name, &version, &args.file)
                 .await?;
         }
-        "rubygems" => {
+        RegistryKind::Rubygems => {
             client.publish_rubygems(&registry, &args.file).await?;
         }
-        "npm" => {
+        RegistryKind::Npm => {
             client
                 .publish_npm(&registry, &name, &version, &args.file)
                 .await?;
         }
-        "cargo" => {
+        RegistryKind::Cargo => {
             client
                 .publish_cargo(&registry, &name, &version, &args.file)
                 .await?;
         }
-        "composer" => {
+        RegistryKind::Composer => {
             client
                 .publish_composer(&registry, &args.file, args.version.as_deref())
                 .await?;
         }
-        "conda" => {
+        RegistryKind::Conda => {
             client
                 .publish_conda(&registry, &args.platform, &args.file)
                 .await?;
         }
-        "openvsx" => {
+        RegistryKind::Openvsx => {
             client
                 .publish_openvsx(&registry, &name, &version, &args.file)
                 .await?;
         }
-        "deb" => {
+        RegistryKind::Deb => {
             let distribution = args.distribution.as_deref().ok_or_else(|| {
                 anyhow::anyhow!("publishing a .deb requires --distribution (e.g. 'stable')")
             })?;
@@ -143,12 +154,12 @@ pub async fn run(
                 .publish_deb(&registry, distribution, component, &args.file)
                 .await?;
         }
-        "rpm" => {
+        RegistryKind::Rpm => {
             client.publish_rpm(&registry, &args.file).await?;
         }
-        _ => {
+        other => {
             bail!(
-                "automatic publish is not yet supported for registry type '{registry_type}'. \
+                "automatic publish is not yet supported for registry type '{other}'. \
                  Maven (multi-file: jar+pom+checksums), Terraform (providers need \
                  shasums/signature files, modules need packaging), and Go (needs an \
                  .info/.mod/.zip triad) don't fit this command's single-file model \

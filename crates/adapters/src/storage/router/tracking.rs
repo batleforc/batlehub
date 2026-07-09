@@ -11,19 +11,18 @@ impl StorageRouter {
     pub(super) async fn recorded_backend_for_key(
         &self,
         key: &str,
-    ) -> Option<Arc<dyn StorageBackend>> {
+    ) -> Result<Option<Arc<dyn StorageBackend>>, CoreError> {
         use sqlx::Row;
         let result =
             sqlx::query("SELECT backend_name FROM artifact_storage WHERE storage_key = $1")
                 .bind(key)
                 .fetch_optional(&self.pool)
                 .await
-                .ok()
-                .flatten();
+                .map_err(|e| CoreError::Storage(e.to_string()))?;
 
-        result
+        Ok(result
             .and_then(|r| r.try_get::<String, _>("backend_name").ok())
-            .and_then(|name| self.backends.get(&name).cloned())
+            .and_then(|name| self.backends.get(&name).cloned()))
     }
 
     /// Look up the physical `content_key` for a logical artifact key via the dedup tables.
@@ -31,7 +30,7 @@ impl StorageRouter {
     pub(super) async fn dedup_content_key(
         &self,
         logical_key: &str,
-    ) -> Option<(String, Arc<dyn StorageBackend>)> {
+    ) -> Result<Option<(String, Arc<dyn StorageBackend>)>, CoreError> {
         use sqlx::Row;
         let row = sqlx::query(
             r#"
@@ -46,18 +45,25 @@ impl StorageRouter {
         .bind(&self.default_name)
         .fetch_optional(&self.pool)
         .await
-        .ok()
-        .flatten()?;
+        .map_err(|e| CoreError::Storage(e.to_string()))?;
 
-        let content_key: String = row.try_get("content_key").ok()?;
-        let backend_name: String = row.try_get("backend_name").ok()?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        let content_key: String = row
+            .try_get("content_key")
+            .map_err(|e| CoreError::Storage(e.to_string()))?;
+        let backend_name: String = row
+            .try_get("backend_name")
+            .map_err(|e| CoreError::Storage(e.to_string()))?;
         let backend = self
             .backends
             .get(&backend_name)
             .cloned()
-            .or_else(|| self.backends.get(&self.default_name).cloned())?;
+            .or_else(|| self.backends.get(&self.default_name).cloned());
 
-        Some((content_key, backend))
+        Ok(backend.map(|b| (content_key, b)))
     }
 
     pub(super) async fn record_backend(

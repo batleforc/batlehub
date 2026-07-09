@@ -145,6 +145,25 @@ async fn deb_publish_requires_authentication() {
 }
 
 #[actix_web::test]
+async fn deb_publish_traversal_in_control_file_returns_400() {
+    let parts = local_registry_app_parts("apt", "deb", RegistryMode::Local, None);
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+
+    let control =
+        "Package: ../../etc\nVersion: 1.0\nArchitecture: amd64\nMaintainer: me\nDescription: hi\n";
+    let resp = call_service(
+        &app,
+        TestRequest::put()
+            .uri("/proxy/apt/deb/pool/stable/main/upload")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .set_payload(make_test_deb(control))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[actix_web::test]
 async fn deb_signed_publish_emits_inrelease_and_key() {
     // 32-byte Ed25519 seed (hex).
     let seed = "9d61b19deffeba00aa3f3b6e3b0fe6a3f3a76b08e2c0a3f3b6e3b0fe6a3f3a76";
@@ -293,6 +312,60 @@ async fn rpm_publish_then_read_repodata_and_package() {
     .await;
     assert_eq!(pkg.status(), 200);
     assert_eq!(read_body(pkg).await.to_vec(), rpm_bytes);
+}
+
+/// rpm_publish doesn't call `validate_coordinate` like deb/pacman do — it derives
+/// its storage id from `RpmPackage::storage_id()` (name-version-release[.epoch].arch)
+/// and validates that with `validate_path_safe`, so the traversal payload must be
+/// injected into the RPM header's name field rather than assumed to hit the same
+/// validation function as the other two formats.
+///
+/// `rpm::PackageBuilder` itself rejects '/' in the name/version fields, so a
+/// well-formed build can never carry a traversal payload — this simulates a
+/// hand-crafted malicious upload by patching the built header bytes in place,
+/// swapping the safely-built name for a same-length string containing a `..`
+/// path segment. `rpm::Package::parse` (used by `parse_rpm`) does not re-validate
+/// the character set on read, only the builder does on write.
+#[actix_web::test]
+async fn rpm_publish_traversal_in_header_returns_400() {
+    let parts = local_registry_app_parts("yum", "rpm", RegistryMode::Local, None);
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+
+    let pkg = rpm::PackageBuilder::new("abcde", "1.0", "MIT", "x86_64", "a greeting")
+        .with_file_contents(
+            b"#!/bin/sh\necho hi\n".to_vec(),
+            rpm::FileOptions::new("/usr/bin/hello").mode(0o100755),
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut rpm_bytes = Vec::new();
+    pkg.write(&mut rpm_bytes).unwrap();
+
+    // Swap every occurrence of the 5-byte placeholder name for a same-length
+    // traversal payload, so the header's tag-length bookkeeping stays valid
+    // regardless of which of the legacy lead / main header / auto-provide
+    // entries actually feeds `parse_rpm`'s extracted name.
+    let needle = b"abcde";
+    let replacement = b"a/../";
+    let mut i = 0;
+    while i + needle.len() <= rpm_bytes.len() {
+        if &rpm_bytes[i..i + needle.len()] == needle {
+            rpm_bytes[i..i + needle.len()].copy_from_slice(replacement);
+        }
+        i += 1;
+    }
+
+    let resp = call_service(
+        &app,
+        TestRequest::put()
+            .uri("/proxy/yum/rpm/upload")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .set_payload(rpm_bytes)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
 }
 
 #[actix_web::test]
@@ -538,6 +611,24 @@ async fn pacman_publish_requires_authentication() {
     )
     .await;
     assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn pacman_publish_traversal_in_pkginfo_returns_400() {
+    let parts = local_registry_app_parts("arch", "pacman", RegistryMode::Local, None);
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+
+    let pkginfo = "pkgname = hello\npkgbase = hello\npkgver = ../../etc-1\npkgdesc = A greeting\nurl = https://example.com\nbuilddate = 1700000000\npackager = me\nsize = 4096\narch = x86_64\nlicense = MIT\ndepend = glibc\n";
+    let resp = call_service(
+        &app,
+        TestRequest::put()
+            .uri("/proxy/arch/pacman/upload")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .set_payload(make_test_pkg(pkginfo))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
 }
 
 #[actix_web::test]

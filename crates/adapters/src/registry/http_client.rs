@@ -184,17 +184,20 @@ pub fn to_registry_error(e: reqwest::Error) -> CoreError {
     CoreError::Registry(e.to_string())
 }
 
+/// True when `a` and `b` share scheme, host, and (explicit-or-default) port.
+pub fn same_origin(a: &reqwest::Url, b: &reqwest::Url) -> bool {
+    a.scheme() == b.scheme()
+        && a.host_str() == b.host_str()
+        && a.port_or_known_default() == b.port_or_known_default()
+}
+
 pub fn ensure_same_origin(url: &str, base_url: &str) -> Result<(), CoreError> {
     let parsed = reqwest::Url::parse(url)
         .map_err(|e| CoreError::Registry(format!("invalid upstream URL '{url}': {e}")))?;
     let base = reqwest::Url::parse(base_url)
         .map_err(|e| CoreError::Registry(format!("invalid base URL '{base_url}': {e}")))?;
 
-    let same_scheme = parsed.scheme() == base.scheme();
-    let same_host = parsed.host_str() == base.host_str();
-    let same_port = parsed.port_or_known_default() == base.port_or_known_default();
-
-    if same_scheme && same_host && same_port {
+    if same_origin(&parsed, &base) {
         Ok(())
     } else {
         Err(CoreError::Registry(format!(
@@ -265,6 +268,23 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, CoreError::Registry(_)));
+    }
+
+    #[test]
+    fn percent_encode_alphanumeric_and_safe_chars_unchanged() {
+        assert_eq!(percent_encode("abc123-_.~"), "abc123-_.~");
+    }
+
+    #[test]
+    fn percent_encode_encodes_space_and_special_chars() {
+        let encoded = percent_encode("hello world+foo=bar");
+        assert!(encoded.contains("%20"), "space should be %20");
+        assert!(encoded.contains("%2B"), "plus should be %2B");
+        assert!(encoded.contains("%3D"), "equals should be %3D");
+        assert!(
+            !encoded.contains(' '),
+            "encoded string should have no raw spaces"
+        );
     }
 
     #[test]

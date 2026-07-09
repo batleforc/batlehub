@@ -265,8 +265,8 @@ async fn proxy_access_is_recorded_in_audit_log() {
         .to_request();
     let audit_resp = call_service(&app, audit_req).await;
     assert_eq!(audit_resp.status(), 200);
-    let events: Value = read_body_json(audit_resp).await;
-    let events = events.as_array().unwrap();
+    let body: Value = read_body_json(audit_resp).await;
+    let events = body["items"].as_array().unwrap();
     assert!(
         !events.is_empty(),
         "at least one access event should be recorded"
@@ -293,8 +293,8 @@ async fn denied_proxy_access_is_recorded_as_denied_in_audit_log() {
         .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
         .to_request();
     let audit_resp = call_service(&app, audit_req).await;
-    let events: Value = read_body_json(audit_resp).await;
-    let events = events.as_array().unwrap();
+    let body: Value = read_body_json(audit_resp).await;
+    let events = body["items"].as_array().unwrap();
     assert!(!events.is_empty(), "denied access should be recorded");
     assert_eq!(events[0]["result"]["outcome"], "denied");
 }

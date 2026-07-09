@@ -1110,8 +1110,12 @@ fn admin_audit_log_json_empty() {
         AUTH_TOKEN,
     );
     assert!(ok, "audit-log --json should succeed; stderr: {stderr}");
-    let arr: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON array");
-    assert!(arr.is_empty(), "stdout: {stdout}");
+    let body: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON object");
+    assert!(
+        body["items"].as_array().unwrap().is_empty(),
+        "stdout: {stdout}"
+    );
+    assert_eq!(body["total"], 0);
 }
 
 #[test]

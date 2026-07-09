@@ -92,13 +92,10 @@ pub async fn explore_packages(
         _ => ExploreSortBy::Downloads,
     };
 
-    // Clamp caller-supplied pagination: `per_page=0` would make `LIMIT 0` return
-    // zero rows while the count query still reports a nonzero total, and would
-    // also collapse `filter`'s cache key onto `count_filter`'s (both would be
-    // limit=0,offset=0). `page` is capped to keep `page * per_page` from
-    // overflowing `u64`.
-    let per_page = query.per_page.clamp(1, 100);
-    let page = query.page.min(10_000);
+    // See `clamp_pagination`'s doc comment for why page/per_page are clamped;
+    // an unclamped per_page=0 here would also collapse `filter`'s cache key
+    // onto `count_filter`'s (both would be limit=0,offset=0).
+    let (page, per_page) = crate::handlers::clamp_pagination(query.page, query.per_page);
 
     let filter = ExploreFilter {
         registry: query.registry.clone(),

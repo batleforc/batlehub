@@ -1,7 +1,7 @@
 use super::{
-    get, proxy_stream, require_registry_type, serve_local_or_proxy_artifact, web, AppError, Arc,
-    AuthIdentity, HttpResponse, LocalOrProxyArtifactOpts, LocalRegistryService, PackageId,
-    ProxyService, RegistryMap, RegistryMode, RegistryModeMap, Responder,
+    get, proxy_stream, require_registry_type, serve_local_or_proxy_artifact,
+    serve_local_or_proxy_json, web, AppError, Arc, AuthIdentity, LocalOrProxyArtifactOpts,
+    LocalRegistryService, PackageId, ProxyService, RegistryMap, RegistryModeMap, Responder,
 };
 
 /// Download a gem file.
@@ -87,27 +87,21 @@ pub async fn gem_info(
     let (registry, name) = path.into_inner();
     require_registry_type(&registry, "rubygems", &map)?;
 
-    let mode = mode_map.get(&registry);
-    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        match local_svc
-            .get_rubygems_gem_info(&registry, &name, &identity)
-            .await
-        {
-            Ok(info) => return Ok(HttpResponse::Ok().json(info)),
-            Err(batlehub_core::error::CoreError::NotFound(_))
-                if matches!(mode, RegistryMode::Hybrid) => {}
-            Err(batlehub_core::error::CoreError::NotFound(_)) => {
-                return Err(AppError::not_found(format!("gem '{name}' not found")));
-            }
-            Err(e) => return Err(AppError::from(e)),
-        }
-    }
-
     let pkg = PackageId::new(&registry, &name, "info");
-    proxy_stream(
+    let not_found_msg = format!("gem '{name}' not found");
+    let (fetch_registry, fetch_name) = (registry.clone(), name.clone());
+    serve_local_or_proxy_json(
         svc,
-        pkg,
+        &mode_map,
+        &registry,
         identity,
+        move |identity: batlehub_core::entities::Identity| async move {
+            local_svc
+                .get_rubygems_gem_info(&fetch_registry, &fetch_name, &identity)
+                .await
+        },
+        not_found_msg,
+        pkg,
         batlehub_core::rules::resource_type::RELEASES_READ,
         Some("application/json"),
     )
@@ -142,27 +136,21 @@ pub async fn gem_versions(
     let (registry, name) = path.into_inner();
     require_registry_type(&registry, "rubygems", &map)?;
 
-    let mode = mode_map.get(&registry);
-    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        match local_svc
-            .get_rubygems_versions(&registry, &name, &identity)
-            .await
-        {
-            Ok(versions) => return Ok(HttpResponse::Ok().json(versions)),
-            Err(batlehub_core::error::CoreError::NotFound(_))
-                if matches!(mode, RegistryMode::Hybrid) => {}
-            Err(batlehub_core::error::CoreError::NotFound(_)) => {
-                return Err(AppError::not_found(format!("gem '{name}' not found")));
-            }
-            Err(e) => return Err(AppError::from(e)),
-        }
-    }
-
     let pkg = PackageId::new(&registry, &name, "versions");
-    proxy_stream(
+    let not_found_msg = format!("gem '{name}' not found");
+    let (fetch_registry, fetch_name) = (registry.clone(), name.clone());
+    serve_local_or_proxy_json(
         svc,
-        pkg,
+        &mode_map,
+        &registry,
         identity,
+        move |identity: batlehub_core::entities::Identity| async move {
+            local_svc
+                .get_rubygems_versions(&fetch_registry, &fetch_name, &identity)
+                .await
+        },
+        not_found_msg,
+        pkg,
         batlehub_core::rules::resource_type::RELEASES_READ,
         Some("application/json"),
     )

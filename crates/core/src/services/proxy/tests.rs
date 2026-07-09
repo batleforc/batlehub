@@ -263,6 +263,9 @@ impl PackageRepository for SpyRepo {
     async fn list_events(&self, _filter: EventFilter) -> Result<Vec<AccessEvent>, CoreError> {
         Ok(self.events.lock().unwrap().clone())
     }
+    async fn count_events(&self, _filter: EventFilter) -> Result<u64, CoreError> {
+        Ok(self.events.lock().unwrap().len() as u64)
+    }
     async fn delete_package(&self, _pkg: &PackageId) -> Result<bool, CoreError> {
         Ok(false)
     }
@@ -1552,7 +1555,7 @@ async fn integrity_disabled_skips_verification_even_on_mismatch() {
 /// Build a ProxyService whose cached artifact (`storage`) and recorded checksum
 /// (`spy_meta`) can be set up independently, so a test can simulate a cached
 /// artifact whose stored bytes no longer match the checksum recorded at cache time.
-fn reserve_proxy(
+fn reverify_proxy(
     verify_on_serve: bool,
     spy_meta: Arc<SpyArtifactMeta>,
     storage: Arc<MemStorage>,
@@ -1599,7 +1602,7 @@ fn reserve_proxy(
 }
 
 #[tokio::test]
-async fn reserve_verification_serves_when_stored_bytes_match() {
+async fn reverify_serves_when_stored_bytes_match() {
     let storage = MemStorage::new();
     let spy_meta = SpyArtifactMeta::new();
     let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
@@ -1623,7 +1626,7 @@ async fn reserve_verification_serves_when_stored_bytes_match() {
         .await
         .unwrap();
 
-    let svc = reserve_proxy(true, spy_meta, storage);
+    let svc = reverify_proxy(true, spy_meta, storage);
     let resp = svc.handle(req("npm")).await.unwrap();
     let ProxyResponse::Stream(mut s) = resp else {
         panic!("matching stored bytes must be served on re-verify");
@@ -1641,7 +1644,7 @@ async fn reserve_verification_serves_when_stored_bytes_match() {
 }
 
 #[tokio::test]
-async fn reserve_verification_blocks_and_evicts_corrupted_cache() {
+async fn reverify_blocks_and_evicts_corrupted_cache() {
     let storage = MemStorage::new();
     let spy_meta = SpyArtifactMeta::new();
     let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
@@ -1666,7 +1669,7 @@ async fn reserve_verification_blocks_and_evicts_corrupted_cache() {
         .await
         .unwrap();
 
-    let svc = reserve_proxy(true, spy_meta, storage.clone());
+    let svc = reverify_proxy(true, spy_meta, storage.clone());
     let result = svc.handle(req("npm")).await;
     assert!(
         matches!(result, Err(CoreError::IntegrityFailure(_))),
@@ -1679,7 +1682,7 @@ async fn reserve_verification_blocks_and_evicts_corrupted_cache() {
 }
 
 #[tokio::test]
-async fn reserve_verification_off_serves_corrupted_bytes() {
+async fn reverify_off_serves_corrupted_bytes() {
     let storage = MemStorage::new();
     let spy_meta = SpyArtifactMeta::new();
     let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
@@ -1704,14 +1707,14 @@ async fn reserve_verification_off_serves_corrupted_bytes() {
         .unwrap();
 
     // verify_on_serve = false → no re-check, the (corrupt) bytes are served as before.
-    let svc = reserve_proxy(false, spy_meta, storage.clone());
+    let svc = reverify_proxy(false, spy_meta, storage.clone());
     let resp = svc.handle(req("npm")).await.unwrap();
     assert!(matches!(resp, ProxyResponse::Stream(_)));
     assert!(storage.exists(&artifact_key).await.unwrap());
 }
 
 #[tokio::test]
-async fn reserve_verification_fails_closed_on_checksum_lookup_error() {
+async fn reverify_fails_closed_on_checksum_lookup_error() {
     let storage = MemStorage::new();
     let spy_meta = SpyArtifactMeta::new();
     let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
@@ -1739,7 +1742,7 @@ async fn reserve_verification_fails_closed_on_checksum_lookup_error() {
         .unwrap();
     spy_meta.fail_checksum_lookups();
 
-    let svc = reserve_proxy(true, spy_meta, storage.clone());
+    let svc = reverify_proxy(true, spy_meta, storage.clone());
     let result = svc.handle(req("npm")).await;
     assert!(
         matches!(result, Err(CoreError::IntegrityFailure(_))),
@@ -1750,7 +1753,7 @@ async fn reserve_verification_fails_closed_on_checksum_lookup_error() {
 }
 
 #[tokio::test]
-async fn reserve_verification_serves_when_no_checksum_recorded() {
+async fn reverify_serves_when_no_checksum_recorded() {
     let storage = MemStorage::new();
     let spy_meta = SpyArtifactMeta::new();
     let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
@@ -1776,7 +1779,7 @@ async fn reserve_verification_serves_when_no_checksum_recorded() {
         .await
         .unwrap();
 
-    let svc = reserve_proxy(true, spy_meta, storage.clone());
+    let svc = reverify_proxy(true, spy_meta, storage.clone());
     let resp = svc.handle(req("npm")).await.unwrap();
     assert!(
         matches!(resp, ProxyResponse::Stream(_)),
@@ -1786,11 +1789,11 @@ async fn reserve_verification_serves_when_no_checksum_recorded() {
 }
 
 #[tokio::test]
-async fn reserve_verification_serves_oversized_artifact_via_reretrieve() {
-    // A body larger than RESERVE_VERIFY_BUFFER_LIMIT is hashed by streaming (its
+async fn reverify_serves_oversized_artifact_via_reretrieve() {
+    // A body larger than REVERIFY_BUFFER_LIMIT is hashed by streaming (its
     // bytes are not retained) and then served by re-opening a fresh stream from
     // storage — the bounded-memory fallback path.
-    let body = vec![0xABu8; super::handle::RESERVE_VERIFY_BUFFER_LIMIT + 1];
+    let body = vec![0xABu8; super::handle::REVERIFY_BUFFER_LIMIT + 1];
     let storage = MemStorage::new();
     let spy_meta = SpyArtifactMeta::new();
     let artifact_key = format!("artifact:{}", req("npm").package_id.cache_key());
@@ -1814,7 +1817,7 @@ async fn reserve_verification_serves_oversized_artifact_via_reretrieve() {
         .await
         .unwrap();
 
-    let svc = reserve_proxy(true, spy_meta, storage);
+    let svc = reverify_proxy(true, spy_meta, storage);
     let resp = svc.handle(req("npm")).await.unwrap();
     let ProxyResponse::Stream(mut s) = resp else {
         panic!("oversized verified artifact must be served");

@@ -12,6 +12,25 @@ pub struct RawAuthRequest {
     pub query_params: HashMap<String, String>,
 }
 
+impl RawAuthRequest {
+    /// Extracts the token from a `Bearer`/`bearer`-prefixed `Authorization`
+    /// header, or `None` if the header is absent or uses a different scheme.
+    ///
+    /// `extractors::raw_auth_from_request` always normalizes header names to
+    /// lowercase before this map is built, but `RawAuthRequest` is also
+    /// constructed directly (tests, and any other future caller), so both
+    /// header-name casings are checked here rather than only the lowercase one.
+    pub fn bearer_token(&self) -> Option<&str> {
+        let value = self
+            .headers
+            .get("authorization")
+            .or_else(|| self.headers.get("Authorization"))?;
+        value
+            .strip_prefix("Bearer ")
+            .or_else(|| value.strip_prefix("bearer "))
+    }
+}
+
 /// Authenticates an HTTP request and returns the caller's identity.
 ///
 /// Returns `Ok(None)` when this provider does not recognise the credentials

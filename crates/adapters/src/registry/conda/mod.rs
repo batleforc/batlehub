@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use batlehub_core::entities::PackageId;
+use batlehub_core::{entities::PackageId, error::CoreError};
 
 use super::http_client::{basic_auth_get, new_http_client, UpstreamHttpOptions};
 
@@ -35,7 +35,7 @@ pub struct CondaRegistryClient {
 }
 
 impl CondaRegistryClient {
-    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> anyhow::Result<Self> {
+    pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Result<Self, CoreError> {
         let http = new_http_client(None, opts)?;
         Ok(Self {
             http,

@@ -231,14 +231,14 @@ async fn reload_immediate_applies_config() {
         explore_admin: Default::default(),
     });
     let builder: HotConfigBuilder = Arc::new(|_| {
-        Ok((
-            batlehub_core::services::HotConfig {
+        Ok(BuiltHotState {
+            hot: batlehub_core::services::HotConfig {
                 registries: HashMap::new(),
                 policies: HashMap::new(),
                 max_artifact_size_bytes: Some(999),
                 ..Default::default()
             },
-            crate::AccessConfig {
+            access: crate::AccessConfig {
                 anonymous: Default::default(),
                 user: Default::default(),
                 admin: Default::default(),
@@ -247,13 +247,13 @@ async fn reload_immediate_applies_config() {
                 explore_user: Default::default(),
                 explore_admin: Default::default(),
             },
-            crate::RegistryMap::new(HashMap::new()),
-            crate::RegistryModeMap::new(HashMap::new()),
-            crate::UpstreamMap::new(HashMap::new()),
-            crate::CargoIndexMap::new(HashMap::new()),
-            crate::RepoSignerMap::default(),
-            crate::VulnDbMap::default(),
-        ))
+            registry_map: crate::RegistryMap::new(HashMap::new()),
+            registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
+            upstream_map: crate::UpstreamMap::new(HashMap::new()),
+            cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
+            repo_signer_map: crate::RepoSignerMap::default(),
+            vuln_db_map: crate::VulnDbMap::default(),
+        })
     });
     let svc = Arc::new(ConfigReloadService::new(
         hot,

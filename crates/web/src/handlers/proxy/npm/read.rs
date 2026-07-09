@@ -1,8 +1,8 @@
 use super::{
     base_url, get, post, proxy_stream, require_npm, require_npm_or_cargo,
-    serve_local_or_proxy_artifact, web, AppError, Arc, AuthIdentity, CoreError, HttpRequest,
-    HttpResponse, LocalOrProxyArtifactOpts, LocalRegistryService, PackageId, ProxyService,
-    RegistryMap, RegistryMode, RegistryModeMap, Responder, UpstreamMap,
+    serve_local_or_proxy_artifact, serve_local_or_proxy_json, web, AppError, Arc, AuthIdentity,
+    HttpRequest, HttpResponse, LocalOrProxyArtifactOpts, LocalRegistryService, PackageId,
+    ProxyService, RegistryMap, RegistryModeMap, Responder, UpstreamMap,
 };
 
 /// Fetch package metadata (all versions / packument).
@@ -34,30 +34,29 @@ pub async fn get_packument(
     let (registry, package) = path.into_inner();
     require_npm_or_cargo(&registry, &map)?;
 
-    let mode = mode_map.get(&registry);
-
-    if map.is_type(&registry, "npm") && matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+    let pkg = PackageId::new(&registry, &package, "latest");
+    if map.is_type(&registry, "npm") {
         let url = base_url(&req);
-        match local_svc
-            .get_npm_packument(&registry, &package, &url, &identity)
-            .await
-        {
-            Ok(packument) => {
-                return Ok(HttpResponse::Ok().json(packument));
-            }
-            Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {
-                // fall through to proxy
-            }
-            Err(CoreError::NotFound(_)) => {
-                return Err(AppError::not_found(format!(
-                    "package '{package}' not found"
-                )));
-            }
-            Err(e) => return Err(AppError::from(e)),
-        }
+        let not_found_msg = format!("package '{package}' not found");
+        let (fetch_registry, fetch_package) = (registry.clone(), package.clone());
+        return serve_local_or_proxy_json(
+            svc,
+            &mode_map,
+            &registry,
+            identity,
+            move |identity: batlehub_core::entities::Identity| async move {
+                local_svc
+                    .get_npm_packument(&fetch_registry, &fetch_package, &url, &identity)
+                    .await
+            },
+            not_found_msg,
+            pkg,
+            batlehub_core::rules::resource_type::RELEASES_READ,
+            None,
+        )
+        .await;
     }
 
-    let pkg = PackageId::new(&registry, &package, "latest");
     proxy_stream(
         svc,
         pkg,
@@ -98,26 +97,36 @@ pub async fn get_version(
     let (registry, package, version) = path.into_inner();
     require_npm_or_cargo(&registry, &map)?;
 
-    let mode = mode_map.get(&registry);
-
-    if map.is_type(&registry, "npm") && matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+    let pkg = PackageId::new(&registry, &package, &version);
+    if map.is_type(&registry, "npm") {
         let url = base_url(&req);
-        match local_svc
-            .get_npm_version(&registry, &package, &version, &url, &identity)
-            .await
-        {
-            Ok(meta) => return Ok(HttpResponse::Ok().json(meta)),
-            Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}
-            Err(CoreError::NotFound(_)) => {
-                return Err(AppError::not_found(format!(
-                    "{package}@{version} not found"
-                )));
-            }
-            Err(e) => return Err(AppError::from(e)),
-        }
+        let not_found_msg = format!("{package}@{version} not found");
+        let (fetch_registry, fetch_package, fetch_version) =
+            (registry.clone(), package.clone(), version.clone());
+        return serve_local_or_proxy_json(
+            svc,
+            &mode_map,
+            &registry,
+            identity,
+            move |identity: batlehub_core::entities::Identity| async move {
+                local_svc
+                    .get_npm_version(
+                        &fetch_registry,
+                        &fetch_package,
+                        &fetch_version,
+                        &url,
+                        &identity,
+                    )
+                    .await
+            },
+            not_found_msg,
+            pkg,
+            batlehub_core::rules::resource_type::RELEASES_READ,
+            None,
+        )
+        .await;
     }
 
-    let pkg = PackageId::new(&registry, &package, &version);
     proxy_stream(
         svc,
         pkg,

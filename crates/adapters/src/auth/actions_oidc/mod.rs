@@ -120,19 +120,7 @@ impl AuthProvider for ActionsOidcAuthProvider {
     }
 
     async fn authenticate(&self, req: &RawAuthRequest) -> Result<Option<Identity>, CoreError> {
-        let auth_header = req
-            .headers
-            .get("authorization")
-            .or_else(|| req.headers.get("Authorization"));
-
-        let Some(value) = auth_header else {
-            return Ok(None);
-        };
-
-        let Some(token) = value
-            .strip_prefix("Bearer ")
-            .or_else(|| value.strip_prefix("bearer "))
-        else {
+        let Some(token) = req.bearer_token() else {
             return Ok(None);
         };
 

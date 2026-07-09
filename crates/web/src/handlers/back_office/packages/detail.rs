@@ -256,6 +256,11 @@ pub async fn package_detail(
                 AccessAction::Undeprecate => "undeprecate",
                 AccessAction::Unlist => "unlist",
                 AccessAction::Relist => "relist",
+                AccessAction::AddBetaMember => "add_beta_member",
+                AccessAction::RemoveBetaMember => "remove_beta_member",
+                AccessAction::ClaimNamespace => "claim_namespace",
+                AccessAction::ReleaseNamespace => "release_namespace",
+                AccessAction::ResetQuota => "reset_quota",
             };
             // `event_filter` above always sets `registry`/`package_name`, so any
             // event matching it has a package coordinate; the fallback only

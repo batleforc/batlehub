@@ -20,7 +20,7 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
-import Dialog from "@/components/ui/dialog/Dialog.vue";
+import { Dialog } from "@/components/ui/dialog";
 
 const { token } = useAuth();
 

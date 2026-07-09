@@ -38,11 +38,12 @@ pub struct AccessSimulationResponse {
     pub rule_matched: Option<String>,
 }
 
-fn parse_role(s: Option<&str>) -> Role {
+fn parse_role(s: Option<&str>) -> Result<Role, AppError> {
     match s {
-        Some("admin") => Role::Admin,
-        Some("user") => Role::User,
-        _ => Role::Anonymous,
+        Some(value) => value
+            .parse::<Role>()
+            .map_err(|_| AppError::bad_request("role must be 'anonymous', 'user', or 'admin'")),
+        None => Ok(Role::Anonymous),
     }
 }
 
@@ -77,7 +78,7 @@ pub async fn admin_access_check(
 
     let sim_identity = Identity {
         user_id: body.user_id.clone(),
-        role: parse_role(body.role.as_deref()),
+        role: parse_role(body.role.as_deref())?,
         auth_provider: None,
         groups: body.groups.clone(),
     };

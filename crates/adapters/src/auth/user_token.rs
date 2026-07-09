@@ -39,11 +39,7 @@ impl AuthProvider for UserTokenAuthProvider {
     }
 
     async fn authenticate(&self, req: &RawAuthRequest) -> Result<Option<Identity>, CoreError> {
-        let Some(header) = req.headers.get("authorization") else {
-            return Ok(None);
-        };
-
-        let Some(raw) = header.strip_prefix("Bearer ") else {
+        let Some(raw) = req.bearer_token() else {
             return Ok(None);
         };
 
@@ -194,6 +190,22 @@ mod tests {
             .unwrap();
         assert_eq!(id.user_id.as_deref(), Some("carol"));
         assert_eq!(id.role, Role::User);
+    }
+
+    #[tokio::test]
+    async fn lowercase_bearer_prefix_returns_identity() {
+        // Sibling auth providers (oidc, kubernetes, static-token, actions-oidc)
+        // accept a lowercase "bearer " prefix via RawAuthRequest::bearer_token;
+        // user-token must match, not silently reject the request.
+        let p = UserTokenAuthProvider::new(Arc::new(StubRepo(Some(stub_token()))));
+        let id = p
+            .authenticate(&req(
+                "bearer abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(id.user_id.as_deref(), Some("carol"));
     }
 
     #[tokio::test]

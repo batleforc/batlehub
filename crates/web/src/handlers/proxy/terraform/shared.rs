@@ -9,37 +9,45 @@ pub fn base_url_from_req(req: &HttpRequest) -> String {
     format!("{}://{}", info.scheme(), info.host())
 }
 
+/// The data describing a single Terraform yank/unyank request — everything
+/// [`terraform_set_yanked`] needs about *what* is being (un)yanked, grouped so
+/// the function's other params stay limited to identity/service handles
+/// (mirrors `common.rs`'s `LocalOrProxyArtifactOpts` split for the analogous
+/// artifact-serving cluster).
+pub struct TerraformYankRequest<'a> {
+    pub registry: &'a str,
+    pub map: &'a RegistryMap,
+    pub mode_map: &'a RegistryModeMap,
+    pub pkg_name: &'a str,
+    pub version: &'a str,
+    /// Human-readable identifier used in the response message, e.g.
+    /// `"module {namespace}/{name}/{provider}"` or `"provider {namespace}/{ptype}"`.
+    pub display_name: &'a str,
+    pub yanked: bool,
+}
+
 /// Shared yank/unyank flow for Terraform modules and providers: validates the
 /// registry/mode, performs the (un)yank, dispatches the notification, and builds
-/// the JSON response message. `display_name` is the human-readable identifier used
-/// in the response message (e.g. `"module {namespace}/{name}/{provider}"` or
-/// `"provider {namespace}/{ptype}"`).
-#[allow(clippy::too_many_arguments)]
+/// the JSON response message.
 pub async fn terraform_set_yanked(
-    registry: &str,
-    map: &RegistryMap,
-    mode_map: &RegistryModeMap,
-    pkg_name: &str,
-    version: &str,
-    display_name: &str,
+    req: TerraformYankRequest<'_>,
     identity: &AuthIdentity,
     local_svc: &Arc<LocalRegistryService>,
     notification_svc: &web::Data<Option<Arc<NotificationService>>>,
-    yanked: bool,
 ) -> Result<HttpResponse, AppError> {
-    require_registry_type(registry, "terraform", map)?;
-    require_local_mode(registry, mode_map)?;
+    require_registry_type(req.registry, "terraform", req.map)?;
+    require_local_mode(req.registry, req.mode_map)?;
 
     let actor = identity.0.user_id.clone().unwrap_or_default();
-    let (event_type, verb) = if yanked {
+    let (event_type, verb) = if req.yanked {
         local_svc
-            .yank(registry, pkg_name, version, &identity.0)
+            .yank(req.registry, req.pkg_name, req.version, &identity.0)
             .await
             .map_err(AppError::from)?;
         (NotificationEventType::PackageYanked, "yanked")
     } else {
         local_svc
-            .unyank(registry, pkg_name, version, &identity.0)
+            .unyank(req.registry, req.pkg_name, req.version, &identity.0)
             .await
             .map_err(AppError::from)?;
         (NotificationEventType::PackageUnyanked, "unyanked")
@@ -48,14 +56,14 @@ pub async fn terraform_set_yanked(
     dispatch_notification(
         notification_svc,
         event_type,
-        registry,
-        pkg_name,
-        Some(version.to_owned()),
+        req.registry,
+        req.pkg_name,
+        Some(req.version.to_owned()),
         &actor,
     );
 
     Ok(HttpResponse::Ok().json(serde_json::json!({
-        "message": format!("{verb} {display_name}@{version}")
+        "message": format!("{verb} {}@{}", req.display_name, req.version)
     })))
 }
 

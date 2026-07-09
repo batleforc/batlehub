@@ -191,7 +191,10 @@ async fn admin_packages_returns_200_for_admin() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
-    assert!(body.is_array());
+    assert!(body["items"].is_array());
+    assert!(body["total"].is_number());
+    assert_eq!(body["page"], 0);
+    assert_eq!(body["per_page"], 50);
 }
 
 // ── /api/v1/admin/packages/block & /unblock ───────────────────────────────────
@@ -321,7 +324,8 @@ async fn audit_log_returns_events_for_admin() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
-    let events = body.as_array().unwrap();
+    assert_eq!(body["total"], 1);
+    let events = body["items"].as_array().unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["package_id"]["name"], "lodash");
 }

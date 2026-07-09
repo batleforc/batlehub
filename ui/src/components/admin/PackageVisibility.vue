@@ -8,7 +8,7 @@ import { useAuth } from "@/composables/useAuth";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
-import Select from "@/components/ui/select/Select.vue";
+import { Select } from "@/components/ui/select";
 
 const props = defineProps<{ registry: string; name: string }>();
 

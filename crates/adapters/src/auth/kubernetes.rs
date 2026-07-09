@@ -105,16 +105,13 @@ impl KubernetesAuthProvider {
         let role_mappings = cfg
             .role_mappings
             .iter()
-            .filter_map(|(k, v)| {
-                let role = match v.as_str() {
-                    "admin" => Role::Admin,
-                    "user" => Role::User,
-                    "anonymous" => Role::Anonymous,
-                    _ => return None,
-                };
-                Some((k.clone(), role))
+            .map(|(k, v)| {
+                let role = v
+                    .parse::<Role>()
+                    .map_err(|e| anyhow::anyhow!("role_mappings.{k}: {e}"))?;
+                Ok((k.clone(), role))
             })
-            .collect();
+            .collect::<anyhow::Result<HashMap<String, Role>>>()?;
 
         Ok(Self {
             name: cfg.name.clone(),
@@ -159,19 +156,7 @@ impl AuthProvider for KubernetesAuthProvider {
     }
 
     async fn authenticate(&self, req: &RawAuthRequest) -> Result<Option<Identity>, CoreError> {
-        let auth_header = req
-            .headers
-            .get("authorization")
-            .or_else(|| req.headers.get("Authorization"));
-
-        let Some(value) = auth_header else {
-            return Ok(None);
-        };
-
-        let Some(token) = value
-            .strip_prefix("Bearer ")
-            .or_else(|| value.strip_prefix("bearer "))
-        else {
+        let Some(token) = req.bearer_token() else {
             return Ok(None);
         };
 

@@ -1,6 +1,10 @@
-mod eco_composer_conda_pypi;
+mod eco_composer;
+mod eco_conda;
 mod eco_go;
-mod eco_rubygems_maven_nuget;
+mod eco_maven;
+mod eco_nuget;
+mod eco_pypi;
+mod eco_rubygems;
 mod eco_terraform;
 mod lifecycle;
 mod publish;

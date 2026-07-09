@@ -16,7 +16,7 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
-import Select from "@/components/ui/select/Select.vue";
+import { Select } from "@/components/ui/select";
 
 const props = defineProps<{ namespace: TeamNamespaceDto }>();
 

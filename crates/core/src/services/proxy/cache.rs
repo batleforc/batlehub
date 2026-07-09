@@ -16,7 +16,7 @@ use crate::services::cache_control::parse_cache_control;
 use crate::services::hot_config::IntegrityPolicy;
 use crate::services::integrity::{IntegrityOutcome, StreamingVerifier};
 
-use super::handle::RESERVE_VERIFY_BUFFER_LIMIT;
+use super::handle::REVERIFY_BUFFER_LIMIT;
 use super::{ProxyRequest, ProxyResponse, ProxyService, RequestTiming};
 
 /// The artifact-cache storage key for `req`. A pure function of the package
@@ -31,7 +31,7 @@ impl ProxyService {
     /// Serve an artifact from a fresh cache hit. When `verify_on_serve` is set,
     /// the stored bytes are re-hashed against the recorded SHA-256 before being
     /// streamed (failing closed on a lookup error, evicting on a mismatch). See
-    /// the module-level note on `RESERVE_VERIFY_BUFFER_LIMIT` for the
+    /// the module-level note on `REVERIFY_BUFFER_LIMIT` for the
     /// retain-vs-re-read trade-off.
     pub(super) async fn serve_cache_hit(
         &self,
@@ -58,7 +58,7 @@ impl ProxyService {
         // `StreamingVerifier` (memory stays bounded regardless of artifact size);
         // a verified entry is then re-opened from storage to serve.
         let response_stream = if integrity.enabled && integrity.verify_on_serve {
-            self.reserve_verified_stream(&req, &artifact_key, artifact.stream, timing)
+            self.reverify_on_serve(&req, &artifact_key, artifact.stream, timing)
                 .await?
         } else {
             artifact.stream
@@ -90,10 +90,10 @@ impl ProxyService {
     /// recorded SHA-256 and return the stream to serve. Serves as-is when no
     /// (parseable) checksum is recorded; fails closed (`IntegrityFailure`) when the
     /// checksum lookup fails or the digest mismatches. See [`serve_cache_hit`] and
-    /// the `RESERVE_VERIFY_BUFFER_LIMIT` note for the retain-vs-re-read trade-off.
+    /// the `REVERIFY_BUFFER_LIMIT` note for the retain-vs-re-read trade-off.
     ///
     /// [`serve_cache_hit`]: Self::serve_cache_hit
-    async fn reserve_verified_stream(
+    async fn reverify_on_serve(
         &self,
         req: &ProxyRequest,
         artifact_key: &str,
@@ -136,7 +136,7 @@ impl ProxyService {
         };
 
         // Stream the stored bytes through the hasher, retaining them up to
-        // `RESERVE_VERIFY_BUFFER_LIMIT` so a verified small artifact (the common
+        // `REVERIFY_BUFFER_LIMIT` so a verified small artifact (the common
         // case) is served from the exact bytes we hashed — one read, no re-retrieve
         // race. A larger artifact drops the copy and is re-opened below.
         let (outcome, retained) = hash_stream_retaining(stream, verifier).await?;
@@ -151,7 +151,7 @@ impl ProxyService {
                 actual,
             } => {
                 return Err(self
-                    .evict_reserve_mismatch(
+                    .evict_reverify_mismatch(
                         req,
                         artifact_key,
                         timing,
@@ -191,7 +191,7 @@ impl ProxyService {
 
     /// Evict a corrupt cached artifact (bytes + recorded meta), audit, finish the
     /// request, and build the `IntegrityFailure` for a re-serve digest mismatch.
-    async fn evict_reserve_mismatch(
+    async fn evict_reverify_mismatch(
         &self,
         req: &ProxyRequest,
         artifact_key: &str,
@@ -614,7 +614,7 @@ impl ProxyService {
 }
 
 /// Drain `stream` through `verifier`, retaining the bytes up to
-/// `RESERVE_VERIFY_BUFFER_LIMIT`. Returns the final digest verdict plus the
+/// `REVERIFY_BUFFER_LIMIT`. Returns the final digest verdict plus the
 /// retained bytes (`None` once the cap is crossed — the caller re-opens storage).
 async fn hash_stream_retaining(
     mut stream: ByteStream,
@@ -625,7 +625,7 @@ async fn hash_stream_retaining(
         let chunk = chunk?;
         verifier.update(&chunk);
         if let Some(buf) = retained.as_mut() {
-            if buf.len() + chunk.len() > RESERVE_VERIFY_BUFFER_LIMIT {
+            if buf.len() + chunk.len() > REVERIFY_BUFFER_LIMIT {
                 // Over the cap: stop retaining and hash-only from here.
                 retained = None;
             } else {
