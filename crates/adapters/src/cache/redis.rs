@@ -88,8 +88,8 @@ impl CacheStore for RedisCacheStore {
 
         match ttl {
             Some(d) => {
-                let secs = d.as_secs().max(1);
-                conn.set_ex::<_, _, ()>(live_key(key), &payload, secs)
+                let millis = d.as_millis().try_into().unwrap_or(u64::MAX).max(1);
+                conn.pset_ex::<_, _, ()>(live_key(key), &payload, millis)
                     .await
                     .map_err(to_cache_err)?;
             }

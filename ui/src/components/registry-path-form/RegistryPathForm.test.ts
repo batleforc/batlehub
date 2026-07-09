@@ -3,7 +3,11 @@ import { mount } from "@vue/test-utils";
 import RegistryPathForm from "./RegistryPathForm.vue";
 import { REGISTRY_PATH_TYPES } from "@/config/registryPathFields";
 
-function mountForm(typeId: string, values: Record<string, string> = {}) {
+function mountForm(
+  typeId: string,
+  values: Record<string, string> = {},
+  registries: { name: string; type: string }[] = [],
+) {
   const typeDef = REGISTRY_PATH_TYPES.find((t) => t.id === typeId)!;
   const allValues = Object.fromEntries(
     typeDef.fields.map((f) => [f.key, values[f.key] ?? f.default ?? ""]),
@@ -11,7 +15,7 @@ function mountForm(typeId: string, values: Record<string, string> = {}) {
   return mount(RegistryPathForm, {
     props: {
       typeDef,
-      registries: [],
+      registries,
       registryName: typeDef.id,
       values: allValues,
       "onUpdate:registryName": () => {},
@@ -48,5 +52,31 @@ describe("RegistryPathForm", () => {
   it("renders the note as trusted HTML", () => {
     const wrapper = mountForm("maven");
     expect(wrapper.find("code").exists()).toBe(true);
+  });
+
+  it("lists known registry names as datalist options", () => {
+    const wrapper = mountForm("npm", {}, [
+      { name: "npm-mirror", type: "npm" },
+      { name: "other", type: "npm" },
+    ]);
+    const options = wrapper.findAll("datalist option");
+    expect(options.map((o) => o.attributes("value"))).toEqual(["npm-mirror", "other"]);
+  });
+
+  it("updates the bound values object when a field is edited", async () => {
+    const typeDef = REGISTRY_PATH_TYPES.find((t) => t.id === "npm")!;
+    const values = { package: "", version: "" };
+    const wrapper = mount(RegistryPathForm, {
+      props: {
+        typeDef,
+        registries: [],
+        registryName: "npm",
+        values,
+        "onUpdate:registryName": () => {},
+        "onUpdate:values": (v: Record<string, string>) => wrapper.setProps({ values: v }),
+      },
+    });
+    await wrapper.find("#npm-package").setValue("left-pad");
+    expect(wrapper.props("values").package).toBe("left-pad");
   });
 });

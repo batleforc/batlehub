@@ -22,9 +22,10 @@ use utoipa_actix_web::AppExt;
 use batlehub_adapters::{
     auth::StaticTokenAuthProvider,
     cache::{InMemoryBannerStore, InMemoryCacheStore},
+    db::InMemoryUserBlockRepository,
     in_memory::{
         InMemoryPackageRepository, InMemoryQuotaRepository, InMemoryStorageBackend,
-        NoopArtifactMetaRepository, NullUserTokenRepository,
+        InMemoryTeamNamespaceStore, NoopArtifactMetaRepository, NullUserTokenRepository,
     },
     local_registry::InMemoryLocalRegistry,
     notification::InMemoryNotificationStore,
@@ -35,6 +36,7 @@ use batlehub_core::{
     entities::{AccessEvent, PackageId, Role},
     ports::{
         AuthProvider, BannerPort, CacheStore, IpBlockStore, PackageRepository, RegistryClient,
+        TeamNamespacePort, UserBlockRepository,
     },
     rules::{BlockListRule, RbacRule},
     services::{
@@ -171,6 +173,9 @@ impl TestServer {
         let ip_block_store: Arc<dyn IpBlockStore> = Arc::new(InMemoryIpBlockStore::new());
         let banner_store: Arc<dyn BannerPort> = Arc::new(InMemoryBannerStore::new());
         let banner_svc = Arc::new(BannerService::new(banner_store));
+        let user_block_repo: Arc<dyn UserBlockRepository> =
+            Arc::new(InMemoryUserBlockRepository::new());
+        let team_namespace_store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
         let reload_builder: HotConfigBuilder = Arc::new(|_| anyhow::bail!("not used in tests"));
         let reload_svc = Arc::new(ConfigReloadService::new(
             proxy_svc.hot.clone(),
@@ -219,6 +224,8 @@ impl TestServer {
             let ip_block_store = ip_block_store.clone();
             let banner_svc = banner_svc.clone();
             let reload_svc = reload_svc.clone();
+            let user_block_repo = user_block_repo.clone();
+            let team_namespace_store = team_namespace_store.clone();
 
             let server = HttpServer::new(move || {
                 let (app, _) = App::new()
@@ -232,6 +239,8 @@ impl TestServer {
                     .app_data(web::Data::new(ip_block_store.clone()))
                     .app_data(web::Data::new(banner_svc.clone()))
                     .app_data(web::Data::new(reload_svc.clone()))
+                    .app_data(web::Data::new(user_block_repo.clone()))
+                    .app_data(web::Data::new(team_namespace_store.clone()))
                     .wrap(AuthMiddlewareFactory::new(auth_providers.clone()))
             })
             .bind("127.0.0.1:0")
@@ -1128,6 +1137,499 @@ fn admin_audit_log_table_empty() {
         "table header expected; stdout: {stdout}"
     );
     assert!(stdout.contains("0 entry/entries"), "stdout: {stdout}");
+}
+
+#[test]
+fn admin_purge_audit_log() {
+    let srv = TestServer::start();
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "admin",
+            "audit-log",
+            "--purge-before",
+            "2026-01-01T00:00:00Z",
+            "--json",
+        ],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(
+        ok,
+        "audit-log --purge-before should succeed; stderr: {stderr}"
+    );
+    let body: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON object");
+    assert_eq!(body["deleted"], 0, "stdout: {stdout}");
+}
+
+#[test]
+fn admin_purge_audit_log_table_mode() {
+    let srv = TestServer::start();
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "admin",
+            "audit-log",
+            "--purge-before",
+            "2026-01-01T00:00:00Z",
+        ],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(
+        ok,
+        "audit-log --purge-before should succeed; stderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("Deleted 0 audit-log row(s) older than 2026-01-01T00:00:00Z"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
+fn admin_audit_log_table_shows_seeded_event() {
+    let srv = TestServer::start();
+    let base = srv.base_url();
+    cli_cmd(&["admin", "users", "block", "someone"], &base, AUTH_TOKEN);
+
+    let (ok, stdout, stderr) = cli_cmd(&["admin", "audit-log"], &base, AUTH_TOKEN);
+    assert!(ok, "audit-log should succeed; stderr: {stderr}");
+    assert!(stdout.contains("1 entry/entries"), "stdout: {stdout}");
+}
+
+#[test]
+fn admin_cache_warm_rejects_empty_selection() {
+    let srv = TestServer::start();
+    let (ok, _stdout, stderr) = cli_cmd(
+        &["admin", "cache", "warm", REGISTRY],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(!ok, "cache warm without --packages/--paths should fail");
+    assert!(
+        stderr.contains("specify --packages and/or --paths"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn admin_stats_json_and_table() {
+    let srv = TestServer::start();
+    let base = srv.base_url();
+
+    let (ok, stdout, stderr) = cli_cmd(&["admin", "stats", "--json"], &base, AUTH_TOKEN);
+    assert!(ok, "admin stats --json should succeed; stderr: {stderr}");
+    let body: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON object");
+    assert!(body["aggregate"].is_object(), "stdout: {stdout}");
+
+    let (ok, stdout, stderr) = cli_cmd(&["admin", "stats"], &base, AUTH_TOKEN);
+    assert!(ok, "admin stats should succeed; stderr: {stderr}");
+    assert!(stdout.contains("Since startup"), "stdout: {stdout}");
+    assert!(stdout.contains("Aggregate"), "stdout: {stdout}");
+}
+
+#[test]
+fn admin_health_json_and_table() {
+    let srv = TestServer::start();
+    let base = srv.base_url();
+
+    let (ok, stdout, stderr) = cli_cmd(&["admin", "health", "--json"], &base, AUTH_TOKEN);
+    assert!(ok, "admin health --json should succeed; stderr: {stderr}");
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON array");
+    assert_eq!(arr.len(), 1, "one configured registry; stdout: {stdout}");
+    assert_eq!(arr[0]["registry"], REGISTRY);
+
+    let (ok, stdout, stderr) = cli_cmd(&["admin", "health"], &base, AUTH_TOKEN);
+    assert!(ok, "admin health should succeed; stderr: {stderr}");
+    assert!(stdout.contains(REGISTRY), "stdout: {stdout}");
+}
+
+#[test]
+fn admin_visibility_get_and_set() {
+    let srv = TestServer::start();
+    let base = srv.base_url();
+    http_publish_nuget(&base, REGISTRY, "VisLib", "1.0.0");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "visibility", "get", REGISTRY, "VisLib"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "visibility get should succeed; stderr: {stderr}");
+    assert!(stdout.contains("public"), "stdout: {stdout}");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "visibility", "get", REGISTRY, "VisLib", "--json"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "visibility get --json should succeed; stderr: {stderr}");
+    let body: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON object");
+    assert_eq!(body["visibility"], "public");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "visibility", "set", REGISTRY, "VisLib", "internal"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "visibility set should succeed; stderr: {stderr}");
+    assert!(stdout.contains("internal"), "stdout: {stdout}");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "visibility", "get", REGISTRY, "VisLib"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(
+        ok,
+        "visibility get after set should succeed; stderr: {stderr}"
+    );
+    assert!(stdout.contains("internal"), "stdout: {stdout}");
+}
+
+#[test]
+fn admin_users_block_list_unblock() {
+    let srv = TestServer::start();
+    let base = srv.base_url();
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "users", "list-blocked", "--json"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "users list-blocked should succeed; stderr: {stderr}");
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON array");
+    assert!(arr.is_empty(), "stdout: {stdout}");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "users", "block", "bad-actor", "--reason", "abuse"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "users block should succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("Blocked user bad-actor"),
+        "stdout: {stdout}"
+    );
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "users", "list-blocked", "--json"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "users list-blocked should succeed; stderr: {stderr}");
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON array");
+    assert_eq!(arr.len(), 1, "stdout: {stdout}");
+    assert_eq!(arr[0]["user_id"], "bad-actor");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "users", "unblock", "bad-actor"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "users unblock should succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("Unblocked user bad-actor"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
+fn admin_users_list_blocked_table_mode() {
+    let srv = TestServer::start();
+    let base = srv.base_url();
+    cli_cmd(
+        &["admin", "users", "block", "table-user"],
+        &base,
+        AUTH_TOKEN,
+    );
+
+    let (ok, stdout, stderr) = cli_cmd(&["admin", "users", "list-blocked"], &base, AUTH_TOKEN);
+    assert!(
+        ok,
+        "users list-blocked (table) should succeed; stderr: {stderr}"
+    );
+    assert!(stdout.contains("table-user"), "stdout: {stdout}");
+    assert!(stdout.contains("Blocked At"), "stdout: {stdout}");
+}
+
+#[test]
+fn admin_namespace_list_claim_release() {
+    let srv = TestServer::start();
+    let base = srv.base_url();
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "namespace", "list", REGISTRY, "--json"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "namespace list should succeed; stderr: {stderr}");
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON array");
+    assert!(arr.is_empty(), "stdout: {stdout}");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "admin",
+            "namespace",
+            "claim",
+            REGISTRY,
+            "frontend",
+            "team-a",
+        ],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "namespace claim should succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("Claimed namespace prefix 'frontend'"),
+        "stdout: {stdout}"
+    );
+
+    let (ok, stdout, stderr) =
+        cli_cmd(&["admin", "namespace", "list", REGISTRY], &base, AUTH_TOKEN);
+    assert!(
+        ok,
+        "namespace list (table) should succeed; stderr: {stderr}"
+    );
+    assert!(stdout.contains("frontend"), "stdout: {stdout}");
+    assert!(stdout.contains("team-a"), "stdout: {stdout}");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "namespace", "release", REGISTRY, "frontend"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "namespace release should succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("Released namespace prefix 'frontend'"),
+        "stdout: {stdout}"
+    );
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "namespace", "list", REGISTRY, "--json"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(
+        ok,
+        "namespace list after release should succeed; stderr: {stderr}"
+    );
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON array");
+    assert!(arr.is_empty(), "stdout: {stdout}");
+}
+
+#[test]
+fn admin_sbom_get_and_export_error_without_service() {
+    // TestServer doesn't wire a `SbomService`, so these correctly fail —
+    // still exercises the CLI's HTTP round trip and error propagation.
+    let srv = TestServer::start();
+    let base = srv.base_url();
+
+    let (ok, _stdout, stderr) = cli_cmd(
+        &["admin", "sbom", "get", REGISTRY, "SomeLib", "1.0.0"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(!ok, "sbom get should fail without a configured service");
+    assert!(!stderr.is_empty(), "stderr: {stderr}");
+
+    let (ok, _stdout, stderr) = cli_cmd(&["admin", "sbom", "export"], &base, AUTH_TOKEN);
+    assert!(!ok, "sbom export should fail without a configured service");
+    assert!(!stderr.is_empty(), "stderr: {stderr}");
+}
+
+#[test]
+fn admin_bulk_yank_unyank_delete() {
+    let srv = TestServer::start();
+    let base = srv.base_url();
+    http_publish_nuget(&base, REGISTRY, "BulkLib", "1.0.0");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "bulk", "yank", REGISTRY, "BulkLib@1.0.0", "--json"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "bulk yank should succeed; stderr: {stderr}");
+    let body: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON object");
+    assert_eq!(body["processed"], 1, "stdout: {stdout}");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "bulk", "unyank", REGISTRY, "BulkLib@1.0.0"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "bulk unyank should succeed; stderr: {stderr}");
+    assert!(stdout.contains("processed=1"), "stdout: {stdout}");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "bulk", "delete", REGISTRY, "BulkLib@1.0.0"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "bulk delete should succeed; stderr: {stderr}");
+    assert!(stdout.contains("processed=1"), "stdout: {stdout}");
+}
+
+#[test]
+fn admin_bulk_rejects_malformed_package_ref() {
+    let srv = TestServer::start();
+    let (ok, _stdout, stderr) = cli_cmd(
+        &["admin", "bulk", "yank", REGISTRY, "no-at-sign"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(!ok, "bulk yank without name@version should fail");
+    assert!(stderr.contains("expected name@version"), "stderr: {stderr}");
+}
+
+#[test]
+fn admin_deprecate_undeprecate_unlist_relist() {
+    let srv = TestServer::start();
+    let base = srv.base_url();
+    http_publish_nuget(&base, REGISTRY, "DepLib", "1.0.0");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "admin",
+            "deprecate",
+            REGISTRY,
+            "DepLib",
+            "1.0.0",
+            "--message",
+            "use v2",
+        ],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "deprecate should succeed; stderr: {stderr}");
+    assert!(stdout.contains("Deprecated"), "stdout: {stdout}");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "undeprecate", REGISTRY, "DepLib", "1.0.0"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "undeprecate should succeed; stderr: {stderr}");
+    assert!(stdout.contains("Undeprecated"), "stdout: {stdout}");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "unlist", REGISTRY, "DepLib", "1.0.0"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "unlist should succeed; stderr: {stderr}");
+    assert!(stdout.contains("Unlisted"), "stdout: {stdout}");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "relist", REGISTRY, "DepLib", "1.0.0"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "relist should succeed; stderr: {stderr}");
+    assert!(stdout.contains("Relisted"), "stdout: {stdout}");
+}
+
+#[test]
+fn admin_access_check_allow_and_json() {
+    let srv = TestServer::start();
+    let base = srv.base_url();
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "admin",
+            "access-check",
+            "-r",
+            REGISTRY,
+            "-p",
+            "SomeLib",
+            "-v",
+            "1.0.0",
+        ],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "access-check should succeed; stderr: {stderr}");
+    assert!(stdout.contains("ALLOW"), "stdout: {stdout}");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "admin",
+            "access-check",
+            "-r",
+            REGISTRY,
+            "-p",
+            "SomeLib",
+            "-v",
+            "1.0.0",
+            "--json",
+        ],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "access-check --json should succeed; stderr: {stderr}");
+    let body: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON object");
+    assert_eq!(body["decision"], "allow", "stdout: {stdout}");
+}
+
+#[test]
+fn admin_notifications_channels_and_list_error_without_service() {
+    // TestServer doesn't wire a `NotificationService` (it needs channel config
+    // like SMTP/webhook targets), so these correctly 503 "not configured" —
+    // still exercises the CLI's HTTP round trip and error propagation.
+    let srv = TestServer::start();
+    let base = srv.base_url();
+
+    let (ok, _stdout, stderr) = cli_cmd(
+        &["admin", "notifications", "channels", "--json"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(!ok, "notifications channels should fail without a service");
+    assert!(stderr.contains("503"), "stderr: {stderr}");
+
+    let (ok, _stdout, stderr) = cli_cmd(
+        &["admin", "notifications", "list", "--json"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(!ok, "notifications list should fail without a service");
+    assert!(stderr.contains("503"), "stderr: {stderr}");
+}
+
+#[test]
+fn admin_export_audit_log_json_default() {
+    let srv = TestServer::start();
+    let (ok, stdout, stderr) = cli_cmd(&["admin", "export-audit-log"], &srv.base_url(), AUTH_TOKEN);
+    assert!(ok, "export-audit-log should succeed; stderr: {stderr}");
+    let _: Vec<serde_json::Value> =
+        serde_json::from_str(&stdout).expect("export-audit-log default output should be JSON");
+}
+
+#[test]
+fn admin_export_audit_log_csv_to_file() {
+    let srv = TestServer::start();
+    let tmp = tempfile::tempdir().unwrap();
+    let out_path = tmp.path().join("audit.csv");
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "admin",
+            "export-audit-log",
+            "--format",
+            "csv",
+            "-o",
+            out_path.to_str().unwrap(),
+        ],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(
+        ok,
+        "export-audit-log --format csv -o should succeed; stderr: {stderr}"
+    );
+    assert!(stdout.contains("Exported to"), "stdout: {stdout}");
+    let content = std::fs::read_to_string(&out_path).unwrap();
+    assert!(
+        content.starts_with("id,timestamp,user_id"),
+        "content: {content}"
+    );
 }
 
 // ── Tests: config ─────────────────────────────────────────────────────────────

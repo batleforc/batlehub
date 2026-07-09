@@ -183,6 +183,7 @@ tasks:
       - cargo llvm-cov --no-report -p batlehub-adapters --test actions_oidc
       - cargo llvm-cov --no-report -p batlehub-adapters --features cache-redis --test redis_cache
       - cargo llvm-cov --no-report -p batlehub-adapters --features cache-redis --test redis_rate_limit
+      - cargo llvm-cov --no-report -p batlehub-adapters --features cache-redis --test redis_warm_coordinator
       - cargo llvm-cov report --html --output-dir coverage/html --ignore-filename-regex "{{.COVERAGE_EXCLUDE}}"
       - cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex "{{.COVERAGE_EXCLUDE}}"
 
@@ -226,6 +227,7 @@ tasks:
       - cargo llvm-cov --no-report -p batlehub-adapters --test actions_oidc
       - cargo llvm-cov --no-report -p batlehub-adapters --features cache-redis --test redis_cache
       - cargo llvm-cov --no-report -p batlehub-adapters --features cache-redis --test redis_rate_limit
+      - cargo llvm-cov --no-report -p batlehub-adapters --features cache-redis --test redis_warm_coordinator
       - cargo llvm-cov report --fail-under-lines 80 --ignore-filename-regex "{{.COVERAGE_EXCLUDE}}"
 
   fuzz:

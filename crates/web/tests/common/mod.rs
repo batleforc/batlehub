@@ -45,6 +45,8 @@ use batlehub_core::{
         RegistryPolicy, SbomService,
     },
 };
+use batlehub_web::handlers::back_office::ops::eviction::EvictionServiceMap;
+use batlehub_web::handlers::back_office::ops::warming::WarmingServiceMap;
 use batlehub_web::services::NotificationService;
 use batlehub_web::{
     configure_app, new_access_lock, AuthMiddlewareFactory, RegistryModeMap, RepoSignerMap,
@@ -195,6 +197,8 @@ pub struct ConfigureAppDefaults {
     pub notification_svc: Option<Arc<NotificationService>>,
     pub notification_store: Arc<dyn NotificationPort + 'static>,
     pub notifications_config: Option<NotificationsConfig>,
+    pub warming_map: WarmingServiceMap,
+    pub eviction_map: EvictionServiceMap,
 }
 
 impl Default for ConfigureAppDefaults {
@@ -206,6 +210,8 @@ impl Default for ConfigureAppDefaults {
             notification_svc: None,
             notification_store: Arc::new(InMemoryNotificationStore::new()),
             notifications_config: None,
+            warming_map: WarmingServiceMap::default(),
+            eviction_map: EvictionServiceMap::default(),
         }
     }
 }
@@ -226,8 +232,8 @@ pub fn configure_test_app(
         registry_map,
         defaults.upstream_map,
         vec![],
-        std::collections::HashMap::new(), // warming_map
-        std::collections::HashMap::new(), // eviction_map
+        defaults.warming_map,
+        defaults.eviction_map,
         defaults.proxy_metrics,
         None,
         defaults.sbom_svc,
@@ -608,6 +614,110 @@ pub async fn make_app_with_ip_store(
         test_auth_providers(),
     )
     .await
+}
+
+/// Build a test app with a single `npm` registry, exposing the raw storage
+/// backend so tests can pre-seed cached artifacts, plus a caller-supplied
+/// `eviction_map` so `/admin/registries/{registry}/evict` has something to run.
+pub async fn make_app_with_eviction(
+    eviction_map: EvictionServiceMap,
+) -> (
+    impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+    Arc<dyn StorageBackend>,
+) {
+    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        hot: new_hot_lock(HotConfig::default()),
+        storage: storage.clone(),
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = access_config_for(&["npm"]);
+    let registry_map = registry_map_for(&[("npm", "npm")]);
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
+
+    let app = finish_test_app(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        RegistryModeMap::default(),
+        cargo_indexes,
+        ConfigureAppDefaults {
+            eviction_map,
+            ..Default::default()
+        },
+        test_auth_providers(),
+    )
+    .await;
+
+    (app, storage)
+}
+
+/// Build a test app with a single `npm` registry, exposing the raw storage
+/// backend so tests can assert on what warming stored, plus a caller-supplied
+/// `warming_map` so `/admin/registries/{registry}/warm` has something to run.
+pub async fn make_app_with_warming(
+    warming_map: WarmingServiceMap,
+) -> (
+    impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+    Arc<dyn StorageBackend>,
+) {
+    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        hot: new_hot_lock(HotConfig::default()),
+        storage: storage.clone(),
+        cache,
+        repo: repo_dyn.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
+    });
+    let admin_svc = Arc::new(AdminService::new(repo_dyn));
+    let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
+    let access_config = access_config_for(&["npm"]);
+    let registry_map = registry_map_for(&[("npm", "npm")]);
+    let cargo_indexes = batlehub_web::CargoIndexMap::default();
+
+    let app = finish_test_app(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        RegistryModeMap::default(),
+        cargo_indexes,
+        ConfigureAppDefaults {
+            warming_map,
+            ..Default::default()
+        },
+        test_auth_providers(),
+    )
+    .await;
+
+    (app, storage)
 }
 
 pub async fn make_app_with_notifications(

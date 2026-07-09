@@ -68,3 +68,22 @@ impl WarmCoordinator for RedisWarmCoordinator {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_err_wraps_redis_error_as_cache_error() {
+        let redis_err = redis::RedisError::from((redis::ErrorKind::Io, "boom"));
+        match to_err(redis_err) {
+            CoreError::Cache(msg) => assert!(msg.contains("boom")),
+            other => panic!("expected CoreError::Cache, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn claim_key_is_namespaced() {
+        assert_eq!(claim_key("npm/foo"), "batlehub:warm:npm/foo");
+    }
+}

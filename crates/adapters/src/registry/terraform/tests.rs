@@ -415,6 +415,60 @@ async fn search_modules_returns_results() {
 }
 
 #[tokio::test]
+async fn registry_type_is_terraform() {
+    let client =
+        TerraformRegistryClient::new("https://registry.terraform.io", &Default::default()).unwrap();
+    assert_eq!(client.registry_type(), "terraform");
+}
+
+#[tokio::test]
+async fn search_packages_disabled_returns_empty() {
+    let opts = UpstreamHttpOptions {
+        search_url: Some(String::new()),
+        ..Default::default()
+    };
+    let client = TerraformRegistryClient::new("https://registry.terraform.io", &opts).unwrap();
+    let results = client.search_packages("aws", 10).await.unwrap();
+    assert!(results.is_empty());
+}
+
+#[tokio::test]
+async fn search_packages_merges_modules_and_providers() {
+    let mut server = Server::new_async().await;
+    let _mods = server
+        .mock("GET", "/v1/modules/search")
+        .match_query(mockito::Matcher::Any)
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{"modules":[{"namespace":"hashicorp","name":"consul","provider":"aws","version":"0.1.0"}]}"#,
+        )
+        .create_async()
+        .await;
+    let _provs = server
+        .mock("GET", "/v1/providers/aws")
+        .with_status(404)
+        .create_async()
+        .await;
+
+    let client = TerraformRegistryClient::new(server.url(), &Default::default()).unwrap();
+    let results = client.search_packages("aws", 10).await.unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].name, "modules/hashicorp/consul/aws");
+}
+
+#[tokio::test]
+async fn resolve_metadata_network_error_maps_to_registry_error() {
+    // Port 0 on loopback is never listening, so the connection itself fails
+    // (as opposed to a mocked non-2xx response), exercising the `send()`
+    // error-mapping branch.
+    let client = TerraformRegistryClient::new("http://127.0.0.1:0", &Default::default()).unwrap();
+    let pkg = provider_pkg("hashicorp", "aws", "versions");
+    let result = client.resolve_metadata(&pkg).await;
+    assert!(matches!(result, Err(CoreError::Registry(_))));
+}
+
+#[tokio::test]
 async fn search_modules_no_match_returns_empty() {
     let mut server = Server::new_async().await;
     let _mock = server

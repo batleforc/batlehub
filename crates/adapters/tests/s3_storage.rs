@@ -13,9 +13,11 @@
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::{config::Builder as S3ConfigBuilder, Client};
 use batlehub_adapters::storage::S3StorageBackend;
-use batlehub_core::ports::{StorageBackend, StorageMeta, StoredArtifact};
+use batlehub_core::ports::{
+    ByteStream, S3StorageConfig, StorageBackend, StorageMeta, StoredArtifact,
+};
 use bytes::Bytes;
-use futures::StreamExt;
+use futures::{stream, StreamExt};
 
 const BUCKET: &str = "test-artifacts";
 const REGION: &str = "us-east-1";
@@ -201,4 +203,166 @@ async fn delete_by_prefix_removes_only_matching_keys() {
     assert_eq!(remaining, 0);
 
     assert!(backend.exists("artifact:cargo/del-pkg-0").await.unwrap());
+}
+
+fn byte_stream(chunks: Vec<Vec<u8>>) -> ByteStream {
+    Box::pin(stream::iter(chunks).map(|c| Ok(Bytes::from(c))))
+}
+
+#[tokio::test]
+async fn store_streaming_small_payload_uses_single_put() {
+    let Some(ep) = s3_endpoint() else { return };
+    let backend = make_backend(&ep).await;
+
+    let outcome = backend
+        .store_streaming(
+            "key-stream-small",
+            byte_stream(vec![b"hello".to_vec(), b", streamed".to_vec()]),
+            StorageMeta::default(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.size, 15);
+    let artifact = backend
+        .retrieve("key-stream-small")
+        .await
+        .unwrap()
+        .expect("should exist");
+    assert_eq!(collect(artifact).await, b"hello, streamed");
+}
+
+#[tokio::test]
+async fn store_streaming_large_payload_uses_multipart() {
+    let Some(ep) = s3_endpoint() else { return };
+    let backend = make_backend(&ep).await;
+
+    // Two chunks of 9 MiB each: crosses the 8 MiB part size twice, exercising
+    // the multipart create/upload-part/complete path with more than one part.
+    let chunk = vec![7u8; 9 * 1024 * 1024];
+    let total_len = chunk.len() * 2;
+    let outcome = backend
+        .store_streaming(
+            "key-stream-large",
+            byte_stream(vec![chunk.clone(), chunk]),
+            StorageMeta::default(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.size, total_len as u64);
+    let artifact = backend
+        .retrieve("key-stream-large")
+        .await
+        .unwrap()
+        .expect("should exist");
+    assert_eq!(collect(artifact).await.len(), total_len);
+}
+
+#[tokio::test]
+async fn move_key_copies_then_deletes_source() {
+    let Some(ep) = s3_endpoint() else { return };
+    let backend = make_backend(&ep).await;
+
+    backend
+        .store(
+            "key-move-src",
+            Bytes::from_static(b"movable"),
+            StorageMeta::default(),
+        )
+        .await
+        .unwrap();
+
+    backend
+        .move_key("key-move-src", "key-move-dst")
+        .await
+        .unwrap();
+
+    assert!(!backend.exists("key-move-src").await.unwrap());
+    let artifact = backend
+        .retrieve("key-move-dst")
+        .await
+        .unwrap()
+        .expect("moved artifact should exist at destination");
+    assert_eq!(collect(artifact).await, b"movable");
+}
+
+#[tokio::test]
+async fn list_keys_returns_logical_keys_under_prefix() {
+    let Some(ep) = s3_endpoint() else { return };
+    let backend = make_backend(&ep).await;
+
+    for i in 0..3u8 {
+        backend
+            .store(
+                &format!("artifact:npm/list-pkg-{i}"),
+                Bytes::from_static(b"x"),
+                StorageMeta::default(),
+            )
+            .await
+            .unwrap();
+    }
+
+    let mut keys = backend.list_keys("artifact:npm/list-pkg-").await.unwrap();
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec![
+            "artifact:npm/list-pkg-0".to_owned(),
+            "artifact:npm/list-pkg-1".to_owned(),
+            "artifact:npm/list-pkg-2".to_owned(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn new_creates_backend_and_round_trips_through_configured_prefix() {
+    let Some(ep) = s3_endpoint() else { return };
+    // Ensure the bucket exists (idempotent) before `new()`'s head_bucket check.
+    make_backend(&ep).await;
+
+    let cfg = S3StorageConfig {
+        bucket: BUCKET.to_owned(),
+        region: REGION.to_owned(),
+        prefix: Some("tenant-a/".to_owned()),
+        endpoint_url: Some(ep),
+        force_path_style: Some(true),
+    };
+    let backend = S3StorageBackend::new(&cfg).await.unwrap();
+
+    backend
+        .store(
+            "key-prefixed",
+            Bytes::from_static(b"scoped"),
+            StorageMeta::default(),
+        )
+        .await
+        .unwrap();
+
+    let artifact = backend
+        .retrieve("key-prefixed")
+        .await
+        .unwrap()
+        .expect("should exist under configured prefix");
+    assert_eq!(collect(artifact).await, b"scoped");
+
+    let keys = backend.list_keys("key-prefixed").await.unwrap();
+    assert_eq!(keys, vec!["key-prefixed".to_owned()]);
+}
+
+#[tokio::test]
+async fn new_fails_for_unreachable_bucket() {
+    let Some(ep) = s3_endpoint() else { return };
+    let cfg = S3StorageConfig {
+        bucket: "bucket-that-does-not-exist".to_owned(),
+        region: REGION.to_owned(),
+        prefix: None,
+        endpoint_url: Some(ep),
+        force_path_style: Some(true),
+    };
+    let result = S3StorageBackend::new(&cfg).await;
+    assert!(
+        result.is_err(),
+        "head_bucket check should fail for a missing bucket"
+    );
 }
