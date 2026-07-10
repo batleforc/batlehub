@@ -136,6 +136,39 @@ fn run_watcher_thread(config_path: String, event_tx: tokio::sync::mpsc::Unbounde
     tracing::info!("config file watcher stopped");
 }
 
+/// Circuit breaker for `run_reload_task`: trips when too many file-change events
+/// land within a sliding window (e.g. a broken sync tool or NFS mount hammering
+/// mtime), so a noisy filesystem can't turn into a reload-parsing busy loop.
+// ponytail: fixed threshold/window, make configurable if a real deployment needs tuning.
+struct ReloadEventLimiter {
+    max_events: u32,
+    window: Duration,
+    window_start: std::time::Instant,
+    count: u32,
+}
+
+impl ReloadEventLimiter {
+    fn new(max_events: u32, window: Duration) -> Self {
+        Self {
+            max_events,
+            window,
+            window_start: std::time::Instant::now(),
+            count: 0,
+        }
+    }
+
+    /// Records one event at `now`. Returns `true` once this event pushes the
+    /// window's count past `max_events` (i.e. the caller should stop watching).
+    fn record_and_check_tripped(&mut self, now: std::time::Instant) -> bool {
+        if now.duration_since(self.window_start) > self.window {
+            self.window_start = now;
+            self.count = 0;
+        }
+        self.count += 1;
+        self.count > self.max_events
+    }
+}
+
 /// Async task body: receives file-change notifications and triggers config reloads.
 async fn run_reload_task(
     reload_svc: Arc<ConfigReloadService>,
@@ -143,7 +176,20 @@ async fn run_reload_task(
 ) {
     use batlehub_web::services::ReloadSource;
 
+    let mut limiter = ReloadEventLimiter::new(5, Duration::from_secs(30));
+
     while let Some(()) = event_rx.recv().await {
+        if limiter.record_and_check_tripped(std::time::Instant::now()) {
+            tracing::error!(
+                max_events = limiter.max_events,
+                window_secs = limiter.window.as_secs(),
+                "config file watcher: too many reload events in a short time, \
+                 disabling automatic reload detection (restart the server to re-enable; \
+                 use POST /api/v1/admin/config/reload to reload manually)"
+            );
+            break;
+        }
+
         tracing::info!("config file changed, loading pending reload");
         match reload_svc.load_pending(ReloadSource::FileWatcher).await {
             Ok(diff) => tracing::info!(
@@ -215,4 +261,32 @@ fn build_otlp_provider(cfg: &OtelConfig) -> anyhow::Result<sdktrace::SdkTracerPr
         .with_batch_exporter(exporter)
         .with_resource(resource)
         .build())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn limiter_trips_after_max_events_within_window() {
+        let mut limiter = ReloadEventLimiter::new(5, Duration::from_secs(30));
+        let t0 = std::time::Instant::now();
+
+        for _ in 0..5 {
+            assert!(!limiter.record_and_check_tripped(t0));
+        }
+        assert!(limiter.record_and_check_tripped(t0));
+    }
+
+    #[test]
+    fn limiter_resets_count_once_window_elapses() {
+        let mut limiter = ReloadEventLimiter::new(5, Duration::from_secs(30));
+        let t0 = std::time::Instant::now();
+
+        for _ in 0..5 {
+            assert!(!limiter.record_and_check_tripped(t0));
+        }
+        let after_window = t0 + Duration::from_secs(31);
+        assert!(!limiter.record_and_check_tripped(after_window));
+    }
 }

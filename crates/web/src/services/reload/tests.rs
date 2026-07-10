@@ -13,6 +13,17 @@ async fn make_svc_with_file(
     enabled: bool,
     initial_content: &str,
 ) -> (Arc<ConfigReloadService>, tempfile::NamedTempFile) {
+    let builder: HotConfigBuilder = Arc::new(|_| anyhow::bail!("builder not used in this test"));
+    make_svc_with_file_and_builder(enabled, initial_content, builder).await
+}
+
+/// Same as `make_svc_with_file` but lets the caller supply a `builder` that
+/// actually succeeds, for tests that exercise `load_pending`'s diff computation.
+async fn make_svc_with_file_and_builder(
+    enabled: bool,
+    initial_content: &str,
+    builder: HotConfigBuilder,
+) -> (Arc<ConfigReloadService>, tempfile::NamedTempFile) {
     use std::io::Write as _;
     let mut tmp = tempfile::NamedTempFile::new().expect("temp file");
     tmp.write_all(initial_content.as_bytes()).expect("write");
@@ -32,7 +43,6 @@ async fn make_svc_with_file(
         explore_user: Default::default(),
         explore_admin: Default::default(),
     });
-    let builder: HotConfigBuilder = Arc::new(|_| anyhow::bail!("builder not used in this test"));
     let svc = Arc::new(ConfigReloadService::new(
         hot,
         access,
@@ -376,6 +386,55 @@ async fn load_pending_from_content_returns_error_for_invalid_toml() {
         .unwrap_err();
     // The error comes from TOML parsing — just verify it propagates.
     assert!(!err.to_string().is_empty());
+}
+
+/// Regression test: a file-watcher-triggered reload of an unchanged config
+/// (e.g. a touch or atomic-save rewrite with identical bytes) must not leave
+/// a "pending reload" behind — the diff is a no-op since state == existing state.
+#[tokio::test]
+async fn load_pending_does_not_store_pending_when_diff_is_noop() {
+    let builder: HotConfigBuilder = Arc::new(|_| {
+        Ok(BuiltHotState {
+            hot: batlehub_core::services::HotConfig::default(),
+            access: crate::AccessConfig {
+                anonymous: Default::default(),
+                user: Default::default(),
+                admin: Default::default(),
+                groups: Default::default(),
+                explore_anonymous: Default::default(),
+                explore_user: Default::default(),
+                explore_admin: Default::default(),
+            },
+            registry_map: crate::RegistryMap::new(HashMap::new()),
+            registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
+            upstream_map: crate::UpstreamMap::new(HashMap::new()),
+            cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
+            repo_signer_map: crate::RepoSignerMap::default(),
+            vuln_db_map: crate::VulnDbMap::default(),
+        })
+    });
+    let minimal_config = r#"
+        [server]
+        host = "127.0.0.1"
+        port = 8080
+
+        [database]
+        type = "postgresql"
+        url = "postgresql://user:pass@localhost/db"
+
+        [storage]
+        type = "filesystem"
+        path = "./tmp"
+        "#;
+    let (svc, _tmp) = make_svc_with_file_and_builder(true, minimal_config, builder).await;
+
+    let diff = svc
+        .load_pending(ReloadSource::FileWatcher)
+        .await
+        .expect("load_pending");
+
+    assert!(diff.is_noop());
+    assert!(svc.pending_snapshot().is_none());
 }
 
 #[tokio::test]

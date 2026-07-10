@@ -33,6 +33,19 @@ pub struct ReloadDiff {
     pub limits_changed: bool,
 }
 
+impl ReloadDiff {
+    /// True when re-parsing the config produced no detectable change. Used to avoid
+    /// surfacing a "pending reload" for filesystem events (touch, atomic-save
+    /// rewrite) that don't actually change the config content.
+    pub fn is_noop(&self) -> bool {
+        self.added_registries.is_empty()
+            && self.removed_registries.is_empty()
+            && self.changed_registries.is_empty()
+            && !self.access_config_changed
+            && !self.limits_changed
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReloadSource {

@@ -67,6 +67,9 @@ impl ConfigReloadService {
         }
         let new_config = load_config_from_str(content)?;
         let diff = self.build_pending(new_config, source).await?;
+        if diff.is_noop() {
+            return Ok(diff);
+        }
         // Store the raw content so apply() can persist it to disk.
         if let Some(ref mut p) = *self.pending.lock().expect("pending reload lock poisoned") {
             p.content = Some(content.to_owned());
@@ -88,6 +91,11 @@ impl ConfigReloadService {
     ) -> Result<ReloadDiff, anyhow::Error> {
         let built = (self.builder)(&new_config)?;
         let diff = self.compute_diff(&built.hot, &built.access).await;
+        if diff.is_noop() {
+            // ponytail: file watcher fires on touch/atomic-save rewrites even when
+            // content is unchanged; don't surface a pending reload for those.
+            return Ok(diff);
+        }
         let now = Utc::now();
         let pending = PendingReload {
             id: Uuid::new_v4(),
