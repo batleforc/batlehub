@@ -51,7 +51,7 @@ Current adapters: npm, Cargo, GitHub, Forgejo/Gitea, GitLab, OpenVSX, VS Code Ma
 - [x] Block serving an artifact if its integrity check fails, or optionally if the upstream provides no integrity metadata at all — a mismatch fails the download with `502` and is never cached (not bypassable); `require_metadata = true` additionally blocks downloads with no advertised checksum (with `bypass_roles`)
 - [ ] Sigstore / npm provenance verification for npm packages
 - [ ] `cargo verify-project`-style verification for Cargo crates
-- [ ] Detect and optionally require signed releases for GitHub, OpenVSX, and VS Code Marketplace
+- [x] Detect and optionally require signed releases for GitHub, OpenVSX, and VS Code Marketplace — `RequireSignedReleaseRule` reads a best-effort `is_signed` signal populated by the GitHub/Forgejo and OpenVSX/VS Code Marketplace adapters; `deny_missing_signature` + `bypass_roles` control enforcement
 - [x] Allowlist of trusted publishers — `trusted_publisher` rule; supported for GitHub/GitLab/Forgejo (owner/group), npm (scope or publishing user), OpenVSX/VS Code Marketplace (publisher segment). **Cargo crate owners not yet supported** — crates.io ownership isn't in the sparse index and would need a separate API call
 - [x] Allowlist of approved versions; blocklist of specific versions with known issues — `version_gate` rule (`allow`/`block` with exact or semver-range matching)
 - [x] Vulnerability scanning via the [OSV API](https://osv.dev) to block or warn about packages with known CVEs — periodic SBOM re-scan plus a per-registry `cve_gate` rule (`min_severity`, `block`/warn-only, `bypass_roles`)

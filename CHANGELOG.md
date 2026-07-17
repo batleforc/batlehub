@@ -8,6 +8,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-07-17
+
+First stable release.
+
+### Security
+
+- **SSRF hardening** across registry adapters, including OpenVSX upstream requests
+- **Signed-release enforcement** (`RequireSignedReleaseRule`) — optionally require GitHub/OpenVSX/VS Code Marketplace releases to carry verifiable signatures before they're served, with a role-based bypass
+- Open-source release housekeeping: `LICENSE` (Apache-2.0), `SECURITY.md`, `CONTRIBUTING.md`
+
+### Reliability
+
+- Fixed the config hot-reload watcher retriggering without a real change; a reload loop that fires more than a few times within 30s without settling now stops and surfaces a warning instead of looping forever
+- Large hardening/bug-fix pass across handlers and services following an in-depth code review
+
+### Developer experience
+
+- Frontend lint job added to CI (`front-test.yaml`)
+- Dependency upgrades across the Rust workspace (including `sqlx`) and the UI toolchain
+- Continued UI rework (routing, navigation) and codebase health cleanup (dead code, duplication)
+
 ## [0.5.0] - 2026-06-29
 
 ### Registry adapters
