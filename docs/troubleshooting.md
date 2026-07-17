@@ -97,6 +97,12 @@ batlehub-cli admin cache clear <registry>
 ```
 Or wait for the TTL to expire (default: 300 seconds).
 
+**Also check upstream health:** if the registry is erroring or slow, `serve_stale_metadata` may be
+serving the last good cache on purpose rather than a stale TTL. `GET /api/v1/admin/stats` reports
+`upstream_degraded`, `upstream_error_rate`, and `upstream_latency_ms` per registry, and a
+`batlehub_upstream_health_degraded{registry}` gauge (plus a warning log on the transition) is
+available on `/metrics` for alerting.
+
 ## Upload failing with `413 Payload Too Large`
 
 **Symptom:** `cargo publish`, `pip upload`, or similar clients receive a 413 error.

@@ -255,6 +255,7 @@ impl ProxyService {
             Arc::clone(&timing.registry_label),
             "fetch_artifact",
             upstream_start,
+            Arc::clone(&self.metrics),
             upstream.stream,
         );
 

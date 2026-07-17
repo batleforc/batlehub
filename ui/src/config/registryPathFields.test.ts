@@ -221,7 +221,13 @@ describe("forgejo", () => {
   });
 
   it("buildPaths gates ref/filename/filePath-dependent paths", () => {
-    const paths = t.buildPaths("forgejo", { owner: "org", repo: "proj", ref: "", filename: "", filePath: "" });
+    const paths = t.buildPaths("forgejo", {
+      owner: "org",
+      repo: "proj",
+      ref: "",
+      filename: "",
+      filePath: "",
+    });
     expect(paths.find((p) => p.label === "List releases")!.available).toBe(true);
     expect(paths.find((p) => p.label === "Release by tag")!.available).toBe(false);
     expect(paths.find((p) => p.label === "Asset by filename")!.available).toBe(false);
@@ -252,7 +258,12 @@ describe("gitlab", () => {
   });
 
   it("buildPaths gates tag/link/file-dependent paths", () => {
-    const paths = t.buildPaths("gitlab", { project: "group/proj", tag: "", linkName: "", filePath: "" });
+    const paths = t.buildPaths("gitlab", {
+      project: "group/proj",
+      tag: "",
+      linkName: "",
+      filePath: "",
+    });
     expect(paths.find((p) => p.label === "List releases")!.available).toBe(true);
     expect(paths.find((p) => p.label === "Release by tag")!.available).toBe(false);
     expect(paths.find((p) => p.label === "Release link download")!.available).toBe(false);
@@ -395,9 +406,9 @@ describe("openvsx", () => {
   const t = typeDef("openvsx");
 
   it("requires publisher, name, and version for the VSIX download", () => {
-    expect(t.buildPaths("openvsx", { publisher: "", name: "python", version: "1.0" })[0].available).toBe(
-      false,
-    );
+    expect(
+      t.buildPaths("openvsx", { publisher: "", name: "python", version: "1.0" })[0].available,
+    ).toBe(false);
     const paths = t.buildPaths("openvsx", {
       publisher: "ms-python",
       name: "python",
@@ -586,7 +597,11 @@ describe("composer", () => {
   });
 
   it("fills in vendor/package/version-dependent paths", () => {
-    const paths = t.buildPaths("composer", { vendor: "symfony", package: "console", version: "7.1.0" });
+    const paths = t.buildPaths("composer", {
+      vendor: "symfony",
+      package: "console",
+      version: "7.1.0",
+    });
     expect(paths.find((p) => p.label === "Dist download")!.url).toBe(
       "/proxy/composer/dist/symfony/console/7.1.0",
     );

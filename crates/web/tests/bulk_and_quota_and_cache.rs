@@ -17,7 +17,7 @@ use batlehub_adapters::in_memory::{
 };
 use batlehub_core::entities::{AccessEvent, PackageId, Role};
 use batlehub_core::ports::{NoopWarmCoordinator, PackageRepository, StorageBackend, StorageMeta};
-use batlehub_core::services::{EvictionConfig, EvictionService, WarmingService};
+use batlehub_core::services::{EvictionConfig, EvictionService, ProxyMetrics, WarmingService};
 use batlehub_web::handlers::back_office::ops::eviction::EvictionServiceMap;
 use batlehub_web::handlers::back_office::ops::warming::WarmingServiceMap;
 use batlehub_web::AuthMiddlewareFactory;
@@ -315,6 +315,7 @@ fn npm_warming_service(storage: Arc<dyn StorageBackend>) -> Arc<WarmingService> 
         latest_n: 3,
         concurrency: 4,
         coordinator: Arc::new(NoopWarmCoordinator),
+        metrics: Arc::new(ProxyMetrics::new(&["npm".to_owned()])),
     })
 }
 

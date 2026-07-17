@@ -109,6 +109,7 @@ impl ProxyService {
                 Arc::clone(&registry_label),
                 "fetch_artifact",
                 upstream_start,
+                Arc::clone(&self.metrics),
                 upstream.stream,
             );
             super::warn_if_audit_failed(

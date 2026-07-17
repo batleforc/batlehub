@@ -24,6 +24,13 @@ pub struct RegistryStatsDto {
     pub hit_rate: Option<f64>,
     /// Total bytes cached in storage for this registry (from storage backend).
     pub cached_bytes: Option<u64>,
+    /// `true` when upstream is showing a high error rate or slow responses;
+    /// cached data may be stale until it recovers.
+    pub upstream_degraded: bool,
+    /// Rolling upstream error rate in [0, 1] (exponential moving average).
+    pub upstream_error_rate: f64,
+    /// Rolling average upstream call latency in milliseconds.
+    pub upstream_latency_ms: u64,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -73,11 +80,18 @@ pub async fn admin_stats(
     registries.sort();
 
     for registry in registries {
-        let (hits, misses) = if let Some(c) = proxy_metrics.all().get(&registry) {
-            (c.hits(), c.misses())
-        } else {
-            (0, 0)
-        };
+        let (hits, misses, degraded, error_rate, latency_ms) =
+            if let Some(c) = proxy_metrics.all().get(&registry) {
+                (
+                    c.hits(),
+                    c.misses(),
+                    c.is_degraded(),
+                    c.upstream_error_rate_permille() as f64 / 1000.0,
+                    c.upstream_latency_ms(),
+                )
+            } else {
+                (0, 0, false, 0.0, 0)
+            };
 
         let prefix = format!("artifact:{}/", registry);
         let cached_bytes: Option<u64> = match proxy_svc.storage.stat_by_prefix(&prefix).await {
@@ -95,6 +109,9 @@ pub async fn admin_stats(
             artifact_misses: misses,
             hit_rate: hit_rate(hits, misses),
             cached_bytes,
+            upstream_degraded: degraded,
+            upstream_error_rate: error_rate,
+            upstream_latency_ms: latency_ms,
         });
     }
 

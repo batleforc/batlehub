@@ -192,6 +192,9 @@ async fn run_reload_task(
 
         tracing::info!("config file changed, loading pending reload");
         match reload_svc.load_pending(ReloadSource::FileWatcher).await {
+            Ok(diff) if diff.is_noop() => {
+                tracing::debug!("config file event produced no change, nothing pending")
+            }
             Ok(diff) => tracing::info!(
                 added = diff.added_registries.len(),
                 removed = diff.removed_registries.len(),

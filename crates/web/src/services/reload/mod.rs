@@ -128,6 +128,13 @@ pub struct ConfigReloadService {
     pub(super) pending: Mutex<Option<PendingReload>>,
     pub(super) builder: HotConfigBuilder,
     pub(super) banner: Option<Arc<BannerService>>,
+    /// Raw content of the last config load attempt (file-watcher or editor), whether
+    /// or not it ended up applied. Lets `load_pending`/`load_pending_from_content`
+    /// suppress redundant rebuilds triggered by byte-identical rewrites (touch,
+    /// atomic-save) without relying on `ReloadDiff`, which can't detect a change to
+    /// an existing registry's fields (see `compute_diff`) and would otherwise treat
+    /// such a change as a no-op too.
+    pub(super) last_content: Mutex<Option<String>>,
 }
 
 impl ConfigReloadService {
@@ -162,6 +169,7 @@ impl ConfigReloadService {
             pending: Mutex::new(None),
             builder,
             banner,
+            last_content: Mutex::new(None),
         }
     }
 

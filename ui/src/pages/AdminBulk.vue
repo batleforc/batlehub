@@ -156,8 +156,7 @@ function reset() {
 registry,name,version,artifact,reason
 npm,lodash,4.17.21,,CVE-2021-23337
 cargo,serde,1.0.0,,License issue
-github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre
-        >
+github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
         <p class="text-xs text-muted-foreground mt-2">
           Header row is optional. <code class="font-mono">artifact</code> may be left blank for
           version-level blocks. <code class="font-mono">reason</code> is used only for block

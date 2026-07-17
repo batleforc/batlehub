@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use batlehub_config::{load as load_config, load_from_str as load_config_from_str};
+use batlehub_config::load_from_str as load_config_from_str;
 use batlehub_core::entities::{BannerLevel, GlobalBanner};
 
 use super::{ConfigReloadService, PendingReload, ReloadDiff, ReloadSource, PENDING_TTL_SECS};
@@ -40,7 +40,13 @@ impl ConfigReloadService {
         if !self.hot_reload_enabled {
             anyhow::bail!("hot reload is disabled (BATLEHUB_DISABLE_HOT_RELOAD=1)");
         }
-        let new_config = load_config(&self.config_path)?;
+        let content = tokio::fs::read_to_string(&self.config_path).await?;
+        if self.mark_seen_and_check_unchanged(&content) {
+            // File-watcher fired (touch/atomic-save rewrite) but the bytes on disk are
+            // identical to the last load attempt — nothing to rebuild.
+            return Ok(ReloadDiff::default());
+        }
+        let new_config = load_config_from_str(&content)?;
         self.build_pending(new_config, source).await
     }
 
@@ -65,11 +71,11 @@ impl ConfigReloadService {
         if !self.hot_reload_enabled {
             anyhow::bail!("hot reload is disabled (BATLEHUB_DISABLE_HOT_RELOAD=1)");
         }
+        if self.mark_seen_and_check_unchanged(content) {
+            return Ok(ReloadDiff::default());
+        }
         let new_config = load_config_from_str(content)?;
         let diff = self.build_pending(new_config, source).await?;
-        if diff.is_noop() {
-            return Ok(diff);
-        }
         // Store the raw content so apply() can persist it to disk.
         if let Some(ref mut p) = *self.pending.lock().expect("pending reload lock poisoned") {
             p.content = Some(content.to_owned());
@@ -83,6 +89,20 @@ impl ConfigReloadService {
         tokio::fs::read_to_string(&self.config_path).await
     }
 
+    /// Records `content` as the last-seen raw config text and reports whether it is
+    /// identical to the previous call's content. `false` on the very first call (there
+    /// is nothing yet to compare against), so the first load after startup always goes
+    /// through `build_pending` — matching the state the caller already has on disk.
+    fn mark_seen_and_check_unchanged(&self, content: &str) -> bool {
+        let mut last = self
+            .last_content
+            .lock()
+            .expect("last_content lock poisoned");
+        let unchanged = last.as_deref() == Some(content);
+        *last = Some(content.to_owned());
+        unchanged
+    }
+
     /// Internal helper shared by `load_pending` and `load_pending_from_content`.
     async fn build_pending(
         &self,
@@ -91,11 +111,6 @@ impl ConfigReloadService {
     ) -> Result<ReloadDiff, anyhow::Error> {
         let built = (self.builder)(&new_config)?;
         let diff = self.compute_diff(&built.hot, &built.access).await;
-        if diff.is_noop() {
-            // ponytail: file watcher fires on touch/atomic-save rewrites even when
-            // content is unchanged; don't surface a pending reload for those.
-            return Ok(diff);
-        }
         let now = Utc::now();
         let pending = PendingReload {
             id: Uuid::new_v4(),

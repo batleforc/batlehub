@@ -73,9 +73,13 @@ impl ProxyService {
         start: Instant,
     ) -> Result<FetchedArtifact, CoreError> {
         match client.fetch_artifact(&req.package_id).await {
-            Ok(artifact) => Ok(artifact),
+            Ok(artifact) => {
+                self.metrics.record_upstream_outcome(registry_label, true);
+                Ok(artifact)
+            }
             Err(e) => {
-                record_upstream_duration(registry_label, "fetch_artifact", start);
+                record_upstream_duration(registry_label, "fetch_artifact", start, &self.metrics);
+                self.metrics.record_upstream_outcome(registry_label, false);
                 metrics::counter!("batlehub_upstream_errors_total", "registry" => Arc::clone(registry_label)).increment(1);
                 warn_if_audit_failed(
                     self.repo
@@ -116,18 +120,22 @@ pub(super) fn finish_request(registry_label: &Arc<str>, outcome: &'static str, s
 }
 
 /// Records a single upstream-latency sample under
-/// `batlehub_upstream_request_duration_seconds{registry,operation}`.
+/// `batlehub_upstream_request_duration_seconds{registry,operation}`, and feeds
+/// the in-process rolling latency EMA used for upstream-health degradation.
 pub(super) fn record_upstream_duration(
     registry_label: &Arc<str>,
     operation: &'static str,
     start: Instant,
+    metrics_svc: &ProxyMetrics,
 ) {
+    let elapsed = start.elapsed();
     metrics::histogram!(
         "batlehub_upstream_request_duration_seconds",
         "registry" => Arc::clone(registry_label),
         "operation" => operation
     )
-    .record(start.elapsed().as_secs_f64());
+    .record(elapsed.as_secs_f64());
+    metrics_svc.record_upstream_latency(registry_label, elapsed.as_millis() as u64);
 }
 
 /// Times a call out to an upstream registry client and records it under
@@ -143,11 +151,12 @@ pub(super) fn record_upstream_duration(
 pub(super) async fn time_upstream_call<T, E>(
     registry_label: &Arc<str>,
     operation: &'static str,
+    metrics_svc: &ProxyMetrics,
     fut: impl std::future::Future<Output = Result<T, E>>,
 ) -> Result<T, E> {
     let start = Instant::now();
     let result = fut.await;
-    record_upstream_duration(registry_label, operation, start);
+    record_upstream_duration(registry_label, operation, start, metrics_svc);
     result
 }
 
@@ -165,20 +174,33 @@ pub(super) fn time_upstream_stream(
     registry_label: Arc<str>,
     operation: &'static str,
     start: Instant,
+    metrics_svc: Arc<ProxyMetrics>,
     stream: ArtifactStream,
 ) -> ArtifactStream {
     Box::pin(stream::unfold(
-        (stream, registry_label, operation, start, false),
-        |(mut stream, registry_label, operation, start, done)| async move {
+        (stream, registry_label, operation, start, metrics_svc, false),
+        |(mut stream, registry_label, operation, start, metrics_svc, done)| async move {
             if done {
                 return None;
             }
             let next = stream.next().await;
             let finished = !matches!(next, Some(Ok(_)));
             if finished {
-                record_upstream_duration(&registry_label, operation, start);
+                record_upstream_duration(&registry_label, operation, start, &metrics_svc);
             }
-            next.map(|item| (item, (stream, registry_label, operation, start, finished)))
+            next.map(|item| {
+                (
+                    item,
+                    (
+                        stream,
+                        registry_label,
+                        operation,
+                        start,
+                        metrics_svc,
+                        finished,
+                    ),
+                )
+            })
         },
     ))
 }

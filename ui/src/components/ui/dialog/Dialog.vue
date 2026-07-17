@@ -41,10 +41,7 @@ defineEmits<{
           <DialogTitle class="text-lg font-semibold leading-none tracking-tight">
             <slot name="title" />
           </DialogTitle>
-          <DialogDescription
-            v-if="$slots.description"
-            class="text-sm text-muted-foreground mt-1"
-          >
+          <DialogDescription v-if="$slots.description" class="text-sm text-muted-foreground mt-1">
             <slot name="description" />
           </DialogDescription>
         </div>

@@ -212,8 +212,7 @@ const usageSnippets = [
             <div class="relative rounded-sm border border-border bg-muted/40 overflow-hidden">
               <pre
                 class="p-4 text-xs font-mono overflow-x-auto text-foreground/90 leading-relaxed"
-                >{{ s.code }}</pre
-              >
+                >{{ s.code }}</pre>
               <CopyButton
                 :text="s.code"
                 size="sm"

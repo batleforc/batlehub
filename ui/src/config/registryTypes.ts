@@ -178,8 +178,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         key: "npm-audit",
         label: "npm audit",
         lang: "bash",
-        template: () =>
-          [`npm audit`, `npm audit --fix`].join("\n"),
+        template: () => [`npm audit`, `npm audit --fix`].join("\n"),
         note:
           `Both audit modes (<code class="font-mono bg-muted px-1 rounded">quick</code> and ` +
           `<code class="font-mono bg-muted px-1 rounded">bulk</code>) are proxied automatically ` +

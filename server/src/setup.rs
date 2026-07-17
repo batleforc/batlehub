@@ -188,6 +188,7 @@ pub(super) fn build_warming_map(
     storage: Arc<dyn StorageBackend>,
     pool: sqlx::PgPool,
     coordinator: Arc<dyn batlehub_core::ports::WarmCoordinator>,
+    proxy_metrics: Arc<batlehub_core::services::ProxyMetrics>,
 ) -> batlehub_web::handlers::back_office::ops::warming::WarmingServiceMap {
     use batlehub_adapters::db::PgArtifactMetaRepository;
     use batlehub_core::services::WarmingService;
@@ -206,6 +207,7 @@ pub(super) fn build_warming_map(
                 latest_n: reg.cache.warm_latest_n,
                 concurrency: reg.cache.warm_concurrency,
                 coordinator: Arc::clone(&coordinator),
+                metrics: Arc::clone(&proxy_metrics),
             });
             warming_map.insert(reg.name.clone(), warming_svc);
         }

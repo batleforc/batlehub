@@ -99,8 +99,20 @@ describe("PackageVersionsTable", () => {
     const { wrapper } = await mountComp([
       version({
         vulnerabilities: [
-          { osv_id: "OSV-1", summary: "bad", severity: "critical", fixed_version: "1.0.1" },
-          { osv_id: "OSV-2", summary: "meh", severity: "low", fixed_version: null },
+          {
+            osv_id: "OSV-1",
+            summary: "bad",
+            severity: "critical",
+            fixed_version: "1.0.1",
+            purl: "pkg:npm/test@1.0.0",
+          },
+          {
+            osv_id: "OSV-2",
+            summary: "meh",
+            severity: "low",
+            fixed_version: null,
+            purl: "pkg:npm/test@1.0.0",
+          },
         ],
       }),
     ]);
@@ -188,12 +200,26 @@ describe("PackageVersionsTable", () => {
     expect(bulkBlockPackagesMock).toHaveBeenCalledWith({
       body: {
         items: [
-          { registry: "npm", name: "pkg", version: "1.0.0", artifact: "pkg-1.0.0.tgz", reason: "bad license" },
-          { registry: "npm", name: "pkg", version: "2.0.0", artifact: "pkg-1.0.0.tgz", reason: "bad license" },
+          {
+            registry: "npm",
+            name: "pkg",
+            version: "1.0.0",
+            artifact: "pkg-1.0.0.tgz",
+            reason: "bad license",
+          },
+          {
+            registry: "npm",
+            name: "pkg",
+            version: "2.0.0",
+            artifact: "pkg-1.0.0.tgz",
+            reason: "bad license",
+          },
         ],
       },
     });
-    expect((wrapper.vm as unknown as { bulkMsg: string }).bulkMsg).toContain("Blocked 1 version(s)");
+    expect((wrapper.vm as unknown as { bulkMsg: string }).bulkMsg).toContain(
+      "Blocked 1 version(s)",
+    );
     expect(wrapper.emitted("reload")).toHaveLength(1);
   });
 

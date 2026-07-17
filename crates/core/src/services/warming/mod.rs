@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::ports::{ArtifactCacheMeta, RegistryClient, StorageBackend, WarmCoordinator};
+use crate::services::metrics::ProxyMetrics;
 
 /// How long a warm-up claim is held in the coordinator. Long enough to cover the
 /// full fetch+store cycle for large artifacts; short enough to unblock other replicas
@@ -52,4 +53,7 @@ pub struct WarmingService {
     /// Cross-replica coordination: prevents multiple replicas from downloading
     /// the same artifact simultaneously. Defaults to `NoopWarmCoordinator`.
     pub coordinator: Arc<dyn WarmCoordinator>,
+    /// Shared with `ProxyService` so warming traffic feeds the same
+    /// upstream-health signal as regular proxy reads.
+    pub metrics: Arc<ProxyMetrics>,
 }

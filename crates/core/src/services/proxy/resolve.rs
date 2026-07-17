@@ -31,12 +31,17 @@ impl ProxyService {
         let meta = match super::time_upstream_call(
             registry_label,
             "resolve_metadata",
+            &self.metrics,
             client.resolve_metadata(&req.package_id),
         )
         .await
         {
-            Ok(m) => m,
+            Ok(m) => {
+                self.metrics.record_upstream_outcome(registry_label, true);
+                m
+            }
             Err(e) => {
+                self.metrics.record_upstream_outcome(registry_label, false);
                 let serve_stale = policy
                     .as_ref()
                     .map(|p| p.serve_stale_metadata)

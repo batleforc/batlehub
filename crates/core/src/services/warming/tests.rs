@@ -89,6 +89,10 @@ fn disabled_svc() -> WarmingService {
         latest_n: 3,
         concurrency: 0,
         coordinator: Arc::new(crate::ports::NoopWarmCoordinator),
+        metrics: Arc::new(crate::services::metrics::ProxyMetrics::new(&[
+            "test".into(),
+            "test-reg".into(),
+        ])),
     }
 }
 
@@ -359,6 +363,10 @@ fn active_svc(client: Arc<dyn RegistryClient>, storage: Arc<dyn StorageBackend>)
         latest_n: 3,
         concurrency: 4,
         coordinator: Arc::new(crate::ports::NoopWarmCoordinator),
+        metrics: Arc::new(crate::services::metrics::ProxyMetrics::new(&[
+            "test".into(),
+            "test-reg".into(),
+        ])),
     }
 }
 
@@ -397,6 +405,10 @@ async fn warm_package_unpinned_scoped_npm_name() {
         latest_n: 1,
         concurrency: 4,
         coordinator: Arc::new(crate::ports::NoopWarmCoordinator),
+        metrics: Arc::new(crate::services::metrics::ProxyMetrics::new(&[
+            "test".into(),
+            "test-reg".into(),
+        ])),
     };
     let report = svc.warm_package("@babel/core").await;
     assert_eq!(report.warmed, 1);
@@ -435,6 +447,10 @@ async fn warm_package_lists_versions_and_warms_latest_n() {
         latest_n: 2,
         concurrency: 4,
         coordinator: Arc::new(crate::ports::NoopWarmCoordinator),
+        metrics: Arc::new(crate::services::metrics::ProxyMetrics::new(&[
+            "test".into(),
+            "test-reg".into(),
+        ])),
     };
     let report = svc.warm_package("mylib").await;
     assert_eq!(report.warmed, 2);
@@ -565,6 +581,10 @@ async fn warm_package_succeeds_despite_record_artifact_failure() {
         latest_n: 3,
         concurrency: 4,
         coordinator: Arc::new(crate::ports::NoopWarmCoordinator),
+        metrics: Arc::new(crate::services::metrics::ProxyMetrics::new(&[
+            "test".into(),
+            "test-reg".into(),
+        ])),
     };
     let report = svc.warm_package("mylib@1.0.0").await;
     // record_artifact failure is logged but non-fatal: the artifact is
@@ -584,6 +604,10 @@ async fn warm_package_latest_n_larger_than_available_versions() {
         latest_n: 10,
         concurrency: 4,
         coordinator: Arc::new(crate::ports::NoopWarmCoordinator),
+        metrics: Arc::new(crate::services::metrics::ProxyMetrics::new(&[
+            "test".into(),
+            "test-reg".into(),
+        ])),
     };
     let report = svc.warm_package("mylib").await;
     assert_eq!(report.warmed, 2);

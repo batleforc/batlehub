@@ -77,7 +77,7 @@ BatleHub aims to be a trust boundary, not just a cache.
 | **OSV vulnerability scanning** | ✅ Shipped | Periodic SBOM re-scan against the [OSV API](https://osv.dev) plus a per-registry `cve_gate` rule (`min_severity`, block or warn-only, `bypass_roles`) |
 | YARA rule evaluation | Planned | Custom malware or policy pattern matching on artifact bytes |
 | Antivirus scanning | Planned | Binary artifact scanning (VSIX, Go module zips) via a configurable external REST API |
-| Upstream health warnings | Planned | Warn when cached data may be stale due to upstream errors |
+| **Upstream health warnings** | ✅ Shipped | Rolling per-registry error-rate/latency EMA; `batlehub_upstream_health_degraded{registry}` gauge plus a warning log on the healthy→degraded transition; surfaced in `GET /api/v1/admin/stats` (`upstream_degraded`, `upstream_error_rate`, `upstream_latency_ms`) so admins know cached data may be stale |
 
 ---
 

@@ -388,11 +388,14 @@ async fn load_pending_from_content_returns_error_for_invalid_toml() {
     assert!(!err.to_string().is_empty());
 }
 
-/// Regression test: a file-watcher-triggered reload of an unchanged config
-/// (e.g. a touch or atomic-save rewrite with identical bytes) must not leave
-/// a "pending reload" behind — the diff is a no-op since state == existing state.
+/// Regression test: a file-watcher event whose config content is structurally a
+/// no-op per `compute_diff` (no registry added/removed, no top-level access/limits
+/// change) must still store a pending reload. `compute_diff` cannot see changes to
+/// an *existing* registry's fields (`changed_registries` is always empty — see its
+/// doc comment), so treating "empty diff" as "nothing changed" would silently drop
+/// real edits to an existing registry's config.
 #[tokio::test]
-async fn load_pending_does_not_store_pending_when_diff_is_noop() {
+async fn load_pending_stores_pending_even_when_diff_is_structurally_noop() {
     let builder: HotConfigBuilder = Arc::new(|_| {
         Ok(BuiltHotState {
             hot: batlehub_core::services::HotConfig::default(),
@@ -434,7 +437,73 @@ async fn load_pending_does_not_store_pending_when_diff_is_noop() {
         .expect("load_pending");
 
     assert!(diff.is_noop());
-    assert!(svc.pending_snapshot().is_none());
+    assert!(
+        svc.pending_snapshot().is_some(),
+        "a structurally-noop diff must not suppress storing the pending reload"
+    );
+}
+
+/// Regression test: a *repeated* file-watcher event whose raw config bytes are
+/// byte-identical to the previous load attempt (e.g. a touch or atomic-save
+/// rewrite) must not rebuild or replace the existing pending reload — this is the
+/// actual case the file watcher hits repeatedly and needs to dedup.
+#[tokio::test]
+async fn load_pending_skips_rebuild_when_raw_content_is_unchanged() {
+    let builder: HotConfigBuilder = Arc::new(|_| {
+        Ok(BuiltHotState {
+            hot: batlehub_core::services::HotConfig::default(),
+            access: crate::AccessConfig {
+                anonymous: Default::default(),
+                user: Default::default(),
+                admin: Default::default(),
+                groups: Default::default(),
+                explore_anonymous: Default::default(),
+                explore_user: Default::default(),
+                explore_admin: Default::default(),
+            },
+            registry_map: crate::RegistryMap::new(HashMap::new()),
+            registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
+            upstream_map: crate::UpstreamMap::new(HashMap::new()),
+            cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
+            repo_signer_map: crate::RepoSignerMap::default(),
+            vuln_db_map: crate::VulnDbMap::default(),
+        })
+    });
+    let minimal_config = r#"
+        [server]
+        host = "127.0.0.1"
+        port = 8080
+
+        [database]
+        type = "postgresql"
+        url = "postgresql://user:pass@localhost/db"
+
+        [storage]
+        type = "filesystem"
+        path = "./tmp"
+        "#;
+    let (svc, _tmp) = make_svc_with_file_and_builder(true, minimal_config, builder).await;
+
+    svc.load_pending(ReloadSource::FileWatcher)
+        .await
+        .expect("first load_pending");
+    let first_id = svc
+        .pending_snapshot()
+        .expect("first load stores a pending")
+        .id;
+
+    // File watcher fires again; the file on disk hasn't actually changed.
+    let second = svc
+        .load_pending(ReloadSource::FileWatcher)
+        .await
+        .expect("second load_pending");
+
+    assert!(second.is_noop());
+    assert_eq!(
+        svc.pending_snapshot().expect("pending left untouched").id,
+        first_id,
+        "unchanged raw content must not replace the existing pending reload"
+    );
 }
 
 #[tokio::test]

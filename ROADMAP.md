@@ -57,7 +57,7 @@ Current adapters: npm, Cargo, GitHub, Forgejo/Gitea, GitLab, OpenVSX, VS Code Ma
 - [x] Vulnerability scanning via the [OSV API](https://osv.dev) to block or warn about packages with known CVEs — periodic SBOM re-scan plus a per-registry `cve_gate` rule (`min_severity`, `block`/warn-only, `bypass_roles`)
 - [ ] YARA rule evaluation for custom malware or policy patterns
 - [ ] Antivirus scanning for binary artifacts (VSIX, Go module zips) via a configurable external REST API
-- [ ] Warn when an upstream registry is returning high error rates or slow responses and cached data may be stale
+- [x] Warn when an upstream registry is returning high error rates or slow responses and cached data may be stale — in-process EMA of upstream error rate / latency per registry (`ProxyMetrics`); a `batlehub_upstream_health_degraded{registry}` gauge plus a `tracing::warn!` on the healthy→degraded transition; also surfaced in `GET /api/v1/admin/stats` (`upstream_degraded`, `upstream_error_rate`, `upstream_latency_ms`)
 - [x] Warn when a registry does not provide integrity metadata for its artifacts — the proxy logs a warning and increments `batlehub_integrity_checks_total{outcome="missing"}` when an artifact is fetched with no advertised checksum (and blocks instead when `require_metadata = true`)
 
 ---

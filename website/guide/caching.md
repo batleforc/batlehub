@@ -138,6 +138,16 @@ Metadata (version lists, release info) is cached for `metadata_ttl_secs` seconds
 
 Set `metadata_ttl_secs = 0` to always re-check upstream on every request (useful in `local` and `hybrid` modes where you want the index to be always fresh).
 
+### Knowing when you're serving stale data
+
+BatleHub tracks a rolling error-rate/latency average per registry and flags it as **degraded**
+once upstream calls are failing often or responding slowly — exactly the situation where
+`serve_stale` may be quietly serving old data. Check it via:
+
+- `GET /api/v1/admin/stats` — per-registry `upstream_degraded`, `upstream_error_rate`, and `upstream_latency_ms`
+- the `batlehub_upstream_health_degraded{registry}` Prometheus gauge (0/1), for alerting
+- a `tracing::warn!` log line on the healthy→degraded transition (and an info log on recovery)
+
 ### Artifact TTL
 
 By default, once an artifact is downloaded it is kept until an eviction policy removes it. Set `artifact_ttl_secs` to make artifacts expire by age — the next request after expiry re-fetches from upstream and resets the clock:

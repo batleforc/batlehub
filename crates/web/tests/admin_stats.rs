@@ -86,4 +86,31 @@ async fn admin_stats_reflects_counter_updates() {
         .expect("npm entry must be present");
     assert_eq!(per_npm["artifact_hits"], 2);
     assert_eq!(per_npm["artifact_misses"], 1);
+    assert_eq!(per_npm["upstream_degraded"], false);
+}
+
+#[actix_web::test]
+async fn admin_stats_flags_upstream_degraded_after_repeated_errors() {
+    let proxy_metrics = Arc::new(ProxyMetrics::new(&["npm".to_owned()]));
+    let app = make_app_ext(InMemoryRepo::new(), proxy_metrics.clone()).await;
+
+    for _ in 0..20 {
+        proxy_metrics.record_upstream_outcome("npm", false);
+    }
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/stats")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    let body: Value = read_body_json(resp).await;
+
+    let per_npm = body["per_registry"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["registry"] == "npm")
+        .expect("npm entry must be present");
+    assert_eq!(per_npm["upstream_degraded"], true);
+    assert!(per_npm["upstream_error_rate"].as_f64().unwrap() > 0.5);
 }

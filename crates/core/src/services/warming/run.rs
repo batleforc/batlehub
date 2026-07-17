@@ -79,12 +79,17 @@ async fn warm_one_version_inner(
     let registry_label: Arc<str> = Arc::from(registry_name);
     let upstream_start = std::time::Instant::now();
     let mut fetched = match svc.client.fetch_artifact(&pkg).await {
-        Ok(f) => f,
+        Ok(f) => {
+            svc.metrics.record_upstream_outcome(registry_name, true);
+            f
+        }
         Err(e) => {
+            svc.metrics.record_upstream_outcome(registry_name, false);
             crate::services::proxy::record_upstream_duration(
                 &registry_label,
                 "fetch_artifact",
                 upstream_start,
+                &svc.metrics,
             );
             tracing::warn!(
                 registry = %registry_name, package = %name,
@@ -104,6 +109,7 @@ async fn warm_one_version_inner(
         Arc::clone(&registry_label),
         "fetch_artifact",
         upstream_start,
+        Arc::clone(&svc.metrics),
         fetched.stream,
     );
 

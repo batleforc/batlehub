@@ -190,6 +190,7 @@ async fn main() -> Result<()> {
         storage.clone(),
         repo.pool(),
         warm_coordinator,
+        Arc::clone(&proxy_metrics),
     );
     let eviction_map = setup::build_eviction_map(&config, storage.clone(), repo.pool());
     let access_config = new_access_lock(init_access);
