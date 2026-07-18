@@ -1,5 +1,5 @@
 # ── Build stage ───────────────────────────────────────────────────────────────
-FROM rust:1.96-slim-bookworm@sha256:4732ca96fd086cb9be682050c3f0176288eebaac2b80aa2bcefccfaf198e1950 AS builder
+FROM rust:1.97-slim-bookworm@sha256:99e09cb2284e2ddbb73a995deee3e91783fd04d177602ccf6eab326d778ee777 AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config libssl-dev curl make \
@@ -42,7 +42,7 @@ RUN cargo build --release -p batlehub-server -p batlehub-cli
 RUN mkdir -p /var/cache/batlehub
 
 # ── Frontend build stage ───────────────────────────────────────────────────────
-FROM node:26-slim@sha256:a1d9d671994fc2d26e297ac56b4b1522a8bc7fa71c43b14cd1b1fe6c5116f7dc AS ui-builder
+FROM node:26-slim@sha256:715e55e4b84e4bb0ff48e49b398a848f08e55daed8eb6a0ea1839ae53bc57583 AS ui-builder
 
 WORKDIR /ui
 COPY ui/package.json ui/package-lock.json ./
@@ -58,7 +58,7 @@ RUN batlehub --config /etc/batlehub/config.toml dump-spec > openapi.json && \
     npm run build
 
 # ── Runtime image ─────────────────────────────────────────────────────────────
-FROM gcr.io/distroless/cc-debian12:latest@sha256:d703b626ba455c4e6c6fbe5f36e6f427c85d51445598d564652a2f334179f96e AS runtime
+FROM gcr.io/distroless/cc-debian12:latest@sha256:7ee09f36862efbdbf70422db263e411c2618409ca46faa555bd5b636155307df AS runtime
 
 COPY --from=builder  /build/target/release/batlehub     /usr/local/bin/batlehub
 COPY --from=builder  /build/target/release/batlehub-cli /usr/local/bin/batlehub-cli
