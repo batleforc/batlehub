@@ -58,7 +58,29 @@ jobs:
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
           tag_name: ${{ needs.meta.outputs.tag }}
-          name: ${{ needs.meta.outputs.tag }}
+          name: "🚀 BatleHub ${{ needs.meta.outputs.tag }}"
+          draft: true
+          body: |
+            ## 🚀 BatleHub ${{ needs.meta.outputs.tag }}
+
+            A fresh release just landed! ✨
+
+            ### 📦 What's in the box
+            - 🖥️ **Server binary** — `batlehub` (Linux x86_64)
+            - 🧰 **CLI** — Linux (amd64/arm64), Windows, macOS
+            - 🐳 **Container image** — `ghcr.io/${{ github.repository }}:${{ needs.meta.outputs.version }}`
+            - ⎈ **Helm chart** — `${{ env.CHART_NAMESPACE }}`
+            - 🛡️ **SBOMs** (CycloneDX) attached & attested for both the binary and the container image
+
+            ### 🔍 Verify it
+            Build provenance and SBOM attestations are published — check them with `gh attestation verify`.
+
+            ### 📚 Docs
+            https://batleforc.git.batleforc.fr/batlehub
+
+            ---
+            #### 📝 Changes
+          generate_release_notes: true
           files: |
             target/release/batlehub
             sbom-rust.cdx.json
@@ -137,7 +159,8 @@ jobs:
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
           tag_name: ${{ needs.meta.outputs.tag }}
-          name: ${{ needs.meta.outputs.tag }}
+          name: "🚀 BatleHub ${{ needs.meta.outputs.tag }}"
+          draft: true
           files: ${{ matrix.archive }}
           fail_on_unmatched_files: true
   image:
@@ -215,7 +238,8 @@ jobs:
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
           tag_name: ${{ needs.meta.outputs.tag }}
-          name: ${{ needs.meta.outputs.tag }}
+          name: "🚀 BatleHub ${{ needs.meta.outputs.tag }}"
+          draft: true
           files: sbom-image.cdx.json
       # Final gate — fail the release run on any fixable HIGH/CRITICAL CVE.
       - name: Trivy scan (gate)
