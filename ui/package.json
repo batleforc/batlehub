@@ -54,7 +54,7 @@
     "eslint-plugin-vue": "^10.0.0",
     "jsdom": "^29.1.1",
     "oxfmt": "^0.59.0",
-    "oxlint": "^1.68.0",
+    "oxlint": "^1.75.0",
     "postcss": "^8.5.15",
     "tailwindcss": "^4.3.0",
     "typescript": "^6.0.3",
