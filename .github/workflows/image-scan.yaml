@@ -5,14 +5,14 @@ on:
     paths:
       - "Containerfile"
       - "Cargo.lock"
-      - "ui/package-lock.json"
+      - "ui/pnpm-lock.yaml"
       - ".github/workflows/image-scan.yaml"
   pull_request:
     branches: ["main"]
     paths:
       - "Containerfile"
       - "Cargo.lock"
-      - "ui/package-lock.json"
+      - "ui/pnpm-lock.yaml"
       - ".github/workflows/image-scan.yaml"
   # Daily rebuild + rescan so a CVE disclosed against a base/OS layer AFTER the
   # last build still trips CI — this is the "future CVE" detection, not just a

@@ -20,4 +20,5 @@ semgrep = "latest"                  # static analysis (Rust / TS / secrets rules
 uv = "latest"
 "cargo:cargo-audit" = "latest"
 python = "latest"
+pnpm = "11" # package manager for ui/ and website/ (settings in pnpm-workspace.yaml + packageManager field)
 #"github:batleforc/batlehub" = { version = "latest", asset_pattern = "batlehub-cli-*" }

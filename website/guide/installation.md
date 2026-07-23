@@ -106,8 +106,8 @@ cargo build --release -p batlehub-server
 
 ```sh
 cd ui
-npm ci
-npm run build
+pnpm install --frozen-lockfile
+pnpm run build
 cd ..
 ```
 
@@ -115,7 +115,7 @@ cd ..
 
 ```sh
 cargo run -p batlehub-server -- --config config.example.toml dump-spec > ui/openapi.json
-cd ui && npm run generate && npm run build && cd ..
+cd ui && pnpm run generate && pnpm run build && cd ..
 ```
 
 **4. Create a config file and run:**

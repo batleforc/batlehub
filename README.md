@@ -100,11 +100,11 @@ The server listens on `http://localhost:8080`. The admin token from `config.exam
 cargo build --release -p batlehub-server
 
 # Frontend (optional — embeds the SPA into the server)
-cd ui && npm ci && npm run build && cd ..
+cd ui && pnpm install --frozen-lockfile && pnpm run build && cd ..
 
 # Generate the OpenAPI spec and TypeScript client
 cargo run -p batlehub-server -- --config config.example.toml dump-spec > ui/openapi.json
-cd ui && npm run generate && npm run build && cd ..
+cd ui && pnpm run generate && pnpm run build && cd ..
 
 # Run
 ./target/release/batlehub --config config.toml

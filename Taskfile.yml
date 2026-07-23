@@ -256,22 +256,24 @@ tasks:
       - cargo deny check
 
   ui:audit:
-    desc: Check frontend npm dependencies for security vulnerabilities
+    desc: Check frontend pnpm dependencies for security vulnerabilities
     dir: ui
     cmds:
-      - npm audit --audit-level=high
+      # Covers the whole dependency tree (direct + transitive) and resolves from
+      # pnpm-lock.yaml, so it needs no install. Exits non-zero on high/critical.
+      - pnpm audit --audit-level high
 
   website:audit:
-    desc: Check docs-website npm dependencies for security vulnerabilities
+    desc: Check docs-website pnpm dependencies for security vulnerabilities
     dir: website
     cmds:
-      # --omit=dev: vitepress (and its transitive vite/esbuild) are build-only
+      # --prod: vitepress (and its transitive vite/esbuild) are build-only
       # tooling for the static site, never shipped or run as a service. Their
       # current advisories (esbuild dev-server CORS/Deno RCE, vite optimized-deps
       # path traversal) have no fix available upstream for vitepress 1.x and
       # don't apply to this repo's build. Runtime deps (e.g. hash-wasm, bundled
       # into the published site) are still audited.
-      - npm audit --audit-level=high --omit=dev
+      - pnpm audit --prod --audit-level high
 
   sbom:rust:
     desc: "Generate a CycloneDX SBOM of the shipped server (sbom-rust.cdx.json) — feed to `trivy sbom` / `grype sbom:` to match future CVEs against a shipped build"
@@ -351,55 +353,55 @@ tasks:
   # ── Frontend ──────────────────────────────────────────────────────────────────
 
   ui:install:
-    desc: Install frontend npm dependencies
+    desc: Install frontend dependencies (pnpm)
     dir: ui
     cmds:
-      - npm install
+      - pnpm install
 
   ui:generate:
     desc: Generate TypeScript client from the OpenAPI spec (run dump-spec first)
     dir: ui
     cmds:
-      - npm run generate
+      - pnpm run generate
 
   ui:dev:
     desc: Start the Vite dev server (proxies /api and /proxy to localhost:8080)
     dir: ui
     cmds:
-      - npm run dev
+      - pnpm run dev
 
   ui:build:
     desc: Build the frontend SPA for production
     dir: ui
     cmds:
-      - npm run build
+      - pnpm run build
 
   ui:lint:
     desc: Run the frontend oxlint, eslint and oxfmt checks locally
     dir: ui
     cmds:
-      - npm run lint
-      - npm run lint:eslint
-      - npm run format:check
+      - pnpm run lint
+      - pnpm run lint:eslint
+      - pnpm run format:check
 
   ui:test:
     desc: Run the frontend test suite
     dir: ui
     cmds:
-      - npm run test
+      - pnpm run test
 
   ui:coverage:
     desc: Run the frontend test suite with coverage (enforces threshold)
     dir: ui
     cmds:
-      - npm run coverage
+      - pnpm run coverage
 
   ui:fix:
     desc: Auto-fix oxlint issues and format the frontend source with oxfmt
     dir: ui
     cmds:
-      - npm run lint:fix
-      - npm run format
+      - pnpm run lint:fix
+      - pnpm run format
 
   dev:
     desc: Start Rust backend and Vite frontend in parallel (requires postgres)
@@ -508,19 +510,19 @@ tasks:
     desc: Start the VitePress documentation dev server
     dir: website
     cmds:
-      - npm run docs:dev
+      - pnpm run docs:dev
 
   website:build:
     desc: Build the VitePress documentation site for production
     dir: website
     cmds:
-      - npm run docs:build
+      - pnpm run docs:build
 
   website:preview:
     desc: Preview the built VitePress documentation site
     dir: website
     cmds:
-      - npm run docs:preview
+      - pnpm run docs:preview
 
   # ── Performance testing ───────────────────────────────────────────────────────
 

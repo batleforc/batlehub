@@ -9,7 +9,7 @@ This document defines how changes to BatleHub code, configuration, and dependenc
 This policy covers:
 - Source code changes (Rust crates, Vue frontend, CLI)
 - Configuration changes (TOML config files, environment variables)
-- Dependency updates (Cargo.lock, package-lock.json)
+- Dependency updates (Cargo.lock, pnpm-lock.yaml)
 - Infrastructure changes (container images, Kubernetes manifests, CI/CD pipelines)
 - Database schema changes (migrations in `crates/adapters/migrations/`)
 
@@ -28,7 +28,7 @@ This policy covers:
    - `cargo fmt --all --check` — formatting
    - `cargo audit` — no unpatched RUSTSEC advisories
    - `cargo deny check` — license, ban, and source policy
-   - `npm audit --audit-level=high` — no high/critical JS CVEs
+   - `pnpm audit --audit-level high` — no high/critical JS CVEs
    - `gitleaks` — no secrets in diff
    - `trivy` — no fixable HIGH/CRITICAL in built image
 5. **Peer review** — at least one approved review required.

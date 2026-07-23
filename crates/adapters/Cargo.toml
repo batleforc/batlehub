@@ -30,7 +30,7 @@ ar = { version = "0.9", optional = true }
 lzma-rs = { version = "0.3", optional = true }
 md-5 = { version = "0.11", optional = true }
 sha1 = { version = "0.11", optional = true }
-ed25519-dalek = { version = "2", optional = true }
+ed25519-dalek = { version = "3", optional = true }
 rpm = { version = "0.25", default-features = false, features = [
   "gzip-compression",
   "xz-compression",

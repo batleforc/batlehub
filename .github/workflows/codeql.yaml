@@ -9,7 +9,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "ui/package.json"
-      - "ui/package-lock.json"
+      - "ui/pnpm-lock.yaml"
       - ".github/workflows/codeql.yaml"
   pull_request:
     branches: ["main"]
@@ -20,7 +20,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "ui/package.json"
-      - "ui/package-lock.json"
+      - "ui/pnpm-lock.yaml"
       - ".github/workflows/codeql.yaml"
   schedule:
     - cron: "50 23 * * 0"

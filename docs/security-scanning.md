@@ -10,7 +10,7 @@ you have already deployed.
 | --- | --- | --- | --- |
 | Rust advisories | `cargo audit` (RUSTSEC) | `back-dep-audit.yaml` (PR + daily) | block |
 | Rust advisories + bans + licenses + sources | `cargo deny` (`deny.toml`) | `back-dep-audit.yaml` | block |
-| JS dependencies | `npm audit --audit-level=high` | `dep-audit-frontend.yaml` (PR + daily) | block on high/critical |
+| JS dependencies | `pnpm audit --audit-level high` | `dep-audit-frontend.yaml` (PR + daily) | block on high/critical |
 | Container / OS layers | Trivy | `image-scan.yaml` (PR + daily, GitHub) runs Trivy directly; `.forgejo/workflows/build.yaml` (both images) polls Harbor's own scan-on-push report instead | block on fixable HIGH/CRITICAL |
 | Static analysis | CodeQL + Semgrep | `codeql.yaml`, `semgrep.yaml` | CodeQL report / Semgrep block on ERROR |
 | Secrets | gitleaks | `secret-scan.yaml` (PR + push) | block |
@@ -34,7 +34,7 @@ scan); the daily `image-scan.yaml` run on GitHub remains the backstop for that l
 ## Run the gate locally
 
 ```bash
-task security        # cargo audit + cargo deny + ui/website npm audit + Rust SBOM
+task security        # cargo audit + cargo deny + ui/website pnpm audit + Rust SBOM
 task deny            # just the cargo-deny supply-chain gate
 task audit           # just cargo audit
 task ui:audit        # just the frontend audit

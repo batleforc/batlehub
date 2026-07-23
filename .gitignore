@@ -19,6 +19,11 @@ node_modules/
 # Frontend
 ui/node_modules/
 ui/dist/
+
+# pnpm — the content-addressable store lives outside the repo; only a local
+# store override would land here. pnpm-lock.yaml and pnpm-workspace.yaml ARE
+# tracked.
+.pnpm-store/
 ui/src/client/
 ui/openapi.json
 ui/.env

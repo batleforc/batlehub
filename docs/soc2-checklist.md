@@ -41,7 +41,7 @@ This document maps each relevant SOC 2 Trust Service Criterion (TSC) to the cont
 |-----------|---------|--------|---------|
 | CC8.1 – Authorise changes | Pull request review required (GitHub/Forgejo branch protection) | Manual process | `docs/change-management.md` |
 | CC8.1 – Config changes tracked | All admin config changes stored in `config_changes` table with identity | ✅ Implemented | `GET /api/v1/admin/config/changes` |
-| CC8.1 – Dependency updates | `cargo audit`, `cargo deny`, `npm audit` gates in CI | ✅ Implemented | `.github/workflows/back-dep-audit.yaml` |
+| CC8.1 – Dependency updates | `cargo audit`, `cargo deny`, `pnpm audit` gates in CI | ✅ Implemented | `.github/workflows/back-dep-audit.yaml` |
 
 ---
 

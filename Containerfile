@@ -45,8 +45,14 @@ RUN mkdir -p /var/cache/batlehub
 FROM node:26-slim@sha256:715e55e4b84e4bb0ff48e49b398a848f08e55daed8eb6a0ea1839ae53bc57583 AS ui-builder
 
 WORKDIR /ui
-COPY ui/package.json ui/package-lock.json ./
-RUN npm ci
+# Corepack is no longer distributed with Node (removed in Node 25), so pnpm is
+# installed explicitly. Keep this version in sync with the `packageManager`
+# field in ui/package.json.
+RUN npm install -g pnpm@11.15.1
+COPY ui/package.json ui/pnpm-lock.yaml ui/pnpm-workspace.yaml ./
+# --frozen-lockfile is the `npm ci` equivalent: it fails rather than silently
+# resolving something the committed lockfile does not describe.
+RUN pnpm install --frozen-lockfile
 
 COPY ui/ ./
 
@@ -54,8 +60,8 @@ COPY ui/ ./
 COPY --from=builder /build/target/release/batlehub /usr/local/bin/batlehub
 COPY config.example.toml /etc/batlehub/config.toml
 RUN batlehub --config /etc/batlehub/config.toml dump-spec > openapi.json && \
-    npm run generate && \
-    npm run build
+    pnpm run generate && \
+    pnpm run build
 
 # ── Runtime image ─────────────────────────────────────────────────────────────
 FROM gcr.io/distroless/cc-debian12:latest@sha256:7ee09f36862efbdbf70422db263e411c2618409ca46faa555bd5b636155307df AS runtime

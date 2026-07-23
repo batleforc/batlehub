@@ -24,7 +24,7 @@ This guide is the starting point for developers working on the BatleHub codebase
 |------|----------------|-------|
 | Rust toolchain | stable (see `rust-toolchain.toml`) | `rustup` is the recommended installer |
 | PostgreSQL | 14 | Integration tests expect `DATABASE_URL` in the environment |
-| Node.js + pnpm | Node 20 / pnpm 8 | UI only (`ui/`) — not needed for Rust-only work |
+| Node.js + pnpm | Node 24 / pnpm 11 (via `mise install`) | UI (`ui/`) and docs site (`website/`) — not needed for Rust-only work |
 
 ```bash
 # Clone and build
@@ -424,7 +424,7 @@ task audit
 task ui:audit
 ```
 
-`task audit` suppresses advisories that have no actionable fix via `.cargo/audit.toml`. Add a new entry there (with a justification comment) when an advisory is known and accepted rather than silencing the whole tool. `task ui:audit` exits non-zero when high-severity vulnerabilities are found; use `npm audit --audit-level=high` manually if you need to ignore lower-severity findings during development.
+`task audit` suppresses advisories that have no actionable fix via `.cargo/audit.toml`. Add a new entry there (with a justification comment) when an advisory is known and accepted rather than silencing the whole tool. `task ui:audit` exits non-zero when high-severity vulnerabilities are found; use `pnpm audit --audit-level high` manually if you need to ignore lower-severity findings during development.
 
 ---
 

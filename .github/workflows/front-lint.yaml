@@ -6,7 +6,7 @@ on:
       - "ui/**/*.ts"
       - "ui/**/*.vue"
       - "ui/package.json"
-      - "ui/package-lock.json"
+      - "ui/pnpm-lock.yaml"
       - "ui/.oxlintrc.json"
       - "ui/.oxfmtrc.json"
       - ".github/workflows/front-lint.yaml"
@@ -16,7 +16,7 @@ on:
       - "ui/**/*.ts"
       - "ui/**/*.vue"
       - "ui/package.json"
-      - "ui/package-lock.json"
+      - "ui/pnpm-lock.yaml"
       - "ui/.oxlintrc.json"
       - "ui/.oxfmtrc.json"
       - ".github/workflows/front-lint.yaml"
@@ -34,17 +34,26 @@ jobs:
         working-directory: ui
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # pnpm must be installed before setup-node so its cache step can resolve
+      # the pnpm store directory. Same action/pin as .forgejo/workflows/updatecli.yml.
+      # (Corepack is not used: Node stopped distributing it in v25.)
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      # --frozen-lockfile fails the job if pnpm-lock.yaml would need updating
+      # (the `npm ci` equivalent). Install-time lifecycle scripts stay blocked by
+      # pnpm's default deny + the `allowBuilds` list in ui/pnpm-workspace.yaml.
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        run: pnpm install --frozen-lockfile
       - name: Run oxlint
         id: oxlint
         continue-on-error: true
-        run: npm run lint -- -f sarif src > oxlint-results.sarif
+        run: pnpm run lint -f sarif src > oxlint-results.sarif
       - name: Upload oxlint SARIF results
         if: always()
         uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
@@ -55,7 +64,7 @@ jobs:
       - name: Run eslint
         id: eslint
         continue-on-error: true
-        run: npm run lint:eslint -- --format @microsoft/eslint-formatter-sarif -o eslint-results.sarif
+        run: pnpm run lint:eslint --format @microsoft/eslint-formatter-sarif -o eslint-results.sarif
       - name: Upload eslint SARIF results
         if: always()
         uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
@@ -64,7 +73,7 @@ jobs:
           category: eslint
           wait-for-processing: true
       - name: Check formatting (oxfmt)
-        run: npm run lint -- --check src
+        run: pnpm run format:check
       - name: Fail on lint errors
         if: steps.oxlint.outcome == 'failure' || steps.eslint.outcome == 'failure'
         run: exit 1

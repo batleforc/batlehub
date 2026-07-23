@@ -39,8 +39,8 @@ task test:s3
 cargo run -p batlehub-server -- --config config.example.toml
 
 # Frontend
-cd ui && npm run dev          # Vite dev server (proxies /api → localhost:8080)
-cd ui && npm run generate     # regenerate TypeScript client from ui/openapi.json
+cd ui && pnpm run dev         # Vite dev server (proxies /api → localhost:8080)
+cd ui && pnpm run generate    # regenerate TypeScript client from ui/openapi.json
 task dump-spec                # refresh ui/openapi.json from running server
 
 # Fuzz (nightly)
@@ -60,7 +60,7 @@ crates/examples  — integration test helpers and smoke/real-proxy test binaries
 server/          — binary: wires everything together, no domain logic
 cli/             — batlehub-cli binary: clap commands + reqwest API client + ratatui TUI
 ui/              — Vue 3 + Vite SPA (TypeScript, Tailwind, shadcn-inspired components)
-website/         — separate Vite docs/guide site (its own npm project; covered by `task website:*`)
+website/         — separate Vite docs/guide site (its own pnpm project; covered by `task website:*`)
 ```
 
 Registry adapters are gated behind `registry-*` cargo features (all on by default) declared in `crates/adapters/src/registry/mod.rs` and the `[features]` block of `crates/adapters/Cargo.toml`.
@@ -134,10 +134,10 @@ The two invariants above are now also enforced by `cargo-deny`: `rsa`, `sqlx-mys
 
 ### Vulnerability scanning
 
-CVE detection runs continuously across every layer; see `docs/security-scanning.md` for the full matrix and the SBOM re-scan workflow. Reproduce the dependency/SBOM gate locally with `task security` (runs `cargo audit`, `cargo deny`, `npm audit` for `ui/` + `website/`, and the Rust SBOM). Scanner tooling is provisioned by `mise install`.
+CVE detection runs continuously across every layer; see `docs/security-scanning.md` for the full matrix and the SBOM re-scan workflow. Reproduce the dependency/SBOM gate locally with `task security` (runs `cargo audit`, `cargo deny`, `pnpm audit` for `ui/` + `website/`, and the Rust SBOM). Scanner tooling is provisioned by `mise install`.
 
 - **Rust deps**: `cargo audit` (RUSTSEC) + `cargo deny` (advisories/bans/licenses/sources) — `.github/workflows/back-dep-audit.yaml`.
-- **JS deps**: `npm audit --audit-level=high` — `.github/workflows/dep-audit-frontend.yaml`.
+- **JS deps**: `pnpm audit --audit-level high` — `.github/workflows/dep-audit-frontend.yaml`.
 - **Container/OS**: Trivy on the built images, blocking on fixable HIGH/CRITICAL — `.github/workflows/image-scan.yaml` (GitHub, daily rebuild+rescan) and `.forgejo/workflows/build.yaml` (both images).
 - **SBOM**: CycloneDX for the Rust workspace and the image, attached/attested on release (`.github/workflows/build.yaml`).
 - **SAST / secrets / lint**: CodeQL, Semgrep (`semgrep.yaml`), gitleaks (`secret-scan.yaml`, config `gitleaks.toml`), and the clippy/fmt `lint` job in `test.yaml`.
@@ -146,7 +146,11 @@ Stance is **no suppressions**: keep `advisories.ignore = []` in `deny.toml` and 
 
 ### Frontend
 
-The Vue SPA lives in `ui/`. The TypeScript API client (`ui/src/client/`) is auto-generated from `ui/openapi.json` via `npm run generate` — do not edit it manually. Setup snippets for the Setup Guide are defined in `ui/src/config/registryTypes.ts` as `REGISTRY_TYPE_DEFS`.
+**Package manager: pnpm.** Both `ui/` and `website/` are pnpm projects — `pnpm-lock.yaml` is the only lockfile, there is no `package-lock.json`. The version is pinned by the `packageManager` field in each `package.json`, and provisioned by `pnpm/action-setup` (GitHub/Forgejo CI), an explicit `npm install -g pnpm@<version>` (the `Containerfile`s — Node stopped distributing corepack in v25), or `mise install` (local). Use `pnpm install --frozen-lockfile` in scripts/CI (the `npm ci` equivalent).
+
+**pnpm settings live in `pnpm-workspace.yaml`, not `package.json`.** Since pnpm 10 the `pnpm` field in `package.json` is no longer read: pnpm only *warns* and carries on, so an override left there is silently dropped. Pin a transitive dependency under `overrides:` in `pnpm-workspace.yaml` (that is where the `js-yaml` CVE pin lives). Install-time lifecycle scripts are denied by default; opt a package in under `allowBuilds:` in the same file, with a reason.
+
+The Vue SPA lives in `ui/`. The TypeScript API client (`ui/src/client/`) is auto-generated from `ui/openapi.json` via `pnpm run generate` — do not edit it manually. Setup snippets for the Setup Guide are defined in `ui/src/config/registryTypes.ts` as `REGISTRY_TYPE_DEFS`.
 
 #### Sync SDK
 

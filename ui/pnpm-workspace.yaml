@@ -1,0 +1,22 @@
+# pnpm settings for the Vue SPA.
+#
+# NOTE: as of pnpm 10/11 the `pnpm` field in package.json is no longer read —
+# overrides and settings live here. Putting them back in package.json makes pnpm
+# ignore them with only a warning, which would silently drop the pins below.
+
+# Transitive-dependency pins. js-yaml < 4.3.0 is GHSA-52cp-r559-cp3m (YAML
+# merge-key chains force quadratic CPU consumption); it reaches us through
+# @hey-api/openapi-ts and eslint 8.
+overrides:
+  undici: ^7.28.0
+  js-yaml: ^4.3.0
+
+# Install-time lifecycle scripts are denied by default (supply-chain hardening:
+# a compromised transitive dependency cannot run code at install time). Packages
+# are opted in here one by one, with a reason.
+#
+# vue-demi: false — its postinstall only rewrites a Vue 2/3 compatibility shim.
+# This project is Vue 3 only, and the build, type-check and full test suite all
+# pass with the script disabled.
+allowBuilds:
+  vue-demi: false

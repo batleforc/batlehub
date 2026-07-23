@@ -1,0 +1,11 @@
+# pnpm settings for the VitePress docs site.
+# See ui/pnpm-workspace.yaml for why settings live here and not in package.json.
+
+# Install-time lifecycle scripts are denied by default (supply-chain hardening).
+# Packages are opted in here one by one, with a reason.
+#
+# esbuild: false — modern esbuild ships its platform binary as an optional
+# dependency, so the postinstall is only a sanity check. `pnpm run docs:build`
+# produces the full site with the script disabled.
+allowBuilds:
+  esbuild: false
