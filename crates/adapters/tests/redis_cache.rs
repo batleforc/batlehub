@@ -311,10 +311,13 @@ async fn set_with_ttl_live_key_has_redis_expiry() {
 }
 
 #[tokio::test]
-async fn stale_key_always_has_no_redis_expiry() {
+async fn stale_key_ttl_is_bounded_with_live_ttl_and_permanent_without() {
     let Some(url) = redis_url() else { return };
     let mut s = make_store(&url).await;
-    // Even when set() receives a TTL, the stale shadow must have no Redis TTL.
+
+    // With a live TTL, the stale shadow gets a bounded (7-day) retention so it
+    // survives an upstream outage past the live key's expiry, yet self-expires
+    // instead of leaking Redis memory forever.
     s.store
         .set(
             &s.key("k1"),
@@ -329,7 +332,27 @@ async fn stale_key_always_has_no_redis_expiry() {
         .query_async(&mut s.conn)
         .await
         .unwrap();
-    assert_eq!(ttl, -1, "stale shadow must never have a Redis TTL");
+    // 7 days = 604800s; allow slack for the elapsed time since the SET.
+    assert!(
+        (604_700..=604_800).contains(&ttl),
+        "stale shadow should have the bounded 7-day retention, got {ttl}"
+    );
+
+    // With no live TTL (a permanent entry), the stale shadow is permanent too.
+    s.store
+        .set(&s.key("k2"), fresh_entry("pkg"), None)
+        .await
+        .unwrap();
+    let stale_key2 = format!("batlehub:cache:{}:stale", s.key("k2"));
+    let ttl2: i64 = redis::cmd("TTL")
+        .arg(&stale_key2)
+        .query_async(&mut s.conn)
+        .await
+        .unwrap();
+    assert_eq!(
+        ttl2, -1,
+        "stale shadow of a permanent entry must have no Redis TTL"
+    );
 }
 
 #[tokio::test]
