@@ -842,7 +842,7 @@ export const REGISTRY_PATH_TYPES: RegistryPathTypeDef[] = [
         key: "path",
         label: "Archive path",
         suffix: "(mirrors download.jetbrains.com path)",
-        placeholder: "idea/ideaIC-2024.1.4.tar.gz",
+        placeholder: "idea/idea-2026.1.3.tar.gz",
         mono: true,
       },
     ],

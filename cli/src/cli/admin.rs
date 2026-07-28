@@ -225,7 +225,7 @@ pub enum CacheCommand {
         #[arg(long)]
         packages: Option<String>,
         /// Comma-separated upstream artifact paths to warm, for path-addressed
-        /// registries (deb/rpm/jetbrains), e.g. "idea/ideaIC-2024.1.4.tar.gz"
+        /// registries (deb/rpm/jetbrains), e.g. "idea/idea-2026.1.3.tar.gz"
         #[arg(long)]
         paths: Option<String>,
     },

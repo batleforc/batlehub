@@ -425,7 +425,7 @@ async fn warm_registry_accepts_paths_body() {
     let req = TestRequest::post()
         .uri("/api/v1/admin/registries/jb/warm")
         .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .set_json(serde_json::json!({"paths": ["idea/ideaIC-2024.1.4.tar.gz"]}))
+        .set_json(serde_json::json!({"paths": ["idea/idea-2026.1.3.tar.gz"]}))
         .to_request();
     assert_eq!(call_service(&app, req).await.status(), 404);
 }
@@ -601,7 +601,7 @@ async fn delete_cached_artifact_by_path_deletes_stored_artifact() {
     let (app, storage) = make_app_with_eviction(EvictionServiceMap::default()).await;
     storage
         .store(
-            "artifact:npm/repo/_/idea/ideaIC-2024.1.4.tar.gz",
+            "artifact:npm/repo/_/idea/idea-2026.1.3.tar.gz",
             Bytes::from_static(b"binary"),
             StorageMeta::default(),
         )
@@ -611,7 +611,7 @@ async fn delete_cached_artifact_by_path_deletes_stored_artifact() {
     let req = TestRequest::delete()
         .uri("/api/v1/admin/registries/npm/cache")
         .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .set_json(serde_json::json!({"path": "idea/ideaIC-2024.1.4.tar.gz"}))
+        .set_json(serde_json::json!({"path": "idea/idea-2026.1.3.tar.gz"}))
         .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
@@ -619,7 +619,7 @@ async fn delete_cached_artifact_by_path_deletes_stored_artifact() {
     assert_eq!(body["deleted"], true);
     assert_eq!(
         body["artifact_key"],
-        "artifact:npm/repo/_/idea/ideaIC-2024.1.4.tar.gz"
+        "artifact:npm/repo/_/idea/idea-2026.1.3.tar.gz"
     );
 }
 

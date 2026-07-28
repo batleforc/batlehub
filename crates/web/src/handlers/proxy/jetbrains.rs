@@ -1,7 +1,7 @@
 //! JetBrains IDE-archive proxy handler.
 //!
 //! JetBrains IDE installers are addressed purely by file path on a download CDN
-//! (e.g. `https://download.jetbrains.com/idea/ideaIC-2024.1.tar.gz`) and have no
+//! (e.g. `https://download.jetbrains.com/idea/idea-2026.1.tar.gz`) and have no
 //! metadata API, so this is a pure proxy cache: every request streams the file
 //! from upstream (caching it on the first miss) via [`ProxyService`]. There is no
 //! local hosting, publishing, or signing — the upstream client is the generic
@@ -29,7 +29,7 @@ use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
     tag = "proxy/jetbrains",
     params(
         ("registry" = String, Path, description = "Registry name"),
-        ("path" = String, Path, description = "Upstream file path (e.g. idea/ideaIC-2024.1.tar.gz)"),
+        ("path" = String, Path, description = "Upstream file path (e.g. idea/idea-2026.1.tar.gz)"),
     ),
     responses(
         (status = 200, description = "Artifact streamed from upstream (cached)"),

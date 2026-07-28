@@ -23,7 +23,7 @@ pub struct WarmRequest {
     #[serde(default)]
     pub packages: Vec<String>,
     /// A single upstream artifact path to warm, for path-addressed registries
-    /// (`deb`/`rpm`/`jetbrains`), e.g. `"idea/ideaIC-2024.1.4.tar.gz"`.
+    /// (`deb`/`rpm`/`jetbrains`), e.g. `"idea/idea-2026.1.3.tar.gz"`.
     #[serde(default)]
     pub path: Option<String>,
     /// Multiple upstream artifact paths to warm (same form as `path`).

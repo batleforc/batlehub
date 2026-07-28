@@ -436,10 +436,10 @@ describe("jetbrains", () => {
   });
 
   it("uses the given path when set", () => {
-    const paths = t.buildPaths("jetbrains", { path: "idea/ideaIC-2024.1.4.tar.gz" });
+    const paths = t.buildPaths("jetbrains", { path: "idea/idea-2026.1.3.tar.gz" });
     expect(paths[0]).toEqual({
       label: "File download",
-      url: "/proxy/jetbrains/jetbrains/idea/ideaIC-2024.1.4.tar.gz",
+      url: "/proxy/jetbrains/jetbrains/idea/idea-2026.1.3.tar.gz",
       available: true,
     });
   });

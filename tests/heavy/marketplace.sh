@@ -26,7 +26,9 @@
 #   BASE             (default http://127.0.0.1:8080)
 #   WEEBO_VERSION    (default 0.5.0)   release of weebo-che-notify to install
 #   VSCODE_VERSION   (default 1.96.4)  VS Code build to download when `code` is absent
-#   IDEA_VERSION     (default 2024.1.4) IntelliJ IDEA Community build
+#   IDEA_VERSION     (default 2026.1.3) IntelliJ IDEA build (unified installer;
+#                    since 2025.3 there is no separate Community edition — the
+#                    tarball is idea-<version>.tar.gz, not ideaIC-<version>.tar.gz)
 #   IDE_CACHE        (default ~/.cache/batlehub-heavy) cacheable IDE downloads
 #   COVERAGE=1       instrument the server with cargo-llvm-cov
 #   SKIP_VSCODE=1 / SKIP_JETBRAINS=1  skip one scenario
@@ -42,7 +44,7 @@ WEEBO_BASE_URL="${WEEBO_BASE_URL:-https://github.com/batleforc/weebo-che-notify/
 VSCODE_EXT_ID="batleforc.weebo-bridge-notify"
 JB_PLUGIN_ID="fr.batleforc.weebo-bridge-notify"
 VSCODE_VERSION="${VSCODE_VERSION:-1.96.4}"
-IDEA_VERSION="${IDEA_VERSION:-2024.1.4}"
+IDEA_VERSION="${IDEA_VERSION:-2026.1.3}"
 IDE_CACHE="${IDE_CACHE:-$HOME/.cache/batlehub-heavy}"
 COVERAGE="${COVERAGE:-0}"
 
@@ -164,12 +166,19 @@ fi
 # ── 4. JetBrains: headless installPlugins against updatePlugins.xml ──────────
 
 if [[ "${SKIP_JETBRAINS:-0}" != "1" ]]; then
-  IDEA_DIR="${IDEA_DIR:-$IDE_CACHE/ideaIC-$IDEA_VERSION}"
+  IDEA_DIR="${IDEA_DIR:-$IDE_CACHE/idea-$IDEA_VERSION}"
   if [[ ! -x "$IDEA_DIR/bin/idea.sh" ]]; then
-    log "Downloading IntelliJ IDEA Community $IDEA_VERSION"
+    log "Downloading IntelliJ IDEA $IDEA_VERSION"
     mkdir -p "$IDEA_DIR"
-    curl -fsSL "https://download.jetbrains.com/idea/ideaIC-$IDEA_VERSION.tar.gz" \
-      | tar -xz -C "$IDEA_DIR" --strip-components=1
+    # Unified installer naming since 2025.3; fall back to the old Community
+    # edition tarball for overrides pinning an older IDEA_VERSION.
+    if ! curl -fsSL "https://download.jetbrains.com/idea/idea-$IDEA_VERSION.tar.gz" \
+        | tar -xz -C "$IDEA_DIR" --strip-components=1; then
+      rm -rf "$IDEA_DIR"
+      mkdir -p "$IDEA_DIR"
+      curl -fsSL "https://download.jetbrains.com/idea/ideaIC-$IDEA_VERSION.tar.gz" \
+        | tar -xz -C "$IDEA_DIR" --strip-components=1
+    fi
   fi
 
   mkdir -p "$WORK/idea/config" "$WORK/idea/system" "$WORK/idea/plugins" "$WORK/idea/log"

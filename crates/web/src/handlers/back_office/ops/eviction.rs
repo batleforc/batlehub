@@ -75,7 +75,7 @@ pub struct DeleteCacheRequest {
     /// Package version. Required for package-centric registries.
     pub version: Option<String>,
     /// Artifact path for path-addressed registries (deb/rpm/jetbrains),
-    /// e.g. `"idea/ideaIC-2026.1.3.tar.gz"`. Takes precedence over name+version.
+    /// e.g. `"idea/idea-2026.1.3.tar.gz"`. Takes precedence over name+version.
     pub path: Option<String>,
 }
 

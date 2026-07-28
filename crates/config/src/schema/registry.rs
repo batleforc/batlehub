@@ -410,7 +410,7 @@ pub struct CachePolicy {
     pub warm_packages: Vec<String>,
     /// Upstream artifact paths to pre-fetch, for path-addressed registries
     /// (`deb`/`rpm`/`jetbrains`) that have no per-package version model. Each entry
-    /// is the upstream-relative path, e.g. `"idea/ideaIC-2024.1.4.tar.gz"` for a
+    /// is the upstream-relative path, e.g. `"idea/idea-2026.1.3.tar.gz"` for a
     /// JetBrains registry or `"dists/stable/Release"` for a Deb registry. Warmed on
     /// startup and via the `/warm` admin endpoint (`paths`).
     #[serde(default)]

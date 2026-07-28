@@ -1432,19 +1432,20 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           const auth = ctx.isAuthenticated ? ` \\\n  -H "Authorization: Bearer ${ctx.token}"` : "";
           return [
             `# The path after /jetbrains/ maps to download.jetbrains.com/<path>`,
-            `curl -fL -o ideaIC.tar.gz${auth} \\`,
-            `  ${reg}/idea/ideaIC-2024.1.4.tar.gz`,
+            `curl -fL -o idea.tar.gz${auth} \\`,
+            `  ${reg}/idea/idea-2026.1.3.tar.gz`,
           ].join("\n");
         },
         note:
           `Use the same path as the upstream URL: ` +
-          `<code class="font-mono bg-muted px-1 rounded">download.jetbrains.com/idea/ideaIC-2024.1.4.tar.gz</code> → ` +
-          `<code class="font-mono bg-muted px-1 rounded">/proxy/{name}/jetbrains/idea/ideaIC-2024.1.4.tar.gz</code>. ` +
+          `<code class="font-mono bg-muted px-1 rounded">download.jetbrains.com/idea/idea-2026.1.3.tar.gz</code> → ` +
+          `<code class="font-mono bg-muted px-1 rounded">/proxy/{name}/jetbrains/idea/idea-2026.1.3.tar.gz</code>. ` +
           `<code class="font-mono bg-muted px-1 rounded">download.jetbrains.com</code> redirects to a CDN ` +
           `(<code class="font-mono bg-muted px-1 rounded">download-cdn.jetbrains.com</code>) — the redirect is followed ` +
-          `automatically, so always use the canonical path, not the CDN host. Use real archive names ` +
-          `(<code class="font-mono bg-muted px-1 rounded">ideaIU-…</code> Ultimate / ` +
-          `<code class="font-mono bg-muted px-1 rounded">ideaIC-…</code> Community).`,
+          `automatically, so always use the canonical path, not the CDN host. Use real archive names: ` +
+          `<code class="font-mono bg-muted px-1 rounded">idea-…</code> (unified installer, 2025.3+); ` +
+          `the legacy <code class="font-mono bg-muted px-1 rounded">ideaIU-…</code>/` +
+          `<code class="font-mono bg-muted px-1 rounded">ideaIC-…</code> names only exist for releases ≤ 2025.2.`,
       },
       {
         key: "jetbrains-config",

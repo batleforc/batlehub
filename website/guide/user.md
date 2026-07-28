@@ -898,20 +898,21 @@ served locally — ideal for CI/Docker builds and offline networks.
 ```bash
 REG="$BATLEHUB/proxy/jetbrains-ide/jetbrains"
 
-# download.jetbrains.com/idea/ideaIC-2024.1.4.tar.gz
-#   → $REG/idea/ideaIC-2024.1.4.tar.gz
-curl -fL -o ideaIC.tar.gz $REG/idea/ideaIC-2024.1.4.tar.gz
+# download.jetbrains.com/idea/idea-2026.1.3.tar.gz
+#   → $REG/idea/idea-2026.1.3.tar.gz
+curl -fL -o idea.tar.gz $REG/idea/idea-2026.1.3.tar.gz
 ```
 
 There is no publish, signing, or local hosting — it is a cache only.
 
 > **Use the canonical path — redirects are followed for you.** Always request the
-> `download.jetbrains.com` path (e.g. `idea/ideaIC-2024.1.4.tar.gz`). That host
+> `download.jetbrains.com` path (e.g. `idea/idea-2026.1.3.tar.gz`). That host
 > 302-redirects to a CDN (`download-cdn.jetbrains.com`); BatleHub follows the
 > redirect automatically and caches the final bytes under the path you requested.
 > You never put the CDN host in the URL. Use the **real** archive names —
-> `ideaIU-<ver>` (Ultimate) / `ideaIC-<ver>` (Community); a wrong name returns the
-> upstream's 404. To proxy the CDN host directly instead, set
+> `idea-<ver>` for the unified installer (2025.3+); the legacy `ideaIU-<ver>`
+> (Ultimate) / `ideaIC-<ver>` (Community) names only exist for releases ≤ 2025.2.
+> A wrong name returns the upstream's 404. To proxy the CDN host directly instead, set
 > `upstreams = ["https://download-cdn.jetbrains.com"]`.
 
 > **Large archives:** IDE archives are ~1–1.7 GB. The proxy buffers the whole
@@ -928,11 +929,11 @@ effect). Give it a registry-relative path with `-r`, a full `/proxy/…` path, o
 full URL:
 
 ```bash
-# registry-relative (needs -r); writes ./ideaIC-2024.1.4.tar.gz
-batlehub -r jetbrains-ide download jetbrains/idea/ideaIC-2024.1.4.tar.gz
+# registry-relative (needs -r); writes ./idea-2026.1.3.tar.gz
+batlehub -r jetbrains-ide download jetbrains/idea/idea-2026.1.3.tar.gz
 
 # or a full proxy path / URL, with an explicit output file
-batlehub download /proxy/jetbrains-ide/jetbrains/idea/ideaIC-2024.1.4.tar.gz -o idea.tgz
+batlehub download /proxy/jetbrains-ide/jetbrains/idea/idea-2026.1.3.tar.gz -o idea.tgz
 ```
 
 ### Pre-warm the cache
@@ -943,12 +944,12 @@ demand:
 
 ```toml
 [registries.cache]
-warm_paths = ["idea/ideaIC-2024.1.4.tar.gz"]
+warm_paths = ["idea/idea-2026.1.3.tar.gz"]
 ```
 
 ```bash
 # Warm one or more paths now (admin):
-batlehub admin cache warm jetbrains-ide --paths "idea/ideaIC-2024.1.4.tar.gz"
+batlehub admin cache warm jetbrains-ide --paths "idea/idea-2026.1.3.tar.gz"
 ```
 
 ---
