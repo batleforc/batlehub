@@ -1,6 +1,7 @@
 mod eco_composer;
 mod eco_conda;
 mod eco_go;
+mod eco_jetbrains;
 mod eco_maven;
 mod eco_nuget;
 mod eco_pypi;
@@ -10,6 +11,7 @@ mod lifecycle;
 mod publish;
 mod read;
 
+pub use eco_jetbrains::{build_in_range, JetbrainsPluginVersion};
 pub use publish::PublishPolicyRequest;
 
 use std::sync::Arc;
@@ -166,6 +168,11 @@ pub struct PublishRequest {
     /// npm: version metadata from the publish payload (`dist.tarball` stripped).
     /// VSIX: `{"id": "pub.name", "version": "1.0.0"}`.
     pub index_metadata: serde_json::Value,
+    /// Publish the version hidden from registry-protocol listings (still
+    /// downloadable by exact coordinate) — maps to `PublishedPackage::unlisted`.
+    /// Used by ecosystems whose publish protocol carries a hidden flag
+    /// (JetBrains Marketplace `isHidden`).
+    pub unlisted: bool,
     /// Identity of the publishing user.
     pub publisher: Identity,
     /// Raw signature bytes decoded from `X-Artifact-Signature` header, if present.

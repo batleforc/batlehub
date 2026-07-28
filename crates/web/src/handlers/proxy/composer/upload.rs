@@ -78,6 +78,7 @@ pub async fn composer_upload(
         &local_svc,
         &notification_svc,
         PublishRequest {
+            unlisted: false,
             registry,
             name: name.clone(),
             version: version.clone(),

@@ -199,7 +199,7 @@ impl LocalRegistryService {
             yanked: false,
             deprecated: false,
             deprecation_message: None,
-            unlisted: false,
+            unlisted: req.unlisted,
             index_metadata: req.index_metadata.clone(),
             published_at: chrono::Utc::now(),
             published_by: req.publisher.user_id.clone(),

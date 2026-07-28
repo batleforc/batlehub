@@ -158,6 +158,7 @@ pub(super) fn upstream_url_for(reg: &RegistryConfig) -> Option<String> {
         RegistryKind::Conda => "https://conda.anaconda.org",
         RegistryKind::Nuget => "https://api.nuget.org",
         RegistryKind::Composer => "https://packagist.org",
+        RegistryKind::JetbrainsMarketplace => "https://plugins.jetbrains.com",
         _ => return None,
     };
     Some(
@@ -558,6 +559,15 @@ mod tests {
         assert_eq!(
             upstream_url_for(&r),
             Some("https://packagist.org".to_owned())
+        );
+    }
+
+    #[test]
+    fn upstream_url_for_jetbrains_marketplace_default() {
+        let r = make_registry("jetbrains-marketplace", "jbm-reg", "");
+        assert_eq!(
+            upstream_url_for(&r),
+            Some("https://plugins.jetbrains.com".to_owned())
         );
     }
 

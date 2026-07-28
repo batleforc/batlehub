@@ -18,6 +18,7 @@ A self-hosted smart proxy and cache for package registries. It sits between your
 | **Composer** | Packagist v2 protocol (`packages.json`, p2 metadata, dist downloads) | `repo.packagist.org` |
 | **PyPI** | Simple Repository API (PEP 503/691) + JSON API; URL rewriting for pip/uv/Poetry | `pypi.org` |
 | **Conda** | repodata.json channel proxy; `.conda` and `.tar.bz2` package downloads | `conda.anaconda.org` |
+| **JetBrains Marketplace** | IDE plugin API (search, compatible updates, downloads) + `updatePlugins.xml` custom repo | `plugins.jetbrains.com` |
 
 Multiple instances of the same registry type can run in parallel (e.g. a private npm registry and the public one as fallback).
 
@@ -51,7 +52,7 @@ Multiple instances of the same registry type can run in parallel (e.g. a private
 ## Key features
 
 - **Artifact caching** — first download is fetched from upstream and stored; subsequent requests are served from local or S3 storage.
-- **Private / local registry** — `npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`, `rubygems`, `maven`, `terraform`, `composer`, `pypi`, and `conda` registries can be set to `mode = "local"` (fully private, no upstream) or `mode = "hybrid"` (local-first with upstream fallback). Teams publish packages directly to BatleHub using standard tools (`npm publish`, `cargo publish`, `gem push`, `mvn deploy`, `twine upload`, raw VSIX / Go zip / Terraform provider upload / Composer ZIP / conda package upload).
+- **Private / local registry** — `npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`, `rubygems`, `maven`, `terraform`, `composer`, `pypi`, `conda`, and `jetbrains-marketplace` registries can be set to `mode = "local"` (fully private, no upstream) or `mode = "hybrid"` (local-first with upstream fallback). Teams publish packages directly to BatleHub using standard tools (`npm publish`, `cargo publish`, `gem push`, `mvn deploy`, `twine upload`, raw VSIX / Go zip / Terraform provider upload / Composer ZIP / conda package upload / JetBrains plugin upload).
 - **Ownership & team management** — per-package owner table (user or group, admin or maintainer role). The first publisher becomes the package admin; subsequent publishes require an owner record. Manage via the admin API or let it be set automatically.
 - **Team namespaces & package visibility** — assign a package name prefix (e.g. `frontend/`) to an auth-provider group so only its members can publish there. Set per-package visibility to `public` (default), `internal` (any authenticated user), or `team` (group members only) to control who can download.
 - **Versioning policies** — enforce semver, block pre-release versions, or restrict accepted version strings with a regex. Violations return HTTP 422 at publish time.
@@ -220,7 +221,7 @@ go get golang.org/x/text@latest
 
 ## Private registries (local / hybrid mode)
 
-`npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`, `rubygems`, `maven`, `terraform`, and `composer` registries can act as authoritative private registries — not just caches. Set the `mode` field on any registry entry:
+`npm`, `cargo`, `openvsx`, `vscode-marketplace`, `goproxy`, `rubygems`, `maven`, `terraform`, `composer`, and `jetbrains-marketplace` registries can act as authoritative private registries — not just caches. Set the `mode` field on any registry entry:
 
 | Mode | Behaviour |
 |------|-----------|

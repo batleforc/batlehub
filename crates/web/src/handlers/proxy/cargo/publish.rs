@@ -74,6 +74,7 @@ pub async fn cargo_publish(
 
     let quota = local_svc
         .publish(PublishRequest {
+            unlisted: false,
             registry: registry.clone(),
             name: name.clone(),
             version: version.clone(),

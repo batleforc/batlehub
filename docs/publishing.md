@@ -17,7 +17,8 @@ This guide walks through publishing packages to a BatleHub private registry for 
 9. [Terraform](#9-terraform)
 10. [Composer](#10-composer)
 11. [NuGet](#11-nuget)
-12. [Troubleshooting](#12-troubleshooting)
+12. [JetBrains Plugins (Marketplace)](#12-jetbrains-plugins-marketplace)
+13. [Troubleshooting](#13-troubleshooting)
 
 ---
 
@@ -982,7 +983,87 @@ curl -s https://batlehub.example.com/proxy/internal-nuget/nuget/v3/flat/mylib/in
 
 ---
 
-## 12. Troubleshooting
+## 12. JetBrains Plugins (Marketplace)
+
+`jetbrains-marketplace` registries in `local`/`hybrid` mode accept the same multipart upload as plugins.jetbrains.com, so both plain `curl` and JetBrains' own publishing tooling work.
+
+### Server configuration
+
+```toml
+[[registries]]
+type = "jetbrains-marketplace"
+name = "internal-plugins"
+mode = "local"
+
+[registries.rbac]
+anonymous = []
+user      = ["releases:read"]
+admin     = ["*"]
+```
+
+### Upload (curl)
+
+The plugin id and version are read from `META-INF/plugin.xml` inside the archive (`.jar`, or `.zip` distribution with `lib/*.jar`). An `xmlId` form field, when present, must match the descriptor.
+
+```sh
+curl -X POST \
+  -H "Authorization: Bearer <your-token>" \
+  -F "xmlId=com.example.myplugin" \
+  -F "channel=" \
+  -F "file=@my-plugin-1.0.0.zip" \
+  "https://batlehub.example.com/proxy/internal-plugins/api/updates/upload"
+# → 201 {"id":"com.example.myplugin","pluginId":"com.example.myplugin","version":"1.0.0","channel":""}
+```
+
+Pass `-F "isHidden=true"` to publish a version hidden from listings (still downloadable by exact coordinate).
+
+### Upload (Gradle / plugin-repository-rest-client)
+
+Point the tooling's host at the proxy and use your BatleHub token:
+
+```kotlin
+// build.gradle.kts (org.jetbrains.intellij / intellij-platform plugin)
+tasks.publishPlugin {
+    host.set("https://batlehub.example.com/proxy/internal-plugins")
+    token.set(providers.environmentVariable("BATLEHUB_TOKEN"))
+}
+```
+
+### Install from the IDE
+
+Settings → Plugins → ⚙ → **Manage Plugin Repositories…** → add
+`https://batlehub.example.com/proxy/internal-plugins/updatePlugins.xml`.
+For a full marketplace replacement instead, set `idea.plugins.host=https://batlehub.example.com/proxy/internal-plugins` in Help → Edit Custom Properties….
+
+### Verify
+
+```sh
+# The custom-repo XML lists the published plugin
+curl -s -H "Authorization: Bearer <your-token>" \
+  "https://batlehub.example.com/proxy/internal-plugins/updatePlugins.xml"
+
+# Download it back
+curl -s -H "Authorization: Bearer <your-token>" \
+  "https://batlehub.example.com/proxy/internal-plugins/plugin/download?pluginId=com.example.myplugin&version=1.0.0" \
+  -o roundtrip.zip
+```
+
+### Endpoint reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/proxy/{registry}/api/updates/upload` | Publish a plugin archive (multipart) |
+| `GET` | `/proxy/{registry}/updatePlugins.xml` | Custom-repository XML (local content) |
+| `GET` | `/proxy/{registry}/plugins/list?pluginId={xmlId}` | Plugin-repository XML (all versions) |
+| `GET` | `/proxy/{registry}/plugin/download?pluginId=&version=[&channel=]` | Download a plugin archive |
+| `GET` | `/proxy/{registry}/pluginManager?action=download&id=&build=` | Newest build-compatible download |
+| `GET` | `/proxy/{registry}/api/searchPlugins?search=` | Search (`{plugins, total}` shape) |
+| `POST` | `/proxy/{registry}/api/search/updates/compatible` | Compatible updates for a build |
+| `GET` | `/proxy/{registry}/files/{xmlId}/{version}/{file}` | Artifact passthrough |
+
+---
+
+## 13. Troubleshooting
 
 ### `403 Forbidden` on publish
 

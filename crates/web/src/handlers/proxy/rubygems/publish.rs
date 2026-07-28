@@ -69,6 +69,7 @@ pub async fn gem_publish(
         &local_svc,
         &notification_svc,
         PublishRequest {
+            unlisted: false,
             registry,
             name: name.clone(),
             version: version.clone(),

@@ -144,6 +144,11 @@ tasks:
     cmds:
       - bash tests/interop/verify.sh
 
+  test:marketplace-heavy:
+    desc: "Heavy marketplace integration: install weebo-bridge-notify into headless VS Code + IntelliJ from a local BatleHub instance (needs DATABASE_URL; downloads the IDEs on first run)"
+    cmds:
+      - bash tests/heavy/marketplace.sh
+
   coverage:
     desc: Generate an HTML coverage report and an lcov report for SonarQube — starts Postgres, MinIO and Redis to include all integration tests
     vars:

@@ -380,6 +380,10 @@ pub async fn make_app_ext(
             "jb".to_owned(),
             FixedRegistry::new("jetbrains") as Arc<dyn RegistryClient>,
         ),
+        (
+            "jbm".to_owned(),
+            FixedRegistry::new("jetbrains-marketplace") as Arc<dyn RegistryClient>,
+        ),
     ]
     .into();
 
@@ -396,6 +400,7 @@ pub async fn make_app_ext(
         ("fj".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
         ("gl".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
         ("jb".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
+        ("jbm".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
     ]
     .into();
 
@@ -417,7 +422,7 @@ pub async fn make_app_ext(
 
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
     let access_config = access_config_for(&[
-        "github", "npm", "cargo", "openvsx", "go", "vscode", "fj", "gl", "jb",
+        "github", "npm", "cargo", "openvsx", "go", "vscode", "fj", "gl", "jb", "jbm",
     ]);
     let registry_map = registry_map_for(&[
         ("github", "github"),
@@ -429,6 +434,7 @@ pub async fn make_app_ext(
         ("fj", "forgejo"),
         ("gl", "gitlab"),
         ("jb", "jetbrains"),
+        ("jbm", "jetbrains-marketplace"),
     ]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
     finish_test_app(

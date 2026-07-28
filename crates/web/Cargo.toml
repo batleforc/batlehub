@@ -37,6 +37,7 @@ lettre = { version = "0.11", features = ["tokio1", "tokio1-rustls-tls", "smtp-tr
 quick-xml = { workspace = true }
 base64.workspace = true
 zip.workspace = true
+form_urlencoded.workspace = true
 
 [dev-dependencies]
 batlehub-adapters = { path = "../adapters" }

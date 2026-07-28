@@ -6,9 +6,10 @@ use batlehub_adapters::db::PgQuotaRepository;
 use batlehub_adapters::registry::{
     CargoRegistryClient, ComposerRegistryClient, CondaRegistryClient, FanoutRegistryClient,
     ForgejoRegistryClient, GithubRegistryClient, GitlabRegistryClient, GoProxyRegistryClient,
-    MavenRegistryClient, NpmRegistryClient, NugetRegistryClient, OpenVsxRegistryClient,
-    PathProxyRegistryClient, PypiRegistryClient, RubyGemsRegistryClient, TerraformRegistryClient,
-    UpstreamHttpOptions, VsCodeMarketplaceRegistryClient,
+    JetbrainsMarketplaceRegistryClient, MavenRegistryClient, NpmRegistryClient,
+    NugetRegistryClient, OpenVsxRegistryClient, PathProxyRegistryClient, PypiRegistryClient,
+    RubyGemsRegistryClient, TerraformRegistryClient, UpstreamHttpOptions,
+    VsCodeMarketplaceRegistryClient,
 };
 use batlehub_config::schema::{
     QuotaEnforcement as ConfigQuotaEnforcement, RegistryConfig, RuleConfig, UpstreamAuthConfig,
@@ -161,6 +162,9 @@ pub(super) fn build_registry_client(
             RegistryKind::Composer => Arc::new(ComposerRegistryClient::new(url, opts)?),
             RegistryKind::Pypi => Arc::new(PypiRegistryClient::new(url, opts)?),
             RegistryKind::Conda => Arc::new(CondaRegistryClient::new(url, opts)?),
+            RegistryKind::JetbrainsMarketplace => {
+                Arc::new(JetbrainsMarketplaceRegistryClient::new(url, opts)?)
+            }
             RegistryKind::Deb => path_proxy("deb")?,
             RegistryKind::Rpm => path_proxy("rpm")?,
             RegistryKind::Pacman => path_proxy("pacman")?,
@@ -199,8 +203,11 @@ pub(super) fn build_registry_client(
         // sensible default, overridable via `upstreams`.
         RegistryKind::Pacman => resolve_urls(&reg.upstreams, "https://geo.mirror.pkgbuild.com"),
         // JetBrains IDE archives are served from a stable CDN, so it's a sensible
-        // default; users can override `upstreams` (e.g. for plugins.jetbrains.com).
+        // default; the marketplace (plugin ecosystem) is its own kind below.
         RegistryKind::Jetbrains => resolve_urls(&reg.upstreams, "https://download.jetbrains.com"),
+        RegistryKind::JetbrainsMarketplace => {
+            resolve_urls(&reg.upstreams, "https://plugins.jetbrains.com")
+        }
         // A generic mirror has no meaningful default upstream — it mirrors whatever
         // file tree the operator points it at. Config validation already requires an
         // explicit `upstreams` entry, so the placeholder is unreachable in practice.

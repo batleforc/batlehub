@@ -342,6 +342,7 @@ pub use middleware::UserBlockMiddlewareFactory;
         (name = "proxy/pypi",       description = "PyPI registry — simple index proxy with URL rewriting, wheel/sdist downloads, and twine-compatible publish"),
         (name = "proxy/conda",      description = "Conda channel proxy — repodata.json, package downloads, and private channel publishing"),
         (name = "proxy/nuget",      description = "NuGet registry — service index, flat container, registration metadata, .nupkg download, and private package publishing"),
+        (name = "proxy/jetbrains-marketplace", description = "JetBrains Marketplace — IDE-facing plugin API (search, compatible updates, meta.json, downloads), updatePlugins.xml custom repository, and marketplace-compatible plugin publishing"),
         (name = "proxy/generic",    description = "Generic file mirror — path-addressed proxy cache for upstreams with no package protocol (toolchain tarballs, vendor CDNs), restricted by a path_allow allowlist"),
         (name = "front-office",     description = "User-facing package information"),
         (name = "explore",          description = "Package explorer — browse and search across registries"),
@@ -449,6 +450,10 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             // shared version metadata > shared packument
             // nuget: vuln page/index > registration > flat > search
             // composer: upload/yank > advisories (literal "api") > p2 > dist > packages.json
+            // jetbrains-marketplace: api/updates/upload > api/search/* > api/plugins/* >
+            //   plugins/list > plugin/download > pluginManager > updatePlugins.xml >
+            //   literal files/*.json > files/{p}/{u}/meta.json > files/{p}/meta.json >
+            //   files/{p}/{u}/{file} — all before the shared npm version/packument wildcards
             conda::{conda_current_repodata, conda_file_download, conda_publish, conda_repodata},
             forgejo::fj_packages,
             generic::generic_get,
@@ -465,6 +470,14 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                 goproxy_vuln_index, goproxy_vuln_query,
             },
             jetbrains::jetbrains_get,
+            jetbrains_marketplace::{
+                jbm_aggregation, jbm_broken_plugins, jbm_comments, jbm_compatible_updates,
+                jbm_feature_implementations, jbm_file_download, jbm_ide_extensions,
+                jbm_jb_plugins_xml_ids, jbm_plugin_download, jbm_plugin_info, jbm_plugin_manager,
+                jbm_plugin_meta, jbm_plugin_updates, jbm_plugins_list, jbm_plugins_xml_ids,
+                jbm_search_plugins, jbm_search_plugins_ide, jbm_update_meta,
+                jbm_update_plugins_xml, jbm_upload,
+            },
             maven::{maven_get, maven_put},
             npm::{
                 audit_bulk, audit_quick, download_tarball as npm_download_tarball, get_packument,
@@ -609,7 +622,30 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                                       // OpenVSX/VSCode VSIX publish (PUT) and download (GET) — same path, different method
     cfg.service(vsix_publish);
     cfg.service(download_vsix);
-    // npm audit pass-through (literal "/-/npm/v1/audit/{quick,bulk}" paths — bulk before quick)
+    // JetBrains Marketplace — literal-prefix routes, most-specific first; must all
+    // precede the shared npm version/packument wildcards below, which would
+    // otherwise swallow e.g. "plugins/list" as {name}/{version}.
+    cfg.service(jbm_upload); // POST …/api/updates/upload
+    cfg.service(jbm_compatible_updates); // POST …/api/search/updates/compatible
+    cfg.service(jbm_aggregation); // GET …/api/search/aggregation/{field}
+    cfg.service(jbm_search_plugins); // GET …/api/search/plugins
+    cfg.service(jbm_search_plugins_ide); // GET …/api/searchPlugins
+    cfg.service(jbm_comments); // GET …/api/products/intellij/plugins/{id}/comments
+    cfg.service(jbm_plugin_updates); // GET …/api/plugins/{id}/updates
+    cfg.service(jbm_plugin_info); // GET …/api/plugins/{id}
+    cfg.service(jbm_plugins_list); // GET …/plugins/list
+    cfg.service(jbm_plugin_download); // GET …/plugin/download
+    cfg.service(jbm_plugin_manager); // GET …/pluginManager
+    cfg.service(jbm_update_plugins_xml); // GET …/updatePlugins.xml
+    cfg.service(jbm_feature_implementations); // GET …/feature/getImplementations
+    cfg.service(jbm_plugins_xml_ids); // GET …/files/pluginsXMLIds.json
+    cfg.service(jbm_jb_plugins_xml_ids); // GET …/files/jbPluginsXMLIds.json
+    cfg.service(jbm_broken_plugins); // GET …/files/brokenPlugins.json
+    cfg.service(jbm_ide_extensions); // GET …/files/IDE/extensions.json
+    cfg.service(jbm_update_meta); // GET …/files/{p}/{u}/meta.json
+    cfg.service(jbm_plugin_meta); // GET …/files/{p}/meta.json
+    cfg.service(jbm_file_download); // GET …/files/{p}/{u}/{file}
+                                    // npm audit pass-through (literal "/-/npm/v1/audit/{quick,bulk}" paths — bulk before quick)
     cfg.service(audit_bulk);
     cfg.service(audit_quick);
     // npm tarball (literal "tarball" suffix)

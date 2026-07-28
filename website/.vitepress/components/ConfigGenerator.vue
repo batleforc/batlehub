@@ -22,7 +22,8 @@ type RegistryType =
   | "nuget"
   | "deb"
   | "rpm"
-  | "jetbrains";
+  | "jetbrains"
+  | "jetbrains-marketplace";
 type AuthRole = "admin" | "user" | "anonymous";
 type StorageBackendType = "filesystem" | "s3";
 type StorageMode = "single" | "multi";
@@ -369,6 +370,7 @@ const defaultUpstream: Record<RegistryType, string> = {
   deb: "https://deb.debian.org",
   rpm: "",
   jetbrains: "https://download.jetbrains.com",
+  "jetbrains-marketplace": "https://plugins.jetbrains.com",
 };
 
 function defaultRegistry(type: RegistryType = "npm"): Registry {
@@ -1628,6 +1630,7 @@ const composerAuthSnippet = `{
                 <option value="deb">Deb (APT)</option>
                 <option value="rpm">RPM (YUM/DNF)</option>
                 <option value="jetbrains">JetBrains IDE</option>
+                <option value="jetbrains-marketplace">JetBrains Marketplace</option>
               </select>
             </label>
           </div>

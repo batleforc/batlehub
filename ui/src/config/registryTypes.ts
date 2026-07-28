@@ -302,6 +302,64 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     ],
   },
 
+  // ── JetBrains Marketplace ──────────────────────────────────────────────────
+  {
+    id: "jetbrains-marketplace",
+    label: "JetBrains Marketplace",
+    fileHint: "plugins.jetbrains.com",
+    description:
+      `Proxy the <a href="https://plugins.jetbrains.com" target="_blank" rel="noopener" ` +
+      `class="underline underline-offset-2 hover:text-foreground transition-colors">JetBrains Marketplace</a> ` +
+      `plugin ecosystem — IDE search, compatible updates, and plugin downloads — with local/hybrid publishing. ` +
+      `Distinct from the <code class="text-xs font-mono bg-muted px-1 rounded">jetbrains</code> IDE-archive type.`,
+    snippets: [
+      {
+        key: "jbm-host",
+        label: "Full replacement — idea.plugins.host custom property",
+        lang: "properties",
+        template: (ctx) =>
+          [
+            `# Help → Edit Custom Properties… (idea.properties)`,
+            `# Replaces plugins.jetbrains.com entirely for this IDE.`,
+            `idea.plugins.host=${ctx.base}/proxy/${ctx.registryName}`,
+          ].join("\n"),
+      },
+      {
+        key: "jbm-custom-repo",
+        label: "Additive — Manage Plugin Repositories URL",
+        lang: "text",
+        template: (ctx) => `${ctx.base}/proxy/${ctx.registryName}/updatePlugins.xml`,
+        note:
+          `Settings → Plugins → ⚙ → <strong>Manage Plugin Repositories…</strong> → add the URL above. ` +
+          `Lists plugins published to this registry alongside the public marketplace.`,
+      },
+      {
+        key: "jbm-download",
+        label: "Direct plugin download",
+        lang: "bash",
+        template: (ctx) =>
+          `curl -L "${ctx.base}/proxy/${ctx.registryName}/plugin/download?pluginId={xmlId}&version={version}" -o plugin.zip`,
+      },
+      {
+        key: "jbm-publish",
+        label: "Publish a plugin (marketplace-compatible upload)",
+        lang: "bash",
+        showWhen: isPublishMode,
+        template: (ctx) =>
+          [
+            `curl -X POST "${ctx.base}/proxy/${ctx.registryName}/api/updates/upload" \\`,
+            `  -H "Authorization: Bearer ${authTokenOrPlaceholder(ctx)}" \\`,
+            `  -F "xmlId={xmlId}" \\`,
+            `  -F "channel=" \\`,
+            `  -F "file=@my-plugin.zip"`,
+          ].join("\n"),
+        note:
+          `Also works with JetBrains' <code class="font-mono bg-muted px-1 rounded">plugin-repository-rest-client</code> ` +
+          `and the Gradle <code class="font-mono bg-muted px-1 rounded">publishPlugin</code> task pointed at this host.`,
+      },
+    ],
+  },
+
   // ── Go ─────────────────────────────────────────────────────────────────────
   {
     id: "goproxy",

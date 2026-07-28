@@ -60,7 +60,7 @@ features:
 
 ## Supported registries
 
-BatleHub proxies eighteen registry types. Every registry type can run as a pure cache (proxy mode), a fully private registry (local mode), or a hybrid of both — except **JetBrains**, which is proxy-only.
+BatleHub proxies nineteen registry types. Every registry type can run as a pure cache (proxy mode), a fully private registry (local mode), or a hybrid of both — except **JetBrains** (the IDE-archive kind), which is proxy-only.
 
 | Registry | Protocol | Default upstream |
 |----------|----------|-----------------|
@@ -82,6 +82,7 @@ BatleHub proxies eighteen registry types. Every registry type can run as a pure 
 | **Deb (APT)** | Path-based APT repository: `Packages`/`Release` proxy + signed private hosting | — ³ |
 | **RPM (YUM/DNF)** | Path-based `repodata/` repository proxy + signed private hosting | — ³ |
 | **JetBrains** | Path-based proxy cache for IDE installer archives | `download.jetbrains.com` ⁵ |
+| **JetBrains Marketplace** | IDE plugin API (search, compatible updates, downloads) + `updatePlugins.xml`; marketplace-compatible publish | `plugins.jetbrains.com` |
 
 The per-package feature matrix below covers the package-centric registries. **Forgejo** and **GitLab** behave like **GitHub** (proxy-only release assets). **Deb**, **RPM**, and **JetBrains** are **path-addressed** formats (last three columns, ⁶): they have no per-package model, so the structural axes do not apply — but they still get registry-level RBAC, multi-upstream fanout, and (Deb/RPM) signed private hosting.
 

@@ -386,6 +386,7 @@ pub async fn conda_publish(
         &local_svc,
         &notification_svc,
         PublishRequest {
+            unlisted: false,
             registry,
             name: pkg_info.name.clone(),
             version: version_key,

@@ -109,6 +109,7 @@ default = [
   "registry-terraform",
   "registry-vscode-marketplace",
   "registry-jetbrains",
+  "registry-jetbrains-marketplace",
   "registry-generic",
   "sbom",
   "storage-fs",
@@ -162,6 +163,10 @@ registry-pypi = []
 # JetBrains IDE-archive proxy cache. Reuses the generic `PathProxyRegistryClient`
 # (shared with deb/rpm), so it needs no extra dependencies.
 registry-jetbrains = []
+# JetBrains Marketplace (plugins.jetbrains.com) metadata-API adapter — distinct
+# from the path-addressed `registry-jetbrains` IDE-archive kind. Needs quick-xml
+# for the plugin-repository XML format.
+registry-jetbrains-marketplace = ["dep:quick-xml"]
 # Path-addressed mirror of an arbitrary upstream file tree (toolchain tarballs,
 # vendor CDNs). Also reuses `PathProxyRegistryClient`.
 registry-generic = []

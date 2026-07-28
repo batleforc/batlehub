@@ -105,6 +105,7 @@ pub async fn npm_publish(
 
     let quota = local_svc
         .publish(PublishRequest {
+            unlisted: false,
             registry: registry.clone(),
             name: name.clone(),
             version: version_str.clone(),

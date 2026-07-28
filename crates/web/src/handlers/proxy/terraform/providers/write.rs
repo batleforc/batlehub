@@ -71,6 +71,7 @@ pub async fn terraform_provider_upload(
         &local_svc,
         &notification_svc,
         PublishRequest {
+            unlisted: false,
             registry,
             name,
             version,

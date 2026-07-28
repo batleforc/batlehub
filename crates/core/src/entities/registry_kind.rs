@@ -33,6 +33,7 @@ pub enum RegistryKind {
     Rpm,
     Pacman,
     Jetbrains,
+    JetbrainsMarketplace,
     Generic,
 }
 
@@ -59,6 +60,7 @@ impl RegistryKind {
         Self::Rpm,
         Self::Pacman,
         Self::Jetbrains,
+        Self::JetbrainsMarketplace,
         Self::Generic,
     ];
 
@@ -84,6 +86,7 @@ impl RegistryKind {
             Self::Rpm => "rpm",
             Self::Pacman => "pacman",
             Self::Jetbrains => "jetbrains",
+            Self::JetbrainsMarketplace => "jetbrains-marketplace",
             Self::Generic => "generic",
         }
     }
@@ -173,6 +176,7 @@ mod tests {
         assert!(!RegistryKind::Generic.supports_local_mode());
         assert!(RegistryKind::Cargo.supports_local_mode());
         assert!(RegistryKind::Deb.supports_local_mode());
+        assert!(RegistryKind::JetbrainsMarketplace.supports_local_mode());
     }
 
     #[test]
@@ -182,6 +186,7 @@ mod tests {
         assert!(RegistryKind::Generic.requires_explicit_upstream_in_proxy_mode());
         assert!(!RegistryKind::Pacman.requires_explicit_upstream_in_proxy_mode());
         assert!(!RegistryKind::Npm.requires_explicit_upstream_in_proxy_mode());
+        assert!(!RegistryKind::JetbrainsMarketplace.requires_explicit_upstream_in_proxy_mode());
     }
 
     #[test]
@@ -200,6 +205,7 @@ mod tests {
             RegistryKind::Cargo,
             RegistryKind::Github,
             RegistryKind::Goproxy,
+            RegistryKind::JetbrainsMarketplace,
         ] {
             assert!(
                 !kind.is_path_addressed(),

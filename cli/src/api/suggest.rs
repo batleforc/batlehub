@@ -118,6 +118,7 @@ const TYPED_HOSTS: &[(&str, &str, &str)] = &[
         "vscode",
     ),
     ("download.jetbrains.com", "jetbrains", "jetbrains"),
+    ("plugins.jetbrains.com", "jetbrains-marketplace", "jbm"),
 ];
 
 /// Hosts with no package protocol at all, for which we know a sensible upstream

@@ -64,6 +64,11 @@ pub mod goproxy;
 #[cfg(feature = "registry-goproxy")]
 pub use goproxy::GoProxyRegistryClient;
 
+#[cfg(feature = "registry-jetbrains-marketplace")]
+pub mod jetbrains_marketplace;
+#[cfg(feature = "registry-jetbrains-marketplace")]
+pub use jetbrains_marketplace::JetbrainsMarketplaceRegistryClient;
+
 #[cfg(feature = "registry-vscode-marketplace")]
 pub mod vscode_marketplace;
 #[cfg(feature = "registry-vscode-marketplace")]

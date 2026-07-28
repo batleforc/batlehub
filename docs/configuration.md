@@ -600,9 +600,9 @@ deny_missing_timestamp = false   # set true to block packages with no timestamp
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `type` | string | yes | `"github"`, `"forgejo"`, `"gitlab"`, `"npm"`, `"cargo"`, `"nuget"`, `"openvsx"`, `"vscode-marketplace"`, `"goproxy"`, `"maven"`, `"terraform"`, `"rubygems"`, `"composer"`, `"pypi"`, `"conda"`, `"deb"`, `"rpm"`, `"pacman"`, `"jetbrains"`, `"generic"` |
+| `type` | string | yes | `"github"`, `"forgejo"`, `"gitlab"`, `"npm"`, `"cargo"`, `"nuget"`, `"openvsx"`, `"vscode-marketplace"`, `"goproxy"`, `"maven"`, `"terraform"`, `"rubygems"`, `"composer"`, `"pypi"`, `"conda"`, `"deb"`, `"rpm"`, `"pacman"`, `"jetbrains"`, `"jetbrains-marketplace"`, `"generic"` |
 | `name` | string | yes | Unique identifier; used in proxy URL paths |
-| `mode` | string | no | `"proxy"` (default), `"local"`, or `"hybrid"`. Supported for `cargo`, `npm`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, `rubygems`, `composer`, `pypi`, and `conda`. See [registry modes](#registry-modes). |
+| `mode` | string | no | `"proxy"` (default), `"local"`, or `"hybrid"`. Supported for `cargo`, `npm`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, `rubygems`, `composer`, `pypi`, `conda`, and `jetbrains-marketplace`. See [registry modes](#registry-modes). |
 | `upstreams` | string[] | no | Upstream URLs tried in order on cache miss; 404 from one falls through to the next. Defaults to the registry's built-in URL. Required for `hybrid` mode. |
 | `index_url` | string | no | Cargo only: sparse crate index URL. Defaults to `https://index.crates.io`. Required for `hybrid` mode and self-hosted Gitea/Forgejo registries. |
 | `storage` | string | no | Name of the storage backend. Must match a `[[storage.backends]]` name. Omit to use the default backend. |
@@ -614,7 +614,7 @@ deny_missing_timestamp = false   # set true to block packages with no timestamp
 
 #### Registry modes {#registry-modes}
 
-`cargo`, `npm`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, `rubygems`, `composer`, `pypi`, and `conda` registries support three operating modes, set via the `mode` field:
+`cargo`, `npm`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, `rubygems`, `composer`, `pypi`, `conda`, and `jetbrains-marketplace` registries support three operating modes, set via the `mode` field:
 
 | Mode | Description |
 |------|-------------|
@@ -679,6 +679,35 @@ curl -H "Authorization: Bearer <token>" \
 curl -H "Authorization: Bearer <token>" \
   http://localhost:8080/proxy/vscode/ms-python.python/2024.2.1/vsix \
   -o ms-python.python-2024.2.1.vsix
+```
+
+**`jetbrains-marketplace`** — full [JetBrains Marketplace](https://plugins.jetbrains.com) emulation for the IDE plugin ecosystem (search, compatible updates, `meta.json` blobs, plugin downloads), distinct from the path-addressed `jetbrains` IDE-archive type. Point an IDE at the proxy either **fully** (Help → Edit Custom Properties… → `idea.plugins.host=https://your-host/proxy/{registry}`) or **additively** (Settings → Plugins → Manage Plugin Repositories… → `https://your-host/proxy/{registry}/updatePlugins.xml`). Supports `mode = "local"`/`"hybrid"` with a marketplace-compatible multipart publish (`POST /proxy/{registry}/api/updates/upload`), so JetBrains' `plugin-repository-rest-client` and the Gradle `publishPlugin` task work against it. Per-plugin metadata, artifacts, and forwarded query blobs are cached with stale fallback: anything seen once keeps resolving if plugins.jetbrains.com becomes unreachable.
+
+```toml
+[[registries]]
+type = "jetbrains-marketplace"
+name = "jbm"
+mode = "hybrid"                                # or "proxy" / "local"
+upstreams = ["https://plugins.jetbrains.com"]  # default
+
+[registries.rbac]
+user = ["releases:read"]
+admin = ["*"]
+```
+
+Download and publish via the proxy:
+
+```sh
+# Download a plugin version
+curl -H "Authorization: Bearer <token>" \
+  "http://localhost:8080/proxy/jbm/plugin/download?pluginId=org.rust.lang&version=241.25026.107" \
+  -o rust-plugin.zip
+
+# Publish a plugin (local/hybrid mode)
+curl -X POST -H "Authorization: Bearer <token>" \
+  -F "xmlId=com.example.myplugin" \
+  -F "file=@my-plugin.zip" \
+  http://localhost:8080/proxy/jbm/api/updates/upload
 ```
 
 **`goproxy`** — implements the [GOPROXY protocol](https://go.dev/ref/mod#goproxy-protocol) for Go module proxying. Set `mode = "local"` or `mode = "hybrid"` to host private modules — see [registry modes](#registry-modes) and [Worked Example 6.9](#69-private-go-module-proxy-local--hybrid-mode). Supports all five module proxy endpoints plus the Go Vulnerability Database (`govulndb`) protocol — see [Vulnerability Proxy](vulnerability-proxy.md#1-go--govulncheck--go-vulnerability-database).

@@ -507,7 +507,8 @@ upstreams = ["https://repo1.maven.org/maven2/"]
 type   = "jetbrains"
 name   = "jetbrains-ide"
 mode   = "proxy"            # upstream defaults to https://download.jetbrains.com
-# upstreams = ["https://plugins.jetbrains.com"]   # override to cache plugins instead
+# For the plugin ecosystem (plugins.jetbrains.com), use the dedicated
+# `jetbrains-marketplace` type below — not an upstream override here.
 [registries.rbac]
 anonymous = ["releases:read"]
 # Pre-warm specific upstream paths on startup (and via the /warm admin endpoint).
@@ -515,6 +516,30 @@ anonymous = ["releases:read"]
 # instead of `warm_packages`. Entries are upstream-relative paths.
 [registries.cache]
 warm_paths = ["idea/ideaIC-2024.1.4.tar.gz"]
+
+# ── JetBrains Marketplace (IDE plugins) ──────────────────────────────────────
+#
+# Full marketplace emulation for the plugin ecosystem: IDE search, compatible
+# updates, meta.json blobs, plugin downloads, and (local/hybrid) marketplace-
+# compatible publishing via POST /proxy/{name}/api/updates/upload.
+#
+# Point an IDE at the proxy either fully:
+#   Help → Edit Custom Properties… → idea.plugins.host=https://your-host/proxy/jbm
+# or additively:
+#   Settings → Plugins → ⚙ → Manage Plugin Repositories… →
+#   https://your-host/proxy/jbm/updatePlugins.xml
+#
+# Metadata, artifacts, and forwarded query blobs are cached with stale
+# fallback, so previously-seen plugins keep working if the upstream is down.
+[[registries]]
+type = "jetbrains-marketplace"
+name = "jbm"
+mode = "hybrid"             # "proxy", "local", or "hybrid"
+upstreams = ["https://plugins.jetbrains.com"]   # default
+[registries.rbac]
+anonymous = ["releases:read"]
+user      = ["releases:read"]
+admin     = ["*"]
 
 # ── Generic file mirror (toolchains, vendor CDNs) ────────────────────────────
 #

@@ -65,6 +65,7 @@ pub async fn terraform_module_upload(
         &local_svc,
         &notification_svc,
         PublishRequest {
+            unlisted: false,
             registry,
             name: pkg_name,
             version,

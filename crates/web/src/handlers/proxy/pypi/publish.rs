@@ -122,6 +122,7 @@ pub async fn pypi_publish(
         &local_svc,
         &notification_svc,
         PublishRequest {
+            unlisted: false,
             registry,
             name,
             version,

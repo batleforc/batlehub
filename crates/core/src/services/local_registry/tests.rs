@@ -220,6 +220,7 @@ async fn publish_rejects_oversized_artifact() {
     let backend = InMemBackend::arc();
     let s = svc(backend, Some(10)); // 10-byte limit
     let req = PublishRequest {
+        unlisted: false,
         registry: "npm".into(),
         name: "big".into(),
         version: "1.0.0".into(),
@@ -291,6 +292,7 @@ async fn enforce_publish_policy_accepts_valid_user_publish() {
 async fn publish_rejects_path_traversal_in_name() {
     let s = svc(InMemBackend::arc(), None);
     let req = PublishRequest {
+        unlisted: false,
         registry: "npm".into(),
         name: "../../../../etc/cron.d/evil".into(),
         version: "1.0.0".into(),
@@ -312,6 +314,7 @@ async fn publish_rejects_path_traversal_in_name() {
 async fn publish_rejects_path_traversal_in_version() {
     let s = svc(InMemBackend::arc(), None);
     let req = PublishRequest {
+        unlisted: false,
         registry: "npm".into(),
         name: "pkg".into(),
         version: "../../../../tmp/evil".into(),
@@ -929,6 +932,7 @@ async fn namespace_enforcement_blocks_non_member() {
     let ns = MockTeamNamespace::with_namespace("reg", "frontend", "team-a");
     let s = svc_with_ns(backend, ns);
     let req = PublishRequest {
+        unlisted: false,
         registry: "reg".into(),
         name: "frontend/utils".into(),
         version: "1.0.0".into(),
@@ -952,6 +956,7 @@ async fn namespace_enforcement_allows_member() {
     let ns = MockTeamNamespace::with_namespace("reg", "frontend", "team-a");
     let s = svc_with_ns(backend, ns);
     let req = PublishRequest {
+        unlisted: false,
         registry: "reg".into(),
         name: "frontend/utils".into(),
         version: "1.0.0".into(),
@@ -971,6 +976,7 @@ async fn namespace_enforcement_admin_bypasses() {
     let ns = MockTeamNamespace::with_namespace("reg", "frontend", "team-a");
     let s = svc_with_ns(backend, ns);
     let req = PublishRequest {
+        unlisted: false,
         registry: "reg".into(),
         name: "frontend/utils".into(),
         version: "1.0.0".into(),
@@ -993,6 +999,7 @@ async fn no_namespace_claim_allows_any_user() {
     let ns = MockTeamNamespace::arc(); // no namespaces
     let s = svc_with_ns(backend, ns);
     let req = PublishRequest {
+        unlisted: false,
         registry: "reg".into(),
         name: "any/package".into(),
         version: "1.0.0".into(),
@@ -1117,6 +1124,7 @@ async fn publish_second_version_inherits_visibility() {
     let s = svc_with_ns(backend, ns);
 
     let req = PublishRequest {
+        unlisted: false,
         registry: "reg".into(),
         name: "my-pkg".into(),
         version: "2.0.0".into(),
@@ -1250,6 +1258,7 @@ async fn unyank_allows_namespace_member() {
 
 fn publish_req(registry: &str, name: &str, version: &str, publisher: Identity) -> PublishRequest {
     PublishRequest {
+        unlisted: false,
         registry: registry.into(),
         name: name.into(),
         version: version.into(),

@@ -917,8 +917,9 @@ There is no publish, signing, or local hosting — it is a cache only.
 > **Large archives:** IDE archives are ~1–1.7 GB. The proxy buffers the whole
 > artifact in memory before caching and rejects anything over
 > `limits.max_artifact_size_bytes` (default 500 MiB), so raise that limit
-> (e.g. `2147483648` for 2 GiB) or downloads will fail. Override `upstreams` to
-> cache a different host such as `https://plugins.jetbrains.com`.
+> (e.g. `2147483648` for 2 GiB) or downloads will fail. For the **plugin
+> ecosystem** (plugins.jetbrains.com), don't point this kind at that host — use
+> the dedicated [`jetbrains-marketplace`](#jetbrains-marketplace) type instead.
 
 ### Download via the CLI
 
@@ -949,6 +950,83 @@ warm_paths = ["idea/ideaIC-2024.1.4.tar.gz"]
 # Warm one or more paths now (admin):
 batlehub admin cache warm jetbrains-ide --paths "idea/ideaIC-2024.1.4.tar.gz"
 ```
+
+---
+
+## JetBrains Marketplace {#jetbrains-marketplace}
+
+A `jetbrains-marketplace` registry proxies the **plugin ecosystem**
+([plugins.jetbrains.com](https://plugins.jetbrains.com)) — search, compatible
+updates, `meta.json` blobs, and plugin downloads — and supports all three
+modes, including local/hybrid publishing. It is a metadata-API adapter, distinct
+from the path-addressed [`jetbrains`](#jetbrains) IDE-archive kind above.
+
+Per-plugin metadata, plugin artifacts, and the fixed JSON blobs the IDE fetches
+at startup are all cached with stale fallback: any plugin seen once keeps
+resolving and downloading even if plugins.jetbrains.com becomes unreachable.
+
+### Point an IDE at the proxy
+
+**Full replacement** — the IDE talks only to BatleHub (search, updates,
+downloads). Help → **Edit Custom Properties…**, then:
+
+```properties
+idea.plugins.host=https://batlehub.example.com/proxy/jbm
+```
+
+**Additive** — keep the public marketplace and add this registry's local
+plugins. Settings → Plugins → ⚙ → **Manage Plugin Repositories…** → add:
+
+```text
+https://batlehub.example.com/proxy/jbm/updatePlugins.xml
+```
+
+(`updatePlugins.xml` lists locally published plugins; it returns 404 on a pure
+proxy-mode registry.)
+
+### Download a plugin
+
+```bash
+curl -fL -o rust-plugin.zip \
+  "$BATLEHUB/proxy/jbm/plugin/download?pluginId=org.rust.lang&version=241.25026.107"
+
+# Or let the proxy pick the newest version compatible with your IDE build:
+curl -fL -o plugin.zip \
+  "$BATLEHUB/proxy/jbm/pluginManager?action=download&id=org.rust.lang&build=IU-241.14494"
+```
+
+### Publish a plugin (local/hybrid)
+
+The upload endpoint is marketplace-compatible: plain `curl`, JetBrains'
+`plugin-repository-rest-client`, and the Gradle `publishPlugin` task all work
+with a BatleHub Bearer token. The plugin id/version are read from
+`META-INF/plugin.xml` inside the archive.
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -F "xmlId=com.example.myplugin" \
+  -F "file=@my-plugin-1.0.0.zip" \
+  "$BATLEHUB/proxy/jbm/api/updates/upload"
+```
+
+```kotlin
+// Gradle (intellij-platform plugin)
+tasks.publishPlugin {
+    host.set("https://batlehub.example.com/proxy/jbm")
+    token.set(providers.environmentVariable("BATLEHUB_TOKEN"))
+}
+```
+
+Publish with `-F "isHidden=true"` to keep a version out of every listing while
+remaining downloadable by exact coordinate.
+
+### Modes
+
+| Mode | Behaviour |
+|------|-----------|
+| `proxy` | Pure cache of plugins.jetbrains.com (metadata, downloads, search) |
+| `local` | Authoritative private plugin repository — no upstream |
+| `hybrid` | Locally published plugins first, upstream fallback for the rest |
 
 ---
 

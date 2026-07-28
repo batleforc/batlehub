@@ -208,6 +208,7 @@ pub async fn maven_put(
                 &local_svc,
                 &notification_svc,
                 PublishRequest {
+                    unlisted: false,
                     registry: registry.clone(),
                     name: name.clone(),
                     version: resolved_version.clone(),

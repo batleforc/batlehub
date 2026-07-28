@@ -197,6 +197,7 @@ pub async fn nuget_publish(
         &local_svc,
         &notification_svc,
         PublishRequest {
+            unlisted: false,
             registry: registry.clone(),
             name: id_lower.clone(),
             version: version.clone(),
