@@ -127,6 +127,11 @@ impl RegistryClient for JetbrainsMarketplaceRegistryClient {
                     "version": e.version,
                     "since_build": e.since_build,
                     "until_build": e.until_build,
+                    // `/plugins/list` is queried without a channel param and
+                    // its XML carries no channel field: every entry here is
+                    // from the default (Stable) channel by construction.
+                    // Channel-specific *downloads* still work via the
+                    // `plugin@{channel}` artifact suffix in `fetch_artifact`.
                     "channel": "",
                     "date_ms": e.date_ms,
                     "size": e.size,

@@ -914,7 +914,7 @@ There is no publish, signing, or local hosting — it is a cache only.
 > (Ultimate) / `ideaIC-<ver>` (Community) names only exist for releases ≤ 2025.2.
 > A wrong name returns the upstream's 404. To proxy the CDN host directly instead, set
 > `upstreams = ["https://download-cdn.jetbrains.com"]`.
-
+>
 > **Large archives:** IDE archives are ~1–1.7 GB. The proxy buffers the whole
 > artifact in memory before caching and rejects anything over
 > `limits.max_artifact_size_bytes` (default 500 MiB), so raise that limit

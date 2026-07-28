@@ -55,18 +55,20 @@ pub async fn append_signature_headers(
     }
 }
 
-/// Drain an actix streaming body into a contiguous `Bytes` buffer.
-///
-/// Rejects the upload if the accumulated size exceeds `max_bytes` (default 500 MiB)
-/// to prevent OOM from unbounded uploads before the service-layer size check fires.
+/// Upload ceiling shared by every publish path (raw payloads and multipart
+/// alike): prevents OOM from unbounded uploads before the service-layer size
+/// check fires.
+pub const MAX_UPLOAD_BYTES: u64 = 500 * 1024 * 1024;
+
+/// Drain an actix streaming body into a contiguous `Bytes` buffer, bounded by
+/// [`MAX_UPLOAD_BYTES`].
 pub async fn collect_payload(mut payload: web::Payload) -> Result<Bytes, AppError> {
-    const MAX_BYTES: u64 = 500 * 1024 * 1024;
     let mut raw = BytesMut::new();
     while let Some(chunk) = payload.next().await {
         let chunk = chunk.map_err(|e| AppError::bad_request(e.to_string()))?;
-        if raw.len() as u64 + chunk.len() as u64 > MAX_BYTES {
+        if raw.len() as u64 + chunk.len() as u64 > MAX_UPLOAD_BYTES {
             return Err(AppError::from(CoreError::PayloadTooLarge(format!(
-                "upload exceeds the {MAX_BYTES}-byte limit"
+                "upload exceeds the {MAX_UPLOAD_BYTES}-byte limit"
             ))));
         }
         raw.extend_from_slice(&chunk);

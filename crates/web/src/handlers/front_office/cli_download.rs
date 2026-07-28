@@ -6,26 +6,13 @@ use actix_web::{get, web, Responder};
 use batlehub_core::error::CoreError;
 
 use crate::error::AppError;
+use crate::handlers::sanitize_filename;
 
 /// Registered path to the `batlehub-cli` binary.
 ///
 /// Inserted into `app_data` by `server/src/main.rs` when `[server] cli_binary_path`
 /// is configured. Absent in tests and when the operator has not configured a path.
 pub struct CliBinaryPath(pub PathBuf);
-
-/// Sanitise a filename for use in a `Content-Disposition: attachment; filename="..."` value.
-///
-/// Replaces `"`, `\`, non-ASCII characters, and ASCII control characters (including CR/LF)
-/// with `_` so the resulting string is safe inside a quoted-string token (RFC 7230 §3.2.6).
-fn sanitize_filename(name: &str) -> String {
-    name.chars()
-        .map(|c| match c {
-            '"' | '\\' => '_',
-            c if !c.is_ascii() || c.is_ascii_control() => '_',
-            c => c,
-        })
-        .collect()
-}
 
 /// Download the `batlehub-cli` binary.
 ///

@@ -23,7 +23,7 @@ use super::cached_forward::{
     ForwardedBody,
 };
 use super::render::{plugin_json, search_hit_json, update_json, ExtraMeta, RenderEntry};
-use super::{require_jbm, STABLE_CHANNEL};
+use super::{require_jbm, require_single_segment, STABLE_CHANNEL};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
 
 const DEFAULT_SEARCH_MAX: usize = 50;
@@ -510,6 +510,7 @@ pub async fn jbm_aggregation(
 ) -> Result<impl Responder, AppError> {
     let (registry, field) = path.into_inner();
     batlehub_core::services::validate_package_name(&field).map_err(AppError::from)?;
+    require_single_segment("aggregation field", &field)?;
     empty_or_forward(
         &svc,
         &upstream_map,
@@ -580,6 +581,7 @@ pub async fn jbm_comments(
 ) -> Result<impl Responder, AppError> {
     let (registry, id) = path.into_inner();
     validate_package_name(&id).map_err(AppError::from)?;
+    require_single_segment("plugin id", &id)?;
     empty_or_forward(
         &svc,
         &upstream_map,

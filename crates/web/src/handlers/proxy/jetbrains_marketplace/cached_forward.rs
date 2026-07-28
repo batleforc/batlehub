@@ -15,8 +15,9 @@ use std::sync::Arc;
 
 use actix_web::HttpResponse;
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use chrono::Utc;
+use futures::StreamExt;
 use sha2::{Digest, Sha256};
 
 use batlehub_core::{
@@ -31,6 +32,17 @@ use crate::{error::AppError, UpstreamMap};
 /// noise that would fragment the cache into single-hit entries and bloat it.
 /// Keep this list in sync with the risk note in the implementation plan.
 const VOLATILE_PARAMS: &[&str] = &["uuid", "machineid", "clientid", "_"];
+
+/// TTL applied to forwarded blobs when the registry has no `metadata_ttl`:
+/// without a fallback the first response would be cached without expiry and
+/// never refresh (`brokenPlugins.json` & co. do change upstream over time).
+const DEFAULT_FORWARD_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Ceiling on a forwarded upstream body. These endpoints carry JSON/XML lists
+/// (the largest, `pluginsXMLIds.json`, is a few MiB); every other upstream
+/// path is size-bounded, so this one must be too — the body is buffered whole
+/// and lands base64-expanded (+33%) in the cache.
+const MAX_FORWARD_BODY_BYTES: u64 = 32 * 1024 * 1024;
 
 /// A forwarded (or cache-served) upstream response body.
 pub struct ForwardedBody {
@@ -54,11 +66,13 @@ pub fn forward_cache_key(registry: &str, path: &str, query_string: &str) -> Stri
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
     params.sort();
-    let qs = params
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join("&");
+    // Re-encode the decoded pairs: joining them raw would collapse distinct
+    // requests into one key (`?a=x%26b%3Dy` vs `?a=x&b=y`).
+    let mut ser = form_urlencoded::Serializer::new(String::new());
+    for (k, v) in &params {
+        ser.append_pair(k, v);
+    }
+    let qs = ser.finish();
     format!("fwd:{registry}:{path}?{qs}")
 }
 
@@ -101,9 +115,12 @@ fn body_from_entry(entry: &CacheEntry) -> Option<ForwardedBody> {
     })
 }
 
-async fn forward_ttl(svc: &ProxyService, registry: &str) -> Option<std::time::Duration> {
+async fn forward_ttl(svc: &ProxyService, registry: &str) -> std::time::Duration {
     let hot = svc.hot.read().await;
-    hot.policies.get(registry).and_then(|p| p.metadata_ttl)
+    hot.policies
+        .get(registry)
+        .and_then(|p| p.metadata_ttl)
+        .unwrap_or(DEFAULT_FORWARD_TTL)
 }
 
 async fn serve_stale_or(
@@ -162,10 +179,26 @@ async fn handle_upstream_response(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/json")
         .to_owned();
-    let body = resp
-        .bytes()
-        .await
-        .map_err(|e| AppError::bad_gateway(format!("upstream response read failed: {e}")))?;
+    if let Some(len) = resp.content_length() {
+        if len > MAX_FORWARD_BODY_BYTES {
+            return Err(AppError::bad_gateway(format!(
+                "upstream body of {len} bytes exceeds the {MAX_FORWARD_BODY_BYTES}-byte forward limit"
+            )));
+        }
+    }
+    let mut buf = BytesMut::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk
+            .map_err(|e| AppError::bad_gateway(format!("upstream response read failed: {e}")))?;
+        if buf.len() as u64 + chunk.len() as u64 > MAX_FORWARD_BODY_BYTES {
+            return Err(AppError::bad_gateway(format!(
+                "upstream body exceeds the {MAX_FORWARD_BODY_BYTES}-byte forward limit"
+            )));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    let body = buf.freeze();
 
     let ttl = forward_ttl(svc, registry).await;
     if let Err(e) = svc
@@ -173,7 +206,7 @@ async fn handle_upstream_response(
         .set(
             cache_key,
             entry_from_body(registry, &content_type, &body),
-            ttl,
+            Some(ttl),
         )
         .await
     {

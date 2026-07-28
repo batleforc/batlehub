@@ -163,7 +163,7 @@ Two inputs, in decreasing order of precision:
   goes by backend prefix / tool name and is best-effort. When a lock file is
   present it takes precedence, since it names the same tools more precisely.
 
-```
+```console
 $ batlehub-cli registry suggest --client-env
 +------------------+---------+--------------------------------------+----------------------------+
 | Name             | Type    | Upstream                             | Detected from              |
@@ -211,12 +211,13 @@ generated block names them explicitly rather than leaving them silently absent;
 use `--client-env` and the per-ecosystem config for those.
 
 > The regex keys must reach the file with **doubled** backslashes
-> (`\.`). TOML treats a lone `\` as an invalid escape, and mise responds by
+> (`\\.`). TOML treats a lone `\` as an invalid escape, and mise responds by
 > logging one line and running on with the entire settings block dropped — a
 > silent no-op. The generator handles this; hand-edits should keep it in mind.
 
 `--mise-commented` prefixes every line, including the generator's own header
-comments, so that stripping exactly one `# ` per line yields a valid file. This
+comments, so that stripping exactly one `#` (and its trailing space) per line
+yields a valid file. This
 repo's own `mise.toml` carries such a block as a worked example.
 
 Every generated `generic` block carries the `upstreams` and `path_allow` fields

@@ -69,6 +69,10 @@ stop_server() {
       pgrep -g "$SERVER_PID" >/dev/null 2>&1 || break
       sleep 1
     done
+    if pgrep -g "$SERVER_PID" >/dev/null 2>&1; then
+      echo "WARNING: server process group $SERVER_PID still alive after 60s;" \
+        "llvm coverage profiles may be incomplete" >&2
+    fi
   fi
   SERVER_PID=""
 }

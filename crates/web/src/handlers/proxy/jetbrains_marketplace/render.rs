@@ -355,6 +355,20 @@ mod tests {
     }
 
     #[test]
+    fn attribute_values_are_escaped() {
+        // quick-xml's `push_attribute((&str, &str))` escapes the value (`"`,
+        // `&`, `<` …) — hostile descriptor fields cannot break out of the
+        // generated attributes.
+        let mut e = entry();
+        e.until_build = Some(r#"241.*" injected="x"#.into());
+        e.download_url = Some("https://proxy/dl?a=1&b=<2>".into());
+        let xml = update_plugins_xml(&[e]).unwrap();
+        assert!(xml.contains(r#"until-build="241.*&quot; injected=&quot;x""#));
+        assert!(xml.contains(r#"url="https://proxy/dl?a=1&amp;b=&lt;2&gt;""#));
+        assert!(!xml.contains(r#"injected="x""#));
+    }
+
+    #[test]
     fn plugin_repository_xml_shape() {
         let xml = plugin_repository_xml(&[entry()]).unwrap();
         assert!(xml.contains("<plugin-repository>"));

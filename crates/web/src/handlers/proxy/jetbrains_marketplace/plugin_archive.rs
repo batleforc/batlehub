@@ -3,8 +3,9 @@
 //! A JetBrains plugin ships either as a `.jar` (with `META-INF/plugin.xml`
 //! inside) or as a `.zip` distribution containing `<name>/lib/*.jar`, one of
 //! which carries the descriptor. All reads are bounded (zip-bomb guard): the
-//! compressed payload itself is already capped by `collect_payload`, but a
-//! hostile archive could still declare entries that decompress far larger.
+//! compressed upload itself is capped by the multipart accumulation limit in
+//! `publish.rs`, but a hostile archive could still declare entries that
+//! decompress far larger — hence the per-jar and cumulative ceilings below.
 
 use std::io::Read;
 
@@ -13,8 +14,12 @@ use quick_xml::{events::Event as XmlEvent, Reader as XmlReader};
 use crate::error::AppError;
 
 /// Decompressed ceiling for a nested `lib/*.jar` read while hunting for the
-/// descriptor.
-const MAX_NESTED_JAR_BYTES: u64 = 256 * 1024 * 1024;
+/// descriptor. Descriptor-bearing jars are typically a few MiB; the ceiling
+/// stays generous for fat plugin jars without allowing quarter-GiB blowups.
+const MAX_NESTED_JAR_BYTES: u64 = 128 * 1024 * 1024;
+/// Cumulative decompressed budget across all nested jars of one archive, so a
+/// zip with many large entries cannot force sustained per-request heap churn.
+const MAX_TOTAL_NESTED_BYTES: u64 = 512 * 1024 * 1024;
 /// Decompressed ceiling for `META-INF/plugin.xml` itself.
 const MAX_DESCRIPTOR_BYTES: u64 = 10 * 1024 * 1024;
 
@@ -45,6 +50,7 @@ pub fn extract_plugin_descriptor(bytes: &[u8]) -> Result<PluginDescriptor, AppEr
 
     // Case 2: zip distribution — scan nested lib/*.jar entries for the
     // descriptor. Bounded read per jar; a jar without the descriptor is skipped.
+    let mut total_nested: u64 = 0;
     for i in 0..archive.len() {
         let is_lib_jar = {
             let entry = archive
@@ -67,6 +73,12 @@ pub fn extract_plugin_descriptor(bytes: &[u8]) -> Result<PluginDescriptor, AppEr
         if jar_bytes.len() as u64 > MAX_NESTED_JAR_BYTES {
             return Err(AppError::unprocessable(format!(
                 "nested jar exceeds the {MAX_NESTED_JAR_BYTES}-byte decompressed limit"
+            )));
+        }
+        total_nested += jar_bytes.len() as u64;
+        if total_nested > MAX_TOTAL_NESTED_BYTES {
+            return Err(AppError::unprocessable(format!(
+                "nested jars exceed the {MAX_TOTAL_NESTED_BYTES}-byte cumulative decompressed limit"
             )));
         }
         let Ok(mut jar) = zip::ZipArchive::new(std::io::Cursor::new(jar_bytes.as_slice())) else {

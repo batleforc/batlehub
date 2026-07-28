@@ -10,14 +10,15 @@ use bytes::BytesMut;
 use futures::StreamExt;
 use sha2::{Digest, Sha256};
 
-use batlehub_core::services::{
-    validate_package_name, validate_path_safe, LocalRegistryService, PublishRequest,
+use batlehub_core::{
+    error::CoreError,
+    services::{validate_package_name, validate_path_safe, LocalRegistryService, PublishRequest},
 };
 
 use super::plugin_archive::extract_plugin_descriptor;
 use super::require_jbm;
 use crate::handlers::proxy::common::{
-    extract_signature_headers, publish_and_respond, require_local_mode,
+    extract_signature_headers, publish_and_respond, require_local_mode, MAX_UPLOAD_BYTES,
 };
 use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
@@ -66,6 +67,10 @@ pub async fn jbm_upload(
     let mut file: Option<bytes::Bytes> = None;
     let mut file_name: Option<String> = None;
 
+    // Raw `Multipart` is not covered by `PayloadConfig`/`MultipartFormConfig`,
+    // so bound the accumulation ourselves — cumulative across all fields, same
+    // ceiling as `collect_payload` on the other publish paths.
+    let mut total_bytes: u64 = 0;
     while let Some(field_result) = multipart.next().await {
         let mut field =
             field_result.map_err(|e| AppError::bad_request(format!("multipart error: {e}")))?;
@@ -78,6 +83,12 @@ pub async fn jbm_upload(
         let mut buf = BytesMut::new();
         while let Some(chunk) = field.next().await {
             let chunk = chunk.map_err(|e| AppError::bad_request(format!("chunk error: {e}")))?;
+            total_bytes += chunk.len() as u64;
+            if total_bytes > MAX_UPLOAD_BYTES {
+                return Err(AppError::from(CoreError::PayloadTooLarge(format!(
+                    "upload exceeds the {MAX_UPLOAD_BYTES}-byte limit"
+                ))));
+            }
             buf.extend_from_slice(&chunk);
         }
         let bytes = buf.freeze();
@@ -129,6 +140,12 @@ pub async fn jbm_upload(
     if !channel.is_empty() {
         validate_path_safe("channel", &channel).map_err(AppError::from)?;
     }
+    // Build bounds are dotted build numbers with an optional product prefix
+    // (`233.0`, `241.*`, `IU-241.123`). Constrain them at the source — the XML
+    // renderer escapes attribute values anyway, but junk here would only
+    // surface later as confusing compatibility behaviour in IDEs.
+    validate_build_bound("since-build", descriptor.since_build.as_deref())?;
+    validate_build_bound("until-build", descriptor.until_build.as_deref())?;
 
     let file_name = file_name.unwrap_or_else(|| format!("{xml_id}-{version}.zip"));
     let checksum = hex::encode(Sha256::digest(&file));
@@ -179,4 +196,22 @@ pub async fn jbm_upload(
         response_body,
     )
     .await
+}
+
+/// Accept only plausible `since-build`/`until-build` values: dot-separated
+/// alphanumerics, `*`, and `-` (product prefixes like `IU-`), length-capped.
+fn validate_build_bound(kind: &str, value: Option<&str>) -> Result<(), AppError> {
+    let Some(value) = value else { return Ok(()) };
+    let plausible = !value.is_empty()
+        && value.len() <= 64
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '*' | '-'));
+    if plausible {
+        Ok(())
+    } else {
+        Err(AppError::unprocessable(format!(
+            "descriptor {kind} '{value}' is not a valid build number"
+        )))
+    }
 }

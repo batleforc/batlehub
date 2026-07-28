@@ -106,8 +106,11 @@ pub async fn jbm_plugins_xml_ids(
         .await
         {
             if let Ok(upstream_ids) = serde_json::from_slice::<Vec<String>>(&fwd.body) {
+                // Upstream carries tens of thousands of ids — a Vec::contains
+                // scan per id would make this union quadratic.
+                let mut seen: std::collections::HashSet<String> = ids.iter().cloned().collect();
                 for id in upstream_ids {
-                    if !ids.contains(&id) {
+                    if seen.insert(id.clone()) {
                         ids.push(id);
                     }
                 }
@@ -333,11 +336,7 @@ pub async fn jbm_file_download(
     validate_package_name(&xml_id).map_err(AppError::from)?;
     validate_path_safe("version", &version).map_err(AppError::from)?;
     validate_path_safe("file name", &file_name).map_err(AppError::from)?;
-    if file_name.contains('/') {
-        return Err(AppError::bad_request(
-            "file name must be a single path segment".to_owned(),
-        ));
-    }
+    super::require_single_segment("file name", &file_name)?;
 
     let artifact = format!("file/{file_name}");
     serve_local_or_proxy_artifact(
@@ -365,8 +364,13 @@ pub async fn jbm_file_download(
 /// no filename in their path, and IntelliJ's `PluginDownloader` rejects the
 /// response with "Invalid filename returned by a server" unless this header
 /// provides one.
+///
+/// `xml_id`/`version` only went through `validate_path_safe`, which still
+/// admits `"` and `/` — sanitise so the quoted-string stays well-formed and
+/// the name is a single path segment.
 fn plugin_attachment_value(xml_id: &str, version: &str) -> Result<header::HeaderValue, AppError> {
-    header::HeaderValue::from_str(&format!("attachment; filename=\"{xml_id}-{version}.zip\""))
+    let file_name = crate::handlers::sanitize_filename(&format!("{xml_id}-{version}.zip"));
+    header::HeaderValue::from_str(&format!("attachment; filename=\"{file_name}\""))
         .map_err(|e| AppError::bad_request(format!("invalid plugin file name: {e}")))
 }
 
@@ -561,4 +565,29 @@ pub async fn jbm_plugin_manager(
         plugin_attachment_value(&query.id, &version)?,
     );
     Ok(resp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plugin_attachment_value;
+
+    #[test]
+    fn attachment_value_names_the_archive() {
+        let v = plugin_attachment_value("org.demo.a", "1.0.0").unwrap();
+        assert_eq!(
+            v.to_str().unwrap(),
+            r#"attachment; filename="org.demo.a-1.0.0.zip""#
+        );
+    }
+
+    #[test]
+    fn attachment_value_sanitizes_quotes_slashes_and_non_ascii() {
+        // `validate_path_safe` admits all three of these; the quoted-string
+        // and the single-segment filename must survive anyway.
+        let v = plugin_attachment_value(r#"org."evil"#, "1/0é").unwrap();
+        assert_eq!(
+            v.to_str().unwrap(),
+            r#"attachment; filename="org._evil-1_0_.zip""#
+        );
+    }
 }

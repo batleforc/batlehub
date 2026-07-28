@@ -42,6 +42,18 @@ pub(crate) fn require_jbm(registry: &str, map: &RegistryMap) -> Result<(), AppEr
     super::common::require_registry_type(registry, REGISTRY_TYPE, map)
 }
 
+/// Reject path parameters that would span segments when interpolated into a
+/// forwarded upstream path: actix percent-decodes `%2F` before extraction, and
+/// `validate_package_name` deliberately admits interior `/`.
+pub(crate) fn require_single_segment(kind: &str, value: &str) -> Result<(), AppError> {
+    if value.contains('/') {
+        return Err(AppError::bad_request(format!(
+            "{kind} must be a single path segment"
+        )));
+    }
+    Ok(())
+}
+
 /// Absolute base URL of this proxy as seen by the caller, for self-referencing
 /// download URLs in generated XML/JSON (inline `connection_info` pattern, cf.
 /// the PyPI simple index).

@@ -82,13 +82,18 @@ fn parse_plugin_list_empty_repository() {
 }
 
 #[test]
-fn parse_plugin_list_malformed_is_error() {
+fn parse_plugin_list_truncated_drops_the_unclosed_entry() {
+    // quick-xml treats EOF with unclosed elements as end-of-input, not an
+    // error; an `<idea-plugin>` whose `End` never arrives is never pushed, so
+    // a truncated document yields an empty list (which the client maps to
+    // NotFound) rather than a half-parsed entry.
+    let entries = parse_plugin_list(b"<plugin-repository><idea-plugin><id>x</id>").unwrap();
+    assert!(entries.is_empty());
+    // Mismatched tags, by contrast, are a hard parse error.
     assert!(matches!(
-        parse_plugin_list(b"<plugin-repository><idea-plugin><id>x</id>"),
-        // Unclosed elements surface as a Registry parse error.
-        Err(CoreError::Registry(_)) | Ok(_)
+        parse_plugin_list(b"<a></b>"),
+        Err(CoreError::Registry(_))
     ));
-    assert!(parse_plugin_list(b"<a></b>").is_err());
 }
 
 // ── resolve_metadata ──────────────────────────────────────────────────────────

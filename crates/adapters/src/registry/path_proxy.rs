@@ -82,6 +82,11 @@ impl PathProxyRegistryClient {
     /// operator sees "your allowlist blocked this" instead of chasing a phantom
     /// upstream 404.
     fn check_path_allowed(&self, path: &str) -> Result<(), CoreError> {
+        // Traversal segments are rejected regardless of the allowlist: the
+        // proxy read funnel validates coordinates too, but paths also arrive
+        // via the admin warming flow, and `../` must never reach the
+        // `{base_url}/{path}` join even when the allowlist is permissive.
+        batlehub_core::services::validate_path_safe("upstream path", path)?;
         if self.path_allow.is_empty() || self.path_allow.iter().any(|p| p.matches(path)) {
             return Ok(());
         }
@@ -226,9 +231,21 @@ mod tests {
     #[test]
     fn path_allow_denies_non_matching_path() {
         let c = generic_with_allow(&["v*/node-v*-linux-x64.tar.gz"]);
-        match c.check_path_allowed("../../etc/passwd") {
+        match c.check_path_allowed("v24.18.0/rogue.bin") {
             Err(CoreError::AccessDenied(_)) => {}
             other => panic!("expected AccessDenied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn traversal_segments_are_rejected_even_with_permissive_allowlist() {
+        // The admin warming flow forwards raw paths — `../` must be rejected
+        // before the allowlist, including the `**` allow-everything opt-out.
+        for c in [generic_with_allow(&["**"]), generic_with_allow(&[])] {
+            match c.check_path_allowed("../../etc/passwd") {
+                Err(CoreError::InvalidInput(_)) => {}
+                other => panic!("expected InvalidInput, got {other:?}"),
+            }
         }
     }
 
