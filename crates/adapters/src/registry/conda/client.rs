@@ -264,10 +264,18 @@ fn parse_conda_format(data: &[u8]) -> Result<CondaPackageInfo, CoreError> {
         .by_name(&info_entry_name)
         .map_err(|e| CoreError::Registry(format!("conda: open {info_entry_name}: {e}")))?;
 
+    // The `.conda` archive is publisher-supplied; bound the compressed info
+    // member so a zip bomb cannot OOM the process before we even decompress it.
+    const MAX_INFO_COMPRESSED: u64 = 32 * 1024 * 1024; // 32 MiB
     let mut zst_bytes = Vec::new();
-    entry
+    Read::take(&mut entry, MAX_INFO_COMPRESSED)
         .read_to_end(&mut zst_bytes)
         .map_err(|e| CoreError::Registry(format!("conda: read {info_entry_name}: {e}")))?;
+    if zst_bytes.len() as u64 >= MAX_INFO_COMPRESSED {
+        return Err(CoreError::Registry(format!(
+            "conda: {info_entry_name} exceeds the maximum allowed size"
+        )));
+    }
 
     let decoder = zstd::Decoder::new(zst_bytes.as_slice())
         .map_err(|e| CoreError::Registry(format!("conda: zstd decoder: {e}")))?;
@@ -285,6 +293,11 @@ fn find_in_tar<R: std::io::Read>(
     target: &str,
 ) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
+    // `archive` wraps a decompressor (bzip2 / zstd) over publisher-supplied
+    // bytes, so the extracted entry could be a decompression bomb. Cap the
+    // read so a small archive expanding to many GB cannot OOM the process;
+    // the entries we look for (`info/index.json`) are tiny in practice.
+    const MAX_ENTRY_BYTES: u64 = 32 * 1024 * 1024; // 32 MiB
     for entry in archive.entries()? {
         let mut entry = entry?;
         let matches = entry
@@ -293,7 +306,13 @@ fn find_in_tar<R: std::io::Read>(
             .unwrap_or(false);
         if matches {
             let mut buf = Vec::new();
-            entry.read_to_end(&mut buf)?;
+            Read::take(&mut entry, MAX_ENTRY_BYTES).read_to_end(&mut buf)?;
+            if buf.len() as u64 >= MAX_ENTRY_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{target} exceeds the maximum allowed size"),
+                ));
+            }
             return Ok(buf);
         }
     }

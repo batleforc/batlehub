@@ -267,6 +267,20 @@ pub async fn serve_local_or_proxy_artifact(
     let mode = mode_map.get(registry);
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        // Enforce the registry's RBAC (`[registries.rbac]`) before serving from
+        // local storage. `get_artifact` only checks per-package Visibility and
+        // pre-release gating — it never runs the registry rule chain, which is
+        // only evaluated on the proxy fall-through. Without this, a local hit
+        // would bypass a registry that denies e.g. anonymous `releases:read`
+        // while its packages keep the default Public visibility. Mirrors the
+        // deb/rpm `repo_get` guard so local and proxy reads stay consistent.
+        svc.authorize_read(
+            &PackageId::new(registry, name, version),
+            &identity.0,
+            opts.resource_type,
+        )
+        .await
+        .map_err(AppError::from)?;
         if opts.check_prerelease {
             local_svc
                 .check_prerelease_access(registry, version, &identity)
@@ -328,6 +342,13 @@ where
 {
     let mode = mode_map.get(registry);
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        // Enforce the registry's RBAC before serving metadata from local storage:
+        // the local fetch only checks per-package Visibility, not the registry
+        // rule chain (which the proxy fall-through would run). See the artifact
+        // helper above for the full rationale.
+        svc.authorize_read(&pkg, &identity.0, resource_type)
+            .await
+            .map_err(AppError::from)?;
         match local_fetch(identity.0.clone()).await {
             Ok(x) => return Ok(HttpResponse::Ok().content_type("application/json").json(x)),
             Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}

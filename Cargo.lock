@@ -1065,6 +1065,7 @@ dependencies = [
  "anyhow",
  "batlehub-core",
  "glob",
+ "regex",
  "serde",
  "thiserror 2.0.19",
  "toml",

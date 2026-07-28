@@ -311,7 +311,7 @@ impl RegistryClient for PypiRegistryClient {
         tracing::debug!(url = %file.url, "fetching PyPI artifact");
 
         let dl_resp = self
-            .get(&file.url)
+            .get_download(&file.url)
             .send()
             .await
             .map_err(to_registry_error)?;

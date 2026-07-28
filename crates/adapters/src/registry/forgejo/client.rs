@@ -3,8 +3,8 @@ use chrono::DateTime;
 use futures::TryStreamExt;
 
 use super::super::http_client::{
-    apply_upstream_tls, basic_auth_get, to_registry_error, upstream_auth_headers,
-    UpstreamHttpOptions,
+    apply_upstream_tls, basic_auth_get, ensure_same_origin, to_registry_error,
+    upstream_auth_headers, UpstreamHttpOptions,
 };
 use super::models::{FjAsset, FjRelease};
 use batlehub_core::{
@@ -277,6 +277,15 @@ impl RegistryClient for ForgejoRegistryClient {
                 ));
             }
         };
+
+        // A release asset's `browser_download_url` comes from the release JSON and
+        // Forgejo/Gitea support *external-URL* attachments, so it can point at an
+        // arbitrary host. Our client carries the operator's auth as a default
+        // header (not stripped cross-host by reqwest), so fetching off-instance
+        // would leak that credential and enable SSRF. Require the resolved URL to
+        // share the instance origin before fetching — the `pkgpath/` and static
+        // selectors are built from `base_url` and satisfy this trivially.
+        ensure_same_origin(&download_url, &self.base_url)?;
 
         tracing::debug!(url = %download_url, "fetching Forgejo artifact");
 

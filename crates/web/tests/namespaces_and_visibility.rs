@@ -143,9 +143,12 @@ async fn make_ns_cargo_app_with_backend(
         FixedRegistry::new("cargo") as Arc<dyn RegistryClient>,
     )]
     .into();
+    // Grant anonymous `source:read` so the registry RBAC allows cargo `download`
+    // (which requires `source:read`); these tests isolate the per-package
+    // *visibility* axis, which is enforced independently inside the local read.
     let policies: HashMap<String, Arc<RegistryPolicy>> = [(
         "local-cargo".to_owned(),
-        Arc::new(rbac_policy(repo_dyn.clone())),
+        Arc::new(rbac_policy_anon_source(repo_dyn.clone())),
     )]
     .into();
 

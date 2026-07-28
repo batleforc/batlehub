@@ -3,8 +3,8 @@ use chrono::DateTime;
 use futures::TryStreamExt;
 
 use super::super::http_client::{
-    apply_upstream_tls, basic_auth_get, percent_encode, to_registry_error, upstream_auth_headers,
-    UpstreamHttpOptions,
+    apply_upstream_tls, basic_auth_get, ensure_same_origin, percent_encode, to_registry_error,
+    upstream_auth_headers, UpstreamHttpOptions,
 };
 use super::models::{GlLink, GlRelease};
 use batlehub_core::{
@@ -306,6 +306,18 @@ impl RegistryClient for GitlabRegistryClient {
                 ));
             }
         };
+
+        // A release "link" asset URL comes straight from the release JSON
+        // (`direct_asset_url`/`url`), i.e. it is set by the project owner and can
+        // point anywhere. Our client carries the operator's `PRIVATE-TOKEN` as a
+        // default header (which reqwest does NOT strip on cross-host requests),
+        // so fetching an off-instance URL would exfiltrate that credential and
+        // enable SSRF (e.g. `http://169.254.169.254/…`). Require the resolved URL
+        // to share the instance origin before fetching — the same guard npm and
+        // OpenVSX already apply to upstream-supplied download URLs. The other
+        // selectors (source archive, raw file, package passthrough) are built
+        // from `api_base_url`, so they satisfy this trivially.
+        ensure_same_origin(&download_url, &self.root)?;
 
         tracing::debug!(url = %download_url, "fetching GitLab artifact");
 

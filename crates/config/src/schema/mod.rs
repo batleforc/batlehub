@@ -146,9 +146,51 @@ impl AppConfig {
                 );
             }
         }
+        // The set of storage backend names a registry's `storage` field may
+        // reference. In single-backend mode only the implicit "default" exists;
+        // in multi mode it is the declared `[[storage.backends]]` names. A
+        // registry pointing at an undeclared backend is rejected here rather
+        // than silently falling back to the default backend at runtime (which
+        // would write artifacts to the wrong place with no warning).
+        let known_backends: std::collections::HashSet<&str> = match &self.storage {
+            StoragesConfig::Single(_) => std::iter::once("default").collect(),
+            StoragesConfig::Multi(multi) => {
+                multi.backends.iter().map(|b| b.name.as_str()).collect()
+            }
+        };
+        // Reject duplicate registry names: every downstream map (clients,
+        // policies, rules, rate-limits, storage assignments) is keyed by name,
+        // so a duplicate would silently shadow the earlier registry's config
+        // (last-write-wins) with no error or log.
+        let mut seen_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for registry in &self.registries {
             if registry.name.is_empty() {
                 bail!("registry is missing a 'name' field");
+            }
+            if !seen_names.insert(registry.name.as_str()) {
+                bail!(
+                    "duplicate registry name '{}': registry names must be unique",
+                    registry.name
+                );
+            }
+            if let Some(backend) = &registry.storage {
+                if !known_backends.contains(backend.as_str()) {
+                    match &self.storage {
+                        StoragesConfig::Single(_) => bail!(
+                            "registry '{}': 'storage = \"{}\"' requires a multi-backend \
+                             [[storage.backends]] configuration; single-backend storage has no \
+                             named backends to select",
+                            registry.name,
+                            backend
+                        ),
+                        StoragesConfig::Multi(_) => bail!(
+                            "registry '{}': 'storage = \"{}\"' does not match any backend name in \
+                             [[storage.backends]]",
+                            registry.name,
+                            backend
+                        ),
+                    }
+                }
             }
             let kind: batlehub_core::entities::RegistryKind =
                 registry.registry_type.parse().map_err(anyhow::Error::msg)?;
@@ -211,6 +253,19 @@ impl AppConfig {
                     )
                 })?;
             }
+            // `version_pattern` is a publish-time restriction (a security
+            // control), so an uncompilable regex must fail the config load
+            // rather than silently degrade to "allow every version" (fail-open).
+            if let Some(versioning) = &registry.versioning {
+                if let Some(pattern) = &versioning.version_pattern {
+                    regex::Regex::new(pattern).map_err(|e| {
+                        anyhow::anyhow!(
+                            "registry '{}': invalid version_pattern '{pattern}': {e}",
+                            registry.name
+                        )
+                    })?;
+                }
+            }
         }
         Ok(())
     }
@@ -245,11 +300,24 @@ impl AppConfig {
     pub fn apply_env_overrides(&mut self) {
         let env = |key: &str| std::env::var(key).ok();
 
+        fn parse_env_or_warn<T: std::str::FromStr>(key: &str, v: &str) -> Option<T> {
+            match v.parse() {
+                Ok(parsed) => Some(parsed),
+                Err(_) => {
+                    eprintln!(
+                        "warning: environment override {key} has invalid value {v:?}; ignoring it \
+                         and keeping the configured value"
+                    );
+                    None
+                }
+            }
+        }
+
         if let Some(v) = env("PROXY_CACHE__SERVER__HOST") {
             self.server.host = v;
         }
         if let Some(v) = env("PROXY_CACHE__SERVER__PORT") {
-            if let Ok(p) = v.parse() {
+            if let Some(p) = parse_env_or_warn("PROXY_CACHE__SERVER__PORT", &v) {
                 self.server.port = p;
             }
         }
@@ -260,17 +328,17 @@ impl AppConfig {
             self.database.url = v;
         }
         if let Some(v) = env("PROXY_CACHE__DATABASE__MAX_CONNECTIONS") {
-            if let Ok(n) = v.parse() {
+            if let Some(n) = parse_env_or_warn("PROXY_CACHE__DATABASE__MAX_CONNECTIONS", &v) {
                 self.database.max_connections = n;
             }
         }
         if let Some(v) = env("PROXY_CACHE__DATABASE__MIN_CONNECTIONS") {
-            if let Ok(n) = v.parse() {
+            if let Some(n) = parse_env_or_warn("PROXY_CACHE__DATABASE__MIN_CONNECTIONS", &v) {
                 self.database.min_connections = n;
             }
         }
         if let Some(v) = env("PROXY_CACHE__DATABASE__ACQUIRE_TIMEOUT_SECS") {
-            if let Ok(n) = v.parse() {
+            if let Some(n) = parse_env_or_warn("PROXY_CACHE__DATABASE__ACQUIRE_TIMEOUT_SECS", &v) {
                 self.database.acquire_timeout_secs = n;
             }
         }

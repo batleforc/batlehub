@@ -249,6 +249,8 @@ async fn main() -> Result<()> {
     if let Some(vuln_cfg) = config.vulnerability_scan.as_ref().filter(|v| v.enabled) {
         let osv_client = reqwest::Client::builder()
             .user_agent("batlehub/0.1")
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(60))
             .build()
             .context("building OSV HTTP client")?;
         let scanner = Arc::new(OsvScanner::new(osv_client, vuln_cfg.osv_api_url.clone()));

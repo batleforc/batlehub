@@ -258,7 +258,7 @@ impl EvictionService {
     /// storage entries that have no corresponding meta row (orphaned blobs from
     /// crashed writes or manual deletions from the DB).
     pub async fn run_coherence_check(&self) -> Result<CoherenceReport, CoreError> {
-        // Artifact keys are stored as "artifact:{registry}/{name}:{version}".
+        // Artifact keys are stored as "artifact:{registry}/{name}/{version}".
         // We need the prefix that matches all artifact keys for this registry.
         let key_prefix = if self.config.registry.is_empty() {
             "artifact:".to_owned()
@@ -276,6 +276,22 @@ impl EvictionService {
         let mut orphaned = 0usize;
         for key in &storage_keys {
             if !meta_keys.contains(key) {
+                // `meta_keys` is a snapshot taken before the scan. `fetch_and_cache`
+                // writes the blob (`store_streaming`) and records its meta row in
+                // two steps, so a blob cached *after* the snapshot but *before* we
+                // reach it here would look orphaned. Re-check the meta row with a
+                // fresh point lookup right before deleting, so a concurrently
+                // completed cache write is not destroyed by the coherence sweep.
+                match self.artifact_meta.get_artifact_checksum(key).await {
+                    Ok(Some(_)) => continue, // meta row now exists — not orphaned
+                    Ok(None) => {}
+                    Err(e) => {
+                        // On lookup error, do NOT delete: fail safe toward keeping
+                        // data rather than deleting a possibly-live blob.
+                        tracing::warn!(key, error = %e, "coherence: meta re-check failed, skipping delete");
+                        continue;
+                    }
+                }
                 tracing::warn!(key, "coherence: orphaned storage object, deleting");
                 if let Err(e) = self.storage.delete(key).await {
                     tracing::warn!(key, error = %e, "coherence: failed to delete orphaned object");

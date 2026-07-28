@@ -52,6 +52,15 @@ pub async fn nuget_flat_versions(
     let mode = mode_map.get(&registry);
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        // Enforce registry RBAC before the local version listing (the proxy
+        // fall-through runs the rule chain; a local hit otherwise bypasses it).
+        svc.authorize_read(
+            &PackageId::new(&registry, &id, "__index__"),
+            &identity.0,
+            batlehub_core::rules::resource_type::RELEASES_READ,
+        )
+        .await
+        .map_err(AppError::from)?;
         match local_svc
             .get_nuget_versions(&registry, &id, &identity)
             .await
@@ -124,6 +133,16 @@ pub async fn nuget_flat_download(
     let mode = mode_map.get(&registry);
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        // Enforce registry RBAC before the direct local storage read: a local hit
+        // otherwise bypasses the `[registries.rbac]` rule chain that the proxy
+        // fall-through runs via `ProxyService::handle`.
+        svc.authorize_read(
+            &PackageId::new(&registry, &id, &version),
+            &identity.0,
+            batlehub_core::rules::resource_type::RELEASES_READ,
+        )
+        .await
+        .map_err(AppError::from)?;
         local_svc
             .check_prerelease_access(&registry, &version, &identity)
             .await

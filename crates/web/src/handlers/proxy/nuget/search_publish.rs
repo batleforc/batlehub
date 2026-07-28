@@ -14,7 +14,7 @@ use batlehub_core::{
 
 use super::super::common::{
     dispatch_notification, extract_signature_headers, publish_and_respond, require_local_mode,
-    require_registry_type,
+    require_registry_type, MAX_UPLOAD_BYTES,
 };
 use super::nuspec::{extract_nuspec_from_nupkg, parse_nuspec};
 use crate::{
@@ -146,6 +146,10 @@ pub async fn nuget_publish(
     // dotnet nuget push and nuget.exe always send multipart/form-data.
     // Accept any field that looks like the package file.
     let mut nupkg_bytes_opt: Option<bytes::Bytes> = None;
+    // Raw `Multipart` is not covered by `PayloadConfig`, so bound the cumulative
+    // accumulation ourselves — otherwise an unauthenticated client could stream
+    // an unbounded body into memory (OOM). Same ceiling as `collect_payload`.
+    let mut total_bytes: u64 = 0;
     while let Some(field_result) = multipart.next().await {
         let mut field =
             field_result.map_err(|e| AppError::bad_request(format!("multipart error: {e}")))?;
@@ -157,6 +161,14 @@ pub async fn nuget_publish(
         let mut buf = BytesMut::new();
         while let Some(chunk) = field.next().await {
             let chunk = chunk.map_err(|e| AppError::bad_request(format!("chunk error: {e}")))?;
+            total_bytes += chunk.len() as u64;
+            if total_bytes > MAX_UPLOAD_BYTES {
+                return Err(AppError::from(
+                    batlehub_core::error::CoreError::PayloadTooLarge(format!(
+                        "upload exceeds the {MAX_UPLOAD_BYTES}-byte limit"
+                    )),
+                ));
+            }
             buf.extend_from_slice(&chunk);
         }
         // Accept "package" field or the first non-empty field.

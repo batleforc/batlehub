@@ -332,6 +332,31 @@ async fn publish_rejects_path_traversal_in_version() {
     );
 }
 
+#[tokio::test]
+async fn publish_rejects_slash_in_version() {
+    // A `/` in the version (no `..`) would collapse two distinct coordinates onto
+    // one storage key (name `pkg` + version `sub/1.0.0` == name `pkg/sub` +
+    // version `1.0.0`), enabling cross-package overwrite. Must be rejected.
+    let s = svc(InMemBackend::arc(), None);
+    let req = PublishRequest {
+        unlisted: false,
+        registry: "npm".into(),
+        name: "pkg".into(),
+        version: "sub/1.0.0".into(),
+        artifact: Bytes::from_static(b"payload"),
+        checksum: "abc".into(),
+        index_metadata: serde_json::json!({}),
+        publisher: user(),
+        signature_bytes: None,
+        signature_type: None,
+    };
+    let err = s.publish(req).await.unwrap_err();
+    assert!(
+        matches!(err, CoreError::InvalidInput(_)),
+        "version containing '/' must be rejected, got {err:?}"
+    );
+}
+
 // ── yank / unyank role checks ─────────────────────────────────────────────
 
 #[tokio::test]

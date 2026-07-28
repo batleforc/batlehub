@@ -169,6 +169,7 @@ pub async fn terraform_module_download(
 pub async fn terraform_module_artifact(
     path: web::Path<(String, String, String, String, String)>,
     identity: AuthIdentity,
+    svc: web::Data<Arc<ProxyService>>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
@@ -177,12 +178,22 @@ pub async fn terraform_module_artifact(
     require_registry_type(&registry, "terraform", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
+    let pkg_name = format!("modules/{namespace}/{name}/{provider}");
+    // Terraform is local-only (no proxy fall-through), so the registry rule chain
+    // would otherwise never run for these reads. Enforce `[registries.rbac]` here.
+    svc.authorize_read(
+        &batlehub_core::entities::PackageId::new(&registry, &pkg_name, &version),
+        &identity.0,
+        batlehub_core::rules::resource_type::RELEASES_READ,
+    )
+    .await
+    .map_err(AppError::from)?;
+
     local_svc
         .check_prerelease_access(&registry, &version, &identity)
         .await
         .map_err(AppError::from)?;
 
-    let pkg_name = format!("modules/{namespace}/{name}/{provider}");
     let bytes = local_svc
         .get_artifact(&registry, &pkg_name, &version, &identity)
         .await

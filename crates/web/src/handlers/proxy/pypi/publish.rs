@@ -10,6 +10,7 @@ use batlehub_core::services::{LocalRegistryService, PublishRequest};
 
 use crate::handlers::proxy::common::{
     extract_signature_headers, publish_and_respond, require_local_mode, require_registry_type,
+    MAX_UPLOAD_BYTES,
 };
 use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
@@ -57,6 +58,10 @@ pub async fn pypi_publish(
     let mut content: Option<bytes::Bytes> = None;
     let mut filename: Option<String> = None;
 
+    // Raw `Multipart` is not covered by `PayloadConfig`, so bound the cumulative
+    // accumulation ourselves to prevent an unauthenticated OOM. Same ceiling as
+    // `collect_payload`.
+    let mut total_bytes: u64 = 0;
     while let Some(field_result) = multipart.next().await {
         let mut field =
             field_result.map_err(|e| AppError::bad_request(format!("multipart error: {e}")))?;
@@ -70,6 +75,14 @@ pub async fn pypi_publish(
         let mut buf = BytesMut::new();
         while let Some(chunk) = field.next().await {
             let chunk = chunk.map_err(|e| AppError::bad_request(format!("chunk error: {e}")))?;
+            total_bytes += chunk.len() as u64;
+            if total_bytes > MAX_UPLOAD_BYTES {
+                return Err(AppError::from(
+                    batlehub_core::error::CoreError::PayloadTooLarge(format!(
+                        "upload exceeds the {MAX_UPLOAD_BYTES}-byte limit"
+                    )),
+                ));
+            }
             buf.extend_from_slice(&chunk);
         }
         let bytes = buf.freeze();

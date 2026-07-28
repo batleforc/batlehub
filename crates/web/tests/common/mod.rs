@@ -190,6 +190,34 @@ pub fn rbac_policy(repo: Arc<dyn PackageRepository>) -> RegistryPolicy {
         ],
     }
 }
+
+/// Like [`rbac_policy`] but also grants anonymous `source:read`. Use this for
+/// tests that isolate the per-package *visibility* axis (public/internal/team)
+/// on registries whose reads require `source:read` (e.g. cargo `download`): the
+/// registry RBAC then allows the read so visibility is the only gate under test.
+pub fn rbac_policy_anon_source(repo: Arc<dyn PackageRepository>) -> RegistryPolicy {
+    let perms = HashMap::from([
+        (
+            Role::Anonymous,
+            vec!["releases:read".to_owned(), "source:read".to_owned()],
+        ),
+        (
+            Role::User,
+            vec!["releases:read".to_owned(), "source:read".to_owned()],
+        ),
+        (Role::Admin, vec!["*".to_owned()]),
+    ]);
+    RegistryPolicy {
+        metadata_ttl: Some(Duration::from_secs(300)),
+        firewall_only: false,
+        serve_stale_metadata: false,
+        artifact_ttl: None,
+        rules: vec![
+            Box::new(RbacRule::new(perms)),
+            Box::new(BlockListRule::new(repo)),
+        ],
+    }
+}
 pub struct ConfigureAppDefaults {
     pub upstream_map: batlehub_web::UpstreamMap,
     pub proxy_metrics: Arc<ProxyMetrics>,

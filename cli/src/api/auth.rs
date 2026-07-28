@@ -98,6 +98,8 @@ pub async fn get_oidc_login_url(
 ) -> Result<String> {
     let client = reqwest::ClientBuilder::new()
         .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(60))
         .build()?;
 
     let mut url = format!(
@@ -149,7 +151,10 @@ pub async fn oidc_refresh(
         expires_in: Option<u64>,
     }
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(60))
+        .build()?;
     let resp = client
         .post(format!("{base_url}/api/v1/auth/oidc/refresh"))
         .json(&Req {

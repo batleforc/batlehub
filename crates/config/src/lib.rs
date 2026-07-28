@@ -283,6 +283,71 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_registry_names_return_validation_error() {
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [[registries]]
+        type = "npm"
+        name = "dup"
+
+        [[registries]]
+        type = "cargo"
+        name = "dup"
+        "#
+        );
+        let config: AppConfig = toml::from_str(&toml).unwrap();
+        let err = config
+            .validate()
+            .expect_err("duplicate registry names should fail validation");
+        assert!(err.to_string().contains("duplicate registry name"));
+    }
+
+    #[test]
+    fn invalid_version_pattern_returns_validation_error() {
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [[registries]]
+        type = "npm"
+        name = "npm-local"
+        mode = "local"
+
+        [registries.versioning]
+        version_pattern = "[unterminated"
+        "#
+        );
+        let config: AppConfig = toml::from_str(&toml).unwrap();
+        let err = config
+            .validate()
+            .expect_err("invalid version_pattern regex should fail validation");
+        assert!(err.to_string().contains("version_pattern"));
+    }
+
+    #[test]
+    fn registry_storage_referencing_unknown_backend_returns_validation_error() {
+        // Single-backend storage has no named backends, so a per-registry
+        // `storage` reference must be rejected rather than silently ignored.
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [[registries]]
+        type = "npm"
+        name = "npm-local"
+        storage = "does-not-exist"
+        "#
+        );
+        let config: AppConfig = toml::from_str(&toml).unwrap();
+        let err = config
+            .validate()
+            .expect_err("unknown storage backend reference should fail validation");
+        assert!(err.to_string().contains("storage"));
+    }
+
+    #[test]
     fn composer_local_mode_passes_validation() {
         let toml = format!(
             "{}\n{}",

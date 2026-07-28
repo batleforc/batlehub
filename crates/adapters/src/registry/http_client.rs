@@ -36,6 +36,17 @@ pub fn apply_upstream_tls(
     mut builder: reqwest::ClientBuilder,
     opts: &UpstreamHttpOptions,
 ) -> anyhow::Result<reqwest::ClientBuilder> {
+    // reqwest has NO default timeouts, so a slow or unresponsive upstream would
+    // otherwise pin an actix worker and a pooled connection indefinitely — a
+    // resource-exhaustion vector on the proxy's hot path. We deliberately avoid
+    // a total `.timeout()` here: this client also streams large artifacts, and a
+    // whole-request cap would abort legitimate long transfers. Instead we bound
+    // connection establishment and per-read inactivity, which kills a stalled
+    // upstream without capping how long a genuinely large (but progressing)
+    // download may take.
+    builder = builder
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .read_timeout(std::time::Duration::from_secs(60));
     if let Some(ref path) = opts.ca_cert_path {
         let pem =
             std::fs::read(path).map_err(|e| anyhow::anyhow!("reading CA cert '{}': {e}", path))?;

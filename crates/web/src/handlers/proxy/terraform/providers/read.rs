@@ -168,6 +168,7 @@ pub(super) async fn try_local_provider_download(
 pub async fn terraform_provider_artifact(
     path: web::Path<(String, String, String, String, String, String)>,
     identity: AuthIdentity,
+    svc: web::Data<Arc<ProxyService>>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
@@ -186,6 +187,18 @@ pub async fn terraform_provider_artifact(
     ] {
         batlehub_core::services::validate_path_safe(kind, value).map_err(AppError::from)?;
     }
+
+    // Terraform is local-only (no proxy fall-through), so enforce the registry
+    // rule chain here — otherwise `[registries.rbac]` is never applied to a
+    // provider-binary read served straight from local storage.
+    let auth_name = format!("providers/{namespace}/{ptype}");
+    svc.authorize_read(
+        &PackageId::new(&registry, &auth_name, &version),
+        &identity.0,
+        batlehub_core::rules::resource_type::RELEASES_READ,
+    )
+    .await
+    .map_err(AppError::from)?;
 
     local_svc
         .check_prerelease_access(&registry, &version, &identity)
