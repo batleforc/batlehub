@@ -6,6 +6,7 @@ use super::super::http_client::{
     apply_upstream_tls, basic_auth_get, ensure_same_origin, to_registry_error,
     upstream_auth_headers, UpstreamHttpOptions,
 };
+use super::super::ssrf;
 use super::models::{FjAsset, FjRelease};
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
@@ -30,6 +31,12 @@ use batlehub_core::{
 /// - `artifact = Some("raw/{path}")` → raw file (`/raw/{ref}/{path}`)
 pub struct ForgejoRegistryClient {
     pub(super) http: reqwest::Client,
+    /// Credentialed download client (same auth default headers as `http`) with
+    /// redirects DISABLED so the SSRF guard validates every hop.
+    pub(super) dl_credentialed: reqwest::Client,
+    /// Credential-free download client (redirects disabled) used for any redirect
+    /// hop that leaves the instance origin, so the token never leaks off-instance.
+    pub(super) dl_plain: reqwest::Client,
     /// Instance root, e.g. `https://codeberg.org` (no trailing slash).
     pub(super) base_url: String,
     /// API base, derived as `{base_url}/api/v1`.
@@ -49,11 +56,25 @@ impl ForgejoRegistryClient {
         let auth_headers = upstream_auth_headers(opts)?;
         headers.extend(auth_headers);
 
-        let builder = reqwest::Client::builder()
-            .user_agent("batlehub/0.1")
-            .default_headers(headers);
-        let builder = apply_upstream_tls(builder, opts)?;
-        let http = builder.build().map_err(|e| CoreError::Other(e.into()))?;
+        // `no_redirect` clients follow redirects manually via the SSRF guard, so
+        // their own redirect policy is disabled; `with_auth` carries the operator's
+        // credentials, which the guard only sends while on the instance origin.
+        let build = |no_redirect: bool, with_auth: bool| -> Result<reqwest::Client, CoreError> {
+            let mut b = reqwest::Client::builder().user_agent("batlehub/0.1");
+            if no_redirect {
+                b = b.redirect(reqwest::redirect::Policy::none());
+            }
+            if with_auth {
+                b = b.default_headers(headers.clone());
+            }
+            apply_upstream_tls(b, opts)
+                .map_err(CoreError::Other)?
+                .build()
+                .map_err(|e| CoreError::Other(e.into()))
+        };
+        let http = build(false, true)?;
+        let dl_credentialed = build(true, true)?;
+        let dl_plain = build(true, false)?;
 
         // The configured URL is the instance root. Strip a trailing `/api/v1`
         // (if a user pasted the API URL) and any trailing slash, then derive the
@@ -66,6 +87,8 @@ impl ForgejoRegistryClient {
 
         Ok(Self {
             http,
+            dl_credentialed,
+            dl_plain,
             base_url,
             api_base_url,
             basic_auth: opts.basic_auth.clone(),
@@ -282,20 +305,28 @@ impl RegistryClient for ForgejoRegistryClient {
         // Forgejo/Gitea support *external-URL* attachments, so it can point at an
         // arbitrary host. Our client carries the operator's auth as a default
         // header (not stripped cross-host by reqwest), so fetching off-instance
-        // would leak that credential and enable SSRF. Require the resolved URL to
-        // share the instance origin before fetching — the `pkgpath/` and static
-        // selectors are built from `base_url` and satisfy this trivially.
+        // would leak that credential and enable SSRF. Require the *initial* URL to
+        // share the instance origin (`pkgpath/` and static selectors are built
+        // from `base_url` and satisfy this trivially)…
         ensure_same_origin(&download_url, &self.base_url)?;
 
         tracing::debug!(url = %download_url, "fetching Forgejo artifact");
 
-        let response = self
-            .get(&download_url)
-            .send()
-            .await
-            .map_err(to_registry_error)?
-            .error_for_status()
-            .map_err(to_registry_error)?;
+        // …then follow any redirects manually: each hop is re-validated against
+        // private/reserved addresses (SSRF) and credentials are dropped as soon as
+        // a redirect leaves the instance origin.
+        let parsed = reqwest::Url::parse(&download_url)
+            .map_err(|e| CoreError::Registry(format!("invalid download URL: {e}")))?;
+        let response = ssrf::fetch_following_redirects(
+            &self.dl_credentialed,
+            &self.dl_plain,
+            &self.basic_auth,
+            &self.base_url,
+            parsed,
+        )
+        .await?
+        .error_for_status()
+        .map_err(to_registry_error)?;
 
         let cache_control = response
             .headers()

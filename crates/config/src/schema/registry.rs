@@ -252,8 +252,11 @@ pub struct SigningConfig {
     /// When `true`, verify a stored `ed25519` detached signature against
     /// `trusted_keys` on every download. A stored signature that fails to verify
     /// (or was signed by an untrusted key) fails the download with `502`.
-    /// Signatures of other types, and artifacts with no stored signature, are not
-    /// verified here (missing signatures are governed by `required` at publish time).
+    /// A stored signature of an *unsupported* type (anything other than
+    /// `ed25519`, which cannot be verified here) is likewise **rejected** with
+    /// `502` — the download fails closed rather than serving unverified bytes.
+    /// Only artifacts with *no* stored signature are exempt (their presence is
+    /// governed by `required` at publish time).
     #[serde(default)]
     pub verify_on_download: bool,
     /// Hex-encoded 32-byte Ed25519 public keys trusted to sign artifacts in this

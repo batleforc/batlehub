@@ -146,6 +146,16 @@ pub async fn jbm_upload(
     // surface later as confusing compatibility behaviour in IDEs.
     validate_build_bound("since-build", descriptor.since_build.as_deref())?;
     validate_build_bound("until-build", descriptor.until_build.as_deref())?;
+    // Free-text descriptor fields flow verbatim into the stored index metadata
+    // (and later into rendered XML/JSON). Cap their length and reject NUL bytes
+    // at the source — defense-in-depth against oversized or malformed archives.
+    validate_free_text("name", descriptor.name.as_deref())?;
+    validate_free_text("vendor", descriptor.vendor.as_deref())?;
+    validate_free_text("description", descriptor.description.as_deref())?;
+    validate_free_text("change-notes", descriptor.change_notes.as_deref())?;
+    for dep in &descriptor.depends {
+        validate_free_text("depends", Some(dep))?;
+    }
 
     let file_name = file_name.unwrap_or_else(|| format!("{xml_id}-{version}.zip"));
     let checksum = hex::encode(Sha256::digest(&file));
@@ -214,4 +224,23 @@ fn validate_build_bound(kind: &str, value: Option<&str>) -> Result<(), AppError>
             "descriptor {kind} '{value}' is not a valid build number"
         )))
     }
+}
+
+/// Cap free-text descriptor fields (`name`/`vendor`/`description`/
+/// `change-notes`/`depends`) at a sane length and reject NUL bytes before they
+/// are persisted into the index metadata.
+fn validate_free_text(kind: &str, value: Option<&str>) -> Result<(), AppError> {
+    const MAX_FREE_TEXT: usize = 10_000;
+    let Some(value) = value else { return Ok(()) };
+    if value.len() > MAX_FREE_TEXT {
+        return Err(AppError::unprocessable(format!(
+            "descriptor {kind} exceeds the {MAX_FREE_TEXT}-character limit"
+        )));
+    }
+    if value.contains('\0') {
+        return Err(AppError::unprocessable(format!(
+            "descriptor {kind} contains a NUL byte"
+        )));
+    }
+    Ok(())
 }
