@@ -3,6 +3,7 @@ pub mod common;
 pub mod composer;
 pub mod conda;
 pub mod forgejo;
+pub mod generic;
 pub mod github;
 pub mod gitlab;
 pub mod goproxy;

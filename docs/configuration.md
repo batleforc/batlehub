@@ -600,12 +600,13 @@ deny_missing_timestamp = false   # set true to block packages with no timestamp
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `type` | string | yes | `"github"`, `"npm"`, `"cargo"`, `"openvsx"`, `"vscode-marketplace"`, `"goproxy"`, `"maven"`, `"terraform"`, `"rubygems"`, `"composer"`, `"pypi"`, `"conda"` |
+| `type` | string | yes | `"github"`, `"forgejo"`, `"gitlab"`, `"npm"`, `"cargo"`, `"nuget"`, `"openvsx"`, `"vscode-marketplace"`, `"goproxy"`, `"maven"`, `"terraform"`, `"rubygems"`, `"composer"`, `"pypi"`, `"conda"`, `"deb"`, `"rpm"`, `"pacman"`, `"jetbrains"`, `"generic"` |
 | `name` | string | yes | Unique identifier; used in proxy URL paths |
 | `mode` | string | no | `"proxy"` (default), `"local"`, or `"hybrid"`. Supported for `cargo`, `npm`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, `rubygems`, `composer`, `pypi`, and `conda`. See [registry modes](#registry-modes). |
 | `upstreams` | string[] | no | Upstream URLs tried in order on cache miss; 404 from one falls through to the next. Defaults to the registry's built-in URL. Required for `hybrid` mode. |
 | `index_url` | string | no | Cargo only: sparse crate index URL. Defaults to `https://index.crates.io`. Required for `hybrid` mode and self-hosted Gitea/Forgejo registries. |
 | `storage` | string | no | Name of the storage backend. Must match a `[[storage.backends]]` name. Omit to use the default backend. |
+| `path_allow` | string[] | no | Glob allowlist of upstream paths this registry may serve. Only valid for the path-addressed types (`deb`, `rpm`, `pacman`, `jetbrains`, `generic`) — using it elsewhere is a config error. **Required and non-empty for `generic`.** Use `["**"]` to allow everything deliberately. |
 | `vuln_db_url` | string | no | **goproxy only.** Upstream URL for the Go Vulnerability Database. Default: `https://vuln.go.dev`. Set to `""` to disable the `/v1/` endpoints. See [Vulnerability Proxy](vulnerability-proxy.md#1-go--govulncheck--go-vulnerability-database). |
 | `upstream_auth` | table | no | Credentials sent on every upstream request. See [upstream auth](#upstream_auth). |
 | `tls` | table | no | TLS settings for upstream connections. See [upstream TLS](#upstream_tls). |
@@ -1032,6 +1033,46 @@ curl -X PUT \
   --data-binary @hello-1.0-1.x86_64.rpm \
   http://batlehub.example.com/proxy/my-rpm/rpm/upload
 ```
+
+---
+
+**`generic`** — a path-addressed mirror of any plain HTTP file tree, for upstreams that have no package protocol at all: toolchain tarballs (`nodejs.org/dist`, `static.rust-lang.org`, `dl.google.com/go`) and single-binary vendor CDNs (`get.helm.sh`, `dl.min.io`, `binaries.sonarsource.com`). Proxy-only — there is no publish, index or signing model. A request to `/proxy/{registry}/generic/{path}` streams `{upstream}/{path}` and caches it on the first miss.
+
+Two fields are **mandatory** for this type:
+
+- `upstreams` — there is no default file tree to fall back to.
+- `path_allow` — the request path is passed straight through to the upstream, so without an allowlist a registry pointed at a host that serves many unrelated tenants (a shared bucket, a multi-vendor CDN) would relay *every* path on that host. Patterns use [`glob`](https://docs.rs/glob) semantics, where `*` also crosses `/`. Paths outside the allowlist are rejected with `403` before any upstream request is made — which also means cache warming (`warm_paths`) cannot bypass it.
+
+```toml
+[[registries]]
+type = "generic"
+name = "node-dist"
+mode = "proxy"
+upstreams = ["https://nodejs.org/dist"]
+# Verified against `mise install node`: mise fetches both the platform
+# tarball and the `node-v<ver>.tar.gz` source tarball, so a platform-only
+# glob 403s mid-install.
+path_allow = ["v*/**"]
+
+[registries.rbac]
+anonymous = ["releases:read"]
+
+# Pre-warm specific paths (path-addressed registries use `warm_paths`,
+# not `warm_packages`).
+[registries.cache]
+warm_paths = ["v24.18.0/node-v24.18.0-linux-x64.tar.gz"]
+```
+
+Point the client at it with the toolchain's own mirror variable:
+
+```sh
+export NODEJS_ORG_MIRROR=https://batlehub.example.com/proxy/node-dist/generic
+export RUSTUP_DIST_SERVER=https://batlehub.example.com/proxy/rust-dist/generic
+```
+
+`batlehub-cli registry suggest` scans a project (including `mise.toml` / `mise.lock`) and prints both the `[[registries]]` blocks and the matching client environment variables — see the [CLI Reference](#7-cli-reference).
+
+**Artifact size:** mirrored archives are often large and the proxy buffers an artifact before caching it, so raise `limits.max_artifact_size_bytes` (default 500 MiB) when mirroring toolchains or IDE-sized downloads.
 
 ---
 

@@ -129,7 +129,17 @@ pub(super) fn build_registry_client(
         kind: RegistryKind,
         url: &str,
         opts: &UpstreamHttpOptions,
+        path_allow: &[String],
     ) -> anyhow::Result<Arc<dyn batlehub_core::ports::RegistryClient>> {
+        // The path-addressed kinds all share one client, so the `path_allow`
+        // allowlist is applied uniformly to them. Config validation has already
+        // rejected `path_allow` on any other kind.
+        let path_proxy =
+            |ty: &str| -> anyhow::Result<Arc<dyn batlehub_core::ports::RegistryClient>> {
+                Ok(Arc::new(
+                    PathProxyRegistryClient::new(ty, url, opts)?.with_path_allow(path_allow)?,
+                ))
+            };
         // Exhaustive match over `RegistryKind`: adding a new variant is a compile
         // error here until an adapter arm is added, instead of silently falling
         // through to a runtime "no adapter compiled in" bail.
@@ -151,12 +161,11 @@ pub(super) fn build_registry_client(
             RegistryKind::Composer => Arc::new(ComposerRegistryClient::new(url, opts)?),
             RegistryKind::Pypi => Arc::new(PypiRegistryClient::new(url, opts)?),
             RegistryKind::Conda => Arc::new(CondaRegistryClient::new(url, opts)?),
-            RegistryKind::Deb => Arc::new(PathProxyRegistryClient::new("deb", url, opts)?),
-            RegistryKind::Rpm => Arc::new(PathProxyRegistryClient::new("rpm", url, opts)?),
-            RegistryKind::Pacman => Arc::new(PathProxyRegistryClient::new("pacman", url, opts)?),
-            RegistryKind::Jetbrains => {
-                Arc::new(PathProxyRegistryClient::new("jetbrains", url, opts)?)
-            }
+            RegistryKind::Deb => path_proxy("deb")?,
+            RegistryKind::Rpm => path_proxy("rpm")?,
+            RegistryKind::Pacman => path_proxy("pacman")?,
+            RegistryKind::Jetbrains => path_proxy("jetbrains")?,
+            RegistryKind::Generic => path_proxy("generic")?,
         };
         Ok(client)
     }
@@ -192,13 +201,17 @@ pub(super) fn build_registry_client(
         // JetBrains IDE archives are served from a stable CDN, so it's a sensible
         // default; users can override `upstreams` (e.g. for plugins.jetbrains.com).
         RegistryKind::Jetbrains => resolve_urls(&reg.upstreams, "https://download.jetbrains.com"),
+        // A generic mirror has no meaningful default upstream — it mirrors whatever
+        // file tree the operator points it at. Config validation already requires an
+        // explicit `upstreams` entry, so the placeholder is unreachable in practice.
+        RegistryKind::Generic => resolve_urls(&reg.upstreams, "https://example.invalid/generic"),
     };
     if urls.len() == 1 {
-        make_one(kind, &urls[0], &opts)
+        make_one(kind, &urls[0], &opts, &reg.path_allow)
     } else {
         let clients = urls
             .iter()
-            .map(|u| make_one(kind, u, &opts))
+            .map(|u| make_one(kind, u, &opts, &reg.path_allow))
             .collect::<anyhow::Result<Vec<_>>>()?;
         Ok(Arc::new(FanoutRegistryClient::new(
             &reg.registry_type,

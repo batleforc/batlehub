@@ -33,6 +33,7 @@ pub enum RegistryKind {
     Rpm,
     Pacman,
     Jetbrains,
+    Generic,
 }
 
 impl RegistryKind {
@@ -58,6 +59,7 @@ impl RegistryKind {
         Self::Rpm,
         Self::Pacman,
         Self::Jetbrains,
+        Self::Generic,
     ];
 
     /// The kebab-case wire string for this kind (matches TOML `type = "..."`).
@@ -82,24 +84,38 @@ impl RegistryKind {
             Self::Rpm => "rpm",
             Self::Pacman => "pacman",
             Self::Jetbrains => "jetbrains",
+            Self::Generic => "generic",
         }
     }
 
     /// Local/hybrid mode is only meaningful for registries this proxy can host
     /// package versions for itself — the read-only source-hosting types
-    /// (github/forgejo/gitlab/jetbrains) have no local publish model.
+    /// (github/forgejo/gitlab/jetbrains) have no local publish model. `generic`
+    /// is proxy-only for now; hosting arbitrary files is a separate roadmap item.
     pub fn supports_local_mode(&self) -> bool {
         !matches!(
             self,
-            Self::Github | Self::Forgejo | Self::Gitlab | Self::Jetbrains
+            Self::Github | Self::Forgejo | Self::Gitlab | Self::Jetbrains | Self::Generic
         )
     }
 
     /// `deb`/`rpm` have no universal default upstream (unlike e.g. `npm`'s
     /// registry.npmjs.org), so proxy mode requires an explicit upstream —
     /// otherwise every fetch would silently hit an unreachable placeholder.
+    /// `generic` mirrors an arbitrary file tree, so it has no default at all.
     pub fn requires_explicit_upstream_in_proxy_mode(&self) -> bool {
-        matches!(self, Self::Deb | Self::Rpm)
+        matches!(self, Self::Deb | Self::Rpm | Self::Generic)
+    }
+
+    /// Whether this kind is addressed purely by upstream file path, with the
+    /// whole path carried in `PackageId::artifact` and no per-package metadata
+    /// API — the kinds served by `PathProxyRegistryClient`. These are the kinds
+    /// for which `path_allow` and `cache.warm_paths` are meaningful.
+    pub fn is_path_addressed(&self) -> bool {
+        matches!(
+            self,
+            Self::Deb | Self::Rpm | Self::Pacman | Self::Jetbrains | Self::Generic
+        )
     }
 }
 
@@ -154,15 +170,41 @@ mod tests {
         assert!(!RegistryKind::Forgejo.supports_local_mode());
         assert!(!RegistryKind::Gitlab.supports_local_mode());
         assert!(!RegistryKind::Jetbrains.supports_local_mode());
+        assert!(!RegistryKind::Generic.supports_local_mode());
         assert!(RegistryKind::Cargo.supports_local_mode());
         assert!(RegistryKind::Deb.supports_local_mode());
     }
 
     #[test]
-    fn only_deb_and_rpm_require_explicit_upstream_in_proxy_mode() {
+    fn only_deb_rpm_and_generic_require_explicit_upstream_in_proxy_mode() {
         assert!(RegistryKind::Deb.requires_explicit_upstream_in_proxy_mode());
         assert!(RegistryKind::Rpm.requires_explicit_upstream_in_proxy_mode());
+        assert!(RegistryKind::Generic.requires_explicit_upstream_in_proxy_mode());
         assert!(!RegistryKind::Pacman.requires_explicit_upstream_in_proxy_mode());
         assert!(!RegistryKind::Npm.requires_explicit_upstream_in_proxy_mode());
+    }
+
+    #[test]
+    fn path_addressed_kinds_are_the_path_proxy_ones() {
+        for kind in [
+            RegistryKind::Deb,
+            RegistryKind::Rpm,
+            RegistryKind::Pacman,
+            RegistryKind::Jetbrains,
+            RegistryKind::Generic,
+        ] {
+            assert!(kind.is_path_addressed(), "{kind} should be path-addressed");
+        }
+        for kind in [
+            RegistryKind::Npm,
+            RegistryKind::Cargo,
+            RegistryKind::Github,
+            RegistryKind::Goproxy,
+        ] {
+            assert!(
+                !kind.is_path_addressed(),
+                "{kind} should not be path-addressed"
+            );
+        }
     }
 }

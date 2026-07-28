@@ -180,6 +180,37 @@ impl AppConfig {
                     kind
                 );
             }
+            // `path_allow` gates a raw upstream path passthrough, so it only means
+            // anything for the path-addressed kinds. Accepting it silently elsewhere
+            // would read as a working restriction while gating nothing.
+            if !registry.path_allow.is_empty() && !kind.is_path_addressed() {
+                bail!(
+                    "registry '{}': 'path_allow' is only supported for path-addressed registry types \
+                     (deb, rpm, pacman, jetbrains, generic), not {}",
+                    registry.name,
+                    kind
+                );
+            }
+            // A `generic` registry mirrors an arbitrary file tree on a host that may
+            // serve unrelated content, so the allowlist is mandatory rather than
+            // opt-in. `["**"]` is the explicit way to mirror everything.
+            if kind == batlehub_core::entities::RegistryKind::Generic
+                && registry.path_allow.is_empty()
+            {
+                bail!(
+                    "registry '{}': generic registries require a non-empty 'path_allow' allowlist \
+                     (use path_allow = [\"**\"] to mirror the whole upstream deliberately)",
+                    registry.name
+                );
+            }
+            for pattern in &registry.path_allow {
+                glob::Pattern::new(pattern).map_err(|e| {
+                    anyhow::anyhow!(
+                        "registry '{}': invalid path_allow glob '{pattern}': {e}",
+                        registry.name
+                    )
+                })?;
+            }
         }
         Ok(())
     }

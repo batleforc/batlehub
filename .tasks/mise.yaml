@@ -1,0 +1,12 @@
+version: "3"
+
+tasks:
+  lock:gen:
+    desc: "Generate mise lock file"
+    cmds:
+      # Add plateform if needed, ATM i'm a solo dev so linux-x64
+      - mise lock --platform linux-x64
+  lock:update:
+    desc: "Update lock file"
+    cmds:
+      - mise upgrade

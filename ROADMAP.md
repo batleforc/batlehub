@@ -8,7 +8,7 @@ For discussion or to propose a feature, open an issue on the [project repository
 
 ## New registry types
 
-Current adapters: npm, Cargo, GitHub, Forgejo/Gitea, GitLab, OpenVSX, VS Code Marketplace, Go modules, Maven, RubyGems, Terraform, Composer, PyPI, Conda, NuGet, Deb (APT), RPM (YUM/DNF), JetBrains (IDE archives).
+Current adapters: npm, Cargo, GitHub, Forgejo/Gitea, GitLab, OpenVSX, VS Code Marketplace, Go modules, Maven, RubyGems, Terraform, Composer, PyPI, Conda, NuGet, Deb (APT), RPM (YUM/DNF), Pacman, JetBrains (IDE archives), Generic (path-addressed file mirror).
 
 - [x] **PyPI** — Python package index; Simple API proxy with URL rewriting; wheel / sdist downloads; private publishing via `twine` in `local`/`hybrid` mode
 - [x] **Maven / Gradle** — Maven Central-compatible metadata XML + JAR / POM downloads; private publishing via `mvn deploy` in `local`/`hybrid` mode
@@ -22,6 +22,12 @@ Current adapters: npm, Cargo, GitHub, Forgejo/Gitea, GitLab, OpenVSX, VS Code Ma
 - [x] **Composer** — PHP Composer registry (Packagist v2 protocol — `packages.json`, p2 metadata, dist downloads); private package publishing via ZIP upload in `local`/`hybrid` mode
 - [x] **Anaconda / Conda** — Python data science package registry; `repodata.json` proxy and channel merging; `.tar.bz2` and `.conda` package parsing; private channel publishing in `local`/`hybrid` mode
 - [x] **Arch Linux / Pacman** — `type = "pacman"`: proxy upstream Arch mirrors **and** private hosting in `local`/`hybrid` mode: `.pkg.tar.{zst,xz,gz}` publish (metadata read from `.PKGINFO`), per-arch `<repo>.db`/`<repo>.files` database regeneration, Ed25519 OpenPGP-signed database (`<repo>.db.sig`) and packages (`.sig` + embedded `%PGPSIG%`) so `SigLevel = Required` works. Signing reuses the hand-rolled Ed25519 signer (the `rsa` crate is banned)
+- [x] **Generic file mirror** — `type = "generic"`: proxy-only path-addressed cache for any HTTP file tree that has no package protocol at all (toolchain tarballs, vendor CDNs, release buckets). Reuses `PathProxyRegistryClient` like `jetbrains`, but with a mandatory explicit `upstreams` entry and a mandatory `path_allow` glob allowlist so a registry pointed at a shared host (e.g. `storage.googleapis.com`) cannot become an open relay for every other path on it. Covers the toolchain sources that no typed adapter reaches — Node (`nodejs.org/dist`), rustup (`static.rust-lang.org`), the Go toolchain (`dl.google.com/go`, distinct from the `goproxy` module adapter), and single-binary vendor CDNs (`get.helm.sh`, `dl.min.io`, `binaries.sonarsource.com`). Archives can be large, so `limits.max_artifact_size_bytes` may need raising
+
+**Not yet started, in rough priority order:**
+
+- [ ] **Generic file mirror, `local`/`hybrid` mode** — publish arbitrary files under `{name}/{version}/{filename}`, the equivalent of GitLab's "generic packages": internal build artifacts, installers, blobs from CI. Inherits quotas, ownership, Ed25519 artifact signing, SBOM, yank and dedup from the shared local-registry machinery
+- [ ] **Helm charts** — `type = "helm"`: a real chart repository (`index.yaml` + `.tgz`) needs URL rewriting in the generated index, so it warrants its own adapter rather than a `generic` instance; `local` mode would regenerate `index.yaml` from the DB the way `conda` regenerates `repodata.json`. Note that the *helm binary* (`get.helm.sh`) is already covered by `generic` — this entry is about charts. OCI-based charts stay out of scope (see below)
 
 > **Not planned:** Docker / OCI artifacts. [Harbor](https://goharbor.io) solves this better than we could, unless concrete demand arises.
 
@@ -146,6 +152,7 @@ Applies to registries running in `local` or `hybrid` mode.
   - [x] Package management commands for listing versions, viewing metadata, or managing owners — `batlehub-cli package list|versions` and `batlehub-cli owners list|add|remove`
   - [x] Authentication support for static tokens and token management — `batlehub-cli auth whoami` and `token list|create|revoke`; token passed via `--token` / `BATLEHUB_TOKEN`
   - [x] List of available registries and their types, with per-registry configuration details — `batlehub-cli registry list|info`
+  - [x] Suggest the set of registries a project needs — `batlehub-cli registry suggest` scans the working directory (`mise.toml`/`mise.lock` tool backends plus the usual manifests: Cargo.toml, package.json, go.mod, …), maps each detected source to a registry type, and emits the `[[registries]]` TOML block (or JSON) to paste into `config.toml`. `--client-env` additionally prints the environment variables that point each toolchain at BatleHub
   - [x] List packages and versions in a registry, with filtering options — `batlehub-cli package list|versions`
   - [x] Autocompletion support for shell integration — `batlehub-cli completion bash|zsh|fish|...` generates and prints the completion script; pipe to shell RC file
   - [x] Config file support for storing credentials and default options, with CLI overrides — `~/.config/batlehub/config.toml` with named profiles; `batlehub-cli config init|show|set`

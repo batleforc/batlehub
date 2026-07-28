@@ -342,6 +342,7 @@ pub use middleware::UserBlockMiddlewareFactory;
         (name = "proxy/pypi",       description = "PyPI registry — simple index proxy with URL rewriting, wheel/sdist downloads, and twine-compatible publish"),
         (name = "proxy/conda",      description = "Conda channel proxy — repodata.json, package downloads, and private channel publishing"),
         (name = "proxy/nuget",      description = "NuGet registry — service index, flat container, registration metadata, .nupkg download, and private package publishing"),
+        (name = "proxy/generic",    description = "Generic file mirror — path-addressed proxy cache for upstreams with no package protocol (toolchain tarballs, vendor CDNs), restricted by a path_allow allowlist"),
         (name = "front-office",     description = "User-facing package information"),
         (name = "explore",          description = "Package explorer — browse and search across registries"),
         (name = "back-office",    description = "Admin management (requires Admin role)"),
@@ -450,6 +451,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             // composer: upload/yank > advisories (literal "api") > p2 > dist > packages.json
             conda::{conda_current_repodata, conda_file_download, conda_publish, conda_repodata},
             forgejo::fj_packages,
+            generic::generic_get,
             github::{
                 download_asset, download_asset_by_name, download_raw, download_tarball,
                 download_zipball, get_release, list_releases,
@@ -534,7 +536,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(pacman_publish); // PUT …/pacman/upload
     cfg.service(pacman_get); // GET …/pacman/{path}
     cfg.service(jetbrains_get); // GET …/jetbrains/{path} (proxy-only cache)
-                                // Cargo download (literal "download" suffix)
+    cfg.service(generic_get); // GET …/generic/{path}   (proxy-only cache)
+                              // Cargo download (literal "download" suffix)
     cfg.service(download_crate);
     // Go module proxy (multi-segment module paths — must precede generic packument routes)
     // Vuln DB passthrough: literal /v1/ paths registered before the module wildcard routes.

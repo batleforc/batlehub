@@ -123,6 +123,7 @@ These flags are available on every command:
 ```
 batlehub-cli registry list
 batlehub-cli registry info <name>
+batlehub-cli registry suggest [--dir <path>] [--depth N] [--client-env] [--mise [--mise-commented]] [--include-existing]
 ```
 
 ### `registry list`
@@ -144,6 +145,100 @@ $ batlehub-cli registry list
 ### `registry info <name>`
 
 Show type and mode for a single registry.
+
+### `registry suggest`
+
+Work out which registries a project actually needs, and print the
+`[[registries]]` blocks to paste into `config.toml`.
+
+Two inputs, in decreasing order of precision:
+
+- **`mise.lock`** — the best source available: it records the exact download URL
+  of every tool, per platform. Each URL maps either onto a typed registry (a
+  `github.com` release asset → `type = "github"`) or, for hosts that speak no
+  package protocol at all, onto a `generic` mirror of that host.
+- **`mise.toml`** and the usual project manifests (`Cargo.toml`, `go.mod`,
+  `package.json`, `pyproject.toml`, `pom.xml`, `composer.json`, `*.gemspec`,
+  `*.nuspec`, `*.csproj`, `*.tf`, `environment.yml`) — no URLs, so the mapping
+  goes by backend prefix / tool name and is best-effort. When a lock file is
+  present it takes precedence, since it names the same tools more precisely.
+
+```
+$ batlehub-cli registry suggest --client-env
++------------------+---------+--------------------------------------+----------------------------+
+| Name             | Type    | Upstream                             | Detected from              |
++------------------+---------+--------------------------------------+----------------------------+
+| cargo            | cargo   | (adapter default)                    | manifest, mise.lock: …     |
+| github           | github  | (adapter default)                    | mise.lock: gitleaks, …     |
+| node-dist        | generic | https://nodejs.org/dist              | mise.lock: node            |
+| rust-dist        | generic | https://static.rust-lang.org         | mise.lock: rust            |
+| helm-bin         | generic | https://get.helm.sh                  | mise.lock: helm            |
++------------------+---------+--------------------------------------+----------------------------+
+
+Add to config.toml:
+…
+Point clients at the proxy:
+
+# node-dist (generic)
+export NODEJS_ORG_MIRROR="https://batlehub.example.com/proxy/node-dist/generic"
+```
+
+| Flag | Description |
+|------|-------------|
+| `--dir <path>`, `-d` | Directory to scan (default: current working directory) |
+| `--depth N` | Subdirectory levels to scan for manifests (default 0 = root only). Does not affect `mise.lock`, which is only read from the root. |
+| `--client-env` | Also print the environment variables that point each toolchain at the proxy |
+| `--mise` | Also print a mise `[settings.url_replacements]` block routing mise itself through the proxy |
+| `--mise-commented` | Comment out every line of the `--mise` block, for committing into a shared `mise.toml` |
+| `--include-existing` | Emit suggestions even when the server already has a registry of that type |
+
+#### Routing mise itself (`--mise`)
+
+`[settings.url_replacements]` rewrites the URLs **mise's own HTTP layer**
+fetches, which covers the aqua/ubi/GitHub-release backends and every `generic`
+mirror. Verified against `mise install`:
+
+- aqua resolves *and downloads* assets through `api.github.com/repos/…/releases/assets/{id}`,
+  so the `api.github.com` rule is the load-bearing one — not the
+  `github.com/…/releases/download/…` rule.
+- `core:node` fetches **both** the platform tarball and the `node-v<ver>.tar.gz`
+  source tarball, which is why the suggested `path_allow` is `v*/**` rather than
+  a platform-only glob.
+
+Backends that shell out to another tool (`cargo:`, `pipx:`, `npm:`, `go:`) are
+**not** covered — those processes read their own config, not mise's. The
+generated block names them explicitly rather than leaving them silently absent;
+use `--client-env` and the per-ecosystem config for those.
+
+> The regex keys must reach the file with **doubled** backslashes
+> (`\.`). TOML treats a lone `\` as an invalid escape, and mise responds by
+> logging one line and running on with the entire settings block dropped — a
+> silent no-op. The generator handles this; hand-edits should keep it in mind.
+
+`--mise-commented` prefixes every line, including the generator's own header
+comments, so that stripping exactly one `# ` per line yields a valid file. This
+repo's own `mise.toml` carries such a block as a worked example.
+
+Every generated `generic` block carries the `upstreams` and `path_allow` fields
+the server requires for that type, so the output is directly usable. Note the
+difference in allowlist precision:
+
+- For hosts with a **curated preset** (`nodejs.org`, `static.rust-lang.org`,
+  `dl.google.com`, `get.helm.sh`, `dl.min.io`, `binaries.sonarsource.com`), the
+  allowlist is a version-agnostic glob and keeps working across version bumps.
+- For any **other host**, the allowlist is the set of exact paths found in the
+  lock — narrow and provably sufficient for the pinned versions, but needing a
+  re-run (or a manual widening) when those versions change. The generated TOML
+  says so in a comment above the block.
+
+On object-storage hosts (`storage.googleapis.com`, `s3.amazonaws.com`) the
+bucket segment is folded into `upstreams`, not left in the path — otherwise the
+mirror would relay every other public bucket on the same host.
+
+Scanning is entirely local: the server is contacted only to annotate which types
+are already configured, and an unreachable server degrades that annotation
+rather than failing the command. `--json` emits the structured suggestions plus
+the rendered TOML under a `toml` key.
 
 ---
 

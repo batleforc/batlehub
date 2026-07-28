@@ -1,7 +1,8 @@
 version: "3"
 
 includes:
-  cde: .task/cde.yaml
+  cde: .tasks/cde.yaml
+  mise: .tasks/mise.yaml
 
 dotenv: [ .env ]
 

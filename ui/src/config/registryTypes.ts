@@ -104,34 +104,34 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
               ``,
               `# ── GitHub (registry: ${gh}) ─────────────────────────────────────────────────`,
               `# API (release listings, tag metadata, asset lists)`,
-              String.raw`"regex:^https://api\.github\.com/repos/(.+)" = "${base}/proxy/${gh}/$1"`,
+              String.raw`"regex:^https://api\\.github\\.com/repos/(.+)" = "${base}/proxy/${gh}/$1"`,
               ``,
               `# Release asset binaries (browser_download_url from API responses)`,
-              String.raw`"regex:^https://github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/(.+)" = "${base}/proxy/${gh}/$1/$2/releases/download/$3/$4"`,
+              String.raw`"regex:^https://github\\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/(.+)" = "${base}/proxy/${gh}/$1/$2/releases/download/$3/$4"`,
               ``,
               `# Source tarballs`,
-              String.raw`"regex:^https://github\.com/([^/]+)/([^/]+)/archive/(?:refs/tags/)?(.+?)\.tar\.gz" = "${base}/proxy/${gh}/$1/$2/tarball/$3"`,
-              String.raw`"regex:^https://codeload\.github\.com/([^/]+)/([^/]+)/tar\.gz/(?:refs/tags/)?(.+)" = "${base}/proxy/${gh}/$1/$2/tarball/$3"`,
+              String.raw`"regex:^https://github\\.com/([^/]+)/([^/]+)/archive/(?:refs/tags/)?(.+?)\\.tar\\.gz" = "${base}/proxy/${gh}/$1/$2/tarball/$3"`,
+              String.raw`"regex:^https://codeload\\.github\\.com/([^/]+)/([^/]+)/tar\\.gz/(?:refs/tags/)?(.+)" = "${base}/proxy/${gh}/$1/$2/tarball/$3"`,
               ``,
               `# Zip archives`,
-              String.raw`"regex:^https://github\.com/([^/]+)/([^/]+)/archive/(?:refs/tags/)?(.+?)\.zip" = "${base}/proxy/${gh}/$1/$2/zipball/$3"`,
+              String.raw`"regex:^https://github\\.com/([^/]+)/([^/]+)/archive/(?:refs/tags/)?(.+?)\\.zip" = "${base}/proxy/${gh}/$1/$2/zipball/$3"`,
               ``,
               `# Raw files (install scripts, manifests, …)`,
-              String.raw`"regex:^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.+)" = "${base}/proxy/${gh}/$1/$2/raw/$3/$4"`,
+              String.raw`"regex:^https://raw\\.githubusercontent\\.com/([^/]+)/([^/]+)/([^/]+)/(.+)" = "${base}/proxy/${gh}/$1/$2/raw/$3/$4"`,
             );
           }
           if (np) {
             lines.push(
               ``,
               `# ── npm (registry: ${np}) ───────────────────────────────────────────────────`,
-              String.raw`"regex:^https://registry\.npmjs\.org/(.+)" = "${base}/proxy/${np}/$1"`,
+              String.raw`"regex:^https://registry\\.npmjs\\.org/(.+)" = "${base}/proxy/${np}/$1"`,
             );
           }
           if (cg) {
             lines.push(
               ``,
               `# ── Cargo (registry: ${cg}) — downloads only, use .cargo/config.toml for full support`,
-              String.raw`"regex:^https://static\.crates\.io/crates/([^/]+)/([^/]+)/.+\.crate" = "${base}/proxy/${cg}/$1/$2/download"`,
+              String.raw`"regex:^https://static\\.crates\\.io/crates/([^/]+)/([^/]+)/.+\\.crate" = "${base}/proxy/${cg}/$1/$2/download"`,
             );
           }
           return lines.join("\n");
@@ -269,7 +269,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `# ── OpenVSX VSIX downloads ────────────────────────────────────────────────────`,
             `# Intercepts VSIX file downloads from open-vsx.org and routes them through the proxy.`,
             `# The extension ID is joined as publisher.name to match the proxy convention.`,
-            String.raw`"regex:^https://open-vsx\.org/api/([^/]+)/([^/]+)/([^/]+)/file/.+\.vsix$" = "${ctx.base}/proxy/${ctx.registryName}/$1.$2/$3/vsix"`,
+            String.raw`"regex:^https://open-vsx\\.org/api/([^/]+)/([^/]+)/([^/]+)/file/.+\\.vsix$" = "${ctx.base}/proxy/${ctx.registryName}/$1.$2/$3/vsix"`,
           );
           return lines.join("\n");
         },
@@ -1408,6 +1408,185 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         note:
           `Override <code class="font-mono bg-muted px-1 rounded">upstreams</code> to cache another host ` +
           `(e.g. <code class="font-mono bg-muted px-1 rounded">https://plugins.jetbrains.com</code>).`,
+      },
+    ],
+  },
+  // ── Generic file mirror (proxy-only, path-addressed) ───────────────────────
+  {
+    id: "generic",
+    label: "Generic mirror",
+    fileHint: "any HTTP file tree",
+    description:
+      `Mirror any plain HTTP file tree — for upstreams with no package protocol at all: ` +
+      `toolchain tarballs (Node, rustup, the Go toolchain) and single-binary vendor CDNs ` +
+      `(Helm, MinIO, SonarScanner). Proxy-only: there is no publish or index model. ` +
+      `Both <code class="text-xs font-mono bg-muted px-1 rounded">upstreams</code> and ` +
+      `<code class="text-xs font-mono bg-muted px-1 rounded">path_allow</code> are required — ` +
+      `without the allowlist a mirror of a shared host would relay every unrelated path on it.`,
+    snippets: [
+      {
+        key: "generic-curl",
+        label: "Download a file",
+        lang: "bash",
+        template: (ctx) => {
+          const reg = `${ctx.base}/proxy/${ctx.registryName}/generic`;
+          const auth = ctx.isAuthenticated ? ` \\\n  -H "Authorization: Bearer ${ctx.token}"` : "";
+          return [
+            `# The path after /generic/ maps 1:1 onto the configured upstream`,
+            `curl -fL -o node.tar.gz${auth} \\`,
+            `  ${reg}/v24.18.0/node-v24.18.0-linux-x64.tar.gz`,
+          ].join("\n");
+        },
+        note:
+          `A path outside the registry's ` +
+          `<code class="font-mono bg-muted px-1 rounded">path_allow</code> allowlist returns ` +
+          `<code class="font-mono bg-muted px-1 rounded">403</code>, not 404 — that is the allowlist ` +
+          `rejecting it locally, before any upstream request is made.`,
+      },
+      {
+        key: "generic-config",
+        label: "Server config",
+        lang: "toml",
+        template: (ctx) =>
+          [
+            `[limits]`,
+            `max_artifact_size_bytes = 2147483648  # 2 GiB — toolchain archives are large`,
+            ``,
+            `[[registries]]`,
+            `name       = "${ctx.registryName}"`,
+            `type       = "generic"`,
+            `mode       = "proxy"`,
+            `upstreams  = ["https://nodejs.org/dist"]   # required — no default exists`,
+            `path_allow = ["v*/**"]                     # required — use ["**"] to allow all`,
+            ``,
+            `[registries.rbac]`,
+            `anonymous = ["releases:read"]`,
+            ``,
+            `# Pre-warm specific paths on startup (path-addressed registries use`,
+            `# warm_paths, not warm_packages).`,
+            `[registries.cache]`,
+            `warm_paths = ["v24.18.0/node-v24.18.0-linux-x64.tar.gz"]`,
+          ].join("\n"),
+        note:
+          `Run <code class="font-mono bg-muted px-1 rounded">batlehub-cli registry suggest</code> in a project ` +
+          `to generate these blocks from its <code class="font-mono bg-muted px-1 rounded">mise.toml</code> / ` +
+          `<code class="font-mono bg-muted px-1 rounded">mise.lock</code> and manifests.`,
+      },
+      {
+        key: "generic-presets",
+        label: "Toolchain presets",
+        lang: "toml",
+        template: (ctx) =>
+          [
+            `# One [[registries]] entry per upstream host. Names below are examples —`,
+            `# the client env vars in the next tab must match whatever you pick.`,
+            ``,
+            `[[registries]]`,
+            `type       = "generic"`,
+            `name       = "node-dist"`,
+            `upstreams  = ["https://nodejs.org/dist"]`,
+            `path_allow = ["v*/**"]                      # mise also fetches the source tarball`,
+            ``,
+            `[[registries]]`,
+            `type       = "generic"`,
+            `name       = "rust-dist"`,
+            `upstreams  = ["https://static.rust-lang.org"]`,
+            `path_allow = ["dist/**", "rustup/**"]`,
+            ``,
+            `[[registries]]`,
+            `type       = "generic"`,
+            `name       = "go-dl"                        # the Go *toolchain* tarballs;`,
+            `upstreams  = ["https://dl.google.com/go"]    # Go *modules* use type = "goproxy"`,
+            `path_allow = ["go*.linux-amd64.tar.gz"]`,
+            ``,
+            `[[registries]]`,
+            `type       = "generic"`,
+            `name       = "helm-bin"`,
+            `upstreams  = ["https://get.helm.sh"]`,
+            `path_allow = ["helm-v*-linux-amd64.tar.gz"]`,
+            ``,
+            `[[registries]]`,
+            `type       = "generic"`,
+            `name       = "minio-dl"`,
+            `upstreams  = ["https://dl.min.io"]`,
+            `path_allow = ["client/mc/release/linux-amd64/**"]`,
+            ``,
+            `[[registries]]`,
+            `type       = "generic"`,
+            `name       = "sonar-binaries"`,
+            `upstreams  = ["https://binaries.sonarsource.com"]`,
+            `path_allow = ["Distribution/sonar-scanner-cli/**"]`,
+            ``,
+            `# Not listed here: anything mise fetches from GitHub releases (the aqua,`,
+            `# ubi and python-build-standalone backends) — those go through a`,
+            `# type = "github" registry, which also avoids GitHub's API rate limit.`,
+          ].join("\n") + `\n\n# Proxy base: ${ctx.base}`,
+      },
+      {
+        key: "generic-client-env",
+        label: "Client env vars",
+        lang: "bash",
+        template: (ctx) => {
+          const p = (name: string) => `${ctx.base}/proxy/${name}/generic`;
+          return [
+            `# Each toolchain has its own mirror variable. Substitute the registry`,
+            `# names you configured — these match the "Toolchain presets" tab.`,
+            ``,
+            `# Node.js (also honoured by nvm, fnm, mise's core:node backend)`,
+            `export NODEJS_ORG_MIRROR="${p("node-dist")}"`,
+            ``,
+            `# Rust toolchains via rustup`,
+            `export RUSTUP_DIST_SERVER="${p("rust-dist")}"`,
+            `export RUSTUP_UPDATE_ROOT="${p("rust-dist")}/rustup"`,
+            ``,
+            `# Everything else is a plain URL swap in your install script, e.g.`,
+            `curl -fL "${p("helm-bin")}/helm-v4.2.3-linux-amd64.tar.gz" | tar xz`,
+            ``,
+            `# Current registry (${ctx.registryName}):`,
+            `# ${ctx.base}/proxy/${ctx.registryName}/generic/<path>`,
+          ].join("\n");
+        },
+        note:
+          `Variables are read at download time, so export them before ` +
+          `<code class="font-mono bg-muted px-1 rounded">mise install</code> / ` +
+          `<code class="font-mono bg-muted px-1 rounded">rustup update</code> — a toolchain already ` +
+          `on disk is not re-fetched.`,
+      },
+      {
+        key: "generic-mise",
+        label: "mise url_replacements",
+        lang: "toml",
+        template: (ctx) => {
+          const p = (name: string) => `${ctx.base}/proxy/${name}/generic`;
+          const lines: string[] = [];
+          if (ctx.isAuthenticated) {
+            lines.push(
+              `# Authentication: mise reads ~/.netrc for HTTP Basic Auth`,
+              `# machine ${ctx.netrcHost}`,
+              `# login ${ctx.netrcLogin}`,
+              `# password ${ctx.token}`,
+              ``,
+            );
+          }
+          lines.push(
+            `# Routes mise's direct downloads through generic mirrors, without`,
+            `# per-tool env vars. Complements the GitHub/npm/cargo rules on the`,
+            `# "mise" tab — keep both in the same [settings.url_replacements].`,
+            `[settings.url_replacements]`,
+            ``,
+            String.raw`"regex:^https://nodejs\\.org/dist/(.+)" = "${p("node-dist")}/$1"`,
+            String.raw`"regex:^https://static\\.rust-lang\\.org/(.+)" = "${p("rust-dist")}/$1"`,
+            String.raw`"regex:^https://dl\\.google\\.com/go/(.+)" = "${p("go-dl")}/$1"`,
+            String.raw`"regex:^https://get\\.helm\\.sh/(.+)" = "${p("helm-bin")}/$1"`,
+            String.raw`"regex:^https://dl\\.min\\.io/(.+)" = "${p("minio-dl")}/$1"`,
+            String.raw`"regex:^https://binaries\\.sonarsource\\.com/(.+)" = "${p("sonar-binaries")}/$1"`,
+          );
+          return lines.join("\n");
+        },
+        note:
+          `Each rewritten URL must still pass its registry's ` +
+          `<code class="font-mono bg-muted px-1 rounded">path_allow</code> allowlist — widen the globs ` +
+          `if <code class="font-mono bg-muted px-1 rounded">mise install</code> reports a 403.`,
       },
     ],
   },

@@ -30,6 +30,21 @@ pub struct RegistryConfig {
     /// When empty the adapter's built-in default (e.g. registry.npmjs.org) is used.
     #[serde(default)]
     pub upstreams: Vec<String>,
+    /// Glob allowlist of upstream paths this registry may serve. Only meaningful
+    /// for path-addressed registry types (`deb`/`rpm`/`pacman`/`jetbrains`/`generic`),
+    /// where the request path is passed straight through to the upstream — without
+    /// it, a registry pointed at a shared host (`storage.googleapis.com`, a CDN
+    /// serving many vendors) would relay *every* path on that host.
+    ///
+    /// Patterns are matched against the upstream-relative path with
+    /// [`glob::Pattern`] semantics, where `*` also crosses `/`. Required for
+    /// `generic`; `["**"]` is the explicit opt-out that allows everything.
+    ///
+    /// ```toml
+    /// path_allow = ["v*/node-v*-linux-x64.tar.*", "v*/SHASUMS256.txt*"]
+    /// ```
+    #[serde(default)]
+    pub path_allow: Vec<String>,
     /// Cargo only: URL of the sparse crate index.
     /// Defaults to `https://index.crates.io` when the upstream is crates.io.
     /// Set this for self-hosted registries (e.g. Gitea/Forgejo package feeds).

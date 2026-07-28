@@ -26,14 +26,16 @@ pub use gitlab::GitlabRegistryClient;
     feature = "registry-deb",
     feature = "registry-rpm",
     feature = "registry-pacman",
-    feature = "registry-jetbrains"
+    feature = "registry-jetbrains",
+    feature = "registry-generic"
 ))]
 pub mod path_proxy;
 #[cfg(any(
     feature = "registry-deb",
     feature = "registry-rpm",
     feature = "registry-pacman",
-    feature = "registry-jetbrains"
+    feature = "registry-jetbrains",
+    feature = "registry-generic"
 ))]
 pub use path_proxy::PathProxyRegistryClient;
 
