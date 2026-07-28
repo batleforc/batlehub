@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use actix_web::{get, web, HttpRequest, HttpResponse, Responder};
+use actix_web::{get, http::header, web, HttpRequest, HttpResponse, Responder};
 use serde::Deserialize;
 
 use batlehub_config::schema::RegistryMode;
@@ -360,6 +360,16 @@ pub async fn jbm_file_download(
     .await
 }
 
+/// `Content-Disposition` value naming the plugin archive. The canonical
+/// download URLs (`plugin/download?pluginId=…`, `pluginManager?action=…`) have
+/// no filename in their path, and IntelliJ's `PluginDownloader` rejects the
+/// response with "Invalid filename returned by a server" unless this header
+/// provides one.
+fn plugin_attachment_value(xml_id: &str, version: &str) -> Result<header::HeaderValue, AppError> {
+    header::HeaderValue::from_str(&format!("attachment; filename=\"{xml_id}-{version}.zip\""))
+        .map_err(|e| AppError::bad_request(format!("invalid plugin file name: {e}")))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PluginDownloadQuery {
     #[serde(rename = "pluginId")]
@@ -408,7 +418,7 @@ pub async fn jbm_plugin_download(
         }
         None => "plugin".to_owned(),
     };
-    serve_local_or_proxy_artifact(
+    let mut resp = serve_local_or_proxy_artifact(
         svc,
         local_svc,
         &mode_map,
@@ -425,7 +435,12 @@ pub async fn jbm_plugin_download(
             append_signature: true,
         },
     )
-    .await
+    .await?;
+    resp.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        plugin_attachment_value(&query.plugin_id, &query.version)?,
+    );
+    Ok(resp)
 }
 
 #[derive(Debug, Deserialize)]
@@ -502,6 +517,10 @@ pub async fn jbm_plugin_manager(
                     .map_err(AppError::from)?;
                 return Ok(HttpResponse::Ok()
                     .content_type("application/octet-stream")
+                    .insert_header((
+                        header::CONTENT_DISPOSITION,
+                        plugin_attachment_value(&query.id, &best.version)?,
+                    ))
                     .body(bytes));
             }
             Err(CoreError::NotFound(_)) if mode == RegistryMode::Hybrid => {}
@@ -536,5 +555,10 @@ pub async fn jbm_plugin_manager(
         .ok_or_else(|| AppError::not_found("upstream version list is empty".to_owned()))?;
 
     let pkg = PackageId::new(&registry, &query.id, &version).with_artifact("plugin");
-    proxy_stream(svc, pkg, identity, RELEASES_READ, None).await
+    let mut resp = proxy_stream(svc, pkg, identity, RELEASES_READ, None).await?;
+    resp.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        plugin_attachment_value(&query.id, &version)?,
+    );
+    Ok(resp)
 }

@@ -36,6 +36,17 @@ use batlehub_web::RegistryModeMap;
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
+/// The `Content-Disposition` IntelliJ's `PluginDownloader` needs on download
+/// URLs that carry no filename in their path (`plugin/download?…`,
+/// `pluginManager?…`) — without it the IDE aborts with "Invalid filename
+/// returned by a server".
+fn content_disposition<B>(resp: &actix_web::dev::ServiceResponse<B>) -> Option<String> {
+    resp.headers()
+        .get(actix_web::http::header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+}
+
 fn plugin_xml(id: &str, version: &str, since: &str, until: &str) -> String {
     format!(
         r#"<idea-plugin>
@@ -326,6 +337,10 @@ async fn jbm_plugin_download_roundtrip() {
         .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
+    assert_eq!(
+        content_disposition(&resp).as_deref(),
+        Some(r#"attachment; filename="org.demo.a-1.0.0.zip""#)
+    );
     assert_eq!(read_body(resp).await.to_vec(), jar);
 }
 
@@ -353,6 +368,10 @@ async fn jbm_hybrid_download_falls_through_to_upstream() {
         .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
+    assert_eq!(
+        content_disposition(&resp).as_deref(),
+        Some(r#"attachment; filename="org.not.local-9.9.9.zip""#)
+    );
     let body = String::from_utf8(read_body(resp).await.to_vec()).unwrap();
     assert!(
         body.starts_with("artifact:jetbrains-marketplace"),
@@ -439,6 +458,10 @@ async fn jbm_plugin_manager_resolves_latest_compatible() {
         .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
+    assert_eq!(
+        content_disposition(&resp).as_deref(),
+        Some(r#"attachment; filename="org.demo.a-1.0.0.zip""#)
+    );
     assert_eq!(read_body(resp).await.to_vec(), v1);
 
     // Incompatible build → 404.
