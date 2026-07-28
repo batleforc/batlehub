@@ -54,10 +54,21 @@ WORK="$(mktemp -d)"
 SERVER_PID=""
 
 stop_server() {
-  if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
-    # SIGTERM → actix graceful shutdown → llvm profile data flushes at exit.
-    kill -TERM "$SERVER_PID" 2>/dev/null || true
+  if [[ -n "$SERVER_PID" ]]; then
+    # SIGTERM the whole process group: $SERVER_PID is the `cargo llvm-cov` /
+    # `cargo run` wrapper and the batlehub-server binary is a grandchild.
+    # cargo does not forward signals, so signalling the wrapper alone strands
+    # the server — no graceful shutdown, no llvm profile flush (the profraw
+    # files would be missing at `cargo llvm-cov report` time). `setsid` at
+    # launch made $SERVER_PID the process-group id.
+    kill -TERM -- "-$SERVER_PID" 2>/dev/null || kill -TERM "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
+    # The server binary outlives the wrapper by a beat — wait for the whole
+    # group to exit so the profile data is fully written before reporting.
+    for _ in $(seq 1 60); do
+      pgrep -g "$SERVER_PID" >/dev/null 2>&1 || break
+      sleep 1
+    done
   fi
   SERVER_PID=""
 }
@@ -73,11 +84,13 @@ log() { printf '\n==> %s\n' "$*"; }
 # ── 1. Start the server ───────────────────────────────────────────────────────
 
 log "Starting BatleHub server (coverage=$COVERAGE)"
+# setsid: own process group, so stop_server can SIGTERM cargo AND the server
+# binary it spawns in one shot (see stop_server).
 if [[ "$COVERAGE" == "1" ]]; then
-  cargo llvm-cov run --no-report -p batlehub-server -- \
+  setsid cargo llvm-cov run --no-report -p batlehub-server -- \
     --config tests/heavy/config.heavy.toml >"$WORK/server.log" 2>&1 &
 else
-  cargo run -p batlehub-server -- \
+  setsid cargo run -p batlehub-server -- \
     --config tests/heavy/config.heavy.toml >"$WORK/server.log" 2>&1 &
 fi
 SERVER_PID=$!
