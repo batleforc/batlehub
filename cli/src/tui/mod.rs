@@ -1,5 +1,6 @@
 mod admin_stats;
 mod help;
+mod ide_setup;
 mod list_nav;
 mod login;
 mod package_detail;
@@ -21,6 +22,7 @@ use tui_input::Input;
 use uuid::Uuid;
 
 use admin_stats::AdminStatsWidget;
+use ide_setup::IdeSetupWidget;
 use login::LoginWidget;
 use package_detail::PackageDetailWidget;
 use package_list::PackageListWidget;
@@ -35,6 +37,7 @@ pub enum Screen {
     PackageDetail { registry: String, name: String },
     PublishWizard,
     SetupWizard,
+    IdeSetup,
     Login,
     Help,
     AdminStats,
@@ -48,6 +51,7 @@ pub struct App {
     pub package_detail: PackageDetailWidget,
     pub publish_form: PublishFormWidget,
     pub setup_wizard: SetupWizardWidget,
+    pub ide_setup: IdeSetupWidget,
     pub login: LoginWidget,
     pub admin_stats: AdminStatsWidget,
     pub client: BatleHubClient,
@@ -65,6 +69,7 @@ impl App {
             package_detail: PackageDetailWidget::new(),
             publish_form: PublishFormWidget::new(),
             setup_wizard: SetupWizardWidget::new(),
+            ide_setup: IdeSetupWidget::new(),
             login: LoginWidget::new(),
             admin_stats: AdminStatsWidget::new(),
             client,
@@ -143,6 +148,7 @@ async fn handle_key(app: &mut App, key: event::KeyEvent) {
         }
         Screen::PublishWizard => handle_publish_form(app, key),
         Screen::SetupWizard => handle_setup_wizard(app, key),
+        Screen::IdeSetup => handle_ide_setup(app, key),
         Screen::Login => handle_login(app, key).await,
         Screen::Help => {
             if matches!(
@@ -200,6 +206,13 @@ async fn handle_registry_list(app: &mut App, key: event::KeyEvent) {
             app.setup_wizard.set_items(items, cwd);
             app.prev_screen = Some(Screen::RegistryList);
             app.screen = Screen::SetupWizard;
+        }
+        KeyCode::Char('i') => {
+            let server_url = app.client.base_url.clone();
+            let items = crate::api::ide::detect_ides(&server_url, &app.registry_list.nav.items);
+            app.ide_setup.set_items(items);
+            app.prev_screen = Some(Screen::RegistryList);
+            app.screen = Screen::IdeSetup;
         }
         KeyCode::Char('L') => {
             app.login = LoginWidget::new();
@@ -370,6 +383,19 @@ fn handle_setup_wizard(app: &mut App, key: event::KeyEvent) {
     }
 }
 
+fn handle_ide_setup(app: &mut App, key: event::KeyEvent) {
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => app.ide_setup.nav.prev(),
+        KeyCode::Down | KeyCode::Char('j') => app.ide_setup.nav.next(),
+        KeyCode::Esc => app.go_back(),
+        KeyCode::Char('?') => {
+            app.prev_screen = Some(Screen::IdeSetup);
+            app.screen = Screen::Help;
+        }
+        _ => {}
+    }
+}
+
 async fn handle_login(app: &mut App, key: event::KeyEvent) {
     // Switching to OIDC tab fetches the authorization URL asynchronously
     if key.code == KeyCode::Char('2') {
@@ -418,6 +444,9 @@ fn render(f: &mut ratatui::Frame, app: &App) {
         }
         Screen::SetupWizard => {
             setup_wizard::render(f, app);
+        }
+        Screen::IdeSetup => {
+            ide_setup::render(f, app);
         }
         Screen::Login => {
             login::render(f, app);

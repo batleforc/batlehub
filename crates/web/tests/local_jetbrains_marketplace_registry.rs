@@ -27,10 +27,13 @@ use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
     ports::{
-        CacheStore, FetchedArtifact, PackageRepository, RegistryClient, StorageBackend,
-        UserTokenRepository,
+        CacheStore, FetchedArtifact, NoopWarmCoordinator, PackageRepository, RegistryClient,
+        StorageBackend, StorageMeta, UserTokenRepository,
     },
-    services::{new_hot_lock, AdminService, HotConfig, ProxyMetrics, ProxyService, RegistryPolicy},
+    services::{
+        new_hot_lock, AdminService, HotConfig, ProxyMetrics, ProxyService, RegistryPolicy,
+        WarmingService,
+    },
 };
 use batlehub_web::RegistryModeMap;
 
@@ -638,6 +641,9 @@ impl RegistryClient for FlakyJbmRegistry {
 
 /// Proxy-mode app around a flippable upstream, with `serve_stale_metadata`
 /// enabled and a very short metadata TTL so the stale path is exercised.
+///
+/// The storage backend is returned too so warming tests can share the exact
+/// cache the proxy read path uses.
 async fn make_flaky_jbm_app(
     upstream_map: batlehub_web::UpstreamMap,
 ) -> (
@@ -647,6 +653,7 @@ async fn make_flaky_jbm_app(
         Error = actix_web::Error,
     >,
     Arc<FlakyJbmRegistry>,
+    Arc<dyn StorageBackend>,
 ) {
     let client = FlakyJbmRegistry::new();
     let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
@@ -674,7 +681,7 @@ async fn make_flaky_jbm_app(
             policies,
             ..Default::default()
         }),
-        storage,
+        storage: storage.clone(),
         cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
@@ -702,12 +709,12 @@ async fn make_flaky_jbm_app(
         test_auth_providers(),
     )
     .await;
-    (app, client)
+    (app, client, storage)
 }
 
 #[actix_web::test]
 async fn jbm_offline_metadata_endpoint_serves_stale() {
-    let (app, client) = make_flaky_jbm_app(batlehub_web::UpstreamMap::default()).await;
+    let (app, client, _storage) = make_flaky_jbm_app(batlehub_web::UpstreamMap::default()).await;
 
     // First hit while the upstream is alive: cached.
     let req = TestRequest::get()
@@ -743,7 +750,7 @@ async fn jbm_offline_metadata_endpoint_serves_stale() {
 
 #[actix_web::test]
 async fn jbm_offline_artifact_still_streams_from_storage() {
-    let (app, client) = make_flaky_jbm_app(batlehub_web::UpstreamMap::default()).await;
+    let (app, client, _storage) = make_flaky_jbm_app(batlehub_web::UpstreamMap::default()).await;
 
     // Fetch once while alive — cached in storage.
     let req = TestRequest::get()
@@ -770,6 +777,57 @@ async fn jbm_offline_artifact_still_streams_from_storage() {
     assert_eq!(read_body(resp).await, first);
 }
 
+// ── Cache warming ─────────────────────────────────────────────────────────────
+
+/// Warming must land the plugin archive in the very slot `plugin/download`
+/// reads from — otherwise a warm run reports success while every download still
+/// goes to upstream.
+///
+/// The key is never spelled out here: whatever key warming wrote is overwritten
+/// with a sentinel, and the download endpoint has to return that sentinel.
+#[actix_web::test]
+async fn jbm_warmed_plugin_lands_in_the_download_cache_slot() {
+    let (app, client, storage) = make_flaky_jbm_app(batlehub_web::UpstreamMap::default()).await;
+
+    let warming = WarmingService {
+        client: client.clone() as Arc<dyn RegistryClient>,
+        storage: storage.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        registry_name: "jbm".to_owned(),
+        latest_n: 1,
+        concurrency: 2,
+        coordinator: Arc::new(NoopWarmCoordinator),
+        metrics: Arc::new(ProxyMetrics::new(&["jbm".to_owned()])),
+    };
+    let report = warming.warm_package("org.flaky.plugin@1.2.0").await;
+    assert_eq!(report.warmed, 1, "pinned version must be fetched");
+    assert_eq!(report.errors, 0);
+
+    let keys = storage.list_keys("artifact:").await.unwrap();
+    assert_eq!(keys.len(), 1, "exactly one artifact warmed: {keys:?}");
+    storage
+        .store(
+            &keys[0],
+            Bytes::from_static(b"sentinel-from-warming"),
+            StorageMeta::default(),
+        )
+        .await
+        .unwrap();
+
+    let req = TestRequest::get()
+        .uri("/proxy/jbm/plugin/download?pluginId=org.flaky.plugin&version=1.2.0")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        read_body(resp).await,
+        Bytes::from_static(b"sentinel-from-warming"),
+        "download must be served from the warmed slot ({}), not re-fetched",
+        keys[0]
+    );
+}
+
 #[actix_web::test]
 async fn jbm_offline_forwarded_blob_serves_stale() {
     // Real HTTP upstream for the cached-forward path.
@@ -785,7 +843,7 @@ async fn jbm_offline_forwarded_blob_serves_stale() {
 
     let upstream_map =
         batlehub_web::UpstreamMap::new([("jbm".to_owned(), server.url())].into_iter().collect());
-    let (app, _client) = make_flaky_jbm_app(upstream_map).await;
+    let (app, _client, _storage) = make_flaky_jbm_app(upstream_map).await;
 
     let req = TestRequest::get()
         .uri("/proxy/jbm/files/brokenPlugins.json")

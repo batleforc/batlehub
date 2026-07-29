@@ -216,7 +216,7 @@ Version enumeration (needed to warm bare package names) is implemented for **npm
 
 ## Content-addressable deduplication {#deduplication}
 
-Artifact bytes are stored at a content-addressed key (`blob/{sha256}`) in blob storage. Each logical artifact path (e.g. `artifact:npm/lodash:4.17.21`) holds a reference to the blob rather than the bytes themselves. A reference-count table tracks how many logical keys point to each blob.
+Artifact bytes are stored at a content-addressed key (`blob/{sha256}`) in blob storage. Each logical artifact path (e.g. `artifact:npm/lodash/4.17.21`) holds a reference to the blob rather than the bytes themselves. A reference-count table tracks how many logical keys point to each blob.
 
 This means:
 - The same package published to two registries stores only one copy.

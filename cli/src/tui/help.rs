@@ -55,6 +55,7 @@ pub fn render(f: &mut Frame, _app: &App) {
         Line::from("  Enter        Open registry / browse packages"),
         Line::from("  p            Open publish wizard"),
         Line::from("  s            Open setup wizard (scan current dir)"),
+        Line::from("  i            Open IDE setup (detect editor → registry)"),
         Line::from("  L            Open login screen (OIDC / Kubernetes / static token)"),
         Line::from(""),
         Line::from(Span::styled(
@@ -81,11 +82,12 @@ pub fn render(f: &mut Frame, _app: &App) {
         Line::from("  Esc          Cancel"),
         Line::from(""),
         Line::from(Span::styled(
-            "Setup wizard",
+            "Setup wizard / IDE setup",
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from("  ↑ / k        Move up"),
         Line::from("  ↓ / j        Move down"),
+        Line::from("  (IDE setup)  * marks a registry type not configured yet"),
         Line::from(""),
         Line::from(Span::styled(
             "Login",

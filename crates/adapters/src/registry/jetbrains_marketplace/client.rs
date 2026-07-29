@@ -165,10 +165,21 @@ impl RegistryClient for JetbrainsMarketplaceRegistryClient {
         })
     }
 
+    /// Versions **oldest-first**, per the `RegistryClient::list_versions`
+    /// contract — `/plugins/list` answers newest-first, so the upstream order is
+    /// inverted and then sorted by publish date (a stable sort, so entries
+    /// without a `date` attribute keep the inverted upstream order and stay
+    /// ahead of the dated ones).
+    ///
+    /// Ordering is not cosmetic here: warming takes the *last* `warm_latest_n`
+    /// entries, so a newest-first list would pre-fetch the oldest releases.
     async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
         let entries = self.fetch_plugin_list(package).await?;
+        let mut ordered: Vec<&PluginListEntry> = entries.iter().rev().collect();
+        ordered.sort_by_key(|e| e.date_ms.unwrap_or(i64::MIN));
+
         let mut versions: Vec<String> = Vec::new();
-        for e in &entries {
+        for e in ordered {
             if let Some(v) = &e.version {
                 if !versions.contains(v) {
                     versions.push(v.clone());

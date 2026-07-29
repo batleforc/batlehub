@@ -46,9 +46,12 @@ fn is_blocked_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_blocked_v4(v4),
         IpAddr::V6(v6) => {
-            // An IPv4-mapped address (`::ffff:a.b.c.d`) is really the v4 host —
-            // check it as such so `::ffff:169.254.169.254` cannot slip through.
-            if let Some(v4) = v6.to_ipv4_mapped() {
+            // An IPv4-mapped (`::ffff:a.b.c.d`) or IPv4-compatible (`::a.b.c.d`)
+            // address is really the v4 host — check it as such so neither
+            // `::ffff:169.254.169.254` nor `::169.254.169.254` can slip through.
+            // `to_ipv4()` covers both forms (it is broader than
+            // `to_ipv4_mapped()`); native IPv6 addresses fall through unchanged.
+            if let Some(v4) = v6.to_ipv4() {
                 return is_blocked_v4(v4);
             }
             let seg = v6.segments();
@@ -211,8 +214,20 @@ mod tests {
     }
 
     #[test]
-    fn blocks_ipv6_local_and_mapped_metadata() {
-        for ip in ["::1", "::", "fc00::1", "fe80::1", "::ffff:169.254.169.254"] {
+    fn blocks_ipv6_local_and_v4_embedded_metadata() {
+        for ip in [
+            "::1",
+            "::",
+            "fc00::1",
+            "fe80::1",
+            // IPv4-mapped (`::ffff:a.b.c.d`)
+            "::ffff:169.254.169.254",
+            "::ffff:127.0.0.1",
+            // IPv4-compatible (`::a.b.c.d`) — must be blocked too
+            "::169.254.169.254",
+            "::127.0.0.1",
+            "::10.0.0.1",
+        ] {
             assert!(is_blocked_ip(ip.parse().unwrap()), "{ip} must be blocked");
         }
         assert!(!is_blocked_ip("2606:4700:4700::1111".parse().unwrap()));

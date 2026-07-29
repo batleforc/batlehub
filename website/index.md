@@ -60,52 +60,12 @@ features:
 
 ## Supported registries
 
-BatleHub proxies nineteen registry types. Every registry type can run as a pure cache (proxy mode), a fully private registry (local mode), or a hybrid of both — except **JetBrains** (the IDE-archive kind), which is proxy-only.
+BatleHub proxies, caches, and privately hosts **21 registry types**. Each runs as a pure cache (**proxy**), a fully private registry (**local**), or a **hybrid** of both — except the source forges, JetBrains IDE archives, and the Generic mirror, which are proxy-only.
 
-| Registry | Protocol | Default upstream |
-|----------|----------|-----------------|
-| **GitHub** | Releases, assets, tarballs, raw files | `api.github.com` |
-| **Forgejo / Gitea** | Releases, assets, source archives, raw files (`/api/v1`) | `codeberg.org` |
-| **GitLab** | Releases, release link assets, source archives (`/api/v4`) | `gitlab.com` |
-| **npm** | Full packument + tarball proxy | `registry.npmjs.org` |
-| **Cargo** | Sparse index + `.crate` download | `crates.io` |
-| **OpenVSX** | VS Code extension VSIX | `open-vsx.org` |
-| **VS Code Marketplace** | VS Code extension VSIX via Microsoft Gallery API | `marketplace.visualstudio.com` |
-| **Go** | GOPROXY protocol (`.info`, `.mod`, `.zip`) | `proxy.golang.org` |
-| **Maven** | Maven Central-compatible metadata XML + JAR / POM downloads | `repo1.maven.org` |
-| **Terraform** | Provider and module proxy protocol (v1 API) | `registry.terraform.io` |
-| **RubyGems** | Gem downloads, version listing, REST info API | `rubygems.org` |
-| **Composer** | Packagist v2 protocol (`packages.json`, p2 metadata, dist downloads) | `repo.packagist.org` |
-| **PyPI** | Simple Repository API (PEP 503/691) + JSON API; URL-rewriting for pip/uv/Poetry | `pypi.org` |
-| **Conda** | repodata.json channel proxy; `.conda` and `.tar.bz2` package downloads | `conda.anaconda.org` |
-| **NuGet** | NuGet v3 service index, flat container metadata, `.nupkg` downloads and publish | `api.nuget.org` |
-| **Deb (APT)** | Path-based APT repository: `Packages`/`Release` proxy + signed private hosting | — ³ |
-| **RPM (YUM/DNF)** | Path-based `repodata/` repository proxy + signed private hosting | — ³ |
-| **JetBrains** | Path-based proxy cache for IDE installer archives | `download.jetbrains.com` ⁵ |
-| **JetBrains Marketplace** | IDE plugin API (search, compatible updates, downloads) + `updatePlugins.xml`; marketplace-compatible publish | `plugins.jetbrains.com` |
+- **Language packages** — npm · Cargo · Go · Maven · PyPI · Conda · Composer · RubyGems · NuGet · Terraform
+- **Editor extensions** — OpenVSX · VS Code Marketplace · JetBrains Marketplace
+- **OS packages** — Debian/APT · RPM/YUM/DNF · Pacman/Arch
+- **Source forges** — GitHub · Forgejo/Gitea · GitLab
+- **Binaries & mirrors** — JetBrains IDE archives · Generic file mirror
 
-The per-package feature matrix below covers the package-centric registries. **Forgejo** and **GitLab** behave like **GitHub** (proxy-only release assets). **Deb**, **RPM**, and **JetBrains** are **path-addressed** formats (last three columns, ⁶): they have no per-package model, so the structural axes do not apply — but they still get registry-level RBAC, multi-upstream fanout, and (Deb/RPM) signed private hosting.
-
-| Feature | GitHub | npm | Cargo | OpenVSX | VS Code | Go | Maven | Terraform | RubyGems | Composer | PyPI | Conda | NuGet | Deb ⁶ | RPM ⁶ | JetBrains ⁶ |
-|---------|:------:|:---:|:-----:|:-------:|:-------:|:--:|:-----:|:---------:|:--------:|:--------:|:----:|:-----:|:-----:|:-----:|:-----:|:----------:|
-| Version listing | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ ¹ | ✓ | — | — | — |
-| Source archive | ✓ | ✓ | ✓ | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
-| Binary / extension | ✓ | — | — | ✓ | ✓ | — | ✓ | ✓ | — | — | ✓ | ✓ | ✓ | — | — | — |
-| **Private publish** | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
-| Multi-upstream fanout | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Release age gate | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ⚠ ² | ✓ | — | — | — |
-| RBAC | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Cache warming (version enumeration) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — | ✓ | ✓ ¹ | ✓ | — | — | — |
-| Explorer upstream search ⁴ | — | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | — | — | — |
-
-> ¹ Conda has no dedicated per-package version listing API. BatleHub synthesises one by scanning `repodata.json` for `noarch`, `linux-64`, `osx-64`, `osx-arm64`, and `win-64`. Results are the union of versions found across all available platforms.
->
-> ² Conda timestamps come from the `timestamp` field in `repodata.json` (ms since epoch). Most packages carry it; packages without one skip the gate by default. Set `deny_missing_timestamp = true` on the rule to block packages with no timestamp instead.
->
-> ³ Deb / RPM have no universal default upstream — set `upstreams` explicitly for proxy/hybrid mode. In local mode no upstream is contacted.
->
-> ⁴ Package Explorer upstream ("Not Yet Proxied") search. Go uses pkg.go.dev; PyPI is exact-name lookup; Terraform combines module search with namespace/exact provider lookup. The release proxies (GitHub/Forgejo/GitLab), VS Code Marketplace, Conda, Deb/RPM, and JetBrains have no upstream search API — see the [Package Explorer guide](/guide/package-explorer#upstream-supported).
->
-> ⁵ JetBrains is proxy-only. The default upstream (`download.jetbrains.com`) serves IDE installer archives; override `upstreams` to cache another host (e.g. `plugins.jetbrains.com`). IDE archives are large (~1–1.7 GB), so raise `limits.max_artifact_size_bytes` (default 500 MiB).
->
-> ⁶ Deb, RPM, and JetBrains are **path-addressed**: artifacts are fetched by file path with no per-package version model, so the version/source/binary/age-gate/warming/search axes do not apply (—). They do support multi-upstream fanout and registry-level RBAC; **Deb/RPM** additionally support signed private hosting (`local`/`hybrid`), while **JetBrains** is proxy-only.
+👉 See the **[Registries reference](/registries/)** for the full feature matrix and a dedicated setup page for every registry.

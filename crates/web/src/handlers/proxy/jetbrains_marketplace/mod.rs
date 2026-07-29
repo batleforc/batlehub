@@ -38,6 +38,15 @@ pub(crate) const REGISTRY_TYPE: &str = "jetbrains-marketplace";
 /// The Stable channel is the empty string, matching marketplace conventions.
 pub(crate) const STABLE_CHANNEL: &str = "";
 
+/// `PackageId::artifact` sub-coordinate the plugin archive is cached under, so
+/// the download endpoints and cache warming share one storage slot.
+///
+/// Must stay equal to `RegistryKind::JetbrainsMarketplace.warm_artifact()` —
+/// warming pre-fetches into exactly this key, and the test below fails if the
+/// two ever drift. A non-Stable channel appends `@{channel}`, which warming
+/// does not pre-fetch (`/plugins/list` only enumerates Stable).
+pub(crate) const PLUGIN_ARTIFACT: &str = "plugin";
+
 pub(crate) fn require_jbm(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     super::common::require_registry_type(registry, REGISTRY_TYPE, map)
 }
@@ -78,7 +87,20 @@ pub(crate) fn content_type_for(file_name: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::content_type_for;
+    use super::{content_type_for, PLUGIN_ARTIFACT};
+    use batlehub_core::entities::RegistryKind;
+
+    /// Warming writes the plugin archive under
+    /// `RegistryKind::warm_artifact()`; the download handlers read it back under
+    /// `PLUGIN_ARTIFACT`. If these diverge, warmed plugins silently stop being
+    /// served from cache.
+    #[test]
+    fn plugin_artifact_matches_the_warming_coordinate() {
+        assert_eq!(
+            RegistryKind::JetbrainsMarketplace.warm_artifact(),
+            Some(PLUGIN_ARTIFACT)
+        );
+    }
 
     #[test]
     fn content_types() {

@@ -4,7 +4,11 @@
 use futures::TryStreamExt;
 use mockito::Server;
 
-use batlehub_core::{entities::PackageId, error::CoreError, ports::RegistryClient};
+use batlehub_core::{
+    entities::{PackageId, RegistryKind},
+    error::CoreError,
+    ports::RegistryClient,
+};
 
 use super::models::parse_plugin_list;
 use super::JetbrainsMarketplaceRegistryClient;
@@ -234,7 +238,7 @@ async fn resolve_metadata_server_error_is_registry_error() {
 // ── list_versions ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn list_versions_returns_all_versions() {
+async fn list_versions_returns_all_versions_oldest_first() {
     let mut server = Server::new_async().await;
     let _m = server
         .mock("GET", "/plugins/list?pluginId=org.rust.lang")
@@ -246,7 +250,39 @@ async fn list_versions_returns_all_versions() {
     let client =
         JetbrainsMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
     let versions = client.list_versions("org.rust.lang").await.unwrap();
-    assert_eq!(versions, vec!["1.2.0", "1.1.0"]);
+    // The upstream body lists 1.2.0 before 1.1.0; the port contract (and cache
+    // warming, which takes the tail) wants oldest-first.
+    assert_eq!(versions, vec!["1.1.0", "1.2.0"]);
+}
+
+#[tokio::test]
+async fn list_versions_without_dates_inverts_the_upstream_order() {
+    let body = r#"<plugin-repository><category>
+      <idea-plugin><id>x</id><version>2.0.0</version></idea-plugin>
+      <idea-plugin><id>x</id><version>1.0.0</version></idea-plugin>
+    </category></plugin-repository>"#;
+    let mut server = Server::new_async().await;
+    let _m = server
+        .mock("GET", "/plugins/list?pluginId=x")
+        .with_status(200)
+        .with_body(body)
+        .create_async()
+        .await;
+
+    let client =
+        JetbrainsMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
+    let versions = client.list_versions("x").await.unwrap();
+    assert_eq!(versions, vec!["1.0.0", "2.0.0"]);
+}
+
+#[test]
+fn warm_artifact_is_the_plugin_sub_coordinate() {
+    // Cache warming stores the plugin archive under this coordinate; the
+    // `plugin/download` handler reads it back from the same one.
+    assert_eq!(
+        RegistryKind::JetbrainsMarketplace.warm_artifact(),
+        Some("plugin")
+    );
 }
 
 // ── fetch_artifact ────────────────────────────────────────────────────────────

@@ -63,32 +63,31 @@ export default defineConfig({
     logo: "/logo.svg",
     siteTitle: "BatleHub.",
 
+    // Navbar = top-level section entry points (plain links). The detailed
+    // page tree for each section lives in the sidebar, so the two don't repeat
+    // the same items. Reference topics (Caching, Access Control, Package
+    // Explorer, SBOM, HA) and Config Generator are reached via the guide sidebar.
     nav: [
       { text: "Home", link: "/" },
       {
-        text: "Getting Started",
-        activeMatch: "/guide/(installation|user)",
-        items: [
-          { text: "Installation", link: "/guide/installation" },
-          { text: "User Guide", link: "/guide/user" },
-        ],
+        text: "Installation",
+        link: "/guide/installation",
+        activeMatch: "/guide/installation",
       },
       {
-        text: "Reference",
-        activeMatch: "/guide/(administration|caching|access-control|high-availability|package-explorer|sbom|explore-cache)",
-        items: [
-          { text: "Administration", link: "/guide/administration" },
-          { text: "Caching", link: "/guide/caching" },
-          { text: "Access Control", link: "/guide/access-control" },
-          { text: "Package Explorer", link: "/guide/package-explorer" },
-          { text: "SBOM", link: "/guide/sbom" },
-          { text: "High Availability", link: "/guide/high-availability" },
-        ],
+        text: "User Guide",
+        link: "/guide/user",
+        activeMatch: "/guide/user",
       },
       {
-        text: "Config Generator",
-        activeMatch: "/guide/config-generator",
-        link: "/guide/config-generator",
+        text: "Registries",
+        link: "/registries/",
+        activeMatch: "/registries/",
+      },
+      {
+        text: "Administration",
+        link: "/guide/administration",
+        activeMatch: "/guide/admin",
       },
       {
         text: "Roadmap",
@@ -97,297 +96,107 @@ export default defineConfig({
       },
     ],
 
-    // Per-page sidebar: each section only shows its own subsections.
-    // Top nav handles cross-section navigation.
+    // Page-grouped sidebars: each entry links a sibling *page*, not an in-page
+    // anchor. VitePress's on-this-page outline (right aside) covers the headings
+    // within a page, so they are not duplicated in the left sidebar.
     sidebar: {
-      "/guide/installation": [
+      "/registries/": [
         {
-          text: "Installation",
+          text: "Registries",
+          items: [{ text: "Overview & matrix", link: "/registries/" }],
+        },
+        {
+          text: "Source hosting",
+          collapsed: false,
           items: [
-            {
-              text: "Prerequisites",
-              link: "/guide/installation#prerequisites",
-            },
-            {
-              text: "Docker Compose",
-              link: "/guide/installation#docker-compose-quickest-path",
-            },
-            {
-              text: "Binary from source",
-              link: "/guide/installation#binary-from-source",
-            },
-            { text: "Helm chart", link: "/guide/installation#helm-chart" },
-            {
-              text: "Helm: secret injection",
-              link: "/guide/installation#helm-env-vars",
-            },
-            {
-              text: "First-time setup",
-              link: "/guide/installation#first-time-setup",
-            },
+            { text: "GitHub", link: "/registries/github" },
+            { text: "Forgejo / Gitea", link: "/registries/forgejo" },
+            { text: "GitLab", link: "/registries/gitlab" },
+          ],
+        },
+        {
+          text: "Language package managers",
+          collapsed: false,
+          items: [
+            { text: "npm", link: "/registries/npm" },
+            { text: "Cargo", link: "/registries/cargo" },
+            { text: "Go Modules", link: "/registries/goproxy" },
+            { text: "Maven", link: "/registries/maven" },
+            { text: "PyPI", link: "/registries/pypi" },
+            { text: "Conda", link: "/registries/conda" },
+            { text: "Composer", link: "/registries/composer" },
+            { text: "RubyGems", link: "/registries/rubygems" },
+            { text: "NuGet", link: "/registries/nuget" },
+            { text: "Terraform", link: "/registries/terraform" },
+          ],
+        },
+        {
+          text: "Editor extensions",
+          collapsed: false,
+          items: [
+            { text: "OpenVSX", link: "/registries/openvsx" },
+            { text: "VS Code Marketplace", link: "/registries/vscode-marketplace" },
+            { text: "JetBrains Marketplace", link: "/registries/jetbrains-marketplace" },
+          ],
+        },
+        {
+          text: "OS / system packages",
+          collapsed: false,
+          items: [
+            { text: "Debian / APT", link: "/registries/deb" },
+            { text: "RPM / YUM / DNF", link: "/registries/rpm" },
+            { text: "Pacman / Arch", link: "/registries/pacman" },
+          ],
+        },
+        {
+          text: "Binaries & mirrors",
+          collapsed: false,
+          items: [
+            { text: "JetBrains IDEs", link: "/registries/jetbrains" },
+            { text: "Generic mirror", link: "/registries/generic" },
           ],
         },
       ],
-      "/guide/administration": [
+      "/guide/": [
+        {
+          text: "Getting started",
+          items: [
+            { text: "Installation", link: "/guide/installation" },
+            { text: "User Guide", link: "/guide/user" },
+            { text: "Config Generator", link: "/guide/config-generator" },
+          ],
+        },
         {
           text: "Administration",
           items: [
-            {
-              text: "Configuration",
-              link: "/guide/administration#configuration",
-            },
-            {
-              text: "Secret injection (${VAR})",
-              link: "/guide/administration#env-inline",
-            },
-            {
-              text: "Named env overrides",
-              link: "/guide/administration#env-named",
-            },
-            { text: "Storage", link: "/guide/administration#storage" },
-            {
-              text: "Health & Observability",
-              link: "/guide/administration#health",
-            },
-            {
-              text: "Cache policy",
-              link: "/guide/administration#cache-policy",
-            },
-            {
-              text: "Package management",
-              link: "/guide/administration#package-management",
-            },
-            { text: "Audit log", link: "/guide/administration#audit-log" },
-            {
-              text: "Beta channel",
-              link: "/guide/administration#beta-channel",
-            },
-            { text: "IP blocking", link: "/guide/administration#ip-blocking" },
-            {
-              text: "Team namespaces",
-              link: "/guide/administration#team-namespaces",
-            },
-            { text: "Rules", link: "/guide/administration#rules" },
+            { text: "Overview", link: "/guide/administration" },
+            { text: "Configuration", link: "/guide/admin-config" },
+            { text: "Storage & health", link: "/guide/admin-storage-health" },
+            { text: "Policies & packages", link: "/guide/admin-policies" },
+            { text: "Access & audit", link: "/guide/admin-access" },
           ],
         },
-      ],
-      "/guide/caching": [
         {
-          text: "Caching",
+          text: "Reference",
           items: [
+            { text: "Caching", link: "/guide/caching" },
+            { text: "Access Control", link: "/guide/access-control" },
             {
-              text: "How the cache works",
-              link: "/guide/caching#how-the-cache-works",
-            },
-            {
-              text: "Cache backend [cache]",
-              link: "/guide/caching#cache-backend",
-            },
-            {
-              text: "Per-registry policy",
-              link: "/guide/caching#registry-cache-policy",
-            },
-            { text: "Cache warming", link: "/guide/caching#cache-warming" },
-            { text: "Deduplication", link: "/guide/caching#deduplication" },
-            { text: "Rate limiting", link: "/guide/caching#rate-limiting" },
-            { text: "Worked examples", link: "/guide/caching#worked-examples" },
-          ],
-        },
-      ],
-      "/guide/user": [
-        {
-          text: "User Guide",
-          items: [
-            { text: "Getting a token", link: "/guide/user#getting-a-token" },
-            { text: "npm", link: "/guide/user#npm" },
-            { text: "npm audit", link: "/guide/user#security-audit" },
-            { text: "Cargo", link: "/guide/user#cargo" },
-            { text: "Go Modules", link: "/guide/user#go-modules" },
-            { text: "govulncheck", link: "/guide/user#vulnerability-scanning-with-govulncheck" },
-            {
-              text: "VS Code Extensions",
-              link: "/guide/user#vs-code-extensions",
-            },
-            { text: "Composer (PHP)", link: "/guide/user#composer" },
-            { text: "composer audit", link: "/guide/user#security-audit-1" },
-            { text: "PyPI (Python)", link: "/guide/user#pypi" },
-            { text: "Conda", link: "/guide/user#conda" },
-            { text: "NuGet (.NET)", link: "/guide/user#nuget" },
-            { text: "dotnet --vulnerable", link: "/guide/user#check-for-vulnerable-packages" },
-            { text: "Troubleshooting", link: "/guide/user#troubleshooting" },
-          ],
-        },
-      ],
-      "/guide/access-control": [
-        {
-          text: "Access Control",
-          items: [
-            {
-              text: "Beta/Pre-Release Channel",
-              link: "/guide/access-control#beta-channel",
-            },
-            {
-              text: "How it works",
-              link: "/guide/access-control#beta-how-it-works",
-            },
-            {
-              text: "Configuration",
-              link: "/guide/access-control#beta-config",
-            },
-            {
-              text: "Managing members",
-              link: "/guide/access-control#beta-members",
-            },
-            {
-              text: "Registry support",
-              link: "/guide/access-control#beta-registries",
-            },
-            {
-              text: "IP-Based Blocking",
-              link: "/guide/access-control#ip-blocking",
-            },
-            {
-              text: "Configuration",
-              link: "/guide/access-control#ip-config",
-            },
-            {
-              text: "Manual block management",
-              link: "/guide/access-control#ip-admin",
-            },
-            {
-              text: "Storage backends",
-              link: "/guide/access-control#ip-storage",
-            },
-            {
-              text: "Team Namespaces & Visibility",
-              link: "/guide/access-control#team-namespaces",
-            },
-            {
-              text: "Namespace claims",
-              link: "/guide/access-control#ns-claims",
-            },
-            {
-              text: "Package visibility",
-              link: "/guide/access-control#ns-visibility",
-            },
-            {
-              text: "Registry support",
-              link: "/guide/access-control#ns-registries",
-            },
-          ],
-        },
-      ],
-      "/guide/package-explorer": [
-        {
-          text: "Package Explorer",
-          items: [
-            { text: "Overview", link: "/guide/package-explorer#overview" },
-            { text: "Data sources", link: "/guide/package-explorer#sources" },
-            { text: "Using the catalog", link: "/guide/package-explorer#catalog" },
-            { text: "Package detail", link: "/guide/package-explorer#detail" },
-            { text: "Firewall status", link: "/guide/package-explorer#firewall" },
-            { text: "Upstream search", link: "/guide/package-explorer#upstream-search" },
-            { text: "Search URL config", link: "/guide/package-explorer#search-url-config" },
-            { text: "Access control", link: "/guide/package-explorer#access-control" },
-            { text: "RBAC configuration", link: "/guide/package-explorer#rbac-config" },
-            { text: "REST API", link: "/guide/package-explorer#api" },
-            {
-              text: "Explorer cache",
-              link: "/guide/package-explorer#cache",
+              text: "Package Explorer",
+              link: "/guide/package-explorer",
               items: [
-                { text: "How it works", link: "/guide/package-explorer#cache-how" },
-                { text: "Stale-while-unavailable", link: "/guide/package-explorer#cache-stale" },
-                { text: "Auto-invalidation", link: "/guide/package-explorer#cache-auto-invalidate" },
-                { text: "Manual flush (UI + API)", link: "/guide/package-explorer#cache-admin" },
-                { text: "Multi-instance", link: "/guide/package-explorer#cache-ha" },
+                { text: "Upstream search", link: "/guide/package-explorer-search" },
+                { text: "Access control", link: "/guide/package-explorer-access" },
+                { text: "Cache & API", link: "/guide/package-explorer-cache" },
               ],
             },
-            { text: "Performance notes", link: "/guide/package-explorer#performance" },
+            { text: "SBOM", link: "/guide/sbom" },
+            { text: "High Availability", link: "/guide/high-availability" },
           ],
         },
-      ],
-      "/guide/sbom": [
         {
-          text: "SBOM",
-          items: [
-            { text: "Overview", link: "/guide/sbom#overview" },
-            { text: "Supported formats", link: "/guide/sbom#formats" },
-            { text: "How SBOMs are generated", link: "/guide/sbom#generation" },
-            { text: "Configuration", link: "/guide/sbom#configuration" },
-            { text: "Per-artifact API", link: "/guide/sbom#per-artifact-api" },
-            { text: "Org-level export", link: "/guide/sbom#org-export" },
-            { text: "Admin UI", link: "/guide/sbom#admin-ui" },
-            { text: "PURL mapping", link: "/guide/sbom#purl" },
-            { text: "Worked examples", link: "/guide/sbom#examples" },
-          ],
-        },
-      ],
-      "/guide/high-availability": [
-        {
-          text: "High Availability",
-          items: [
-            {
-              text: "Architecture overview",
-              link: "/guide/high-availability#overview",
-            },
-            {
-              text: "Prerequisites",
-              link: "/guide/high-availability#prerequisites",
-            },
-            {
-              text: "Configuration changes",
-              link: "/guide/high-availability#config",
-            },
-            {
-              text: "Docker Compose",
-              link: "/guide/high-availability#compose",
-            },
-            {
-              text: "Kubernetes / Helm",
-              link: "/guide/high-availability#kubernetes",
-            },
-            {
-              text: "Rolling updates",
-              link: "/guide/high-availability#rolling-updates",
-            },
-            {
-              text: "Health probes",
-              link: "/guide/high-availability#health",
-            },
-            {
-              text: "Observability",
-              link: "/guide/high-availability#observability",
-            },
-            {
-              text: "Known limitations",
-              link: "/guide/high-availability#limitations",
-            },
-          ],
-        },
-      ],
-      "/guide/roadmap": [
-        {
-          text: "Roadmap",
-          items: [
-            {
-              text: "New registry types",
-              link: "/guide/roadmap#new-registries",
-            },
-            { text: "Cache policy", link: "/guide/roadmap#cache-policy" },
-            { text: "Metrics & observability", link: "/guide/roadmap#metrics" },
-            { text: "Artifact integrity", link: "/guide/roadmap#integrity" },
-            { text: "Rate limiting", link: "/guide/roadmap#rate-limiting" },
-            { text: "Quota management", link: "/guide/roadmap#quotas" },
-            { text: "Hot reload & config", link: "/guide/roadmap#hot-reload" },
-            { text: "Webhooks", link: "/guide/roadmap#webhooks" },
-            {
-              text: "Private registry",
-              link: "/guide/roadmap#private-registry",
-            },
-            { text: "SBOM", link: "/guide/roadmap#sbom" },
-            { text: "UI improvements", link: "/guide/roadmap#ui" },
-            { text: "Testing", link: "/guide/roadmap#testing" },
-          ],
+          text: "Project",
+          items: [{ text: "Roadmap", link: "/guide/roadmap" }],
         },
       ],
     },
@@ -398,7 +207,8 @@ export default defineConfig({
     ],
 
     footer: {
-      message: "Released under the MIT License.",
+      message:
+        "Released under the Apache 2.0 License. Made with ❤️ and too much ☕.",
       copyright: "Copyright © 2026 Batleforc",
     },
 

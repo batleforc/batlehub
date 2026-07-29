@@ -1157,6 +1157,20 @@ curl -X POST http://localhost:8080/api/v1/admin/registries/npm/warm \
 
 > **Registry support:** version enumeration (used by bare-name warming) is implemented for **npm**, **Cargo**, **OpenVSX**, and **Go** modules. For GitHub and VS Code Marketplace, pass a pinned version string (e.g. `"owner/repo@v1.2.3"`) to warm a specific version.
 
+**JetBrains Marketplace:** plugins warm like any other package — an entry is the plugin `xmlId`, bare or pinned:
+
+```toml
+[[registries]]
+name = "jetbrains-plugins"
+type = "jetbrains-marketplace"
+
+[registries.cache]
+warm_packages = ["org.rust.lang", "com.intellij.ml.llm@2026.1.1"]
+warm_latest_n = 2
+```
+
+Bare names enumerate versions through `/plugins/list`, which only lists the **Stable** channel — plugins on an EAP/nightly channel are not pre-fetched (their download path carries a `channel` parameter). The warmed archive is the one the IDE downloads from `plugin/download?pluginId=…&version=…`, so it is served from cache on the first request, including while plugins.jetbrains.com is unreachable.
+
 **Cross-replica warm-up coordination (Redis):**
 
 When `[cache] type = "redis"` is configured and the `cache-redis` feature is compiled in, BatleHub automatically coordinates cache warming across replicas. Before downloading an artifact, each replica attempts to acquire a short-lived Redis lock (`SET batlehub:warm:{key} 1 NX PX 600000`). Only the first replica to acquire the lock performs the upstream download; the others skip that artifact. This prevents thundering-herd downloads when multiple replicas restart simultaneously and discover the same cold-cache misses. No additional configuration is required — the coordination is enabled automatically whenever the Redis cache backend is selected. With non-Redis backends (`memory` or `postgres`), each replica warms independently (safe but redundant).

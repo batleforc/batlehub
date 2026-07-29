@@ -302,6 +302,84 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     ],
   },
 
+  // ── VS Code Marketplace ────────────────────────────────────────────────────
+  {
+    id: "vscode-marketplace",
+    label: "VS Code Marketplace",
+    fileHint: "marketplace.visualstudio.com",
+    description:
+      `Proxy VS Code extension downloads from Microsoft's ` +
+      `<a href="https://marketplace.visualstudio.com" target="_blank" rel="noopener" ` +
+      `class="underline underline-offset-2 hover:text-foreground transition-colors">Visual Studio Marketplace</a> ` +
+      `(marketplace.visualstudio.com). Use this for extensions that are only on the Microsoft marketplace and not mirrored on open-vsx.org. ` +
+      `Extension IDs follow the <code class="text-xs font-mono bg-muted px-1 rounded">publisher.name</code> convention.`,
+    snippets: [
+      {
+        key: "vscode-marketplace-direct",
+        label: "Direct VSIX download URL",
+        lang: "text",
+        template: (ctx) =>
+          `${ctx.base}/proxy/${ctx.registryName}/{publisher}.{extension}/{version}/vsix`,
+        note:
+          `Example: download and install via CLI — ` +
+          `<code class="font-mono bg-muted px-1 rounded">` +
+          `curl -L {proxy}/ms-python.python/2024.0.0/vsix -o ext.vsix &amp;&amp; code --install-extension ext.vsix` +
+          `</code>. Use <code class="font-mono bg-muted px-1 rounded">latest</code> as the version to fetch the newest release.`,
+      },
+      {
+        key: "vscode-marketplace-mise",
+        label: "mise — URL replacement to intercept VSIX downloads",
+        lang: "toml",
+        template: (ctx) => {
+          const lines: string[] = [];
+          if (ctx.isAuthenticated) {
+            lines.push(
+              `# Authentication: mise reads ~/.netrc for HTTP Basic Auth`,
+              `# machine ${ctx.netrcHost}`,
+              `# login ${ctx.netrcLogin}`,
+              `# password ${ctx.token}`,
+              ``,
+            );
+          }
+          lines.push(
+            `[settings.url_replacements]`,
+            ``,
+            `# ── VS Code Marketplace VSIX downloads ────────────────────────────────────────`,
+            `# Intercepts VSIX downloads from marketplace.visualstudio.com and routes them`,
+            `# through the proxy. The publisher and extension name are joined as publisher.name.`,
+            String.raw`"regex:^https://marketplace\\.visualstudio\\.com/_apis/public/gallery/publishers/([^/]+)/vsextensions/([^/]+)/([^/]+)/vspackage$" = "${ctx.base}/proxy/${ctx.registryName}/$1.$2/$3/vsix"`,
+          );
+          return lines.join("\n");
+        },
+      },
+      {
+        key: "vscode-marketplace-vscodium",
+        label: "VS Code / VSCodium extension gallery (product.json)",
+        lang: "jsonc",
+        template: (ctx) =>
+          [
+            `// ~/.config/VSCodium/User/product.json  (or merge into existing product.json)`,
+            `{`,
+            `  "extensionGallery": {`,
+            `    "serviceUrl": "${ctx.base}/proxy/${ctx.registryName}/vscode/gallery",`,
+            `    "itemUrl": "${ctx.base}/proxy/${ctx.registryName}/vscode/item",`,
+            `    "resourceUrlTemplate": "${ctx.base}/proxy/${ctx.registryName}/vscode/unpkg/{publisher}/{name}/{version}/{path}"`,
+            `  }`,
+            `}`,
+          ].join("\n"),
+        note: (ctx) =>
+          `Requires the proxy to implement the VS Code gallery protocol ` +
+          `(<code class="font-mono bg-muted px-1 rounded">/vscode/gallery</code> endpoints). ` +
+          `Only VSIX proxying is supported today — download extensions with the Direct VSIX URL above.` +
+          (ctx.isAuthenticated
+            ? ` VSCodium does not support HTTP Basic Auth in ` +
+              `<code class="font-mono bg-muted px-1 rounded">product.json</code>. ` +
+              `Add your credentials to <code class="font-mono bg-muted px-1 rounded">~/.netrc</code> — see the <strong>.netrc</strong> tab.`
+            : ""),
+      },
+    ],
+  },
+
   // ── JetBrains Marketplace ──────────────────────────────────────────────────
   {
     id: "jetbrains-marketplace",

@@ -1965,6 +1965,47 @@ fn setup_detect_empty_dir_returns_empty_json() {
     );
 }
 
+/// `setup ide --json` must emit a JSON array and detect a JetBrains IDE from a
+/// `.idea/` directory in the working directory, with a placeholder registry name
+/// (the CLI path has no loaded registry list, so nothing is "configured").
+#[test]
+fn setup_ide_json_detects_idea_project() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join(".idea")).unwrap();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
+        .args(["setup", "ide", "--json"])
+        .current_dir(dir.path())
+        .env("HOME", dir.path()) // no ~/.config/{Code,VSCodium,JetBrains}
+        .env("BATLEHUB_SERVER", "https://batlehub.example.com")
+        // Strip editor signals that might leak from the test runner's own env so
+        // the only detection is the `.idea/` directory above.
+        .env_remove("TERM_PROGRAM")
+        .env_remove("VSCODE_PID")
+        .env_remove("VSCODE_IPC_HOOK")
+        .env_remove("VSCODE_IPC_HOOK_CLI")
+        .env_remove("VSCODE_GIT_IPC_HANDLE")
+        .env_remove("VSCODE_INJECTION")
+        .env_remove("TERMINAL_EMULATOR")
+        .env_remove("IDEA_INITIAL_DIRECTORY")
+        .env_remove("__INTELLIJ_COMMAND_HISTFILE__")
+        .output()
+        .expect("failed to run batlehub-cli");
+
+    assert!(
+        out.status.success(),
+        "setup ide should succeed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let items: Vec<serde_json::Value> =
+        serde_json::from_slice(&out.stdout).expect("stdout should be a JSON array");
+    let jb = items
+        .iter()
+        .find(|v| v["registry_type"] == "jetbrains-marketplace")
+        .unwrap_or_else(|| panic!("expected a jetbrains-marketplace entry; got: {items:?}"));
+    assert_eq!(jb["registry_configured"], serde_json::json!(false));
+}
+
 #[test]
 fn setup_detect_cargo_toml() {
     let dir = tempfile::tempdir().unwrap();

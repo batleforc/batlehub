@@ -120,6 +120,26 @@ impl RegistryKind {
             Self::Deb | Self::Rpm | Self::Pacman | Self::Jetbrains | Self::Generic
         )
     }
+
+    /// The `PackageId::artifact` sub-coordinate this kind's primary downloadable
+    /// artifact is cached under, when it uses one.
+    ///
+    /// Proxy cache keys are `artifact:` + [`crate::entities::PackageId::cache_key`], i.e.
+    /// `artifact:{registry}/{name}/{version}[/{artifact}]`. Most kinds address
+    /// their main artifact by name/version alone and return `None` (new kinds
+    /// default to that). JetBrains Marketplace serves the plugin archive under
+    /// `plugin` — see `jbm_plugin_download` in
+    /// `crates/web/src/handlers/proxy/jetbrains_marketplace/files.rs`, which
+    /// must keep using the same sub-coordinate.
+    ///
+    /// Warming reads this so a pre-fetched artifact lands in the exact slot the
+    /// proxy read path looks in, instead of a slot nothing ever reads.
+    pub fn warm_artifact(&self) -> Option<&'static str> {
+        match self {
+            Self::JetbrainsMarketplace => Some("plugin"),
+            _ => None,
+        }
+    }
 }
 
 impl std::str::FromStr for RegistryKind {

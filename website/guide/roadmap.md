@@ -10,7 +10,7 @@ To propose a feature or discuss an item, open an issue on the [project repositor
 
 ## New registry types {#new-registries}
 
-BatleHub currently supports npm, Cargo, GitHub, GitLab, Forgejo/Gitea, OpenVSX, VS Code Marketplace, Go modules, Maven / Gradle, RubyGems, Terraform, Composer, PyPI, Conda, NuGet, Deb (APT), RPM (YUM/DNF), JetBrains IDE archives, JetBrains Marketplace, and Arch Linux (Pacman):
+BatleHub currently supports npm, Cargo, GitHub, GitLab, Forgejo/Gitea, OpenVSX, VS Code Marketplace, Go modules, Maven / Gradle, RubyGems, Terraform, Composer, PyPI, Conda, NuGet, Deb (APT), RPM (YUM/DNF), JetBrains IDE archives, JetBrains Marketplace, Arch Linux (Pacman), and a Generic file mirror:
 
 | Registry | Status | Notes |
 |----------|--------|-------|

@@ -17,7 +17,7 @@ use batlehub_core::{
 
 use super::cached_forward::{cached_forward_get, forward_cache_key};
 use super::render::{plugin_meta_json, update_meta_json, ExtraMeta, RenderEntry};
-use super::{content_type_for, require_jbm, STABLE_CHANNEL};
+use super::{content_type_for, require_jbm, PLUGIN_ARTIFACT, STABLE_CHANNEL};
 use crate::handlers::proxy::common::{
     proxy_stream, serve_local_or_proxy_artifact, LocalOrProxyArtifactOpts,
 };
@@ -418,9 +418,9 @@ pub async fn jbm_plugin_download(
     let artifact = match query.channel.as_deref().filter(|c| !c.is_empty()) {
         Some(channel) => {
             validate_path_safe("channel", channel).map_err(AppError::from)?;
-            format!("plugin@{channel}")
+            format!("{PLUGIN_ARTIFACT}@{channel}")
         }
-        None => "plugin".to_owned(),
+        None => PLUGIN_ARTIFACT.to_owned(),
     };
     let mut resp = serve_local_or_proxy_artifact(
         svc,
@@ -558,7 +558,7 @@ pub async fn jbm_plugin_manager(
         .clone()
         .ok_or_else(|| AppError::not_found("upstream version list is empty".to_owned()))?;
 
-    let pkg = PackageId::new(&registry, &query.id, &version).with_artifact("plugin");
+    let pkg = PackageId::new(&registry, &query.id, &version).with_artifact(PLUGIN_ARTIFACT);
     let mut resp = proxy_stream(svc, pkg, identity, RELEASES_READ, None).await?;
     resp.headers_mut().insert(
         header::CONTENT_DISPOSITION,
