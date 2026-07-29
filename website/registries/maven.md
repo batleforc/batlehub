@@ -60,7 +60,7 @@ Then deploy:
 ```bash
 mvn deploy
 # or override the repository URL without editing pom.xml:
-mvn deploy -DaltDeploymentRepository=internal-maven::default::https://batlehub.example.com/proxy/<registry>/maven2
+mvn deploy -DaltDeploymentRepository=internal-maven::https://batlehub.example.com/proxy/<registry>/maven2
 ```
 
 Maven uploads the `.jar`, `-sources.jar`, `.pom`, and checksum files individually; BatleHub records the version when the `.pom` arrives. For Gradle, add a credentialed `maven { … }` repository under `publishing { repositories { … } }` and run `./gradlew publish`.
@@ -75,7 +75,7 @@ Credentials live in a `<server>` block in `~/.m2/settings.xml`, keyed by an `<id
     <server>
       <id>internal-maven</id>
       <username>token</username>
-      <password>${BATLEHUB_TOKEN}</password>
+      <password>${env.BATLEHUB_TOKEN}</password>
     </server>
   </servers>
 </settings>

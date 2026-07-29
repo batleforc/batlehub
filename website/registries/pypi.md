@@ -52,13 +52,13 @@ Or configure `~/.pypirc` with a `repository = https://batlehub.example.com/proxy
 
 Twine sends the token as the password with the literal username `__token__`. For installs, pip/uv/Poetry read credentials from `~/.netrc` automatically:
 
-```
+```text
 machine batlehub.example.com
 login <your-user-id>
 password <your-token>
 ```
 
-Alternatively embed them in the URL: `https://__token__:<your-token>@batlehub.example.com/proxy/<registry>/simple/`.
+Keep the token out of the index URL: a token embedded in `index-url` ends up in `pip.conf`, in build logs, and in `pip --verbose` / `pip config list` output. Use `~/.netrc` (above) or a [pip credential helper](https://pip.pypa.io/en/stable/topics/authentication/) instead.
 
 ## Notes
 

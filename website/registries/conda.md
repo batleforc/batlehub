@@ -53,7 +53,7 @@ Both `.tar.bz2` and `.conda` formats are accepted. The name, version, build, and
 
 Conda reads credentials from `~/.netrc` automatically:
 
-```
+```text
 machine batlehub.example.com
 login <your-user-id>
 password <your-token>

@@ -13,7 +13,7 @@ Explorer catalog results are served from an **in-memory cache** to avoid scannin
 | Invalidation | TTL expiry, admin flush, or successful publish |
 | Stale-on-failure | Yes — expired entries are kept and served if the database is unreachable |
 | Persistence | In-memory only; cleared on server restart |
-| Multi-instance | Each instance has its own cache; use the admin API to flush all instances after bulk data changes |
+| Multi-instance | Each instance has its own cache; there is no cluster-wide broadcast — after bulk data changes, call the flush endpoint on **every replica** (see [Multi-instance deployments](#cache-ha)) |
 
 ### Stale-while-unavailable {#cache-stale}
 
@@ -121,7 +121,7 @@ For large registries (> 50 000 packages), the 10-minute in-memory cache reduces 
 
 ## REST API {#api}
 
-All endpoints require a Bearer token with at least the `user` role (or `anonymous` role if the registry is public). Only registries the caller can explore are included in responses.
+Registries whose RBAC grants the `anonymous` role read access can be queried without credentials; every other registry requires a Bearer token whose identity resolves to at least the `user` role. Either way, only registries the caller can explore are included in responses.
 
 ### List packages {#api-list}
 

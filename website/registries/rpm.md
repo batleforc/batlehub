@@ -65,7 +65,7 @@ password=<your-token>
 
 Alternatively, use `~/.netrc` (DNF and libcurl honour it for HTTP Basic Auth):
 
-```
+```text
 machine batlehub.example.com
 login <your-username>
 password <your-token>

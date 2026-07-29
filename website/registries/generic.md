@@ -46,7 +46,15 @@ Tools like `mise` read these automatically, and can also route direct downloads 
 
 ## Authentication
 
-Add `-H "Authorization: Bearer $BATLEHUB_TOKEN"` when the registry requires auth. For tools driven by env vars, embed HTTP Basic credentials in the mirror URL or add a `~/.netrc` entry for the proxy host — mise reads `~/.netrc` automatically.
+Add `-H "Authorization: Bearer $BATLEHUB_TOKEN"` when the registry requires auth. For tools driven by env vars, add a `~/.netrc` entry for the proxy host — mise and anything else built on libcurl read it automatically:
+
+```text
+machine batlehub.example.com
+login <your-user-id>
+password <your-token>
+```
+
+Embedding HTTP Basic credentials in the mirror URL works as a fallback, but the token then lives in an environment variable that leaks into shell history, CI logs, process listings, and `mise doctor`-style diagnostics — prefer `~/.netrc`.
 
 ## Notes
 

@@ -8,7 +8,7 @@ Every registry type can run in one of three **modes**, set per registry in the c
 - **local** — a fully private registry. Nothing is fetched from upstream; you publish and serve your own artifacts.
 - **hybrid** — local artifacts win, and anything not published locally falls through to the upstream proxy.
 
-Four types are **proxy-only** (no private publish model): **GitHub**, **Forgejo**, **GitLab** (they host source/releases upstream) and **JetBrains** IDE archives + **Generic** file mirrors (path-only caches).
+Five types are **proxy-only** (no private publish model): **GitHub**, **Forgejo**, **GitLab** (they host source/releases upstream) and **JetBrains** IDE archives + **Generic** file mirrors (path-only caches).
 
 ## The registries
 

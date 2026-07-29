@@ -115,13 +115,13 @@ cors_allowed_origins = ["https://batlehub.example.com"]
 
 [database]
 type = "postgresql"
-url  = "postgresql://batlehub:changeme@postgres:5432/batlehub"
+url  = "${DATABASE_URL}"
 
 [[auth]]
 type = "token"
 
 [[auth.tokens]]
-value   = "change-me-admin-token"
+value   = "${ADMIN_TOKEN}"
 role    = "admin"
 user_id = "admin"
 

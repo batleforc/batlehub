@@ -15,7 +15,7 @@
 
 Today a registry is reachable at exactly one place:
 
-```
+```text
 https://hub.example.com/proxy/{registry}/…
 ```
 
@@ -23,7 +23,7 @@ This RFC proposes letting an administrator additionally bind a registry to one o
 **hostnames**, so that everything reachable under `/proxy/{registry}/…` is reachable identically at
 the **root** of that host:
 
-```
+```text
 https://npm1.hub.example.com/…      # wildcard, derived from the registry name
 https://npm.acme.io/…               # explicit vanity host
 ```
@@ -151,7 +151,7 @@ path_routing = true               # default; false ⇒ reachable only by host (�
 | a `hosts` entry equal to `base_domain` itself                    | would shadow the main host and hide the admin API |
 | a host containing `/`, a scheme prefix, or empty after trimming  | not a hostname                                   |
 | `path_routing = false` on a registry with no reachable host      | the registry would be unreachable entirely (§4.6) |
-| host-based routing configured, but `[server].trusted_proxies` absent | routing would depend on an ungoverned header (§4.5) |
+| host-based routing configured with **neither** `[server].trusted_proxies` nor the deprecated `[ip_blocking].trusted_proxies` set | routing would depend on an ungoverned header (§4.5) |
 
 This mirrors the existing duplicate-registry-name check in
 `crates/config/src/schema/mod.rs::validate` (~line 139), and lives in the same per-registry loop.
@@ -163,12 +163,13 @@ Conditions that are **warnings**, not errors — logged and surfaced in the admi
 | `[subdomain_routing]` enabled but a registry name is not a valid DNS label (`my_registry`, `Foo.Bar`) | no wildcard host for that registry; it stays reachable by path and by any explicit `hosts` |
 | both `[server].trusted_proxies` and the deprecated `[ip_blocking].trusted_proxies` are set | `[server]` wins; the warning names the shadowed one |
 | `[server].trusted_proxies` absent while *no* host routing is configured | legacy permissive header trust — recommended to set it explicitly |
+| host routing configured and satisfied only by the deprecated `[ip_blocking].trusted_proxies` | accepted, and the list governs host/scheme/client-IP alike; the warning asks for the one-line move to `[server]` |
 
 ### 4.4 The host belongs to the registry — entirely
 
 **On a registry host, every path is the registry's.** There is no passthrough allowlist.
 
-```
+```text
 GET https://cargo1.hub.example.com/api/v1/crates/new
   -> /proxy/cargo1/api/v1/crates/new     ✅ cargo publish
 
@@ -242,6 +243,12 @@ Notes:
 - `[ip_blocking].trusted_proxies` stays valid as a **deprecated alias**: when `[server]` has none, it
   is used, so no existing config breaks. When both are present, `[server]` wins and a warning names
   the shadowed one.
+- **The alias satisfies the §4.3 requirement.** "Absent" in the rule above means *no list from
+  either key*. A deployment that already declares `[ip_blocking].trusted_proxies` has stated a proxy
+  policy; refusing to start it because the same list sits under the older key would break the
+  backwards compatibility the alias exists for (§9). It resolves to the same effective list, so it
+  governs host, scheme and client IP alike — and it warns, so the deprecation is still visible and
+  the operator is nudged to move it. Only a deployment with *neither* key fails to start.
 - The trust decision is computed **once**, in the host-routing middleware, and stored in the request
   extensions next to `HostRoutedRegistry`, so the outbound helper (§5.3) and the IP-based middlewares
   read the same verdict rather than each re-deriving it.
@@ -271,8 +278,9 @@ where a URL leaked from one ingress silently keeps working on the other.
 
 ### 4.7 Configuration warnings
 
-Two rules above degrade rather than fail — a non-DNS-label registry name, a shadowed deprecated
-setting — and a silent `tracing::warn!` at startup is not good enough for something an operator
+Several rules above degrade rather than fail — a non-DNS-label registry name, a shadowed deprecated
+setting, host routing leaning on the deprecated alias — and a silent `tracing::warn!` at startup is
+not good enough for something an operator
 will only notice when a hostname mysteriously does not resolve to a registry.
 
 There is no config-warning surface in the codebase today. This RFC adds a small one, because it is
@@ -531,7 +539,6 @@ one place — it moves to a shared module and both middlewares import it.
 - `jetbrains_marketplace/files.rs` — the `/proxy/{registry}/files/…` strings there are route
   *definitions* (utoipa + `#[get]` macros), not generated URLs.
 - `nuget/vuln.rs::vuln_base` — builds an **upstream** URL, not a self-URL.
-- `front_office/packages.rs` — emits relative links for the SPA, which is served from the main host.
 
 ### 6.5 Wiring
 
@@ -637,9 +644,11 @@ cluster's pod CIDR placeholder with a comment — since §4.5 makes it mandatory
   forwards the original `Host`, and `[server].trusted_proxies` listing that proxy's IPs.
 - **Proxy trust is backwards compatible for existing deployments**: an absent `trusted_proxies`
   behaves exactly as today, and `[ip_blocking].trusted_proxies` keeps working (as a CIDR list now,
-  which every existing bare-IP value still satisfies). Adopting host routing requires adding the
-  list — a deliberate one-line migration, enforced by a startup error whose message contains the
-  exact TOML to paste (§4.5).
+  which every existing bare-IP value still satisfies) — including as the list that satisfies the
+  §4.3 host-routing requirement, so a deployment that already sets it can adopt host routing without
+  touching its proxy-trust config, and only gets a deprecation warning. Adopting host routing from a
+  config that declares **neither** key requires adding the list — a deliberate one-line migration,
+  enforced by a startup error whose message contains the exact TOML to paste (§4.5).
 - **`path_routing = false` is opt-in per registry** and defaults to `true`; no existing route
   changes behaviour.
 - **Rollback** is a config edit plus a hot reload; nothing is persisted.
@@ -651,7 +660,8 @@ cluster's pod CIDR placeholder with a comment — since §4.5 makes it mandatory
 - **Config** (`crates/config/src/schema/tests.rs`): parse + validate — duplicate host,
   wildcard/explicit collision, `enabled` without `base_domain`, host normalisation (case, port,
   trailing dot), host equal to `base_domain`, `path_routing = false` with no reachable host,
-  host routing configured with `trusted_proxies` absent; and `warnings()` returning the expected
+  host routing configured with both `trusted_proxies` keys absent (error) and with only the
+  deprecated `[ip_blocking]` one set (accepted, warns); and `warnings()` returning the expected
   codes for a non-DNS-label registry name and a shadowed `[ip_blocking].trusted_proxies`.
 - **Map** (unit tests in `crates/web/src/lib.rs`): wildcard materialisation, explicit-host
   precedence, `public_url_for`, miss on an unknown host, `replace_from`.
@@ -703,7 +713,7 @@ generated URLs on the subpath.
 | 2 | Per-registry opt-out from path routing — now or later? | **Now.** `path_routing = false` is part of this RFC, specified in §4.6. |
 | 3 | Registry name that is not a valid DNS label, under a wildcard | **Warn and skip.** Warning goes to the log *and* the admin UI, which is why §4.7 exists. |
 | 4 | Should the wildcard cover a bare `base_domain` request? | **No.** The bare domain stays the main host. |
-| 5 | `trusted_proxies` absent while host routing is configured | **Hard error.** It is a one-line migration; the error message contains the TOML to paste (§4.5). |
+| 5 | `trusted_proxies` absent while host routing is configured | **Hard error**, where "absent" means neither `[server].trusted_proxies` nor the deprecated `[ip_blocking].trusted_proxies` is set. The alias satisfies the requirement (and warns) so existing deployments are not broken by a key move; from a config with neither, it is a one-line migration and the error message contains the TOML to paste (§4.5). |
 | 6 | Exact IPs or CIDR ranges? | **CIDR**, with bare addresses accepted as `/32` / `/128`. Easier to set up and to maintain across pod-IP churn (§4.5). |
 | 1 | `public_url` visible to anonymous callers of `GET /api/v1/registries`? | **Yes**, with no extra gate. The endpoint already filters by `accessible_registries_for(&identity)`, so an anonymous caller only ever sees registries that already allow anonymous access — and for those, the host is exactly what they need to configure a client. Withholding it would leave the Setup Guide unusable for the anonymous case while hiding a hostname that is in public DNS anyway. |
 

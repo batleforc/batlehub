@@ -50,7 +50,7 @@ invocation, or the client-side snippet is worth a paragraph of prose.
 
 ### Before / after
 
-```
+```text
 # today
 
 # with this RFC

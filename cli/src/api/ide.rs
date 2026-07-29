@@ -233,9 +233,13 @@ fn build_setup(
         .unwrap_or_else(|| kind.registry_types()[0]);
 
     let instructions = match kind {
-        IdeKind::VsCode | IdeKind::VsCodium => {
-            vscode_instructions(kind, server, &registry_name, registry_configured)
-        }
+        IdeKind::VsCode | IdeKind::VsCodium => vscode_instructions(
+            kind,
+            server,
+            &registry_name,
+            registry_type,
+            registry_configured,
+        ),
         IdeKind::JetBrains => jetbrains_instructions(server, &registry_name, registry_configured),
     };
 
@@ -262,14 +266,19 @@ fn hint_if_placeholder(server: &str, registry_type: &str, configured: bool) -> S
     }
 }
 
-fn vscode_instructions(kind: IdeKind, server: &str, reg: &str, configured: bool) -> String {
+/// `registry_type` is the type [`build_setup`] actually resolved — the matched
+/// registry's type when one is configured, the editor's primary preference
+/// otherwise. Recomputing it from `kind` here would mislabel the fallback case
+/// (a VS Code user with only an `openvsx` registry configured).
+fn vscode_instructions(
+    kind: IdeKind,
+    server: &str,
+    reg: &str,
+    registry_type: &str,
+    configured: bool,
+) -> String {
     // vscode-marketplace and openvsx share the same VSIX download route, so the
     // instructions are identical apart from which type we resolved.
-    let registry_type = if kind == IdeKind::VsCodium {
-        "openvsx"
-    } else {
-        "vscode-marketplace"
-    };
     format!(
         "IDE          : {ide}\n\
          Registry     : {registry_type}  ({reg})\n\

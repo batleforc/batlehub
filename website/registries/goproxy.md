@@ -14,24 +14,66 @@ Proxy and cache Go modules via the [GOPROXY protocol](https://go.dev/ref/mod#gop
 
 ## Proxy setup
 
-Point the go toolchain at your registry. The `,direct` fallback lets the go tool reach the internet when BatleHub returns a 404:
+Point the go toolchain at your registry:
 
 ```bash
-export GONOSUMCHECK="*"
-export GONOSUMDB="*"
-export GOPROXY="https://batlehub.example.com/proxy/<registry>,direct"
+export GOPROXY="https://batlehub.example.com/proxy/<registry>"
 
 go get golang.org/x/text@v0.3.7
 ```
 
-To persist these, use `go env -w GOPROXY="https://batlehub.example.com/proxy/<registry>,direct"` (and likewise for `GONOSUMCHECK` / `GONOSUMDB`, which disable the public checksum database — required for private modules).
+There is no `,direct` fallback here on purpose: every module then resolves through BatleHub, so the proxy stays the single ingress and a miss fails loudly instead of silently reaching the internet — usually the reason for running a proxy at all. Opt in explicitly when your build hosts *are* allowed to fetch directly and you want that fallback on a 404:
+
+```bash
+export GOPROXY="https://batlehub.example.com/proxy/<registry>,direct"
+```
+
+For **private modules**, list their path prefixes so the go tool stops checking them against the public checksum database (`sum.golang.org`), which has never seen them:
+
+```bash
+# Private and served by BatleHub: still proxied, but not sum-checked.
+export GONOSUMDB="example.com/internal/*"
+
+# Private and fetched straight from the VCS: GOPRIVATE implies both
+# GONOPROXY and GONOSUMDB, so these bypass BatleHub entirely.
+export GOPRIVATE="example.com/internal/*"
+```
+
+To persist any of these, use `go env -w`, e.g. `go env -w GOPROXY="https://batlehub.example.com/proxy/<registry>"`.
 
 ## Publishing (local / hybrid)
 
-Build a standard Go module zip, then upload it. The module path may contain slashes; BatleHub extracts `go.mod` from the zip and generates version metadata automatically:
+The go toolchain has no `go mod zip` command — the canonical way to build a proxy-compatible module zip is [`golang.org/x/mod/zip`](https://pkg.go.dev/golang.org/x/mod/zip), the same package `go mod download` uses. A four-line helper is enough:
+
+```go
+// zipmod.go — go run zipmod.go <module> <version> <dir> <out.zip>
+package main
+
+import (
+	"log"
+	"os"
+
+	"golang.org/x/mod/module"
+	"golang.org/x/mod/zip"
+)
+
+func main() {
+	mod, ver, dir, out := os.Args[1], os.Args[2], os.Args[3], os.Args[4]
+	f, err := os.Create(out)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+	if err := zip.CreateFromDir(f, module.Version{Path: mod, Version: ver}, dir); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+Then build and upload it. The module path may contain slashes; BatleHub extracts `go.mod` from the zip and generates version metadata automatically:
 
 ```bash
-go mod zip example.com/mymod@v1.0.0 . --mod-zip /tmp/mymod-v1.0.0.zip
+go run zipmod.go example.com/mymod v1.0.0 . /tmp/mymod-v1.0.0.zip
 
 curl -X PUT \
   -H "Authorization: Bearer $BATLEHUB_TOKEN" \
@@ -40,13 +82,13 @@ curl -X PUT \
   "https://batlehub.example.com/proxy/<registry>/example.com/mymod/@v/v1.0.0.zip"
 ```
 
-Every entry inside the zip must be prefixed with `{module}@{version}/` — `go mod zip` produces this layout automatically.
+Every entry inside the zip must be prefixed with `{module}@{version}/` (here `example.com/mymod@v1.0.0/`) — `zip.CreateFromDir` produces exactly that layout, and also enforces the module-zip rules (no symlinks, no nested modules, size limits), so a zip it accepts is one the go tool will accept.
 
 ## Authentication
 
 Uploads pass a BatleHub token as a Bearer header. For read access, put the token in `~/.netrc` so the go tool and `govulncheck` pick it up automatically:
 
-```
+```text
 machine batlehub.example.com login user password $BATLEHUB_TOKEN
 ```
 

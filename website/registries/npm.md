@@ -22,7 +22,21 @@ registry=https://batlehub.example.com/proxy/<registry>/
 //batlehub.example.com/proxy/<registry>/:_authToken=${BATLEHUB_TOKEN}
 ```
 
-To route only a specific scope through the proxy, use `@myorg:registry=https://batlehub.example.com/proxy/<registry>/` instead. Yarn Berry (`.yarnrc.yml`) and pnpm read the same registry/token settings.
+To route only a specific scope through the proxy, use `@myorg:registry=https://batlehub.example.com/proxy/<registry>/` instead. **pnpm** reads the same `.npmrc` keys unchanged.
+
+**Yarn Berry** (Yarn 2+) does not read `.npmrc` — configure it in `.yarnrc.yml` with its own key names:
+
+```yaml
+# .yarnrc.yml
+npmRegistryServer: "https://batlehub.example.com/proxy/<registry>/"
+npmAuthToken: "${BATLEHUB_TOKEN}"
+
+# Or, to route only one scope:
+npmScopes:
+  myorg:
+    npmRegistryServer: "https://batlehub.example.com/proxy/<registry>/"
+    npmAuthToken: "${BATLEHUB_TOKEN}"
+```
 
 ## Publishing (local / hybrid)
 

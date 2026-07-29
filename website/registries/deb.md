@@ -31,6 +31,10 @@ sudo apt update && sudo apt install hello
 
 For an unsigned **local** repository (no `[registries.repo_signing]` key), replace `[signed-by=…]` with `[trusted=yes]`.
 
+::: warning `trusted=yes` disables apt-secure
+`trusted=yes` tells apt to accept the repository with **no signature verification at all** — anything that can answer for the host, or sit on the path, can serve arbitrary packages that install as root. Restrict it to an isolated, fully trusted channel (an internal network you control end to end). Prefer configuring `[registries.repo_signing]` so BatleHub signs the indexes and consumers verify with `signed-by`.
+:::
+
 **Proxy mode** has no BatleHub key — `…/deb/key.gpg` is served only for `local`/`hybrid` registries with a `repo_signing` key. In proxy mode BatleHub relays the **upstream** repo's `InRelease`/`Release.gpg` and its signature, so apt verifies against the **upstream's** archive key. Official Debian/Ubuntu mirrors already ship it (packages `debian-archive-keyring` / `ubuntu-keyring`):
 
 ```bash
@@ -69,7 +73,7 @@ On older systems, use `/etc/apt/auth.conf` with the same `machine / login / pass
 
 ## Notes
 
-- A `NO_PUBKEY` / "the following signatures couldn't be verified" error in proxy mode means the upstream's key isn't in the keyring named by `signed-by` — install `debian-archive-keyring` (Debian) or `ubuntu-keyring` (Ubuntu), import the upstream's key into a keyring and point `signed-by` at it, or use `[trusted=yes]` if you trust the channel.
+- A `NO_PUBKEY` / "the following signatures couldn't be verified" error in proxy mode means the upstream's key isn't in the keyring named by `signed-by` — install `debian-archive-keyring` (Debian) or `ubuntu-keyring` (Ubuntu), or import the upstream's key into a keyring and point `signed-by` at it. Authenticate against the upstream keyring rather than reaching for `[trusted=yes]`: in proxy mode BatleHub relays the upstream signature, so verification is available and turning it off buys nothing.
 - Publishing requires the registry in `local` or `hybrid` mode — ask your administrator.
 
 ## See also
