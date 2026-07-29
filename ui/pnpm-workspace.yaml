@@ -7,9 +7,27 @@
 # Transitive-dependency pins. js-yaml < 4.3.0 is GHSA-52cp-r559-cp3m (YAML
 # merge-key chains force quadratic CPU consumption); it reaches us through
 # @hey-api/openapi-ts and eslint 8.
+#
+# brace-expansion <= 5.0.8 is GHSA-mh99-v99m-4gvg (unbounded expansion length
+# OOMs the process). Only 5.0.8 is considered patched by the advisory, and the
+# 5.x line exports `{ expand }` instead of a callable default — so the fix is to
+# retire the old `minimatch` majors that pull brace-expansion 1.x/2.x, not to
+# force brace-expansion itself:
+#
+#   * `minimatch: ^10.2.6` — minimatch 10 already depends on brace-expansion
+#     ^5.0.8. This replaces minimatch 9 under js-beautify (`editorconfig`,
+#     `glob@10`), which reaches us through @vue/test-utils.
+#   * `@microsoft/eslint-formatter-sarif>eslint` — the formatter declares
+#     `eslint: ^8.9.0` as a regular dependency (it should be a peer): at runtime
+#     it only does `require.main.require('eslint')`, i.e. it resolves eslint
+#     from the CLI that invoked it, never from its own node_modules. Pinning it
+#     to the workspace eslint dedupes away the entire second eslint 8 tree
+#     (minimatch 3, glob 7, rimraf 3 → brace-expansion 1.1.16).
 overrides:
   undici: ^7.28.0
   js-yaml: ^4.3.0
+  minimatch: ^10.2.6
+  '@microsoft/eslint-formatter-sarif>eslint': ^10.8.0
 
 # Install-time lifecycle scripts are denied by default (supply-chain hardening:
 # a compromised transitive dependency cannot run code at install time). Packages
