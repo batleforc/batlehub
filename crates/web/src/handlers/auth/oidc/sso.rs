@@ -163,6 +163,10 @@ pub async fn oidc_callback(
             //   1. The frontend (router/index.ts) immediately removes them from the
             //      address bar and moves them to localStorage before any navigation.
             //   2. CSRF is prevented by the `state` parameter validated above.
+            //   3. The redirect carries `Referrer-Policy: no-referrer` (so the
+            //      token-bearing URL is never sent as a `Referer` when the landing
+            //      page loads sub-resources) and `Cache-Control: no-store` (so it is
+            //      not cached by intermediaries).
             // A proper fix would use a server-side one-time code exchange instead of
             // query params, but that requires a stateful session layer.
             let mut location = format!(
@@ -179,6 +183,8 @@ pub async fn oidc_callback(
             }
             HttpResponse::Found()
                 .insert_header(("Location", location))
+                .insert_header(("Referrer-Policy", "no-referrer"))
+                .insert_header(("Cache-Control", "no-store"))
                 .finish()
         }
         Err(e) => {

@@ -190,6 +190,34 @@ pub fn rbac_policy(repo: Arc<dyn PackageRepository>) -> RegistryPolicy {
         ],
     }
 }
+
+/// Like [`rbac_policy`] but also grants anonymous `source:read`. Use this for
+/// tests that isolate the per-package *visibility* axis (public/internal/team)
+/// on registries whose reads require `source:read` (e.g. cargo `download`): the
+/// registry RBAC then allows the read so visibility is the only gate under test.
+pub fn rbac_policy_anon_source(repo: Arc<dyn PackageRepository>) -> RegistryPolicy {
+    let perms = HashMap::from([
+        (
+            Role::Anonymous,
+            vec!["releases:read".to_owned(), "source:read".to_owned()],
+        ),
+        (
+            Role::User,
+            vec!["releases:read".to_owned(), "source:read".to_owned()],
+        ),
+        (Role::Admin, vec!["*".to_owned()]),
+    ]);
+    RegistryPolicy {
+        metadata_ttl: Some(Duration::from_secs(300)),
+        firewall_only: false,
+        serve_stale_metadata: false,
+        artifact_ttl: None,
+        rules: vec![
+            Box::new(RbacRule::new(perms)),
+            Box::new(BlockListRule::new(repo)),
+        ],
+    }
+}
 pub struct ConfigureAppDefaults {
     pub upstream_map: batlehub_web::UpstreamMap,
     pub proxy_metrics: Arc<ProxyMetrics>,
@@ -380,6 +408,10 @@ pub async fn make_app_ext(
             "jb".to_owned(),
             FixedRegistry::new("jetbrains") as Arc<dyn RegistryClient>,
         ),
+        (
+            "jbm".to_owned(),
+            FixedRegistry::new("jetbrains-marketplace") as Arc<dyn RegistryClient>,
+        ),
     ]
     .into();
 
@@ -396,6 +428,7 @@ pub async fn make_app_ext(
         ("fj".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
         ("gl".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
         ("jb".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
+        ("jbm".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
     ]
     .into();
 
@@ -417,7 +450,7 @@ pub async fn make_app_ext(
 
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
     let access_config = access_config_for(&[
-        "github", "npm", "cargo", "openvsx", "go", "vscode", "fj", "gl", "jb",
+        "github", "npm", "cargo", "openvsx", "go", "vscode", "fj", "gl", "jb", "jbm",
     ]);
     let registry_map = registry_map_for(&[
         ("github", "github"),
@@ -429,6 +462,7 @@ pub async fn make_app_ext(
         ("fj", "forgejo"),
         ("gl", "gitlab"),
         ("jb", "jetbrains"),
+        ("jbm", "jetbrains-marketplace"),
     ]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
     finish_test_app(

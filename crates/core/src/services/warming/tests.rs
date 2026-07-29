@@ -121,6 +121,9 @@ use std::collections::HashMap;
 use tokio::sync::Mutex as TokioMutex;
 
 struct StubClient {
+    /// Drives `warm_artifact()`'s per-kind lookup: `"stub"` parses to no
+    /// `RegistryKind`, so the sub-coordinate stays `None`.
+    registry_type: &'static str,
     versions: Vec<String>,
     fail_fetch: bool,
     fail_list: bool,
@@ -131,6 +134,19 @@ struct StubClient {
 impl StubClient {
     fn with_versions(versions: Vec<&str>) -> Arc<Self> {
         Arc::new(Self {
+            registry_type: "stub",
+            versions: versions.into_iter().map(str::to_owned).collect(),
+            fail_fetch: false,
+            fail_list: false,
+            fail_stream: false,
+            panic_fetch: false,
+        })
+    }
+    /// A client claiming a real registry kind, to exercise the per-kind
+    /// artifact sub-coordinate.
+    fn of_kind(registry_type: &'static str, versions: Vec<&str>) -> Arc<Self> {
+        Arc::new(Self {
+            registry_type,
             versions: versions.into_iter().map(str::to_owned).collect(),
             fail_fetch: false,
             fail_list: false,
@@ -140,6 +156,7 @@ impl StubClient {
     }
     fn failing_list() -> Arc<Self> {
         Arc::new(Self {
+            registry_type: "stub",
             versions: vec![],
             fail_fetch: false,
             fail_list: true,
@@ -149,6 +166,7 @@ impl StubClient {
     }
     fn failing_fetch() -> Arc<Self> {
         Arc::new(Self {
+            registry_type: "stub",
             versions: vec!["1.0.0".into()],
             fail_fetch: true,
             fail_list: false,
@@ -158,6 +176,7 @@ impl StubClient {
     }
     fn failing_stream() -> Arc<Self> {
         Arc::new(Self {
+            registry_type: "stub",
             versions: vec!["1.0.0".into()],
             fail_fetch: false,
             fail_list: false,
@@ -167,6 +186,7 @@ impl StubClient {
     }
     fn panicking_fetch() -> Arc<Self> {
         Arc::new(Self {
+            registry_type: "stub",
             versions: vec!["1.0.0".into()],
             fail_fetch: false,
             fail_list: false,
@@ -179,7 +199,7 @@ impl StubClient {
 #[async_trait]
 impl RegistryClient for StubClient {
     fn registry_type(&self) -> &str {
-        "stub"
+        self.registry_type
     }
     async fn resolve_metadata(&self, _: &PackageId) -> Result<PackageMetadata, CoreError> {
         Ok(PackageMetadata {
@@ -378,8 +398,36 @@ async fn warm_package_fetches_and_stores_new_version() {
     assert_eq!(report.warmed, 1);
     assert_eq!(report.skipped, 0);
     assert_eq!(report.errors, 0);
-    let key = "artifact:test-reg/mylib:1.0.0";
-    assert!(storage.exists(key).await.unwrap());
+    // Must be the exact key the proxy read path reads:
+    // `artifact:` + PackageId::cache_key().
+    let key = format!(
+        "artifact:{}",
+        PackageId::new("test-reg", "mylib", "1.0.0").cache_key()
+    );
+    assert_eq!(key, "artifact:test-reg/mylib/1.0.0");
+    assert!(storage.exists(&key).await.unwrap());
+}
+
+#[tokio::test]
+async fn warm_package_uses_the_per_kind_artifact_coordinate() {
+    let storage = StubStorage::new();
+    let svc = active_svc(
+        StubClient::of_kind("jetbrains-marketplace", vec!["1.0.0"]),
+        storage.clone(),
+    );
+    let report = svc.warm_package("org.rust.lang@1.0.0").await;
+    assert_eq!(report.warmed, 1);
+    assert_eq!(report.errors, 0);
+    // JetBrains plugin archives are served from the `plugin` sub-coordinate, so
+    // that is where warming must put them.
+    let key = format!(
+        "artifact:{}",
+        PackageId::new("test-reg", "org.rust.lang", "1.0.0")
+            .with_artifact("plugin")
+            .cache_key()
+    );
+    assert_eq!(key, "artifact:test-reg/org.rust.lang/1.0.0/plugin");
+    assert!(storage.exists(&key).await.unwrap());
 }
 
 #[tokio::test]
@@ -390,7 +438,7 @@ async fn warm_package_pinned_scoped_npm_name() {
     assert_eq!(report.warmed, 1);
     assert_eq!(report.skipped, 0);
     assert_eq!(report.errors, 0);
-    let key = "artifact:test-reg/@babel/core:1.0.0";
+    let key = "artifact:test-reg/@babel/core/1.0.0";
     assert!(storage.exists(key).await.unwrap());
 }
 
@@ -414,7 +462,7 @@ async fn warm_package_unpinned_scoped_npm_name() {
     assert_eq!(report.warmed, 1);
     assert_eq!(report.skipped, 0);
     assert_eq!(report.errors, 0);
-    let key = "artifact:test-reg/@babel/core:1.0.0";
+    let key = "artifact:test-reg/@babel/core/1.0.0";
     assert!(storage.exists(key).await.unwrap());
 }
 
@@ -423,7 +471,7 @@ async fn warm_package_skips_already_cached_version() {
     let storage = StubStorage::new();
     storage
         .store(
-            "artifact:test-reg/mylib:1.0.0",
+            "artifact:test-reg/mylib/1.0.0",
             Bytes::from("old"),
             StorageMeta::default(),
         )
@@ -470,11 +518,11 @@ async fn warm_package_returns_error_when_list_versions_fails() {
 async fn warm_path_stores_under_the_proxy_cache_key() {
     let storage = StubStorage::new();
     let svc = active_svc(StubClient::with_versions(vec!["unused"]), storage.clone());
-    let report = svc.warm_path("idea/ideaIC-2024.1.4.tar.gz").await;
+    let report = svc.warm_path("idea/idea-2026.1.3.tar.gz").await;
     assert_eq!(report.warmed, 1);
     assert_eq!(report.errors, 0);
     // Must be the exact key the proxy read path reads: artifact:{reg}/repo/_/{path}.
-    let key = "artifact:test-reg/repo/_/idea/ideaIC-2024.1.4.tar.gz";
+    let key = "artifact:test-reg/repo/_/idea/idea-2026.1.3.tar.gz";
     assert!(storage.exists(key).await.unwrap());
 }
 

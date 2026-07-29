@@ -1,10 +1,12 @@
 pub mod admin;
 pub mod auth;
+pub mod ide;
 pub mod owner;
 pub mod package;
 pub mod publish;
 pub mod registry;
 pub mod setup;
+pub mod suggest;
 pub mod version;
 
 use anyhow::{bail, Result};
@@ -20,8 +22,13 @@ pub struct BatleHubClient {
 
 impl BatleHubClient {
     pub fn new(base_url: &str, token: Option<&str>) -> Result<Self> {
+        // No total `.timeout()`: this client also streams artifact downloads,
+        // which may legitimately be large. Bound connection setup and per-read
+        // inactivity instead so an unresponsive server can't hang the CLI forever.
         let inner = reqwest::Client::builder()
             .user_agent("batlehub-cli/0.1")
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .read_timeout(std::time::Duration::from_secs(60))
             .build()?;
         Ok(Self {
             inner,
@@ -127,7 +134,12 @@ impl BatleHubClient {
 
     /// GET a proxy path (relative to the server base URL) or an absolute URL and
     /// stream the response body into `dest`, returning the number of bytes written.
-    /// Sends the auth token so RBAC-protected registries are reachable.
+    ///
+    /// The auth token is attached **only** when the target resolves to the
+    /// configured server origin, so RBAC-protected registries on that server stay
+    /// reachable. An arbitrary absolute URL (e.g. a redirect or a manifest-sourced
+    /// download link to another host) is fetched **without** the token — sending
+    /// the BatleHub credential to an unrelated host would be a leak.
     pub async fn download_to<W: std::io::Write>(
         &self,
         path_or_url: &str,
@@ -135,15 +147,24 @@ impl BatleHubClient {
     ) -> Result<u64> {
         use futures::StreamExt;
 
-        let url = if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
-            path_or_url.to_string()
-        } else if let Some(rest) = path_or_url.strip_prefix('/') {
-            self.url(&format!("/{rest}"))
-        } else {
-            self.url(&format!("/{path_or_url}"))
-        };
+        let (url, is_own_origin) =
+            if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
+                let own = path_or_url == self.base_url
+                    || path_or_url.starts_with(&format!("{}/", self.base_url));
+                (path_or_url.to_string(), own)
+            } else if let Some(rest) = path_or_url.strip_prefix('/') {
+                (self.url(&format!("/{rest}")), true)
+            } else {
+                (self.url(&format!("/{path_or_url}")), true)
+            };
 
-        let resp = self.send(self.inner.request(Method::GET, url)).await?;
+        let mut req = self.inner.request(Method::GET, url.as_str());
+        if is_own_origin {
+            if let Some(auth) = self.auth_header() {
+                req = req.header("Authorization", auth);
+            }
+        }
+        let resp = req.send().await?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();

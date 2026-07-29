@@ -493,11 +493,13 @@ upstreams = ["https://repo1.maven.org/maven2/"]
 # ── JetBrains IDE-archive proxy cache ────────────────────────────────────────
 #
 # Proxy-only: caches JetBrains IDE installer archives by path. A request to
-#   http(s)://your-host/proxy/jetbrains-ide/jetbrains/idea/ideaIC-2024.1.4.tar.gz
+#   http(s)://your-host/proxy/jetbrains-ide/jetbrains/idea/idea-2026.1.3.tar.gz
 # is served from cache after the first download from download.jetbrains.com.
 #
-# Use the canonical download.jetbrains.com path (real names: ideaIU-… Ultimate /
-# ideaIC-… Community). That host 302-redirects to a CDN (download-cdn.jetbrains.com);
+# Use the canonical download.jetbrains.com path. Since 2025.3 IDEA ships as a
+# single unified installer (idea-<version>.tar.gz); the older per-edition names
+# (ideaIU-… Ultimate / ideaIC-… Community) only exist for releases ≤ 2025.2.
+# That host 302-redirects to a CDN (download-cdn.jetbrains.com);
 # the redirect is followed automatically — don't put the CDN host in the path.
 #
 # IMPORTANT: IDE archives are ~1–1.7 GB. The proxy rejects downloads over
@@ -507,14 +509,91 @@ upstreams = ["https://repo1.maven.org/maven2/"]
 type   = "jetbrains"
 name   = "jetbrains-ide"
 mode   = "proxy"            # upstream defaults to https://download.jetbrains.com
-# upstreams = ["https://plugins.jetbrains.com"]   # override to cache plugins instead
+# For the plugin ecosystem (plugins.jetbrains.com), use the dedicated
+# `jetbrains-marketplace` type below — not an upstream override here.
 [registries.rbac]
 anonymous = ["releases:read"]
 # Pre-warm specific upstream paths on startup (and via the /warm admin endpoint).
-# Path-addressed registries (deb/rpm/jetbrains) use `warm_paths` instead of
-# `warm_packages`. Entries are upstream-relative paths.
+# Path-addressed registries (deb/rpm/pacman/jetbrains/generic) use `warm_paths`
+# instead of `warm_packages`. Entries are upstream-relative paths.
 [registries.cache]
-warm_paths = ["idea/ideaIC-2024.1.4.tar.gz"]
+warm_paths = ["idea/idea-2026.1.3.tar.gz"]
+
+# ── JetBrains Marketplace (IDE plugins) ──────────────────────────────────────
+#
+# Full marketplace emulation for the plugin ecosystem: IDE search, compatible
+# updates, meta.json blobs, plugin downloads, and (local/hybrid) marketplace-
+# compatible publishing via POST /proxy/{name}/api/updates/upload.
+#
+# Point an IDE at the proxy either fully:
+#   Help → Edit Custom Properties… → idea.plugins.host=https://your-host/proxy/jbm
+# or additively:
+#   Settings → Plugins → ⚙ → Manage Plugin Repositories… →
+#   https://your-host/proxy/jbm/updatePlugins.xml
+#
+# Metadata, artifacts, and forwarded query blobs are cached with stale
+# fallback, so previously-seen plugins keep working if the upstream is down.
+[[registries]]
+type = "jetbrains-marketplace"
+name = "jbm"
+mode = "hybrid"             # "proxy", "local", or "hybrid"
+upstreams = ["https://plugins.jetbrains.com"]   # default
+[registries.rbac]
+anonymous = ["releases:read"]
+user      = ["releases:read"]
+admin     = ["*"]
+
+# ── Generic file mirror (toolchains, vendor CDNs) ────────────────────────────
+#
+# Proxy-only mirror of any plain HTTP file tree — for upstreams with no package
+# protocol at all. A request to
+#   http(s)://your-host/proxy/node-dist/generic/v24.18.0/node-v24.18.0-linux-x64.tar.gz
+# streams (and caches) https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-x64.tar.gz
+#
+# Two fields are MANDATORY for this type:
+#   * `upstreams`  — there is no default file tree to fall back to.
+#   * `path_allow` — the request path is passed straight through upstream, so
+#     without an allowlist a registry pointed at a host serving many unrelated
+#     tenants (a shared bucket, a multi-vendor CDN) would relay every path on it.
+#     Globs use `glob` semantics where `*` also crosses `/`. Denied paths get a
+#     403 before any upstream request — warm_paths cannot bypass it either.
+#     Use path_allow = ["**"] to mirror the whole upstream deliberately.
+#
+# Point the client at it with its own mirror variable, e.g.
+#   export NODEJS_ORG_MIRROR=https://your-host/proxy/node-dist/generic
+#   export RUSTUP_DIST_SERVER=https://your-host/proxy/rust-dist/generic
+# `batlehub-cli registry suggest` generates these blocks from a project's
+# mise.toml/mise.lock and manifests.
+#
+# NOTE: toolchain archives can be large — see `max_artifact_size_bytes` above.
+[[registries]]
+type       = "generic"
+name       = "node-dist"
+mode       = "proxy"
+upstreams  = ["https://nodejs.org/dist"]
+path_allow = ["v*/**"]   # mise fetches the platform tarball AND the source tarball
+[registries.rbac]
+anonymous = ["releases:read"]
+
+# Other useful generic mirrors (uncomment and adapt):
+#
+# [[registries]]
+# type       = "generic"
+# name       = "rust-dist"
+# upstreams  = ["https://static.rust-lang.org"]   # RUSTUP_DIST_SERVER
+# path_allow = ["dist/**", "rustup/**"]
+#
+# [[registries]]
+# type       = "generic"
+# name       = "go-dl"
+# upstreams  = ["https://dl.google.com/go"]       # the Go toolchain tarballs;
+# path_allow = ["go*.linux-amd64.tar.gz"]         # Go *modules* use type="goproxy"
+#
+# [[registries]]
+# type       = "generic"
+# name       = "helm-bin"
+# upstreams  = ["https://get.helm.sh"]
+# path_allow = ["helm-v*-linux-amd64.tar.gz"]
 
 # ── Versioning policies (local/hybrid mode) ──────────────────────────────────
 #

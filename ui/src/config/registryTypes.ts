@@ -104,34 +104,34 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
               ``,
               `# ── GitHub (registry: ${gh}) ─────────────────────────────────────────────────`,
               `# API (release listings, tag metadata, asset lists)`,
-              String.raw`"regex:^https://api\.github\.com/repos/(.+)" = "${base}/proxy/${gh}/$1"`,
+              String.raw`"regex:^https://api\\.github\\.com/repos/(.+)" = "${base}/proxy/${gh}/$1"`,
               ``,
               `# Release asset binaries (browser_download_url from API responses)`,
-              String.raw`"regex:^https://github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/(.+)" = "${base}/proxy/${gh}/$1/$2/releases/download/$3/$4"`,
+              String.raw`"regex:^https://github\\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/(.+)" = "${base}/proxy/${gh}/$1/$2/releases/download/$3/$4"`,
               ``,
               `# Source tarballs`,
-              String.raw`"regex:^https://github\.com/([^/]+)/([^/]+)/archive/(?:refs/tags/)?(.+?)\.tar\.gz" = "${base}/proxy/${gh}/$1/$2/tarball/$3"`,
-              String.raw`"regex:^https://codeload\.github\.com/([^/]+)/([^/]+)/tar\.gz/(?:refs/tags/)?(.+)" = "${base}/proxy/${gh}/$1/$2/tarball/$3"`,
+              String.raw`"regex:^https://github\\.com/([^/]+)/([^/]+)/archive/(?:refs/tags/)?(.+?)\\.tar\\.gz" = "${base}/proxy/${gh}/$1/$2/tarball/$3"`,
+              String.raw`"regex:^https://codeload\\.github\\.com/([^/]+)/([^/]+)/tar\\.gz/(?:refs/tags/)?(.+)" = "${base}/proxy/${gh}/$1/$2/tarball/$3"`,
               ``,
               `# Zip archives`,
-              String.raw`"regex:^https://github\.com/([^/]+)/([^/]+)/archive/(?:refs/tags/)?(.+?)\.zip" = "${base}/proxy/${gh}/$1/$2/zipball/$3"`,
+              String.raw`"regex:^https://github\\.com/([^/]+)/([^/]+)/archive/(?:refs/tags/)?(.+?)\\.zip" = "${base}/proxy/${gh}/$1/$2/zipball/$3"`,
               ``,
               `# Raw files (install scripts, manifests, …)`,
-              String.raw`"regex:^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.+)" = "${base}/proxy/${gh}/$1/$2/raw/$3/$4"`,
+              String.raw`"regex:^https://raw\\.githubusercontent\\.com/([^/]+)/([^/]+)/([^/]+)/(.+)" = "${base}/proxy/${gh}/$1/$2/raw/$3/$4"`,
             );
           }
           if (np) {
             lines.push(
               ``,
               `# ── npm (registry: ${np}) ───────────────────────────────────────────────────`,
-              String.raw`"regex:^https://registry\.npmjs\.org/(.+)" = "${base}/proxy/${np}/$1"`,
+              String.raw`"regex:^https://registry\\.npmjs\\.org/(.+)" = "${base}/proxy/${np}/$1"`,
             );
           }
           if (cg) {
             lines.push(
               ``,
               `# ── Cargo (registry: ${cg}) — downloads only, use .cargo/config.toml for full support`,
-              String.raw`"regex:^https://static\.crates\.io/crates/([^/]+)/([^/]+)/.+\.crate" = "${base}/proxy/${cg}/$1/$2/download"`,
+              String.raw`"regex:^https://static\\.crates\\.io/crates/([^/]+)/([^/]+)/.+\\.crate" = "${base}/proxy/${cg}/$1/$2/download"`,
             );
           }
           return lines.join("\n");
@@ -269,7 +269,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `# ── OpenVSX VSIX downloads ────────────────────────────────────────────────────`,
             `# Intercepts VSIX file downloads from open-vsx.org and routes them through the proxy.`,
             `# The extension ID is joined as publisher.name to match the proxy convention.`,
-            String.raw`"regex:^https://open-vsx\.org/api/([^/]+)/([^/]+)/([^/]+)/file/.+\.vsix$" = "${ctx.base}/proxy/${ctx.registryName}/$1.$2/$3/vsix"`,
+            String.raw`"regex:^https://open-vsx\\.org/api/([^/]+)/([^/]+)/([^/]+)/file/.+\\.vsix$" = "${ctx.base}/proxy/${ctx.registryName}/$1.$2/$3/vsix"`,
           );
           return lines.join("\n");
         },
@@ -298,6 +298,142 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
               `<code class="font-mono bg-muted px-1 rounded">product.json</code>. ` +
               `Add your credentials to <code class="font-mono bg-muted px-1 rounded">~/.netrc</code> — see the <strong>.netrc</strong> tab.`
             : ""),
+      },
+    ],
+  },
+
+  // ── VS Code Marketplace ────────────────────────────────────────────────────
+  {
+    id: "vscode-marketplace",
+    label: "VS Code Marketplace",
+    fileHint: "marketplace.visualstudio.com",
+    description:
+      `Proxy VS Code extension downloads from Microsoft's ` +
+      `<a href="https://marketplace.visualstudio.com" target="_blank" rel="noopener" ` +
+      `class="underline underline-offset-2 hover:text-foreground transition-colors">Visual Studio Marketplace</a> ` +
+      `(marketplace.visualstudio.com). Use this for extensions that are only on the Microsoft marketplace and not mirrored on open-vsx.org. ` +
+      `Extension IDs follow the <code class="text-xs font-mono bg-muted px-1 rounded">publisher.name</code> convention.`,
+    snippets: [
+      {
+        key: "vscode-marketplace-direct",
+        label: "Direct VSIX download URL",
+        lang: "text",
+        template: (ctx) =>
+          `${ctx.base}/proxy/${ctx.registryName}/{publisher}.{extension}/{version}/vsix`,
+        note:
+          `Example: download and install via CLI — ` +
+          `<code class="font-mono bg-muted px-1 rounded">` +
+          `curl -L {proxy}/ms-python.python/2024.0.0/vsix -o ext.vsix &amp;&amp; code --install-extension ext.vsix` +
+          `</code>. Use <code class="font-mono bg-muted px-1 rounded">latest</code> as the version to fetch the newest release.`,
+      },
+      {
+        key: "vscode-marketplace-mise",
+        label: "mise — URL replacement to intercept VSIX downloads",
+        lang: "toml",
+        template: (ctx) => {
+          const lines: string[] = [];
+          if (ctx.isAuthenticated) {
+            lines.push(
+              `# Authentication: mise reads ~/.netrc for HTTP Basic Auth`,
+              `# machine ${ctx.netrcHost}`,
+              `# login ${ctx.netrcLogin}`,
+              `# password ${ctx.token}`,
+              ``,
+            );
+          }
+          lines.push(
+            `[settings.url_replacements]`,
+            ``,
+            `# ── VS Code Marketplace VSIX downloads ────────────────────────────────────────`,
+            `# Intercepts VSIX downloads from marketplace.visualstudio.com and routes them`,
+            `# through the proxy. The publisher and extension name are joined as publisher.name.`,
+            String.raw`"regex:^https://marketplace\\.visualstudio\\.com/_apis/public/gallery/publishers/([^/]+)/vsextensions/([^/]+)/([^/]+)/vspackage$" = "${ctx.base}/proxy/${ctx.registryName}/$1.$2/$3/vsix"`,
+          );
+          return lines.join("\n");
+        },
+      },
+      {
+        key: "vscode-marketplace-vscodium",
+        label: "VS Code / VSCodium extension gallery (product.json)",
+        lang: "jsonc",
+        template: (ctx) =>
+          [
+            `// ~/.config/VSCodium/User/product.json  (or merge into existing product.json)`,
+            `{`,
+            `  "extensionGallery": {`,
+            `    "serviceUrl": "${ctx.base}/proxy/${ctx.registryName}/vscode/gallery",`,
+            `    "itemUrl": "${ctx.base}/proxy/${ctx.registryName}/vscode/item",`,
+            `    "resourceUrlTemplate": "${ctx.base}/proxy/${ctx.registryName}/vscode/unpkg/{publisher}/{name}/{version}/{path}"`,
+            `  }`,
+            `}`,
+          ].join("\n"),
+        note: (ctx) =>
+          `Requires the proxy to implement the VS Code gallery protocol ` +
+          `(<code class="font-mono bg-muted px-1 rounded">/vscode/gallery</code> endpoints). ` +
+          `Only VSIX proxying is supported today — download extensions with the Direct VSIX URL above.` +
+          (ctx.isAuthenticated
+            ? ` VSCodium does not support HTTP Basic Auth in ` +
+              `<code class="font-mono bg-muted px-1 rounded">product.json</code>. ` +
+              `Add your credentials to <code class="font-mono bg-muted px-1 rounded">~/.netrc</code> — see the <strong>.netrc</strong> tab.`
+            : ""),
+      },
+    ],
+  },
+
+  // ── JetBrains Marketplace ──────────────────────────────────────────────────
+  {
+    id: "jetbrains-marketplace",
+    label: "JetBrains Marketplace",
+    fileHint: "plugins.jetbrains.com",
+    description:
+      `Proxy the <a href="https://plugins.jetbrains.com" target="_blank" rel="noopener" ` +
+      `class="underline underline-offset-2 hover:text-foreground transition-colors">JetBrains Marketplace</a> ` +
+      `plugin ecosystem — IDE search, compatible updates, and plugin downloads — with local/hybrid publishing. ` +
+      `Distinct from the <code class="text-xs font-mono bg-muted px-1 rounded">jetbrains</code> IDE-archive type.`,
+    snippets: [
+      {
+        key: "jbm-host",
+        label: "Full replacement — idea.plugins.host custom property",
+        lang: "properties",
+        template: (ctx) =>
+          [
+            `# Help → Edit Custom Properties… (idea.properties)`,
+            `# Replaces plugins.jetbrains.com entirely for this IDE.`,
+            `idea.plugins.host=${ctx.base}/proxy/${ctx.registryName}`,
+          ].join("\n"),
+      },
+      {
+        key: "jbm-custom-repo",
+        label: "Additive — Manage Plugin Repositories URL",
+        lang: "text",
+        template: (ctx) => `${ctx.base}/proxy/${ctx.registryName}/updatePlugins.xml`,
+        note:
+          `Settings → Plugins → ⚙ → <strong>Manage Plugin Repositories…</strong> → add the URL above. ` +
+          `Lists plugins published to this registry alongside the public marketplace.`,
+      },
+      {
+        key: "jbm-download",
+        label: "Direct plugin download",
+        lang: "bash",
+        template: (ctx) =>
+          `curl -L "${ctx.base}/proxy/${ctx.registryName}/plugin/download?pluginId={xmlId}&version={version}" -o plugin.zip`,
+      },
+      {
+        key: "jbm-publish",
+        label: "Publish a plugin (marketplace-compatible upload)",
+        lang: "bash",
+        showWhen: isPublishMode,
+        template: (ctx) =>
+          [
+            `curl -X POST "${ctx.base}/proxy/${ctx.registryName}/api/updates/upload" \\`,
+            `  -H "Authorization: Bearer ${authTokenOrPlaceholder(ctx)}" \\`,
+            `  -F "xmlId={xmlId}" \\`,
+            `  -F "channel=" \\`,
+            `  -F "file=@my-plugin.zip"`,
+          ].join("\n"),
+        note:
+          `Also works with JetBrains' <code class="font-mono bg-muted px-1 rounded">plugin-repository-rest-client</code> ` +
+          `and the Gradle <code class="font-mono bg-muted px-1 rounded">publishPlugin</code> task pointed at this host.`,
       },
     ],
   },
@@ -1374,19 +1510,20 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           const auth = ctx.isAuthenticated ? ` \\\n  -H "Authorization: Bearer ${ctx.token}"` : "";
           return [
             `# The path after /jetbrains/ maps to download.jetbrains.com/<path>`,
-            `curl -fL -o ideaIC.tar.gz${auth} \\`,
-            `  ${reg}/idea/ideaIC-2024.1.4.tar.gz`,
+            `curl -fL -o idea.tar.gz${auth} \\`,
+            `  ${reg}/idea/idea-2026.1.3.tar.gz`,
           ].join("\n");
         },
         note:
           `Use the same path as the upstream URL: ` +
-          `<code class="font-mono bg-muted px-1 rounded">download.jetbrains.com/idea/ideaIC-2024.1.4.tar.gz</code> → ` +
-          `<code class="font-mono bg-muted px-1 rounded">/proxy/{name}/jetbrains/idea/ideaIC-2024.1.4.tar.gz</code>. ` +
+          `<code class="font-mono bg-muted px-1 rounded">download.jetbrains.com/idea/idea-2026.1.3.tar.gz</code> → ` +
+          `<code class="font-mono bg-muted px-1 rounded">/proxy/{name}/jetbrains/idea/idea-2026.1.3.tar.gz</code>. ` +
           `<code class="font-mono bg-muted px-1 rounded">download.jetbrains.com</code> redirects to a CDN ` +
           `(<code class="font-mono bg-muted px-1 rounded">download-cdn.jetbrains.com</code>) — the redirect is followed ` +
-          `automatically, so always use the canonical path, not the CDN host. Use real archive names ` +
-          `(<code class="font-mono bg-muted px-1 rounded">ideaIU-…</code> Ultimate / ` +
-          `<code class="font-mono bg-muted px-1 rounded">ideaIC-…</code> Community).`,
+          `automatically, so always use the canonical path, not the CDN host. Use real archive names: ` +
+          `<code class="font-mono bg-muted px-1 rounded">idea-…</code> (unified installer, 2025.3+); ` +
+          `the legacy <code class="font-mono bg-muted px-1 rounded">ideaIU-…</code>/` +
+          `<code class="font-mono bg-muted px-1 rounded">ideaIC-…</code> names only exist for releases ≤ 2025.2.`,
       },
       {
         key: "jetbrains-config",
@@ -1408,6 +1545,185 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         note:
           `Override <code class="font-mono bg-muted px-1 rounded">upstreams</code> to cache another host ` +
           `(e.g. <code class="font-mono bg-muted px-1 rounded">https://plugins.jetbrains.com</code>).`,
+      },
+    ],
+  },
+  // ── Generic file mirror (proxy-only, path-addressed) ───────────────────────
+  {
+    id: "generic",
+    label: "Generic mirror",
+    fileHint: "any HTTP file tree",
+    description:
+      `Mirror any plain HTTP file tree — for upstreams with no package protocol at all: ` +
+      `toolchain tarballs (Node, rustup, the Go toolchain) and single-binary vendor CDNs ` +
+      `(Helm, MinIO, SonarScanner). Proxy-only: there is no publish or index model. ` +
+      `Both <code class="text-xs font-mono bg-muted px-1 rounded">upstreams</code> and ` +
+      `<code class="text-xs font-mono bg-muted px-1 rounded">path_allow</code> are required — ` +
+      `without the allowlist a mirror of a shared host would relay every unrelated path on it.`,
+    snippets: [
+      {
+        key: "generic-curl",
+        label: "Download a file",
+        lang: "bash",
+        template: (ctx) => {
+          const reg = `${ctx.base}/proxy/${ctx.registryName}/generic`;
+          const auth = ctx.isAuthenticated ? ` \\\n  -H "Authorization: Bearer ${ctx.token}"` : "";
+          return [
+            `# The path after /generic/ maps 1:1 onto the configured upstream`,
+            `curl -fL -o node.tar.gz${auth} \\`,
+            `  ${reg}/v24.18.0/node-v24.18.0-linux-x64.tar.gz`,
+          ].join("\n");
+        },
+        note:
+          `A path outside the registry's ` +
+          `<code class="font-mono bg-muted px-1 rounded">path_allow</code> allowlist returns ` +
+          `<code class="font-mono bg-muted px-1 rounded">403</code>, not 404 — that is the allowlist ` +
+          `rejecting it locally, before any upstream request is made.`,
+      },
+      {
+        key: "generic-config",
+        label: "Server config",
+        lang: "toml",
+        template: (ctx) =>
+          [
+            `[limits]`,
+            `max_artifact_size_bytes = 2147483648  # 2 GiB — toolchain archives are large`,
+            ``,
+            `[[registries]]`,
+            `name       = "${ctx.registryName}"`,
+            `type       = "generic"`,
+            `mode       = "proxy"`,
+            `upstreams  = ["https://nodejs.org/dist"]   # required — no default exists`,
+            `path_allow = ["v*/**"]                     # required — use ["**"] to allow all`,
+            ``,
+            `[registries.rbac]`,
+            `anonymous = ["releases:read"]`,
+            ``,
+            `# Pre-warm specific paths on startup (path-addressed registries use`,
+            `# warm_paths, not warm_packages).`,
+            `[registries.cache]`,
+            `warm_paths = ["v24.18.0/node-v24.18.0-linux-x64.tar.gz"]`,
+          ].join("\n"),
+        note:
+          `Run <code class="font-mono bg-muted px-1 rounded">batlehub-cli registry suggest</code> in a project ` +
+          `to generate these blocks from its <code class="font-mono bg-muted px-1 rounded">mise.toml</code> / ` +
+          `<code class="font-mono bg-muted px-1 rounded">mise.lock</code> and manifests.`,
+      },
+      {
+        key: "generic-presets",
+        label: "Toolchain presets",
+        lang: "toml",
+        template: (ctx) =>
+          [
+            `# One [[registries]] entry per upstream host. Names below are examples —`,
+            `# the client env vars in the next tab must match whatever you pick.`,
+            ``,
+            `[[registries]]`,
+            `type       = "generic"`,
+            `name       = "node-dist"`,
+            `upstreams  = ["https://nodejs.org/dist"]`,
+            `path_allow = ["v*/**"]                      # mise also fetches the source tarball`,
+            ``,
+            `[[registries]]`,
+            `type       = "generic"`,
+            `name       = "rust-dist"`,
+            `upstreams  = ["https://static.rust-lang.org"]`,
+            `path_allow = ["dist/**", "rustup/**"]`,
+            ``,
+            `[[registries]]`,
+            `type       = "generic"`,
+            `name       = "go-dl"                        # the Go *toolchain* tarballs;`,
+            `upstreams  = ["https://dl.google.com/go"]    # Go *modules* use type = "goproxy"`,
+            `path_allow = ["go*.linux-amd64.tar.gz"]`,
+            ``,
+            `[[registries]]`,
+            `type       = "generic"`,
+            `name       = "helm-bin"`,
+            `upstreams  = ["https://get.helm.sh"]`,
+            `path_allow = ["helm-v*-linux-amd64.tar.gz"]`,
+            ``,
+            `[[registries]]`,
+            `type       = "generic"`,
+            `name       = "minio-dl"`,
+            `upstreams  = ["https://dl.min.io"]`,
+            `path_allow = ["client/mc/release/linux-amd64/**"]`,
+            ``,
+            `[[registries]]`,
+            `type       = "generic"`,
+            `name       = "sonar-binaries"`,
+            `upstreams  = ["https://binaries.sonarsource.com"]`,
+            `path_allow = ["Distribution/sonar-scanner-cli/**"]`,
+            ``,
+            `# Not listed here: anything mise fetches from GitHub releases (the aqua,`,
+            `# ubi and python-build-standalone backends) — those go through a`,
+            `# type = "github" registry, which also avoids GitHub's API rate limit.`,
+          ].join("\n") + `\n\n# Proxy base: ${ctx.base}`,
+      },
+      {
+        key: "generic-client-env",
+        label: "Client env vars",
+        lang: "bash",
+        template: (ctx) => {
+          const p = (name: string) => `${ctx.base}/proxy/${name}/generic`;
+          return [
+            `# Each toolchain has its own mirror variable. Substitute the registry`,
+            `# names you configured — these match the "Toolchain presets" tab.`,
+            ``,
+            `# Node.js (also honoured by nvm, fnm, mise's core:node backend)`,
+            `export NODEJS_ORG_MIRROR="${p("node-dist")}"`,
+            ``,
+            `# Rust toolchains via rustup`,
+            `export RUSTUP_DIST_SERVER="${p("rust-dist")}"`,
+            `export RUSTUP_UPDATE_ROOT="${p("rust-dist")}/rustup"`,
+            ``,
+            `# Everything else is a plain URL swap in your install script, e.g.`,
+            `curl -fL "${p("helm-bin")}/helm-v4.2.3-linux-amd64.tar.gz" | tar xz`,
+            ``,
+            `# Current registry (${ctx.registryName}):`,
+            `# ${ctx.base}/proxy/${ctx.registryName}/generic/<path>`,
+          ].join("\n");
+        },
+        note:
+          `Variables are read at download time, so export them before ` +
+          `<code class="font-mono bg-muted px-1 rounded">mise install</code> / ` +
+          `<code class="font-mono bg-muted px-1 rounded">rustup update</code> — a toolchain already ` +
+          `on disk is not re-fetched.`,
+      },
+      {
+        key: "generic-mise",
+        label: "mise url_replacements",
+        lang: "toml",
+        template: (ctx) => {
+          const p = (name: string) => `${ctx.base}/proxy/${name}/generic`;
+          const lines: string[] = [];
+          if (ctx.isAuthenticated) {
+            lines.push(
+              `# Authentication: mise reads ~/.netrc for HTTP Basic Auth`,
+              `# machine ${ctx.netrcHost}`,
+              `# login ${ctx.netrcLogin}`,
+              `# password ${ctx.token}`,
+              ``,
+            );
+          }
+          lines.push(
+            `# Routes mise's direct downloads through generic mirrors, without`,
+            `# per-tool env vars. Complements the GitHub/npm/cargo rules on the`,
+            `# "mise" tab — keep both in the same [settings.url_replacements].`,
+            `[settings.url_replacements]`,
+            ``,
+            String.raw`"regex:^https://nodejs\\.org/dist/(.+)" = "${p("node-dist")}/$1"`,
+            String.raw`"regex:^https://static\\.rust-lang\\.org/(.+)" = "${p("rust-dist")}/$1"`,
+            String.raw`"regex:^https://dl\\.google\\.com/go/(.+)" = "${p("go-dl")}/$1"`,
+            String.raw`"regex:^https://get\\.helm\\.sh/(.+)" = "${p("helm-bin")}/$1"`,
+            String.raw`"regex:^https://dl\\.min\\.io/(.+)" = "${p("minio-dl")}/$1"`,
+            String.raw`"regex:^https://binaries\\.sonarsource\\.com/(.+)" = "${p("sonar-binaries")}/$1"`,
+          );
+          return lines.join("\n");
+        },
+        note:
+          `Each rewritten URL must still pass its registry's ` +
+          `<code class="font-mono bg-muted px-1 rounded">path_allow</code> allowlist — widen the globs ` +
+          `if <code class="font-mono bg-muted px-1 rounded">mise install</code> reports a 403.`,
       },
     ],
   },

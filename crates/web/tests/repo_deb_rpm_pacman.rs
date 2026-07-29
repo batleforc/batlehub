@@ -825,14 +825,14 @@ async fn jetbrains_proxy_get_streams_upstream_by_path() {
     let resp = call_service(
         &app,
         TestRequest::get()
-            .uri("/proxy/jb/jetbrains/idea/ideaIC-2024.1.4.tar.gz")
+            .uri("/proxy/jb/jetbrains/idea/idea-2026.1.3.tar.gz")
             .to_request(),
     )
     .await;
     assert_eq!(resp.status(), 200);
     let body = String::from_utf8(read_body(resp).await.to_vec()).unwrap();
     assert!(body.starts_with("artifact:jetbrains:"));
-    assert!(body.contains("jb/repo/_/idea/ideaIC-2024.1.4.tar.gz"));
+    assert!(body.contains("jb/repo/_/idea/idea-2026.1.3.tar.gz"));
 }
 
 #[actix_web::test]

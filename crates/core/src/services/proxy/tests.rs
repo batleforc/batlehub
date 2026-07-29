@@ -1844,3 +1844,140 @@ async fn reverify_serves_oversized_artifact_via_reretrieve() {
         "re-served bytes must match the stored content"
     );
 }
+
+// ── resolve_metadata_for (metadata-only entry point) ──────────────────────
+
+/// Counts `resolve_metadata` calls so cache hits are observable.
+struct CountingRegistry {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl CountingRegistry {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+    fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl RegistryClient for CountingRegistry {
+    fn registry_type(&self) -> &str {
+        "test"
+    }
+    async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(PackageMetadata {
+            id: pkg.clone(),
+            published_at: Some(Utc::now() - chrono::Duration::days(30)),
+            download_url: None,
+            checksum: None,
+            is_signed: None,
+            extra: serde_json::json!({"marker": "from-upstream"}),
+            cache_control: None,
+        })
+    }
+    async fn fetch_artifact(&self, _pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
+        Err(CoreError::Registry("metadata-only test".into()))
+    }
+}
+
+#[tokio::test]
+async fn resolve_metadata_for_miss_fetches_then_serves_from_cache() {
+    let client = CountingRegistry::new();
+    let svc = ProxyService {
+        hot: make_hot(
+            "jbm",
+            client.clone(),
+            RegistryPolicy {
+                metadata_ttl: Some(Duration::from_secs(300)),
+                firewall_only: false,
+                serve_stale_metadata: false,
+                artifact_ttl: None,
+                rules: vec![],
+            },
+            None,
+        ),
+        storage: MemStorage::new(),
+        cache: TestCacheStore::new(),
+        repo: SpyRepo::new(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        metrics: Arc::new(ProxyMetrics::new(&[])),
+        sbom: None,
+    };
+
+    let meta = svc.resolve_metadata_for(&req("jbm")).await.unwrap();
+    assert_eq!(meta.extra["marker"], "from-upstream");
+    assert_eq!(client.calls(), 1);
+
+    // Second resolution must come from the metadata cache, not upstream.
+    let meta = svc.resolve_metadata_for(&req("jbm")).await.unwrap();
+    assert_eq!(meta.extra["marker"], "from-upstream");
+    assert_eq!(client.calls(), 1, "second call must be a cache hit");
+}
+
+#[tokio::test]
+async fn resolve_metadata_for_serves_stale_on_upstream_error() {
+    let cache = TestCacheStore::new();
+    let pkg = PackageId::new("npm", "test-pkg", "1.0.0");
+    let cache_key = format!("meta:{}", pkg.cache_key());
+    cache.seed_expired(
+        &cache_key,
+        PackageMetadata {
+            id: pkg.clone(),
+            published_at: Some(Utc::now() - chrono::Duration::days(10)),
+            download_url: None,
+            checksum: None,
+            is_signed: None,
+            extra: serde_json::json!({"marker": "stale"}),
+            cache_control: None,
+        },
+    );
+
+    let svc = proxy_with_stale(Arc::new(UnavailableRegistry), SpyRepo::new(), cache, true);
+    let meta = svc.resolve_metadata_for(&req("npm")).await.unwrap();
+    assert_eq!(meta.extra["marker"], "stale");
+}
+
+#[tokio::test]
+async fn resolve_metadata_for_upstream_error_without_stale_propagates() {
+    let svc = proxy_with_stale(
+        Arc::new(UnavailableRegistry),
+        SpyRepo::new(),
+        TestCacheStore::new(),
+        false,
+    );
+    let result = svc.resolve_metadata_for(&req("npm")).await;
+    assert!(matches!(result, Err(CoreError::Registry(_))));
+}
+
+#[tokio::test]
+async fn resolve_metadata_for_denied_by_rules() {
+    let svc = proxy(
+        "npm",
+        Arc::new(FixedRegistry),
+        SpyRepo::new(),
+        vec![Box::new(AlwaysDenyRule)],
+    );
+    let result = svc.resolve_metadata_for(&req("npm")).await;
+    assert!(matches!(result, Err(CoreError::AccessDenied(_))));
+}
+
+#[tokio::test]
+async fn resolve_metadata_for_rejects_traversal() {
+    let svc = proxy("npm", Arc::new(FixedRegistry), SpyRepo::new(), vec![]);
+    let bad = ProxyRequest {
+        package_id: PackageId::new("npm", "../../etc/passwd", "1.0.0"),
+        identity: Identity::anonymous(),
+        resource_type: "releases:read".to_owned(),
+        ip_address: None,
+        user_agent: None,
+    };
+    assert!(matches!(
+        svc.resolve_metadata_for(&bad).await,
+        Err(CoreError::InvalidInput(_))
+    ));
+}

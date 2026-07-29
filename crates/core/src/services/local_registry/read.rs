@@ -133,6 +133,20 @@ impl LocalRegistryService {
                 .await;
             return Err(e);
         }
+        // Defense in depth: gate pre-release/beta access on the artifact bytes
+        // themselves, not just on the metadata endpoints. Most download handlers
+        // call `check_prerelease_access` before this, but at least the conda
+        // handler reaches `get_artifact` directly — enforcing it here closes that
+        // fail-open gap for every current and future caller. The check is
+        // idempotent, so callers that already gate keep working unchanged.
+        if let Err(e) = self
+            .check_prerelease_access(registry, version, identity)
+            .await
+        {
+            self.record_download(registry, name, version, identity, Some(e.to_string()))
+                .await;
+            return Err(e);
+        }
         let key = artifact_storage_key(registry, name, version);
         let artifact = self.storage.retrieve(&key).await?.ok_or_else(|| {
             CoreError::NotFound(format!(
@@ -295,9 +309,23 @@ impl LocalRegistryService {
             return Ok(());
         };
         if !ty.eq_ignore_ascii_case(ED25519_SIG_TYPE) {
-            // Only Ed25519 is verifiable here (rsa/PGP are banned); skip others.
-            metrics::counter!("batlehub_signature_checks_total", "registry" => registry.to_owned(), "outcome" => "skipped").increment(1);
-            return Ok(());
+            // Only Ed25519 is verifiable here (rsa/PGP are banned). We reach this
+            // function only when `verify_on_download` is enabled, i.e. the operator
+            // asked for every served byte to be verified — so an artifact carrying
+            // a signature we *cannot* verify must fail closed, not be waved through
+            // as "skipped". (An absent signature is handled above and governed by
+            // publish-time `signing.required`.)
+            metrics::counter!("batlehub_signature_checks_total", "registry" => registry.to_owned(), "outcome" => "mismatch").increment(1);
+            tracing::warn!(
+                registry,
+                name,
+                version,
+                signature_type = ty,
+                "refusing to serve: artifact signature type is not verifiable (only ed25519 is supported) while verify_on_download is enabled"
+            );
+            return Err(CoreError::IntegrityFailure(format!(
+                "cannot verify {registry}/{name}@{version}: signature type '{ty}' is not supported (only ed25519); refusing to serve unverified"
+            )));
         }
         if verify_ed25519(&signing.trusted_keys, sig, bytes) {
             metrics::counter!("batlehub_signature_checks_total", "registry" => registry.to_owned(), "outcome" => "verified").increment(1);

@@ -832,24 +832,35 @@ async fn coherence_check_deletes_orphaned_storage_objects() {
         Duration::hours(1),
     ));
 
-    let report = svc(
+    let service = svc(
         meta,
         storage.clone(),
         EvictionConfig {
             registry: "npm".to_owned(),
             ..Default::default()
         },
-    )
-    .run_coherence_check()
-    .await
-    .unwrap();
+    );
 
+    // First pass defers deletion (two-pass grace closes the write/delete race):
+    // the orphan is only recorded as pending, not yet deleted.
+    let report1 = service.run_coherence_check().await.unwrap();
+    assert_eq!(
+        report1.orphaned_deleted, 0,
+        "first pass must defer deletion"
+    );
+    assert!(
+        storage.contains("artifact:npm/orphan:1.0"),
+        "orphan must survive the first pass"
+    );
+
+    // Second pass: still orphaned → deleted.
+    let report = service.run_coherence_check().await.unwrap();
     assert_eq!(report.orphaned_deleted, 1);
     assert_eq!(report.storage_keys, 3);
     assert_eq!(report.meta_rows, 2);
     assert!(
         !storage.contains("artifact:npm/orphan:1.0"),
-        "orphan must be deleted from storage"
+        "orphan must be deleted from storage on the second pass"
     );
     assert!(
         storage.contains("artifact:npm/a:1.0"),
@@ -910,17 +921,19 @@ async fn coherence_check_empty_registry_spans_all_namespaces() {
         Duration::hours(1),
     ));
 
-    let report = svc(
+    let service = svc(
         meta,
         storage.clone(),
         EvictionConfig {
             registry: "".to_owned(), // empty = all namespaces
             ..Default::default()
         },
-    )
-    .run_coherence_check()
-    .await
-    .unwrap();
+    );
+
+    // Two-pass grace: first run defers, second run deletes the still-orphaned blob.
+    let report1 = service.run_coherence_check().await.unwrap();
+    assert_eq!(report1.orphaned_deleted, 0, "first pass defers deletion");
+    let report = service.run_coherence_check().await.unwrap();
 
     assert_eq!(
         report.orphaned_deleted, 1,

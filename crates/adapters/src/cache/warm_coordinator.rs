@@ -23,6 +23,11 @@ fn to_err(e: redis::RedisError) -> CoreError {
 /// after `ttl` so a crashed replica cannot block future warm-up runs.
 pub struct RedisWarmCoordinator {
     conn: ConnectionManager,
+    /// Per-instance owner token written as the claim value. `release` only
+    /// deletes a claim whose value still equals this token, so one replica can
+    /// never clear a claim another replica re-acquired after the first replica's
+    /// TTL expired.
+    instance_token: String,
 }
 
 impl RedisWarmCoordinator {
@@ -32,7 +37,10 @@ impl RedisWarmCoordinator {
         let conn = ConnectionManager::new(client)
             .await
             .map_err(|e| CoreError::Cache(format!("Redis connection failed: {e}")))?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            instance_token: uuid::Uuid::new_v4().to_string(),
+        })
     }
 }
 
@@ -44,7 +52,7 @@ impl WarmCoordinator for RedisWarmCoordinator {
         let result: Result<Option<String>, _> = conn
             .set_options(
                 claim_key(key),
-                "1",
+                self.instance_token.as_str(),
                 redis::SetOptions::default()
                     .conditional_set(redis::ExistenceCheck::NX)
                     .get(false)
@@ -63,7 +71,19 @@ impl WarmCoordinator for RedisWarmCoordinator {
 
     async fn release(&self, key: &str) {
         let mut conn = self.conn.clone();
-        if let Err(e) = conn.del::<_, ()>(claim_key(key)).await {
+        // Compare-and-delete: only remove the claim if it still holds OUR token.
+        // A plain `DEL` would delete whatever claim currently exists, including
+        // one another replica acquired after our TTL lapsed — letting a third
+        // replica warm concurrently. This Lua runs atomically on the server.
+        let script = redis::Script::new(
+            "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end",
+        );
+        if let Err(e) = script
+            .key(claim_key(key))
+            .arg(self.instance_token.as_str())
+            .invoke_async::<i64>(&mut conn)
+            .await
+        {
             tracing::warn!(key, error = %to_err(e), "warm_coordinator: release failed");
         }
     }

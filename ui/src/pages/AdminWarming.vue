@@ -209,7 +209,7 @@ onMounted(() => void loadStatus());
               <Input
                 :id="`path-${reg.name}`"
                 v-model="pathInputs[reg.name]"
-                placeholder="idea/ideaIC-2024.1.4.tar.gz"
+                placeholder="idea/idea-2026.1.3.tar.gz"
                 class="font-mono text-xs"
               />
               <p class="text-[11px] text-muted-foreground">
@@ -322,7 +322,7 @@ onMounted(() => void loadStatus());
           <Input
             id="del-path"
             v-model="deletePath"
-            placeholder="idea/ideaIC-2026.1.3.tar.gz"
+            placeholder="idea/idea-2026.1.3.tar.gz"
             class="font-mono text-sm max-w-sm"
           />
         </div>

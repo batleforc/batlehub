@@ -186,7 +186,19 @@ impl LocalRegistryService {
         // Propagate DB errors rather than defaulting to Public — silently publishing a
         // team-private package as world-readable during a DB outage is a security failure.
         let visibility = if let Some(ref ns_port) = self.team_namespace {
-            ns_port.get_visibility(&req.registry, &req.name).await?
+            // Quota was already reserved-and-recorded in `enforce_publish_policy`.
+            // A failure here (before `execute_publish_transaction`, the only place
+            // that revokes on rollback) would otherwise charge the publisher for
+            // bytes that are never stored, so revoke the reservation before
+            // propagating the error.
+            match ns_port.get_visibility(&req.registry, &req.name).await {
+                Ok(v) => v,
+                Err(e) => {
+                    self.revoke_quota(&req.publisher, &req.registry, req.artifact.len() as u64)
+                        .await;
+                    return Err(e);
+                }
+            }
         } else {
             Visibility::default()
         };
@@ -199,7 +211,7 @@ impl LocalRegistryService {
             yanked: false,
             deprecated: false,
             deprecation_message: None,
-            unlisted: false,
+            unlisted: req.unlisted,
             index_metadata: req.index_metadata.clone(),
             published_at: chrono::Utc::now(),
             published_by: req.publisher.user_id.clone(),
@@ -220,13 +232,17 @@ impl LocalRegistryService {
             cache.invalidate(Some(&req.registry)).await;
         }
 
-        // Step 4: on first publish, register the publisher as the package admin.
+        // Step 4: generate SBOM. When `required` is true and generation fails,
+        // roll back the publish (version row + bytes + quota) and return the
+        // error. This runs *before* owner registration so a rejected publish
+        // never leaves a dangling owner claim on a name with no versions.
+        self.run_publish_sbom(&req, &storage_key, bytes).await?;
+
+        // Step 5: on first publish, register the publisher as the package admin.
+        // Last, and only once the publish is fully committed, so it is never
+        // orphaned by a later rollback.
         self.register_initial_owner(is_new_package, &req.registry, &req.name, &req.publisher)
             .await;
-
-        // Step 5: generate SBOM. When `required` is true and generation fails,
-        // roll back the publish and return the error.
-        self.run_publish_sbom(&req, &storage_key, bytes).await?;
 
         Ok(quota_check)
     }

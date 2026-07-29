@@ -842,7 +842,7 @@ export const REGISTRY_PATH_TYPES: RegistryPathTypeDef[] = [
         key: "path",
         label: "Archive path",
         suffix: "(mirrors download.jetbrains.com path)",
-        placeholder: "idea/ideaIC-2024.1.4.tar.gz",
+        placeholder: "idea/idea-2026.1.3.tar.gz",
         mono: true,
       },
     ],
@@ -852,6 +852,30 @@ export const REGISTRY_PATH_TYPES: RegistryPathTypeDef[] = [
         {
           label: "File download",
           url: `/proxy/${reg}/jetbrains/${path || "<product>/<filename>"}`,
+          available: !!path,
+        },
+      ];
+    },
+  },
+  {
+    id: "generic",
+    label: "Generic file mirror",
+    group: "DevOps / IDE",
+    fields: [
+      {
+        key: "path",
+        label: "File path",
+        suffix: "(mirrors the upstream path; must match path_allow)",
+        placeholder: "v24.18.0/node-v24.18.0-linux-x64.tar.gz",
+        mono: true,
+      },
+    ],
+    buildPaths: (reg, values) => {
+      const path = v(values, "path");
+      return [
+        {
+          label: "File download",
+          url: `/proxy/${reg}/generic/${path || "<upstream/path>"}`,
           available: !!path,
         },
       ];

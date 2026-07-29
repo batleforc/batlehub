@@ -1,0 +1,49 @@
+# Server configuration for the heavy marketplace integration tests
+# (tests/heavy/marketplace.sh): two local-mode marketplace registries that
+# real IDE tooling (VS Code CLI, IntelliJ `installPlugins`) is pointed at.
+#
+# `${DATABASE_URL}` is interpolated from the environment before TOML parsing.
+
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[database]
+type = "postgresql"
+url = "${DATABASE_URL}"
+max_connections = 5
+
+[[auth]]
+type = "token"
+
+[[auth.tokens]]
+# CI-only credential for publishing the test extension/plugin.
+value = "heavy-admin-token"
+role = "admin"
+user_id = "ci-admin"
+
+[storage]
+type = "filesystem"
+path = "./tmp/heavy-storage"
+
+# ── VS Code extension registry (local: the extension exists ONLY here) ────────
+[[registries]]
+type = "vscode-marketplace"
+name = "vscode"
+mode = "local"
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
+
+# ── JetBrains Marketplace registry (local: the plugin exists ONLY here) ───────
+[[registries]]
+type = "jetbrains-marketplace"
+name = "jbm"
+mode = "local"
+
+[registries.rbac]
+anonymous = ["releases:read"]
+user = ["releases:read"]
+admin = ["*"]

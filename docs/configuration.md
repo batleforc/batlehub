@@ -600,12 +600,13 @@ deny_missing_timestamp = false   # set true to block packages with no timestamp
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `type` | string | yes | `"github"`, `"npm"`, `"cargo"`, `"openvsx"`, `"vscode-marketplace"`, `"goproxy"`, `"maven"`, `"terraform"`, `"rubygems"`, `"composer"`, `"pypi"`, `"conda"` |
+| `type` | string | yes | `"github"`, `"forgejo"`, `"gitlab"`, `"npm"`, `"cargo"`, `"nuget"`, `"openvsx"`, `"vscode-marketplace"`, `"goproxy"`, `"maven"`, `"terraform"`, `"rubygems"`, `"composer"`, `"pypi"`, `"conda"`, `"deb"`, `"rpm"`, `"pacman"`, `"jetbrains"`, `"jetbrains-marketplace"`, `"generic"` |
 | `name` | string | yes | Unique identifier; used in proxy URL paths |
-| `mode` | string | no | `"proxy"` (default), `"local"`, or `"hybrid"`. Supported for `cargo`, `npm`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, `rubygems`, `composer`, `pypi`, and `conda`. See [registry modes](#registry-modes). |
+| `mode` | string | no | `"proxy"` (default), `"local"`, or `"hybrid"`. Supported for `cargo`, `npm`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, `rubygems`, `composer`, `pypi`, `conda`, and `jetbrains-marketplace`. See [registry modes](#registry-modes). |
 | `upstreams` | string[] | no | Upstream URLs tried in order on cache miss; 404 from one falls through to the next. Defaults to the registry's built-in URL. Required for `hybrid` mode. |
 | `index_url` | string | no | Cargo only: sparse crate index URL. Defaults to `https://index.crates.io`. Required for `hybrid` mode and self-hosted Gitea/Forgejo registries. |
 | `storage` | string | no | Name of the storage backend. Must match a `[[storage.backends]]` name. Omit to use the default backend. |
+| `path_allow` | string[] | no | Glob allowlist of upstream paths this registry may serve. Only valid for the path-addressed types (`deb`, `rpm`, `pacman`, `jetbrains`, `generic`) — using it elsewhere is a config error. **Required and non-empty for `generic`.** Use `["**"]` to allow everything deliberately. |
 | `vuln_db_url` | string | no | **goproxy only.** Upstream URL for the Go Vulnerability Database. Default: `https://vuln.go.dev`. Set to `""` to disable the `/v1/` endpoints. See [Vulnerability Proxy](vulnerability-proxy.md#1-go--govulncheck--go-vulnerability-database). |
 | `upstream_auth` | table | no | Credentials sent on every upstream request. See [upstream auth](#upstream_auth). |
 | `tls` | table | no | TLS settings for upstream connections. See [upstream TLS](#upstream_tls). |
@@ -613,7 +614,7 @@ deny_missing_timestamp = false   # set true to block packages with no timestamp
 
 #### Registry modes {#registry-modes}
 
-`cargo`, `npm`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, `rubygems`, `composer`, `pypi`, and `conda` registries support three operating modes, set via the `mode` field:
+`cargo`, `npm`, `openvsx`, `vscode-marketplace`, `goproxy`, `maven`, `terraform`, `rubygems`, `composer`, `pypi`, `conda`, and `jetbrains-marketplace` registries support three operating modes, set via the `mode` field:
 
 | Mode | Description |
 |------|-------------|
@@ -678,6 +679,35 @@ curl -H "Authorization: Bearer <token>" \
 curl -H "Authorization: Bearer <token>" \
   http://localhost:8080/proxy/vscode/ms-python.python/2024.2.1/vsix \
   -o ms-python.python-2024.2.1.vsix
+```
+
+**`jetbrains-marketplace`** — full [JetBrains Marketplace](https://plugins.jetbrains.com) emulation for the IDE plugin ecosystem (search, compatible updates, `meta.json` blobs, plugin downloads), distinct from the path-addressed `jetbrains` IDE-archive type. Point an IDE at the proxy either **fully** (Help → Edit Custom Properties… → `idea.plugins.host=https://your-host/proxy/{registry}`) or **additively** (Settings → Plugins → Manage Plugin Repositories… → `https://your-host/proxy/{registry}/updatePlugins.xml`). Supports `mode = "local"`/`"hybrid"` with a marketplace-compatible multipart publish (`POST /proxy/{registry}/api/updates/upload`), so JetBrains' `plugin-repository-rest-client` and the Gradle `publishPlugin` task work against it. Per-plugin metadata, artifacts, and forwarded query blobs are cached with stale fallback: anything seen once keeps resolving if plugins.jetbrains.com becomes unreachable.
+
+```toml
+[[registries]]
+type = "jetbrains-marketplace"
+name = "jbm"
+mode = "hybrid"                                # or "proxy" / "local"
+upstreams = ["https://plugins.jetbrains.com"]  # default
+
+[registries.rbac]
+user = ["releases:read"]
+admin = ["*"]
+```
+
+Download and publish via the proxy:
+
+```sh
+# Download a plugin version
+curl -H "Authorization: Bearer <token>" \
+  "http://localhost:8080/proxy/jbm/plugin/download?pluginId=org.rust.lang&version=241.25026.107" \
+  -o rust-plugin.zip
+
+# Publish a plugin (local/hybrid mode)
+curl -X POST -H "Authorization: Bearer <token>" \
+  -F "xmlId=com.example.myplugin" \
+  -F "file=@my-plugin.zip" \
+  http://localhost:8080/proxy/jbm/api/updates/upload
 ```
 
 **`goproxy`** — implements the [GOPROXY protocol](https://go.dev/ref/mod#goproxy-protocol) for Go module proxying. Set `mode = "local"` or `mode = "hybrid"` to host private modules — see [registry modes](#registry-modes) and [Worked Example 6.9](#69-private-go-module-proxy-local--hybrid-mode). Supports all five module proxy endpoints plus the Go Vulnerability Database (`govulndb`) protocol — see [Vulnerability Proxy](vulnerability-proxy.md#1-go--govulncheck--go-vulnerability-database).
@@ -1035,6 +1065,46 @@ curl -X PUT \
 
 ---
 
+**`generic`** — a path-addressed mirror of any plain HTTP file tree, for upstreams that have no package protocol at all: toolchain tarballs (`nodejs.org/dist`, `static.rust-lang.org`, `dl.google.com/go`) and single-binary vendor CDNs (`get.helm.sh`, `dl.min.io`, `binaries.sonarsource.com`). Proxy-only — there is no publish, index or signing model. A request to `/proxy/{registry}/generic/{path}` streams `{upstream}/{path}` and caches it on the first miss.
+
+Two fields are **mandatory** for this type:
+
+- `upstreams` — there is no default file tree to fall back to.
+- `path_allow` — the request path is passed straight through to the upstream, so without an allowlist a registry pointed at a host that serves many unrelated tenants (a shared bucket, a multi-vendor CDN) would relay *every* path on that host. Patterns use [`glob`](https://docs.rs/glob) semantics, where `*` also crosses `/`. Paths outside the allowlist are rejected with `403` before any upstream request is made — which also means cache warming (`warm_paths`) cannot bypass it.
+
+```toml
+[[registries]]
+type = "generic"
+name = "node-dist"
+mode = "proxy"
+upstreams = ["https://nodejs.org/dist"]
+# Verified against `mise install node`: mise fetches both the platform
+# tarball and the `node-v<ver>.tar.gz` source tarball, so a platform-only
+# glob 403s mid-install.
+path_allow = ["v*/**"]
+
+[registries.rbac]
+anonymous = ["releases:read"]
+
+# Pre-warm specific paths (path-addressed registries use `warm_paths`,
+# not `warm_packages`).
+[registries.cache]
+warm_paths = ["v24.18.0/node-v24.18.0-linux-x64.tar.gz"]
+```
+
+Point the client at it with the toolchain's own mirror variable:
+
+```sh
+export NODEJS_ORG_MIRROR=https://batlehub.example.com/proxy/node-dist/generic
+export RUSTUP_DIST_SERVER=https://batlehub.example.com/proxy/rust-dist/generic
+```
+
+`batlehub-cli registry suggest` scans a project (including `mise.toml` / `mise.lock`) and prints both the `[[registries]]` blocks and the matching client environment variables — see the [CLI Reference](#7-cli-reference).
+
+**Artifact size:** mirrored archives are often large and the proxy buffers an artifact before caching it, so raise `limits.max_artifact_size_bytes` (default 500 MiB) when mirroring toolchains or IDE-sized downloads.
+
+---
+
 **`[registries.cache]` fields:**
 
 | Field | Type | Default | Notes |
@@ -1086,6 +1156,20 @@ curl -X POST http://localhost:8080/api/v1/admin/registries/npm/warm \
 ```
 
 > **Registry support:** version enumeration (used by bare-name warming) is implemented for **npm**, **Cargo**, **OpenVSX**, and **Go** modules. For GitHub and VS Code Marketplace, pass a pinned version string (e.g. `"owner/repo@v1.2.3"`) to warm a specific version.
+
+**JetBrains Marketplace:** plugins warm like any other package — an entry is the plugin `xmlId`, bare or pinned:
+
+```toml
+[[registries]]
+name = "jetbrains-plugins"
+type = "jetbrains-marketplace"
+
+[registries.cache]
+warm_packages = ["org.rust.lang", "com.intellij.ml.llm@2026.1.1"]
+warm_latest_n = 2
+```
+
+Bare names enumerate versions through `/plugins/list`, which only lists the **Stable** channel — plugins on an EAP/nightly channel are not pre-fetched (their download path carries a `channel` parameter). The warmed archive is the one the IDE downloads from `plugin/download?pluginId=…&version=…`, so it is served from cache on the first request, including while plugins.jetbrains.com is unreachable.
 
 **Cross-replica warm-up coordination (Redis):**
 

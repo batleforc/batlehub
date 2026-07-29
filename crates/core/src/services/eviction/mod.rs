@@ -30,6 +30,12 @@ pub struct EvictionService {
     pub artifact_meta: Arc<dyn ArtifactMetaRepository>,
     pub storage: Arc<dyn StorageBackend>,
     pub config: EvictionConfig,
+    /// Storage keys that looked orphaned during the *previous* coherence run.
+    /// The coherence sweep only deletes a blob that is orphaned on two
+    /// consecutive runs, which closes the write/delete race with `fetch_and_cache`
+    /// (whose `store` → `record_artifact` window is milliseconds, always far
+    /// shorter than the coherence interval) without cross-service locking.
+    coherence_pending: tokio::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl EvictionService {
@@ -42,6 +48,7 @@ impl EvictionService {
             artifact_meta,
             storage,
             config,
+            coherence_pending: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -258,7 +265,7 @@ impl EvictionService {
     /// storage entries that have no corresponding meta row (orphaned blobs from
     /// crashed writes or manual deletions from the DB).
     pub async fn run_coherence_check(&self) -> Result<CoherenceReport, CoreError> {
-        // Artifact keys are stored as "artifact:{registry}/{name}:{version}".
+        // Artifact keys are stored as "artifact:{registry}/{name}/{version}".
         // We need the prefix that matches all artifact keys for this registry.
         let key_prefix = if self.config.registry.is_empty() {
             "artifact:".to_owned()
@@ -273,17 +280,52 @@ impl EvictionService {
         let meta_keys: std::collections::HashSet<String> =
             meta_rows.into_iter().map(|m| m.artifact_key).collect();
 
+        // Two-pass grace to close the write/delete race with `fetch_and_cache`:
+        // a blob is only deleted if it looked orphaned on the PREVIOUS run too.
+        // `fetch_and_cache` writes the blob (`store`) and records its meta row in
+        // two steps; that window is milliseconds, always far shorter than the
+        // interval between coherence runs, so a legitimately-cached blob always
+        // has its meta row by the next run and is dropped from the pending set
+        // before it could ever be deleted. Only a genuinely orphaned blob (a
+        // crashed write, or a manual DB deletion) stays orphaned across two runs.
+        let mut prev_pending = self.coherence_pending.lock().await;
+        let mut still_orphaned: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         let mut orphaned = 0usize;
         for key in &storage_keys {
-            if !meta_keys.contains(key) {
-                tracing::warn!(key, "coherence: orphaned storage object, deleting");
+            if meta_keys.contains(key) {
+                continue;
+            }
+            // Fresh point lookup: a meta row recorded after the snapshot above
+            // means the blob is live — never delete it.
+            match self.artifact_meta.get_artifact_checksum(key).await {
+                Ok(Some(_)) => continue,
+                Ok(None) => {}
+                Err(e) => {
+                    // On lookup error, do NOT delete and do NOT carry the key
+                    // forward: fail safe toward keeping data.
+                    tracing::warn!(key, error = %e, "coherence: meta re-check failed, skipping");
+                    continue;
+                }
+            }
+            if prev_pending.contains(key) {
+                // Orphaned on two consecutive runs → delete.
+                tracing::warn!(key, "coherence: orphaned storage object (2 runs), deleting");
                 if let Err(e) = self.storage.delete(key).await {
                     tracing::warn!(key, error = %e, "coherence: failed to delete orphaned object");
+                    // Deletion failed — keep it pending so we retry next run.
+                    still_orphaned.insert(key.clone());
                 } else {
                     orphaned += 1;
                 }
+            } else {
+                // First run we've seen this key orphaned — defer deletion, carry
+                // it forward so a concurrent in-flight cache write can complete.
+                still_orphaned.insert(key.clone());
             }
         }
+        *prev_pending = still_orphaned;
+        drop(prev_pending);
 
         Ok(CoherenceReport {
             storage_keys: storage_keys.len(),

@@ -310,11 +310,9 @@ impl RegistryClient for PypiRegistryClient {
 
         tracing::debug!(url = %file.url, "fetching PyPI artifact");
 
-        let dl_resp = self
-            .get(&file.url)
-            .send()
-            .await
-            .map_err(to_registry_error)?;
+        // SSRF-guarded: validates the URL (and every redirect hop) against
+        // private/reserved addresses and scopes credentials to the index origin.
+        let dl_resp = self.download(&file.url).await?;
 
         if !dl_resp.status().is_success() {
             return Err(CoreError::Registry(format!(

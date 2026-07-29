@@ -162,6 +162,7 @@ pub async fn vsix_publish(
 
     let quota = local_svc
         .publish(PublishRequest {
+            unlisted: false,
             registry,
             name: extension_id,
             version,

@@ -3,9 +3,10 @@ use chrono::DateTime;
 use futures::TryStreamExt;
 
 use super::super::http_client::{
-    apply_upstream_tls, basic_auth_get, percent_encode, to_registry_error, upstream_auth_headers,
-    UpstreamHttpOptions,
+    apply_upstream_tls, basic_auth_get, ensure_same_origin, percent_encode, to_registry_error,
+    upstream_auth_headers, UpstreamHttpOptions,
 };
+use super::super::ssrf;
 use super::models::{GlLink, GlRelease};
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
@@ -28,6 +29,12 @@ use batlehub_core::{
 /// `upstream_auth` as a custom header. OAuth `Authorization: Bearer` also works.
 pub struct GitlabRegistryClient {
     pub(super) http: reqwest::Client,
+    /// Credentialed download client (same auth default headers as `http`) with
+    /// redirects DISABLED so the SSRF guard validates every hop.
+    pub(super) dl_credentialed: reqwest::Client,
+    /// Credential-free download client (redirects disabled) used for any redirect
+    /// hop that leaves the instance origin, so the token never leaks off-instance.
+    pub(super) dl_plain: reqwest::Client,
     /// Instance root, e.g. `https://gitlab.com` (no trailing slash). Used for
     /// package-registry passthrough.
     pub(super) root: String,
@@ -48,11 +55,25 @@ impl GitlabRegistryClient {
         let auth_headers = upstream_auth_headers(opts)?;
         headers.extend(auth_headers);
 
-        let builder = reqwest::Client::builder()
-            .user_agent("batlehub/0.1")
-            .default_headers(headers);
-        let builder = apply_upstream_tls(builder, opts)?;
-        let http = builder.build().map_err(|e| CoreError::Other(e.into()))?;
+        // `no_redirect` clients follow redirects manually via the SSRF guard;
+        // `with_auth` carries the operator's PAT, which the guard only sends while
+        // the request stays on the instance origin.
+        let build = |no_redirect: bool, with_auth: bool| -> Result<reqwest::Client, CoreError> {
+            let mut b = reqwest::Client::builder().user_agent("batlehub/0.1");
+            if no_redirect {
+                b = b.redirect(reqwest::redirect::Policy::none());
+            }
+            if with_auth {
+                b = b.default_headers(headers.clone());
+            }
+            apply_upstream_tls(b, opts)
+                .map_err(CoreError::Other)?
+                .build()
+                .map_err(|e| CoreError::Other(e.into()))
+        };
+        let http = build(false, true)?;
+        let dl_credentialed = build(true, true)?;
+        let dl_plain = build(true, false)?;
 
         let root = base_url.into();
         let root = root.trim_end_matches('/');
@@ -64,6 +85,8 @@ impl GitlabRegistryClient {
 
         Ok(Self {
             http,
+            dl_credentialed,
+            dl_plain,
             root,
             api_base_url,
             basic_auth: opts.basic_auth.clone(),
@@ -307,15 +330,35 @@ impl RegistryClient for GitlabRegistryClient {
             }
         };
 
+        // A release "link" asset URL comes straight from the release JSON
+        // (`direct_asset_url`/`url`), i.e. it is set by the project owner and can
+        // point anywhere. Our client carries the operator's `PRIVATE-TOKEN` as a
+        // default header (which reqwest does NOT strip on cross-host requests),
+        // so fetching an off-instance URL would exfiltrate that credential and
+        // enable SSRF (e.g. `http://169.254.169.254/…`). Require the resolved URL
+        // to share the instance origin before fetching — the same guard npm and
+        // OpenVSX already apply to upstream-supplied download URLs. The other
+        // selectors (source archive, raw file, package passthrough) are built
+        // from `api_base_url`, so they satisfy this trivially.
+        ensure_same_origin(&download_url, &self.root)?;
+
         tracing::debug!(url = %download_url, "fetching GitLab artifact");
 
-        let response = self
-            .get(&download_url)
-            .send()
-            .await
-            .map_err(to_registry_error)?
-            .error_for_status()
-            .map_err(to_registry_error)?;
+        // Follow redirects manually so each hop is re-validated against
+        // private/reserved addresses (SSRF) and the PAT is dropped the moment a
+        // redirect leaves the instance origin.
+        let parsed = reqwest::Url::parse(&download_url)
+            .map_err(|e| CoreError::Registry(format!("invalid download URL: {e}")))?;
+        let response = ssrf::fetch_following_redirects(
+            &self.dl_credentialed,
+            &self.dl_plain,
+            &self.basic_auth,
+            &self.root,
+            parsed,
+        )
+        .await?
+        .error_for_status()
+        .map_err(to_registry_error)?;
 
         let cache_control = response
             .headers()

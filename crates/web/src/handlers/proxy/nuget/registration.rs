@@ -46,6 +46,15 @@ pub async fn nuget_registration(
     let mode = mode_map.get(&registry);
 
     if mode == RegistryMode::Local {
+        // Enforce registry RBAC before the local read (proxy path runs the rule
+        // chain via `proxy_stream`; a local hit otherwise bypasses it).
+        svc.authorize_read(
+            &PackageId::new(&registry, &id, "__registration__"),
+            &identity.0,
+            batlehub_core::rules::resource_type::RELEASES_READ,
+        )
+        .await
+        .map_err(AppError::from)?;
         let versions = local_svc
             .get_nuget_versions(&registry, &id, &identity)
             .await

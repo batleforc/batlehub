@@ -61,9 +61,20 @@ pub async fn receive_inbound_webhook(
         }
     };
 
+    // Inbound webhook payloads are small JSON events; bound the raw `Payload`
+    // accumulation so an unauthenticated caller cannot stream an unbounded body
+    // into memory (OOM) before the HMAC check even runs.
+    const MAX_WEBHOOK_BYTES: u64 = 5 * 1024 * 1024;
     let mut raw = BytesMut::new();
+    let mut total: u64 = 0;
     while let Some(chunk) = payload.next().await {
         let chunk = chunk.map_err(|e| AppError::bad_request(e.to_string()))?;
+        total += chunk.len() as u64;
+        if total > MAX_WEBHOOK_BYTES {
+            return Err(AppError::bad_request(format!(
+                "webhook payload exceeds the {MAX_WEBHOOK_BYTES}-byte limit"
+            )));
+        }
         raw.extend_from_slice(&chunk);
     }
     let body = raw.freeze();

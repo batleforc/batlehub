@@ -30,6 +30,21 @@ pub struct RegistryConfig {
     /// When empty the adapter's built-in default (e.g. registry.npmjs.org) is used.
     #[serde(default)]
     pub upstreams: Vec<String>,
+    /// Glob allowlist of upstream paths this registry may serve. Only meaningful
+    /// for path-addressed registry types (`deb`/`rpm`/`pacman`/`jetbrains`/`generic`),
+    /// where the request path is passed straight through to the upstream — without
+    /// it, a registry pointed at a shared host (`storage.googleapis.com`, a CDN
+    /// serving many vendors) would relay *every* path on that host.
+    ///
+    /// Patterns are matched against the upstream-relative path with
+    /// [`glob::Pattern`] semantics, where `*` also crosses `/`. Required for
+    /// `generic`; `["**"]` is the explicit opt-out that allows everything.
+    ///
+    /// ```toml
+    /// path_allow = ["v*/node-v*-linux-x64.tar.*", "v*/SHASUMS256.txt*"]
+    /// ```
+    #[serde(default)]
+    pub path_allow: Vec<String>,
     /// Cargo only: URL of the sparse crate index.
     /// Defaults to `https://index.crates.io` when the upstream is crates.io.
     /// Set this for self-hosted registries (e.g. Gitea/Forgejo package feeds).
@@ -237,8 +252,11 @@ pub struct SigningConfig {
     /// When `true`, verify a stored `ed25519` detached signature against
     /// `trusted_keys` on every download. A stored signature that fails to verify
     /// (or was signed by an untrusted key) fails the download with `502`.
-    /// Signatures of other types, and artifacts with no stored signature, are not
-    /// verified here (missing signatures are governed by `required` at publish time).
+    /// A stored signature of an *unsupported* type (anything other than
+    /// `ed25519`, which cannot be verified here) is likewise **rejected** with
+    /// `502` — the download fails closed rather than serving unverified bytes.
+    /// Only artifacts with *no* stored signature are exempt (their presence is
+    /// governed by `required` at publish time).
     #[serde(default)]
     pub verify_on_download: bool,
     /// Hex-encoded 32-byte Ed25519 public keys trusted to sign artifacts in this
@@ -395,7 +413,7 @@ pub struct CachePolicy {
     pub warm_packages: Vec<String>,
     /// Upstream artifact paths to pre-fetch, for path-addressed registries
     /// (`deb`/`rpm`/`jetbrains`) that have no per-package version model. Each entry
-    /// is the upstream-relative path, e.g. `"idea/ideaIC-2024.1.4.tar.gz"` for a
+    /// is the upstream-relative path, e.g. `"idea/idea-2026.1.3.tar.gz"` for a
     /// JetBrains registry or `"dists/stable/Release"` for a Deb registry. Warmed on
     /// startup and via the `/warm` admin endpoint (`paths`).
     #[serde(default)]

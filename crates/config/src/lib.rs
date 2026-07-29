@@ -283,6 +283,71 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_registry_names_return_validation_error() {
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [[registries]]
+        type = "npm"
+        name = "dup"
+
+        [[registries]]
+        type = "cargo"
+        name = "dup"
+        "#
+        );
+        let config: AppConfig = toml::from_str(&toml).unwrap();
+        let err = config
+            .validate()
+            .expect_err("duplicate registry names should fail validation");
+        assert!(err.to_string().contains("duplicate registry name"));
+    }
+
+    #[test]
+    fn invalid_version_pattern_returns_validation_error() {
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [[registries]]
+        type = "npm"
+        name = "npm-local"
+        mode = "local"
+
+        [registries.versioning]
+        version_pattern = "[unterminated"
+        "#
+        );
+        let config: AppConfig = toml::from_str(&toml).unwrap();
+        let err = config
+            .validate()
+            .expect_err("invalid version_pattern regex should fail validation");
+        assert!(err.to_string().contains("version_pattern"));
+    }
+
+    #[test]
+    fn registry_storage_referencing_unknown_backend_returns_validation_error() {
+        // Single-backend storage has no named backends, so a per-registry
+        // `storage` reference must be rejected rather than silently ignored.
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [[registries]]
+        type = "npm"
+        name = "npm-local"
+        storage = "does-not-exist"
+        "#
+        );
+        let config: AppConfig = toml::from_str(&toml).unwrap();
+        let err = config
+            .validate()
+            .expect_err("unknown storage backend reference should fail validation");
+        assert!(err.to_string().contains("storage"));
+    }
+
+    #[test]
     fn composer_local_mode_passes_validation() {
         let toml = format!(
             "{}\n{}",
@@ -356,6 +421,170 @@ mod tests {
         assert!(
             config.validate().is_err(),
             "jetbrains + local mode should fail validation"
+        );
+    }
+
+    #[test]
+    fn generic_proxy_mode_with_upstream_and_path_allow_passes() {
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [[registries]]
+        type = "generic"
+        name = "node-dist"
+        mode = "proxy"
+        upstreams = ["https://nodejs.org/dist"]
+        path_allow = ["v*/node-v*-linux-x64.tar.*", "v*/SHASUMS256.txt*"]
+        "#
+        );
+        let config: AppConfig = toml::from_str(&toml).unwrap();
+        config
+            .validate()
+            .expect("generic + upstream + path_allow must be accepted");
+    }
+
+    #[test]
+    fn generic_without_upstream_is_rejected() {
+        // A generic mirror has no default file tree to fall back to.
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [[registries]]
+        type = "generic"
+        name = "files"
+        mode = "proxy"
+        path_allow = ["**"]
+        "#
+        );
+        let config: AppConfig = toml::from_str(&toml).unwrap();
+        assert!(
+            config.validate().is_err(),
+            "generic without upstreams should fail validation"
+        );
+    }
+
+    #[test]
+    fn generic_without_path_allow_is_rejected() {
+        // The allowlist is mandatory so a mirror of a shared host can't relay
+        // every unrelated path on it.
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [[registries]]
+        type = "generic"
+        name = "files"
+        mode = "proxy"
+        upstreams = ["https://storage.googleapis.com"]
+        "#
+        );
+        let config: AppConfig = toml::from_str(&toml).unwrap();
+        assert!(
+            config.validate().is_err(),
+            "generic without path_allow should fail validation"
+        );
+    }
+
+    #[test]
+    fn generic_path_allow_double_star_is_the_explicit_opt_out() {
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [[registries]]
+        type = "generic"
+        name = "files"
+        mode = "proxy"
+        upstreams = ["https://get.helm.sh"]
+        path_allow = ["**"]
+        "#
+        );
+        let config: AppConfig = toml::from_str(&toml).unwrap();
+        config
+            .validate()
+            .expect("path_allow = [\"**\"] must be accepted as the deliberate opt-out");
+    }
+
+    #[test]
+    fn generic_local_mode_is_rejected() {
+        // generic is proxy-only for now — hosting arbitrary files is a separate
+        // roadmap item.
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [[registries]]
+        type = "generic"
+        name = "files"
+        mode = "local"
+        path_allow = ["**"]
+        "#
+        );
+        let config: AppConfig = toml::from_str(&toml).unwrap();
+        assert!(
+            config.validate().is_err(),
+            "generic + local mode should fail validation"
+        );
+    }
+
+    #[test]
+    fn path_allow_on_non_path_addressed_registry_is_rejected() {
+        // Accepting it silently would read as a working restriction while gating
+        // nothing, since npm requests never carry a raw upstream path.
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [[registries]]
+        type = "npm"
+        name = "npm1"
+        path_allow = ["lodash/*"]
+        "#
+        );
+        let config: AppConfig = toml::from_str(&toml).unwrap();
+        assert!(
+            config.validate().is_err(),
+            "path_allow on an npm registry should fail validation"
+        );
+    }
+
+    #[test]
+    fn path_allow_on_jetbrains_registry_is_accepted() {
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [[registries]]
+        type = "jetbrains"
+        name = "jb"
+        path_allow = ["idea/*"]
+        "#
+        );
+        let config: AppConfig = toml::from_str(&toml).unwrap();
+        config
+            .validate()
+            .expect("path_allow must be accepted on path-addressed kinds");
+    }
+
+    #[test]
+    fn invalid_path_allow_glob_is_rejected() {
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [[registries]]
+        type = "generic"
+        name = "files"
+        upstreams = ["https://get.helm.sh"]
+        path_allow = ["[unclosed"]
+        "#
+        );
+        let config: AppConfig = toml::from_str(&toml).unwrap();
+        assert!(
+            config.validate().is_err(),
+            "an uncompilable path_allow glob should fail validation"
         );
     }
 

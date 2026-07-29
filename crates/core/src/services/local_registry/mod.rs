@@ -1,6 +1,7 @@
 mod eco_composer;
 mod eco_conda;
 mod eco_go;
+mod eco_jetbrains;
 mod eco_maven;
 mod eco_nuget;
 mod eco_pypi;
@@ -10,6 +11,7 @@ mod lifecycle;
 mod publish;
 mod read;
 
+pub use eco_jetbrains::{build_in_range, JetbrainsPluginVersion};
 pub use publish::PublishPolicyRequest;
 
 use std::sync::Arc;
@@ -92,6 +94,21 @@ pub fn validate_path_safe(kind: &str, value: &str) -> Result<(), CoreError> {
             "{kind} '{value}' contains a path-traversal segment"
         )));
     }
+    // The `version` component is a single path segment of the
+    // `{registry}/{name}/{version}` storage key. An interior `/` there is never
+    // legitimate (no registry uses slashes in a version) and would let two
+    // distinct coordinates collapse onto the same key — e.g. name `foo` +
+    // version `bar/1.0.0` produces the same key as name `foo/bar` + version
+    // `1.0.0`, enabling cross-package artifact overwrite / cache poisoning. The
+    // `..`/absolute checks above don't catch that, so reject `/` outright for
+    // the version. Names, upstream paths, and the `artifact` selector legitimately
+    // contain `/` (npm scopes, `owner/repo`, git-forge `raw/{ref}/{path}` and
+    // `link/{name}` selectors, mirrored file trees) and stay exempt.
+    if kind == "version" && value.contains('/') {
+        return Err(CoreError::InvalidInput(format!(
+            "{kind} '{value}' must not contain '/'"
+        )));
+    }
     Ok(())
 }
 
@@ -166,6 +183,11 @@ pub struct PublishRequest {
     /// npm: version metadata from the publish payload (`dist.tarball` stripped).
     /// VSIX: `{"id": "pub.name", "version": "1.0.0"}`.
     pub index_metadata: serde_json::Value,
+    /// Publish the version hidden from registry-protocol listings (still
+    /// downloadable by exact coordinate) — maps to `PublishedPackage::unlisted`.
+    /// Used by ecosystems whose publish protocol carries a hidden flag
+    /// (JetBrains Marketplace `isHidden`).
+    pub unlisted: bool,
     /// Identity of the publishing user.
     pub publisher: Identity,
     /// Raw signature bytes decoded from `X-Artifact-Signature` header, if present.

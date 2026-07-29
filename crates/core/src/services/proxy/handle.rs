@@ -15,8 +15,28 @@ use super::{ProxyRequest, ProxyResponse, ProxyService, RequestTiming};
 /// memory for pathologically large ones.
 pub(crate) const REVERIFY_BUFFER_LIMIT: usize = 32 * 1024 * 1024;
 
+/// Everything `handle` (and the metadata-only entry point) derives from a
+/// `ProxyRequest` before any I/O: the hot-config snapshot for the registry plus
+/// the metadata cache key/TTL. Extracted so `resolve_metadata_for` shares the
+/// exact same validation, lock discipline, and key derivation as `handle`.
+pub(super) struct RequestPrelude {
+    pub(super) client: Arc<dyn crate::ports::RegistryClient>,
+    pub(super) policy: Option<Arc<crate::services::hot_config::RegistryPolicy>>,
+    pub(super) integrity: crate::services::hot_config::IntegrityPolicy,
+    pub(super) limit: u64,
+    pub(super) cache_key: String,
+    pub(super) ttl: Option<std::time::Duration>,
+    pub(super) registry_label: Arc<str>,
+}
+
 impl ProxyService {
-    pub async fn handle(&self, req: ProxyRequest) -> Result<ProxyResponse, CoreError> {
+    /// Validate the coordinate, snapshot the registry's hot config (one brief
+    /// read lock, released before any async I/O), and derive the metadata
+    /// cache key + TTL.
+    pub(super) async fn request_prelude(
+        &self,
+        req: &ProxyRequest,
+    ) -> Result<RequestPrelude, CoreError> {
         // Edge chokepoint: reject any package coordinate that would escape the
         // storage root once interpolated into the cache key, before it reaches the
         // metadata cache or the storage backend. Covers every registry that proxies
@@ -28,14 +48,11 @@ impl ProxyService {
         )?;
 
         let registry_name: &str = req.package_id.registry.as_str();
-        // Arc<str> instead of String: every downstream metrics call below clones
-        // this cheaply (atomic refcount bump) instead of copying the registry
-        // name's bytes on every `counter!`/`histogram!` invocation.
+        // Arc<str> instead of String: every downstream metrics call clones this
+        // cheaply (atomic refcount bump) instead of copying the registry name's
+        // bytes on every `counter!`/`histogram!` invocation.
         let registry_label: Arc<str> = Arc::from(registry_name);
-        let start = Instant::now();
 
-        // Acquire the read lock briefly to clone the Arc<RegistryClient> and
-        // Arc<RegistryPolicy>. The lock is released before any async I/O begins.
         let (client, policy, integrity, limit) = {
             let hot = self.hot.read().await;
             let client = hot
@@ -55,9 +72,80 @@ impl ProxyService {
             (client, policy, integrity, limit)
         };
 
-        // ── 1. Resolve metadata (cache-first) ─────────────────────────────────
         let cache_key = format!("meta:{}", req.package_id.cache_key());
         let ttl = policy.as_ref().and_then(|p| p.metadata_ttl);
+
+        Ok(RequestPrelude {
+            client,
+            policy,
+            integrity,
+            limit,
+            cache_key,
+            ttl,
+            registry_label,
+        })
+    }
+
+    /// Resolve a package's metadata through the cache-first / stale-on-error
+    /// pipeline **without** streaming an artifact, enforcing the registry's
+    /// policy rules against the resolved metadata (`AccessDenied` on deny).
+    ///
+    /// This is the metadata-only sibling of [`Self::handle`] — same coordinate
+    /// validation, same hot-config snapshot, same `meta:` cache key and TTL —
+    /// for handlers that render responses from `PackageMetadata.extra` (e.g.
+    /// the JetBrains Marketplace per-plugin endpoints). Because it goes through
+    /// `resolve_metadata_cached`, anything resolved once keeps resolving from
+    /// cache (or stale cache, when `serve_stale` allows) after upstream loss.
+    pub async fn resolve_metadata_for(
+        &self,
+        req: &ProxyRequest,
+    ) -> Result<crate::entities::PackageMetadata, CoreError> {
+        let prelude = self.request_prelude(req).await?;
+        let metadata = self
+            .resolve_metadata_cached(
+                &prelude.client,
+                &prelude.policy,
+                req,
+                &prelude.cache_key,
+                prelude.ttl,
+                &prelude.registry_label,
+            )
+            .await?;
+
+        let empty: Vec<Box<dyn crate::rules::Rule>> = vec![];
+        let rules = prelude
+            .policy
+            .as_ref()
+            .map(|p| p.rules.as_slice())
+            .unwrap_or(empty.as_slice());
+        let ctx = RuleContext {
+            identity: &req.identity,
+            package: &metadata,
+            resource_type: &req.resource_type,
+            cache_entry: None,
+            requested_version: Some(&req.package_id.version),
+        };
+        if let RuleDecision::Deny { reason } = evaluate_rules(rules, &ctx).await {
+            return Err(CoreError::AccessDenied(reason));
+        }
+
+        Ok(metadata)
+    }
+
+    pub async fn handle(&self, req: ProxyRequest) -> Result<ProxyResponse, CoreError> {
+        let start = Instant::now();
+        let registry_name: &str = req.package_id.registry.as_str();
+        let RequestPrelude {
+            client,
+            policy,
+            integrity,
+            limit,
+            cache_key,
+            ttl,
+            registry_label,
+        } = self.request_prelude(&req).await?;
+
+        // ── 1. Resolve metadata (cache-first) ─────────────────────────────────
         let metadata = self
             .resolve_metadata_cached(&client, &policy, &req, &cache_key, ttl, &registry_label)
             .await?;

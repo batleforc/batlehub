@@ -8,7 +8,7 @@ function typeDef(id: string) {
 }
 
 describe("REGISTRY_PATH_TYPES", () => {
-  it("has exactly the 18 expected registry types", () => {
+  it("has exactly the 19 expected registry types", () => {
     const ids = REGISTRY_PATH_TYPES.map((t) => t.id).sort();
     expect(ids).toEqual(
       [
@@ -17,6 +17,7 @@ describe("REGISTRY_PATH_TYPES", () => {
         "conda",
         "deb",
         "forgejo",
+        "generic",
         "github",
         "gitlab",
         "goproxy",
@@ -435,10 +436,34 @@ describe("jetbrains", () => {
   });
 
   it("uses the given path when set", () => {
-    const paths = t.buildPaths("jetbrains", { path: "idea/ideaIC-2024.1.4.tar.gz" });
+    const paths = t.buildPaths("jetbrains", { path: "idea/idea-2026.1.3.tar.gz" });
     expect(paths[0]).toEqual({
       label: "File download",
-      url: "/proxy/jetbrains/jetbrains/idea/ideaIC-2024.1.4.tar.gz",
+      url: "/proxy/jetbrains/jetbrains/idea/idea-2026.1.3.tar.gz",
+      available: true,
+    });
+  });
+});
+
+describe("generic", () => {
+  const t = typeDef("generic");
+
+  it("uses a placeholder when no path is given", () => {
+    const paths = t.buildPaths("node-dist", { path: "" });
+    expect(paths[0]).toEqual({
+      label: "File download",
+      url: "/proxy/node-dist/generic/<upstream/path>",
+      available: false,
+    });
+  });
+
+  it("mirrors the upstream path verbatim when set", () => {
+    const paths = t.buildPaths("node-dist", {
+      path: "v24.18.0/node-v24.18.0-linux-x64.tar.gz",
+    });
+    expect(paths[0]).toEqual({
+      label: "File download",
+      url: "/proxy/node-dist/generic/v24.18.0/node-v24.18.0-linux-x64.tar.gz",
       available: true,
     });
   });

@@ -23,9 +23,10 @@ pub use hot_config::{
 };
 pub use integrity::{verify as verify_checksum, ChecksumAlgo, IntegrityOutcome};
 pub use local_registry::{
-    artifact_storage_key, maven_artifact_storage_key, terraform_provider_binary_storage_key,
-    validate_coordinate, validate_package_name, validate_path_safe, LocalRegistryService,
-    PublishPolicyRequest, PublishRequest, TerraformPlatform,
+    artifact_storage_key, build_in_range, maven_artifact_storage_key,
+    terraform_provider_binary_storage_key, validate_coordinate, validate_package_name,
+    validate_path_safe, JetbrainsPluginVersion, LocalRegistryService, PublishPolicyRequest,
+    PublishRequest, TerraformPlatform,
 };
 pub use metrics::ProxyMetrics;
 pub use proxy::{ProxyRequest, ProxyResponse, ProxyService};

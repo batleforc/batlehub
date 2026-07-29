@@ -4,7 +4,7 @@ use tokio::sync::Semaphore;
 
 use super::{WarmingReport, WarmingService, WARM_CLAIM_TTL};
 use crate::{
-    entities::PackageId,
+    entities::{PackageId, RegistryKind},
     ports::{ArtifactMetaRecord, StorageMeta},
 };
 
@@ -160,6 +160,19 @@ async fn warm_one_version_inner(
 }
 
 impl WarmingService {
+    /// The artifact sub-coordinate this registry's primary artifact is cached
+    /// under, derived from the client's `registry_type()` — `Some("plugin")`
+    /// for JetBrains Marketplace, `None` for kinds addressed by name/version
+    /// alone. An unrecognised type (test doubles, future kinds) yields `None`,
+    /// which is the historical behaviour.
+    fn warm_artifact(&self) -> Option<&'static str> {
+        self.client
+            .registry_type()
+            .parse::<RegistryKind>()
+            .ok()
+            .and_then(|kind| kind.warm_artifact())
+    }
+
     /// Return a new `WarmingService` identical to `self` but with a different `latest_n`.
     /// Used by the admin API to honour a per-request version count override.
     pub fn with_latest_n(&self, n: usize) -> Self {
@@ -178,6 +191,10 @@ impl WarmingService {
     /// Scoped npm names (`"@scope/name"` or `"@scope/name@version"`) start with a
     /// leading `@` that is part of the name, not a version separator, so it is
     /// skipped before searching for the real `@version` split point.
+    ///
+    /// Each version lands under the exact storage key the proxy read path reads
+    /// back — `artifact:{registry}/{name}/{version}[/{artifact}]`, with the
+    /// per-kind sub-coordinate from `Self::warm_artifact`.
     pub async fn warm_package(&self, package: &str) -> WarmingReport {
         if self.concurrency == 0 {
             return WarmingReport::default();
@@ -220,9 +237,19 @@ impl WarmingService {
         let sem = Arc::new(Semaphore::new(self.concurrency));
         let mut handles = Vec::with_capacity(versions.len());
 
+        // The key must be the one the proxy read path reads back — `artifact:`
+        // + `PackageId::cache_key()`, artifact sub-coordinate included (see
+        // `WarmingService::warm_artifact`). Anything else fills a storage slot
+        // no request ever looks in.
+        let artifact = self.warm_artifact();
+
         for version in versions {
-            let artifact_key = format!("artifact:{}/{name}:{version}", self.registry_name);
-            let pkg = PackageId::new(self.registry_name.clone(), name.to_owned(), version.clone());
+            let mut pkg =
+                PackageId::new(self.registry_name.clone(), name.to_owned(), version.clone());
+            if let Some(a) = artifact {
+                pkg = pkg.with_artifact(a);
+            }
+            let artifact_key = format!("artifact:{}", pkg.cache_key());
             handles.push(tokio::spawn(warm_one_version(
                 self.clone(),
                 artifact_key,

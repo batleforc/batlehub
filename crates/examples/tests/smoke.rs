@@ -371,6 +371,15 @@ fn proxy_curl_endpoints() {
             name: "nuget",
             path: "/proxy/my-nuget/nuget/v3/flat/newtonsoft.json/index.json",
         },
+        // JetBrains Marketplace: custom-repo XML + IDE search surface.
+        Case {
+            name: "jetbrains-marketplace",
+            path: "/proxy/my-jetbrains-marketplace/updatePlugins.xml",
+        },
+        Case {
+            name: "jetbrains-marketplace-search",
+            path: "/proxy/my-jetbrains-marketplace/api/search/plugins",
+        },
     ];
 
     let mut failures = Vec::new();

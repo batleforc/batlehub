@@ -10,7 +10,7 @@ To propose a feature or discuss an item, open an issue on the [project repositor
 
 ## New registry types {#new-registries}
 
-BatleHub currently supports npm, Cargo, GitHub, GitLab, Forgejo/Gitea, OpenVSX, VS Code Marketplace, Go modules, Maven / Gradle, RubyGems, Terraform, Composer, PyPI, Conda, NuGet, Deb (APT), RPM (YUM/DNF), JetBrains IDE archives, and Arch Linux (Pacman):
+BatleHub currently supports npm, Cargo, GitHub, GitLab, Forgejo/Gitea, OpenVSX, VS Code Marketplace, Go modules, Maven / Gradle, RubyGems, Terraform, Composer, PyPI, Conda, NuGet, Deb (APT), RPM (YUM/DNF), JetBrains IDE archives, JetBrains Marketplace, Arch Linux (Pacman), and a Generic file mirror:
 
 | Registry | Status | Notes |
 |----------|--------|-------|
@@ -31,6 +31,7 @@ BatleHub currently supports npm, Cargo, GitHub, GitLab, Forgejo/Gitea, OpenVSX, 
 | **GitLab** | ✅ Shipped | `gitlab`: paginated release list/tag, link assets, source archives + raw files (`/-/` URL scheme), nested groups, `PRIVATE-TOKEN`/Bearer auth; package-registry passthrough (`/api/v4/…`). Ecosystem package registries via the matching typed adapter pointed at the GitLab package endpoint |
 | **Forgejo / Gitea** | ✅ Shipped | `forgejo`: paginated `/api/v1` releases, assets, source archives, raw files (reuses the GitHub URL scheme); package-registry passthrough (`/api/packages/…`). Ecosystem registries via the matching typed adapter |
 | **JetBrains IDE archives** | ✅ Shipped | `jetbrains`: proxy-only path-based cache for IDE installer archives (default upstream `download.jetbrains.com`). No private hosting; raise `limits.max_artifact_size_bytes` for the large (~1-1.7 GB) installers |
+| **JetBrains Marketplace** | ✅ Shipped | `jetbrains-marketplace`: full marketplace emulation for the plugin ecosystem (search, compatible updates, `meta.json`, downloads, `updatePlugins.xml`) in proxy/local/hybrid mode, with marketplace-compatible publishing (`plugin-repository-rest-client` / Gradle `publishPlugin`); metadata and blobs cached with stale fallback for offline resilience |
 | **Arch Linux / Pacman** | ✅ Shipped | `pacman`: proxy upstream Arch mirrors **and** signed private hosting in `local`/`hybrid` mode — `.pkg.tar.{zst,xz,gz}` publish, per-arch `<repo>.db`/`<repo>.files` regeneration, Ed25519-signed database and packages |
 
 ::: info Docker / OCI not planned

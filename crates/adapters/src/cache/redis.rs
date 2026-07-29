@@ -100,11 +100,33 @@ impl CacheStore for RedisCacheStore {
             }
         }
 
-        // Stale shadow: always written without TTL so get_stale can return it even
-        // after the live key has expired.
-        conn.set::<_, _, ()>(stale_key(key), &payload)
-            .await
-            .map_err(to_cache_err)?;
+        // Stale shadow: kept longer than the live key so `get_stale` can still
+        // serve it during an upstream outage after the live key expired — but
+        // NOT forever. A permanent shadow for every distinct key leaks Redis
+        // memory unboundedly (only `invalidate` ever removed them). When a live
+        // TTL is set we give the shadow a bounded retention so shadows for keys
+        // that stop being refreshed self-expire; when the entry is permanent
+        // (no live TTL) the shadow stays permanent to match.
+        match ttl {
+            Some(live_ttl) => {
+                // At least 7 days (generous enough to ride out a prolonged upstream
+                // outage), but never shorter than the live TTL itself — otherwise a
+                // registry configured with a multi-week `metadata_ttl`/`artifact_ttl`
+                // would see its shadow expire *before* the live key, silently
+                // disabling the stale-fallback guarantee it is meant to provide.
+                const MIN_STALE_TTL_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+                let live_ms: u64 = live_ttl.as_millis().try_into().unwrap_or(u64::MAX);
+                let stale_ttl_ms = live_ms.max(MIN_STALE_TTL_MS);
+                conn.pset_ex::<_, _, ()>(stale_key(key), &payload, stale_ttl_ms)
+                    .await
+                    .map_err(to_cache_err)?;
+            }
+            None => {
+                conn.set::<_, _, ()>(stale_key(key), &payload)
+                    .await
+                    .map_err(to_cache_err)?;
+            }
+        }
 
         Ok(())
     }

@@ -55,18 +55,20 @@ pub async fn append_signature_headers(
     }
 }
 
-/// Drain an actix streaming body into a contiguous `Bytes` buffer.
-///
-/// Rejects the upload if the accumulated size exceeds `max_bytes` (default 500 MiB)
-/// to prevent OOM from unbounded uploads before the service-layer size check fires.
+/// Upload ceiling shared by every publish path (raw payloads and multipart
+/// alike): prevents OOM from unbounded uploads before the service-layer size
+/// check fires.
+pub const MAX_UPLOAD_BYTES: u64 = 500 * 1024 * 1024;
+
+/// Drain an actix streaming body into a contiguous `Bytes` buffer, bounded by
+/// [`MAX_UPLOAD_BYTES`].
 pub async fn collect_payload(mut payload: web::Payload) -> Result<Bytes, AppError> {
-    const MAX_BYTES: u64 = 500 * 1024 * 1024;
     let mut raw = BytesMut::new();
     while let Some(chunk) = payload.next().await {
         let chunk = chunk.map_err(|e| AppError::bad_request(e.to_string()))?;
-        if raw.len() as u64 + chunk.len() as u64 > MAX_BYTES {
+        if raw.len() as u64 + chunk.len() as u64 > MAX_UPLOAD_BYTES {
             return Err(AppError::from(CoreError::PayloadTooLarge(format!(
-                "upload exceeds the {MAX_BYTES}-byte limit"
+                "upload exceeds the {MAX_UPLOAD_BYTES}-byte limit"
             ))));
         }
         raw.extend_from_slice(&chunk);
@@ -265,6 +267,20 @@ pub async fn serve_local_or_proxy_artifact(
     let mode = mode_map.get(registry);
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        // Enforce the registry's RBAC (`[registries.rbac]`) before serving from
+        // local storage. `get_artifact` only checks per-package Visibility and
+        // pre-release gating — it never runs the registry rule chain, which is
+        // only evaluated on the proxy fall-through. Without this, a local hit
+        // would bypass a registry that denies e.g. anonymous `releases:read`
+        // while its packages keep the default Public visibility. Mirrors the
+        // deb/rpm `repo_get` guard so local and proxy reads stay consistent.
+        svc.authorize_read(
+            &PackageId::new(registry, name, version),
+            &identity.0,
+            opts.resource_type,
+        )
+        .await
+        .map_err(AppError::from)?;
         if opts.check_prerelease {
             local_svc
                 .check_prerelease_access(registry, version, &identity)
@@ -326,6 +342,13 @@ where
 {
     let mode = mode_map.get(registry);
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        // Enforce the registry's RBAC before serving metadata from local storage:
+        // the local fetch only checks per-package Visibility, not the registry
+        // rule chain (which the proxy fall-through would run). See the artifact
+        // helper above for the full rationale.
+        svc.authorize_read(&pkg, &identity.0, resource_type)
+            .await
+            .map_err(AppError::from)?;
         match local_fetch(identity.0.clone()).await {
             Ok(x) => return Ok(HttpResponse::Ok().content_type("application/json").json(x)),
             Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}

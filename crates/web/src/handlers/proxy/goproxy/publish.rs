@@ -86,6 +86,7 @@ pub async fn goproxy_publish(
         &local_svc,
         &notification_svc,
         PublishRequest {
+            unlisted: false,
             registry,
             name: module.to_owned(),
             version: version.to_owned(),

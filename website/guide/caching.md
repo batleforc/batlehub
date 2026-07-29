@@ -209,14 +209,24 @@ curl -X POST http://localhost:8080/api/v1/admin/registries/npm/warm \
 ```
 
 ::: tip Registry support
-Version enumeration (needed to warm bare package names) is implemented for **npm**, **Cargo**, **OpenVSX**, and **Go** modules. For GitHub and VS Code Marketplace, pass a pinned version string to warm a specific version.
+Version enumeration (needed to warm bare package names) applies only to the package-based registry types — those addressed by a name plus a version — and excludes the path-addressed ones (Deb, RPM, Pacman, JetBrains IDEs, Generic). It is implemented for every package-based type, so bare names work across all of them; pass a pinned `name@version` entry when you want exactly one version. The name half is whatever coordinate the registry addresses packages by:
+
+| Registry | Bare name | Pinned version |
+| --- | --- | --- |
+| npm | `lodash` | `lodash@4.17.21` |
+| Maven | `com.google.guava:guava` | `com.google.guava:guava@33.0.0-jre` |
+| Terraform | `providers/hashicorp/aws` | `providers/hashicorp/aws@5.0.0` |
+| RubyGems | `rails` | `rails@7.1.0` |
+| Composer | `monolog/monolog` | `monolog/monolog@3.5.0` |
+
+Scoped npm names keep their leading `@` as part of the name (`@scope/pkg`, `@scope/pkg@1.2.3`). For **GitHub**, bare names enumerate releases via the Releases API. For **VS Code Marketplace**, they enumerate all extension versions via the Gallery API. For **Conda**, the version list is synthesised by scanning `repodata.json` across the standard platforms. For **JetBrains Marketplace**, an entry is the plugin `xmlId` and bare names enumerate the **Stable** channel only. The path-addressed types (Deb, RPM, Pacman, JetBrains IDEs, Generic) have no version model at all and pre-warm `warm_paths` instead of `warm_packages`.
 :::
 
 ---
 
 ## Content-addressable deduplication {#deduplication}
 
-Artifact bytes are stored at a content-addressed key (`blob/{sha256}`) in blob storage. Each logical artifact path (e.g. `artifact:npm/lodash:4.17.21`) holds a reference to the blob rather than the bytes themselves. A reference-count table tracks how many logical keys point to each blob.
+Artifact bytes are stored at a content-addressed key (`blob/{sha256}`) in blob storage. Each logical artifact path (e.g. `artifact:npm/lodash/4.17.21`) holds a reference to the blob rather than the bytes themselves. A reference-count table tracks how many logical keys point to each blob.
 
 This means:
 - The same package published to two registries stores only one copy.

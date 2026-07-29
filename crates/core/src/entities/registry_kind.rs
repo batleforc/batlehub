@@ -33,6 +33,8 @@ pub enum RegistryKind {
     Rpm,
     Pacman,
     Jetbrains,
+    JetbrainsMarketplace,
+    Generic,
 }
 
 impl RegistryKind {
@@ -58,6 +60,8 @@ impl RegistryKind {
         Self::Rpm,
         Self::Pacman,
         Self::Jetbrains,
+        Self::JetbrainsMarketplace,
+        Self::Generic,
     ];
 
     /// The kebab-case wire string for this kind (matches TOML `type = "..."`).
@@ -82,24 +86,59 @@ impl RegistryKind {
             Self::Rpm => "rpm",
             Self::Pacman => "pacman",
             Self::Jetbrains => "jetbrains",
+            Self::JetbrainsMarketplace => "jetbrains-marketplace",
+            Self::Generic => "generic",
         }
     }
 
     /// Local/hybrid mode is only meaningful for registries this proxy can host
     /// package versions for itself — the read-only source-hosting types
-    /// (github/forgejo/gitlab/jetbrains) have no local publish model.
+    /// (github/forgejo/gitlab/jetbrains) have no local publish model. `generic`
+    /// is proxy-only for now; hosting arbitrary files is a separate roadmap item.
     pub fn supports_local_mode(&self) -> bool {
         !matches!(
             self,
-            Self::Github | Self::Forgejo | Self::Gitlab | Self::Jetbrains
+            Self::Github | Self::Forgejo | Self::Gitlab | Self::Jetbrains | Self::Generic
         )
     }
 
     /// `deb`/`rpm` have no universal default upstream (unlike e.g. `npm`'s
     /// registry.npmjs.org), so proxy mode requires an explicit upstream —
     /// otherwise every fetch would silently hit an unreachable placeholder.
+    /// `generic` mirrors an arbitrary file tree, so it has no default at all.
     pub fn requires_explicit_upstream_in_proxy_mode(&self) -> bool {
-        matches!(self, Self::Deb | Self::Rpm)
+        matches!(self, Self::Deb | Self::Rpm | Self::Generic)
+    }
+
+    /// Whether this kind is addressed purely by upstream file path, with the
+    /// whole path carried in `PackageId::artifact` and no per-package metadata
+    /// API — the kinds served by `PathProxyRegistryClient`. These are the kinds
+    /// for which `path_allow` and `cache.warm_paths` are meaningful.
+    pub fn is_path_addressed(&self) -> bool {
+        matches!(
+            self,
+            Self::Deb | Self::Rpm | Self::Pacman | Self::Jetbrains | Self::Generic
+        )
+    }
+
+    /// The `PackageId::artifact` sub-coordinate this kind's primary downloadable
+    /// artifact is cached under, when it uses one.
+    ///
+    /// Proxy cache keys are `artifact:` + [`crate::entities::PackageId::cache_key`], i.e.
+    /// `artifact:{registry}/{name}/{version}[/{artifact}]`. Most kinds address
+    /// their main artifact by name/version alone and return `None` (new kinds
+    /// default to that). JetBrains Marketplace serves the plugin archive under
+    /// `plugin` — see `jbm_plugin_download` in
+    /// `crates/web/src/handlers/proxy/jetbrains_marketplace/files.rs`, which
+    /// must keep using the same sub-coordinate.
+    ///
+    /// Warming reads this so a pre-fetched artifact lands in the exact slot the
+    /// proxy read path looks in, instead of a slot nothing ever reads.
+    pub fn warm_artifact(&self) -> Option<&'static str> {
+        match self {
+            Self::JetbrainsMarketplace => Some("plugin"),
+            _ => None,
+        }
     }
 }
 
@@ -154,15 +193,44 @@ mod tests {
         assert!(!RegistryKind::Forgejo.supports_local_mode());
         assert!(!RegistryKind::Gitlab.supports_local_mode());
         assert!(!RegistryKind::Jetbrains.supports_local_mode());
+        assert!(!RegistryKind::Generic.supports_local_mode());
         assert!(RegistryKind::Cargo.supports_local_mode());
         assert!(RegistryKind::Deb.supports_local_mode());
+        assert!(RegistryKind::JetbrainsMarketplace.supports_local_mode());
     }
 
     #[test]
-    fn only_deb_and_rpm_require_explicit_upstream_in_proxy_mode() {
+    fn only_deb_rpm_and_generic_require_explicit_upstream_in_proxy_mode() {
         assert!(RegistryKind::Deb.requires_explicit_upstream_in_proxy_mode());
         assert!(RegistryKind::Rpm.requires_explicit_upstream_in_proxy_mode());
+        assert!(RegistryKind::Generic.requires_explicit_upstream_in_proxy_mode());
         assert!(!RegistryKind::Pacman.requires_explicit_upstream_in_proxy_mode());
         assert!(!RegistryKind::Npm.requires_explicit_upstream_in_proxy_mode());
+        assert!(!RegistryKind::JetbrainsMarketplace.requires_explicit_upstream_in_proxy_mode());
+    }
+
+    #[test]
+    fn path_addressed_kinds_are_the_path_proxy_ones() {
+        for kind in [
+            RegistryKind::Deb,
+            RegistryKind::Rpm,
+            RegistryKind::Pacman,
+            RegistryKind::Jetbrains,
+            RegistryKind::Generic,
+        ] {
+            assert!(kind.is_path_addressed(), "{kind} should be path-addressed");
+        }
+        for kind in [
+            RegistryKind::Npm,
+            RegistryKind::Cargo,
+            RegistryKind::Github,
+            RegistryKind::Goproxy,
+            RegistryKind::JetbrainsMarketplace,
+        ] {
+            assert!(
+                !kind.is_path_addressed(),
+                "{kind} should not be path-addressed"
+            );
+        }
     }
 }

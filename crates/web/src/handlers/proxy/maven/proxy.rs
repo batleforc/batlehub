@@ -45,6 +45,21 @@ pub async fn maven_get(
     let kind = parse_maven_path(&registry, &maven_path)?;
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        // Enforce registry RBAC before any local read. `maven_local_response`
+        // reads generated metadata and artifact bytes straight from local storage
+        // without running the registry rule chain (only the proxy fall-through
+        // does), so a local hit would otherwise bypass `[registries.rbac]`.
+        let (auth_name, auth_version) = match &kind {
+            MavenPathKind::Metadata { name } => (name.clone(), "maven-metadata.xml".to_owned()),
+            MavenPathKind::Artifact { name, version, .. } => (name.clone(), version.clone()),
+        };
+        svc.authorize_read(
+            &PackageId::new(&registry, auth_name, auth_version),
+            &identity.0,
+            batlehub_core::rules::resource_type::RELEASES_READ,
+        )
+        .await
+        .map_err(AppError::from)?;
         if let Some(resp) =
             maven_local_response(&local_svc, &registry, &kind, &identity, mode).await?
         {
@@ -208,6 +223,7 @@ pub async fn maven_put(
                 &local_svc,
                 &notification_svc,
                 PublishRequest {
+                    unlisted: false,
                     registry: registry.clone(),
                     name: name.clone(),
                     version: resolved_version.clone(),

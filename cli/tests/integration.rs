@@ -391,6 +391,202 @@ fn registry_list_json() {
     assert_eq!(arr[0]["mode"], "local");
 }
 
+/// A `mise.lock` covering the three shapes `registry suggest` must handle: a
+/// GitHub release asset (typed registry), a preset toolchain host (curated
+/// generic mirror), and a URL-less backend (mapped by backend prefix).
+const SAMPLE_MISE_LOCK: &str = r#"
+[[tools."aqua:EmbarkStudios/cargo-deny"]]
+version = "0.20.2"
+backend = "aqua:EmbarkStudios/cargo-deny"
+
+[tools."aqua:EmbarkStudios/cargo-deny"."platforms.linux-x64"]
+url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny.tar.gz"
+
+[[tools.node]]
+version = "24.18.0"
+backend = "core:node"
+
+[tools.node."platforms.linux-x64"]
+url = "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-x64.tar.gz"
+
+[[tools.semgrep]]
+version = "1.170.0"
+backend = "pipx:semgrep"
+"#;
+
+#[test]
+fn registry_suggest_maps_mise_lock_sources_to_registries() {
+    let srv = TestServer::start();
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("mise.lock"), SAMPLE_MISE_LOCK).unwrap();
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "registry",
+            "suggest",
+            "--dir",
+            dir.path().to_str().unwrap(),
+            "--json",
+        ],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "registry suggest should succeed: {stderr}");
+    let val: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let suggested = val["suggested"].as_array().expect("suggested array");
+
+    let by_name = |name: &str| {
+        suggested
+            .iter()
+            .find(|s| s["name"] == name)
+            .unwrap_or_else(|| panic!("no '{name}' suggestion in {stdout}"))
+    };
+
+    // GitHub release asset → typed adapter, which brings its own upstream.
+    assert_eq!(by_name("github")["type"], "github");
+    assert!(by_name("github")["upstreams"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    // A preset host → generic mirror with an explicit upstream + allowlist,
+    // both of which the server requires for `type = "generic"`.
+    let node = by_name("node-dist");
+    assert_eq!(node["type"], "generic");
+    assert_eq!(node["upstreams"][0], "https://nodejs.org/dist");
+    assert!(!node["path_allow"].as_array().unwrap().is_empty());
+    assert_eq!(
+        node["client_env"]["NODEJS_ORG_MIRROR"],
+        serde_json::json!(format!("{}/proxy/node-dist/generic", srv.base_url()))
+    );
+
+    // A URL-less backend maps by prefix (`pipx:` → PyPI).
+    assert_eq!(by_name("pypi")["type"], "pypi");
+}
+
+#[test]
+fn registry_suggest_omits_types_the_server_already_has() {
+    // The test server exposes one `nuget` registry, so a NuGet project should be
+    // reported as already covered rather than suggested again.
+    let srv = TestServer::start();
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("MyPkg.nuspec"), "<package/>").unwrap();
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "registry",
+            "suggest",
+            "--dir",
+            dir.path().to_str().unwrap(),
+            "--json",
+        ],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "registry suggest should succeed: {stderr}");
+    let val: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert!(
+        val["suggested"].as_array().unwrap().is_empty(),
+        "nuget is already configured, so nothing should be suggested: {stdout}"
+    );
+    assert_eq!(val["already_configured"][0]["type"], "nuget");
+
+    // …unless the user asks for everything.
+    let (ok, stdout, _) = cli_cmd(
+        &[
+            "registry",
+            "suggest",
+            "--dir",
+            dir.path().to_str().unwrap(),
+            "--include-existing",
+            "--json",
+        ],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok);
+    let val: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(val["suggested"][0]["type"], "nuget");
+}
+
+#[test]
+fn registry_suggest_works_without_a_reachable_server() {
+    // Scanning is entirely local; an unreachable server may only cost the
+    // "already configured" annotation, never the whole command.
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("mise.lock"), SAMPLE_MISE_LOCK).unwrap();
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "registry",
+            "suggest",
+            "--dir",
+            dir.path().to_str().unwrap(),
+            "--client-env",
+        ],
+        "http://127.0.0.1:1", // nothing listening
+        AUTH_TOKEN,
+    );
+    assert!(
+        ok,
+        "suggest must not fail on an unreachable server: {stderr}"
+    );
+    assert!(stdout.contains("[[registries]]"), "{stdout}");
+    assert!(stdout.contains("NODEJS_ORG_MIRROR"), "{stdout}");
+}
+
+#[test]
+fn registry_suggest_mise_block_is_valid_toml_with_doubled_escapes() {
+    // A lone `\.` is a TOML parse error, and mise reacts by logging one line and
+    // running on with the whole settings block dropped — so the escaping is the
+    // difference between "routed through the proxy" and a silent no-op.
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("mise.lock"), SAMPLE_MISE_LOCK).unwrap();
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "registry",
+            "suggest",
+            "--dir",
+            dir.path().to_str().unwrap(),
+            "--mise",
+            "--json",
+        ],
+        "https://hub.example.com",
+        AUTH_TOKEN,
+    );
+    assert!(ok, "suggest --mise should succeed: {stderr}");
+    let val: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let mise_toml = val["mise_toml"].as_str().expect("mise_toml string");
+
+    let parsed: toml::Value = toml::from_str(mise_toml)
+        .unwrap_or_else(|e| panic!("mise block must be valid TOML: {e}\n{mise_toml}"));
+    let repl = parsed["settings"]["url_replacements"].as_table().unwrap();
+
+    // Generic mirror: rule derived from the upstream, proxied under /generic/.
+    assert_eq!(
+        repl[r"regex:^https://nodejs\.org/dist/(.+)"].as_str(),
+        Some("https://hub.example.com/proxy/node-dist/generic/$1")
+    );
+    // GitHub: no `/github/` type segment — that route is /proxy/{name}/{owner}/…
+    assert_eq!(
+        repl[r"regex:^https://api\.github\.com/repos/(.+)"].as_str(),
+        Some("https://hub.example.com/proxy/github/$1")
+    );
+}
+
+#[test]
+fn registry_suggest_on_empty_dir_reports_nothing_found() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (ok, stdout, _stderr) = cli_cmd(
+        &["registry", "suggest", "--dir", dir.path().to_str().unwrap()],
+        "http://127.0.0.1:1",
+        AUTH_TOKEN,
+    );
+    assert!(ok);
+    assert!(stdout.contains("No package sources found"), "{stdout}");
+}
+
 #[test]
 fn registry_info_found() {
     let srv = TestServer::start();
@@ -1767,6 +1963,47 @@ fn setup_detect_empty_dir_returns_empty_json() {
         items.is_empty(),
         "empty dir should produce no detections; got: {items:?}"
     );
+}
+
+/// `setup ide --json` must emit a JSON array and detect a JetBrains IDE from a
+/// `.idea/` directory in the working directory, with a placeholder registry name
+/// (the CLI path has no loaded registry list, so nothing is "configured").
+#[test]
+fn setup_ide_json_detects_idea_project() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join(".idea")).unwrap();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
+        .args(["setup", "ide", "--json"])
+        .current_dir(dir.path())
+        .env("HOME", dir.path()) // no ~/.config/{Code,VSCodium,JetBrains}
+        .env("BATLEHUB_SERVER", "https://batlehub.example.com")
+        // Strip editor signals that might leak from the test runner's own env so
+        // the only detection is the `.idea/` directory above.
+        .env_remove("TERM_PROGRAM")
+        .env_remove("VSCODE_PID")
+        .env_remove("VSCODE_IPC_HOOK")
+        .env_remove("VSCODE_IPC_HOOK_CLI")
+        .env_remove("VSCODE_GIT_IPC_HANDLE")
+        .env_remove("VSCODE_INJECTION")
+        .env_remove("TERMINAL_EMULATOR")
+        .env_remove("IDEA_INITIAL_DIRECTORY")
+        .env_remove("__INTELLIJ_COMMAND_HISTFILE__")
+        .output()
+        .expect("failed to run batlehub-cli");
+
+    assert!(
+        out.status.success(),
+        "setup ide should succeed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let items: Vec<serde_json::Value> =
+        serde_json::from_slice(&out.stdout).expect("stdout should be a JSON array");
+    let jb = items
+        .iter()
+        .find(|v| v["registry_type"] == "jetbrains-marketplace")
+        .unwrap_or_else(|| panic!("expected a jetbrains-marketplace entry; got: {items:?}"));
+    assert_eq!(jb["registry_configured"], serde_json::json!(false));
 }
 
 #[test]

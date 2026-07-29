@@ -1,4 +1,5 @@
 pub mod http_client;
+pub mod ssrf;
 pub use http_client::{
     apply_upstream_options, apply_upstream_tls, basic_auth_get, cache_control, parse_http_date,
     percent_encode, to_registry_error, upstream_auth_headers, UpstreamHttpOptions,
@@ -26,14 +27,16 @@ pub use gitlab::GitlabRegistryClient;
     feature = "registry-deb",
     feature = "registry-rpm",
     feature = "registry-pacman",
-    feature = "registry-jetbrains"
+    feature = "registry-jetbrains",
+    feature = "registry-generic"
 ))]
 pub mod path_proxy;
 #[cfg(any(
     feature = "registry-deb",
     feature = "registry-rpm",
     feature = "registry-pacman",
-    feature = "registry-jetbrains"
+    feature = "registry-jetbrains",
+    feature = "registry-generic"
 ))]
 pub use path_proxy::PathProxyRegistryClient;
 
@@ -61,6 +64,11 @@ pub use openvsx::OpenVsxRegistryClient;
 pub mod goproxy;
 #[cfg(feature = "registry-goproxy")]
 pub use goproxy::GoProxyRegistryClient;
+
+#[cfg(feature = "registry-jetbrains-marketplace")]
+pub mod jetbrains_marketplace;
+#[cfg(feature = "registry-jetbrains-marketplace")]
+pub use jetbrains_marketplace::JetbrainsMarketplaceRegistryClient;
 
 #[cfg(feature = "registry-vscode-marketplace")]
 pub mod vscode_marketplace;

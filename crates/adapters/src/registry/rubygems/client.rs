@@ -22,6 +22,12 @@ use models::GemMetadata;
 pub fn parse_gem_bytes(data: &[u8]) -> Result<GemMetadata, CoreError> {
     use std::io::{Cursor, Read};
 
+    // A `.gem` is publisher-supplied, so its embedded `metadata.gz` is untrusted:
+    // cap both the compressed read and the decompressed output so a "gzip bomb"
+    // (a few KB expanding to many GB) cannot OOM the process on publish.
+    const MAX_METADATA_COMPRESSED: u64 = 16 * 1024 * 1024; // 16 MiB
+    const MAX_METADATA_DECOMPRESSED: u64 = 64 * 1024 * 1024; // 64 MiB
+
     let cursor = Cursor::new(data);
     let mut archive = tar::Archive::new(cursor);
 
@@ -38,9 +44,14 @@ pub fn parse_gem_bytes(data: &[u8]) -> Result<GemMetadata, CoreError> {
             .unwrap_or(false);
         if is_metadata {
             let mut buf = Vec::new();
-            entry
+            Read::take(&mut entry, MAX_METADATA_COMPRESSED)
                 .read_to_end(&mut buf)
                 .map_err(|e| CoreError::Registry(format!("rubygems: read metadata.gz: {e}")))?;
+            if buf.len() as u64 >= MAX_METADATA_COMPRESSED {
+                return Err(CoreError::Registry(
+                    "rubygems: metadata.gz exceeds the maximum allowed size".to_owned(),
+                ));
+            }
             metadata_bytes = Some(buf);
             break;
         }
@@ -50,11 +61,16 @@ pub fn parse_gem_bytes(data: &[u8]) -> Result<GemMetadata, CoreError> {
         CoreError::Registry("rubygems: metadata.gz not found in .gem archive".to_owned())
     })?;
 
-    let mut decoder = flate2::read::GzDecoder::new(compressed.as_slice());
+    let decoder = flate2::read::GzDecoder::new(compressed.as_slice());
     let mut yaml = String::new();
-    decoder
+    Read::take(decoder, MAX_METADATA_DECOMPRESSED)
         .read_to_string(&mut yaml)
         .map_err(|e| CoreError::Registry(format!("rubygems: decompress metadata.gz: {e}")))?;
+    if yaml.len() as u64 >= MAX_METADATA_DECOMPRESSED {
+        return Err(CoreError::Registry(
+            "rubygems: decompressed metadata.gz exceeds the maximum allowed size".to_owned(),
+        ));
+    }
 
     parse_gem_yaml(&yaml)
 }

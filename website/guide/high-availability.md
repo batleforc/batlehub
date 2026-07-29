@@ -398,7 +398,7 @@ otel:
   endpoint: "http://otel-collector:4317"
 ```
 
-Each replica emits its own spans; the collector stitches them into complete traces by trace ID. See the [Administration guide](/guide/administration#health) for the Jaeger quickstart.
+Each replica emits its own spans; the collector stitches them into complete traces by trace ID. See the [Administration guide](/guide/admin-storage-health#health) for the Jaeger quickstart.
 
 ---
 

@@ -85,8 +85,8 @@ mod tests {
     #[test]
     fn output_name_is_last_path_segment() {
         assert_eq!(
-            default_output_name("/proxy/jb/jetbrains/idea/ideaIC-2024.1.4.tar.gz"),
-            "ideaIC-2024.1.4.tar.gz"
+            default_output_name("/proxy/jb/jetbrains/idea/idea-2026.1.3.tar.gz"),
+            "idea-2026.1.3.tar.gz"
         );
     }
 

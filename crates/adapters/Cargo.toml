@@ -37,7 +37,10 @@ rpm = { version = "0.25", default-features = false, features = [
   "zstd-compression",
 ], optional = true }
 futures.workspace = true
-glob = { workspace = true, optional = true }
+# Non-optional: used both by the actions-OIDC group rules and by the
+# path-proxy `path_allow` allowlist, which is shared across registry features.
+# `glob` has no transitive dependencies, so unconditional inclusion is free.
+glob.workspace = true
 hex.workspace = true
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"], optional = true }
 metrics.workspace = true
@@ -106,11 +109,13 @@ default = [
   "registry-terraform",
   "registry-vscode-marketplace",
   "registry-jetbrains",
+  "registry-jetbrains-marketplace",
+  "registry-generic",
   "sbom",
   "storage-fs",
   "vuln-scan"
 ]
-auth-actions-oidc = ["dep:glob", "dep:jsonwebtoken", "dep:regex"]
+auth-actions-oidc = ["dep:jsonwebtoken", "dep:regex"]
 auth-kubernetes = []
 auth-oidc = ["dep:jsonwebtoken"]
 auth-token = []
@@ -158,6 +163,13 @@ registry-pypi = []
 # JetBrains IDE-archive proxy cache. Reuses the generic `PathProxyRegistryClient`
 # (shared with deb/rpm), so it needs no extra dependencies.
 registry-jetbrains = []
+# JetBrains Marketplace (plugins.jetbrains.com) metadata-API adapter — distinct
+# from the path-addressed `registry-jetbrains` IDE-archive kind. Needs quick-xml
+# for the plugin-repository XML format.
+registry-jetbrains-marketplace = ["dep:quick-xml"]
+# Path-addressed mirror of an arbitrary upstream file tree (toolchain tarballs,
+# vendor CDNs). Also reuses `PathProxyRegistryClient`.
+registry-generic = []
 registry-rubygems = ["dep:flate2", "dep:tar"]
 registry-terraform = []
 registry-vscode-marketplace = []

@@ -67,6 +67,17 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
         with:
           fetch-depth: 0
+      # ── Rust toolchain (needed early to dump the OpenAPI spec the frontend
+      #    client is generated from, then reused for Rust coverage) ─────────────
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
+        with:
+          toolchain: "stable"
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
       # ── Frontend coverage ────────────────────────────────────────────────────
       # pnpm must be installed before setup-node so its cache step can resolve
       # the pnpm store directory. Same action/pin as .forgejo/workflows/updatecli.yml.
@@ -85,20 +96,20 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
         working-directory: ui
+      # The generated client (ui/src/client/) and ui/openapi.json are gitignored,
+      # so they must be produced before the Vitest coverage run — otherwise the
+      # suites that import `@/client/*` fail to resolve. Mirrors front-test.yaml.
+      - name: Generate OpenAPI spec
+        run: cargo run -p batlehub-server -- --config config.example.toml dump-spec > ui/openapi.json
+      - name: Generate TypeScript client
+        run: pnpm run generate
+        working-directory: ui
       - name: Generate frontend coverage (lcov)
         run: pnpm run coverage
         working-directory: ui
         env:
           CI: "true"
       # ── Rust coverage (workspace + integration tests) ────────────────────────
-      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
-        with:
-          components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
       - name: Clean previous coverage data
@@ -134,7 +145,7 @@ jobs:
           cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex "${{ env.COVERAGE_EXCLUDE }}"
       # ── SonarCloud scan ──────────────────────────────────────────────────────
       - name: SonarCloud scan
-        uses: SonarSource/sonarcloud-github-action@ffc3010689be73b8e5ae0c57ce35968afd7909e8 # v5.0.0
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

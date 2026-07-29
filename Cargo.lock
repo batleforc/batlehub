@@ -1064,6 +1064,8 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "batlehub-core",
+ "glob",
+ "regex",
  "serde",
  "thiserror 2.0.19",
  "toml",
@@ -1176,6 +1178,7 @@ dependencies = [
  "bzip2",
  "chrono",
  "flate2",
+ "form_urlencoded",
  "futures",
  "hex",
  "hmac 0.13.0",
