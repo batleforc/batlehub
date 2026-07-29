@@ -70,10 +70,22 @@ func main() {
 }
 ```
 
-Then build and upload it. The module path may contain slashes; BatleHub extracts `go.mod` from the zip and generates version metadata automatically:
+The helper needs `golang.org/x/mod` on hand, so run it from a Go module that already
+depends on it — or create a throwaway one:
 
 ```bash
-go run zipmod.go example.com/mymod v1.0.0 . /tmp/mymod-v1.0.0.zip
+mkdir -p /tmp/zipmod && cd /tmp/zipmod
+# save the zipmod.go above in this directory
+go mod init zipmod
+go get golang.org/x/mod@latest
+```
+
+Then build and upload it. Pass the module source directory explicitly (the helper's own
+directory is not the module you are packaging). The module path may contain slashes;
+BatleHub extracts `go.mod` from the zip and generates version metadata automatically:
+
+```bash
+go run zipmod.go example.com/mymod v1.0.0 /path/to/mymod /tmp/mymod-v1.0.0.zip
 
 curl -X PUT \
   -H "Authorization: Bearer $BATLEHUB_TOKEN" \
@@ -88,8 +100,11 @@ Every entry inside the zip must be prefixed with `{module}@{version}/` (here `ex
 
 Uploads pass a BatleHub token as a Bearer header. For read access, put the token in `~/.netrc` so the go tool and `govulncheck` pick it up automatically:
 
-```text
+```bash
+cat >> ~/.netrc <<EOF
 machine batlehub.example.com login user password $BATLEHUB_TOKEN
+EOF
+chmod 600 ~/.netrc
 ```
 
 ## Notes
