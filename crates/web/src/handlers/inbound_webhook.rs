@@ -99,10 +99,9 @@ pub async fn receive_inbound_webhook(
     let payload: serde_json::Value = serde_json::from_slice(&body)
         .map_err(|e| AppError::bad_request(format!("request body is not valid JSON: {e}")))?;
 
-    let source_ip = req
-        .connection_info()
-        .realip_remote_addr()
-        .map(str::to_owned);
+    // `realip_remote_addr()` would believe X-Forwarded-For from anyone; this
+    // records the peer unless a trusted proxy vouched for the header.
+    let source_ip = crate::middleware::trusted_client_ip(&req, req.peer_addr().map(|a| a.ip()));
 
     let event = InboundWebhookEvent {
         id: Uuid::new_v4(),

@@ -324,6 +324,7 @@ pub use middleware::IpBlockMiddlewareFactory;
 pub use middleware::RateLimitMiddlewareFactory;
 pub use middleware::RateLimitService;
 pub use middleware::UserBlockMiddlewareFactory;
+pub use middleware::{ProxyTrust, ProxyTrustMiddlewareFactory};
 
 #[derive(OpenApi)]
 #[openapi(

@@ -15,6 +15,17 @@ port = 8080
 # Restrict CORS to specific frontend origins in production.
 # When absent, all origins are allowed (fine for local dev).
 # cors_allowed_origins = ["https://batlehub.example.com"]
+#
+# CIDR ranges (or bare IPs) of the reverse proxies in front of BatleHub.
+# Forwarded / X-Forwarded-Host / X-Forwarded-Proto / X-Forwarded-For are
+# honoured only when the TCP peer falls inside one of these.
+#   absent  -> forwarded host/scheme trusted as before; X-Forwarded-For ignored
+#   []      -> forwarded headers ignored entirely; Host + connection decide
+#   [nets]  -> honoured only from those peers
+# Set this whenever BatleHub sits behind an ingress: it is what stops a client
+# from choosing the host embedded in generated download URLs, or its own IP for
+# rate limiting.
+# trusted_proxies = ["10.42.0.0/16", "192.168.1.10"]
 
 [database]
 type = "postgresql"

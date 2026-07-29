@@ -28,6 +28,19 @@ pub fn extract_registry_from_path(path: &str) -> Option<&str> {
     segments.next() // registry name
 }
 
+/// The IP an anonymous caller is bucketed under.
+///
+/// Behind a trusted reverse proxy this is the real client IP rather than the
+/// ingress address, so one noisy anonymous client cannot exhaust the bucket
+/// every other anonymous client shares. The trust decision is the shared
+/// per-request verdict (RFC 0001 §4.5), so this middleware, the IP-block
+/// middleware and the base-URL helpers agree on who the peer is. With no
+/// `trusted_proxies` configured the peer address is used, exactly as before.
+fn client_ip_key(req: &ServiceRequest) -> String {
+    crate::middleware::proxy_trust::trusted_client_ip(req, req.peer_addr().map(|a| a.ip()))
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
 // ── Middleware factory ────────────────────────────────────────────────────────
 
 /// Actix-web `Transform` factory for the rate-limit middleware.
@@ -103,22 +116,13 @@ where
                 let identity = req.extensions().get::<Identity>().cloned();
                 match identity {
                     Some(id) => {
-                        let key = id.user_id.clone().unwrap_or_else(|| {
-                            let addr = req
-                                .peer_addr()
-                                .map(|a| a.ip().to_string())
-                                .unwrap_or_else(|| "unknown".to_owned());
-                            format!("ip:{addr}")
-                        });
+                        let key = id
+                            .user_id
+                            .clone()
+                            .unwrap_or_else(|| format!("ip:{}", client_ip_key(&req)));
                         (key, id.groups)
                     }
-                    None => {
-                        let addr = req
-                            .peer_addr()
-                            .map(|a| a.ip().to_string())
-                            .unwrap_or_else(|| "unknown".to_owned());
-                        (format!("ip:{addr}"), vec![])
-                    }
+                    None => (format!("ip:{}", client_ip_key(&req)), vec![]),
                 }
             };
 

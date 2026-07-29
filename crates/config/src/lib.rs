@@ -1,4 +1,5 @@
 pub mod schema;
+pub mod trusted_proxies;
 
 pub use schema::AppConfig;
 
@@ -192,6 +193,75 @@ mod tests {
             cfg.storage,
             StoragesConfig::Single(StorageBackendConfig::Filesystem(_))
         ));
+    }
+
+    // ── trusted_proxies (RFC 0001 §4.5) ───────────────────────────────────────
+
+    /// Parse without asserting success, for the rejection cases.
+    fn try_parse(toml: &str) -> anyhow::Result<AppConfig> {
+        let config: AppConfig = toml::from_str(toml)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    #[test]
+    fn trusted_proxies_absent_is_distinguishable_from_empty() {
+        assert!(parse(minimal()).server.trusted_proxies.is_none());
+
+        let toml = minimal().replace("port = 8080", "port = 8080\n        trusted_proxies = []");
+        assert_eq!(parse(&toml).server.trusted_proxies, Some(vec![]));
+    }
+
+    #[test]
+    fn trusted_proxies_accepts_cidrs_and_bare_addresses() {
+        let toml = minimal().replace(
+            "port = 8080",
+            r#"port = 8080
+        trusted_proxies = ["10.42.0.0/16", "192.168.1.10", "2001:db8::/32", "::1"]"#,
+        );
+        assert_eq!(parse(&toml).server.trusted_proxies.unwrap().len(), 4);
+    }
+
+    #[test]
+    fn trusted_proxies_rejects_a_malformed_entry() {
+        let toml = minimal().replace(
+            "port = 8080",
+            r#"port = 8080
+        trusted_proxies = ["10.0.0.1", "not-an-ip"]"#,
+        );
+        let err = try_parse(&toml).unwrap_err().to_string();
+        assert!(err.contains("[server].trusted_proxies"), "{err}");
+        assert!(err.contains("not-an-ip"), "{err}");
+    }
+
+    #[test]
+    fn the_deprecated_alias_is_validated_too() {
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [ip_blocking]
+        enabled         = true
+        trusted_proxies = ["10.0.0.0/8", "10.0.0.1/33"]
+        "#
+        );
+        let err = try_parse(&toml).unwrap_err().to_string();
+        assert!(err.contains("[ip_blocking].trusted_proxies"), "{err}");
+    }
+
+    #[test]
+    fn the_deprecated_alias_still_parses_when_valid() {
+        let toml = format!(
+            "{}\n{}",
+            minimal(),
+            r#"
+        [ip_blocking]
+        enabled         = true
+        trusted_proxies = ["10.0.0.1", "10.0.0.2"]
+        "#
+        );
+        let cfg = parse(&toml);
+        assert_eq!(cfg.ip_blocking.unwrap().trusted_proxies.len(), 2);
     }
 
     #[test]

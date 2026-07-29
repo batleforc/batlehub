@@ -15,42 +15,19 @@ use futures::future::LocalBoxFuture;
 use batlehub_config::schema::IpBlockingConfig;
 use batlehub_core::ports::IpBlockStore;
 
-/// Extract the first IP from the `X-Forwarded-For` header, or `None` if absent/empty.
-fn first_xff_ip(req: &ServiceRequest) -> Option<String> {
-    let xff = req.headers().get("x-forwarded-for")?.to_str().ok()?;
-    let first = xff.split(',').next()?.trim();
-    if first.is_empty() {
-        None
-    } else {
-        Some(first.to_owned())
-    }
-}
+use super::proxy_trust::trusted_client_ip;
 
-/// Extract the client IP. `X-Forwarded-For` is only trusted when the TCP peer
-/// address appears in `trusted_proxies`; otherwise the peer address is used
-/// directly to prevent spoofed-header bypass.
-pub(crate) fn extract_client_ip(req: &ServiceRequest, trusted_proxies: &[String]) -> String {
-    let peer_ip: Option<IpAddr> = req.peer_addr().map(|a| a.ip());
-    let peer = peer_ip.map(|ip| ip.to_string()).unwrap_or_default();
-
-    let peer_is_trusted = peer_ip.is_some_and(|ip| {
-        trusted_proxies
-            .iter()
-            .filter_map(|t| t.parse::<IpAddr>().ok())
-            .any(|t| t == ip)
-    });
-
-    if !trusted_proxies.is_empty() && peer_is_trusted {
-        if let Some(ip) = first_xff_ip(req) {
-            return ip;
-        }
-    }
-
-    if peer.is_empty() {
-        "unknown".to_owned()
-    } else {
-        peer
-    }
+/// Extract the client IP.
+///
+/// The trust decision itself lives in [`super::proxy_trust`] and is computed once
+/// per request by `ProxyTrustMiddleware`, so this middleware, the base-URL
+/// helpers and the inbound-webhook handler cannot disagree about who the peer
+/// is. `X-Forwarded-For` is honoured only from a peer inside the configured
+/// `trusted_proxies` set; with no set configured it is ignored entirely, exactly
+/// as before.
+pub(crate) fn extract_client_ip(req: &ServiceRequest) -> String {
+    let peer: Option<IpAddr> = req.peer_addr().map(|a| a.ip());
+    trusted_client_ip(req, peer).unwrap_or_else(|| "unknown".to_owned())
 }
 
 fn now_unix() -> u64 {
@@ -121,7 +98,7 @@ where
         let config = self.config.clone();
 
         Box::pin(async move {
-            let ip = extract_client_ip(&req, &config.trusted_proxies);
+            let ip = extract_client_ip(&req);
 
             match store.blocked_until(&ip).await {
                 Ok(Some(unblock_at)) => {
@@ -206,19 +183,50 @@ mod tests {
     }
 
     // ── extract_client_ip ─────────────────────────────────────────────────────
+    //
+    // The trust verdict now arrives as a request extension from
+    // `ProxyTrustMiddleware`; these build it directly so the cases stay the
+    // ones they always were.
+
+    use crate::middleware::proxy_trust::ProxyTrust;
+    use actix_web::dev::ServiceRequest;
+    use actix_web::HttpMessage;
+
+    /// Apply `trusted` (as it would be configured in TOML) to a request, the way
+    /// the middleware does.
+    fn with_trust(req: &ServiceRequest, trusted: Option<&[String]>) {
+        let verdict = ProxyTrust::new(trusted).verdict(req.peer_addr().map(|a| a.ip()));
+        req.extensions_mut().insert(verdict);
+    }
+
+    fn list(entries: &[&str]) -> Vec<String> {
+        entries.iter().map(|s| (*s).to_owned()).collect()
+    }
 
     #[test]
     fn xff_ignored_when_no_trusted_proxies() {
-        // Without trusted_proxies, XFF must be ignored — peer addr wins.
+        // With no list configured at all, XFF must be ignored — peer addr wins.
         let req = TestRequest::get()
             .peer_addr("10.0.0.99:1234".parse().unwrap())
             .insert_header(("x-forwarded-for", "203.0.113.5, 10.0.0.1"))
             .to_srv_request();
-        let ip = extract_client_ip(&req, &[]);
+        with_trust(&req, None);
         assert_eq!(
-            ip, "10.0.0.99",
+            extract_client_ip(&req),
+            "10.0.0.99",
             "XFF must not be trusted without trusted_proxies"
         );
+    }
+
+    #[test]
+    fn xff_ignored_when_trusted_proxies_is_empty() {
+        // `trusted_proxies = []` is an explicit "trust nobody".
+        let req = TestRequest::get()
+            .peer_addr("10.0.0.1:1234".parse().unwrap())
+            .insert_header(("x-forwarded-for", "203.0.113.5"))
+            .to_srv_request();
+        with_trust(&req, Some(&[]));
+        assert_eq!(extract_client_ip(&req), "10.0.0.1");
     }
 
     #[test]
@@ -227,8 +235,8 @@ mod tests {
             .peer_addr("10.0.0.1:1234".parse().unwrap())
             .insert_header(("x-forwarded-for", "203.0.113.5, 172.16.0.1"))
             .to_srv_request();
-        let trusted = vec!["10.0.0.1".to_owned()];
-        assert_eq!(extract_client_ip(&req, &trusted), "203.0.113.5");
+        with_trust(&req, Some(&list(&["10.0.0.1"])));
+        assert_eq!(extract_client_ip(&req), "203.0.113.5");
     }
 
     #[test]
@@ -237,8 +245,8 @@ mod tests {
             .peer_addr("10.0.0.1:1234".parse().unwrap())
             .insert_header(("x-forwarded-for", "198.51.100.7"))
             .to_srv_request();
-        let trusted = vec!["10.0.0.1".to_owned()];
-        assert_eq!(extract_client_ip(&req, &trusted), "198.51.100.7");
+        with_trust(&req, Some(&list(&["10.0.0.1"])));
+        assert_eq!(extract_client_ip(&req), "198.51.100.7");
     }
 
     #[test]
@@ -247,15 +255,47 @@ mod tests {
             .peer_addr("192.0.2.1:1234".parse().unwrap())
             .insert_header(("x-forwarded-for", "1.1.1.1"))
             .to_srv_request();
-        let trusted = vec!["10.0.0.1".to_owned()]; // 192.0.2.1 is not trusted
-        assert_eq!(extract_client_ip(&req, &trusted), "192.0.2.1");
+        with_trust(&req, Some(&list(&["10.0.0.1"]))); // 192.0.2.1 is not trusted
+        assert_eq!(extract_client_ip(&req), "192.0.2.1");
+    }
+
+    #[test]
+    fn xff_used_when_peer_is_inside_a_trusted_cidr() {
+        // The pod-IP-churn case CIDR support exists for.
+        let req = TestRequest::get()
+            .peer_addr("10.42.7.9:1234".parse().unwrap())
+            .insert_header(("x-forwarded-for", "203.0.113.5"))
+            .to_srv_request();
+        with_trust(&req, Some(&list(&["10.42.0.0/16"])));
+        assert_eq!(extract_client_ip(&req), "203.0.113.5");
+    }
+
+    #[test]
+    fn xff_not_used_from_a_peer_just_outside_the_cidr() {
+        let req = TestRequest::get()
+            .peer_addr("10.43.0.1:1234".parse().unwrap())
+            .insert_header(("x-forwarded-for", "203.0.113.5"))
+            .to_srv_request();
+        with_trust(&req, Some(&list(&["10.42.0.0/16"])));
+        assert_eq!(extract_client_ip(&req), "10.43.0.1");
     }
 
     #[test]
     fn ip_falls_back_to_unknown_when_no_peer() {
         let req = TestRequest::get().to_srv_request();
-        let ip = extract_client_ip(&req, &[]);
-        assert!(!ip.is_empty());
+        with_trust(&req, None);
+        assert_eq!(extract_client_ip(&req), "unknown");
+    }
+
+    #[test]
+    fn missing_verdict_extension_behaves_like_no_configuration() {
+        // Apps built without the trust middleware (unit tests, older wiring)
+        // must keep the fail-closed client-IP rule.
+        let req = TestRequest::get()
+            .peer_addr("10.0.0.99:1234".parse().unwrap())
+            .insert_header(("x-forwarded-for", "203.0.113.5"))
+            .to_srv_request();
+        assert_eq!(extract_client_ip(&req), "10.0.0.99");
     }
 
     // ── middleware integration via actix App ──────────────────────────────────

@@ -146,6 +146,21 @@ impl AppConfig {
                 );
             }
         }
+        // Proxy trust (RFC 0001 §4.5). A malformed entry used to be dropped
+        // silently, which reads as "this proxy is not trusted" — fail-closed,
+        // but invisible to whoever typo'd it. Both keys are checked, including
+        // the deprecated one, so a bad value is caught wherever it lives.
+        if let Some(entries) = &self.server.trusted_proxies {
+            if let Err(e) = crate::trusted_proxies::parse_list(entries) {
+                bail!("[server].trusted_proxies: {e}");
+            }
+        }
+        if let Some(ip_blocking) = &self.ip_blocking {
+            if let Err(e) = crate::trusted_proxies::parse_list(&ip_blocking.trusted_proxies) {
+                bail!("[ip_blocking].trusted_proxies: {e}");
+            }
+        }
+
         // The set of storage backend names a registry's `storage` field may
         // reference. In single-backend mode only the implicit "default" exists;
         // in multi mode it is the declared `[[storage.backends]]` names. A

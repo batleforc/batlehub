@@ -4,9 +4,10 @@ use super::{
     NotificationService, PackageId, ProxyService, RegistryMap, RegistryMode, RegistryModeMap,
 };
 
+/// Base URL of this proxy as seen by the caller. Forwarded host/scheme headers
+/// are honoured only from a trusted peer — see [`crate::middleware::proxy_trust`].
 pub fn base_url_from_req(req: &HttpRequest) -> String {
-    let info = req.connection_info();
-    format!("{}://{}", info.scheme(), info.host())
+    crate::middleware::trusted_base_url(req)
 }
 
 /// The data describing a single Terraform yank/unyank request — everything

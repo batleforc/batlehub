@@ -14,6 +14,7 @@ use batlehub_adapters::{
 use batlehub_config::schema::{AuthConfig, RegistryMode, StorageBackendConfig, StoragesConfig};
 use batlehub_core::entities::RegistryKind;
 use batlehub_core::ports::{AuthProvider, StorageBackend, UserTokenRepository};
+use batlehub_web::ProxyTrust;
 
 use crate::builders::parse_role;
 
@@ -252,6 +253,62 @@ pub(super) fn build_eviction_map(
         eviction_map.insert(reg.name.clone(), eviction_svc);
     }
     eviction_map
+}
+
+// ── Proxy trust ───────────────────────────────────────────────────────────────
+
+/// Resolve the effective `trusted_proxies` list and log what the server ended up
+/// believing (RFC 0001 §4.5).
+///
+/// `[server].trusted_proxies` wins; `[ip_blocking].trusted_proxies` is the
+/// deprecated alias, still honoured so existing configs keep working. Entries
+/// are already validated by `AppConfig::validate`, so this only reports.
+pub(super) fn build_proxy_trust(config: &batlehub_config::schema::AppConfig) -> ProxyTrust {
+    let server = config.server.trusted_proxies.as_deref();
+    let alias = config
+        .ip_blocking
+        .as_ref()
+        .map(|c| c.trusted_proxies.as_slice())
+        // An empty deprecated list is indistinguishable from an unset one in the
+        // old schema (it is a plain `Vec`), so treat it as unset rather than as
+        // an explicit "trust nobody" the operator never wrote.
+        .filter(|entries| !entries.is_empty());
+
+    if server.is_some() && alias.is_some() {
+        tracing::warn!(
+            "both [server].trusted_proxies and the deprecated \
+             [ip_blocking].trusted_proxies are set; [server] wins and the \
+             [ip_blocking] list is ignored — remove it"
+        );
+    }
+
+    match batlehub_config::trusted_proxies::resolve_trusted_proxies(server, alias) {
+        Some(entries) if server.is_none() => {
+            tracing::warn!(
+                count = entries.len(),
+                "[ip_blocking].trusted_proxies is deprecated; move it to \
+                 [server].trusted_proxies, which also governs the forwarded host \
+                 and scheme"
+            );
+            ProxyTrust::new(Some(entries))
+        }
+        Some(entries) if entries.is_empty() => {
+            info!("trusted_proxies = []: forwarded headers will be ignored entirely");
+            ProxyTrust::new(Some(entries))
+        }
+        Some(entries) => {
+            info!(count = entries.len(), "configured trusted proxies");
+            ProxyTrust::new(Some(entries))
+        }
+        None => {
+            info!(
+                "no trusted_proxies configured: forwarded host/scheme are trusted \
+                 as before and X-Forwarded-For stays ignored; set \
+                 [server].trusted_proxies to govern them explicitly"
+            );
+            ProxyTrust::legacy()
+        }
+    }
 }
 
 // ── User token provider ───────────────────────────────────────────────────────

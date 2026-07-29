@@ -17,9 +17,8 @@ use serde::Deserialize;
 /// violation_window_secs = 300
 /// ban_duration_secs     = 3600
 /// trigger_on_status     = [429, 401]
-/// # List the exact IPs of your reverse proxies so that X-Forwarded-For is
-/// # trusted only from those hosts. Leave empty (the default) to always use
-/// # the TCP peer address — required when the server is exposed directly.
+/// # Deprecated: prefer [server].trusted_proxies, which covers the forwarded
+/// # host and scheme too. Still read when [server] declares no list.
 /// trusted_proxies       = ["10.0.0.1", "10.0.0.2"]
 /// ```
 #[derive(Debug, Clone, Deserialize)]
@@ -39,9 +38,16 @@ pub struct IpBlockingConfig {
     /// HTTP status codes that increment the violation counter for the source IP.
     #[serde(default = "default_trigger_on_status")]
     pub trigger_on_status: Vec<u16>,
-    /// IPs of trusted reverse proxies. When the TCP peer address matches one of
-    /// these, the first entry of `X-Forwarded-For` is used as the client IP.
-    /// When empty (the default), the TCP peer address is always used and
+    /// **Deprecated** — moved to `[server].trusted_proxies`, which governs the
+    /// forwarded host and scheme as well as the client IP (RFC 0001 §4.5).
+    ///
+    /// Still honoured, and with the same meaning, whenever `[server]` declares
+    /// no list of its own, so no existing config breaks. When both are set,
+    /// `[server]` wins and a startup warning names this one. Entries now accept
+    /// CIDR ranges as well as bare addresses; a bare address is a `/32` (or
+    /// `/128`), which is exactly what the old exact-match rule did.
+    ///
+    /// When neither key is set, the TCP peer address is always used and
     /// `X-Forwarded-For` is ignored — preventing spoofed-header bypass.
     #[serde(default)]
     pub trusted_proxies: Vec<String>,

@@ -87,6 +87,9 @@ pub(super) struct ServerParams {
     pub beta_channel_store: Arc<dyn BetaChannelPort>,
     pub team_namespace_store: Arc<dyn TeamNamespacePort>,
     pub ip_blocking_cfg: Option<IpBlockingConfig>,
+    /// Resolved `trusted_proxies` set (RFC 0001 §4.5), shared by every consumer
+    /// of a forwarded header.
+    pub proxy_trust: batlehub_web::ProxyTrust,
     pub cargo_index_map: CargoIndexMap,
     pub vuln_db_map: VulnDbMap,
     pub rate_limit_svc: Arc<RateLimitService>,
@@ -129,6 +132,7 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
         beta_channel_store,
         team_namespace_store,
         ip_blocking_cfg,
+        proxy_trust,
         cargo_index_map,
         vuln_db_map,
         rate_limit_svc,
@@ -205,6 +209,12 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
             .wrap(actix_web::middleware::Condition::new(
                 enabled,
                 IpBlockMiddlewareFactory::new(Arc::clone(&ip_block_store), ip_block_cfg_for_mw),
+            ))
+            // Outermost on purpose: everything below — the IP-block middleware,
+            // the rate limiter's IP fallback key, and every base-URL helper —
+            // reads the `PeerTrusted` verdict this inserts (RFC 0001 §4.5).
+            .wrap(batlehub_web::ProxyTrustMiddlewareFactory::new(
+                proxy_trust.clone(),
             ))
             .service(batlehub_web::scalar(openapi))
             .configure(move |cfg| {

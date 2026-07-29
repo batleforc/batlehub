@@ -8,7 +8,9 @@ pub use upload::{composer_upload, composer_yank};
 
 /// Extract base URL from the incoming request, owned so the `ConnectionInfo`
 /// borrow can be released before any `.await` points.
+///
+/// Forwarded host/scheme headers are honoured only from a trusted peer — see
+/// [`crate::middleware::proxy_trust`].
 pub(crate) fn build_base_url(req: &actix_web::HttpRequest) -> String {
-    let conn = req.connection_info();
-    format!("{}://{}", conn.scheme(), conn.host())
+    crate::middleware::trusted_base_url(req)
 }

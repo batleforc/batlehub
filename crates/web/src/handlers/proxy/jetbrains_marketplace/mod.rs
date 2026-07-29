@@ -64,11 +64,15 @@ pub(crate) fn require_single_segment(kind: &str, value: &str) -> Result<(), AppE
 }
 
 /// Absolute base URL of this proxy as seen by the caller, for self-referencing
-/// download URLs in generated XML/JSON (inline `connection_info` pattern, cf.
-/// the PyPI simple index).
+/// download URLs in generated XML/JSON (cf. the PyPI simple index).
+///
+/// These URLs are embedded in `updatePlugins.xml` and in `cached_forward` bodies
+/// that outlive the request, so the host must not be attacker-controlled:
+/// `Forwarded` / `X-Forwarded-Host` are honoured only from a peer inside
+/// `trusted_proxies`, otherwise the `Host` header and the listener's own TLS
+/// state decide (see [`crate::middleware::proxy_trust`]).
 pub(crate) fn proxy_base(req: &HttpRequest) -> String {
-    let conn_info = req.connection_info();
-    format!("{}://{}", conn_info.scheme(), conn_info.host())
+    crate::middleware::trusted_base_url(req)
 }
 
 pub(crate) fn content_type_for(file_name: &str) -> &'static str {

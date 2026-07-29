@@ -60,9 +60,7 @@ pub async fn nuget_registration(
             .await
             .map_err(AppError::from)?;
 
-        let conn = req.connection_info();
-        let base = format!("{}://{}", conn.scheme(), conn.host());
-        drop(conn);
+        let base = crate::middleware::trusted_base_url(&req);
 
         let items: Vec<serde_json::Value> = versions
             .iter()

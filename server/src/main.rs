@@ -171,6 +171,7 @@ async fn main() -> Result<()> {
     let ip_block_store = stores::create_ip_block_store(&config, repo.pool()).await?;
     let user_block_repo = stores::create_user_block_repository(repo.pool());
     let ip_blocking_cfg = config.ip_blocking.clone();
+    let proxy_trust = setup::build_proxy_trust(&config);
     let local_svc = Arc::new(LocalRegistryService {
         backend: local_registry_backend,
         storage: storage.clone(),
@@ -306,6 +307,7 @@ async fn main() -> Result<()> {
         beta_channel_store,
         team_namespace_store,
         ip_blocking_cfg,
+        proxy_trust,
         cargo_index_map,
         rate_limit_svc,
         auth_providers,

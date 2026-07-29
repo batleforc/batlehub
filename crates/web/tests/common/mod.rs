@@ -900,6 +900,69 @@ pub async fn make_local_nuget_app(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
+    build_local_registry_app(
+        local_nuget_parts(mode),
+        batlehub_web::CargoIndexMap::default(),
+        None,
+    )
+    .await
+}
+
+/// [`make_local_nuget_app`] plus the proxy-trust middleware, configured with
+/// `trusted` exactly as `[server].trusted_proxies` would be.
+///
+/// Only the proxy-trust suite needs this: every other factory here deliberately
+/// omits the middleware, which is how they assert the legacy "no list
+/// configured" behaviour still holds.
+pub async fn make_local_nuget_app_with_trust(
+    mode: RegistryMode,
+    trusted: Option<Vec<String>>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let LocalRegistryAppParts {
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        mode_map,
+    } = local_nuget_parts(mode);
+
+    let (app, _) = App::new()
+        .into_utoipa_app()
+        .configure(configure_test_app(
+            proxy_svc,
+            admin_svc,
+            token_repo,
+            access_config,
+            registry_map,
+            ConfigureAppDefaults::default(),
+        ))
+        .split_for_parts();
+    let app = app
+        .app_data(actix_web::web::Data::new(
+            batlehub_web::CargoIndexMap::default(),
+        ))
+        .app_data(actix_web::web::Data::new(local_svc))
+        .app_data(actix_web::web::Data::new(mode_map))
+        .app_data(actix_web::web::Data::new(RepoSignerMap::default()))
+        .app_data(actix_web::web::Data::new(batlehub_web::VulnDbMap::default()));
+
+    init_service(
+        app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))
+            // Outermost, as in `server_factory.rs`.
+            .wrap(batlehub_web::ProxyTrustMiddlewareFactory::new(
+                batlehub_web::ProxyTrust::new(trusted.as_deref()),
+            )),
+    )
+    .await
+}
+
+fn local_nuget_parts(mode: RegistryMode) -> LocalRegistryAppParts {
     let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
@@ -935,7 +998,7 @@ pub async fn make_local_nuget_app(
     let mode_map = RegistryModeMap::default();
     mode_map.insert("local-nuget".to_owned(), mode);
 
-    let parts = LocalRegistryAppParts {
+    LocalRegistryAppParts {
         proxy_svc,
         admin_svc,
         token_repo: Arc::new(NullTokenRepository),
@@ -943,8 +1006,7 @@ pub async fn make_local_nuget_app(
         registry_map: registry_map_for(&[("local-nuget", "nuget")]),
         local_svc,
         mode_map,
-    };
-    build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await
+    }
 }
 
 pub fn make_composer_zip(name: &str, version: &str) -> Vec<u8> {

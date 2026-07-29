@@ -87,10 +87,7 @@ pub async fn pypi_simple_package(
     let mode = mode_map.get(&registry);
     let normalized = batlehub_adapters::registry::pypi::normalize_name(&package);
 
-    let proxy_base = {
-        let conn_info = req.connection_info();
-        format!("{}://{}", conn_info.scheme(), conn_info.host())
-    };
+    let proxy_base = crate::middleware::trusted_base_url(&req);
 
     if mode == Mode::Local {
         let html = local_svc

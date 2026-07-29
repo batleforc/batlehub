@@ -24,6 +24,29 @@ pub struct ServerConfig {
     /// allowed (suitable for development; restrict in production).
     #[serde(default)]
     pub cors_allowed_origins: Option<Vec<String>>,
+    /// CIDR ranges (or bare IPs) of the reverse proxies in front of BatleHub.
+    /// `Forwarded` / `X-Forwarded-Host` / `X-Forwarded-Proto` / `X-Forwarded-For`
+    /// are honoured only when the TCP peer falls inside one of these.
+    ///
+    /// ```toml
+    /// [server]
+    /// trusted_proxies = ["10.42.0.0/16", "192.168.1.10"]
+    /// ```
+    ///
+    /// The three states are distinct, which is why this is an `Option`:
+    ///
+    /// - **absent** — legacy behaviour: forwarded host/scheme are trusted
+    ///   unconditionally (that is what every generated URL already did), while
+    ///   `X-Forwarded-For` is still ignored, so client IPs cannot be spoofed.
+    /// - `[]` — forwarded headers are ignored entirely; the `Host` header and
+    ///   the connection decide.
+    /// - `[nets]` — forwarded headers are honoured, but only from those peers.
+    ///
+    /// A bare address is treated as a `/32` (or `/128`), so every value that was
+    /// valid for the deprecated `[ip_blocking].trusted_proxies` still matches
+    /// exactly what it used to.
+    #[serde(default)]
+    pub trusted_proxies: Option<Vec<String>>,
 }
 
 pub(super) fn default_host() -> String {

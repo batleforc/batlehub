@@ -29,10 +29,9 @@ pub async fn nuget_service_index(
     require_registry_type(&registry, "nuget", &map)?;
 
     // Build the base URL from the incoming request so the service index works
-    // behind reverse proxies and in local dev alike.
-    let conn = req.connection_info();
-    let base = format!("{}://{}", conn.scheme(), conn.host());
-    drop(conn);
+    // behind reverse proxies and in local dev alike. Forwarded host/scheme
+    // headers count only from a trusted peer (`middleware::proxy_trust`).
+    let base = crate::middleware::trusted_base_url(&req);
 
     let _ = &identity; // auth enforced by middleware; referenced to satisfy extractor
 

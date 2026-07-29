@@ -49,7 +49,8 @@ pub(crate) fn require_npm(
     }
 }
 
+/// Base URL of this proxy as seen by the caller. Forwarded host/scheme headers
+/// are honoured only from a trusted peer — see [`crate::middleware::proxy_trust`].
 pub(crate) fn base_url(req: &actix_web::HttpRequest) -> String {
-    let info = req.connection_info();
-    format!("{}://{}", info.scheme(), info.host())
+    crate::middleware::trusted_base_url(req)
 }

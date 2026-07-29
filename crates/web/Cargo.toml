@@ -27,6 +27,7 @@ uuid.workspace = true
 chrono.workspace = true
 bytes.workspace = true
 futures.workspace = true
+ipnet.workspace = true
 tokio.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true

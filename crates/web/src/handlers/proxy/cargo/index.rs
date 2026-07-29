@@ -42,10 +42,7 @@ pub async fn cargo_registry_config(
         return Err(AppError::not_found("no cargo index configured"));
     }
 
-    let (scheme, host) = {
-        let info = req.connection_info();
-        (info.scheme().to_owned(), info.host().to_owned())
-    };
+    let (scheme, host) = crate::middleware::trusted_origin(&req);
     let dl = format!("{scheme}://{host}/proxy/{registry}/{{crate}}/{{version}}/download");
     let mut resp = serde_json::json!({ "dl": dl });
 
