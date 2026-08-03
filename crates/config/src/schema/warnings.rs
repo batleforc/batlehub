@@ -57,6 +57,11 @@ pub const PROXY_TRUST_UNCONFIGURED: &str = "proxy-trust.unconfigured";
 /// deprecated `[ip_blocking].trusted_proxies`.
 pub const PROXY_TRUST_DEPRECATED_KEY_ONLY: &str = "proxy-trust.deprecated-key-only";
 
+/// An entry of the deprecated `[ip_blocking].trusted_proxies` is not an IP or a
+/// CIDR range. It was silently dropped before this key gained a validator, so it
+/// is still dropped (with this warning) rather than refusing to start.
+pub const PROXY_TRUST_INVALID_DEPRECATED_ENTRY: &str = "proxy-trust.invalid-deprecated-entry";
+
 /// `[subdomain_routing]` is enabled but a registry name is not a valid DNS
 /// label, so no wildcard host is derived for it.
 pub const SUBDOMAIN_INVALID_DNS_LABEL: &str = "subdomain.invalid-dns-label";

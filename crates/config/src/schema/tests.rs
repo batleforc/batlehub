@@ -303,16 +303,24 @@ fn validate_rejects_a_malformed_trusted_proxy_entry() {
 }
 
 #[test]
-fn validate_rejects_a_malformed_deprecated_trusted_proxy_entry() {
-    let err = parse_config(
+fn a_malformed_deprecated_trusted_proxy_entry_warns_instead_of_failing_the_boot() {
+    // The deprecated key predates any validator: entries it could not parse were
+    // dropped. Rejecting one now would turn an upgrade into a CrashLoopBackOff
+    // for a config file that never changed.
+    let cfg = parse_config(
         r#"
         [ip_blocking]
-        trusted_proxies = ["nope"]"#,
-    )
-    .validate()
-    .unwrap_err()
-    .to_string();
-    assert!(err.contains("[ip_blocking].trusted_proxies"), "{err}");
+        trusted_proxies = ["10.0.0.5", "ingress.internal"]"#,
+    );
+    cfg.validate()
+        .expect("a stale entry must not fail the boot");
+
+    let warning = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::PROXY_TRUST_INVALID_DEPRECATED_ENTRY)
+        .expect("the dropped entry is surfaced as a warning");
+    assert!(warning.message.contains("ingress.internal"), "{warning:?}");
 }
 
 #[test]

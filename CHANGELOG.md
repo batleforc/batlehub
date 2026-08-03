@@ -39,13 +39,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   deprecated key, and a registry name that cannot become a DNS label.
 - Helm: `ingress.extraHosts` for the additional hostnames, and a documented
   `config.server.trusted_proxies`.
+- `pending_created` on the config-reload responses. `POST /config/from-content`
+  answers `200` with an empty diff both when it stages a pending reload and when
+  the submitted content is byte-identical to the last load attempt, in which case
+  there is nothing to stage; the flag tells the two apart instead of leaving the
+  caller to find out from a `404 No pending reload` at apply time. `false` for
+  `/config/validate` (a dry run) and for `/config/reload` and
+  `/config/pending/apply` (which consume a pending rather than leave one).
+
+### Changed
+
+- `[server].trusted_proxies` is now hot-reloadable, and is swapped just before
+  the host-routing table it guards. A reload that turns host routing on used to
+  keep the startup trust policy until the process restarted, which left routing
+  driven by `X-Forwarded-Host` from any peer — the state config validation exists
+  to make unreachable.
+- The rate limiter buckets anonymous clients on the same client IP the IP-block
+  middleware bans, instead of the raw TCP peer. Behind a trusted proxy the two
+  previously disagreed: one abusive client could exhaust a bucket shared by every
+  anonymous user, and the resulting `429`s then counted as violations against
+  each innocent client's own IP.
+- Registry names are matched on the path actix routes on rather than the raw
+  URI. Percent-encoding a character of the name (`/proxy/npm%32/…`) reached the
+  registry's handler while slipping past both the `path_routing = false` 404 and
+  the registry's rate limit.
+- `ui/openapi.json` is tracked in git, so an API change shows up in review as a
+  diff of the contract. Refresh it with `task dump-spec`, which needs no database.
+  The generated TypeScript client under `ui/src/client/` stays untracked.
+
+### Fixed
+
+- The Setup Guide's `.netrc` block lists every host a client may authenticate
+  against. `.netrc` entries are matched by hostname, so a guide naming only the
+  main host meant no credentials were sent to a host-routed registry and every
+  authenticated install failed with `401`.
+- The Terraform `source` snippet drops the registry segment for a host-routed
+  registry, where provider endpoints live at the root, and keeps the port, which
+  `terraform init` needs on any deployment not served on 443.
+- `POST /config/from-content` reports the warnings of the config submitted rather
+  than of the one still in force when the content matches the last load attempt.
+  An admin staging a config with warnings could see an empty warning panel.
 
 ### Deprecated
 
 - `[ip_blocking].trusted_proxies` — use `[server].trusted_proxies`. The old key
   keeps working (and now governs the forwarded host and scheme too, so an
   existing deployment can adopt host routing without touching it), but raises a
-  config warning. When both are set, `[server]` wins.
+  config warning. When both are set, `[server]` wins. An entry of the old key
+  that is not an IP or CIDR range is still dropped — with a
+  `proxy-trust.invalid-deprecated-entry` warning — rather than failing the boot,
+  since that key never validated its entries before.
 
 ## [1.0.0] - 2026-07-17
 

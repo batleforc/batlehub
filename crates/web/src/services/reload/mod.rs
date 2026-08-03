@@ -8,8 +8,9 @@ use batlehub_core::ports::ConfigChangeRepository;
 use batlehub_core::services::{HotConfig, HotConfigLock};
 
 use crate::{
-    services::banner::BannerService, AccessConfig, AccessConfigLock, CargoIndexMap,
-    RegistryHostMap, RegistryMap, RegistryModeMap, RepoSignerMap, UpstreamMap, VulnDbMap,
+    middleware::ProxyTrust, services::banner::BannerService, AccessConfig, AccessConfigLock,
+    CargoIndexMap, RegistryHostMap, RegistryMap, RegistryModeMap, RepoSignerMap, UpstreamMap,
+    VulnDbMap,
 };
 
 pub(super) const PENDING_TTL_SECS: i64 = 600; // 10 minutes
@@ -57,6 +58,15 @@ impl ReloadDiff {
 pub struct ReloadOutcome {
     pub diff: ReloadDiff,
     pub warnings: Vec<ConfigWarning>,
+    /// Whether this call left a pending reload staged for approval.
+    ///
+    /// `false` is not a failure — it is the answer for a dry run
+    /// (`validate_content` stages nothing by contract) and for content that is
+    /// byte-identical to the last load attempt, where there is nothing to
+    /// rebuild. Without it a caller cannot tell "staged, go apply it" from
+    /// "nothing to stage", since both return `200` with an empty diff, and would
+    /// only find out at apply time via [`ReloadApplyError::NoPendingReload`].
+    pub pending_created: bool,
 }
 
 /// The [`ConfigWarning`]s of the config currently in force, shared between the
@@ -111,6 +121,10 @@ pub struct PendingReload {
     pub new_repo_signer_map: RepoSignerMap,
     pub new_vuln_db_map: VulnDbMap,
     pub new_registry_host_map: RegistryHostMap,
+    /// The candidate's proxy-trust policy. Derived from the `AppConfig` directly
+    /// rather than from the builder, since it needs no adapter wiring — see
+    /// `build_pending`.
+    pub new_proxy_trust: ProxyTrust,
     /// Warnings the candidate config produces, promoted to the live
     /// [`ConfigWarnings`] store when this pending reload is applied.
     pub warnings: Vec<ConfigWarning>,
@@ -160,6 +174,12 @@ pub struct ConfigReloadService {
     pub(super) repo_signer_map: RepoSignerMap,
     pub(super) vuln_db_map: VulnDbMap,
     pub(super) registry_host_map: RegistryHostMap,
+    /// The live proxy-trust policy, swapped on apply just before
+    /// `registry_host_map` — routing reads a header, so the table and the policy
+    /// that says who may set it must never drift apart. Supplied by
+    /// [`ConfigReloadParams::proxy_trust`], which see for why it is a mandatory
+    /// field rather than something defaulted here.
+    pub(super) proxy_trust: ProxyTrust,
     pub(super) config_path: String,
     pub(super) config_change_repo: Option<Arc<dyn ConfigChangeRepository>>,
     pub hot_reload_enabled: bool,
@@ -183,24 +203,62 @@ pub struct ConfigReloadService {
     pub(super) last_content: Mutex<Option<String>>,
 }
 
+/// Everything [`ConfigReloadService::new`] needs, as named fields.
+///
+/// A struct rather than 15 positional parameters because most of them are
+/// interchangeable at the type level — six registry-keyed maps, two `Option`s,
+/// two booleans-adjacent values — so a transposed pair would compile and only
+/// show up as a reload that swaps the wrong table.
+///
+/// It is also what makes [`proxy_trust`](Self::proxy_trust) safe. Every field of
+/// a struct literal is mandatory, so a construction site that does not pass the
+/// app's live handle is a *compile* error. The alternative shapes could not give
+/// that: a defaulted field or a `with_proxy_trust` setter both let a caller
+/// silently end up with a detached handle, and no runtime check can catch it —
+/// a never-wired policy and a legitimately unconfigured one are both just
+/// `is_configured() == false`.
+pub struct ConfigReloadParams {
+    pub hot: HotConfigLock,
+    pub access: AccessConfigLock,
+    pub registry_map: RegistryMap,
+    pub registry_mode_map: RegistryModeMap,
+    pub upstream_map: UpstreamMap,
+    pub cargo_index_map: CargoIndexMap,
+    pub repo_signer_map: RepoSignerMap,
+    pub vuln_db_map: VulnDbMap,
+    pub registry_host_map: RegistryHostMap,
+    /// The app's live [`ProxyTrust`] handle — the same one wrapped into the
+    /// host-routing middleware and registered as `app_data`, not a fresh one.
+    /// All clones share a lock, which is what lets `apply` update the policy the
+    /// middleware actually reads; a `ProxyTrust::default()` here would be a
+    /// detached handle and every reload of it a silent no-op.
+    pub proxy_trust: ProxyTrust,
+    pub config_path: String,
+    pub config_change_repo: Option<Arc<dyn ConfigChangeRepository>>,
+    pub hot_reload_enabled: bool,
+    pub builder: HotConfigBuilder,
+    pub banner: Option<Arc<BannerService>>,
+}
+
 impl ConfigReloadService {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        hot: HotConfigLock,
-        access: AccessConfigLock,
-        registry_map: RegistryMap,
-        registry_mode_map: RegistryModeMap,
-        upstream_map: UpstreamMap,
-        cargo_index_map: CargoIndexMap,
-        repo_signer_map: RepoSignerMap,
-        vuln_db_map: VulnDbMap,
-        registry_host_map: RegistryHostMap,
-        config_path: String,
-        config_change_repo: Option<Arc<dyn ConfigChangeRepository>>,
-        hot_reload_enabled: bool,
-        builder: HotConfigBuilder,
-        banner: Option<Arc<BannerService>>,
-    ) -> Self {
+    pub fn new(params: ConfigReloadParams) -> Self {
+        let ConfigReloadParams {
+            hot,
+            access,
+            registry_map,
+            registry_mode_map,
+            upstream_map,
+            cargo_index_map,
+            repo_signer_map,
+            vuln_db_map,
+            registry_host_map,
+            proxy_trust,
+            config_path,
+            config_change_repo,
+            hot_reload_enabled,
+            builder,
+            banner,
+        } = params;
         Self {
             hot,
             access,
@@ -211,6 +269,7 @@ impl ConfigReloadService {
             repo_signer_map,
             vuln_db_map,
             registry_host_map,
+            proxy_trust,
             config_path,
             config_change_repo,
             hot_reload_enabled,

@@ -325,6 +325,30 @@ impl AppConfig {
     }
 
     fn proxy_trust_warnings(&self, out: &mut Vec<ConfigWarning>) {
+        // Entries of the deprecated key that `validate` no longer rejects (see
+        // there). Only reported when that key is the list actually in force: a
+        // shadowed list changes nothing, and `PROXY_TRUST_SHADOWED_DEPRECATED_KEY`
+        // already tells the operator to delete it — a second warning about an
+        // entry of a list that has no effect is noise.
+        for entry in self
+            .ip_blocking
+            .as_ref()
+            .filter(|_| self.uses_deprecated_trusted_proxies())
+            .map(|c| c.trusted_proxies.as_slice())
+            .unwrap_or_default()
+        {
+            if parse_trusted_proxies(std::slice::from_ref(entry)).is_err() {
+                out.push(ConfigWarning::new(
+                    warnings::PROXY_TRUST_INVALID_DEPRECATED_ENTRY,
+                    "ip_blocking.trusted_proxies",
+                    format!(
+                        "'{entry}' is not an IP address or CIDR range and is ignored. Replace it \
+                         with the proxy's address(es) under [server].trusted_proxies; a hostname \
+                         is not resolved."
+                    ),
+                ));
+            }
+        }
         if self.shadows_deprecated_trusted_proxies() {
             out.push(ConfigWarning::new(
                 warnings::PROXY_TRUST_SHADOWED_DEPRECATED_KEY,
@@ -486,10 +510,13 @@ impl AppConfig {
             parse_trusted_proxies(list)
                 .map_err(|e| anyhow::anyhow!("[server].trusted_proxies: {e}"))?;
         }
-        if let Some(ip_blocking) = self.ip_blocking.as_ref() {
-            parse_trusted_proxies(&ip_blocking.trusted_proxies)
-                .map_err(|e| anyhow::anyhow!("[ip_blocking].trusted_proxies: {e}"))?;
-        }
+        // The deprecated `[ip_blocking].trusted_proxies` is deliberately *not*
+        // validated here. Before it fed the proxy-trust policy it was parsed with
+        // `.parse::<IpAddr>().ok()`, so a hostname entry (an ingress DNS name, a
+        // Service name) loaded fine and was dropped. Bailing on it now would turn
+        // an upgrade into a boot failure for a config that never changed; the
+        // entry is dropped as before and surfaced as
+        // `PROXY_TRUST_INVALID_DEPRECATED_ENTRY` instead.
         self.validate_host_routing()?;
 
         // The set of storage backend names a registry's `storage` field may

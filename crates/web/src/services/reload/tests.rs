@@ -43,22 +43,23 @@ async fn make_svc_with_file_and_builder(
         explore_user: Default::default(),
         explore_admin: Default::default(),
     });
-    let svc = Arc::new(ConfigReloadService::new(
+    let svc = Arc::new(ConfigReloadService::new(ConfigReloadParams {
         hot,
         access,
-        crate::RegistryMap::new(HashMap::new()),
-        crate::RegistryModeMap::new(HashMap::new()),
-        crate::UpstreamMap::new(HashMap::new()),
-        crate::CargoIndexMap::new(HashMap::new()),
-        crate::RepoSignerMap::default(),
-        crate::VulnDbMap::default(),
-        crate::RegistryHostMap::default(),
-        path,
-        None,
-        enabled,
+        registry_map: crate::RegistryMap::new(HashMap::new()),
+        registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
+        upstream_map: crate::UpstreamMap::new(HashMap::new()),
+        cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
+        repo_signer_map: crate::RepoSignerMap::default(),
+        vuln_db_map: crate::VulnDbMap::default(),
+        registry_host_map: crate::RegistryHostMap::default(),
+        proxy_trust: crate::middleware::ProxyTrust::default(),
+        config_path: path,
+        config_change_repo: None,
+        hot_reload_enabled: enabled,
         builder,
-        None,
-    ));
+        banner: None,
+    }));
     (svc, tmp)
 }
 
@@ -80,22 +81,23 @@ pub(super) fn make_svc(enabled: bool) -> Arc<ConfigReloadService> {
         explore_admin: Default::default(),
     });
     let builder: HotConfigBuilder = Arc::new(|_| anyhow::bail!("builder not used in unit tests"));
-    Arc::new(ConfigReloadService::new(
+    Arc::new(ConfigReloadService::new(ConfigReloadParams {
         hot,
         access,
-        crate::RegistryMap::new(HashMap::new()),
-        crate::RegistryModeMap::new(HashMap::new()),
-        crate::UpstreamMap::new(HashMap::new()),
-        crate::CargoIndexMap::new(HashMap::new()),
-        crate::RepoSignerMap::default(),
-        crate::VulnDbMap::default(),
-        crate::RegistryHostMap::default(),
-        "config.toml".to_owned(),
-        None,
-        enabled,
+        registry_map: crate::RegistryMap::new(HashMap::new()),
+        registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
+        upstream_map: crate::UpstreamMap::new(HashMap::new()),
+        cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
+        repo_signer_map: crate::RepoSignerMap::default(),
+        vuln_db_map: crate::VulnDbMap::default(),
+        registry_host_map: crate::RegistryHostMap::default(),
+        proxy_trust: crate::middleware::ProxyTrust::default(),
+        config_path: "config.toml".to_owned(),
+        config_change_repo: None,
+        hot_reload_enabled: enabled,
         builder,
-        None,
-    ))
+        banner: None,
+    }))
 }
 
 // ── Basic guard tests ─────────────────────────────────────────────────────────
@@ -207,8 +209,15 @@ async fn apply_success_swaps_hot_config() {
         new_repo_signer_map: crate::RepoSignerMap::from(new_signers),
         new_vuln_db_map: crate::VulnDbMap::default(),
         new_registry_host_map: crate::RegistryHostMap::default(),
+        new_proxy_trust: crate::middleware::ProxyTrust::from_config(Some(&[
+            "10.42.0.0/16".to_owned()
+        ])),
         warnings: Vec::new(),
     };
+    // The handle the app's middleware would hold. It must see the swap, or host
+    // routing can go live while trust stays at its startup value.
+    let live_trust = svc.proxy_trust.clone();
+    assert!(!live_trust.is_configured());
     *svc.pending.lock().unwrap() = Some(pending);
 
     let diff = svc.apply("test-user").await.unwrap();
@@ -219,6 +228,12 @@ async fn apply_success_swaps_hot_config() {
     assert_eq!(hot.max_artifact_size_bytes, Some(42));
     // The deb/rpm signer map was swapped in by the same apply().
     assert!(svc.repo_signer_map.get("apt").is_some());
+    // …and so was the proxy-trust policy.
+    assert!(live_trust.is_configured());
+    assert_eq!(
+        live_trust.verdict_for(Some("10.42.7.1".parse().unwrap())),
+        crate::middleware::PeerTrust::Trusted
+    );
 }
 
 #[tokio::test]
@@ -270,22 +285,23 @@ async fn reload_immediate_applies_config() {
             registry_host_map: crate::RegistryHostMap::default(),
         })
     });
-    let svc = Arc::new(ConfigReloadService::new(
+    let svc = Arc::new(ConfigReloadService::new(ConfigReloadParams {
         hot,
         access,
-        crate::RegistryMap::new(HashMap::new()),
-        crate::RegistryModeMap::new(HashMap::new()),
-        crate::UpstreamMap::new(HashMap::new()),
-        crate::CargoIndexMap::new(HashMap::new()),
-        crate::RepoSignerMap::default(),
-        crate::VulnDbMap::default(),
-        crate::RegistryHostMap::default(),
-        tmp_path.clone(),
-        None,
-        true,
+        registry_map: crate::RegistryMap::new(HashMap::new()),
+        registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
+        upstream_map: crate::UpstreamMap::new(HashMap::new()),
+        cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
+        repo_signer_map: crate::RepoSignerMap::default(),
+        vuln_db_map: crate::VulnDbMap::default(),
+        registry_host_map: crate::RegistryHostMap::default(),
+        proxy_trust: crate::middleware::ProxyTrust::default(),
+        config_path: tmp_path.clone(),
+        config_change_repo: None,
+        hot_reload_enabled: true,
         builder,
-        None,
-    ));
+        banner: None,
+    }));
 
     let diff = svc.reload_immediate("test").await.unwrap();
     assert!(diff.added_registries.is_empty());
@@ -355,6 +371,7 @@ fn make_pending(expires_offset_secs: i64, already_expired: bool) -> PendingReloa
         new_repo_signer_map: crate::RepoSignerMap::default(),
         new_vuln_db_map: crate::VulnDbMap::default(),
         new_registry_host_map: crate::RegistryHostMap::default(),
+        new_proxy_trust: crate::middleware::ProxyTrust::default(),
         warnings: Vec::new(),
     }
 }
@@ -450,6 +467,100 @@ async fn load_pending_stores_pending_even_when_diff_is_structurally_noop() {
         svc.pending_snapshot().is_some(),
         "a structurally-noop diff must not suppress storing the pending reload"
     );
+}
+
+/// A builder that succeeds with empty state, for tests that only care about the
+/// staging bookkeeping rather than what gets built.
+fn noop_builder() -> HotConfigBuilder {
+    Arc::new(|_| {
+        Ok(BuiltHotState {
+            hot: batlehub_core::services::HotConfig::default(),
+            access: crate::AccessConfig {
+                anonymous: Default::default(),
+                user: Default::default(),
+                admin: Default::default(),
+                groups: Default::default(),
+                explore_anonymous: Default::default(),
+                explore_user: Default::default(),
+                explore_admin: Default::default(),
+            },
+            registry_map: crate::RegistryMap::new(HashMap::new()),
+            registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
+            upstream_map: crate::UpstreamMap::new(HashMap::new()),
+            cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
+            repo_signer_map: crate::RepoSignerMap::default(),
+            vuln_db_map: crate::VulnDbMap::default(),
+            registry_host_map: crate::RegistryHostMap::default(),
+        })
+    })
+}
+
+const MINIMAL_CONFIG: &str = r#"
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[database]
+type = "postgresql"
+url = "postgresql://user:pass@localhost/db"
+
+[storage]
+type = "filesystem"
+path = "./tmp"
+"#;
+
+/// `pending_created` is the only thing that distinguishes "staged, go apply it"
+/// from "nothing to stage": both return `Ok` with an empty diff, and the second
+/// only reveals itself when the follow-up apply fails.
+#[tokio::test]
+async fn resubmitting_identical_content_reports_that_nothing_was_staged() {
+    let (svc, _tmp) = make_svc_with_file_and_builder(true, MINIMAL_CONFIG, noop_builder()).await;
+
+    let first = svc
+        .load_pending_from_content(MINIMAL_CONFIG, ReloadSource::AdminRequest)
+        .await
+        .expect("first submission");
+    assert!(first.pending_created, "the first submission stages");
+    assert!(svc.pending_snapshot().is_some());
+
+    // The admin discards it, then re-submits the very same bytes from the editor
+    // — the shape of the real complaint: the file watcher had already loaded this
+    // content, so the dedup fires even though nothing is staged any more.
+    assert!(svc.discard_pending());
+    let second = svc
+        .load_pending_from_content(MINIMAL_CONFIG, ReloadSource::AdminRequest)
+        .await
+        .expect("re-submission still succeeds");
+
+    assert!(
+        !second.pending_created,
+        "identical content stages nothing, and must say so"
+    );
+    assert!(svc.pending_snapshot().is_none());
+    let err = svc.apply("test").await.unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<ReloadApplyError>(),
+            Some(ReloadApplyError::NoPendingReload)
+        ),
+        "…which is exactly what applying would have hit: {err}"
+    );
+}
+
+#[tokio::test]
+async fn validate_content_never_reports_a_staged_pending() {
+    let (svc, _tmp) = make_svc_with_file_and_builder(true, MINIMAL_CONFIG, noop_builder()).await;
+
+    let outcome = svc
+        .validate_content(MINIMAL_CONFIG)
+        .await
+        .expect("validate");
+
+    assert!(
+        !outcome.pending_created,
+        "validate is a dry run by contract"
+    );
+    assert!(svc.pending_snapshot().is_none());
 }
 
 /// Regression test: a *repeated* file-watcher event whose raw config bytes are
@@ -550,6 +661,7 @@ async fn load_pending_from_content_stores_raw_content_in_pending() {
         new_repo_signer_map: crate::RepoSignerMap::default(),
         new_vuln_db_map: crate::VulnDbMap::default(),
         new_registry_host_map: crate::RegistryHostMap::default(),
+        new_proxy_trust: crate::middleware::ProxyTrust::default(),
         warnings: Vec::new(),
     };
     *svc.pending.lock().unwrap() = Some(pending);
@@ -589,6 +701,7 @@ async fn apply_writes_editor_content_to_disk() {
         new_repo_signer_map: crate::RepoSignerMap::default(),
         new_vuln_db_map: crate::VulnDbMap::default(),
         new_registry_host_map: crate::RegistryHostMap::default(),
+        new_proxy_trust: crate::middleware::ProxyTrust::default(),
         warnings: Vec::new(),
     };
     *svc.pending.lock().unwrap() = Some(pending);
@@ -632,6 +745,7 @@ async fn apply_with_no_content_leaves_file_unchanged() {
         new_repo_signer_map: crate::RepoSignerMap::default(),
         new_vuln_db_map: crate::VulnDbMap::default(),
         new_registry_host_map: crate::RegistryHostMap::default(),
+        new_proxy_trust: crate::middleware::ProxyTrust::default(),
         warnings: Vec::new(),
     };
     *svc.pending.lock().unwrap() = Some(pending);

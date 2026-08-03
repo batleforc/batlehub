@@ -92,6 +92,11 @@ const configLoadError = ref<string | null>(null);
 const editorValidating = ref(false);
 const editorCreating = ref(false);
 const editorSuccess = ref<string | null>(null);
+/**
+ * Neither success nor failure: the call was accepted but staged nothing, so the
+ * green box would promise an apply step that is not there.
+ */
+const editorNotice = ref<string | null>(null);
 const editorError = ref<string | null>(null);
 const validatedContent = ref<string | null>(null);
 
@@ -114,6 +119,7 @@ async function loadConfigContent() {
 async function validateConfigContent() {
   editorValidating.value = true;
   editorSuccess.value = null;
+  editorNotice.value = null;
   editorError.value = null;
   validatedContent.value = null;
   try {
@@ -140,6 +146,7 @@ async function validateConfigContent() {
 async function createPendingFromContent() {
   editorCreating.value = true;
   editorSuccess.value = null;
+  editorNotice.value = null;
   editorError.value = null;
   try {
     const res = await authFetch(`${API_BASE_URL}/api/v1/admin/config/from-content`, {
@@ -151,10 +158,21 @@ async function createPendingFromContent() {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       throw new Error(body.error ?? `HTTP ${res.status}`);
     }
-    const body = (await res.json().catch(() => ({}))) as { warnings?: ConfigWarning[] };
+    const body = (await res.json().catch(() => ({}))) as {
+      warnings?: ConfigWarning[];
+      pending_created?: boolean;
+    };
     candidateWarnings.value = body.warnings ?? [];
     validatedContent.value = null;
-    editorSuccess.value = "Pending reload created. Review it below, then apply.";
+    if (body.pending_created) {
+      editorSuccess.value = "Pending reload created. Review it below, then apply.";
+    } else {
+      // The server deduped: these exact bytes were the last config it loaded, so
+      // there is nothing to rebuild and nothing staged. Saying "created" here is
+      // what sends the admin to an Apply button that answers "no pending reload".
+      editorNotice.value =
+        "Nothing to stage — this content is identical to the config already loaded. No pending reload was created.";
+    }
     await fetchPending();
   } catch (e) {
     editorError.value = extractMessage(e);
@@ -356,6 +374,12 @@ onUnmounted(() => {
           class="rounded-sm bg-primary/10 border border-primary/30 px-4 py-2 text-primary text-sm"
         >
           {{ editorSuccess }}
+        </div>
+        <div
+          v-if="editorNotice"
+          class="rounded-sm border border-yellow-400 bg-yellow-50 dark:bg-yellow-900/20 px-4 py-2 text-sm text-yellow-800 dark:text-yellow-300"
+        >
+          {{ editorNotice }}
         </div>
         <div v-if="candidateWarnings.length" class="space-y-2">
           <p class="text-sm text-muted-foreground">

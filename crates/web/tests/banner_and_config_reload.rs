@@ -21,7 +21,9 @@ use batlehub_core::{
     ports::{BannerPort, CacheStore, StorageBackend, UserTokenRepository},
     services::{new_hot_lock, AdminService, HotConfig, ProxyMetrics, ProxyService},
 };
-use batlehub_web::services::{BannerService, ConfigReloadService, HotConfigBuilder};
+use batlehub_web::services::{
+    BannerService, ConfigReloadParams, ConfigReloadService, HotConfigBuilder,
+};
 use batlehub_web::AuthMiddlewareFactory;
 
 // ── Banner endpoints ──────────────────────────────────────────────────────────
@@ -72,22 +74,23 @@ async fn make_banner_app_seeded(
 
     let hot = proxy_svc.hot.clone();
     let builder: HotConfigBuilder = Arc::new(|_| anyhow::bail!("not used in tests"));
-    let reload_svc = Arc::new(ConfigReloadService::new(
+    let reload_svc = Arc::new(ConfigReloadService::new(ConfigReloadParams {
         hot,
-        access_config.clone(),
-        batlehub_web::RegistryMap::new(HashMap::new()),
-        batlehub_web::RegistryModeMap::new(HashMap::new()),
-        batlehub_web::UpstreamMap::new(HashMap::new()),
-        batlehub_web::CargoIndexMap::new(HashMap::new()),
-        batlehub_web::RepoSignerMap::default(),
-        batlehub_web::VulnDbMap::default(),
-        batlehub_web::RegistryHostMap::default(),
-        "config.toml".to_owned(),
-        None,
-        true,
+        access: access_config.clone(),
+        registry_map: batlehub_web::RegistryMap::new(HashMap::new()),
+        registry_mode_map: batlehub_web::RegistryModeMap::new(HashMap::new()),
+        upstream_map: batlehub_web::UpstreamMap::new(HashMap::new()),
+        cargo_index_map: batlehub_web::CargoIndexMap::new(HashMap::new()),
+        repo_signer_map: batlehub_web::RepoSignerMap::default(),
+        vuln_db_map: batlehub_web::VulnDbMap::default(),
+        registry_host_map: batlehub_web::RegistryHostMap::default(),
+        proxy_trust: batlehub_web::ProxyTrust::default(),
+        config_path: "config.toml".to_owned(),
+        config_change_repo: None,
+        hot_reload_enabled: true,
         builder,
-        Some(Arc::clone(&banner_svc)),
-    ));
+        banner: Some(Arc::clone(&banner_svc)),
+    }));
     reload_svc.set_warnings(warnings);
 
     let (app, _) = actix_web::App::new()
@@ -218,22 +221,23 @@ async fn reload_config_returns_503_when_disabled() {
 
     let hot = proxy_svc.hot.clone();
     let builder: HotConfigBuilder = Arc::new(|_| anyhow::bail!("unused"));
-    let reload_svc = Arc::new(ConfigReloadService::new(
+    let reload_svc = Arc::new(ConfigReloadService::new(ConfigReloadParams {
         hot,
-        access_config.clone(),
-        batlehub_web::RegistryMap::new(HashMap::new()),
-        batlehub_web::RegistryModeMap::new(HashMap::new()),
-        batlehub_web::UpstreamMap::new(HashMap::new()),
-        batlehub_web::CargoIndexMap::new(HashMap::new()),
-        batlehub_web::RepoSignerMap::default(),
-        batlehub_web::VulnDbMap::default(),
-        batlehub_web::RegistryHostMap::default(),
-        "config.toml".to_owned(),
-        None,
-        false, // disabled
+        access: access_config.clone(),
+        registry_map: batlehub_web::RegistryMap::new(HashMap::new()),
+        registry_mode_map: batlehub_web::RegistryModeMap::new(HashMap::new()),
+        upstream_map: batlehub_web::UpstreamMap::new(HashMap::new()),
+        cargo_index_map: batlehub_web::CargoIndexMap::new(HashMap::new()),
+        repo_signer_map: batlehub_web::RepoSignerMap::default(),
+        vuln_db_map: batlehub_web::VulnDbMap::default(),
+        registry_host_map: batlehub_web::RegistryHostMap::default(),
+        proxy_trust: batlehub_web::ProxyTrust::default(),
+        config_path: "config.toml".to_owned(),
+        config_change_repo: None,
+        hot_reload_enabled: false,
         builder,
-        None,
-    ));
+        banner: None,
+    }));
 
     let (app, _) = actix_web::App::new()
         .into_utoipa_app()

@@ -159,19 +159,38 @@ const cliSnippets = computed<Record<string, string>>(() => {
     npm: `npm set registry ${url}\nnpm publish`,
     cargo: `# .cargo/config.toml:\n[registries.${reg}]\nindex = "sparse+${url}/registry/"\n\ncargo publish --registry ${reg}`,
     maven: `<!-- settings.xml -->\n<server>\n  <id>${reg}</id>\n  <username>your-user</username>\n  <password>your-token</password>\n</server>\n\n<!-- pom.xml -->\n<distributionManagement>\n  <repository>\n    <id>${reg}</id>\n    <url>${url}/maven2</url>\n  </repository>\n</distributionManagement>\n\nmvn deploy`,
-    terraform: `terraform {\n  required_providers {\n    <provider> = {\n      source = "${terraformHost(url)}/${reg}/<namespace>/<provider>"\n    }\n  }\n}`,
+    terraform: `terraform {\n  required_providers {\n    <provider> = {\n      source = "${terraformSource(url, reg)}/<namespace>/<provider>"\n    }\n  }\n}`,
     deb: `# Publish a .deb to pool/{distribution}/{component}\ncurl -X PUT \\\n  -H "Authorization: Bearer <your-token>" \\\n  --data-binary @hello_1.0_amd64.deb \\\n  ${url}/deb/pool/stable/main/upload`,
     rpm: `# Publish an .rpm\ncurl -X PUT \\\n  -H "Authorization: Bearer <your-token>" \\\n  --data-binary @hello-1.0-1.x86_64.rpm \\\n  ${url}/rpm/upload`,
   };
 });
 
-/** Terraform provider sources are keyed by hostname, not URL. */
+/**
+ * Terraform provider sources are keyed by host, not URL. `host` rather than
+ * `hostname`, so a non-default port survives — a source of `localhost/ns/name`
+ * sends `terraform init` to port 443 on a dev server listening on 8080.
+ */
 function terraformHost(url: string): string {
   try {
-    return new URL(url, globalThis.location.origin).hostname;
+    return new URL(url, globalThis.location.origin).host;
   } catch {
-    return globalThis.location.hostname;
+    return globalThis.location.host;
   }
+}
+
+/**
+ * The `host[/registry]` prefix of a provider source. A host-routed registry
+ * serves `/v1/providers/…` at the root of its own hostname, so repeating the
+ * registry name there points `terraform init` at a path that does not exist.
+ */
+function terraformSource(url: string, reg: string): string {
+  let path = "";
+  try {
+    path = new URL(url, globalThis.location.origin).pathname.replaceAll(/^\/+|\/+$/g, "");
+  } catch {
+    path = "";
+  }
+  return path ? `${terraformHost(url)}/${reg}` : terraformHost(url);
 }
 
 const currentSnippet = computed(

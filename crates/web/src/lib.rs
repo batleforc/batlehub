@@ -55,6 +55,13 @@ impl<V: Clone> LockedMap<V> {
             .collect()
     }
 
+    /// Emptiness without materialising the keys — this runs on the request hot
+    /// path (see `RegistryHostMap::is_empty`), where cloning every key just to
+    /// throw the `Vec` away costs one allocation per configured host per request.
+    fn is_empty(&self) -> bool {
+        self.0.read().expect("locked map lock poisoned").is_empty()
+    }
+
     fn insert(&self, key: String, value: V) {
         self.0
             .write()
@@ -335,7 +342,7 @@ impl RegistryHostMap {
     /// True when no host is bound at all — the feature is off and the middleware
     /// can skip every lookup.
     pub fn is_empty(&self) -> bool {
-        self.by_host.keys().is_empty()
+        self.by_host.is_empty()
     }
 
     /// Materialise the tables from a validated `AppConfig`.

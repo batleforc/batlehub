@@ -30,10 +30,17 @@ use batlehub_config::schema::normalise_host;
 /// [`Default`] is the legacy-permissive policy, so an app that never registers
 /// one (every existing test app, and any deployment with no `trusted_proxies`
 /// key) behaves exactly as it did before this policy existed.
+///
+/// The list lives behind a lock, like every other hot-reloadable table, because
+/// the host-routing table it guards *is* hot-reloadable: a reload that turns host
+/// routing on while this policy stayed at its startup value would leave routing
+/// driven by a header from any peer — the state `validate_host_routing` exists to
+/// forbid. All clones share the lock, so `replace_from` reaches the copy held by
+/// the middleware and the one in `app_data` alike.
 #[derive(Clone, Debug, Default)]
 pub struct ProxyTrust {
     /// `None` — no list configured anywhere.
-    trusted: Option<Arc<Vec<IpNet>>>,
+    trusted: Arc<std::sync::RwLock<Option<Arc<Vec<IpNet>>>>>,
 }
 
 impl ProxyTrust {
@@ -41,48 +48,72 @@ impl ProxyTrust {
     /// and `X-Forwarded-For` is ignored. This is what the server did before
     /// `[server].trusted_proxies` existed.
     pub fn legacy_permissive() -> Self {
-        Self { trusted: None }
+        Self::from_policy(None)
     }
 
     /// An explicit policy. An empty `networks` list means "trust nobody": every
     /// peer is [`PeerTrust::Untrusted`], so forwarded headers are ignored
     /// entirely.
     pub fn from_networks(networks: Vec<IpNet>) -> Self {
+        Self::from_policy(Some(Arc::new(networks)))
+    }
+
+    fn from_policy(trusted: Option<Arc<Vec<IpNet>>>) -> Self {
         Self {
-            trusted: Some(Arc::new(networks)),
+            trusted: Arc::new(std::sync::RwLock::new(trusted)),
         }
+    }
+
+    /// A snapshot of the policy in force, taken under a short read lock.
+    fn policy(&self) -> Option<Arc<Vec<IpNet>>> {
+        self.trusted
+            .read()
+            .expect("proxy trust lock poisoned")
+            .clone()
+    }
+
+    /// Adopt `other`'s policy, in place, for every clone of this handle — called
+    /// by the hot-reload applier so the trust policy and the host-routing table it
+    /// guards change together. In-flight requests keep the verdict they already
+    /// resolved.
+    pub fn replace_from(&self, other: &Self) {
+        let snapshot = other.policy();
+        *self.trusted.write().expect("proxy trust lock poisoned") = snapshot;
     }
 
     /// Build from raw config entries, widening bare addresses to `/32` / `/128`.
     /// `None` yields the legacy-permissive policy.
     ///
-    /// Malformed entries are already rejected by `AppConfig::validate`; if one
-    /// slips through it is dropped with a warning rather than silently widening
-    /// the trusted set.
+    /// `[server].trusted_proxies` is validated by `AppConfig::validate`, so a
+    /// malformed entry can only come from the deprecated
+    /// `[ip_blocking].trusted_proxies`, which predates that validator. Such an
+    /// entry is dropped individually — exactly what the old `extract_client_ip`
+    /// did — so the valid entries around it keep working; the config layer
+    /// surfaces it as `PROXY_TRUST_INVALID_DEPRECATED_ENTRY`. Discarding the whole
+    /// list instead would turn one stale hostname into "trust no peer", which
+    /// silently rewrites every URL this server advertises.
     pub fn from_config(entries: Option<&[String]>) -> Self {
         let Some(entries) = entries else {
             return Self::legacy_permissive();
         };
-        match batlehub_config::schema::parse_trusted_proxies(entries) {
-            Ok(networks) => Self::from_networks(networks),
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "ignoring malformed trusted_proxies entry; falling back to trusting no peer"
-                );
-                Self::from_networks(Vec::new())
+        let mut networks = Vec::with_capacity(entries.len());
+        for entry in entries {
+            match batlehub_config::schema::parse_trusted_proxies(std::slice::from_ref(entry)) {
+                Ok(parsed) => networks.extend(parsed),
+                Err(e) => tracing::warn!(error = %e, "ignoring malformed trusted_proxies entry"),
             }
         }
+        Self::from_networks(networks)
     }
 
     /// True when an explicit list is configured (as opposed to legacy permissive).
     pub fn is_configured(&self) -> bool {
-        self.trusted.is_some()
+        self.policy().is_some()
     }
 
     /// Resolve this policy against the request's TCP peer.
     pub fn verdict_for(&self, peer: Option<IpAddr>) -> PeerTrust {
-        match &self.trusted {
+        match self.policy() {
             None => PeerTrust::LegacyPermissive,
             Some(networks) => {
                 if peer.is_some_and(|ip| networks.iter().any(|net| net.contains(&ip))) {
@@ -296,6 +327,46 @@ mod tests {
         assert_eq!(
             trust.verdict_for(Some("2001:db9::1".parse().unwrap())),
             PeerTrust::Untrusted
+        );
+    }
+
+    #[test]
+    fn a_malformed_entry_is_dropped_without_discarding_the_valid_ones() {
+        // Only the deprecated `[ip_blocking].trusted_proxies` can reach here with
+        // a bad entry; dropping the whole list would silently retarget every URL
+        // this server advertises.
+        let trust = nets(&["10.0.0.5", "ingress.internal"]);
+        assert_eq!(
+            trust.verdict_for(Some("10.0.0.5".parse().unwrap())),
+            PeerTrust::Trusted
+        );
+        assert_eq!(
+            trust.verdict_for(Some("10.0.0.6".parse().unwrap())),
+            PeerTrust::Untrusted
+        );
+    }
+
+    #[test]
+    fn replace_from_updates_every_clone() {
+        // The middleware and `app_data` each hold a clone; a reload has to reach
+        // both, or routing keeps running under the startup policy.
+        let live = ProxyTrust::legacy_permissive();
+        let held_by_middleware = live.clone();
+        assert_eq!(
+            held_by_middleware.verdict_for(Some("203.0.113.7".parse().unwrap())),
+            PeerTrust::LegacyPermissive
+        );
+
+        live.replace_from(&nets(&["10.42.0.0/16"]));
+
+        assert!(held_by_middleware.is_configured());
+        assert_eq!(
+            held_by_middleware.verdict_for(Some("203.0.113.7".parse().unwrap())),
+            PeerTrust::Untrusted
+        );
+        assert_eq!(
+            held_by_middleware.verdict_for(Some("10.42.7.1".parse().unwrap())),
+            PeerTrust::Trusted
         );
     }
 

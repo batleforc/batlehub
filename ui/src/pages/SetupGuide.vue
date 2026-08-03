@@ -32,16 +32,35 @@ function hostnameOf(url: string): string {
   }
 }
 
-const netrcHost = computed(() => hostnameOf(base.value));
 const netrcLogin = computed(() => identity.value?.user_id ?? "token");
-const netrcSnippet = computed(
-  () => `machine ${netrcHost.value}\nlogin ${netrcLogin.value}\npassword ${token.value}`,
-);
 const isOidc = computed(() => expiresAt.value > 0);
 
 const { data: registries, loading } = useApi<Array<RegistryInfo>>(
   () => listRegistries() as Promise<{ data?: unknown; error?: unknown }>,
   [],
+);
+
+/**
+ * Every host a client may authenticate against: this origin, plus the hostname of
+ * each host-routed registry. `.netrc` entries are matched by hostname, so a guide
+ * that lists only the main host sends no credentials to a registry advertised on
+ * its own `public_url` — the per-registry snippets point there, and every
+ * authenticated install would 401.
+ */
+const netrcHosts = computed(() => {
+  const hosts = [hostnameOf(base.value)];
+  for (const registry of registries.value ?? []) {
+    if (!registry.public_url) continue;
+    const host = hostnameOf(registry.public_url);
+    if (!hosts.includes(host)) hosts.push(host);
+  }
+  return hosts;
+});
+
+const netrcSnippet = computed(() =>
+  netrcHosts.value
+    .map((host) => `machine ${host}\nlogin ${netrcLogin.value}\npassword ${token.value}`)
+    .join("\n\n"),
 );
 
 // Group API registries by type

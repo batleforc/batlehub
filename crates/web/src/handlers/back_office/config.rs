@@ -43,6 +43,16 @@ pub struct ReloadResponse {
     /// force for `reload`/`apply`, the candidate one for `validate`/`from-content`.
     /// Empty for a clean config.
     pub warnings: Vec<ConfigWarning>,
+    /// Whether this call left a pending reload staged for approval.
+    ///
+    /// Only `from-content` can set it: `reload` and `apply` consume the pending
+    /// rather than leave one, and `validate` is a dry run. It exists because
+    /// `from-content` returns `200` with an empty diff in two very different
+    /// situations — a pending was staged, or the submitted content was identical
+    /// to the last load attempt so there was nothing to stage. Without this flag
+    /// the caller only discovers the difference when the subsequent apply fails
+    /// with `404 No pending reload`.
+    pub pending_created: bool,
 }
 
 /// Immediately reload the configuration (load, validate, and apply atomically).
@@ -73,6 +83,8 @@ pub async fn reload_config(
     Ok(web::Json(ReloadResponse {
         diff,
         warnings: reload_svc.warnings(),
+        // This call consumed the pending reload; nothing is left staged.
+        pending_created: false,
     }))
 }
 
@@ -134,6 +146,8 @@ pub async fn apply_pending_reload(
     Ok(web::Json(ReloadResponse {
         diff,
         warnings: reload_svc.warnings(),
+        // This call consumed the pending reload; nothing is left staged.
+        pending_created: false,
     }))
 }
 
@@ -296,6 +310,7 @@ pub async fn validate_config_content(
     Ok(web::Json(ReloadResponse {
         diff: outcome.diff,
         warnings: outcome.warnings,
+        pending_created: outcome.pending_created,
     }))
 }
 
@@ -333,6 +348,7 @@ pub async fn load_config_from_content(
     Ok(web::Json(ReloadResponse {
         diff: outcome.diff,
         warnings: outcome.warnings,
+        pending_created: outcome.pending_created,
     }))
 }
 
@@ -461,7 +477,7 @@ mod tests {
     }
 
     fn disabled_svc() -> Arc<ConfigReloadService> {
-        use crate::services::HotConfigBuilder;
+        use crate::services::{ConfigReloadParams, HotConfigBuilder};
         use batlehub_core::services::new_hot_lock;
         use std::collections::HashMap;
 
@@ -481,22 +497,23 @@ mod tests {
         });
         let builder: HotConfigBuilder =
             Arc::new(|_| anyhow::bail!("builder not used in this test"));
-        Arc::new(ConfigReloadService::new(
+        Arc::new(ConfigReloadService::new(ConfigReloadParams {
             hot,
             access,
-            crate::RegistryMap::new(HashMap::new()),
-            crate::RegistryModeMap::new(HashMap::new()),
-            crate::UpstreamMap::new(HashMap::new()),
-            crate::CargoIndexMap::new(HashMap::new()),
-            crate::RepoSignerMap::default(),
-            crate::VulnDbMap::default(),
-            crate::RegistryHostMap::default(),
-            "config.toml".to_owned(),
-            None,
-            false, // hot_reload_enabled = false
+            registry_map: crate::RegistryMap::new(HashMap::new()),
+            registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
+            upstream_map: crate::UpstreamMap::new(HashMap::new()),
+            cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
+            repo_signer_map: crate::RepoSignerMap::default(),
+            vuln_db_map: crate::VulnDbMap::default(),
+            registry_host_map: crate::RegistryHostMap::default(),
+            proxy_trust: crate::middleware::ProxyTrust::default(),
+            config_path: "config.toml".to_owned(),
+            config_change_repo: None,
+            hot_reload_enabled: false,
             builder,
-            None,
-        ))
+            banner: None,
+        }))
     }
 
     #[test]
@@ -508,7 +525,7 @@ mod tests {
 
     #[test]
     fn require_hot_reload_passes_when_enabled() {
-        use crate::services::HotConfigBuilder;
+        use crate::services::{ConfigReloadParams, HotConfigBuilder};
         use batlehub_core::services::new_hot_lock;
         use std::collections::HashMap;
 
@@ -527,22 +544,23 @@ mod tests {
             explore_admin: Default::default(),
         });
         let builder: HotConfigBuilder = Arc::new(|_| anyhow::bail!("unused"));
-        let svc = Arc::new(ConfigReloadService::new(
+        let svc = Arc::new(ConfigReloadService::new(ConfigReloadParams {
             hot,
             access,
-            crate::RegistryMap::new(HashMap::new()),
-            crate::RegistryModeMap::new(HashMap::new()),
-            crate::UpstreamMap::new(HashMap::new()),
-            crate::CargoIndexMap::new(HashMap::new()),
-            crate::RepoSignerMap::default(),
-            crate::VulnDbMap::default(),
-            crate::RegistryHostMap::default(),
-            "config.toml".to_owned(),
-            None,
-            true,
+            registry_map: crate::RegistryMap::new(HashMap::new()),
+            registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
+            upstream_map: crate::UpstreamMap::new(HashMap::new()),
+            cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
+            repo_signer_map: crate::RepoSignerMap::default(),
+            vuln_db_map: crate::VulnDbMap::default(),
+            registry_host_map: crate::RegistryHostMap::default(),
+            proxy_trust: crate::middleware::ProxyTrust::default(),
+            config_path: "config.toml".to_owned(),
+            config_change_repo: None,
+            hot_reload_enabled: true,
             builder,
-            None,
-        ));
+            banner: None,
+        }));
         assert!(require_hot_reload(&svc).is_ok());
     }
 

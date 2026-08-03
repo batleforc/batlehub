@@ -24,8 +24,10 @@ ui/dist/
 # store override would land here. pnpm-lock.yaml and pnpm-workspace.yaml ARE
 # tracked.
 .pnpm-store/
+# The generated TypeScript client stays out of the tree; the OpenAPI spec it is
+# generated from (ui/openapi.json) IS tracked, so API changes show up in review
+# as a diff of the contract. Refresh it with `task dump-spec`.
 ui/src/client/
-ui/openapi.json
 ui/.env
 
 # Logs

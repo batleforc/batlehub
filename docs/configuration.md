@@ -194,6 +194,12 @@ advertise. The startup error contains the exact TOML to paste.
 > requirement above, so an existing deployment can adopt host routing without
 > touching its proxy-trust config. When both are set, `[server]` wins. Either way
 > you get a config warning; see [`GET /api/v1/admin/config/warnings`](#92-api-endpoints).
+>
+> Unlike `[server].trusted_proxies`, an entry of the deprecated key that is
+> neither an IP nor a CIDR range (a hostname, say) is **dropped with a warning**
+> rather than refused at startup — that key predates the validator and used to
+> discard such entries silently, so rejecting one now would break a config that
+> never changed. The valid entries around it still apply.
 
 ---
 
@@ -3042,6 +3048,9 @@ BatleHub can reload its configuration at runtime without restarting the process.
 - Per-registry policy rules (age gate, deny latest)
 - Per-registry versioning, signing, and beta-channel configuration
 - Artifact size limit
+- Host-based routing (`hosts`, `path_routing`, `[subdomain_routing]`) and the
+  `trusted_proxies` policy that governs it — the two swap together, so a reload
+  that turns host routing on never runs under the old trust policy
 
 The following components **require a process restart**:
 - Server host / port
@@ -3118,6 +3127,7 @@ Config Reload admin page renders both.
 |---|---|
 | `proxy-trust.unconfigured` | No `trusted_proxies` list anywhere; forwarded host/scheme are believed from any client |
 | `proxy-trust.deprecated-key-only` | Proxy trust comes from the deprecated `[ip_blocking].trusted_proxies` |
+| `proxy-trust.invalid-deprecated-entry` | An entry of the deprecated `[ip_blocking].trusted_proxies` is not an IP or CIDR range and was dropped |
 | `proxy-trust.shadowed-deprecated-key` | Both keys are set; `[server]` wins and the deprecated list is ignored entirely |
 | `subdomain.invalid-dns-label` | `[subdomain_routing]` is on but a registry name cannot be a DNS label, so no wildcard host is derived for it |
 

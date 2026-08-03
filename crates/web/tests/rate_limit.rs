@@ -245,6 +245,25 @@ async fn request_over_limit_returns_429() {
 }
 
 #[actix_web::test]
+async fn a_percent_encoded_registry_name_shares_the_same_bucket() {
+    // actix requotes the path before routing, so `/proxy/np%6d/…` reaches the
+    // `npm` handler. Keying the bucket on the raw URI would make that a free
+    // opt-out from the registry's rate limit.
+    let rl_svc = block_rl_svc("npm", 1);
+    let app = make_rate_limited_app(rl_svc, test_auth_providers()).await;
+
+    let req = TestRequest::get().uri("/proxy/npm/lodash").to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    let req = TestRequest::get().uri("/proxy/np%6d/lodash").to_request();
+    assert_eq!(
+        call_service(&app, req).await.status(),
+        429,
+        "percent-encoding the registry name must not bypass its rate limit"
+    );
+}
+
+#[actix_web::test]
 async fn block_mode_response_carries_required_headers() {
     let rl_svc = block_rl_svc("npm", 1);
     let app = make_rate_limited_app(rl_svc, test_auth_providers()).await;

@@ -12,8 +12,15 @@ pub mod user_block;
 /// host-routing middleware (which uses it to enforce the `path_routing = false`
 /// opt-out), so the two cannot disagree about what counts as a proxy path.
 ///
+/// **Both callers must pass `req.match_info().unprocessed()`, never
+/// `req.path()`.** The latter is the raw percent-encoded URI while actix routes
+/// on the requoted one, so `/proxy/npm%32/…` reaches the `npm2` handler while
+/// looking like an unknown registry here — which would silently skip both the
+/// host-only 404 and the registry's rate limit.
+///
 /// Host-routed requests have already been rewritten to this shape by the time
-/// the rate limiter runs — see [`host_routing`].
+/// the rate limiter runs — see [`host_routing`], whose `rewrite_uri` updates
+/// `match_info` alongside the URI for exactly this reason.
 pub fn extract_registry_from_path(path: &str) -> Option<&str> {
     let mut segments = path.splitn(4, '/');
     segments.next(); // leading ""

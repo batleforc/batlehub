@@ -187,17 +187,24 @@ where
                 // Not a registry host — the main host, a bare IP, a probe. The
                 // only thing to enforce here is the §4.6 opt-out, because this is
                 // the one place that knows the request was *not* host-routed.
-                if let Some(registry) = extract_registry_from_path(req.path()) {
-                    if self.map.is_host_only(registry) {
-                        // 404, not 403: a disabled ingress should look absent,
-                        // indistinguishable from an unknown registry.
-                        let response = HttpResponse::NotFound()
-                            .content_type("application/json")
-                            .body(r#"{"error":"Not Found","message":"unknown registry"}"#);
-                        return Box::pin(async move {
-                            Ok(req.into_response(response).map_into_right_body())
-                        });
-                    }
+                //
+                // Read the path from `match_info`, not `req.path()`: the latter is
+                // the raw percent-encoded URI, while actix routes on the requoted
+                // one, so `/proxy/npm%32/…` would slip past a `npm2` opt-out here
+                // and still reach the npm2 handler. Using the router's own view
+                // also avoids over-decoding — `%2f` stays encoded in both, so a
+                // scoped npm package is still one segment.
+                let host_only = extract_registry_from_path(req.match_info().unprocessed())
+                    .is_some_and(|registry| self.map.is_host_only(registry));
+                if host_only {
+                    // 404, not 403: a disabled ingress should look absent,
+                    // indistinguishable from an unknown registry.
+                    let response = HttpResponse::NotFound()
+                        .content_type("application/json")
+                        .body(r#"{"error":"Not Found","message":"unknown registry"}"#);
+                    return Box::pin(async move {
+                        Ok(req.into_response(response).map_into_right_body())
+                    });
                 }
             }
         }
@@ -436,6 +443,19 @@ mod tests {
         let app = echo_app(map(), ProxyTrust::legacy_permissive()).await;
         let req = TestRequest::get()
             .uri("/proxy/npm2/lodash")
+            .insert_header(("host", "hub.example.com"))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[actix_web::test]
+    async fn a_percent_encoded_registry_name_does_not_bypass_the_opt_out() {
+        // actix requotes the path before routing, so `npm%32` reaches the npm2
+        // handler. Matching on the raw URI here would 200 what must be a 404.
+        let app = echo_app(map(), ProxyTrust::legacy_permissive()).await;
+        let req = TestRequest::get()
+            .uri("/proxy/npm%32/lodash")
             .insert_header(("host", "hub.example.com"))
             .to_request();
         let resp = test::call_service(&app, req).await;
