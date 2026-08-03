@@ -22,7 +22,7 @@
   "dependencies": {
     "@lucide/vue": "^1.27.0",
     "@shikijs/core": "^4.3.1",
-    "@shikijs/engine-javascript": "^4.3.1",
+    "@shikijs/engine-javascript": "^4.4.1",
     "@shikijs/langs": "^4.3.1",
     "@shikijs/themes": "^4.3.1",
     "@vueuse/core": "^14.3.0",
