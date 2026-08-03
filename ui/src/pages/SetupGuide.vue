@@ -24,22 +24,43 @@ const copied = ref<string | null>(null);
 
 const { token, identity, isAuthenticated, expiresAt } = useAuth();
 
-const netrcHost = computed(() => {
+function hostnameOf(url: string): string {
   try {
-    return new URL(base.value).hostname;
+    return new URL(url).hostname;
   } catch {
-    return base.value;
+    return url;
   }
-});
+}
+
 const netrcLogin = computed(() => identity.value?.user_id ?? "token");
-const netrcSnippet = computed(
-  () => `machine ${netrcHost.value}\nlogin ${netrcLogin.value}\npassword ${token.value}`,
-);
 const isOidc = computed(() => expiresAt.value > 0);
 
 const { data: registries, loading } = useApi<Array<RegistryInfo>>(
   () => listRegistries() as Promise<{ data?: unknown; error?: unknown }>,
   [],
+);
+
+/**
+ * Every host a client may authenticate against: this origin, plus the hostname of
+ * each host-routed registry. `.netrc` entries are matched by hostname, so a guide
+ * that lists only the main host sends no credentials to a registry advertised on
+ * its own `public_url` — the per-registry snippets point there, and every
+ * authenticated install would 401.
+ */
+const netrcHosts = computed(() => {
+  const hosts = [hostnameOf(base.value)];
+  for (const registry of registries.value ?? []) {
+    if (!registry.public_url) continue;
+    const host = hostnameOf(registry.public_url);
+    if (!hosts.includes(host)) hosts.push(host);
+  }
+  return hosts;
+});
+
+const netrcSnippet = computed(() =>
+  netrcHosts.value
+    .map((host) => `machine ${host}\nlogin ${netrcLogin.value}\npassword ${token.value}`)
+    .join("\n\n"),
 );
 
 // Group API registries by type
@@ -51,6 +72,16 @@ const registriesByType = computed<Record<string, RegistryInfo[]>>(() => {
   }
   return map;
 });
+
+/**
+ * Base URL clients should use for `name`: the registry's own hostname-rooted URL
+ * when the server advertises one (`public_url`, set by host-based routing),
+ * otherwise the `/proxy/{name}` subpath on this origin.
+ */
+function urlFor(name: string): string {
+  const registry = (registries.value ?? []).find((r) => r.name === name);
+  return registry?.public_url ?? `${base.value}/proxy/${name}`;
+}
 
 // Per-type selected registry name; defaults to first in the list
 const selectedByType = ref<Record<string, string>>({});
@@ -97,13 +128,19 @@ function ctxFor(def: RegistryTypeDef): SnippetContext {
     primaryType(def) ??
     (def.apiTypes ?? [def.id]).find((t) => t in registriesByType.value) ??
     def.id;
+  const registryName = getSelected(pt);
+  const registryUrl = urlFor(registryName);
   return {
     base: base.value,
-    registryName: getSelected(pt),
+    registryName,
+    registryUrl,
+    urlFor,
     mode: getMode(pt),
     isAuthenticated: isAuthenticated.value,
     token: token.value ?? "",
-    netrcHost: netrcHost.value,
+    // Credentials are keyed by the host the client actually talks to, which is
+    // the registry's own host once it has one.
+    netrcHost: hostnameOf(registryUrl),
     netrcLogin: netrcLogin.value,
     identity: identity.value,
     selectedNames: selectedNames.value,

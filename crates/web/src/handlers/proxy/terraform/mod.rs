@@ -15,7 +15,8 @@ use batlehub_core::{
 
 use super::common::{
     append_signature_headers, collect_payload, collect_storage_stream, dispatch_notification,
-    extract_signature_headers, proxy_stream, require_local_mode, require_registry_type,
+    extract_signature_headers, proxy_stream, registry_public_base, require_local_mode,
+    require_registry_type,
 };
 use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
@@ -36,6 +37,4 @@ pub use providers::{
     terraform_provider_unyank, terraform_provider_upload, terraform_provider_versions,
     terraform_provider_yank,
 };
-pub(super) use shared::{
-    base_url_from_req, terraform_set_yanked, terraform_versions_response, TerraformYankRequest,
-};
+pub(super) use shared::{terraform_set_yanked, terraform_versions_response, TerraformYankRequest};

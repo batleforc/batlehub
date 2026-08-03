@@ -2,7 +2,7 @@
 
 | Field       | Value                                                        |
 | ----------- | ------------------------------------------------------------ |
-| Status      | Draft — all open questions resolved, awaiting implementation review |
+| Status      | **Implemented** — all phases landed; see the implementation notes in §13 |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                       |
 | Co-author   | Claude Opus 5 (1M context) <noreply@anthropic.com>            |
 | Created     | 2026-07-29                                                    |
@@ -736,3 +736,49 @@ Each phase is independently reviewable and leaves the tree green.
 | 3 | Outbound unification: `registry_public_base`, removal of the 8 local helpers, the ~25 format sites, the 5 core functions; extend `host_routing.rs` with the generated-URL assertions. |
 | 4 | `RegistryInfo.public_url`, SDK regeneration, `registryTypes.ts` / `SetupGuide.vue` / `NamespaceUpload.vue`, absolute package links for host-only registries in `front_office/packages.rs`. |
 | 5 | Helm `extraHosts`, user documentation (`website/guide/`, including a proxy-trust section for `[server].trusted_proxies`), `docs/configuration.md`, `config.example.toml`, `CHANGELOG.md`, `ROADMAP.md`. |
+
+---
+
+## 13. Implementation notes
+
+All six phases landed. Three deliberate deviations from the design above, each
+because the spec as written would have been wrong:
+
+1. **`PeerTrusted(bool)` became a three-state `PeerTrust` enum**
+   (`crates/web/src/middleware/proxy_trust.rs`). §4.5's own table needs "absent"
+   and "trusted" to agree about the forwarded host and scheme while *disagreeing*
+   about `X-Forwarded-For` — absent must keep ignoring it. A single boolean
+   cannot express that, and collapsing it would have silently made the client IP
+   spoofable for every deployment with no list. The variants are
+   `LegacyPermissive` / `Trusted` / `Untrusted`.
+
+2. **The trust verdict resolves lazily when the middleware did not run.**
+   `peer_trust()` reads the request extension, falls back to the registered
+   `ProxyTrust` app data, and only then to legacy-permissive. Without this, every
+   test app that does not wrap `HostRoutingMiddlewareFactory` — which is most of
+   them — would have silently changed behaviour.
+
+3. **The URI rewrite updates `match_info` as well as `head.uri`.** §5.1 describes
+   only the latter; actix routes on the former, so rewriting just the URI changes
+   what handlers *see* while still routing on the original path. Both halves, in
+   the order actix's own `NormalizePath` does them.
+
+Two things the RFC left implicit that the implementation had to decide:
+
+- **`registry_public_base` on a *foreign* registry host.** A request routed to
+  registry A that generates a URL for registry B cannot use
+  `{current host}/proxy/B`, because on A's host every path is A's. It falls back
+  to B's advertised public URL. Same fallback for a `path_routing = false`
+  registry addressed from anywhere else.
+- **Host normalisation is shared with the config crate**
+  (`batlehub_config::schema::normalise_host`), so a host that validates at
+  startup is byte-for-byte the host that routes at request time.
+
+Two adjacent fixes the change forced:
+
+- `NamespaceUpload.vue`'s `cliSnippets` was a plain object evaluated once during
+  setup, so its interpolated registry name never updated. It had to become a
+  `computed` for the per-registry base URL to work, which fixes that too.
+- The Setup Guide's `netrcHost` now derives from the *registry's* URL rather than
+  the API origin — credentials are keyed by the host the client actually talks to.
+  Identical to before for any registry without a host.

@@ -46,7 +46,7 @@ use batlehub_core::{
 };
 use batlehub_web::{
     configure_app, new_access_lock,
-    services::{BannerService, ConfigReloadService, HotConfigBuilder},
+    services::{BannerService, ConfigReloadParams, ConfigReloadService, HotConfigBuilder},
     AccessConfig, AuthMiddlewareFactory, RegistryMap, RegistryModeMap, UpstreamMap,
 };
 
@@ -177,21 +177,23 @@ impl TestServer {
             Arc::new(InMemoryUserBlockRepository::new());
         let team_namespace_store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();
         let reload_builder: HotConfigBuilder = Arc::new(|_| anyhow::bail!("not used in tests"));
-        let reload_svc = Arc::new(ConfigReloadService::new(
-            proxy_svc.hot.clone(),
-            access_config.clone(),
-            registry_map.clone(),
-            mode_map.clone(),
-            UpstreamMap::default(),
-            batlehub_web::CargoIndexMap::default(),
-            batlehub_web::RepoSignerMap::default(),
-            batlehub_web::VulnDbMap::default(),
-            "config.toml".to_owned(),
-            None,
-            false, // hot reload disabled -> deterministic 503 for `admin config reload`
-            reload_builder,
-            Some(Arc::clone(&banner_svc)),
-        ));
+        let reload_svc = Arc::new(ConfigReloadService::new(ConfigReloadParams {
+            hot: proxy_svc.hot.clone(),
+            access: access_config.clone(),
+            registry_map: registry_map.clone(),
+            registry_mode_map: mode_map.clone(),
+            upstream_map: UpstreamMap::default(),
+            cargo_index_map: batlehub_web::CargoIndexMap::default(),
+            repo_signer_map: batlehub_web::RepoSignerMap::default(),
+            vuln_db_map: batlehub_web::VulnDbMap::default(),
+            registry_host_map: batlehub_web::RegistryHostMap::default(),
+            proxy_trust: batlehub_web::ProxyTrust::default(),
+            config_path: "config.toml".to_owned(),
+            config_change_repo: None,
+            hot_reload_enabled: false,
+            builder: reload_builder,
+            banner: Some(Arc::clone(&banner_svc)),
+        }));
 
         let configure = configure_app(
             proxy_svc,

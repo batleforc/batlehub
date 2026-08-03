@@ -27,7 +27,7 @@ use batlehub_core::services::{
     new_hot_lock, AdminService, LocalRegistryService, ProxyMetrics, ProxyService,
     VulnerabilityScanService,
 };
-use batlehub_web::services::{BannerService, ConfigReloadService};
+use batlehub_web::services::{BannerService, ConfigReloadParams, ConfigReloadService};
 use batlehub_web::{new_access_lock, openapi_spec, RateLimitService};
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
@@ -171,6 +171,15 @@ async fn main() -> Result<()> {
     let ip_block_store = stores::create_ip_block_store(&config, repo.pool()).await?;
     let user_block_repo = stores::create_user_block_repository(repo.pool());
     let ip_blocking_cfg = config.ip_blocking.clone();
+    // `[server].trusted_proxies`, falling back to the deprecated
+    // `[ip_blocking].trusted_proxies`. Hot-reloadable, and handed to the reload
+    // service below: it decides which peers may influence routing, so it has to
+    // move in step with the host-routing table (which is hot-reloadable) or a
+    // reload that turns host routing on would run under the startup policy. Each
+    // request resolves its verdict once, so no in-flight request straddles two
+    // policies.
+    let proxy_trust = batlehub_web::ProxyTrust::from_config(config.effective_trusted_proxies());
+    let registry_host_map = batlehub_web::RegistryHostMap::from_app_config(&config);
     let local_svc = Arc::new(LocalRegistryService {
         backend: local_registry_backend,
         storage: storage.clone(),
@@ -216,21 +225,30 @@ async fn main() -> Result<()> {
         Arc::new(PgConfigChangeRepository::new(repo.pool()));
     let storage_admin_repo: Arc<dyn batlehub_core::ports::StorageAdminRepository> =
         Arc::new(PgStorageAdminRepository::new(repo.pool()));
-    let reload_svc = Arc::new(ConfigReloadService::new(
-        Arc::clone(&hot),
-        Arc::clone(&access_config),
-        registry_map.clone(),
-        registry_mode_map.clone(),
-        upstream_map.clone(),
-        cargo_index_map.clone(),
-        repo_signer_map.clone(),
-        vuln_db_map.clone(),
-        config_path.clone(),
-        Some(Arc::clone(&config_change_repo)),
+    let reload_svc = Arc::new(ConfigReloadService::new(ConfigReloadParams {
+        hot: Arc::clone(&hot),
+        access: Arc::clone(&access_config),
+        registry_map: registry_map.clone(),
+        registry_mode_map: registry_mode_map.clone(),
+        upstream_map: upstream_map.clone(),
+        cargo_index_map: cargo_index_map.clone(),
+        repo_signer_map: repo_signer_map.clone(),
+        vuln_db_map: vuln_db_map.clone(),
+        registry_host_map: registry_host_map.clone(),
+        // The same handle wrapped into the host-routing middleware and registered
+        // as `app_data` below — clones share a lock, which is what lets a reload
+        // reach the policy those two actually read.
+        proxy_trust: proxy_trust.clone(),
+        config_path: config_path.clone(),
+        config_change_repo: Some(Arc::clone(&config_change_repo)),
         hot_reload_enabled,
-        hot_builder,
-        Some(Arc::clone(&banner_svc)),
-    ));
+        builder: hot_builder,
+        banner: Some(Arc::clone(&banner_svc)),
+    }));
+
+    // Seed the warning store from the config we booted with (this also logs each
+    // one). Reloads refresh it themselves.
+    reload_svc.set_warnings(config.warnings());
 
     if hot_reload_enabled {
         watcher::spawn_config_watcher(config_path.clone(), Arc::clone(&reload_svc));
@@ -306,6 +324,8 @@ async fn main() -> Result<()> {
         beta_channel_store,
         team_namespace_store,
         ip_blocking_cfg,
+        proxy_trust,
+        registry_host_map,
         cargo_index_map,
         rate_limit_svc,
         auth_providers,

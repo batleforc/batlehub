@@ -3,6 +3,9 @@ use super::{CoreError, Identity, LocalRegistryService};
 impl LocalRegistryService {
     /// Build a Packagist v2-compatible p2 JSON response for a locally published package.
     ///
+    /// `base_url` is the registry's public base as seen by the requesting client
+    /// (see [`LocalRegistryService::get_npm_packument`]).
+    ///
     /// Returns `CoreError::NotFound` when no versions are published for `name`.
     pub async fn get_composer_p2_response(
         &self,
@@ -42,7 +45,7 @@ impl LocalRegistryService {
                     serde_json::json!({
                         "type": "zip",
                         "url": format!(
-                            "{base}/proxy/{registry}/dist/{vendor}/{pkg_name}/{version}",
+                            "{base}/dist/{vendor}/{pkg_name}/{version}",
                             version = pkg.version
                         ),
                         "shasum": pkg.checksum,

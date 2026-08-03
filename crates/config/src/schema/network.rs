@@ -39,10 +39,21 @@ pub struct IpBlockingConfig {
     /// HTTP status codes that increment the violation counter for the source IP.
     #[serde(default = "default_trigger_on_status")]
     pub trigger_on_status: Vec<u16>,
-    /// IPs of trusted reverse proxies. When the TCP peer address matches one of
-    /// these, the first entry of `X-Forwarded-For` is used as the client IP.
-    /// When empty (the default), the TCP peer address is always used and
-    /// `X-Forwarded-For` is ignored — preventing spoofed-header bypass.
+    /// **Deprecated** — use [`ServerConfig::trusted_proxies`] instead.
+    ///
+    /// IPs (or, since proxy trust became server-level, CIDR ranges) of trusted
+    /// reverse proxies. When the TCP peer address falls inside one of these, the
+    /// first entry of `X-Forwarded-For` is used as the client IP. When empty
+    /// (the default), the TCP peer address is always used and `X-Forwarded-For`
+    /// is ignored — preventing spoofed-header bypass.
+    ///
+    /// Still honoured as a fallback: when `[server].trusted_proxies` is absent
+    /// this list governs the forwarded host and scheme as well as the client IP,
+    /// and it satisfies the trust-policy requirement that host-based routing
+    /// imposes. When both keys are set, `[server]` wins and a config warning
+    /// names this one.
+    ///
+    /// [`ServerConfig::trusted_proxies`]: super::server::ServerConfig::trusted_proxies
     #[serde(default)]
     pub trusted_proxies: Vec<String>,
 }

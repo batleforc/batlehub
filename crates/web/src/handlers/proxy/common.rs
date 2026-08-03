@@ -13,9 +13,53 @@ use batlehub_core::{
 };
 
 use crate::{
-    error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
-    RegistryModeMap,
+    error::AppError,
+    extractors::AuthIdentity,
+    middleware::{host_routing::host_routed_registry, proxy_trust::trusted_origin},
+    services::NotificationService,
+    RegistryHostMap, RegistryMap, RegistryModeMap,
 };
+
+/// The public base URL of `registry` **as seen by this client** — the prefix every
+/// self-referencing URL the server generates should be built on.
+///
+/// ```text
+/// https://npm.acme.io                     on a request that arrived on npm1's host
+/// https://hub.example.com/proxy/npm1      otherwise
+/// ```
+///
+/// Callers format `{base}/…` with no literal `/proxy/` anywhere: the shape of the
+/// ingress is this function's business, not theirs. The same contract applies to
+/// the `base_url` parameter of the `LocalRegistryService` methods that build
+/// metadata documents — it is a *registry* base, not a server origin.
+///
+/// The scheme and host come from [`trusted_origin`], so this is also the single
+/// place that decides whether a forwarded header may influence a generated URL.
+pub fn registry_public_base(req: &HttpRequest, registry: &str) -> String {
+    let (scheme, host) = trusted_origin(req);
+    let routed = host_routed_registry(req);
+
+    // The client reached this very registry at a host root, so its URLs are
+    // rooted there too.
+    if routed.as_deref() == Some(registry) {
+        return format!("{scheme}://{host}");
+    }
+
+    // Two cases where `{host}/proxy/{registry}` would not resolve for the client:
+    // the registry has no subpath ingress at all (`path_routing = false`), or the
+    // request arrived on *another* registry's host, where every path already
+    // belongs to that other registry. Both need this registry's own advertised
+    // URL, which is only known when host routing is configured.
+    if let Some(map) = req.app_data::<web::Data<RegistryHostMap>>() {
+        if map.is_host_only(registry) || routed.is_some() {
+            if let Some(public) = map.public_url_for(registry) {
+                return public;
+            }
+        }
+    }
+
+    format!("{scheme}://{host}/proxy/{registry}")
+}
 
 /// Decode `X-Artifact-Signature` (base64) and `X-Signature-Type` headers from a request.
 ///

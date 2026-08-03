@@ -17,16 +17,8 @@ use batlehub_core::entities::Identity;
 
 use super::store::RateLimitService;
 
-/// Extract the registry name from a proxy path like `/proxy/{registry}/...`.
-pub fn extract_registry_from_path(path: &str) -> Option<&str> {
-    let mut segments = path.splitn(4, '/');
-    segments.next(); // leading ""
-    let prefix = segments.next()?; // "proxy"
-    if prefix != "proxy" {
-        return None;
-    }
-    segments.next() // registry name
-}
+pub use crate::middleware::extract_registry_from_path;
+use crate::middleware::proxy_trust::{client_ip, peer_trust_of_service};
 
 // ── Middleware factory ────────────────────────────────────────────────────────
 
@@ -93,32 +85,40 @@ where
 
         Box::pin(async move {
             // Only rate-limit proxy routes: /proxy/{registry}/...
-            let Some(registry) = extract_registry_from_path(req.path()) else {
+            //
+            // Read the path actix will route on (`match_info`), not the raw URI:
+            // `/proxy/npm%32/…` reaches the npm2 handler, so keying the bucket on
+            // the literal `npm%32` would let any client opt out of a registry's
+            // rate limit by percent-encoding one character of its name — and would
+            // label the `batlehub_rate_limit_hits_total` metric with a registry
+            // that does not exist. `%2f` stays encoded here, so a scoped npm
+            // package is still one segment.
+            let registry =
+                extract_registry_from_path(req.match_info().unprocessed()).map(str::to_owned);
+            let Some(registry) = registry else {
                 return service.call(req).await.map(|r| r.map_into_left_body());
             };
-            let registry = registry.to_owned();
 
             // Extract user key and group membership from the identity set by auth middleware.
+            //
+            // The anonymous key uses the same `client_ip` helper as the IP-block
+            // middleware, so behind a trusted proxy both bucket and ban the real
+            // client rather than one keying on the shared proxy address (which
+            // would let a single abuser exhaust everyone's bucket).
             let (user_key, groups) = {
                 let identity = req.extensions().get::<Identity>().cloned();
+                let anonymous_key = || {
+                    format!(
+                        "ip:{}",
+                        client_ip(req.request(), peer_trust_of_service(&req))
+                    )
+                };
                 match identity {
                     Some(id) => {
-                        let key = id.user_id.clone().unwrap_or_else(|| {
-                            let addr = req
-                                .peer_addr()
-                                .map(|a| a.ip().to_string())
-                                .unwrap_or_else(|| "unknown".to_owned());
-                            format!("ip:{addr}")
-                        });
+                        let key = id.user_id.clone().unwrap_or_else(anonymous_key);
                         (key, id.groups)
                     }
-                    None => {
-                        let addr = req
-                            .peer_addr()
-                            .map(|a| a.ip().to_string())
-                            .unwrap_or_else(|| "unknown".to_owned());
-                        (format!("ip:{addr}"), vec![])
-                    }
+                    None => (anonymous_key(), vec![]),
                 }
             };
 

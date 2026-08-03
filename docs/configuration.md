@@ -24,6 +24,7 @@ batlehub is configured with a single TOML file. This document covers every optio
    - [ip_blocking](#36-ip_blocking-optional)
    - [otel](#37-otel-optional)
    - [proxy](#38-proxy-optional)
+   - [subdomain_routing](#39-subdomain_routing-optional)
 4. [Permissions Reference](#4-permissions-reference)
 5. [Environment Variable Overrides](#5-environment-variable-overrides)
 6. [Worked Examples](#6-worked-examples)
@@ -145,6 +146,7 @@ Controls the HTTP listener and optional SPA serving.
 host = "0.0.0.0"        # default
 port = 8080             # default
 # static_dir = "./ui/dist"  # optional: serve the built Vue SPA from this path
+# trusted_proxies = ["10.42.0.0/16"]   # see "Proxy trust" below
 ```
 
 | Field | Type | Default | Notes |
@@ -152,6 +154,52 @@ port = 8080             # default
 | `host` | string | `"0.0.0.0"` | Bind address |
 | `port` | u16 | `8080` | TCP port |
 | `static_dir` | string | — | Path to the built SPA; when set, the server serves the frontend at `/` |
+| `cors_allowed_origins` | string[] | — | When set, only these origins receive CORS headers |
+| `cli_binary_path` | string | — | Path to `batlehub-cli`, served at `GET /api/v1/cli/download` |
+| `trusted_proxies` | string[] | *absent* | CIDR ranges (or bare IPs) of reverse proxies whose `X-Forwarded-*` headers are believed |
+
+#### Proxy trust
+
+Three headers from a reverse proxy shape what BatleHub does, and all three are
+attacker-settable when the server is exposed directly:
+
+| Header | Decides |
+|---|---|
+| `Forwarded` / `X-Forwarded-Host` | the host in every generated URL — NuGet service indexes, npm `dist.tarball`, PyPI simple pages, Composer `dist`, Terraform `download_url` — and, with [`[subdomain_routing]`](#39-subdomain_routing-optional), **which registry** serves the request |
+| `X-Forwarded-Proto` | `http` vs `https` in those URLs |
+| `X-Forwarded-For` | the client IP the [`[ip_blocking]`](#36-ip_blocking-optional) middleware counts violations against |
+
+`trusted_proxies` states which peers may set them. It has three distinguishable
+states:
+
+| Value | Host + scheme | Client IP |
+|---|---|---|
+| absent | forwarded headers believed from **any** peer | TCP peer (`X-Forwarded-For` ignored) |
+| `[]` | `Host` header and the connection only | TCP peer |
+| `["10.42.0.0/16"]` | forwarded headers believed from peers inside the range, `Host` from everyone else | right-most `X-Forwarded-For` entry outside the range, from a peer in range; TCP peer otherwise |
+
+**Use CIDR ranges, not exact IPs.** A Kubernetes ingress sits behind a pod CIDR
+that changes on every rollout, so enumerating addresses is unmaintainable. A bare
+address is accepted and treated as a `/32` (`/128` for IPv6).
+
+**Absent is a hard error once host-based routing is configured** — routing on a
+header the server has no stated policy about is not a state a deployment should
+reach. For everyone else, absent keeps the pre-existing behaviour, because
+tightening it by default would silently change the URLs existing deployments
+advertise. The startup error contains the exact TOML to paste.
+
+> **Deprecated:** `[ip_blocking].trusted_proxies` still works. When
+> `[server].trusted_proxies` is absent it is used, and then governs the forwarded
+> host and scheme as well as the client IP — including satisfying the host-routing
+> requirement above, so an existing deployment can adopt host routing without
+> touching its proxy-trust config. When both are set, `[server]` wins. Either way
+> you get a config warning; see [`GET /api/v1/admin/config/warnings`](#92-api-endpoints).
+>
+> Unlike `[server].trusted_proxies`, an entry of the deprecated key that is
+> neither an IP nor a CIDR range (a hostname, say) is **dropped with a warning**
+> rather than refused at startup — that key predates the validator and used to
+> discard such entries silently, so rejecting one now would break a config that
+> never changed. The valid entries around it still apply.
 
 ---
 
@@ -1632,6 +1680,107 @@ export PROXY_CACHE__PROXY__NO_PROXY="localhost,10.0.0.0/8"
 
 ---
 
+### 3.9 `[subdomain_routing]` (optional)
+
+Every registry is always reachable at `/proxy/{name}/…`. This section adds a
+second ingress: a hostname whose **root** is the registry.
+
+```toml
+[subdomain_routing]
+enabled     = true                # derive "<name>.<base_domain>" per registry
+base_domain = "hub.example.com"   # npm1.hub.example.com -> registry "npm1"
+scheme      = "https"             # only used to advertise public URLs
+
+[[registries]]
+name         = "npm1"
+type         = "npm"
+hosts        = ["npm.acme.io"]    # optional extra vanity hosts
+path_routing = true               # default; false => the host is the only ingress
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | bool | `false` | Derive a wildcard host per registry |
+| `base_domain` | string | — | Required when `enabled = true` |
+| `scheme` | string | `"https"` | Only decides whether the API advertises `https://…` or `http://…`; **never** affects routing |
+| `registries[].hosts` | string[] | `[]` | Extra hostnames rooted at this registry. Independent of `[subdomain_routing]` |
+| `registries[].path_routing` | bool | `true` | `false` makes `/proxy/{name}/…` return 404 |
+
+```ini
+# .npmrc — subpath
+registry=https://hub.example.com/proxy/npm1/
+
+# .npmrc — with a vanity host
+registry=https://npm.acme.io/
+```
+
+**On a registry host, every path is the registry's.** There is no passthrough
+allowlist, because cargo (`/api/v1/…`), GitLab (`/api/v4/…`) and Forgejo
+(`/api/packages/…`) all legitimately serve paths under `/api`, and a `generic` or
+`deb` registry can legitimately mirror `/healthz` or `/metrics`. The admin API,
+the SPA, `/healthz` and `/metrics` therefore live on the **main host only** —
+point your probes and scrapes there.
+
+A corollary worth knowing: `https://npm1.hub.example.com/proxy/npm1/lodash`
+becomes `/proxy/npm1/proxy/npm1/lodash` and 404s. Pick one ingress per client.
+
+Every URL the server generates reflects the ingress the client actually used, so
+a packument fetched from `npm.acme.io` advertises
+`https://npm.acme.io/lodash/-/lodash-4.17.21.tgz` while the same packument on the
+subpath keeps advertising `https://hub.example.com/proxy/npm1/…`.
+
+#### `path_routing = false`
+
+Makes a registry reachable **only** through its host(s). The motivation is
+isolation: once a team is handed `npm.acme.io`, you may not want the same content
+answering on the shared main host, where it inherits that host's CORS policy, WAF
+rules and cache keys, and where a URL leaked from one ingress silently keeps
+working on the other. The subpath returns **404**, not 403 — a disabled ingress
+should look absent, not forbidden.
+
+#### Operator prerequisites
+
+- A DNS record per host (or a wildcard `*.hub.example.com`).
+- A certificate covering it — a wildcard certificate for the `base_domain` case.
+- A reverse proxy that forwards the original `Host` header.
+- [`[server].trusted_proxies`](#31-server) listing that proxy's CIDR ranges.
+  **This is mandatory:** configuring host routing with no trusted-proxy policy is
+  a startup error, because routing would then depend on an ungoverned header.
+
+With the Helm chart, add the hosts to `ingress.extraHosts` and the CIDR to
+`config.server.trusted_proxies`.
+
+#### Validation
+
+Rejected at startup and on every reload:
+
+| Condition | Why |
+|---|---|
+| `enabled = true` with no `base_domain` | the section would route nothing |
+| the same host claimed by two registries | ambiguous; last-write-wins would be invisible |
+| a `hosts` entry colliding with another registry's wildcard host | same ambiguity, harder to spot |
+| a `hosts` entry equal to `base_domain` | would shadow the main host and hide the admin API |
+| a `hosts` entry containing `/`, a scheme prefix, or empty after trimming | not a hostname |
+| `path_routing = false` on a registry with no reachable host | the registry would be unreachable entirely |
+| host routing with neither `[server].trusted_proxies` nor `[ip_blocking].trusted_proxies` | routing would depend on an ungoverned header |
+
+Warned about, but accepted — see `GET /api/v1/admin/config/warnings` and the
+Config Reload admin page:
+
+| Condition | Behaviour |
+|---|---|
+| a registry name that is not a valid DNS label (`my_registry`, `Foo.Bar`) | no wildcard host for it; it stays reachable by path and by any explicit `hosts` entry |
+| host routing satisfied only by the deprecated `[ip_blocking].trusted_proxies` | accepted and honoured; move the list to `[server]` |
+
+#### Rollback
+
+A config edit plus a hot reload. Nothing is persisted, and with no
+`[subdomain_routing]` and no `hosts` the routing table is empty, the middleware
+is a no-op, and every generated URL is byte-identical to a deployment that never
+had the feature.
+
+---
+
 ## 4. Permissions Reference
 
 ### Roles
@@ -2899,6 +3048,9 @@ BatleHub can reload its configuration at runtime without restarting the process.
 - Per-registry policy rules (age gate, deny latest)
 - Per-registry versioning, signing, and beta-channel configuration
 - Artifact size limit
+- Host-based routing (`hosts`, `path_routing`, `[subdomain_routing]`) and the
+  `trusted_proxies` policy that governs it — the two swap together, so a reload
+  that turns host routing on never runs under the old trust policy
 
 The following components **require a process restart**:
 - Server host / port
@@ -2927,6 +3079,7 @@ Use this when `config.toml` is mounted as a read-only Kubernetes ConfigMap.
 | `POST` | `/api/v1/admin/config/pending/apply` | Apply the pending reload |
 | `DELETE` | `/api/v1/admin/config/pending` | Discard the pending reload |
 | `GET` | `/api/v1/admin/config/changes` | Paginated audit history (`?page=0&per_page=50`) |
+| `GET` | `/api/v1/admin/config/warnings` | Non-fatal problems with the config currently in force |
 
 ```sh
 # CI/CD: apply a new config atomically
@@ -2941,6 +3094,42 @@ curl -s -X POST \
 ```
 
 All reloads (applied or rejected) are written to the `config_changes` table with the diff, trigger source, and operator identity.
+
+#### Config warnings
+
+Some config states are wrong enough to tell an operator about but not wrong
+enough to refuse to start — a registry name that cannot become a DNS label, a
+deprecated key being shadowed, a permissive security default left in place. These
+are logged at startup and on every reload, **and** served from
+`GET /api/v1/admin/config/warnings` so they can be seen without grepping logs:
+
+```json
+{
+  "warnings": [
+    {
+      "code": "proxy-trust.unconfigured",
+      "path": "server.trusted_proxies",
+      "message": "no trusted-proxy list is configured, so Forwarded / X-Forwarded-Host / …"
+    }
+  ]
+}
+```
+
+`code` is a stable slug, safe to match on; `path` points at the offending config
+location verbatim, so it can be searched for in the TOML.
+
+`POST /api/v1/admin/config/validate` and `POST /api/v1/admin/config/from-content`
+return the same shape inline under `warnings`, describing the *candidate* config —
+so an admin sees them **before** applying a pending reload rather than after. The
+Config Reload admin page renders both.
+
+| Code | Meaning |
+|---|---|
+| `proxy-trust.unconfigured` | No `trusted_proxies` list anywhere; forwarded host/scheme are believed from any client |
+| `proxy-trust.deprecated-key-only` | Proxy trust comes from the deprecated `[ip_blocking].trusted_proxies` |
+| `proxy-trust.invalid-deprecated-entry` | An entry of the deprecated `[ip_blocking].trusted_proxies` is not an IP or CIDR range and was dropped |
+| `proxy-trust.shadowed-deprecated-key` | Both keys are set; `[server]` wins and the deprecated list is ignored entirely |
+| `subdomain.invalid-dns-label` | `[subdomain_routing]` is on but a registry name cannot be a DNS label, so no wildcard host is derived for it |
 
 ### 9.3 Global Admin Banner
 

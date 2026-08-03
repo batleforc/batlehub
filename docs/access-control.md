@@ -222,13 +222,15 @@ trigger_on_status     = [429, 401, 403]
 
 #### Behind a load balancer
 
-If BatleHub sits behind a proxy or load balancer, real client IPs arrive via `X-Forwarded-For`. BatleHub reads the first IP from that header when present:
+If BatleHub sits behind a proxy or load balancer, real client IPs arrive via `X-Forwarded-For`. Each hop *appends* the address it observed, so BatleHub reads the header **right to left** — skipping entries that fall inside [`trusted_proxies`](configuration.md#33-server) — and uses the first address that is not one of your own proxies:
 
-```
-X-Forwarded-For: 1.2.3.4, 10.0.0.1
+```text
+X-Forwarded-For: 1.2.3.4, 203.0.113.9, 10.0.0.1
 ```
 
-→ BatleHub uses `1.2.3.4` as the client IP. Make sure your load balancer sets this header correctly and strips any client-supplied values to prevent spoofing.
+→ with `trusted_proxies = ["10.0.0.0/8"]`, BatleHub uses `203.0.113.9`: `10.0.0.1` is a known proxy and is skipped, and `1.2.3.4` is whatever the client chose to send before reaching your edge. Reading the left-most entry instead would let any client pick the IP that gets banned — its own, or a third party's.
+
+The walk stops at any entry that is not a valid IP address (`unknown`, an obfuscated identifier), falling back to the TCP peer address rather than stepping over a hop it cannot classify. `X-Forwarded-For` is ignored entirely unless the TCP peer is in `trusted_proxies`.
 
 ### 2.3 Manual block management
 

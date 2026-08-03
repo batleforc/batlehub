@@ -27,6 +27,7 @@ uuid.workspace = true
 chrono.workspace = true
 bytes.workspace = true
 futures.workspace = true
+ipnet.workspace = true
 tokio.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
@@ -51,6 +52,7 @@ flate2 = "1"
 rpm = { version = "0.25", default-features = false, features = ["payload", "gzip-compression"] }
 tar = "0.4"
 tempfile.workspace = true
+toml.workspace = true
 mockito = "1"
 
 [lints]

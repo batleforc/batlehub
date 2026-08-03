@@ -64,7 +64,10 @@ impl LocalRegistryService {
     }
 
     /// Build the Terraform provider download-info response for a specific version+platform.
-    /// Rewrites `download_url` to point at `base_url`.
+    ///
+    /// Rewrites `download_url` to point at `base_url`, the registry's public base
+    /// as seen by the requesting client (see
+    /// [`LocalRegistryService::get_npm_packument`]).
     pub async fn get_terraform_provider_download_response(
         &self,
         registry: &str,
@@ -119,9 +122,8 @@ impl LocalRegistryService {
         };
 
         let base = base_url.trim_end_matches('/');
-        let download_url = format!(
-            "{base}/proxy/{registry}/v1/providers/{ns}/{ptype}/{version}/artifact/{os}/{arch}"
-        );
+        let download_url =
+            format!("{base}/v1/providers/{ns}/{ptype}/{version}/artifact/{os}/{arch}");
 
         let mut resp = platform.clone();
         if let Some(obj) = resp.as_object_mut() {

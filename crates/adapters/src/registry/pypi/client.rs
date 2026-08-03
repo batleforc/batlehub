@@ -84,23 +84,27 @@ pub async fn fetch_simple_page(
 }
 
 /// Rewrite href/url values in a PyPI simple page so all file links go through
-/// the batlehub proxy at `/proxy/{registry}/packages/{filename}`.
+/// this registry's `packages/{filename}` endpoint.
+///
+/// `registry_base` is the registry's public base URL as seen by the requesting
+/// client — `https://pypi.acme.io` on a host-routed request,
+/// `https://hub.example.com/proxy/pypi1` on the subpath. The shape of the ingress
+/// is the caller's business; this function only appends `/packages/{filename}`.
 ///
 /// Handles both HTML (PEP 503) and JSON (PEP 691) formats.
 pub fn rewrite_simple_page(
     body: &[u8],
     content_type: Option<&str>,
-    registry: &str,
-    proxy_base: &str,
+    registry_base: &str,
 ) -> Vec<u8> {
     let is_json = content_type
         .map(|ct| ct.contains("application/vnd.pypi.simple"))
         .unwrap_or(false);
 
     if is_json {
-        rewrite_simple_json(body, registry, proxy_base)
+        rewrite_simple_json(body, registry_base)
     } else {
-        rewrite_simple_html(body, registry, proxy_base)
+        rewrite_simple_html(body, registry_base)
     }
 }
 
@@ -125,13 +129,13 @@ fn rewrite_abs_href(href_value: &str, proxy_packages: &str) -> Option<String> {
     None
 }
 
-pub(super) fn rewrite_simple_html(body: &[u8], registry: &str, proxy_base: &str) -> Vec<u8> {
+pub(super) fn rewrite_simple_html(body: &[u8], registry_base: &str) -> Vec<u8> {
     let text = match std::str::from_utf8(body) {
         Ok(s) => s,
         Err(_) => return body.to_vec(),
     };
 
-    let proxy_packages = format!("{proxy_base}/proxy/{registry}/packages");
+    let proxy_packages = format!("{registry_base}/packages");
     let mut result = String::with_capacity(text.len());
     let mut remaining = text;
 
@@ -153,13 +157,13 @@ pub(super) fn rewrite_simple_html(body: &[u8], registry: &str, proxy_base: &str)
     result.into_bytes()
 }
 
-pub(super) fn rewrite_simple_json(body: &[u8], registry: &str, proxy_base: &str) -> Vec<u8> {
+pub(super) fn rewrite_simple_json(body: &[u8], registry_base: &str) -> Vec<u8> {
     let mut json: serde_json::Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(_) => return body.to_vec(),
     };
 
-    let proxy_packages = format!("{proxy_base}/proxy/{registry}/packages");
+    let proxy_packages = format!("{registry_base}/packages");
 
     if let Some(files) = json.get_mut("files").and_then(|f| f.as_array_mut()) {
         for file in files.iter_mut() {

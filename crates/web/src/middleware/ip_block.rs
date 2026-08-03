@@ -1,5 +1,4 @@
 use std::future::{ready, Ready};
-use std::net::IpAddr;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -15,42 +14,18 @@ use futures::future::LocalBoxFuture;
 use batlehub_config::schema::IpBlockingConfig;
 use batlehub_core::ports::IpBlockStore;
 
-/// Extract the first IP from the `X-Forwarded-For` header, or `None` if absent/empty.
-fn first_xff_ip(req: &ServiceRequest) -> Option<String> {
-    let xff = req.headers().get("x-forwarded-for")?.to_str().ok()?;
-    let first = xff.split(',').next()?.trim();
-    if first.is_empty() {
-        None
-    } else {
-        Some(first.to_owned())
-    }
-}
+use super::proxy_trust::{client_ip, peer_trust_of_service, PeerTrust};
 
-/// Extract the client IP. `X-Forwarded-For` is only trusted when the TCP peer
-/// address appears in `trusted_proxies`; otherwise the peer address is used
-/// directly to prevent spoofed-header bypass.
-pub(crate) fn extract_client_ip(req: &ServiceRequest, trusted_proxies: &[String]) -> String {
-    let peer_ip: Option<IpAddr> = req.peer_addr().map(|a| a.ip());
-    let peer = peer_ip.map(|ip| ip.to_string()).unwrap_or_default();
-
-    let peer_is_trusted = peer_ip.is_some_and(|ip| {
-        trusted_proxies
-            .iter()
-            .filter_map(|t| t.parse::<IpAddr>().ok())
-            .any(|t| t == ip)
-    });
-
-    if !trusted_proxies.is_empty() && peer_is_trusted {
-        if let Some(ip) = first_xff_ip(req) {
-            return ip;
-        }
-    }
-
-    if peer.is_empty() {
-        "unknown".to_owned()
-    } else {
-        peer
-    }
+/// Extract the client IP. `X-Forwarded-For` is only trusted when `trust` says the
+/// TCP peer is one of the configured reverse proxies; otherwise the peer address
+/// is used directly to prevent spoofed-header bypass.
+///
+/// The verdict is computed once per request by the host-routing middleware and
+/// shared through the request extensions, so the client IP, the forwarded host
+/// and the forwarded scheme cannot disagree about which peers are trusted — see
+/// [`super::proxy_trust`].
+pub(crate) fn extract_client_ip(req: &ServiceRequest, trust: PeerTrust) -> String {
+    client_ip(req.request(), trust)
 }
 
 fn now_unix() -> u64 {
@@ -121,7 +96,7 @@ where
         let config = self.config.clone();
 
         Box::pin(async move {
-            let ip = extract_client_ip(&req, &config.trusted_proxies);
+            let ip = extract_client_ip(&req, peer_trust_of_service(&req));
 
             match store.blocked_until(&ip).await {
                 Ok(Some(unblock_at)) => {
@@ -206,6 +181,10 @@ mod tests {
     }
 
     // ── extract_client_ip ─────────────────────────────────────────────────────
+    //
+    // The peer-membership test itself now lives in `proxy_trust` (and is covered
+    // by its own CIDR tests); these assert that a given verdict produces the same
+    // client IP it always did.
 
     #[test]
     fn xff_ignored_when_no_trusted_proxies() {
@@ -214,7 +193,7 @@ mod tests {
             .peer_addr("10.0.0.99:1234".parse().unwrap())
             .insert_header(("x-forwarded-for", "203.0.113.5, 10.0.0.1"))
             .to_srv_request();
-        let ip = extract_client_ip(&req, &[]);
+        let ip = extract_client_ip(&req, PeerTrust::LegacyPermissive);
         assert_eq!(
             ip, "10.0.0.99",
             "XFF must not be trusted without trusted_proxies"
@@ -223,12 +202,14 @@ mod tests {
 
     #[test]
     fn xff_used_when_peer_is_trusted_proxy() {
+        // The right-most hop is the address our own proxy observed; the entries
+        // to its left are whatever the client chose to send — see
+        // `proxy_trust::forwarded_client_ip`.
         let req = TestRequest::get()
             .peer_addr("10.0.0.1:1234".parse().unwrap())
             .insert_header(("x-forwarded-for", "203.0.113.5, 172.16.0.1"))
             .to_srv_request();
-        let trusted = vec!["10.0.0.1".to_owned()];
-        assert_eq!(extract_client_ip(&req, &trusted), "203.0.113.5");
+        assert_eq!(extract_client_ip(&req, PeerTrust::Trusted), "172.16.0.1");
     }
 
     #[test]
@@ -237,8 +218,7 @@ mod tests {
             .peer_addr("10.0.0.1:1234".parse().unwrap())
             .insert_header(("x-forwarded-for", "198.51.100.7"))
             .to_srv_request();
-        let trusted = vec!["10.0.0.1".to_owned()];
-        assert_eq!(extract_client_ip(&req, &trusted), "198.51.100.7");
+        assert_eq!(extract_client_ip(&req, PeerTrust::Trusted), "198.51.100.7");
     }
 
     #[test]
@@ -247,15 +227,78 @@ mod tests {
             .peer_addr("192.0.2.1:1234".parse().unwrap())
             .insert_header(("x-forwarded-for", "1.1.1.1"))
             .to_srv_request();
-        let trusted = vec!["10.0.0.1".to_owned()]; // 192.0.2.1 is not trusted
-        assert_eq!(extract_client_ip(&req, &trusted), "192.0.2.1");
+        assert_eq!(extract_client_ip(&req, PeerTrust::Untrusted), "192.0.2.1");
     }
 
     #[test]
     fn ip_falls_back_to_unknown_when_no_peer() {
         let req = TestRequest::get().to_srv_request();
-        let ip = extract_client_ip(&req, &[]);
+        let ip = extract_client_ip(&req, PeerTrust::LegacyPermissive);
         assert!(!ip.is_empty());
+    }
+
+    #[actix_web::test]
+    async fn middleware_honours_xff_when_the_registered_policy_trusts_the_peer() {
+        // End-to-end through the middleware: the ban is recorded against the
+        // forwarded client IP, not the proxy's own address.
+        let store: Arc<dyn IpBlockStore> = Arc::new(InMemoryIpBlockStore::new());
+        let config = IpBlockingConfig {
+            violation_threshold: 1,
+            trigger_on_status: vec![429],
+            ..default_config()
+        };
+        let trust = crate::middleware::ProxyTrust::from_config(Some(&["10.42.0.0/16".to_owned()]));
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(trust))
+                .wrap(IpBlockMiddlewareFactory::new(Arc::clone(&store), config))
+                .route(
+                    "/rate",
+                    web::get().to(|| async { HttpResponse::TooManyRequests().finish() }),
+                ),
+        )
+        .await;
+
+        let req = TestRequest::get()
+            .peer_addr("10.42.0.9:1234".parse().unwrap())
+            .insert_header(("x-forwarded-for", "203.0.113.77"))
+            .uri("/rate")
+            .to_request();
+        test::call_service(&app, req).await;
+
+        assert!(store.blocked_until("203.0.113.77").await.unwrap().is_some());
+        assert!(store.blocked_until("10.42.0.9").await.unwrap().is_none());
+    }
+
+    #[actix_web::test]
+    async fn middleware_ignores_xff_from_a_peer_outside_the_trusted_range() {
+        let store: Arc<dyn IpBlockStore> = Arc::new(InMemoryIpBlockStore::new());
+        let config = IpBlockingConfig {
+            violation_threshold: 1,
+            trigger_on_status: vec![429],
+            ..default_config()
+        };
+        let trust = crate::middleware::ProxyTrust::from_config(Some(&["10.42.0.0/16".to_owned()]));
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(trust))
+                .wrap(IpBlockMiddlewareFactory::new(Arc::clone(&store), config))
+                .route(
+                    "/rate",
+                    web::get().to(|| async { HttpResponse::TooManyRequests().finish() }),
+                ),
+        )
+        .await;
+
+        let req = TestRequest::get()
+            .peer_addr("198.51.100.4:1234".parse().unwrap())
+            .insert_header(("x-forwarded-for", "203.0.113.77"))
+            .uri("/rate")
+            .to_request();
+        test::call_service(&app, req).await;
+
+        assert!(store.blocked_until("203.0.113.77").await.unwrap().is_none());
+        assert!(store.blocked_until("198.51.100.4").await.unwrap().is_some());
     }
 
     // ── middleware integration via actix App ──────────────────────────────────

@@ -3,12 +3,14 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use batlehub_config::schema::ConfigWarning;
 use batlehub_core::ports::ConfigChangeRepository;
 use batlehub_core::services::{HotConfig, HotConfigLock};
 
 use crate::{
-    services::banner::BannerService, AccessConfig, AccessConfigLock, CargoIndexMap, RegistryMap,
-    RegistryModeMap, RepoSignerMap, UpstreamMap, VulnDbMap,
+    middleware::ProxyTrust, services::banner::BannerService, AccessConfig, AccessConfigLock,
+    CargoIndexMap, RegistryHostMap, RegistryMap, RegistryModeMap, RepoSignerMap, UpstreamMap,
+    VulnDbMap,
 };
 
 pub(super) const PENDING_TTL_SECS: i64 = 600; // 10 minutes
@@ -46,6 +48,51 @@ impl ReloadDiff {
     }
 }
 
+/// A [`ReloadDiff`] plus the [`ConfigWarning`]s the candidate config produces.
+///
+/// Returned by the two dry-run-ish entry points (`validate_content` and
+/// `load_pending_from_content`) so an admin sees the warnings *before* applying
+/// a pending reload rather than after. The applied config's warnings are read
+/// from [`ConfigWarnings`] instead, since they outlive the request that set them.
+#[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
+pub struct ReloadOutcome {
+    pub diff: ReloadDiff,
+    pub warnings: Vec<ConfigWarning>,
+    /// Whether this call left a pending reload staged for approval.
+    ///
+    /// `false` is not a failure — it is the answer for a dry run
+    /// (`validate_content` stages nothing by contract) and for content that is
+    /// byte-identical to the last load attempt, where there is nothing to
+    /// rebuild. Without it a caller cannot tell "staged, go apply it" from
+    /// "nothing to stage", since both return `200` with an empty diff, and would
+    /// only find out at apply time via [`ReloadApplyError::NoPendingReload`].
+    pub pending_created: bool,
+}
+
+/// The [`ConfigWarning`]s of the config currently in force, shared between the
+/// reload service (which refreshes them on every apply) and the admin endpoint
+/// that serves them.
+#[derive(Clone, Default)]
+pub struct ConfigWarnings(Arc<std::sync::RwLock<Vec<ConfigWarning>>>);
+
+impl ConfigWarnings {
+    pub fn get(&self) -> Vec<ConfigWarning> {
+        self.0
+            .read()
+            .expect("config warnings lock poisoned")
+            .clone()
+    }
+
+    /// Replace the stored warnings and log each one. Called at startup and after
+    /// every applied reload, so the log and the endpoint never disagree.
+    pub fn replace(&self, warnings: Vec<ConfigWarning>) {
+        for w in &warnings {
+            tracing::warn!(code = %w.code, path = %w.path, "config: {}", w.message);
+        }
+        *self.0.write().expect("config warnings lock poisoned") = warnings;
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReloadSource {
@@ -73,6 +120,14 @@ pub struct PendingReload {
     pub new_cargo_index_map: CargoIndexMap,
     pub new_repo_signer_map: RepoSignerMap,
     pub new_vuln_db_map: VulnDbMap,
+    pub new_registry_host_map: RegistryHostMap,
+    /// The candidate's proxy-trust policy. Derived from the `AppConfig` directly
+    /// rather than from the builder, since it needs no adapter wiring — see
+    /// `build_pending`.
+    pub new_proxy_trust: ProxyTrust,
+    /// Warnings the candidate config produces, promoted to the live
+    /// [`ConfigWarnings`] store when this pending reload is applied.
+    pub warnings: Vec<ConfigWarning>,
 }
 
 /// Snapshot of a pending reload returned to the GET /pending endpoint.
@@ -97,6 +152,7 @@ pub struct BuiltHotState {
     pub cargo_index_map: CargoIndexMap,
     pub repo_signer_map: RepoSignerMap,
     pub vuln_db_map: VulnDbMap,
+    pub registry_host_map: RegistryHostMap,
 }
 
 /// Builds a new hot-reloadable bundle from an `AppConfig`.
@@ -117,6 +173,13 @@ pub struct ConfigReloadService {
     pub(super) cargo_index_map: CargoIndexMap,
     pub(super) repo_signer_map: RepoSignerMap,
     pub(super) vuln_db_map: VulnDbMap,
+    pub(super) registry_host_map: RegistryHostMap,
+    /// The live proxy-trust policy, swapped on apply just before
+    /// `registry_host_map` — routing reads a header, so the table and the policy
+    /// that says who may set it must never drift apart. Supplied by
+    /// [`ConfigReloadParams::proxy_trust`], which see for why it is a mandatory
+    /// field rather than something defaulted here.
+    pub(super) proxy_trust: ProxyTrust,
     pub(super) config_path: String,
     pub(super) config_change_repo: Option<Arc<dyn ConfigChangeRepository>>,
     pub hot_reload_enabled: bool,
@@ -128,6 +191,9 @@ pub struct ConfigReloadService {
     pub(super) pending: Mutex<Option<PendingReload>>,
     pub(super) builder: HotConfigBuilder,
     pub(super) banner: Option<Arc<BannerService>>,
+    /// Warnings for the config currently in force. Populated at startup via
+    /// [`ConfigReloadService::set_warnings`] and refreshed by `apply`.
+    pub(super) config_warnings: ConfigWarnings,
     /// Raw content of the last config load attempt (file-watcher or editor), whether
     /// or not it ended up applied. Lets `load_pending`/`load_pending_from_content`
     /// suppress redundant rebuilds triggered by byte-identical rewrites (touch,
@@ -137,23 +203,62 @@ pub struct ConfigReloadService {
     pub(super) last_content: Mutex<Option<String>>,
 }
 
+/// Everything [`ConfigReloadService::new`] needs, as named fields.
+///
+/// A struct rather than 15 positional parameters because most of them are
+/// interchangeable at the type level — six registry-keyed maps, two `Option`s,
+/// two booleans-adjacent values — so a transposed pair would compile and only
+/// show up as a reload that swaps the wrong table.
+///
+/// It is also what makes [`proxy_trust`](Self::proxy_trust) safe. Every field of
+/// a struct literal is mandatory, so a construction site that does not pass the
+/// app's live handle is a *compile* error. The alternative shapes could not give
+/// that: a defaulted field or a `with_proxy_trust` setter both let a caller
+/// silently end up with a detached handle, and no runtime check can catch it —
+/// a never-wired policy and a legitimately unconfigured one are both just
+/// `is_configured() == false`.
+pub struct ConfigReloadParams {
+    pub hot: HotConfigLock,
+    pub access: AccessConfigLock,
+    pub registry_map: RegistryMap,
+    pub registry_mode_map: RegistryModeMap,
+    pub upstream_map: UpstreamMap,
+    pub cargo_index_map: CargoIndexMap,
+    pub repo_signer_map: RepoSignerMap,
+    pub vuln_db_map: VulnDbMap,
+    pub registry_host_map: RegistryHostMap,
+    /// The app's live [`ProxyTrust`] handle — the same one wrapped into the
+    /// host-routing middleware and registered as `app_data`, not a fresh one.
+    /// All clones share a lock, which is what lets `apply` update the policy the
+    /// middleware actually reads; a `ProxyTrust::default()` here would be a
+    /// detached handle and every reload of it a silent no-op.
+    pub proxy_trust: ProxyTrust,
+    pub config_path: String,
+    pub config_change_repo: Option<Arc<dyn ConfigChangeRepository>>,
+    pub hot_reload_enabled: bool,
+    pub builder: HotConfigBuilder,
+    pub banner: Option<Arc<BannerService>>,
+}
+
 impl ConfigReloadService {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        hot: HotConfigLock,
-        access: AccessConfigLock,
-        registry_map: RegistryMap,
-        registry_mode_map: RegistryModeMap,
-        upstream_map: UpstreamMap,
-        cargo_index_map: CargoIndexMap,
-        repo_signer_map: RepoSignerMap,
-        vuln_db_map: VulnDbMap,
-        config_path: String,
-        config_change_repo: Option<Arc<dyn ConfigChangeRepository>>,
-        hot_reload_enabled: bool,
-        builder: HotConfigBuilder,
-        banner: Option<Arc<BannerService>>,
-    ) -> Self {
+    pub fn new(params: ConfigReloadParams) -> Self {
+        let ConfigReloadParams {
+            hot,
+            access,
+            registry_map,
+            registry_mode_map,
+            upstream_map,
+            cargo_index_map,
+            repo_signer_map,
+            vuln_db_map,
+            registry_host_map,
+            proxy_trust,
+            config_path,
+            config_change_repo,
+            hot_reload_enabled,
+            builder,
+            banner,
+        } = params;
         Self {
             hot,
             access,
@@ -163,14 +268,28 @@ impl ConfigReloadService {
             cargo_index_map,
             repo_signer_map,
             vuln_db_map,
+            registry_host_map,
+            proxy_trust,
             config_path,
             config_change_repo,
             hot_reload_enabled,
             pending: Mutex::new(None),
             builder,
             banner,
+            config_warnings: ConfigWarnings::default(),
             last_content: Mutex::new(None),
         }
+    }
+
+    /// The warnings of the config currently in force.
+    pub fn warnings(&self) -> Vec<ConfigWarning> {
+        self.config_warnings.get()
+    }
+
+    /// Seed the warning store from the config loaded at startup. Reloads refresh
+    /// it themselves, so this is only needed once.
+    pub fn set_warnings(&self, warnings: Vec<ConfigWarning>) {
+        self.config_warnings.replace(warnings);
     }
 
     /// Discards the pending reload without applying. Returns `true` if one existed.

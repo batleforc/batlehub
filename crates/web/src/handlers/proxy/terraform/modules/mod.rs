@@ -1,10 +1,10 @@
 use super::{
-    append_signature_headers, base_url_from_req, collect_payload, delete,
-    extract_signature_headers, get, post, require_local_mode, require_registry_type,
-    terraform_set_yanked, terraform_versions_response, web, AppError, Arc, AuthIdentity, Digest,
-    HttpRequest, HttpResponse, LocalRegistryService, NotificationService, ProxyService,
-    PublishRequest, RegistryMap, RegistryMode, RegistryModeMap, Responder, Sha256,
-    TerraformYankRequest, UpstreamMap,
+    append_signature_headers, collect_payload, delete, extract_signature_headers, get, post,
+    registry_public_base, require_local_mode, require_registry_type, terraform_set_yanked,
+    terraform_versions_response, web, AppError, Arc, AuthIdentity, Digest, HttpRequest,
+    HttpResponse, LocalRegistryService, NotificationService, ProxyService, PublishRequest,
+    RegistryMap, RegistryMode, RegistryModeMap, Responder, Sha256, TerraformYankRequest,
+    UpstreamMap,
 };
 
 pub mod read;

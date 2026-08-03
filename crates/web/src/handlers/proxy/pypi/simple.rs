@@ -9,7 +9,8 @@ use batlehub_core::{
 };
 
 use crate::handlers::proxy::common::{
-    proxy_stream, require_registry_type, serve_local_or_proxy_artifact, LocalOrProxyArtifactOpts,
+    proxy_stream, registry_public_base, require_registry_type, serve_local_or_proxy_artifact,
+    LocalOrProxyArtifactOpts,
 };
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
 
@@ -87,10 +88,7 @@ pub async fn pypi_simple_package(
     let mode = mode_map.get(&registry);
     let normalized = batlehub_adapters::registry::pypi::normalize_name(&package);
 
-    let proxy_base = {
-        let conn_info = req.connection_info();
-        format!("{}://{}", conn_info.scheme(), conn_info.host())
-    };
+    let proxy_base = registry_public_base(&req, &registry);
 
     if mode == Mode::Local {
         let html = local_svc
@@ -141,7 +139,6 @@ pub async fn pypi_simple_package(
     let rewritten = batlehub_adapters::registry::pypi::rewrite_simple_page(
         &body,
         content_type.as_deref(),
-        &registry,
         &proxy_base,
     );
 

@@ -8,6 +8,98 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Host-based (subdomain) registry routing.** A registry can now be bound to one
+  or more hostnames whose root serves it, in addition to `/proxy/{name}/…`:
+  `https://npm.acme.io/lodash` means exactly what
+  `https://hub.example.com/proxy/npm1/lodash` means. Configure a wildcard with
+  `[subdomain_routing]` (`enabled` + `base_domain`), vanity hosts with a
+  registry's `hosts = […]`, or both. Every self-referencing URL the server
+  generates — npm `dist.tarball`, the NuGet service index and registration
+  `@id`s, the PyPI simple index, Composer `metadata-url`/`dist`, the Terraform
+  provider `download_url`, the cargo index `dl`/`api` — now reflects the ingress
+  the client actually used. Off by default; with no hosts configured every
+  generated URL is byte-identical to before. See the
+  [Host-based routing guide](https://batleforc.git.batleforc.fr/batlehub/guide/host-routing).
+- `registries[].path_routing = false` makes a registry reachable **only** through
+  its host(s); `/proxy/{name}/…` then returns 404 (not 403 — a disabled ingress
+  should look absent). A registry with no reachable ingress is a config error.
+- `GET /api/v1/registries` gained `public_url`, the registry's hostname-rooted
+  URL when it has one. The Setup Guide and namespace upload snippets use it.
+- **`[server].trusted_proxies`** — one server-level CIDR list governing which
+  peers may set `Forwarded` / `X-Forwarded-Host` / `X-Forwarded-Proto` /
+  `X-Forwarded-For`. Previously the forwarded host and scheme were trusted
+  unconditionally while only the client IP had a rule; now all three follow one
+  verdict computed once per request. Bare IPs are accepted as `/32` (`/128`).
+- **Config warnings** — `AppConfig::warnings()`, surfaced at
+  `GET /api/v1/admin/config/warnings`, inline in the responses of
+  `/config/validate` and `/config/from-content`, and rendered on the Config
+  Reload admin page. First users: an unstated proxy-trust policy, a shadowed
+  deprecated key, and a registry name that cannot become a DNS label.
+- Helm: `ingress.extraHosts` for the additional hostnames, and a documented
+  `config.server.trusted_proxies`.
+- `pending_created` on the config-reload responses. `POST /config/from-content`
+  answers `200` with an empty diff both when it stages a pending reload and when
+  the submitted content is byte-identical to the last load attempt, in which case
+  there is nothing to stage; the flag tells the two apart instead of leaving the
+  caller to find out from a `404 No pending reload` at apply time. `false` for
+  `/config/validate` (a dry run) and for `/config/reload` and
+  `/config/pending/apply` (which consume a pending rather than leave one).
+
+### Changed
+
+- `[server].trusted_proxies` is now hot-reloadable, and is swapped just before
+  the host-routing table it guards. A reload that turns host routing on used to
+  keep the startup trust policy until the process restarted, which left routing
+  driven by `X-Forwarded-Host` from any peer — the state config validation exists
+  to make unreachable.
+- The rate limiter buckets anonymous clients on the same client IP the IP-block
+  middleware bans, instead of the raw TCP peer. Behind a trusted proxy the two
+  previously disagreed: one abusive client could exhaust a bucket shared by every
+  anonymous user, and the resulting `429`s then counted as violations against
+  each innocent client's own IP.
+- Registry names are matched on the path actix routes on rather than the raw
+  URI. Percent-encoding a character of the name (`/proxy/npm%32/…`) reached the
+  registry's handler while slipping past both the `path_routing = false` 404 and
+  the registry's rate limit.
+- `ui/openapi.json` is tracked in git, so an API change shows up in review as a
+  diff of the contract. Refresh it with `task dump-spec`, which needs no database.
+  The generated TypeScript client under `ui/src/client/` stays untracked.
+
+### Fixed
+
+- **`X-Forwarded-For` is now read right to left**, skipping hops that fall inside
+  `trusted_proxies`, instead of taking the left-most entry. Each hop appends the
+  address it observed, so everything left of the entry our own proxy wrote is
+  client-supplied: behind a trusted proxy, any client could name the IP that
+  `[ip_blocking]` bans and the anonymous rate-limit bucket is keyed on — evading
+  its own ban, or getting a third party blocked. Entries are parsed as IP
+  addresses (the `ip:port` and `[ipv6]:port` forms included) and the walk stops
+  at anything that does not parse, falling back to the TCP peer address rather
+  than stepping over a hop it cannot classify. Deployments with no
+  `trusted_proxies` list are unaffected — they still ignore the header entirely.
+- The Setup Guide's `.netrc` block lists every host a client may authenticate
+  against. `.netrc` entries are matched by hostname, so a guide naming only the
+  main host meant no credentials were sent to a host-routed registry and every
+  authenticated install failed with `401`.
+- The Terraform `source` snippet drops the registry segment for a host-routed
+  registry, where provider endpoints live at the root, and keeps the port, which
+  `terraform init` needs on any deployment not served on 443.
+- `POST /config/from-content` reports the warnings of the config submitted rather
+  than of the one still in force when the content matches the last load attempt.
+  An admin staging a config with warnings could see an empty warning panel.
+
+### Deprecated
+
+- `[ip_blocking].trusted_proxies` — use `[server].trusted_proxies`. The old key
+  keeps working (and now governs the forwarded host and scheme too, so an
+  existing deployment can adopt host routing without touching it), but raises a
+  config warning. When both are set, `[server]` wins. An entry of the old key
+  that is not an IP or CIDR range is still dropped — with a
+  `proxy-trust.invalid-deprecated-entry` warning — rather than failing the boot,
+  since that key never validated its entries before.
+
 ## [1.0.0] - 2026-07-17
 
 First stable release.

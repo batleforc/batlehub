@@ -21,13 +21,27 @@ use batlehub_core::{
     ports::{BannerPort, CacheStore, StorageBackend, UserTokenRepository},
     services::{new_hot_lock, AdminService, HotConfig, ProxyMetrics, ProxyService},
 };
-use batlehub_web::services::{BannerService, ConfigReloadService, HotConfigBuilder};
+use batlehub_web::services::{
+    BannerService, ConfigReloadParams, ConfigReloadService, HotConfigBuilder,
+};
 use batlehub_web::AuthMiddlewareFactory;
 
 // ── Banner endpoints ──────────────────────────────────────────────────────────
 
 /// Build a minimal app with banner and reload services wired in.
 async fn make_banner_app() -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    make_banner_app_seeded(Vec::new()).await
+}
+
+/// `make_banner_app`, with the reload service's config-warning store pre-seeded
+/// as `set_warnings` does at server startup.
+async fn make_banner_app_seeded(
+    warnings: Vec<batlehub_config::schema::ConfigWarning>,
+) -> impl actix_web::dev::Service<
     actix_http::Request,
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
@@ -60,21 +74,24 @@ async fn make_banner_app() -> impl actix_web::dev::Service<
 
     let hot = proxy_svc.hot.clone();
     let builder: HotConfigBuilder = Arc::new(|_| anyhow::bail!("not used in tests"));
-    let reload_svc = Arc::new(ConfigReloadService::new(
+    let reload_svc = Arc::new(ConfigReloadService::new(ConfigReloadParams {
         hot,
-        access_config.clone(),
-        batlehub_web::RegistryMap::new(HashMap::new()),
-        batlehub_web::RegistryModeMap::new(HashMap::new()),
-        batlehub_web::UpstreamMap::new(HashMap::new()),
-        batlehub_web::CargoIndexMap::new(HashMap::new()),
-        batlehub_web::RepoSignerMap::default(),
-        batlehub_web::VulnDbMap::default(),
-        "config.toml".to_owned(),
-        None,
-        true,
+        access: access_config.clone(),
+        registry_map: batlehub_web::RegistryMap::new(HashMap::new()),
+        registry_mode_map: batlehub_web::RegistryModeMap::new(HashMap::new()),
+        upstream_map: batlehub_web::UpstreamMap::new(HashMap::new()),
+        cargo_index_map: batlehub_web::CargoIndexMap::new(HashMap::new()),
+        repo_signer_map: batlehub_web::RepoSignerMap::default(),
+        vuln_db_map: batlehub_web::VulnDbMap::default(),
+        registry_host_map: batlehub_web::RegistryHostMap::default(),
+        proxy_trust: batlehub_web::ProxyTrust::default(),
+        config_path: "config.toml".to_owned(),
+        config_change_repo: None,
+        hot_reload_enabled: true,
         builder,
-        Some(Arc::clone(&banner_svc)),
-    ));
+        banner: Some(Arc::clone(&banner_svc)),
+    }));
+    reload_svc.set_warnings(warnings);
 
     let (app, _) = actix_web::App::new()
         .into_utoipa_app()
@@ -204,21 +221,23 @@ async fn reload_config_returns_503_when_disabled() {
 
     let hot = proxy_svc.hot.clone();
     let builder: HotConfigBuilder = Arc::new(|_| anyhow::bail!("unused"));
-    let reload_svc = Arc::new(ConfigReloadService::new(
+    let reload_svc = Arc::new(ConfigReloadService::new(ConfigReloadParams {
         hot,
-        access_config.clone(),
-        batlehub_web::RegistryMap::new(HashMap::new()),
-        batlehub_web::RegistryModeMap::new(HashMap::new()),
-        batlehub_web::UpstreamMap::new(HashMap::new()),
-        batlehub_web::CargoIndexMap::new(HashMap::new()),
-        batlehub_web::RepoSignerMap::default(),
-        batlehub_web::VulnDbMap::default(),
-        "config.toml".to_owned(),
-        None,
-        false, // disabled
+        access: access_config.clone(),
+        registry_map: batlehub_web::RegistryMap::new(HashMap::new()),
+        registry_mode_map: batlehub_web::RegistryModeMap::new(HashMap::new()),
+        upstream_map: batlehub_web::UpstreamMap::new(HashMap::new()),
+        cargo_index_map: batlehub_web::CargoIndexMap::new(HashMap::new()),
+        repo_signer_map: batlehub_web::RepoSignerMap::default(),
+        vuln_db_map: batlehub_web::VulnDbMap::default(),
+        registry_host_map: batlehub_web::RegistryHostMap::default(),
+        proxy_trust: batlehub_web::ProxyTrust::default(),
+        config_path: "config.toml".to_owned(),
+        config_change_repo: None,
+        hot_reload_enabled: false,
         builder,
-        None,
-    ));
+        banner: None,
+    }));
 
     let (app, _) = actix_web::App::new()
         .into_utoipa_app()
@@ -330,4 +349,66 @@ async fn list_config_changes_returns_empty_without_db() {
         "unexpected status {}",
         resp.status()
     );
+}
+
+// ── Config warnings ───────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn config_warnings_endpoint_returns_the_active_warnings() {
+    use batlehub_config::schema::{warnings as codes, ConfigWarning};
+    let app = make_banner_app_seeded(vec![ConfigWarning::new(
+        codes::PROXY_TRUST_UNCONFIGURED,
+        "server.trusted_proxies",
+        "no trusted-proxy list is configured",
+    )])
+    .await;
+
+    let resp = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/api/v1/admin/config/warnings")
+            .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = actix_web::test::read_body_json(resp).await;
+    let warnings = body["warnings"].as_array().expect("warnings array");
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0]["code"], codes::PROXY_TRUST_UNCONFIGURED);
+    // `path` is shown verbatim so an operator can grep the TOML for it.
+    assert_eq!(warnings[0]["path"], "server.trusted_proxies");
+}
+
+#[actix_web::test]
+async fn config_warnings_endpoint_returns_an_empty_list_for_a_clean_config() {
+    let app = make_banner_app().await;
+    let resp = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/api/v1/admin/config/warnings")
+            .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = actix_web::test::read_body_json(resp).await;
+    assert!(body["warnings"]
+        .as_array()
+        .expect("warnings array")
+        .is_empty());
+}
+
+#[actix_web::test]
+async fn config_warnings_endpoint_requires_admin() {
+    let app = make_banner_app().await;
+    let resp = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/api/v1/admin/config/warnings")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 403);
 }

@@ -8,7 +8,7 @@ use batlehub_core::{
     services::{LocalRegistryService, ProxyService},
 };
 
-use super::super::common::{proxy_stream, require_registry_type};
+use super::super::common::{proxy_stream, registry_public_base, require_registry_type};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 /// Return NuGet v3 registration metadata for a package.
@@ -60,16 +60,14 @@ pub async fn nuget_registration(
             .await
             .map_err(AppError::from)?;
 
-        let conn = req.connection_info();
-        let base = format!("{}://{}", conn.scheme(), conn.host());
-        drop(conn);
+        let base = registry_public_base(&req, &registry);
 
         let items: Vec<serde_json::Value> = versions
             .iter()
             .filter(|v| !v.yanked)
             .map(|v| {
                 let pkg_content = format!(
-                    "{base}/proxy/{registry}/nuget/v3/flat/{id}/{}/{id}.{}.nupkg",
+                    "{base}/nuget/v3/flat/{id}/{}/{id}.{}.nupkg",
                     v.version, v.version
                 );
                 let published = v.published_at.to_rfc3339();
@@ -90,9 +88,9 @@ pub async fn nuget_registration(
                     .unwrap_or("");
 
                 serde_json::json!({
-                    "@id": format!("{base}/proxy/{registry}/nuget/v3/registration5/{id}/{}.json", v.version),
+                    "@id": format!("{base}/nuget/v3/registration5/{id}/{}.json", v.version),
                     "catalogEntry": {
-                        "@id": format!("{base}/proxy/{registry}/nuget/v3/registration5/{id}/{}.json", v.version),
+                        "@id": format!("{base}/nuget/v3/registration5/{id}/{}.json", v.version),
                         "@type": "PackageDetails",
                         "id": original_id,
                         "version": v.version,
@@ -110,10 +108,10 @@ pub async fn nuget_registration(
         let upper = versions.last().map(|v| v.version.as_str()).unwrap_or("");
 
         let response = serde_json::json!({
-            "@id": format!("{base}/proxy/{registry}/nuget/v3/registration5/{id}/index.json"),
+            "@id": format!("{base}/nuget/v3/registration5/{id}/index.json"),
             "count": 1,
             "items": [{
-                "@id": format!("{base}/proxy/{registry}/nuget/v3/registration5/{id}/page/{lower}/{upper}.json"),
+                "@id": format!("{base}/nuget/v3/registration5/{id}/page/{lower}/{upper}.json"),
                 "lower": lower,
                 "upper": upper,
                 "count": items.len(),

@@ -3,6 +3,9 @@ use super::{CoreError, Identity, LocalRegistryService};
 impl LocalRegistryService {
     /// Build a PyPI Simple API HTML page listing all versions of `package_name`
     /// published in this local registry, formatted so `pip` can parse it.
+    ///
+    /// `base_url` is the registry's public base as seen by the requesting client
+    /// (see [`LocalRegistryService::get_npm_packument`]).
     pub async fn get_pypi_simple_page(
         &self,
         registry: &str,
@@ -27,7 +30,7 @@ impl LocalRegistryService {
                 .get("sha256")
                 .and_then(|v| v.as_str())
                 .unwrap_or(&pkg.checksum);
-            let url = format!("{base}/proxy/{registry}/packages/{filename}#sha256={sha256}");
+            let url = format!("{base}/packages/{filename}#sha256={sha256}");
             links.push_str(&format!("    <a href=\"{url}\">{filename}</a>\n"));
         }
         Ok(format!(

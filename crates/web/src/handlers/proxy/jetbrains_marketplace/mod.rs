@@ -29,8 +29,7 @@ pub use ide::{
 pub use publish::jbm_upload;
 pub use xml::{jbm_plugins_list, jbm_update_plugins_xml};
 
-use actix_web::HttpRequest;
-
+use super::common::registry_public_base;
 use crate::{error::AppError, RegistryMap};
 
 pub(crate) const REGISTRY_TYPE: &str = "jetbrains-marketplace";
@@ -61,14 +60,6 @@ pub(crate) fn require_single_segment(kind: &str, value: &str) -> Result<(), AppE
         )));
     }
     Ok(())
-}
-
-/// Absolute base URL of this proxy as seen by the caller, for self-referencing
-/// download URLs in generated XML/JSON (inline `connection_info` pattern, cf.
-/// the PyPI simple index).
-pub(crate) fn proxy_base(req: &HttpRequest) -> String {
-    let conn_info = req.connection_info();
-    format!("{}://{}", conn_info.scheme(), conn_info.host())
 }
 
 pub(crate) fn content_type_for(file_name: &str) -> &'static str {

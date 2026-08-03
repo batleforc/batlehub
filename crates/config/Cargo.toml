@@ -7,10 +7,12 @@ license.workspace = true
 [dependencies]
 batlehub-core = { path = "../core" }
 glob.workspace = true
+ipnet.workspace = true
 regex.workspace = true
 serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true
+utoipa.workspace = true
 anyhow.workspace = true
 
 [lints]
