@@ -32,6 +32,18 @@ async fn make_banner_app() -> impl actix_web::dev::Service<
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
+    make_banner_app_seeded(Vec::new()).await
+}
+
+/// `make_banner_app`, with the reload service's config-warning store pre-seeded
+/// as `set_warnings` does at server startup.
+async fn make_banner_app_seeded(
+    warnings: Vec<batlehub_config::schema::ConfigWarning>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
     use std::collections::HashMap;
     let repo = InMemoryRepo::new();
     let repo_dyn: Arc<dyn batlehub_core::ports::PackageRepository> = repo.clone();
@@ -69,12 +81,14 @@ async fn make_banner_app() -> impl actix_web::dev::Service<
         batlehub_web::CargoIndexMap::new(HashMap::new()),
         batlehub_web::RepoSignerMap::default(),
         batlehub_web::VulnDbMap::default(),
+        batlehub_web::RegistryHostMap::default(),
         "config.toml".to_owned(),
         None,
         true,
         builder,
         Some(Arc::clone(&banner_svc)),
     ));
+    reload_svc.set_warnings(warnings);
 
     let (app, _) = actix_web::App::new()
         .into_utoipa_app()
@@ -213,6 +227,7 @@ async fn reload_config_returns_503_when_disabled() {
         batlehub_web::CargoIndexMap::new(HashMap::new()),
         batlehub_web::RepoSignerMap::default(),
         batlehub_web::VulnDbMap::default(),
+        batlehub_web::RegistryHostMap::default(),
         "config.toml".to_owned(),
         None,
         false, // disabled
@@ -330,4 +345,66 @@ async fn list_config_changes_returns_empty_without_db() {
         "unexpected status {}",
         resp.status()
     );
+}
+
+// ── Config warnings ───────────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn config_warnings_endpoint_returns_the_active_warnings() {
+    use batlehub_config::schema::{warnings as codes, ConfigWarning};
+    let app = make_banner_app_seeded(vec![ConfigWarning::new(
+        codes::PROXY_TRUST_UNCONFIGURED,
+        "server.trusted_proxies",
+        "no trusted-proxy list is configured",
+    )])
+    .await;
+
+    let resp = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/api/v1/admin/config/warnings")
+            .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = actix_web::test::read_body_json(resp).await;
+    let warnings = body["warnings"].as_array().expect("warnings array");
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0]["code"], codes::PROXY_TRUST_UNCONFIGURED);
+    // `path` is shown verbatim so an operator can grep the TOML for it.
+    assert_eq!(warnings[0]["path"], "server.trusted_proxies");
+}
+
+#[actix_web::test]
+async fn config_warnings_endpoint_returns_an_empty_list_for_a_clean_config() {
+    let app = make_banner_app().await;
+    let resp = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/api/v1/admin/config/warnings")
+            .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = actix_web::test::read_body_json(resp).await;
+    assert!(body["warnings"]
+        .as_array()
+        .expect("warnings array")
+        .is_empty());
+}
+
+#[actix_web::test]
+async fn config_warnings_endpoint_requires_admin() {
+    let app = make_banner_app().await;
+    let resp = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/api/v1/admin/config/warnings")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 403);
 }

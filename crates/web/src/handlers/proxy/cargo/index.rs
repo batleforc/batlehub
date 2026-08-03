@@ -1,8 +1,8 @@
 use actix_web::http::StatusCode;
 
 use super::{
-    get, require_cargo, serve_local_or_proxy_artifact, web, AppError, Arc, AuthIdentity,
-    CargoIndexMap, CoreError, HttpRequest, HttpResponse, LocalOrProxyArtifactOpts,
+    get, registry_public_base, require_cargo, serve_local_or_proxy_artifact, web, AppError, Arc,
+    AuthIdentity, CargoIndexMap, CoreError, HttpRequest, HttpResponse, LocalOrProxyArtifactOpts,
     LocalRegistryService, ProxyService, RegistryMap, RegistryMode, RegistryModeMap, Responder,
 };
 
@@ -42,16 +42,13 @@ pub async fn cargo_registry_config(
         return Err(AppError::not_found("no cargo index configured"));
     }
 
-    let (scheme, host) = {
-        let info = req.connection_info();
-        (info.scheme().to_owned(), info.host().to_owned())
-    };
-    let dl = format!("{scheme}://{host}/proxy/{registry}/{{crate}}/{{version}}/download");
+    let base = registry_public_base(&req, &registry);
+    let dl = format!("{base}/{{crate}}/{{version}}/download");
     let mut resp = serde_json::json!({ "dl": dl });
 
     // Expose the publish API URL for local and hybrid registries.
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        resp["api"] = serde_json::Value::String(format!("{scheme}://{host}/proxy/{registry}"));
+        resp["api"] = serde_json::Value::String(base);
     }
 
     Ok(HttpResponse::Ok()

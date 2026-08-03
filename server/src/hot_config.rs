@@ -13,8 +13,8 @@ use batlehub_core::services::{
 
 use crate::builders::parse_role;
 use batlehub_web::{
-    AccessConfig, CargoIndexMap, CargoIndexProxy, RegistryMap, RegistryModeMap, UpstreamMap,
-    VulnDbMap,
+    AccessConfig, CargoIndexMap, CargoIndexProxy, RegistryHostMap, RegistryMap, RegistryModeMap,
+    UpstreamMap, VulnDbMap,
 };
 
 /// Shared shape for the `build_*_map` functions below: an optional per-registry
@@ -326,6 +326,7 @@ pub(super) fn make_hot_builder(
             cargo_index_map: CargoIndexMap::new(cargo_map),
             repo_signer_map,
             vuln_db_map: vuln_db,
+            registry_host_map: RegistryHostMap::from_app_config(cfg),
         })
     })
 }

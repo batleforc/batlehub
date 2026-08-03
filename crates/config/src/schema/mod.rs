@@ -2,9 +2,11 @@ pub mod auth;
 pub mod network;
 pub mod notifications;
 pub mod registry;
+pub mod routing;
 pub mod rules;
 pub mod server;
 pub mod storage;
+pub mod warnings;
 
 pub use auth::{
     ActionsGroupRule, ActionsOidcAuthConfig, AuthConfig, Condition, ConditionMatchType,
@@ -24,11 +26,20 @@ pub use registry::{
     QuotaEnforcement, RegistryConfig, RegistryMode, RepoSigningConfig, SbomConfig, SigningConfig,
     VersioningPolicy,
 };
+pub use routing::{
+    is_dns_label, normalise_host, validate_host_entry, wildcard_host, HostSyntaxError,
+    RegistryHostBinding, SubdomainRoutingConfig,
+};
 pub use rules::{
     CveGateConfig, DenyLatestConfig, ExploreRbacConfig, RbacConfig, ReleaseAgeGateConfig,
     RequireSignedReleaseConfig, RuleConfig, TrustedPublisherConfig, VersionGateConfig,
 };
-pub use server::{default_service_name, CacheConfig, DatabaseConfig, OtelConfig, ServerConfig};
+pub use server::{
+    default_service_name, parse_trusted_proxies, CacheConfig, DatabaseConfig, OtelConfig,
+    ServerConfig,
+};
+pub use warnings::ConfigWarning;
+
 pub use storage::{
     FilesystemStorageConfig, MultiStorageConfig, NamedStorageConfig, S3StorageConfig,
     StorageBackendConfig, StoragesConfig,
@@ -83,6 +94,11 @@ pub struct AppConfig {
     /// database. When absent or `enabled = false`, no background scan runs.
     #[serde(default)]
     pub vulnerability_scan: Option<VulnerabilityScanConfig>,
+    /// Optional wildcard host derivation for host-based registry routing.
+    /// Absent or `enabled = false` derives no wildcard hosts; a registry can
+    /// still declare explicit `hosts`.
+    #[serde(default)]
+    pub subdomain_routing: Option<SubdomainRoutingConfig>,
 }
 
 // ── Vulnerability scan ──────────────────────────────────────────────────────────
@@ -136,6 +152,322 @@ pub struct LimitsConfig {
 }
 
 impl AppConfig {
+    /// The effective reverse-proxy trust list, or `None` when no policy is
+    /// configured anywhere.
+    ///
+    /// `[server].trusted_proxies` is authoritative; the deprecated
+    /// `[ip_blocking].trusted_proxies` is the fallback so existing configs keep
+    /// working unchanged. An empty `[ip_blocking].trusted_proxies` does *not*
+    /// count as a policy: it is that section's serde default, so it carries no
+    /// operator intent (`[server].trusted_proxies = []`, being an `Option`,
+    /// does — it means "trust nobody").
+    pub fn effective_trusted_proxies(&self) -> Option<&[String]> {
+        if let Some(list) = self.server.trusted_proxies.as_deref() {
+            return Some(list);
+        }
+        self.ip_blocking
+            .as_ref()
+            .map(|c| c.trusted_proxies.as_slice())
+            .filter(|l| !l.is_empty())
+    }
+
+    /// True when the deprecated `[ip_blocking].trusted_proxies` is the list
+    /// actually in force (i.e. `[server].trusted_proxies` is absent).
+    pub fn uses_deprecated_trusted_proxies(&self) -> bool {
+        self.server.trusted_proxies.is_none()
+            && self
+                .ip_blocking
+                .as_ref()
+                .is_some_and(|c| !c.trusted_proxies.is_empty())
+    }
+
+    /// True when both trusted-proxy keys carry a list, so `[server]` shadows the
+    /// deprecated one (surfaced as a warning, see [`AppConfig::warnings`]).
+    pub fn shadows_deprecated_trusted_proxies(&self) -> bool {
+        self.server.trusted_proxies.is_some()
+            && self
+                .ip_blocking
+                .as_ref()
+                .is_some_and(|c| !c.trusted_proxies.is_empty())
+    }
+
+    // ── Host-based routing ────────────────────────────────────────────────────
+
+    /// The `base_domain` wildcard hosts hang off, when wildcard derivation is on.
+    fn wildcard_base_domain(&self) -> Option<&str> {
+        self.subdomain_routing
+            .as_ref()
+            .filter(|s| s.enabled)
+            .and_then(|s| s.base_domain.as_deref())
+    }
+
+    /// Scheme used when advertising registry public URLs. Never affects routing.
+    pub fn subdomain_scheme(&self) -> &str {
+        self.subdomain_routing
+            .as_ref()
+            .map_or("https", |s| s.scheme.as_str())
+    }
+
+    /// Every `host -> registry` binding this config declares, explicit `hosts`
+    /// entries before wildcard-derived ones.
+    ///
+    /// Materialised once at config-load time so a request-time lookup is a single
+    /// hash lookup with no suffix parsing. Registry names that are not usable DNS
+    /// labels simply contribute no wildcard binding (and a warning); duplicates
+    /// across registries are rejected by [`AppConfig::validate`], not here.
+    pub fn registry_host_bindings(&self) -> Vec<RegistryHostBinding> {
+        let base_domain = self.wildcard_base_domain();
+        let mut bindings = Vec::new();
+        for registry in &self.registries {
+            for host in &registry.hosts {
+                let normalised = normalise_host(host);
+                if normalised.is_empty() {
+                    continue;
+                }
+                bindings.push(RegistryHostBinding {
+                    host: normalised,
+                    registry: registry.name.clone(),
+                    explicit: true,
+                });
+            }
+        }
+        if let Some(base) = base_domain {
+            for registry in &self.registries {
+                if let Some(host) = wildcard_host(&registry.name, base) {
+                    bindings.push(RegistryHostBinding {
+                        host,
+                        registry: registry.name.clone(),
+                        explicit: false,
+                    });
+                }
+            }
+        }
+        bindings
+    }
+
+    /// True when any host-based routing is configured — wildcard derivation is
+    /// enabled, or some registry declares `hosts`.
+    ///
+    /// This is the trigger for the strict proxy-trust requirement: once a header
+    /// selects a *registry*, a deployment with no stated trust policy is not a
+    /// state we let it reach.
+    pub fn host_routing_configured(&self) -> bool {
+        self.subdomain_routing.as_ref().is_some_and(|s| s.enabled)
+            || self.registries.iter().any(|r| !r.hosts.is_empty())
+    }
+
+    /// The preferred public URL of each registry that has one: the first explicit
+    /// host when present, otherwise the wildcard host, prefixed with
+    /// [`AppConfig::subdomain_scheme`]. This is what the API and UI advertise.
+    pub fn registry_public_urls(&self) -> Vec<(String, String)> {
+        let scheme = self.subdomain_scheme();
+        let base_domain = self.wildcard_base_domain();
+        self.registries
+            .iter()
+            .filter_map(|registry| {
+                let host = registry
+                    .hosts
+                    .iter()
+                    .map(|h| normalise_host(h))
+                    .find(|h| !h.is_empty())
+                    .or_else(|| base_domain.and_then(|b| wildcard_host(&registry.name, b)))?;
+                Some((registry.name.clone(), format!("{scheme}://{host}")))
+            })
+            .collect()
+    }
+
+    /// Registry names that are reachable *only* by host (`path_routing = false`).
+    pub fn host_only_registries(&self) -> Vec<String> {
+        self.registries
+            .iter()
+            .filter(|r| !r.path_routing)
+            .map(|r| r.name.clone())
+            .collect()
+    }
+
+    /// Non-fatal configuration problems, a sibling of [`AppConfig::validate`].
+    ///
+    /// `validate` refuses to start; this reports states that degrade instead —
+    /// a shadowed deprecated key, a permissive default left in place. Emitted as
+    /// `tracing::warn!` at startup and on every reload, and served from
+    /// `GET /api/v1/admin/config/warnings` so an operator sees them without
+    /// grepping logs.
+    pub fn warnings(&self) -> Vec<ConfigWarning> {
+        let mut out = Vec::new();
+        self.proxy_trust_warnings(&mut out);
+        self.subdomain_warnings(&mut out);
+        out
+    }
+
+    /// `[subdomain_routing]` is on but a registry name cannot become a DNS label.
+    /// That registry gets no wildcard host; it stays reachable by path and by any
+    /// explicit `hosts` entry, so this degrades rather than fails.
+    fn subdomain_warnings(&self, out: &mut Vec<ConfigWarning>) {
+        if self.wildcard_base_domain().is_none() {
+            return;
+        }
+        for (index, registry) in self.registries.iter().enumerate() {
+            if is_dns_label(&registry.name) {
+                continue;
+            }
+            out.push(ConfigWarning::new(
+                warnings::SUBDOMAIN_INVALID_DNS_LABEL,
+                format!("registries[{index}].name"),
+                format!(
+                    "registry '{}' is not a valid DNS label, so no wildcard host is derived \
+                     for it. It stays reachable at /proxy/{}/… and at any explicit 'hosts' \
+                     entry. Rename it to letters, digits and inner hyphens only, or give it \
+                     an explicit host.",
+                    registry.name, registry.name
+                ),
+            ));
+        }
+    }
+
+    fn proxy_trust_warnings(&self, out: &mut Vec<ConfigWarning>) {
+        if self.shadows_deprecated_trusted_proxies() {
+            out.push(ConfigWarning::new(
+                warnings::PROXY_TRUST_SHADOWED_DEPRECATED_KEY,
+                "ip_blocking.trusted_proxies",
+                "both [server].trusted_proxies and the deprecated \
+                 [ip_blocking].trusted_proxies are set; [server] wins and this list is \
+                 ignored entirely. Delete it.",
+            ));
+        } else if self.uses_deprecated_trusted_proxies() {
+            out.push(ConfigWarning::new(
+                warnings::PROXY_TRUST_DEPRECATED_KEY_ONLY,
+                "ip_blocking.trusted_proxies",
+                "proxy trust comes from the deprecated [ip_blocking].trusted_proxies. It is \
+                 honoured — and now governs the forwarded host and scheme as well as the \
+                 client IP — but move the list to [server].trusted_proxies.",
+            ));
+        } else if self.effective_trusted_proxies().is_none() && !self.host_routing_configured() {
+            // With host routing on, no list at all is a hard error (see
+            // `validate`), so this branch only ever describes the legacy case.
+            out.push(ConfigWarning::new(
+                warnings::PROXY_TRUST_UNCONFIGURED,
+                "server.trusted_proxies",
+                "no trusted-proxy list is configured, so Forwarded / X-Forwarded-Host / \
+                 X-Forwarded-Proto are believed from any client and decide the URLs this \
+                 server advertises. Set [server].trusted_proxies to your ingress's CIDR \
+                 ranges, or to [] if BatleHub is exposed directly.",
+            ));
+        }
+    }
+
+    /// Fail-fast checks for host-based routing (RFC 0001 §4.3).
+    ///
+    /// Every condition here is one where the deployment would come up looking
+    /// healthy but route wrongly — a host silently bound to the last registry
+    /// that claimed it, a registry nothing can reach, the admin API shadowed by a
+    /// vanity host, or routing driven by a header the server has no policy about.
+    fn validate_host_routing(&self) -> Result<()> {
+        if let Some(subdomain) = self.subdomain_routing.as_ref() {
+            if subdomain.enabled
+                && subdomain
+                    .base_domain
+                    .as_deref()
+                    .map(normalise_host)
+                    .is_none_or(|d| d.is_empty())
+            {
+                bail!(
+                    "[subdomain_routing]: 'enabled = true' requires a non-empty 'base_domain' \
+                     (e.g. base_domain = \"hub.example.com\"); without one no wildcard host is \
+                     derived and the section routes nothing"
+                );
+            }
+        }
+
+        // Syntax first, so a pasted URL is reported as such rather than as a
+        // mystery collision after normalisation.
+        for registry in &self.registries {
+            for host in &registry.hosts {
+                validate_host_entry(host).map_err(|e| {
+                    anyhow::anyhow!(
+                        "registry '{}': invalid 'hosts' entry '{host}': {e}",
+                        registry.name
+                    )
+                })?;
+            }
+        }
+
+        // The bare base_domain stays the main host: it serves the admin API, the
+        // SPA, /healthz and /metrics. A vanity host equal to it would rewrite all
+        // of that into one registry and hide the admin API entirely.
+        if let Some(base) = self
+            .subdomain_routing
+            .as_ref()
+            .and_then(|s| s.base_domain.as_deref())
+            .map(normalise_host)
+            .filter(|d| !d.is_empty())
+        {
+            for registry in &self.registries {
+                if registry.hosts.iter().any(|h| normalise_host(h) == base) {
+                    bail!(
+                        "registry '{}': 'hosts' entry '{base}' is the [subdomain_routing] \
+                         base_domain itself; that host serves the admin API and the SPA, and \
+                         binding it to a registry would hide them",
+                        registry.name
+                    );
+                }
+            }
+        }
+
+        // One host, one registry. Same-registry duplicates are fine — an explicit
+        // `hosts` entry that repeats that registry's own wildcard host just wins.
+        let mut claimed: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        let bindings = self.registry_host_bindings();
+        for binding in &bindings {
+            match claimed.get(binding.host.as_str()) {
+                Some(&owner) if owner != binding.registry => bail!(
+                    "host '{}' is claimed by both registry '{owner}' and registry '{}'; \
+                     a host routes to exactly one registry",
+                    binding.host,
+                    binding.registry
+                ),
+                Some(_) => {}
+                None => {
+                    claimed.insert(binding.host.as_str(), binding.registry.as_str());
+                }
+            }
+        }
+
+        // A registry with neither ingress is unreachable — catch it here rather
+        // than as a stream of 404s nobody can explain.
+        for registry in &self.registries {
+            if registry.path_routing {
+                continue;
+            }
+            let has_host = bindings.iter().any(|b| b.registry == registry.name);
+            if !has_host {
+                bail!(
+                    "registry '{}': 'path_routing = false' leaves it with no ingress — it has \
+                     no 'hosts' entry, and no wildcard host is derived for it (either \
+                     [subdomain_routing] is off, or the name is not a valid DNS label). Add a \
+                     host, or drop 'path_routing = false'.",
+                    registry.name
+                );
+            }
+        }
+
+        // Routing now depends on a header, so an unstated trust policy is not a
+        // state we let a deployment reach. The deprecated key counts as a policy
+        // (and warns), so an existing config adopting host routing changes nothing.
+        if self.host_routing_configured() && self.effective_trusted_proxies().is_none() {
+            bail!(
+                "host-based routing is configured ([subdomain_routing] or a registry 'hosts' \
+                 entry), which routes on the Forwarded / X-Forwarded-Host header. Declare which \
+                 peers may set it:\n\n\
+                 \x20   [server]\n\
+                 \x20   trusted_proxies = [\"10.42.0.0/16\"]   # your ingress's CIDR ranges\n\n\
+                 Use trusted_proxies = [] if BatleHub is exposed directly and no proxy sits in \
+                 front of it."
+            );
+        }
+
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<()> {
         if let Some(v) = self.config_version {
             if v > CURRENT_CONFIG_VERSION {
@@ -146,6 +478,20 @@ impl AppConfig {
                 );
             }
         }
+        // Reject malformed proxy-trust entries up front: a typo here silently
+        // widens or narrows which peers may set `X-Forwarded-*`, and the
+        // consequence (a spoofable routing header, or generated URLs pointing at
+        // the internal service host) shows up far from the config file.
+        if let Some(list) = self.server.trusted_proxies.as_deref() {
+            parse_trusted_proxies(list)
+                .map_err(|e| anyhow::anyhow!("[server].trusted_proxies: {e}"))?;
+        }
+        if let Some(ip_blocking) = self.ip_blocking.as_ref() {
+            parse_trusted_proxies(&ip_blocking.trusted_proxies)
+                .map_err(|e| anyhow::anyhow!("[ip_blocking].trusted_proxies: {e}"))?;
+        }
+        self.validate_host_routing()?;
+
         // The set of storage backend names a registry's `storage` field may
         // reference. In single-backend mode only the implicit "default" exists;
         // in multi mode it is the declared `[[storage.backends]]` names. A

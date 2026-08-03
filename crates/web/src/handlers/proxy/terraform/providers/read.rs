@@ -1,5 +1,5 @@
 use super::{
-    append_signature_headers, base_url_from_req, collect_storage_stream, get, proxy_stream,
+    append_signature_headers, collect_storage_stream, get, proxy_stream, registry_public_base,
     require_local_mode, require_registry_type, terraform_provider_binary_storage_key,
     terraform_versions_response, web, AppError, Arc, AuthIdentity, HttpRequest, HttpResponse,
     LocalRegistryService, PackageId, ProxyService, RegistryMap, RegistryMode, RegistryModeMap,
@@ -88,7 +88,7 @@ pub async fn terraform_provider_download(
     let mode = mode_map.get(&registry);
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        let base_url = base_url_from_req(&req);
+        let base_url = registry_public_base(&req, &registry);
         if let Some(resp) = try_local_provider_download(
             &local_svc, &registry, &name, &version, &os, &arch, &base_url, &identity, mode,
         )

@@ -24,7 +24,12 @@ impl LocalRegistryService {
     }
 
     /// Build an npm packument for all published versions, rewriting `dist.tarball`
-    /// to point at `base_url` (e.g. `"https://batlehub.example.com"`).
+    /// to point at `base_url`.
+    ///
+    /// `base_url` is the **registry's** public base as seen by the requesting
+    /// client — `https://npm.acme.io` on a host-routed request,
+    /// `https://hub.example.com/proxy/npm1` on the subpath. The web layer builds
+    /// it with `registry_public_base`; nothing here re-derives the ingress shape.
     pub async fn get_npm_packument(
         &self,
         registry: &str,
@@ -49,7 +54,7 @@ impl LocalRegistryService {
                     d.insert(
                         "tarball".to_owned(),
                         serde_json::json!(format!(
-                            "{base}/proxy/{registry}/{name}/{version}/tarball",
+                            "{base}/{name}/{version}/tarball",
                             version = pkg.version
                         )),
                     );
@@ -82,7 +87,9 @@ impl LocalRegistryService {
         }))
     }
 
-    /// Return a single npm version metadata object with `dist.tarball` rewritten.
+    /// Return a single npm version metadata object with `dist.tarball` rewritten
+    /// to point at `base_url` (the registry's public base — see
+    /// [`LocalRegistryService::get_npm_packument`]).
     pub async fn get_npm_version(
         &self,
         registry: &str,
@@ -112,7 +119,7 @@ impl LocalRegistryService {
             if let Some(d) = dist.as_object_mut() {
                 d.insert(
                     "tarball".to_owned(),
-                    serde_json::json!(format!("{base}/proxy/{registry}/{name}/{version}/tarball")),
+                    serde_json::json!(format!("{base}/{name}/{version}/tarball")),
                 );
             }
         }

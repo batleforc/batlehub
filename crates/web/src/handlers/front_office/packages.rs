@@ -9,7 +9,7 @@ use batlehub_core::{
     services::AdminService,
 };
 
-use crate::{error::AppError, extractors::AuthIdentity};
+use crate::{error::AppError, extractors::AuthIdentity, RegistryHostMap};
 
 #[derive(Deserialize, IntoParams)]
 pub struct PackageQuery {
@@ -185,6 +185,7 @@ pub async fn check_access(
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
     access: web::Data<crate::AccessConfigLock>,
+    hosts: Option<web::Data<RegistryHostMap>>,
 ) -> Result<impl Responder, AppError> {
     let pkg = PackageId {
         registry: query.registry.clone(),
@@ -219,6 +220,7 @@ pub async fn check_access(
     };
 
     let proxy_url = build_proxy_url(
+        &registry_link_base(&pkg.registry, hosts.as_ref().map(|h| h.get_ref())),
         &pkg.registry,
         &pkg.name,
         &pkg.version,
@@ -238,7 +240,21 @@ pub async fn check_access(
     }))
 }
 
+/// The prefix package links for `registry` hang off.
+///
+/// Normally the SPA-relative `/proxy/{registry}`. For a registry with
+/// `path_routing = false` that path does not exist, so the link has to be the
+/// registry's absolute public URL instead — otherwise every package link in the
+/// admin UI 404s for exactly the registries an operator chose to isolate.
+fn registry_link_base(registry: &str, hosts: Option<&RegistryHostMap>) -> String {
+    hosts
+        .filter(|h| h.is_host_only(registry))
+        .and_then(|h| h.public_url_for(registry))
+        .unwrap_or_else(|| format!("/proxy/{registry}"))
+}
+
 fn build_proxy_url(
+    base: &str,
     registry: &str,
     name: &str,
     version: &str,
@@ -246,25 +262,25 @@ fn build_proxy_url(
 ) -> Option<String> {
     match registry {
         "github" => Some(match (version, artifact) {
-            ("releases", _) => format!("/proxy/github/{name}/releases"),
+            ("releases", _) => format!("{base}/{name}/releases"),
             (v, Some(art)) if art.starts_with("tarball") => {
-                format!("/proxy/github/{name}/tarball/{v}")
+                format!("{base}/{name}/tarball/{v}")
             }
-            (v, Some("zipball")) => format!("/proxy/github/{name}/zipball/{v}"),
+            (v, Some("zipball")) => format!("{base}/{name}/zipball/{v}"),
             (v, Some(art)) if art.starts_with("raw/") => {
                 let path = art.strip_prefix("raw/").unwrap_or("");
-                format!("/proxy/github/{name}/raw/{v}/{path}")
+                format!("{base}/{name}/raw/{v}/{path}")
             }
-            (_, Some(art)) => format!("/proxy/github/{name}/releases/assets/{art}"),
-            (v, None) => format!("/proxy/github/{name}/releases/tags/{v}"),
+            (_, Some(art)) => format!("{base}/{name}/releases/assets/{art}"),
+            (v, None) => format!("{base}/{name}/releases/tags/{v}"),
         }),
         "npm" => Some(match artifact {
-            Some("tarball") => format!("/proxy/npm/{name}/{version}/tarball"),
-            _ => format!("/proxy/npm/{name}/{version}"),
+            Some("tarball") => format!("{base}/{name}/{version}/tarball"),
+            _ => format!("{base}/{name}/{version}"),
         }),
         "cargo" => Some(match artifact {
-            Some("download") => format!("/proxy/cargo/{name}/{version}/download"),
-            _ => format!("/proxy/cargo/{name}/{version}"),
+            Some("download") => format!("{base}/{name}/{version}/download"),
+            _ => format!("{base}/{name}/{version}"),
         }),
         _ => None,
     }

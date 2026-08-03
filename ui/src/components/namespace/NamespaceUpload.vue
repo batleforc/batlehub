@@ -26,6 +26,15 @@ const registryType = computed(
   () => props.registries.find((r) => r.name === selectedRegistry.value)?.type ?? "",
 );
 
+/**
+ * Base URL for `name`: the registry's own hostname-rooted URL when the server
+ * advertises one (`public_url`, set by host-based routing), otherwise the
+ * `/proxy/{name}` subpath. Callers append paths and never write `/proxy/`.
+ */
+function urlFor(name: string, origin: string = API_BASE_URL): string {
+  return props.registries.find((r) => r.name === name)?.public_url ?? `${origin}/proxy/${name}`;
+}
+
 const BINARY_TYPES = new Set([
   "rubygems",
   "composer",
@@ -64,18 +73,19 @@ function acceptFor(t: string) {
 /** Build the upload URL + HTTP method for the selected registry type.
  *  Throws when type-specific required fields are missing. */
 function buildUploadTarget(type: string, reg: string): { url: string; method: string } {
+  const base = urlFor(reg);
   switch (type) {
     case "rubygems":
-      return { url: `${API_BASE_URL}/proxy/${reg}/api/v1/gems`, method: "POST" };
+      return { url: `${base}/api/v1/gems`, method: "POST" };
     case "composer":
-      return { url: `${API_BASE_URL}/proxy/${reg}/api/upload`, method: "POST" };
+      return { url: `${base}/api/upload`, method: "POST" };
     case "openvsx":
     case "vscode-marketplace": {
       const id = uploadExtId.value.trim();
       const version = uploadVersion.value.trim();
       if (!id || !version) throw new Error("Extension ID and version are required");
       return {
-        url: `${API_BASE_URL}/proxy/${reg}/${encodeURIComponent(id)}/${encodeURIComponent(version)}/vsix`,
+        url: `${base}/${encodeURIComponent(id)}/${encodeURIComponent(version)}/vsix`,
         method: "PUT",
       };
     }
@@ -84,7 +94,7 @@ function buildUploadTarget(type: string, reg: string): { url: string; method: st
       const version = uploadVersion.value.trim();
       if (!mod || !version) throw new Error("Module path and version are required");
       return {
-        url: `${API_BASE_URL}/proxy/${reg}/${encodeURIComponent(mod)}/@v/${encodeURIComponent(version)}.zip`,
+        url: `${base}/${encodeURIComponent(mod)}/@v/${encodeURIComponent(version)}.zip`,
         method: "PUT",
       };
     }
@@ -93,12 +103,12 @@ function buildUploadTarget(type: string, reg: string): { url: string; method: st
       const component = uploadComponent.value.trim();
       if (!dist || !component) throw new Error("Distribution and component are required");
       return {
-        url: `${API_BASE_URL}/proxy/${reg}/deb/pool/${encodeURIComponent(dist)}/${encodeURIComponent(component)}/upload`,
+        url: `${base}/deb/pool/${encodeURIComponent(dist)}/${encodeURIComponent(component)}/upload`,
         method: "PUT",
       };
     }
     case "rpm":
-      return { url: `${API_BASE_URL}/proxy/${reg}/rpm/upload`, method: "PUT" };
+      return { url: `${base}/rpm/upload`, method: "PUT" };
     default:
       return { url: "", method: "POST" };
   }
@@ -136,17 +146,38 @@ async function doUpload() {
 }
 
 const cliRegistryName = computed(() => selectedRegistry.value || "<registry>");
-const cliSnippets: Record<string, string> = {
-  npm: `npm set registry ${globalThis.location.origin}/proxy/${cliRegistryName.value}\nnpm publish`,
-  cargo: `# .cargo/config.toml:\n[registries.${cliRegistryName.value}]\nindex = "sparse+${globalThis.location.origin}/proxy/${cliRegistryName.value}/registry/"\n\ncargo publish --registry ${cliRegistryName.value}`,
-  maven: `<!-- settings.xml -->\n<server>\n  <id>${cliRegistryName.value}</id>\n  <username>your-user</username>\n  <password>your-token</password>\n</server>\n\n<!-- pom.xml -->\n<distributionManagement>\n  <repository>\n    <id>${cliRegistryName.value}</id>\n    <url>${globalThis.location.origin}/proxy/${cliRegistryName.value}/maven2</url>\n  </repository>\n</distributionManagement>\n\nmvn deploy`,
-  terraform: `terraform {\n  required_providers {\n    <provider> = {\n      source = "${globalThis.location.hostname}/${cliRegistryName.value}/<namespace>/<provider>"\n    }\n  }\n}`,
-  deb: `# Publish a .deb to pool/{distribution}/{component}\ncurl -X PUT \\\n  -H "Authorization: Bearer <your-token>" \\\n  --data-binary @hello_1.0_amd64.deb \\\n  ${globalThis.location.origin}/proxy/${cliRegistryName.value}/deb/pool/stable/main/upload`,
-  rpm: `# Publish an .rpm\ncurl -X PUT \\\n  -H "Authorization: Bearer <your-token>" \\\n  --data-binary @hello-1.0-1.x86_64.rpm \\\n  ${globalThis.location.origin}/proxy/${cliRegistryName.value}/rpm/upload`,
-};
+/** The selected registry's client-facing base URL, on this page's origin. */
+const cliRegistryUrl = computed(() => urlFor(cliRegistryName.value, globalThis.location.origin));
+/**
+ * Reactive: both the registry name and its base URL change with the selector,
+ * so this cannot be a plain object evaluated once during setup.
+ */
+const cliSnippets = computed<Record<string, string>>(() => {
+  const reg = cliRegistryName.value;
+  const url = cliRegistryUrl.value;
+  return {
+    npm: `npm set registry ${url}\nnpm publish`,
+    cargo: `# .cargo/config.toml:\n[registries.${reg}]\nindex = "sparse+${url}/registry/"\n\ncargo publish --registry ${reg}`,
+    maven: `<!-- settings.xml -->\n<server>\n  <id>${reg}</id>\n  <username>your-user</username>\n  <password>your-token</password>\n</server>\n\n<!-- pom.xml -->\n<distributionManagement>\n  <repository>\n    <id>${reg}</id>\n    <url>${url}/maven2</url>\n  </repository>\n</distributionManagement>\n\nmvn deploy`,
+    terraform: `terraform {\n  required_providers {\n    <provider> = {\n      source = "${terraformHost(url)}/${reg}/<namespace>/<provider>"\n    }\n  }\n}`,
+    deb: `# Publish a .deb to pool/{distribution}/{component}\ncurl -X PUT \\\n  -H "Authorization: Bearer <your-token>" \\\n  --data-binary @hello_1.0_amd64.deb \\\n  ${url}/deb/pool/stable/main/upload`,
+    rpm: `# Publish an .rpm\ncurl -X PUT \\\n  -H "Authorization: Bearer <your-token>" \\\n  --data-binary @hello-1.0-1.x86_64.rpm \\\n  ${url}/rpm/upload`,
+  };
+});
+
+/** Terraform provider sources are keyed by hostname, not URL. */
+function terraformHost(url: string): string {
+  try {
+    return new URL(url, globalThis.location.origin).hostname;
+  } catch {
+    return globalThis.location.hostname;
+  }
+}
+
 const currentSnippet = computed(
   () =>
-    cliSnippets[registryType.value] ?? "# No CLI instructions available for this registry type.",
+    cliSnippets.value[registryType.value] ??
+    "# No CLI instructions available for this registry type.",
 );
 </script>
 

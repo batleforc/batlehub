@@ -1,8 +1,18 @@
 import type { MeResponse } from "@/client/types.gen";
 
 export interface SnippetContext {
+  /** Origin of the BatleHub API itself — the main host. */
   base: string;
   registryName: string;
+  /**
+   * Base URL clients should use for `registryName`: its own hostname-rooted URL
+   * (`https://npm.acme.io`) when one is configured, otherwise
+   * `${base}/proxy/${registryName}`. Snippets append paths to this and never
+   * write a literal `/proxy/` — where the registry lives is not their business.
+   */
+  registryUrl: string;
+  /** {@link registryUrl} for *another* registry, by name. */
+  urlFor: (name: string) => string;
   mode: string;
   isAuthenticated: boolean;
   token: string;
@@ -42,7 +52,7 @@ const authTokenOrPlaceholder = (ctx: SnippetContext) =>
 
 /** Builds `registry=<url>` plus an optional `_authToken` line for npm-compatible `.npmrc` files. */
 function buildNpmAuthLines(ctx: SnippetContext): string[] {
-  const regUrl = `${ctx.base}/proxy/${ctx.registryName}/`;
+  const regUrl = `${ctx.registryUrl}/`;
   const lines = [`registry=${regUrl}`];
   if (ctx.isAuthenticated) {
     try {
@@ -84,7 +94,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         key: "mise",
         lang: "toml",
         template: (ctx) => {
-          const { base, isAuthenticated, token, netrcHost, netrcLogin, selectedNames } = ctx;
+          const { urlFor, isAuthenticated, token, netrcHost, netrcLogin, selectedNames } = ctx;
           const gh = selectedNames["github"];
           const np = selectedNames["npm"];
           const cg = selectedNames["cargo"];
@@ -104,34 +114,34 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
               ``,
               `# ── GitHub (registry: ${gh}) ─────────────────────────────────────────────────`,
               `# API (release listings, tag metadata, asset lists)`,
-              String.raw`"regex:^https://api\\.github\\.com/repos/(.+)" = "${base}/proxy/${gh}/$1"`,
+              String.raw`"regex:^https://api\\.github\\.com/repos/(.+)" = "${urlFor(gh)}/$1"`,
               ``,
               `# Release asset binaries (browser_download_url from API responses)`,
-              String.raw`"regex:^https://github\\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/(.+)" = "${base}/proxy/${gh}/$1/$2/releases/download/$3/$4"`,
+              String.raw`"regex:^https://github\\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/(.+)" = "${urlFor(gh)}/$1/$2/releases/download/$3/$4"`,
               ``,
               `# Source tarballs`,
-              String.raw`"regex:^https://github\\.com/([^/]+)/([^/]+)/archive/(?:refs/tags/)?(.+?)\\.tar\\.gz" = "${base}/proxy/${gh}/$1/$2/tarball/$3"`,
-              String.raw`"regex:^https://codeload\\.github\\.com/([^/]+)/([^/]+)/tar\\.gz/(?:refs/tags/)?(.+)" = "${base}/proxy/${gh}/$1/$2/tarball/$3"`,
+              String.raw`"regex:^https://github\\.com/([^/]+)/([^/]+)/archive/(?:refs/tags/)?(.+?)\\.tar\\.gz" = "${urlFor(gh)}/$1/$2/tarball/$3"`,
+              String.raw`"regex:^https://codeload\\.github\\.com/([^/]+)/([^/]+)/tar\\.gz/(?:refs/tags/)?(.+)" = "${urlFor(gh)}/$1/$2/tarball/$3"`,
               ``,
               `# Zip archives`,
-              String.raw`"regex:^https://github\\.com/([^/]+)/([^/]+)/archive/(?:refs/tags/)?(.+?)\\.zip" = "${base}/proxy/${gh}/$1/$2/zipball/$3"`,
+              String.raw`"regex:^https://github\\.com/([^/]+)/([^/]+)/archive/(?:refs/tags/)?(.+?)\\.zip" = "${urlFor(gh)}/$1/$2/zipball/$3"`,
               ``,
               `# Raw files (install scripts, manifests, …)`,
-              String.raw`"regex:^https://raw\\.githubusercontent\\.com/([^/]+)/([^/]+)/([^/]+)/(.+)" = "${base}/proxy/${gh}/$1/$2/raw/$3/$4"`,
+              String.raw`"regex:^https://raw\\.githubusercontent\\.com/([^/]+)/([^/]+)/([^/]+)/(.+)" = "${urlFor(gh)}/$1/$2/raw/$3/$4"`,
             );
           }
           if (np) {
             lines.push(
               ``,
               `# ── npm (registry: ${np}) ───────────────────────────────────────────────────`,
-              String.raw`"regex:^https://registry\\.npmjs\\.org/(.+)" = "${base}/proxy/${np}/$1"`,
+              String.raw`"regex:^https://registry\\.npmjs\\.org/(.+)" = "${urlFor(np)}/$1"`,
             );
           }
           if (cg) {
             lines.push(
               ``,
               `# ── Cargo (registry: ${cg}) — downloads only, use .cargo/config.toml for full support`,
-              String.raw`"regex:^https://static\\.crates\\.io/crates/([^/]+)/([^/]+)/.+\\.crate" = "${base}/proxy/${cg}/$1/$2/download"`,
+              String.raw`"regex:^https://static\\.crates\\.io/crates/([^/]+)/([^/]+)/.+\\.crate" = "${urlFor(cg)}/$1/$2/download"`,
             );
           }
           return lines.join("\n");
@@ -156,14 +166,14 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         template: (ctx) => buildNpmAuthLines(ctx).join("\n"),
         note: (ctx) =>
           `To route only a specific scope through the proxy, use ` +
-          `<code class="font-mono bg-muted px-1 rounded">@myorg:registry=${ctx.base}/proxy/${ctx.registryName}/</code> instead.`,
+          `<code class="font-mono bg-muted px-1 rounded">@myorg:registry=${ctx.registryUrl}/</code> instead.`,
       },
       {
         key: "yarn",
         label: "Yarn Berry (.yarnrc.yml)",
         lang: "yaml",
         template: (ctx) => {
-          const lines = [`npmRegistryServer: "${ctx.base}/proxy/${ctx.registryName}/"`];
+          const lines = [`npmRegistryServer: "${ctx.registryUrl}/"`];
           if (ctx.isAuthenticated) lines.push(`npmAuthToken: "${ctx.token}"`);
           return lines.join("\n");
         },
@@ -207,7 +217,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `replace-with = "batlehub"`,
             ``,
             `[source.batlehub]`,
-            `registry = "sparse+${ctx.base}/proxy/${ctx.registryName}/registry/"`,
+            `registry = "sparse+${ctx.registryUrl}/registry/"`,
           ];
           if (ctx.isAuthenticated) {
             lines.push(``, `[registries.batlehub]`, `token = "${ctx.token}"`);
@@ -240,8 +250,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         key: "openvsx-direct",
         label: "Direct VSIX download URL",
         lang: "text",
-        template: (ctx) =>
-          `${ctx.base}/proxy/${ctx.registryName}/{publisher}.{extension}/{version}/vsix`,
+        template: (ctx) => `${ctx.registryUrl}/{publisher}.{extension}/{version}/vsix`,
         note:
           `Example: download and install via CLI — ` +
           `<code class="font-mono bg-muted px-1 rounded">` +
@@ -269,7 +278,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `# ── OpenVSX VSIX downloads ────────────────────────────────────────────────────`,
             `# Intercepts VSIX file downloads from open-vsx.org and routes them through the proxy.`,
             `# The extension ID is joined as publisher.name to match the proxy convention.`,
-            String.raw`"regex:^https://open-vsx\\.org/api/([^/]+)/([^/]+)/([^/]+)/file/.+\\.vsix$" = "${ctx.base}/proxy/${ctx.registryName}/$1.$2/$3/vsix"`,
+            String.raw`"regex:^https://open-vsx\\.org/api/([^/]+)/([^/]+)/([^/]+)/file/.+\\.vsix$" = "${ctx.registryUrl}/$1.$2/$3/vsix"`,
           );
           return lines.join("\n");
         },
@@ -283,9 +292,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `// ~/.config/VSCodium/User/product.json  (or merge into existing product.json)`,
             `{`,
             `  "extensionGallery": {`,
-            `    "serviceUrl": "${ctx.base}/proxy/${ctx.registryName}/vscode/gallery",`,
-            `    "itemUrl": "${ctx.base}/proxy/${ctx.registryName}/vscode/item",`,
-            `    "resourceUrlTemplate": "${ctx.base}/proxy/${ctx.registryName}/vscode/unpkg/{publisher}/{name}/{version}/{path}"`,
+            `    "serviceUrl": "${ctx.registryUrl}/vscode/gallery",`,
+            `    "itemUrl": "${ctx.registryUrl}/vscode/item",`,
+            `    "resourceUrlTemplate": "${ctx.registryUrl}/vscode/unpkg/{publisher}/{name}/{version}/{path}"`,
             `  }`,
             `}`,
           ].join("\n"),
@@ -318,8 +327,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         key: "vscode-marketplace-direct",
         label: "Direct VSIX download URL",
         lang: "text",
-        template: (ctx) =>
-          `${ctx.base}/proxy/${ctx.registryName}/{publisher}.{extension}/{version}/vsix`,
+        template: (ctx) => `${ctx.registryUrl}/{publisher}.{extension}/{version}/vsix`,
         note:
           `Example: download and install via CLI — ` +
           `<code class="font-mono bg-muted px-1 rounded">` +
@@ -347,7 +355,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `# ── VS Code Marketplace VSIX downloads ────────────────────────────────────────`,
             `# Intercepts VSIX downloads from marketplace.visualstudio.com and routes them`,
             `# through the proxy. The publisher and extension name are joined as publisher.name.`,
-            String.raw`"regex:^https://marketplace\\.visualstudio\\.com/_apis/public/gallery/publishers/([^/]+)/vsextensions/([^/]+)/([^/]+)/vspackage$" = "${ctx.base}/proxy/${ctx.registryName}/$1.$2/$3/vsix"`,
+            String.raw`"regex:^https://marketplace\\.visualstudio\\.com/_apis/public/gallery/publishers/([^/]+)/vsextensions/([^/]+)/([^/]+)/vspackage$" = "${ctx.registryUrl}/$1.$2/$3/vsix"`,
           );
           return lines.join("\n");
         },
@@ -361,9 +369,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `// ~/.config/VSCodium/User/product.json  (or merge into existing product.json)`,
             `{`,
             `  "extensionGallery": {`,
-            `    "serviceUrl": "${ctx.base}/proxy/${ctx.registryName}/vscode/gallery",`,
-            `    "itemUrl": "${ctx.base}/proxy/${ctx.registryName}/vscode/item",`,
-            `    "resourceUrlTemplate": "${ctx.base}/proxy/${ctx.registryName}/vscode/unpkg/{publisher}/{name}/{version}/{path}"`,
+            `    "serviceUrl": "${ctx.registryUrl}/vscode/gallery",`,
+            `    "itemUrl": "${ctx.registryUrl}/vscode/item",`,
+            `    "resourceUrlTemplate": "${ctx.registryUrl}/vscode/unpkg/{publisher}/{name}/{version}/{path}"`,
             `  }`,
             `}`,
           ].join("\n"),
@@ -399,14 +407,14 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           [
             `# Help → Edit Custom Properties… (idea.properties)`,
             `# Replaces plugins.jetbrains.com entirely for this IDE.`,
-            `idea.plugins.host=${ctx.base}/proxy/${ctx.registryName}`,
+            `idea.plugins.host=${ctx.registryUrl}`,
           ].join("\n"),
       },
       {
         key: "jbm-custom-repo",
         label: "Additive — Manage Plugin Repositories URL",
         lang: "text",
-        template: (ctx) => `${ctx.base}/proxy/${ctx.registryName}/updatePlugins.xml`,
+        template: (ctx) => `${ctx.registryUrl}/updatePlugins.xml`,
         note:
           `Settings → Plugins → ⚙ → <strong>Manage Plugin Repositories…</strong> → add the URL above. ` +
           `Lists plugins published to this registry alongside the public marketplace.`,
@@ -416,7 +424,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "Direct plugin download",
         lang: "bash",
         template: (ctx) =>
-          `curl -L "${ctx.base}/proxy/${ctx.registryName}/plugin/download?pluginId={xmlId}&version={version}" -o plugin.zip`,
+          `curl -L "${ctx.registryUrl}/plugin/download?pluginId={xmlId}&version={version}" -o plugin.zip`,
       },
       {
         key: "jbm-publish",
@@ -425,7 +433,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         showWhen: isPublishMode,
         template: (ctx) =>
           [
-            `curl -X POST "${ctx.base}/proxy/${ctx.registryName}/api/updates/upload" \\`,
+            `curl -X POST "${ctx.registryUrl}/api/updates/upload" \\`,
             `  -H "Authorization: Bearer ${authTokenOrPlaceholder(ctx)}" \\`,
             `  -F "xmlId={xmlId}" \\`,
             `  -F "channel=" \\`,
@@ -454,7 +462,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "Environment variables",
         lang: "bash",
         template: (ctx) => {
-          const proxyUrl = withCredentials(`${ctx.base}/proxy/${ctx.registryName}`, ctx);
+          const proxyUrl = withCredentials(`${ctx.registryUrl}`, ctx);
           return [
             `# Shell / CI environment — set before running go commands`,
             `export GONOSUMCHECK="*"`,
@@ -476,7 +484,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "govulncheck",
         lang: "bash",
         template: (ctx) => {
-          const proxyUrl = withCredentials(`${ctx.base}/proxy/${ctx.registryName}`, ctx);
+          const proxyUrl = withCredentials(`${ctx.registryUrl}`, ctx);
           const lines = [
             `# Point govulncheck at BatleHub (same base URL as GOPROXY)`,
             `export GOVULNDB="${proxyUrl}"`,
@@ -525,7 +533,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "~/.m2/settings.xml — proxy all Maven dependencies",
         lang: "xml",
         template: (ctx) => {
-          const { base, registryName: reg, isAuthenticated, token, netrcLogin } = ctx;
+          const { registryUrl, registryName: reg, isAuthenticated, token, netrcLogin } = ctx;
           const lines = [`<!-- ~/.m2/settings.xml -->`];
           if (isAuthenticated) {
             lines.push(
@@ -541,7 +549,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
               `    <mirror>`,
               `      <id>batlehub-${reg}</id>`,
               `      <name>BatleHub Maven Proxy</name>`,
-              `      <url>${base}/proxy/${reg}/maven2/</url>`,
+              `      <url>${registryUrl}/maven2/</url>`,
               `      <mirrorOf>*</mirrorOf>`,
               `    </mirror>`,
               `  </mirrors>`,
@@ -554,7 +562,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
               `    <mirror>`,
               `      <id>batlehub-${reg}</id>`,
               `      <name>BatleHub Maven Proxy</name>`,
-              `      <url>${base}/proxy/${reg}/maven2/</url>`,
+              `      <url>${registryUrl}/maven2/</url>`,
               `      <mirrorOf>*</mirrorOf>`,
               `    </mirror>`,
               `  </mirrors>`,
@@ -570,13 +578,13 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "xml",
         showWhen: isPublishMode,
         template: (ctx) => {
-          const { base, registryName: reg } = ctx;
+          const { registryUrl, registryName: reg } = ctx;
           return [
             `<!-- pom.xml — add <distributionManagement> inside <project> -->`,
             `<distributionManagement>`,
             `  <repository>`,
             `    <id>batlehub-${reg}</id>`,
-            `    <url>${base}/proxy/${reg}/maven2/</url>`,
+            `    <url>${registryUrl}/maven2/</url>`,
             `  </repository>`,
             `</distributionManagement>`,
             ``,
@@ -612,10 +620,12 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "~/.terraformrc — provider network mirror",
         lang: "terraform",
         template: (ctx) => {
-          const { base, registryName: reg, isAuthenticated, token } = ctx;
-          let hostPart = base;
+          const { registryUrl, isAuthenticated, token } = ctx;
+          // Terraform keys its credentials block by hostname, which is the
+          // registry's own host when it has one.
+          let hostPart = registryUrl;
           try {
-            hostPart = new URL(base).hostname;
+            hostPart = new URL(registryUrl).hostname;
           } catch {
             /* keep */
           }
@@ -623,7 +633,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `# ~/.terraformrc`,
             `provider_installation {`,
             `  network_mirror {`,
-            `    url = "${base}/proxy/${reg}/"`,
+            `    url = "${registryUrl}/"`,
             `  }`,
             `}`,
           ];
@@ -643,17 +653,17 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "bash",
         showWhen: isPublishMode,
         template: (ctx) => {
-          const { base, registryName: reg } = ctx;
+          const { registryUrl } = ctx;
           return [
             `# Upload a module (tar.gz archive)`,
             `curl -X POST \\`,
             `  -H "Authorization: Bearer ${authTokenOrPlaceholder(ctx)}" \\`,
             `  -H "Content-Type: application/gzip" \\`,
             `  --data-binary @module.tar.gz \\`,
-            `  "${base}/proxy/${reg}/v1/modules/namespace/name/provider/1.0.0"`,
+            `  "${registryUrl}/v1/modules/namespace/name/provider/1.0.0"`,
             ``,
             `# Download artifact URL returned as X-Terraform-Get header:`,
-            `# ${base}/proxy/${reg}/v1/modules/namespace/name/provider/1.0.0/artifact`,
+            `# ${registryUrl}/v1/modules/namespace/name/provider/1.0.0/artifact`,
           ].join("\n");
         },
         note:
@@ -681,8 +691,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "Bundler mirror / gem CLI source",
         lang: "bash",
         template: (ctx) => {
-          const { base, registryName: reg } = ctx;
-          const proxyUrl = withCredentials(`${base}/proxy/${reg}/`, ctx);
+          const { registryUrl } = ctx;
+          const proxyUrl = withCredentials(`${registryUrl}/`, ctx);
           return [
             `# Bundler — mirror rubygems.org through the proxy`,
             `# Run once, or commit to .bundle/config`,
@@ -704,10 +714,10 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "bash",
         showWhen: isPublishMode,
         template: (ctx) => {
-          const { base, registryName: reg, isAuthenticated, token } = ctx;
+          const { registryUrl, isAuthenticated, token } = ctx;
           const lines = [
             `# Publish a gem (local / hybrid mode only)`,
-            `gem push name-version.gem --host ${base}/proxy/${reg}`,
+            `gem push name-version.gem --host ${registryUrl}`,
           ];
           if (isAuthenticated) {
             lines.push(
@@ -746,13 +756,13 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "composer.json — add the proxy as a repository",
         lang: "jsonc",
         template: (ctx) => {
-          const { base, registryName: reg, isAuthenticated, token } = ctx;
+          const { registryUrl, isAuthenticated, token } = ctx;
           const lines = [
             `// composer.json — add inside the root object`,
             `"repositories": [`,
             `  {`,
             `    "type": "composer",`,
-            `    "url": "${base}/proxy/${reg}/",`,
+            `    "url": "${registryUrl}/",`,
           ];
           if (isAuthenticated) {
             lines.push(
@@ -772,9 +782,11 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "auth.json — credentials (never commit this file)",
         lang: "jsonc",
         template: (ctx) => {
-          let hostPart = ctx.base;
+          // The credentials are scoped to the host Composer actually talks to,
+          // which is the registry's own host when it has one.
+          let hostPart = ctx.registryUrl;
           try {
-            hostPart = new URL(ctx.base).hostname;
+            hostPart = new URL(ctx.registryUrl).hostname;
           } catch {
             /* keep */
           }
@@ -815,7 +827,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "bash",
         showWhen: isPublishMode,
         template: (ctx) => {
-          const { base, registryName: reg } = ctx;
+          const { registryUrl } = ctx;
           const tok = authTokenOrPlaceholder(ctx);
           return [
             `# Publish a package (Local / Hybrid mode only)`,
@@ -826,12 +838,12 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `  -H "Authorization: Bearer ${tok}" \\`,
             `  -H "Content-Type: application/zip" \\`,
             `  --data-binary @vendor-pkg-1.0.0.zip \\`,
-            `  "${base}/proxy/${reg}/api/upload"`,
+            `  "${registryUrl}/api/upload"`,
             ``,
             `# Yank a version`,
             `curl -X DELETE \\`,
             `  -H "Authorization: Bearer ${tok}" \\`,
-            `  "${base}/proxy/${reg}/api/packages/vendor/pkg/versions/1.0.0"`,
+            `  "${registryUrl}/api/packages/vendor/pkg/versions/1.0.0"`,
           ].join("\n");
         },
         note:
@@ -863,12 +875,19 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "~/.pip/pip.conf — global pip configuration",
         lang: "ini",
         template: (ctx) => {
-          const { base, registryName: reg, isAuthenticated, token, netrcLogin, netrcHost } = ctx;
+          const {
+            registryUrl,
+            registryName: reg,
+            isAuthenticated,
+            token,
+            netrcLogin,
+            netrcHost,
+          } = ctx;
           const lines = [
             `# ~/.pip/pip.conf  (Linux/macOS)`,
             String.raw`# %APPDATA%\pip\pip.ini  (Windows)`,
             `[global]`,
-            `index-url = ${base}/proxy/${reg}/simple/`,
+            `index-url = ${registryUrl}/simple/`,
           ];
           if (isAuthenticated) {
             lines.push(
@@ -889,12 +908,12 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "pyproject.toml — uv index configuration",
         lang: "toml",
         template: (ctx) => {
-          const { base, registryName: reg, isAuthenticated, token, netrcLogin, netrcHost } = ctx;
+          const { registryUrl, isAuthenticated, token, netrcLogin, netrcHost } = ctx;
           const lines = [
             `# pyproject.toml — add inside [tool.uv]`,
             `[[tool.uv.index]]`,
             `name = "batlehub"`,
-            `url = "${base}/proxy/${reg}/simple/"`,
+            `url = "${registryUrl}/simple/"`,
             `default = true`,
           ];
           if (isAuthenticated) {
@@ -915,21 +934,21 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "bash",
         showWhen: isPublishMode,
         template: (ctx) => {
-          const { base, registryName: reg } = ctx;
+          const { registryUrl } = ctx;
           const tok = authTokenOrPlaceholder(ctx);
           return [
             `# Publish a wheel or sdist (Local / Hybrid mode only)`,
             `# Build first: python -m build`,
             ``,
             `twine upload \\`,
-            `  --repository-url ${base}/proxy/${reg}/legacy/ \\`,
+            `  --repository-url ${registryUrl}/legacy/ \\`,
             `  --username __token__ \\`,
             `  --password ${tok} \\`,
             `  dist/*`,
             ``,
             `# Or via ~/.pypirc:`,
             `# [batlehub]`,
-            `# repository = ${base}/proxy/${reg}/legacy/`,
+            `# repository = ${registryUrl}/legacy/`,
             `# username = __token__`,
             `# password = ${tok}`,
           ].join("\n");
@@ -961,11 +980,11 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "~/.condarc — point conda at the proxy",
         lang: "yaml",
         template: (ctx) => {
-          const { base, registryName: reg, isAuthenticated, token, netrcLogin, netrcHost } = ctx;
+          const { registryUrl, isAuthenticated, token, netrcLogin, netrcHost } = ctx;
           const lines = [
             `# ~/.condarc  (or .condarc in the project root)`,
             `channels:`,
-            `  - ${base}/proxy/${reg}`,
+            `  - ${registryUrl}`,
             `  - nodefaults`,
           ];
           if (isAuthenticated) {
@@ -993,7 +1012,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           [
             `# environment.yml`,
             `channels:`,
-            `  - ${ctx.base}/proxy/${ctx.registryName}`,
+            `  - ${ctx.registryUrl}`,
             `  - nodefaults`,
             `dependencies:`,
             `  - python=3.11`,
@@ -1006,7 +1025,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "bash",
         showWhen: isPublishMode,
         template: (ctx) => {
-          const { base, registryName: reg } = ctx;
+          const { registryUrl } = ctx;
           const tok = authTokenOrPlaceholder(ctx);
           return [
             `# Publish a conda package (Local / Hybrid mode only)`,
@@ -1016,10 +1035,10 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `  -H "Authorization: Bearer ${tok}" \\`,
             `  -H "Content-Type: application/octet-stream" \\`,
             `  --data-binary @my-pkg-1.0.0-py311h0_0.tar.bz2 \\`,
-            `  "${base}/proxy/${reg}/linux-64/"`,
+            `  "${registryUrl}/linux-64/"`,
             ``,
             `# Verify: repodata.json will list your package`,
-            `curl -s "${base}/proxy/${reg}/linux-64/repodata.json" | \\`,
+            `curl -s "${registryUrl}/linux-64/repodata.json" | \\`,
             `  python3 -c "import sys,json; d=json.load(sys.stdin); print(list(d['packages'].keys())[:5])"`,
           ].join("\n");
         },
@@ -1049,12 +1068,12 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "Add NuGet source (CLI)",
         lang: "bash",
         template: (ctx) => {
-          const { base, registryName: reg, isAuthenticated } = ctx;
+          const { registryUrl, registryName: reg, isAuthenticated } = ctx;
           const tok = authTokenOrPlaceholder(ctx);
           const lines = [
             `# Register the proxy as a NuGet source`,
             `dotnet nuget add source \\`,
-            `  "${base}/proxy/${reg}/nuget/v3/index.json" \\`,
+            `  "${registryUrl}/nuget/v3/index.json" \\`,
             `  --name ${reg}`,
           ];
           if (isAuthenticated) {
@@ -1062,7 +1081,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
               ``,
               `# Or with authentication`,
               `dotnet nuget add source \\`,
-              `  "${base}/proxy/${reg}/nuget/v3/index.json" \\`,
+              `  "${registryUrl}/nuget/v3/index.json" \\`,
               `  --name ${reg} \\`,
               `  --username __token__ --password ${tok}`,
             );
@@ -1079,7 +1098,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `<?xml version="1.0" encoding="utf-8"?>`,
             `<configuration>`,
             `  <packageSources>`,
-            `    <add key="${ctx.registryName}" value="${ctx.base}/proxy/${ctx.registryName}/nuget/v3/index.json" />`,
+            `    <add key="${ctx.registryName}" value="${ctx.registryUrl}/nuget/v3/index.json" />`,
             `  </packageSources>`,
             `</configuration>`,
           ].join("\n"),
@@ -1112,18 +1131,18 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "bash",
         showWhen: isPublishMode,
         template: (ctx) => {
-          const { base, registryName: reg } = ctx;
+          const { registryUrl } = ctx;
           const tok = authTokenOrPlaceholder(ctx);
           return [
             `# Publish a .nupkg (Local / Hybrid mode only)`,
             `dotnet nuget push MyLib.1.0.0.nupkg \\`,
             `  --api-key ${tok} \\`,
-            `  --source "${base}/proxy/${reg}/nuget/v3/index.json"`,
+            `  --source "${registryUrl}/nuget/v3/index.json"`,
             ``,
             `# Yank a version`,
             `curl -X DELETE \\`,
             `  -H "Authorization: Bearer ${tok}" \\`,
-            `  "${base}/proxy/${reg}/nuget/v2/package/mylib/1.0.0"`,
+            `  "${registryUrl}/nuget/v2/package/mylib/1.0.0"`,
           ].join("\n");
         },
         note:
@@ -1152,7 +1171,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "Download release assets & archives",
         lang: "bash",
         template: (ctx) => {
-          const reg = `${ctx.base}/proxy/${ctx.registryName}`;
+          const reg = `${ctx.registryUrl}`;
           const auth = ctx.isAuthenticated ? ` \\\n  -H "Authorization: Bearer ${ctx.token}"` : "";
           return [
             `# List releases for owner/repo`,
@@ -1200,7 +1219,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "Download releases & archives",
         lang: "bash",
         template: (ctx) => {
-          const reg = `${ctx.base}/proxy/${ctx.registryName}`;
+          const reg = `${ctx.registryUrl}`;
           const auth = ctx.isAuthenticated ? ` \\\n  -H "Authorization: Bearer ${ctx.token}"` : "";
           return [
             `# List releases for a project (nested groups allowed)`,
@@ -1249,7 +1268,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "APT source",
         lang: "bash",
         template: (ctx) => {
-          const reg = `${ctx.base}/proxy/${ctx.registryName}/deb`;
+          const reg = `${ctx.registryUrl}/deb`;
           if (isPublishMode(ctx)) {
             // Local/hybrid: BatleHub signs Release with its own key (served at /key.gpg).
             return [
@@ -1286,7 +1305,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             ? `For an unsigned local repository (no <code class="font-mono bg-muted px-1 rounded">repo_signing</code> key), replace ` +
               `<code class="font-mono bg-muted px-1 rounded">[signed-by=…]</code> with <code class="font-mono bg-muted px-1 rounded">[trusted=yes]</code>.`
             : `Proxy registries relay the upstream's signature, so apt verifies against the <strong>upstream's</strong> key — ` +
-              `<code class="font-mono bg-muted px-1 rounded">${ctx.base}/proxy/${ctx.registryName}/deb/key.gpg</code> is not served (it is a local/hybrid signing artifact). ` +
+              `<code class="font-mono bg-muted px-1 rounded">${ctx.registryUrl}/deb/key.gpg</code> is not served (it is a local/hybrid signing artifact). ` +
               `A <code class="font-mono bg-muted px-1 rounded">NO_PUBKEY</code> error means that key isn't in the keyring named by ` +
               `<code class="font-mono bg-muted px-1 rounded">signed-by</code> — install <code class="font-mono bg-muted px-1 rounded">debian-archive-keyring</code>/` +
               `<code class="font-mono bg-muted px-1 rounded">ubuntu-keyring</code> (or import the upstream key), or use <code class="font-mono bg-muted px-1 rounded">[trusted=yes]</code>.`,
@@ -1337,7 +1356,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `curl -X PUT \\`,
             `  -H "Authorization: Bearer ${authTokenOrPlaceholder(ctx)}" \\`,
             `  --data-binary @hello_1.0_amd64.deb \\`,
-            `  ${ctx.base}/proxy/${ctx.registryName}/deb/pool/stable/main/upload`,
+            `  ${ctx.registryUrl}/deb/pool/stable/main/upload`,
           ].join("\n"),
       },
     ],
@@ -1360,7 +1379,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: ".repo file",
         lang: "ini",
         template: (ctx) => {
-          const reg = `${ctx.base}/proxy/${ctx.registryName}/rpm`;
+          const reg = `${ctx.registryUrl}/rpm`;
           const { isAuthenticated, token, netrcLogin } = ctx;
           const login = isAuthenticated ? netrcLogin : "<your-username>";
           const password = isAuthenticated ? token : "<your-token>";
@@ -1405,7 +1424,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `curl -X PUT \\`,
             `  -H "Authorization: Bearer ${authTokenOrPlaceholder(ctx)}" \\`,
             `  --data-binary @hello-1.0-1.x86_64.rpm \\`,
-            `  ${ctx.base}/proxy/${ctx.registryName}/rpm/upload`,
+            `  ${ctx.registryUrl}/rpm/upload`,
           ].join("\n"),
       },
     ],
@@ -1427,7 +1446,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "pacman.conf repository",
         lang: "ini",
         template: (ctx) => {
-          const reg = `${ctx.base}/proxy/${ctx.registryName}/pacman`;
+          const reg = `${ctx.registryUrl}/pacman`;
           const lines = [
             `[${ctx.registryName}]`,
             // $arch is expanded by pacman (e.g. x86_64); $repo resolves to the section name.
@@ -1460,7 +1479,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         template: (ctx) =>
           [
             `# Import BatleHub's repo key and locally trust it`,
-            `curl -fsSL ${ctx.base}/proxy/${ctx.registryName}/pacman/key.gpg \\`,
+            `curl -fsSL ${ctx.registryUrl}/pacman/key.gpg \\`,
             `  | sudo pacman-key --add -`,
             `# Find the imported key id, then locally sign it:`,
             `sudo pacman-key --lsign-key <KEYID>`,
@@ -1480,7 +1499,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `curl -X PUT \\`,
             `  -H "Authorization: Bearer ${authTokenOrPlaceholder(ctx)}" \\`,
             `  --data-binary @hello-1.0-1-x86_64.pkg.tar.zst \\`,
-            `  ${ctx.base}/proxy/${ctx.registryName}/pacman/upload`,
+            `  ${ctx.registryUrl}/pacman/upload`,
           ].join("\n"),
         note:
           `The package name, version, and architecture are read from the archive's ` +
@@ -1506,7 +1525,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "Download an IDE archive",
         lang: "bash",
         template: (ctx) => {
-          const reg = `${ctx.base}/proxy/${ctx.registryName}/jetbrains`;
+          const reg = `${ctx.registryUrl}/jetbrains`;
           const auth = ctx.isAuthenticated ? ` \\\n  -H "Authorization: Bearer ${ctx.token}"` : "";
           return [
             `# The path after /jetbrains/ maps to download.jetbrains.com/<path>`,
@@ -1566,7 +1585,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "Download a file",
         lang: "bash",
         template: (ctx) => {
-          const reg = `${ctx.base}/proxy/${ctx.registryName}/generic`;
+          const reg = `${ctx.registryUrl}/generic`;
           const auth = ctx.isAuthenticated ? ` \\\n  -H "Authorization: Bearer ${ctx.token}"` : "";
           return [
             `# The path after /generic/ maps 1:1 onto the configured upstream`,
@@ -1664,7 +1683,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "Client env vars",
         lang: "bash",
         template: (ctx) => {
-          const p = (name: string) => `${ctx.base}/proxy/${name}/generic`;
+          const p = (name: string) => `${ctx.urlFor(name)}/generic`;
           return [
             `# Each toolchain has its own mirror variable. Substitute the registry`,
             `# names you configured — these match the "Toolchain presets" tab.`,
@@ -1680,7 +1699,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `curl -fL "${p("helm-bin")}/helm-v4.2.3-linux-amd64.tar.gz" | tar xz`,
             ``,
             `# Current registry (${ctx.registryName}):`,
-            `# ${ctx.base}/proxy/${ctx.registryName}/generic/<path>`,
+            `# ${ctx.registryUrl}/generic/<path>`,
           ].join("\n");
         },
         note:
@@ -1694,7 +1713,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "mise url_replacements",
         lang: "toml",
         template: (ctx) => {
-          const p = (name: string) => `${ctx.base}/proxy/${name}/generic`;
+          const p = (name: string) => `${ctx.urlFor(name)}/generic`;
           const lines: string[] = [];
           if (ctx.isAuthenticated) {
             lines.push(

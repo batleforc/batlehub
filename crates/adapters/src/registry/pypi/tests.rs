@@ -16,7 +16,7 @@ fn name_normalization() {
 #[test]
 fn rewrite_simple_html_rewrites_cdn_urls() {
     let html = br#"<a href="https://files.pythonhosted.org/packages/ab/cd/requests-2.28.0.tar.gz#sha256=abc">requests-2.28.0.tar.gz</a>"#;
-    let out = rewrite_simple_html(html, "my-pypi", "http://localhost:8080");
+    let out = rewrite_simple_html(html, "http://localhost:8080/proxy/my-pypi");
     let out_str = std::str::from_utf8(&out).unwrap();
     assert!(out_str.contains("/proxy/my-pypi/packages/requests-2.28.0.tar.gz#sha256=abc"));
     assert!(!out_str.contains("files.pythonhosted.org"));
@@ -25,7 +25,7 @@ fn rewrite_simple_html_rewrites_cdn_urls() {
 #[test]
 fn rewrite_simple_html_keeps_relative_hrefs() {
     let html = br#"<a href="/simple/">index</a>"#;
-    let out = rewrite_simple_html(html, "my-pypi", "http://localhost:8080");
+    let out = rewrite_simple_html(html, "http://localhost:8080/proxy/my-pypi");
     let out_str = std::str::from_utf8(&out).unwrap();
     assert!(out_str.contains(r#"href="/simple/""#));
 }
@@ -38,7 +38,7 @@ fn rewrite_simple_json_rewrites_urls() {
         ]
     });
     let body = serde_json::to_vec(&json).unwrap();
-    let out = rewrite_simple_json(&body, "my-pypi", "http://localhost");
+    let out = rewrite_simple_json(&body, "http://localhost/proxy/my-pypi");
     let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
     let url = parsed["files"][0]["url"].as_str().unwrap();
     assert_eq!(
@@ -287,8 +287,7 @@ fn rewrite_simple_json_leaves_slashless_url_unchanged() {
     let out = rewrite_simple_page(
         &body,
         Some("application/vnd.pypi.simple.v1+json"),
-        "my-pypi",
-        "http://localhost",
+        "http://localhost/proxy/my-pypi",
     );
     let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(parsed["files"][0]["url"].as_str().unwrap(), "no-slash-url");

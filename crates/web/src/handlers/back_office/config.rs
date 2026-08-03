@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::io;
 use utoipa::{IntoParams, ToSchema};
 
+use batlehub_config::schema::ConfigWarning;
 use batlehub_core::{
     entities::{BannerLevel, GlobalBanner},
     error::CoreError,
@@ -38,6 +39,10 @@ fn require_hot_reload(svc: &ConfigReloadService) -> Result<(), AppError> {
 #[derive(Serialize, ToSchema)]
 pub struct ReloadResponse {
     pub diff: ReloadDiff,
+    /// Non-fatal problems with the config this response describes — the one in
+    /// force for `reload`/`apply`, the candidate one for `validate`/`from-content`.
+    /// Empty for a clean config.
+    pub warnings: Vec<ConfigWarning>,
 }
 
 /// Immediately reload the configuration (load, validate, and apply atomically).
@@ -65,7 +70,10 @@ pub async fn reload_config(
         .reload_immediate(user_id)
         .await
         .map_err(|e| AppError::bad_request(e.to_string()))?;
-    Ok(web::Json(ReloadResponse { diff }))
+    Ok(web::Json(ReloadResponse {
+        diff,
+        warnings: reload_svc.warnings(),
+    }))
 }
 
 /// Get the current pending reload (loaded by the file watcher or a previous request).
@@ -123,7 +131,10 @@ pub async fn apply_pending_reload(
             _ => AppError::bad_request(e.to_string()),
         }
     })?;
-    Ok(web::Json(ReloadResponse { diff }))
+    Ok(web::Json(ReloadResponse {
+        diff,
+        warnings: reload_svc.warnings(),
+    }))
 }
 
 /// Discard the current pending reload without applying.
@@ -278,11 +289,14 @@ pub async fn validate_config_content(
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
     require_hot_reload(&reload_svc)?;
-    let diff = reload_svc
+    let outcome = reload_svc
         .validate_content(&body.content)
         .await
         .map_err(|e| AppError::bad_request(e.to_string()))?;
-    Ok(web::Json(ReloadResponse { diff }))
+    Ok(web::Json(ReloadResponse {
+        diff: outcome.diff,
+        warnings: outcome.warnings,
+    }))
 }
 
 /// Validate a config TOML string and store it as a pending reload.
@@ -312,11 +326,48 @@ pub async fn load_config_from_content(
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
     require_hot_reload(&reload_svc)?;
-    let diff = reload_svc
+    let outcome = reload_svc
         .load_pending_from_content(&body.content, crate::services::ReloadSource::AdminRequest)
         .await
         .map_err(|e| AppError::bad_request(e.to_string()))?;
-    Ok(web::Json(ReloadResponse { diff }))
+    Ok(web::Json(ReloadResponse {
+        diff: outcome.diff,
+        warnings: outcome.warnings,
+    }))
+}
+
+// ── Config warnings ───────────────────────────────────────────────────────────
+
+#[derive(Serialize, ToSchema)]
+pub struct ConfigWarningsResponse {
+    pub warnings: Vec<ConfigWarning>,
+}
+
+/// List the non-fatal problems with the configuration currently in force.
+///
+/// These are the states `validate` accepts but degrades on — a registry name
+/// that cannot become a DNS label, a deprecated key being shadowed, a permissive
+/// security default. Each carries a stable `code` and the `path` of the offending
+/// config location, verbatim enough to search for in the TOML.
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/config/warnings",
+    tag = "back-office",
+    responses(
+        (status = 200, description = "Warnings for the active config", body = ConfigWarningsResponse),
+        (status = 403, description = "Admin role required"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[get("/api/v1/admin/config/warnings")]
+pub async fn get_config_warnings(
+    identity: AuthIdentity,
+    reload_svc: web::Data<Arc<ConfigReloadService>>,
+) -> Result<impl Responder, AppError> {
+    require_admin(&identity)?;
+    Ok(web::Json(ConfigWarningsResponse {
+        warnings: reload_svc.warnings(),
+    }))
 }
 
 // ── Banner endpoints ──────────────────────────────────────────────────────────
@@ -439,6 +490,7 @@ mod tests {
             crate::CargoIndexMap::new(HashMap::new()),
             crate::RepoSignerMap::default(),
             crate::VulnDbMap::default(),
+            crate::RegistryHostMap::default(),
             "config.toml".to_owned(),
             None,
             false, // hot_reload_enabled = false
@@ -484,6 +536,7 @@ mod tests {
             crate::CargoIndexMap::new(HashMap::new()),
             crate::RepoSignerMap::default(),
             crate::VulnDbMap::default(),
+            crate::RegistryHostMap::default(),
             "config.toml".to_owned(),
             None,
             true,

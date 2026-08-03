@@ -272,6 +272,104 @@ impl Default for VulnDbMap {
     }
 }
 
+/// Host-based registry routing tables (RFC 0001).
+///
+/// Three registry-scoped maps that always change together, materialised at
+/// config-load time so a request-time lookup is one hash lookup with no suffix
+/// parsing and no "does this registry exist" check:
+///
+/// * `by_host` — the routing table the middleware consults;
+/// * `public` — the *preferred* public URL per registry (first explicit host,
+///   else the wildcard host, prefixed with the configured scheme). This is what
+///   the API and UI advertise, and what `registry_public_base` returns for a
+///   host-only registry reached from somewhere else;
+/// * `host_only` — registries whose `/proxy/{name}/…` ingress is switched off.
+///
+/// Empty by default, which is the whole feature turned off: the middleware
+/// passes every request through untouched.
+#[derive(Clone, Default)]
+pub struct RegistryHostMap {
+    /// `"npm.acme.io"` | `"npm1.hub.example.com"` → `"npm1"`. Keys are normalised
+    /// (see `batlehub_config::schema::normalise_host`).
+    by_host: LockedMap<String>,
+    /// `"npm1"` → `"https://npm.acme.io"`.
+    public: LockedMap<String>,
+    /// `"npm1"` → `true` when `path_routing = false`.
+    host_only: LockedMap<bool>,
+}
+
+impl RegistryHostMap {
+    /// Build from resolved config bindings. `bindings` is in preference order
+    /// (explicit hosts first), so a same-registry duplicate keeps the explicit
+    /// entry. Cross-registry conflicts are already rejected by
+    /// `AppConfig::validate`.
+    pub fn new(
+        by_host: HashMap<String, String>,
+        public: HashMap<String, String>,
+        host_only: HashMap<String, bool>,
+    ) -> Self {
+        Self {
+            by_host: LockedMap::new(by_host),
+            public: LockedMap::new(public),
+            host_only: LockedMap::new(host_only),
+        }
+    }
+
+    /// The registry bound to `normalised_host`, if any. The caller must have
+    /// normalised the host already.
+    pub fn registry_for(&self, normalised_host: &str) -> Option<String> {
+        self.by_host.get(normalised_host)
+    }
+
+    /// The advertised public URL of `registry` (scheme included, no trailing
+    /// slash), when it has a host.
+    pub fn public_url_for(&self, registry: &str) -> Option<String> {
+        self.public.get(registry)
+    }
+
+    /// Whether `registry` has opted out of `/proxy/{name}/…` (RFC 0001 §4.6).
+    pub fn is_host_only(&self, registry: &str) -> bool {
+        self.host_only.get(registry).unwrap_or(false)
+    }
+
+    /// True when no host is bound at all — the feature is off and the middleware
+    /// can skip every lookup.
+    pub fn is_empty(&self) -> bool {
+        self.by_host.keys().is_empty()
+    }
+
+    /// Materialise the tables from a validated `AppConfig`.
+    ///
+    /// Assumes `AppConfig::validate` has already run: cross-registry host
+    /// conflicts are rejected there, so the first binding for a host wins here
+    /// rather than being detected as an error.
+    pub fn from_app_config(config: &batlehub_config::schema::AppConfig) -> Self {
+        let mut by_host = HashMap::new();
+        for binding in config.registry_host_bindings() {
+            by_host.entry(binding.host).or_insert(binding.registry);
+        }
+        Self::new(
+            by_host,
+            config.registry_public_urls().into_iter().collect(),
+            config
+                .host_only_registries()
+                .into_iter()
+                .map(|name| (name, true))
+                .collect(),
+        )
+    }
+
+    /// Replace this map's contents with `other`'s (called by the hot-reload applier).
+    ///
+    /// The three inner maps swap one after another, like every other hot-reload
+    /// map — see `LockedMap::replace_from`.
+    pub fn replace_from(&self, other: &Self) {
+        self.by_host.replace_from(&other.by_host);
+        self.public.replace_from(&other.public);
+        self.host_only.replace_from(&other.host_only);
+    }
+}
+
 /// Maps Cargo registry name → [`CargoIndexProxy`] (sparse-index HTTP client + URL).
 #[derive(Clone, Default)]
 pub struct CargoIndexMap(LockedMap<CargoIndexProxy>);
@@ -320,7 +418,10 @@ pub use handlers::healthz::healthz;
 pub use handlers::metrics::prometheus_metrics;
 pub use handlers::proxy::cargo::CargoIndexProxy;
 pub use middleware::AuthMiddlewareFactory;
+pub use middleware::HostRoutingMiddlewareFactory;
 pub use middleware::IpBlockMiddlewareFactory;
+pub use middleware::PeerTrust;
+pub use middleware::ProxyTrust;
 pub use middleware::RateLimitMiddlewareFactory;
 pub use middleware::RateLimitService;
 pub use middleware::UserBlockMiddlewareFactory;
@@ -385,8 +486,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             },
             config::{
                 apply_pending_reload, clear_banner, discard_pending_reload, get_config_content,
-                get_pending_reload, list_config_changes, load_config_from_content, reload_config,
-                set_banner, validate_config_content,
+                get_config_warnings, get_pending_reload, list_config_changes,
+                load_config_from_content, reload_config, set_banner, validate_config_content,
             },
             explore::invalidate_explore_cache,
             governance::{
@@ -732,6 +833,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(get_pending_reload);
     cfg.service(discard_pending_reload);
     cfg.service(list_config_changes);
+    cfg.service(get_config_warnings);
     // Config content (editor) endpoints
     cfg.service(get_config_content);
     cfg.service(validate_config_content);
@@ -830,5 +932,176 @@ pub fn configure_app(
             cfg.app_data(web::Data::new(r.clone()));
         }
         collect_routes(cfg);
+    }
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── RegistryHostMap ───────────────────────────────────────────────────────
+
+    /// A validated `AppConfig` with `extra` appended. `[server]` comes last so
+    /// `extra` may start with bare keys that land in it.
+    fn config(extra: &str) -> batlehub_config::schema::AppConfig {
+        let raw = format!(
+            r#"
+            [database]
+            type = "postgresql"
+            url = "postgresql://localhost/test"
+
+            [storage]
+            type = "filesystem"
+            path = "/tmp/batlehub-test"
+
+            [server]
+            trusted_proxies = ["10.0.0.0/8"]
+{extra}
+            "#
+        );
+        let cfg: batlehub_config::schema::AppConfig = toml::from_str(&raw).expect("parses");
+        cfg.validate().expect("valid config");
+        cfg
+    }
+
+    const WILDCARD: &str = r#"
+            [subdomain_routing]
+            enabled = true
+            base_domain = "hub.example.com"
+"#;
+
+    fn npm(name: &str, extra: &str) -> String {
+        format!(
+            "
+            [[registries]]
+            type = \"npm\"
+            name = \"{name}\"
+{extra}"
+        )
+    }
+
+    #[test]
+    fn an_unconfigured_map_is_empty_and_routes_nothing() {
+        let map = RegistryHostMap::from_app_config(&config(&npm("npm1", "")));
+        assert!(map.is_empty());
+        assert_eq!(map.registry_for("npm1.hub.example.com"), None);
+        assert_eq!(map.public_url_for("npm1"), None);
+        assert!(!map.is_host_only("npm1"));
+    }
+
+    #[test]
+    fn wildcard_hosts_are_materialised_for_every_registry() {
+        let map = RegistryHostMap::from_app_config(&config(&format!(
+            "{WILDCARD}{}{}",
+            npm("npm1", ""),
+            npm("npm2", "")
+        )));
+        assert!(!map.is_empty());
+        assert_eq!(
+            map.registry_for("npm1.hub.example.com").as_deref(),
+            Some("npm1")
+        );
+        assert_eq!(
+            map.registry_for("npm2.hub.example.com").as_deref(),
+            Some("npm2")
+        );
+    }
+
+    #[test]
+    fn explicit_and_wildcard_hosts_both_resolve_to_the_same_registry() {
+        let map = RegistryHostMap::from_app_config(&config(&format!(
+            "{WILDCARD}{}",
+            npm("npm1", "            hosts = [\"npm.acme.io\"]")
+        )));
+        assert_eq!(map.registry_for("npm.acme.io").as_deref(), Some("npm1"));
+        assert_eq!(
+            map.registry_for("npm1.hub.example.com").as_deref(),
+            Some("npm1")
+        );
+    }
+
+    #[test]
+    fn the_explicit_host_is_the_advertised_public_url() {
+        let map = RegistryHostMap::from_app_config(&config(&format!(
+            "{WILDCARD}{}",
+            npm(
+                "npm1",
+                "            hosts = [\"npm.acme.io\", \"npm2.acme.io\"]"
+            )
+        )));
+        assert_eq!(
+            map.public_url_for("npm1").as_deref(),
+            Some("https://npm.acme.io"),
+            "the first explicit host wins over the wildcard"
+        );
+    }
+
+    #[test]
+    fn the_wildcard_host_is_advertised_when_there_is_no_explicit_one() {
+        let map =
+            RegistryHostMap::from_app_config(&config(&format!("{WILDCARD}{}", npm("npm1", ""))));
+        assert_eq!(
+            map.public_url_for("npm1").as_deref(),
+            Some("https://npm1.hub.example.com")
+        );
+    }
+
+    #[test]
+    fn lookups_are_by_normalised_host() {
+        let map = RegistryHostMap::from_app_config(&config(&npm(
+            "npm1",
+            "            hosts = [\"NPM.Acme.io\"]",
+        )));
+        assert_eq!(map.registry_for("npm.acme.io").as_deref(), Some("npm1"));
+        // The caller normalises; a raw header value is deliberately not matched.
+        assert_eq!(map.registry_for("NPM.Acme.io:8443"), None);
+    }
+
+    #[test]
+    fn an_unknown_host_misses() {
+        let map =
+            RegistryHostMap::from_app_config(&config(&format!("{WILDCARD}{}", npm("npm1", ""))));
+        assert_eq!(map.registry_for("hub.example.com"), None);
+        assert_eq!(map.registry_for("evil.example.com"), None);
+    }
+
+    #[test]
+    fn host_only_registries_are_flagged() {
+        let map = RegistryHostMap::from_app_config(&config(&format!(
+            "{}{}",
+            npm(
+                "npm1",
+                "            hosts = [\"npm.acme.io\"]\n            path_routing = false"
+            ),
+            npm("npm2", "            hosts = [\"npm2.acme.io\"]")
+        )));
+        assert!(map.is_host_only("npm1"));
+        assert!(!map.is_host_only("npm2"), "path_routing defaults to true");
+        assert!(!map.is_host_only("nonexistent"));
+    }
+
+    #[test]
+    fn replace_from_swaps_every_table() {
+        let live = RegistryHostMap::from_app_config(&config(&npm(
+            "npm1",
+            "            hosts = [\"npm.acme.io\"]",
+        )));
+        let pending = RegistryHostMap::from_app_config(&config(&npm(
+            "npm2",
+            "            hosts = [\"npm2.acme.io\"]\n            path_routing = false",
+        )));
+
+        live.replace_from(&pending);
+
+        assert_eq!(live.registry_for("npm.acme.io"), None, "old host is gone");
+        assert_eq!(live.registry_for("npm2.acme.io").as_deref(), Some("npm2"));
+        assert_eq!(
+            live.public_url_for("npm2").as_deref(),
+            Some("https://npm2.acme.io")
+        );
+        assert!(live.is_host_only("npm2"));
+        assert!(!live.is_host_only("npm1"));
     }
 }

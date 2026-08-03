@@ -22,8 +22,9 @@ use batlehub_web::handlers::back_office::ops::warming::WarmingServiceMap;
 use batlehub_web::services::{BannerService, ConfigReloadService, NotificationService};
 use batlehub_web::{
     configure_app, healthz, prometheus_metrics, AccessConfigLock, ApiDoc, CargoIndexMap,
-    CliBinaryPath, IpBlockMiddlewareFactory, RateLimitMiddlewareFactory, RateLimitService,
-    RegistryMap, RegistryModeMap, UpstreamMap, UserBlockMiddlewareFactory, VulnDbMap,
+    CliBinaryPath, HostRoutingMiddlewareFactory, IpBlockMiddlewareFactory, ProxyTrust,
+    RateLimitMiddlewareFactory, RateLimitService, RegistryHostMap, RegistryMap, RegistryModeMap,
+    UpstreamMap, UserBlockMiddlewareFactory, VulnDbMap,
 };
 
 // ── Tracing span builder ──────────────────────────────────────────────────────
@@ -87,6 +88,13 @@ pub(super) struct ServerParams {
     pub beta_channel_store: Arc<dyn BetaChannelPort>,
     pub team_namespace_store: Arc<dyn TeamNamespacePort>,
     pub ip_blocking_cfg: Option<IpBlockingConfig>,
+    /// Resolved `[server].trusted_proxies` (or the deprecated
+    /// `[ip_blocking]` fallback). Registered as `app_data` so the middleware
+    /// stack and the outbound URL helper share one verdict per request.
+    pub proxy_trust: ProxyTrust,
+    /// `host -> registry` routing table for host-based ingress. Empty when the
+    /// feature is unconfigured, which makes the middleware a no-op.
+    pub registry_host_map: RegistryHostMap,
     pub cargo_index_map: CargoIndexMap,
     pub vuln_db_map: VulnDbMap,
     pub rate_limit_svc: Arc<RateLimitService>,
@@ -129,6 +137,8 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
         beta_channel_store,
         team_namespace_store,
         ip_blocking_cfg,
+        proxy_trust,
+        registry_host_map,
         cargo_index_map,
         vuln_db_map,
         rate_limit_svc,
@@ -182,6 +192,8 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
             .app_data(web::Data::new(Arc::clone(&team_namespace_store)))
             .app_data(web::Data::new(Arc::clone(&reload_svc)))
             .app_data(web::Data::new(Arc::clone(&banner_svc)))
+            .app_data(web::Data::new(proxy_trust.clone()))
+            .app_data(web::Data::new(registry_host_map.clone()))
             .service(prometheus_metrics)
             .service(healthz);
 
@@ -205,6 +217,13 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
             .wrap(actix_web::middleware::Condition::new(
                 enabled,
                 IpBlockMiddlewareFactory::new(Arc::clone(&ip_block_store), ip_block_cfg_for_mw),
+            ))
+            // Outermost, so the URI rewrite lands before route matching and the
+            // proxy-trust verdict before anything that reads a forwarded header.
+            // `.wrap` builds inside-out, so this must stay the last call.
+            .wrap(HostRoutingMiddlewareFactory::new(
+                registry_host_map.clone(),
+                proxy_trust.clone(),
             ))
             .service(batlehub_web::scalar(openapi))
             .configure(move |cfg| {

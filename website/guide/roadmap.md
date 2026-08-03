@@ -152,9 +152,24 @@ See [Configuration § Actions OIDC auth](https://git.batleforc.fr/batleforc/batl
 | Immediate reload API | ✅ Shipped | `POST /api/v1/admin/config/reload` — load, validate, and apply atomically for CI/CD |
 | Disable hot reload | ✅ Shipped | `BATLEHUB_DISABLE_HOT_RELOAD=1` returns 503 from all reload endpoints (use with read-only Kubernetes ConfigMaps) |
 | Config change audit trail | ✅ Shipped | Every reload written to `config_changes` table; `GET /api/v1/admin/config/changes` |
+| Config warnings | ✅ Shipped | Non-fatal problems surfaced at `GET /api/v1/admin/config/warnings`, inline in `/config/validate`, and on the Config Reload admin page |
 | Global admin banner | ✅ Shipped | Broadcast info / warning / error messages to all visitors; HA-safe via Redis or PostgreSQL; auto-set during reload |
 | Dynamic blocking rules from external source | Planned | Fetch and apply block rules from a signed external repository (e.g. signed Git repo) |
 | Dynamic allowlists from external source | Planned | Fetch trusted publisher / approved version lists and merge into RBAC / block rules automatically |
+
+---
+
+## Ingress & routing {#ingress-routing}
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| **Host-based registry routing** | ✅ Shipped | Bind a registry to hostnames whose root serves it, alongside `/proxy/{name}/…`. See the [guide](/guide/host-routing) |
+| Ingress-aware generated URLs | ✅ Shipped | npm `dist.tarball`, NuGet service index + registration `@id`s, PyPI simple index, Composer `metadata-url`/`dist`, Terraform `download_url`, cargo `dl`/`api` |
+| Host-only registries | ✅ Shipped | `path_routing = false` closes the subpath ingress (404, not 403) |
+| **Proxy trust** | ✅ Shipped | `[server].trusted_proxies` — one CIDR list governing every `X-Forwarded-*` header; deprecates `[ip_blocking].trusted_proxies` |
+| `public_url` in the API | ✅ Shipped | `GET /api/v1/registries`; used by the Setup Guide snippets |
+| Helm `ingress.extraHosts` | ✅ Shipped | Plus a documented `config.server.trusted_proxies` |
+| Per-host TLS inside the server | Planned | Certificates stay the ingress's job today |
 
 ---
 

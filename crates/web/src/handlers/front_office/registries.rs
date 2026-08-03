@@ -2,7 +2,7 @@ use actix_web::{get, web, Responder};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::{extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+use crate::{extractors::AuthIdentity, RegistryHostMap, RegistryMap, RegistryModeMap};
 
 #[derive(Serialize, ToSchema)]
 pub struct RegistryInfo {
@@ -10,6 +10,16 @@ pub struct RegistryInfo {
     #[serde(rename = "type")]
     pub registry_type: String,
     pub mode: String,
+    /// The registry's own hostname-rooted URL (`https://npm.acme.io`) when one is
+    /// configured, otherwise `null` — clients then fall back to
+    /// `{origin}/proxy/{name}`.
+    ///
+    /// Shown to anonymous callers too. The endpoint already filters by
+    /// `accessible_registries_for`, so a caller only ever sees registries they
+    /// can already reach; withholding the host from them would break the Setup
+    /// Guide while hiding a name that is in public DNS anyway.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_url: Option<String>,
 }
 
 /// List configured registries visible to the current user.
@@ -26,6 +36,7 @@ pub struct RegistryInfo {
 pub async fn list_registries(
     map: web::Data<RegistryMap>,
     modes: web::Data<RegistryModeMap>,
+    hosts: Option<web::Data<RegistryHostMap>>,
     access: web::Data<crate::AccessConfigLock>,
     identity: AuthIdentity,
 ) -> impl Responder {
@@ -41,6 +52,7 @@ pub async fn list_registries(
                 batlehub_config::schema::RegistryMode::Hybrid => "hybrid",
             }
             .to_string(),
+            public_url: hosts.as_ref().and_then(|h| h.public_url_for(&name)),
             name,
             registry_type,
         })

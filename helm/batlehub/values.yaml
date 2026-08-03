@@ -46,10 +46,24 @@ ingress:
     # kubernetes.io/ingress.class: nginx
     # cert-manager.io/cluster-issuer: letsencrypt-prod
   host: batlehub.example.com
+  # Additional hostnames routed to BatleHub, for host-based registry routing
+  # (`config.subdomain_routing` / a registry's `hosts`). A wildcard entry covers
+  # every derived registry host at once.
+  #
+  #   extraHosts:
+  #     - "*.batlehub.example.com"
+  #     - "npm.acme.io"
+  #
+  # Setting this makes `config.server.trusted_proxies` mandatory — the server
+  # refuses to start with host routing configured and no proxy-trust policy.
+  extraHosts: []
   tls: []
   #  - secretName: batlehub-tls
   #    hosts:
   #      - batlehub.example.com
+  #      # The certificate must carry a SAN for every extra host, including the
+  #      # wildcard: "*.batlehub.example.com".
+  #      - "*.batlehub.example.com"
 
 resources:
   requests:
@@ -113,6 +127,31 @@ config:
     # static_dir: "/app/ui/dist"
     # cors_allowed_origins:
     #   - "https://batlehub.example.com"
+    #
+    # CIDR ranges (or bare IPs) of the reverse proxies in front of BatleHub.
+    # `Forwarded` / `X-Forwarded-Host` / `X-Forwarded-Proto` / `X-Forwarded-For`
+    # are honoured only from peers inside these ranges; from anyone else the
+    # `Host` header and the connection decide.
+    #
+    # In Kubernetes this is your ingress controller's pod CIDR — enumerating pod
+    # IPs is unmaintainable, since they change on every rollout. Find it with:
+    #   kubectl cluster-info dump | grep -m1 cluster-cidr
+    #
+    #   trusted_proxies: ["10.42.0.0/16"]
+    #
+    # Absent keeps today's permissive behaviour, but is a startup error once
+    # `ingress.extraHosts` or `subdomain_routing` is in play. Use `[]` when
+    # BatleHub is exposed directly with no proxy in front of it.
+    # trusted_proxies: []
+
+  # ── [subdomain_routing] ─────────────────────────────────────────────────────
+  # Bind every registry to `<name>.<base_domain>` in addition to
+  # /proxy/<name>/…. Needs a wildcard DNS record and a matching certificate;
+  # see `ingress.extraHosts` above.
+  # subdomain_routing:
+  #   enabled: true
+  #   base_domain: "batlehub.example.com"
+  #   scheme: "https"          # only used to advertise public URLs
 
   # ── [database] ──────────────────────────────────────────────────────────────
   database:

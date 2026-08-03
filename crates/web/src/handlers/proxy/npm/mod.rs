@@ -8,7 +8,7 @@ use batlehub_core::{
 };
 
 use super::common::{
-    proxy_stream, serve_local_or_proxy_artifact, serve_local_or_proxy_json,
+    proxy_stream, registry_public_base, serve_local_or_proxy_artifact, serve_local_or_proxy_json,
     LocalOrProxyArtifactOpts,
 };
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
@@ -47,9 +47,4 @@ pub(crate) fn require_npm(
             "unknown registry '{registry}'"
         ))),
     }
-}
-
-pub(crate) fn base_url(req: &actix_web::HttpRequest) -> String {
-    let info = req.connection_info();
-    format!("{}://{}", info.scheme(), info.host())
 }

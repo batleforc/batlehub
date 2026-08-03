@@ -139,6 +139,46 @@ anonymous = ["releases:read", "source:read"]
 
 ---
 
+### Proxy trust {#trusted-proxies}
+
+BatleHub sits behind a reverse proxy in most deployments, and three headers from
+that proxy shape what it does: `Forwarded` / `X-Forwarded-Host` decides the host
+in every generated URL (and, with
+[host-based routing](/guide/host-routing), *which registry* serves the request),
+`X-Forwarded-Proto` decides `http` vs `https`, and `X-Forwarded-For` decides the
+client IP the fail2ban middleware counts violations against.
+
+`[server].trusted_proxies` states which peers may set them:
+
+```toml
+[server]
+# CIDR ranges (or bare IPs) of the reverse proxies in front of BatleHub.
+trusted_proxies = ["10.42.0.0/16", "192.168.1.10"]
+```
+
+| Value | Behaviour |
+| --- | --- |
+| absent | forwarded host/scheme believed from any client, `X-Forwarded-For` ignored (the pre-existing default) |
+| `[]` | forwarded headers ignored entirely — the `Host` header and the connection decide |
+| `[nets]` | honoured only from peers inside those prefixes |
+
+Use CIDR ranges rather than exact IPs: a Kubernetes ingress sits behind a pod
+CIDR that changes on every rollout. A bare address is treated as a `/32`
+(`/128` for IPv6).
+
+::: warning Mandatory with host-based routing
+Once `[subdomain_routing]` is enabled or any registry declares `hosts`, an absent
+list is a startup error — routing would otherwise depend on a header the server
+has no stated policy about. The error message contains the TOML to paste.
+:::
+
+::: info `[ip_blocking].trusted_proxies` is deprecated
+It still works: when `[server].trusted_proxies` is absent it is used, and then
+governs the forwarded host and scheme as well as the client IP — including
+satisfying the requirement above. When both are set, `[server]` wins. Either way
+you get a [config warning](#config-warnings).
+:::
+
 ### Registry modes
 
 Every registry can run in one of three modes:
@@ -271,6 +311,39 @@ Pending reloads expire after **10 minutes** if not applied or discarded.
 | Database URL | ❌ requires restart |
 | Auth providers | ❌ requires restart |
 | Storage backends | ❌ requires restart |
+
+### Config warnings {#config-warnings}
+
+Some config states are worth telling an operator about but not worth refusing to
+start over — a registry name that cannot become a DNS label, a deprecated key
+being shadowed, a permissive security default left in place. These are logged at
+startup and on every reload, **and** served from an endpoint so they are actually
+seen:
+
+```sh
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://localhost:8080/api/v1/admin/config/warnings
+```
+
+```json
+{
+  "warnings": [
+    {
+      "code": "proxy-trust.unconfigured",
+      "path": "server.trusted_proxies",
+      "message": "no trusted-proxy list is configured, so Forwarded / X-Forwarded-Host / …"
+    }
+  ]
+}
+```
+
+`code` is a stable slug, safe to match on in automation; `path` points at the
+offending config location verbatim, so you can search for it in the TOML.
+
+`POST /api/v1/admin/config/validate` and `/config/from-content` return the same
+shape inline under `warnings`, describing the **candidate** config — so you see
+them before applying a pending reload rather than after. The Config Reload admin
+page renders both, the active ones as a dismissible list.
 
 ### Audit trail
 

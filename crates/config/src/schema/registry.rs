@@ -45,6 +45,32 @@ pub struct RegistryConfig {
     /// ```
     #[serde(default)]
     pub path_allow: Vec<String>,
+    /// Extra hostnames whose **root** serves this registry, in addition to
+    /// `/proxy/{name}/…`. Everything reachable under the subpath is reachable
+    /// identically at the root of each of these hosts.
+    ///
+    /// ```toml
+    /// hosts = ["npm.acme.io"]
+    /// ```
+    ///
+    /// Independent of `[subdomain_routing]`: a registry can have vanity hosts
+    /// with no wildcard configured at all, and an explicit entry wins over this
+    /// registry's own wildcard host. A host claimed by two registries is a config
+    /// error. DNS and TLS for these names are the operator's job.
+    #[serde(default)]
+    pub hosts: Vec<String>,
+    /// Whether `/proxy/{name}/…` serves this registry. Defaults to `true`.
+    ///
+    /// `false` makes the registry reachable **only** through its `hosts` (or its
+    /// wildcard host), so content handed to a team under `npm.acme.io` does not
+    /// also answer on the shared main host, where it would inherit that host's
+    /// CORS policy, WAF rules and cache keys. The subpath then returns `404`, not
+    /// `403` — a disabled ingress should look absent, not forbidden.
+    ///
+    /// `path_routing = false` on a registry with no reachable host is a config
+    /// error: nothing could talk to it.
+    #[serde(default = "default_true")]
+    pub path_routing: bool,
     /// Cargo only: URL of the sparse crate index.
     /// Defaults to `https://index.crates.io` when the upstream is crates.io.
     /// Set this for self-hosted registries (e.g. Gitea/Forgejo package feeds).

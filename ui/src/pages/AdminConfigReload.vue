@@ -8,7 +8,7 @@ import {
   setBanner,
   clearBanner,
 } from "@/client/sdk.gen";
-import type { PendingReloadSnapshot, ConfigChangeRow } from "@/client/types.gen";
+import type { PendingReloadSnapshot, ConfigChangeRow, ConfigWarning } from "@/client/types.gen";
 import { useAuthFetch } from "@/composables/useAuthFetch";
 import { extractMessage } from "@/composables/useApi";
 import { useBanner } from "@/composables/useBanner";
@@ -48,6 +48,41 @@ const loadingSetBanner = ref(false);
 const loadingClearBanner = ref(false);
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+// ── Config warnings ───────────────────────────────────────────────────────────
+//
+// Non-fatal problems with the config currently in force. `activeWarnings` comes
+// from the server; `dismissedCodes` only hides them for this session — the
+// underlying config is unchanged, so they come back on the next visit until the
+// TOML is fixed.
+
+const activeWarnings = ref<ConfigWarning[]>([]);
+const candidateWarnings = ref<ConfigWarning[]>([]);
+const dismissedCodes = ref<Set<string>>(new Set());
+const visibleWarnings = computed(() =>
+  activeWarnings.value.filter((w) => !dismissedCodes.value.has(`${w.code}@${w.path}`)),
+);
+
+function dismissWarning(w: ConfigWarning) {
+  dismissedCodes.value = new Set(dismissedCodes.value).add(`${w.code}@${w.path}`);
+}
+
+async function fetchWarnings() {
+  try {
+    const res = await authFetch(`${API_BASE_URL}/api/v1/admin/config/warnings`);
+    if (!res.ok) return;
+    const body = (await res.json()) as { warnings?: ConfigWarning[] };
+    activeWarnings.value = body.warnings ?? [];
+    // A warning that has come back is worth showing again.
+    dismissedCodes.value = new Set(
+      [...dismissedCodes.value].filter((key) =>
+        activeWarnings.value.some((w) => `${w.code}@${w.path}` === key),
+      ),
+    );
+  } catch {
+    // non-critical — the panel stays as it was
+  }
+}
 
 // ── Config editor ─────────────────────────────────────────────────────────────
 
@@ -91,6 +126,8 @@ async function validateConfigContent() {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       throw new Error(body.error ?? `HTTP ${res.status}`);
     }
+    const body = (await res.json().catch(() => ({}))) as { warnings?: ConfigWarning[] };
+    candidateWarnings.value = body.warnings ?? [];
     validatedContent.value = configContent.value;
     editorSuccess.value = 'Config is valid. Click "Create Pending Reload" to stage it for apply.';
   } catch (e) {
@@ -114,6 +151,8 @@ async function createPendingFromContent() {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       throw new Error(body.error ?? `HTTP ${res.status}`);
     }
+    const body = (await res.json().catch(() => ({}))) as { warnings?: ConfigWarning[] };
+    candidateWarnings.value = body.warnings ?? [];
     validatedContent.value = null;
     editorSuccess.value = "Pending reload created. Review it below, then apply.";
     await fetchPending();
@@ -166,8 +205,7 @@ async function forceReload() {
     const diff = (data as { diff?: { added_registries: string[]; removed_registries: string[] } })
       ?.diff;
     successMsg.value = `Reloaded: +${diff?.added_registries.length ?? 0} -${diff?.removed_registries.length ?? 0} registries`;
-    await fetchPending();
-    await fetchHistory();
+    await Promise.all([fetchPending(), fetchHistory(), fetchWarnings()]);
   } catch (e: unknown) {
     errorMsg.value = extractMessage(e);
   } finally {
@@ -186,7 +224,8 @@ async function applyPending() {
       ?.diff;
     successMsg.value = `Applied: +${diff?.added_registries.length ?? 0} -${diff?.removed_registries.length ?? 0} registries`;
     pendingReload.value = null;
-    await fetchHistory();
+    candidateWarnings.value = [];
+    await Promise.all([fetchHistory(), fetchWarnings()]);
   } catch (e: unknown) {
     errorMsg.value = extractMessage(e);
   } finally {
@@ -251,7 +290,7 @@ const expiresIn = computed(() => {
 });
 
 onMounted(async () => {
-  await Promise.all([fetchPending(), fetchHistory(), loadConfigContent()]);
+  await Promise.all([fetchPending(), fetchHistory(), loadConfigContent(), fetchWarnings()]);
   pollTimer = setInterval(() => void fetchPending(), 5_000);
 });
 onUnmounted(() => {
@@ -263,6 +302,31 @@ onUnmounted(() => {
   <div class="space-y-6">
     <SectionTabs :tabs="OPERATIONS_TABS" />
     <PageHeader title="Config Reload" />
+
+    <!-- Config warnings: valid config, but something an operator should know -->
+    <Card v-if="visibleWarnings.length">
+      <CardHeader>
+        <CardTitle>Configuration warnings ({{ visibleWarnings.length }})</CardTitle>
+      </CardHeader>
+      <CardContent class="space-y-2">
+        <div
+          v-for="w in visibleWarnings"
+          :key="`${w.code}@${w.path}`"
+          class="flex items-start gap-3 rounded-sm border border-yellow-400 bg-yellow-50 dark:bg-yellow-900/20 px-4 py-2 text-sm text-yellow-800 dark:text-yellow-300"
+        >
+          <div class="flex-1 space-y-1">
+            <div class="flex items-center gap-2">
+              <code class="font-mono text-xs bg-yellow-100 dark:bg-yellow-900/40 px-1 rounded">{{
+                w.path
+              }}</code>
+              <Badge variant="outline">{{ w.code }}</Badge>
+            </div>
+            <p>{{ w.message }}</p>
+          </div>
+          <Button variant="ghost" size="sm" @click="dismissWarning(w)">Dismiss</Button>
+        </div>
+      </CardContent>
+    </Card>
 
     <!-- Config Editor -->
     <Card>
@@ -292,6 +356,18 @@ onUnmounted(() => {
           class="rounded-sm bg-primary/10 border border-primary/30 px-4 py-2 text-primary text-sm"
         >
           {{ editorSuccess }}
+        </div>
+        <div v-if="candidateWarnings.length" class="space-y-2">
+          <p class="text-sm text-muted-foreground">
+            This config is valid but raises {{ candidateWarnings.length }} warning(s):
+          </p>
+          <div
+            v-for="w in candidateWarnings"
+            :key="`${w.code}@${w.path}`"
+            class="rounded-sm border border-yellow-400 bg-yellow-50 dark:bg-yellow-900/20 px-4 py-2 text-sm text-yellow-800 dark:text-yellow-300"
+          >
+            <code class="font-mono text-xs">{{ w.path }}</code> — {{ w.message }}
+          </div>
         </div>
         <div
           v-if="editorError"

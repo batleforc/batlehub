@@ -15,6 +15,26 @@ port = 8080
 # Restrict CORS to specific frontend origins in production.
 # When absent, all origins are allowed (fine for local dev).
 # cors_allowed_origins = ["https://batlehub.example.com"]
+#
+# ── Proxy trust ───────────────────────────────────────────────────────────────
+# CIDR ranges (or bare IPs) of the reverse proxies in front of BatleHub.
+# `Forwarded` / `X-Forwarded-Host` / `X-Forwarded-Proto` / `X-Forwarded-For` are
+# honoured only when the TCP peer falls inside one of these; from anyone else the
+# `Host` header and the connection decide.
+#
+# These headers decide the URLs BatleHub advertises in NuGet service indexes,
+# npm `dist.tarball`, PyPI simple pages and so on — and, with host-based routing
+# (see [subdomain_routing] below), *which registry* serves the request. So who
+# may set them is a policy worth stating explicitly.
+#
+#   absent  -> legacy permissive: forwarded host/scheme believed from anyone,
+#              `X-Forwarded-For` ignored. A hard error once host routing is on.
+#   []      -> forwarded headers ignored entirely (BatleHub exposed directly).
+#   [nets]  -> honoured only from peers inside those prefixes.
+#
+# A bare address is treated as a /32 (or /128), so every value that was valid
+# for the deprecated `[ip_blocking].trusted_proxies` stays valid here.
+# trusted_proxies = ["10.42.0.0/16", "192.168.1.10"]
 
 [database]
 type = "postgresql"
@@ -672,6 +692,55 @@ anonymous = ["releases:read"]
 # violation_window_secs = 300      # counting window in seconds (default: 300)
 # ban_duration_secs     = 3600     # how long to block the IP (default: 3600)
 # trigger_on_status     = [429, 401]   # HTTP status codes that count as violations
+#
+# `[ip_blocking].trusted_proxies` still works but is **deprecated**: proxy trust
+# is now a server-level setting covering the forwarded host and scheme as well as
+# the client IP. Move the list to [server].trusted_proxies (see above); until you
+# do, it is honoured for all three and reported as a config warning.
+
+# ── Host-based (subdomain) registry routing ───────────────────────────────────
+#
+# Every registry is always reachable at /proxy/{name}/…. This section adds a
+# second ingress: a hostname whose *root* is the registry, so
+#
+#     https://npm1.hub.example.com/lodash
+#
+# means exactly what https://hub.example.com/proxy/npm1/lodash means. Useful for
+# ecosystems that assume they own the origin root (cargo publishes to
+# /api/v1/crates/new, GitLab serves /api/v4/…), and for handing a team a stable
+# vanity hostname.
+#
+# On a registry host *every* path belongs to that registry — the admin API, the
+# SPA, /healthz and /metrics live on the main host only.
+#
+# Operator prerequisites: a DNS record (or wildcard) per host, a certificate
+# covering it, a reverse proxy that forwards the original Host, and
+# [server].trusted_proxies listing that proxy — see above. Configuring host
+# routing without a trusted-proxy policy is a startup error, because routing
+# would depend on a header the server has no stated policy about.
+#
+# [subdomain_routing]
+# enabled     = true                # derive <name>.<base_domain> for every registry
+# base_domain = "hub.example.com"   # npm1.hub.example.com -> registry "npm1"
+# scheme      = "https"             # only used to advertise public URLs; never routes
+#
+# Per registry (independent of [subdomain_routing] — a registry can have vanity
+# hosts with no wildcard configured at all):
+#
+#   [[registries]]
+#   name         = "npm1"
+#   type         = "npm"
+#   hosts        = ["npm.acme.io"]  # extra hostnames rooted at this registry
+#   path_routing = true             # default; false => the host is the only ingress
+#
+# `path_routing = false` makes /proxy/npm1/… return 404, so content handed to a
+# team under npm.acme.io does not also answer on the shared main host. A registry
+# with path_routing = false and no reachable host is a config error.
+#
+# A host claimed by two registries, a `hosts` entry equal to `base_domain`, and a
+# `hosts` entry that is a URL rather than a bare hostname are all rejected at
+# startup. A registry name that is not a valid DNS label simply gets no wildcard
+# host, with a warning at GET /api/v1/admin/config/warnings.
 
 # ── Vulnerability scanning ────────────────────────────────────────────────────
 #

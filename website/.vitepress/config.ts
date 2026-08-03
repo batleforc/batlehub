@@ -181,6 +181,7 @@ export default defineConfig({
           items: [
             { text: "Caching", link: "/guide/caching" },
             { text: "Access Control", link: "/guide/access-control" },
+            { text: "Host-based routing", link: "/guide/host-routing" },
             {
               text: "Package Explorer",
               link: "/guide/package-explorer",

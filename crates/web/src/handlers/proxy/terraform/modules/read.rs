@@ -1,7 +1,7 @@
 use batlehub_core::error::CoreError;
 
 use super::{
-    append_signature_headers, base_url_from_req, get, require_local_mode, require_registry_type,
+    append_signature_headers, get, registry_public_base, require_local_mode, require_registry_type,
     terraform_versions_response, web, AppError, Arc, AuthIdentity, HttpRequest, HttpResponse,
     LocalRegistryService, ProxyService, RegistryMap, RegistryMode, RegistryModeMap, Responder,
     UpstreamMap,
@@ -89,10 +89,9 @@ pub async fn terraform_module_download(
 
     let mode = mode_map.get(&registry);
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        let base_url = base_url_from_req(&req);
-        let artifact_url = format!(
-            "{base_url}/proxy/{registry}/v1/modules/{namespace}/{name}/{provider}/{version}/artifact"
-        );
+        let base_url = registry_public_base(&req, &registry);
+        let artifact_url =
+            format!("{base_url}/v1/modules/{namespace}/{name}/{provider}/{version}/artifact");
         return Ok(HttpResponse::NoContent()
             .insert_header(("X-Terraform-Get", artifact_url))
             .finish());

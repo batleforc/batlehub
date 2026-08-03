@@ -1,5 +1,5 @@
 use super::{
-    base_url, get, post, proxy_stream, require_npm, require_npm_or_cargo,
+    get, post, proxy_stream, registry_public_base, require_npm, require_npm_or_cargo,
     serve_local_or_proxy_artifact, serve_local_or_proxy_json, web, AppError, Arc, AuthIdentity,
     HttpRequest, HttpResponse, LocalOrProxyArtifactOpts, LocalRegistryService, PackageId,
     ProxyService, RegistryMap, RegistryModeMap, Responder, UpstreamMap,
@@ -36,7 +36,7 @@ pub async fn get_packument(
 
     let pkg = PackageId::new(&registry, &package, "latest");
     if map.is_type(&registry, "npm") {
-        let url = base_url(&req);
+        let url = registry_public_base(&req, &registry);
         let not_found_msg = format!("package '{package}' not found");
         let (fetch_registry, fetch_package) = (registry.clone(), package.clone());
         return serve_local_or_proxy_json(
@@ -99,7 +99,7 @@ pub async fn get_version(
 
     let pkg = PackageId::new(&registry, &package, &version);
     if map.is_type(&registry, "npm") {
-        let url = base_url(&req);
+        let url = registry_public_base(&req, &registry);
         let not_found_msg = format!("{package}@{version} not found");
         let (fetch_registry, fetch_package, fetch_version) =
             (registry.clone(), package.clone(), version.clone());

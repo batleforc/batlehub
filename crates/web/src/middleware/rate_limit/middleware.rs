@@ -17,16 +17,7 @@ use batlehub_core::entities::Identity;
 
 use super::store::RateLimitService;
 
-/// Extract the registry name from a proxy path like `/proxy/{registry}/...`.
-pub fn extract_registry_from_path(path: &str) -> Option<&str> {
-    let mut segments = path.splitn(4, '/');
-    segments.next(); // leading ""
-    let prefix = segments.next()?; // "proxy"
-    if prefix != "proxy" {
-        return None;
-    }
-    segments.next() // registry name
-}
+pub use crate::middleware::extract_registry_from_path;
 
 // ── Middleware factory ────────────────────────────────────────────────────────
 

@@ -1,6 +1,6 @@
 use actix_web::{get, web, HttpRequest, HttpResponse, Responder};
 
-use super::super::common::require_registry_type;
+use super::super::common::{registry_public_base, require_registry_type};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
 /// Return a NuGet v3 service index pointing all resource URLs back to this proxy.
@@ -28,11 +28,9 @@ pub async fn nuget_service_index(
     let registry = path.into_inner();
     require_registry_type(&registry, "nuget", &map)?;
 
-    // Build the base URL from the incoming request so the service index works
-    // behind reverse proxies and in local dev alike.
-    let conn = req.connection_info();
-    let base = format!("{}://{}", conn.scheme(), conn.host());
-    drop(conn);
+    // Built from the incoming request so the service index works behind reverse
+    // proxies, on a registry host, and in local dev alike.
+    let base = registry_public_base(&req, &registry);
 
     let _ = &identity; // auth enforced by middleware; referenced to satisfy extractor
 
@@ -40,32 +38,32 @@ pub async fn nuget_service_index(
         "version": "3.0.0",
         "resources": [
             {
-                "@id": format!("{base}/proxy/{registry}/nuget/v3/registration5/"),
+                "@id": format!("{base}/nuget/v3/registration5/"),
                 "@type": "RegistrationsBaseUrl/3.6.0",
                 "comment": "Base URL for NuGet package registration (metadata)"
             },
             {
-                "@id": format!("{base}/proxy/{registry}/nuget/v3/flat/"),
+                "@id": format!("{base}/nuget/v3/flat/"),
                 "@type": "PackageBaseAddress/3.0.0",
                 "comment": "Base URL for NuGet package content (flat container)"
             },
             {
-                "@id": format!("{base}/proxy/{registry}/nuget/api/v2/package"),
+                "@id": format!("{base}/nuget/api/v2/package"),
                 "@type": "PackagePublish/2.0.0",
                 "comment": "Publish .nupkg files"
             },
             {
-                "@id": format!("{base}/proxy/{registry}/nuget/v3/query"),
+                "@id": format!("{base}/nuget/v3/query"),
                 "@type": "SearchQueryService",
                 "comment": "NuGet package search"
             },
             {
-                "@id": format!("{base}/proxy/{registry}/nuget/v3/query"),
+                "@id": format!("{base}/nuget/v3/query"),
                 "@type": "SearchQueryService/3.5.0",
                 "comment": "NuGet package search"
             },
             {
-                "@id": format!("{base}/proxy/{registry}/nuget/v3/vulnerabilities/"),
+                "@id": format!("{base}/nuget/v3/vulnerabilities/"),
                 "@type": "VulnerabilitiesUrl/6.7.0",
                 "comment": "NuGet vulnerability database"
             }

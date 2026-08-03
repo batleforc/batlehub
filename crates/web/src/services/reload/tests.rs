@@ -52,6 +52,7 @@ async fn make_svc_with_file_and_builder(
         crate::CargoIndexMap::new(HashMap::new()),
         crate::RepoSignerMap::default(),
         crate::VulnDbMap::default(),
+        crate::RegistryHostMap::default(),
         path,
         None,
         enabled,
@@ -88,6 +89,7 @@ pub(super) fn make_svc(enabled: bool) -> Arc<ConfigReloadService> {
         crate::CargoIndexMap::new(HashMap::new()),
         crate::RepoSignerMap::default(),
         crate::VulnDbMap::default(),
+        crate::RegistryHostMap::default(),
         "config.toml".to_owned(),
         None,
         enabled,
@@ -204,6 +206,8 @@ async fn apply_success_swaps_hot_config() {
         new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         new_repo_signer_map: crate::RepoSignerMap::from(new_signers),
         new_vuln_db_map: crate::VulnDbMap::default(),
+        new_registry_host_map: crate::RegistryHostMap::default(),
+        warnings: Vec::new(),
     };
     *svc.pending.lock().unwrap() = Some(pending);
 
@@ -263,6 +267,7 @@ async fn reload_immediate_applies_config() {
             cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
             repo_signer_map: crate::RepoSignerMap::default(),
             vuln_db_map: crate::VulnDbMap::default(),
+            registry_host_map: crate::RegistryHostMap::default(),
         })
     });
     let svc = Arc::new(ConfigReloadService::new(
@@ -274,6 +279,7 @@ async fn reload_immediate_applies_config() {
         crate::CargoIndexMap::new(HashMap::new()),
         crate::RepoSignerMap::default(),
         crate::VulnDbMap::default(),
+        crate::RegistryHostMap::default(),
         tmp_path.clone(),
         None,
         true,
@@ -348,6 +354,8 @@ fn make_pending(expires_offset_secs: i64, already_expired: bool) -> PendingReloa
         new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         new_repo_signer_map: crate::RepoSignerMap::default(),
         new_vuln_db_map: crate::VulnDbMap::default(),
+        new_registry_host_map: crate::RegistryHostMap::default(),
+        warnings: Vec::new(),
     }
 }
 
@@ -414,6 +422,7 @@ async fn load_pending_stores_pending_even_when_diff_is_structurally_noop() {
             cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
             repo_signer_map: crate::RepoSignerMap::default(),
             vuln_db_map: crate::VulnDbMap::default(),
+            registry_host_map: crate::RegistryHostMap::default(),
         })
     });
     let minimal_config = r#"
@@ -467,6 +476,7 @@ async fn load_pending_skips_rebuild_when_raw_content_is_unchanged() {
             cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
             repo_signer_map: crate::RepoSignerMap::default(),
             vuln_db_map: crate::VulnDbMap::default(),
+            registry_host_map: crate::RegistryHostMap::default(),
         })
     });
     let minimal_config = r#"
@@ -539,6 +549,8 @@ async fn load_pending_from_content_stores_raw_content_in_pending() {
         new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         new_repo_signer_map: crate::RepoSignerMap::default(),
         new_vuln_db_map: crate::VulnDbMap::default(),
+        new_registry_host_map: crate::RegistryHostMap::default(),
+        warnings: Vec::new(),
     };
     *svc.pending.lock().unwrap() = Some(pending);
 
@@ -576,6 +588,8 @@ async fn apply_writes_editor_content_to_disk() {
         new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         new_repo_signer_map: crate::RepoSignerMap::default(),
         new_vuln_db_map: crate::VulnDbMap::default(),
+        new_registry_host_map: crate::RegistryHostMap::default(),
+        warnings: Vec::new(),
     };
     *svc.pending.lock().unwrap() = Some(pending);
 
@@ -617,6 +631,8 @@ async fn apply_with_no_content_leaves_file_unchanged() {
         new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         new_repo_signer_map: crate::RepoSignerMap::default(),
         new_vuln_db_map: crate::VulnDbMap::default(),
+        new_registry_host_map: crate::RegistryHostMap::default(),
+        warnings: Vec::new(),
     };
     *svc.pending.lock().unwrap() = Some(pending);
     svc.apply("test-user").await.unwrap();

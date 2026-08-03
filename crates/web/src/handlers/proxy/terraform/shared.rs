@@ -1,13 +1,8 @@
 use super::{
     dispatch_notification, proxy_stream, require_local_mode, require_registry_type, web, AppError,
-    Arc, AuthIdentity, HttpRequest, HttpResponse, LocalRegistryService, NotificationEventType,
+    Arc, AuthIdentity, HttpResponse, LocalRegistryService, NotificationEventType,
     NotificationService, PackageId, ProxyService, RegistryMap, RegistryMode, RegistryModeMap,
 };
-
-pub fn base_url_from_req(req: &HttpRequest) -> String {
-    let info = req.connection_info();
-    format!("{}://{}", info.scheme(), info.host())
-}
 
 /// The data describing a single Terraform yank/unyank request — everything
 /// [`terraform_set_yanked`] needs about *what* is being (un)yanked, grouped so

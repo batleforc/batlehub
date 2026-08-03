@@ -4,7 +4,9 @@ use uuid::Uuid;
 use batlehub_config::load_from_str as load_config_from_str;
 use batlehub_core::entities::{BannerLevel, GlobalBanner};
 
-use super::{ConfigReloadService, PendingReload, ReloadDiff, ReloadSource, PENDING_TTL_SECS};
+use super::{
+    ConfigReloadService, PendingReload, ReloadDiff, ReloadOutcome, ReloadSource, PENDING_TTL_SECS,
+};
 
 /// The 3 distinguishable failure modes of [`ConfigReloadService::apply`],
 /// wrapped into the `anyhow::Error` it returns so callers that need to tell
@@ -51,14 +53,18 @@ impl ConfigReloadService {
     }
 
     /// Validates a config TOML string without storing a pending reload.
-    /// Returns the diff that would result from applying the new config.
-    pub async fn validate_content(&self, content: &str) -> Result<ReloadDiff, anyhow::Error> {
+    /// Returns the diff that would result from applying the new config, plus the
+    /// warnings it would raise — so an admin sees them before committing to it.
+    pub async fn validate_content(&self, content: &str) -> Result<ReloadOutcome, anyhow::Error> {
         if !self.hot_reload_enabled {
             anyhow::bail!("hot reload is disabled (BATLEHUB_DISABLE_HOT_RELOAD=1)");
         }
         let new_config = load_config_from_str(content)?;
         let built = (self.builder)(&new_config)?;
-        Ok(self.compute_diff(&built.hot, &built.access).await)
+        Ok(ReloadOutcome {
+            diff: self.compute_diff(&built.hot, &built.access).await,
+            warnings: new_config.warnings(),
+        })
     }
 
     /// Same as `load_pending` but parses the config from a supplied TOML string
@@ -67,20 +73,26 @@ impl ConfigReloadService {
         &self,
         content: &str,
         source: ReloadSource,
-    ) -> Result<ReloadDiff, anyhow::Error> {
+    ) -> Result<ReloadOutcome, anyhow::Error> {
         if !self.hot_reload_enabled {
             anyhow::bail!("hot reload is disabled (BATLEHUB_DISABLE_HOT_RELOAD=1)");
         }
         if self.mark_seen_and_check_unchanged(content) {
-            return Ok(ReloadDiff::default());
+            // Byte-identical to the last load attempt: nothing to rebuild, so the
+            // warnings in force are still the right answer.
+            return Ok(ReloadOutcome {
+                diff: ReloadDiff::default(),
+                warnings: self.config_warnings.get(),
+            });
         }
         let new_config = load_config_from_str(content)?;
+        let warnings = new_config.warnings();
         let diff = self.build_pending(new_config, source).await?;
         // Store the raw content so apply() can persist it to disk.
         if let Some(ref mut p) = *self.pending.lock().expect("pending reload lock poisoned") {
             p.content = Some(content.to_owned());
         }
-        Ok(diff)
+        Ok(ReloadOutcome { diff, warnings })
     }
 
     /// Read the current on-disk config content without parsing or validating it.
@@ -111,6 +123,7 @@ impl ConfigReloadService {
     ) -> Result<ReloadDiff, anyhow::Error> {
         let built = (self.builder)(&new_config)?;
         let diff = self.compute_diff(&built.hot, &built.access).await;
+        let warnings = new_config.warnings();
         let now = Utc::now();
         let pending = PendingReload {
             id: Uuid::new_v4(),
@@ -127,6 +140,8 @@ impl ConfigReloadService {
             new_cargo_index_map: built.cargo_index_map,
             new_repo_signer_map: built.repo_signer_map,
             new_vuln_db_map: built.vuln_db_map,
+            new_registry_host_map: built.registry_host_map,
+            warnings,
         };
         *self.pending.lock().expect("pending reload lock poisoned") = Some(pending);
         Ok(diff)
@@ -200,6 +215,13 @@ impl ConfigReloadService {
             .replace_from(&pending.new_repo_signer_map);
         // Swap the Go vuln DB URL map; reuse the existing HTTP client.
         self.vuln_db_map.replace_from(&pending.new_vuln_db_map);
+        // Swap the host -> registry routing table so a reload that adds, moves or
+        // removes a `hosts` entry takes effect without a process restart.
+        self.registry_host_map
+            .replace_from(&pending.new_registry_host_map);
+        // Refresh (and re-log) the config warnings so the admin endpoint describes
+        // the config that is now in force, not the one it replaced.
+        self.config_warnings.replace(pending.warnings.clone());
 
         // Clear the in-progress banner on success.
         if let Some(ref banner) = self.banner {

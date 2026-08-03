@@ -186,6 +186,7 @@ impl TestServer {
             batlehub_web::CargoIndexMap::default(),
             batlehub_web::RepoSignerMap::default(),
             batlehub_web::VulnDbMap::default(),
+            batlehub_web::RegistryHostMap::default(),
             "config.toml".to_owned(),
             None,
             false, // hot reload disabled -> deterministic 503 for `admin config reload`

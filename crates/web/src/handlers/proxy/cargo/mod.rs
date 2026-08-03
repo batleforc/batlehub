@@ -12,8 +12,8 @@ use batlehub_core::{
 };
 
 use super::common::{
-    collect_payload, extract_signature_headers, require_local_mode, serve_local_or_proxy_artifact,
-    LocalOrProxyArtifactOpts,
+    collect_payload, extract_signature_headers, registry_public_base, require_local_mode,
+    serve_local_or_proxy_artifact, LocalOrProxyArtifactOpts,
 };
 use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, CargoIndexMap,

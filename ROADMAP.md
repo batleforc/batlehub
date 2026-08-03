@@ -107,8 +107,21 @@ Current adapters: npm, Cargo, GitHub, Forgejo/Gitea, GitLab, OpenVSX, VS Code Ma
 - [x] Audit trail for all config changes (who triggered, what changed, when) — stored in `config_changes` table; retrievable via `GET /api/v1/admin/config/changes`
 - [x] **Global admin banner** — broadcast a message (info / warning / error) to all website visitors; automatically set during a reload and cleared on completion; backed by in-memory, Redis, or PostgreSQL depending on the cache backend; `PUT/DELETE /api/v1/admin/banner` + `/admin/config-reload` UI page
 - [x] `BATLEHUB_DISABLE_HOT_RELOAD=1` — disable the file watcher and all reload endpoints (e.g. when config is a read-only Kubernetes ConfigMap)
+- [x] **Config warnings** — non-fatal problems (`AppConfig::warnings()`) logged at startup and on every reload, served from `GET /api/v1/admin/config/warnings`, returned inline by `/config/validate` and `/config/from-content`, and rendered on the Config Reload admin page. Each carries a stable `code` and the `path` of the offending config location
 - [ ] Dynamic blocking rules fetched from an external trusted source (e.g. a signed Git repository); verify signatures before applying
 - [ ] Dynamic allowlists of trusted publishers or approved versions, fetched from an external source and merged into RBAC / block rules automatically
+
+---
+
+## Ingress & routing
+
+- [x] **Host-based (subdomain) registry routing** — bind a registry to one or more hostnames whose root serves it, in addition to `/proxy/{name}/…`. `[subdomain_routing]` derives `<name>.<base_domain>` for every registry; `registries[].hosts` adds vanity hosts. One outermost middleware rewrites the URI, so none of the ~249 route definitions change; the host table is hot-reloadable like every other registry-scoped map (RFC `docs/future-feature/0001-subdomain-routing.md`)
+- [x] Every self-referencing URL reflects the ingress the client used — one `registry_public_base` helper replaced 8 ad-hoc base-URL builders, ~25 `format!("{base}/proxy/{registry}/…")` sites and the `base_url` contract of 5 `LocalRegistryService` methods
+- [x] `registries[].path_routing = false` — make a registry reachable *only* by host, so isolated content does not also answer on the shared main host (404, not 403)
+- [x] **Proxy trust** (`[server].trusted_proxies`) — one CIDR list governing `Forwarded` / `X-Forwarded-Host` / `X-Forwarded-Proto` / `X-Forwarded-For` alike, resolved once per request. Closes the previously unconditional trust of the forwarded host and scheme; deprecates `[ip_blocking].trusted_proxies`
+- [x] `RegistryInfo.public_url` on `GET /api/v1/registries`, used by the Setup Guide and namespace upload snippets
+- [x] Helm `ingress.extraHosts` + documented `config.server.trusted_proxies`
+- [ ] Per-host TLS certificate management inside the server (currently the ingress's job)
 
 ---
 

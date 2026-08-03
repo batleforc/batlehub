@@ -16,7 +16,7 @@ use batlehub_core::{
 };
 
 use super::render::{plugin_repository_xml, update_plugins_xml, ExtraMeta, RenderEntry};
-use super::{proxy_base, require_jbm, STABLE_CHANNEL};
+use super::{registry_public_base, require_jbm, STABLE_CHANNEL};
 use crate::handlers::proxy::common::require_local_mode;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
@@ -61,13 +61,13 @@ pub async fn jbm_update_plugins_xml(
         .await
         .map_err(AppError::from)?;
 
-    let base = proxy_base(&req);
+    let base = registry_public_base(&req, &registry);
     let entries: Vec<RenderEntry> = plugins
         .iter()
         .map(|p| {
             let mut e = RenderEntry::from_local(p);
             e.download_url = Some(format!(
-                "{base}/proxy/{registry}/plugin/download?pluginId={}&version={}",
+                "{base}/plugin/download?pluginId={}&version={}",
                 p.xml_id, p.version
             ));
             e

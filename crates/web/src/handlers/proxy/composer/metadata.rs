@@ -9,12 +9,10 @@ use batlehub_core::{
 };
 
 use crate::handlers::proxy::common::{
-    require_registry_type, serve_local_or_proxy_artifact, serve_local_or_proxy_json,
-    LocalOrProxyArtifactOpts,
+    registry_public_base, require_registry_type, serve_local_or_proxy_artifact,
+    serve_local_or_proxy_json, LocalOrProxyArtifactOpts,
 };
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
-
-use super::build_base_url;
 
 // ── packages.json ─────────────────────────────────────────────────────────────
 
@@ -46,8 +44,8 @@ pub async fn composer_packages_json(
     let registry = path.into_inner();
     require_registry_type(&registry, "composer", &map)?;
 
-    let base_url = build_base_url(&req);
-    let metadata_url = format!("{base_url}/proxy/{registry}/p2/%package%.json");
+    let base_url = registry_public_base(&req, &registry);
+    let metadata_url = format!("{base_url}/p2/%package%.json");
 
     let mode = mode_map.get(&registry);
     let available_packages: Vec<String> =
@@ -114,7 +112,7 @@ pub async fn composer_p2_metadata(
     let is_dev = p2_path.contains('~');
     let p2_artifact = if is_dev { "p2~dev" } else { "p2" };
 
-    let base_url = build_base_url(&req);
+    let base_url = registry_public_base(&req, &registry);
 
     // Use version="_index" so the artifact key is stable; p2_artifact encodes the ~dev variant.
     let pkg = PackageId::new(&registry, &package_name, "_index").with_artifact(p2_artifact);

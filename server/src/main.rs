@@ -171,6 +171,12 @@ async fn main() -> Result<()> {
     let ip_block_store = stores::create_ip_block_store(&config, repo.pool()).await?;
     let user_block_repo = stores::create_user_block_repository(repo.pool());
     let ip_blocking_cfg = config.ip_blocking.clone();
+    // Resolved once at startup: `[server].trusted_proxies`, falling back to the
+    // deprecated `[ip_blocking].trusted_proxies`. Not hot-reloadable — it decides
+    // which peers may influence routing, so swapping it under in-flight requests
+    // would let one request straddle two trust policies.
+    let proxy_trust = batlehub_web::ProxyTrust::from_config(config.effective_trusted_proxies());
+    let registry_host_map = batlehub_web::RegistryHostMap::from_app_config(&config);
     let local_svc = Arc::new(LocalRegistryService {
         backend: local_registry_backend,
         storage: storage.clone(),
@@ -225,12 +231,17 @@ async fn main() -> Result<()> {
         cargo_index_map.clone(),
         repo_signer_map.clone(),
         vuln_db_map.clone(),
+        registry_host_map.clone(),
         config_path.clone(),
         Some(Arc::clone(&config_change_repo)),
         hot_reload_enabled,
         hot_builder,
         Some(Arc::clone(&banner_svc)),
     ));
+
+    // Seed the warning store from the config we booted with (this also logs each
+    // one). Reloads refresh it themselves.
+    reload_svc.set_warnings(config.warnings());
 
     if hot_reload_enabled {
         watcher::spawn_config_watcher(config_path.clone(), Arc::clone(&reload_svc));
@@ -306,6 +317,8 @@ async fn main() -> Result<()> {
         beta_channel_store,
         team_namespace_store,
         ip_blocking_cfg,
+        proxy_trust,
+        registry_host_map,
         cargo_index_map,
         rate_limit_svc,
         auth_providers,

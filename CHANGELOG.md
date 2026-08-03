@@ -8,6 +8,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Host-based (subdomain) registry routing.** A registry can now be bound to one
+  or more hostnames whose root serves it, in addition to `/proxy/{name}/…`:
+  `https://npm.acme.io/lodash` means exactly what
+  `https://hub.example.com/proxy/npm1/lodash` means. Configure a wildcard with
+  `[subdomain_routing]` (`enabled` + `base_domain`), vanity hosts with a
+  registry's `hosts = […]`, or both. Every self-referencing URL the server
+  generates — npm `dist.tarball`, the NuGet service index and registration
+  `@id`s, the PyPI simple index, Composer `metadata-url`/`dist`, the Terraform
+  provider `download_url`, the cargo index `dl`/`api` — now reflects the ingress
+  the client actually used. Off by default; with no hosts configured every
+  generated URL is byte-identical to before. See the
+  [Host-based routing guide](https://batleforc.git.batleforc.fr/batlehub/guide/host-routing).
+- `registries[].path_routing = false` makes a registry reachable **only** through
+  its host(s); `/proxy/{name}/…` then returns 404 (not 403 — a disabled ingress
+  should look absent). A registry with no reachable ingress is a config error.
+- `GET /api/v1/registries` gained `public_url`, the registry's hostname-rooted
+  URL when it has one. The Setup Guide and namespace upload snippets use it.
+- **`[server].trusted_proxies`** — one server-level CIDR list governing which
+  peers may set `Forwarded` / `X-Forwarded-Host` / `X-Forwarded-Proto` /
+  `X-Forwarded-For`. Previously the forwarded host and scheme were trusted
+  unconditionally while only the client IP had a rule; now all three follow one
+  verdict computed once per request. Bare IPs are accepted as `/32` (`/128`).
+- **Config warnings** — `AppConfig::warnings()`, surfaced at
+  `GET /api/v1/admin/config/warnings`, inline in the responses of
+  `/config/validate` and `/config/from-content`, and rendered on the Config
+  Reload admin page. First users: an unstated proxy-trust policy, a shadowed
+  deprecated key, and a registry name that cannot become a DNS label.
+- Helm: `ingress.extraHosts` for the additional hostnames, and a documented
+  `config.server.trusted_proxies`.
+
+### Deprecated
+
+- `[ip_blocking].trusted_proxies` — use `[server].trusted_proxies`. The old key
+  keeps working (and now governs the forwarded host and scheme too, so an
+  existing deployment can adopt host routing without touching it), but raises a
+  config warning. When both are set, `[server]` wins.
+
 ## [1.0.0] - 2026-07-17
 
 First stable release.

@@ -1,3 +1,6 @@
+use std::net::IpAddr;
+
+use ipnet::IpNet;
 use serde::Deserialize;
 
 // ── Server ────────────────────────────────────────────────────────────────────
@@ -24,6 +27,51 @@ pub struct ServerConfig {
     /// allowed (suitable for development; restrict in production).
     #[serde(default)]
     pub cors_allowed_origins: Option<Vec<String>>,
+    /// CIDR ranges (or bare IPs) of the reverse proxies in front of BatleHub.
+    /// `Forwarded` / `X-Forwarded-Host` / `X-Forwarded-Proto` / `X-Forwarded-For`
+    /// are honoured only when the TCP peer falls inside one of these.
+    ///
+    /// ```toml
+    /// [server]
+    /// trusted_proxies = ["10.42.0.0/16", "192.168.1.10"]
+    /// ```
+    ///
+    /// Three distinguishable states, which is why this is an `Option`:
+    ///
+    /// | Value    | Behaviour                                                        |
+    /// |----------|------------------------------------------------------------------|
+    /// | absent   | legacy permissive — forwarded host/scheme believed unconditionally, `X-Forwarded-For` ignored. A hard error once host-based routing is configured. |
+    /// | `[]`     | forwarded headers ignored entirely; the `Host` header and the connection decide. |
+    /// | `[nets]` | forwarded headers honoured only from peers inside those prefixes. |
+    ///
+    /// A bare address is accepted and treated as a `/32` (`/128` for IPv6), so
+    /// every value that was valid for the deprecated
+    /// `[ip_blocking].trusted_proxies` stays valid here.
+    #[serde(default)]
+    pub trusted_proxies: Option<Vec<String>>,
+}
+
+/// Parse `trusted_proxies` entries into CIDR prefixes.
+///
+/// A bare address is widened to its host prefix (`/32` for IPv4, `/128` for
+/// IPv6) so the deprecated `[ip_blocking].trusted_proxies` exact-IP values keep
+/// matching exactly what they matched before.
+pub fn parse_trusted_proxies(entries: &[String]) -> Result<Vec<IpNet>, String> {
+    entries
+        .iter()
+        .map(|entry| {
+            let trimmed = entry.trim();
+            trimmed
+                .parse::<IpNet>()
+                .or_else(|_| trimmed.parse::<IpAddr>().map(IpNet::from))
+                .map_err(|_| {
+                    format!(
+                        "invalid trusted proxy entry '{entry}': expected an IP address \
+                         (10.0.0.1) or a CIDR range (10.42.0.0/16)"
+                    )
+                })
+        })
+        .collect()
 }
 
 pub(super) fn default_host() -> String {
