@@ -224,7 +224,7 @@ trigger_on_status     = [429, 401, 403]
 
 If BatleHub sits behind a proxy or load balancer, real client IPs arrive via `X-Forwarded-For`. Each hop *appends* the address it observed, so BatleHub reads the header **right to left** — skipping entries that fall inside [`trusted_proxies`](configuration.md#33-server) — and uses the first address that is not one of your own proxies:
 
-```
+```text
 X-Forwarded-For: 1.2.3.4, 203.0.113.9, 10.0.0.1
 ```
 
