@@ -16,7 +16,7 @@
 //! URL helper and the IP-based middlewares all read the same answer instead of
 //! each re-deriving it.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use actix_web::{dev::ServiceRequest, http::header, web, HttpMessage, HttpRequest};
@@ -223,12 +223,13 @@ pub fn routing_host(req: &HttpRequest) -> String {
     normalise_host(&trusted_origin(req).1)
 }
 
-/// The client IP: the first `X-Forwarded-For` entry when the peer is trusted,
-/// otherwise the TCP peer address.
+/// The client IP: the right-most `X-Forwarded-For` entry that is not itself one
+/// of the configured proxies when the peer is trusted, otherwise the TCP peer
+/// address.
 pub fn client_ip(req: &HttpRequest, trust: PeerTrust) -> String {
     if trust.honours_forwarded_for() {
-        if let Some(ip) = first_xff_ip(req) {
-            return ip;
+        if let Some(ip) = forwarded_client_ip(req) {
+            return ip.to_string();
         }
     }
     match req.peer_addr() {
@@ -237,15 +238,61 @@ pub fn client_ip(req: &HttpRequest, trust: PeerTrust) -> String {
     }
 }
 
-/// The first entry of `X-Forwarded-For`, or `None` when absent or empty.
-fn first_xff_ip(req: &HttpRequest) -> Option<String> {
-    let xff = req.headers().get("x-forwarded-for")?.to_str().ok()?;
-    let first = xff.split(',').next()?.trim();
-    if first.is_empty() {
-        None
-    } else {
-        Some(first.to_owned())
+/// Walk `X-Forwarded-For` right to left and return the first hop that is not
+/// itself a configured proxy.
+///
+/// Each hop *appends* the peer address it observed, so the right-most entry was
+/// written by the proxy we are talking to and the left-most is whatever the
+/// original client chose to send. Reading the left side therefore hands every
+/// client the IP that fail2ban counts violations against and that the anonymous
+/// rate-limit bucket is keyed on — enough to dodge one's own ban, or to get a
+/// third party blocked by naming them. Walking from the right and skipping the
+/// hops we recognise as our own proxies yields the address the last proxy we
+/// trust actually saw, which is the first value the client could not choose.
+///
+/// The trusted networks come from the [`ProxyTrust`] registered as `app_data`,
+/// the same handle [`peer_trust`] falls back to; a reload reaches it through the
+/// shared lock. When none is registered no hop can be recognised as a proxy, so
+/// the right-most entry — the one our peer wrote — is used.
+fn forwarded_client_ip(req: &HttpRequest) -> Option<IpAddr> {
+    let networks = req
+        .app_data::<web::Data<ProxyTrust>>()
+        .and_then(|trust| trust.policy());
+    let is_proxy = |ip: &IpAddr| {
+        networks
+            .as_ref()
+            .is_some_and(|nets| nets.iter().any(|net| net.contains(ip)))
+    };
+
+    // Multiple header lines are one logical list, joined in the order received.
+    let hops: Vec<&str> = req
+        .headers()
+        .get_all("x-forwarded-for")
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .collect();
+
+    for hop in hops.iter().rev() {
+        // An entry that does not parse ends the walk rather than being skipped:
+        // an unrecognisable hop cannot be shown to be one of our proxies, and
+        // stepping over it would resume trusting values from further left —
+        // exactly the entries the client controls. Falling back to the peer
+        // address instead degrades to "everyone behind this proxy shares a
+        // bucket", which is wrong but not attacker-steerable.
+        let ip = parse_forwarded_hop(hop.trim())?;
+        if !is_proxy(&ip) {
+            return Some(ip);
+        }
     }
+    None
+}
+
+/// Parse one `X-Forwarded-For` entry, tolerating the `ip:port` and `[ipv6]:port`
+/// forms some proxies emit.
+fn parse_forwarded_hop(hop: &str) -> Option<IpAddr> {
+    hop.parse::<IpAddr>()
+        .ok()
+        .or_else(|| hop.parse::<SocketAddr>().ok().map(|addr| addr.ip()))
 }
 
 #[cfg(test)]
@@ -468,13 +515,77 @@ mod tests {
                 .insert_header(("x-forwarded-for", "203.0.113.5, 172.16.0.1"))
                 .to_http_request()
         };
-        assert_eq!(client_ip(&build(), PeerTrust::Trusted), "203.0.113.5");
+        assert_eq!(
+            client_ip(&build(), PeerTrust::Trusted),
+            "172.16.0.1",
+            "the right-most hop is the one our own proxy wrote"
+        );
         assert_eq!(client_ip(&build(), PeerTrust::Untrusted), "10.0.0.1");
         assert_eq!(
             client_ip(&build(), PeerTrust::LegacyPermissive),
             "10.0.0.1",
             "an unconfigured deployment must keep ignoring X-Forwarded-For"
         );
+    }
+
+    /// A request whose `PeerTrust` is `Trusted` and whose `app_data` carries the
+    /// list those proxies were configured from — the shape a real deployment has.
+    fn trusted_req(proxies: &[&str], xff: &str) -> HttpRequest {
+        let req = TestRequest::default()
+            .app_data(web::Data::new(nets(proxies)))
+            .peer_addr("10.42.0.1:1234".parse().unwrap())
+            .insert_header(("x-forwarded-for", xff.to_owned()))
+            .to_http_request();
+        req.extensions_mut().insert(PeerTrust::Trusted);
+        req
+    }
+
+    #[test]
+    fn client_ip_skips_our_own_proxies_walking_right_to_left() {
+        // client → edge (10.42.0.2) → inner (10.42.0.1) → here.
+        let req = trusted_req(&["10.42.0.0/16"], "203.0.113.5, 198.51.100.9, 10.42.0.2");
+        assert_eq!(client_ip(&req, PeerTrust::Trusted), "198.51.100.9");
+    }
+
+    #[test]
+    fn client_ip_ignores_a_client_supplied_prefix() {
+        // The client prepended a chain of its own before reaching the proxy; only
+        // the entry the proxy appended may decide the ban/rate-limit key.
+        let req = trusted_req(&["10.42.0.0/16"], "1.1.1.1, 2.2.2.2, 203.0.113.77");
+        assert_eq!(client_ip(&req, PeerTrust::Trusted), "203.0.113.77");
+    }
+
+    #[test]
+    fn client_ip_accepts_a_hop_carrying_a_port() {
+        let req = trusted_req(&["10.42.0.0/16"], "[2001:db8::5]:443");
+        assert_eq!(client_ip(&req, PeerTrust::Trusted), "2001:db8::5");
+        let req = trusted_req(&["10.42.0.0/16"], "203.0.113.5:51234");
+        assert_eq!(client_ip(&req, PeerTrust::Trusted), "203.0.113.5");
+    }
+
+    #[test]
+    fn client_ip_falls_back_to_peer_on_an_unparseable_hop() {
+        // Stepping over `unknown` would resume trusting the client-controlled
+        // entries to its left.
+        let req = trusted_req(&["10.42.0.0/16"], "203.0.113.5, unknown, 10.42.0.2");
+        assert_eq!(client_ip(&req, PeerTrust::Trusted), "10.42.0.1");
+    }
+
+    #[test]
+    fn client_ip_falls_back_to_peer_when_every_hop_is_our_own_proxy() {
+        let req = trusted_req(&["10.42.0.0/16"], "10.42.0.3, 10.42.0.2");
+        assert_eq!(client_ip(&req, PeerTrust::Trusted), "10.42.0.1");
+    }
+
+    #[test]
+    fn client_ip_joins_repeated_xff_headers_in_order() {
+        let req = TestRequest::default()
+            .app_data(web::Data::new(nets(&["10.42.0.0/16"])))
+            .peer_addr("10.42.0.1:1234".parse().unwrap())
+            .insert_header(("x-forwarded-for", "1.1.1.1"))
+            .append_header(("x-forwarded-for", "203.0.113.5, 10.42.0.2"))
+            .to_http_request();
+        assert_eq!(client_ip(&req, PeerTrust::Trusted), "203.0.113.5");
     }
 
     #[test]

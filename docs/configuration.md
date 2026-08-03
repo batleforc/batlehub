@@ -176,7 +176,7 @@ states:
 |---|---|---|
 | absent | forwarded headers believed from **any** peer | TCP peer (`X-Forwarded-For` ignored) |
 | `[]` | `Host` header and the connection only | TCP peer |
-| `["10.42.0.0/16"]` | forwarded headers believed from peers inside the range, `Host` from everyone else | first `X-Forwarded-For` entry from a peer in range, TCP peer otherwise |
+| `["10.42.0.0/16"]` | forwarded headers believed from peers inside the range, `Host` from everyone else | right-most `X-Forwarded-For` entry outside the range, from a peer in range; TCP peer otherwise |
 
 **Use CIDR ranges, not exact IPs.** A Kubernetes ingress sits behind a pod CIDR
 that changes on every rollout, so enumerating addresses is unmaintainable. A bare

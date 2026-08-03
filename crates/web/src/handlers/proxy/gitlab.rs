@@ -216,12 +216,12 @@ pub async fn gl_download_archive(
 /// Download a raw file from a GitLab repository.
 #[utoipa::path(
     get,
-    path = "/proxy/{registry}/{project}/-/raw/{ref}/{path}",
+    path = "/proxy/{registry}/{project}/-/raw/{git_ref}/{path}",
     tag = "proxy/gitlab",
     params(
         ("registry" = String, Path, description = "Registry name"),
         ("project"  = String, Path, description = "Full project path"),
-        ("ref"      = String, Path, description = "Branch, tag, or commit SHA"),
+        ("git_ref"  = String, Path, description = "Branch, tag, or commit SHA"),
         ("path"     = String, Path, description = "File path within the repository"),
     ),
     responses(

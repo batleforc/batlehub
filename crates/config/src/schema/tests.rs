@@ -515,6 +515,35 @@ fn enabled_without_base_domain_is_rejected() {
 }
 
 #[test]
+fn a_url_shaped_base_domain_is_rejected() {
+    let err = host_routing_config(
+        r#"
+        [subdomain_routing]
+        enabled = true
+        base_domain = "https://hub.example.com""#,
+    )
+    .validate()
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("base_domain"), "{err}");
+    assert!(err.contains("scheme prefix"), "{err}");
+}
+
+#[test]
+fn a_base_domain_with_a_path_is_rejected() {
+    let err = host_routing_config(
+        r#"
+        [subdomain_routing]
+        enabled = true
+        base_domain = "hub.example.com/registry""#,
+    )
+    .validate()
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("base_domain"), "{err}");
+}
+
+#[test]
 fn two_registries_claiming_the_same_host_is_rejected() {
     let cfg = host_routing_config(&format!(
         "{}{}",

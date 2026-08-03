@@ -69,6 +69,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`X-Forwarded-For` is now read right to left**, skipping hops that fall inside
+  `trusted_proxies`, instead of taking the left-most entry. Each hop appends the
+  address it observed, so everything left of the entry our own proxy wrote is
+  client-supplied: behind a trusted proxy, any client could name the IP that
+  `[ip_blocking]` bans and the anonymous rate-limit bucket is keyed on — evading
+  its own ban, or getting a third party blocked. Entries are parsed as IP
+  addresses (the `ip:port` and `[ipv6]:port` forms included) and the walk stops
+  at anything that does not parse, falling back to the TCP peer address rather
+  than stepping over a hop it cannot classify. Deployments with no
+  `trusted_proxies` list are unaffected — they still ignore the header entirely.
 - The Setup Guide's `.netrc` block lists every host a client may authenticate
   against. `.netrc` entries are matched by hostname, so a guide naming only the
   main host meant no credentials were sent to a host-routed registry and every

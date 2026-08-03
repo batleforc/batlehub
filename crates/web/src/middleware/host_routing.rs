@@ -104,16 +104,39 @@ pub struct HostRoutingMiddleware<S> {
     trust: ProxyTrust,
 }
 
+/// Whether `registry` is safe to splice into `/proxy/{registry}/…` as one path
+/// segment.
+///
+/// The name comes from config, not from the request, but it is interpolated into
+/// a URI without escaping: a `/` would silently shift the rest of the path down a
+/// segment (so `{registry}` would match only the first half), a `?` or `#` would
+/// truncate the path into a query or fragment, and a `.`/`..` segment would be
+/// collapsed by any normalising hop. Restrict it to what a registry name is
+/// allowed to look like everywhere else — see `is_dns_label`, which is stricter
+/// still — and let the caller fail the request rather than route a mangled URI.
+fn is_routable_registry_name(registry: &str) -> bool {
+    if registry.is_empty() || registry == "." || registry == ".." {
+        return false;
+    }
+    registry
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
 /// Rewrite `req`'s URI to `/proxy/{registry}{original path and query}`.
 ///
 /// The **raw** `path_and_query` is concatenated and never decoded: npm scoped
 /// packages arrive as `/@scope%2fpkg`, and decoding would turn one path segment
 /// into two and change what is fetched.
 ///
-/// Returns `false` if the result is not a valid URI, which the caller must turn
-/// into a `400` — never a silent passthrough. On a registry host a passthrough
-/// would expose the admin API at a place the operator believes is registry-only.
+/// Returns `false` if `registry` is not a single safe path segment, or if the
+/// result is not a valid URI. The caller must turn that into a `400` — never a
+/// silent passthrough. On a registry host a passthrough would expose the admin
+/// API at a place the operator believes is registry-only.
 fn rewrite_uri(req: &mut ServiceRequest, registry: &str) -> bool {
+    if !is_routable_registry_name(registry) {
+        return false;
+    }
     let original = req.uri().path_and_query().map_or("/", PathAndQuery::as_str);
     // `path_and_query` always starts with '/', so "/" becomes "/proxy/{reg}/"
     // (with its trailing slash) and "/x?y=1" becomes "/proxy/{reg}/x?y=1".
@@ -311,6 +334,45 @@ mod tests {
             routed_path("/@scope%2fpkg", "npm.acme.io").await,
             "/proxy/npm1/@scope%2fpkg"
         );
+    }
+
+    #[actix_web::test]
+    async fn a_registry_name_that_is_not_one_safe_segment_is_rejected() {
+        for bad in [
+            "",
+            ".",
+            "..",
+            "npm1/../admin",
+            "npm1/x",
+            "npm1?q=1",
+            "npm1#frag",
+            "npm1%2f..",
+            "npm 1",
+        ] {
+            assert!(
+                !is_routable_registry_name(bad),
+                "{bad:?} must not be spliced into the route"
+            );
+        }
+        for good in ["npm1", "internal-crates", "my_npm", "npm.eu", "a"] {
+            assert!(is_routable_registry_name(good), "{good:?} must still route");
+        }
+    }
+
+    #[actix_web::test]
+    async fn a_host_bound_to_an_unroutable_registry_name_returns_400() {
+        let map = RegistryHostMap::new(
+            HashMap::from([("evil.acme.io".to_owned(), "npm1/../api/v1".to_owned())]),
+            HashMap::new(),
+            HashMap::new(),
+        );
+        let app = echo_app(map, ProxyTrust::legacy_permissive()).await;
+        let req = TestRequest::get()
+            .uri("/admin/config")
+            .insert_header(("host", "evil.acme.io"))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[actix_web::test]

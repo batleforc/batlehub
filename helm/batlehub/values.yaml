@@ -54,8 +54,11 @@ ingress:
   #     - "*.batlehub.example.com"
   #     - "npm.acme.io"
   #
-  # Setting this makes `config.server.trusted_proxies` mandatory — the server
-  # refuses to start with host routing configured and no proxy-trust policy.
+  # This only extends the Ingress: it adds rules so the controller accepts these
+  # hostnames. It turns nothing on inside BatleHub — host routing itself comes
+  # from `config.subdomain_routing` or a registry's `hosts`, and it is *those*
+  # that make `config.server.trusted_proxies` mandatory (the server refuses to
+  # start with host routing configured and no proxy-trust policy). Set both.
   extraHosts: []
   tls: []
   #  - secretName: batlehub-tls
@@ -139,9 +142,10 @@ config:
     #
     #   trusted_proxies: ["10.42.0.0/16"]
     #
-    # Absent keeps today's permissive behaviour, but is a startup error once
-    # `ingress.extraHosts` or `subdomain_routing` is in play. Use `[]` when
-    # BatleHub is exposed directly with no proxy in front of it.
+    # Absent keeps today's permissive behaviour, but is a startup error once host
+    # routing is configured (`config.subdomain_routing`, or a registry's
+    # `hosts`). Use `[]` when BatleHub is exposed directly with no proxy in front
+    # of it.
     # trusted_proxies: []
 
   # ── [subdomain_routing] ─────────────────────────────────────────────────────

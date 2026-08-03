@@ -841,9 +841,9 @@ fn pypi_publish_body(name: &str, version: &str) -> (Vec<u8>, String) {
 // ── path_routing = false: links must be absolute (§4.6) ───────────────────────
 
 #[actix_web::test]
-async fn a_host_only_registry_advertises_its_public_url_from_the_main_host() {
-    // Nothing can reach `/proxy/npm1/…`, so a URL generated for that registry
-    // outside its own host has to be the absolute public one.
+async fn a_host_only_registry_roots_generated_urls_at_its_own_host() {
+    // Nothing can reach `/proxy/npm1/…`, so the only origin a generated URL may
+    // carry is the host the client actually used.
     let app = make_host_routed_app(host_only_spec()).await;
 
     let publish = TestRequest::put()

@@ -387,18 +387,21 @@ impl AppConfig {
     /// vanity host, or routing driven by a header the server has no policy about.
     fn validate_host_routing(&self) -> Result<()> {
         if let Some(subdomain) = self.subdomain_routing.as_ref() {
-            if subdomain.enabled
-                && subdomain
-                    .base_domain
-                    .as_deref()
-                    .map(normalise_host)
-                    .is_none_or(|d| d.is_empty())
-            {
-                bail!(
-                    "[subdomain_routing]: 'enabled = true' requires a non-empty 'base_domain' \
-                     (e.g. base_domain = \"hub.example.com\"); without one no wildcard host is \
-                     derived and the section routes nothing"
-                );
+            if subdomain.enabled {
+                let base = subdomain.base_domain.as_deref().unwrap_or_default();
+                if normalise_host(base).is_empty() {
+                    bail!(
+                        "[subdomain_routing]: 'enabled = true' requires a non-empty 'base_domain' \
+                         (e.g. base_domain = \"hub.example.com\"); without one no wildcard host \
+                         is derived and the section routes nothing"
+                    );
+                }
+                // A pasted URL normalises to something non-empty ("https://hub.example.com" ->
+                // "https"), so it would otherwise flow into the wildcard hosts, the public URLs
+                // and the collision checks below as a plausible-looking domain.
+                validate_host_entry(base).map_err(|e| {
+                    anyhow::anyhow!("[subdomain_routing]: invalid 'base_domain' '{base}': {e}")
+                })?;
             }
         }
 

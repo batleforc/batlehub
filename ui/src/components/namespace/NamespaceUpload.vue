@@ -184,7 +184,7 @@ function terraformHost(url: string): string {
  * registry name there points `terraform init` at a path that does not exist.
  */
 function terraformSource(url: string, reg: string): string {
-  let path = "";
+  let path: string;
   try {
     path = new URL(url, globalThis.location.origin).pathname.replaceAll(/^\/+|\/+$/g, "");
   } catch {

@@ -202,11 +202,14 @@ mod tests {
 
     #[test]
     fn xff_used_when_peer_is_trusted_proxy() {
+        // The right-most hop is the address our own proxy observed; the entries
+        // to its left are whatever the client chose to send — see
+        // `proxy_trust::forwarded_client_ip`.
         let req = TestRequest::get()
             .peer_addr("10.0.0.1:1234".parse().unwrap())
             .insert_header(("x-forwarded-for", "203.0.113.5, 172.16.0.1"))
             .to_srv_request();
-        assert_eq!(extract_client_ip(&req, PeerTrust::Trusted), "203.0.113.5");
+        assert_eq!(extract_client_ip(&req, PeerTrust::Trusted), "172.16.0.1");
     }
 
     #[test]

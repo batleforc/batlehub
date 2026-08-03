@@ -9236,7 +9236,7 @@
         ]
       }
     },
-    "/proxy/{registry}/{project}/-/raw/{ref}/{path}": {
+    "/proxy/{registry}/{project}/-/raw/{git_ref}/{path}": {
       "get": {
         "tags": [
           "proxy/gitlab"
@@ -9263,7 +9263,7 @@
             }
           },
           {
-            "name": "ref",
+            "name": "git_ref",
             "in": "path",
             "description": "Branch, tag, or commit SHA",
             "required": true,
@@ -9275,14 +9275,6 @@
             "name": "path",
             "in": "path",
             "description": "File path within the repository",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "git_ref",
-            "in": "path",
             "required": true,
             "schema": {
               "type": "string"
