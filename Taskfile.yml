@@ -281,6 +281,45 @@ tasks:
       # into the published site) are still audited.
       - pnpm audit --prod --audit-level high
 
+  postmortem:rust:
+    desc: "Dependency supply-chain gate for the Rust workspace — source-repo reputation + known vulns, from Cargo.lock"
+    cmds:
+      # Rebuilds the dependency forest from the lockfile (no install, no
+      # lifecycle scripts), resolves each dep to its source repo and scores it
+      # (stars, age, last activity, archived, typosquat), then cross-checks
+      # vuln.mlab.sh. --fail-on-vuln high is the same bar as `pnpm audit
+      # --audit-level high` and the Trivy image gate; the reputation thresholds
+      # (--max-risk/--max-dep/--max-high/--max-sus) are deliberately unset until
+      # a baseline exists. Keep in sync with .github/workflows/postmortem.yaml.
+      #
+      # `postmortem` detects only the lockfiles sitting directly in the scanned
+      # directory — hence one task per dependency root. Export GITHUB_TOKEN to
+      # raise the 60/h anonymous limit on the reputation lookups.
+      - postmortem tree . --online --vulns --fail-on-vuln high
+
+  postmortem:ui:
+    desc: "Dependency supply-chain gate for the frontend — source-repo reputation + known vulns, from ui/pnpm-lock.yaml"
+    dir: ui
+    cmds:
+      - postmortem tree . --online --vulns --fail-on-vuln high
+
+  postmortem:website:
+    desc: "Dependency supply-chain report for the docs website (report-only, like `task website:audit`'s --prod carve-out)"
+    dir: website
+    cmds:
+      # No --fail-on-vuln, for the same reason website:audit runs with --prod:
+      # vitepress and its transitive build tooling carry advisories with no
+      # upstream fix for 1.x, and none of it ships or runs as a service.
+      # postmortem has no prod-only filter, so report-only is the equivalent.
+      - postmortem tree . --online --vulns
+
+  postmortem:
+    desc: "Run the dependency supply-chain gate over every dependency root (Rust, UI, Website)"
+    cmds:
+      - task: postmortem:rust
+      - task: postmortem:ui
+      - task: postmortem:website
+
   sbom:rust:
     desc: "Generate a CycloneDX SBOM of the shipped server (sbom-rust.cdx.json) — feed to `trivy sbom` / `grype sbom:` to match future CVEs against a shipped build"
     cmds:
@@ -291,12 +330,15 @@ tasks:
       - find . -maxdepth 3 -name '*.cdx.json' -not -path './sbom-rust.cdx.json' -delete
 
   security:
-    desc: "Run the full local security gate — Rust advisories + bans, frontend audits, and Rust SBOM. Trivy/gitleaks/semgrep run in CI (see .github/workflows)"
+    desc: "Run the full local security gate — Rust advisories + bans, frontend audits, dependency supply chain, and Rust SBOM. Trivy/gitleaks/semgrep run in CI (see .github/workflows)"
     cmds:
       - task: audit
       - task: deny
       - task: ui:audit
       - task: website:audit
+      # Needs network (reputation + vuln lookups); the advisory-only audits above
+      # can't see an upstream that went archived or got taken over.
+      - task: postmortem
       - task: sbom:rust
       - echo "Local gate passed. Image scanning (Trivy) and secret/SAST (gitleaks, semgrep) run in CI."
 

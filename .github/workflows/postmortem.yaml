@@ -1,0 +1,184 @@
+name: Supply chain (postmortem)
+# Dependency supply-chain gate: reconstructs the dependency forest from the
+# committed lockfiles, scores each dependency's source repo (reputation,
+# activity, archived/abandoned, identity signals) and cross-checks it against
+# known vulnerabilities, then uploads the findings as SARIF.
+#
+# This complements — it does not replace — `back-dep-audit.yaml` (RUSTSEC) and
+# `dep-audit-frontend.yaml` (pnpm audit): those only know about *advisories*,
+# postmortem also flags the "no advisory yet" shape of supply-chain risk
+# (unmaintained/archived upstreams, typosquats, unresolvable repos).
+#
+# One job per dependency root — postmortem's `detect()` only looks at lockfiles
+# sitting directly in the scanned directory, it does not recurse, so each root
+# (Cargo.lock, ui/pnpm-lock.yaml, website/pnpm-lock.yaml) needs its own run.
+#
+# These are three *separate jobs* rather than one matrix, and that is load
+# bearing for Code Scanning, not a style choice. postmortem emits every result
+# with `artifactLocation.uri = "."` whatever it scanned, so the uploads are told
+# apart only by their analysis category. The category is computed by
+# `github/codeql-action/upload-sarif` from `GITHUB_JOB` plus its `matrix` input,
+# whose `${{ toJson(matrix) }}` default does not resolve when the upload runs
+# from inside a composite action — as it does here. A matrix would therefore
+# hand all three uploads the same category and let them supersede each other,
+# silently leaving only the last one's alerts. Distinct job ids can't collide.
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "ui/package.json"
+      - "ui/pnpm-lock.yaml"
+      - "website/package.json"
+      - "website/pnpm-lock.yaml"
+      - ".github/workflows/postmortem.yaml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "ui/package.json"
+      - "ui/pnpm-lock.yaml"
+      - "website/package.json"
+      - "website/pnpm-lock.yaml"
+      - ".github/workflows/postmortem.yaml"
+  # Daily, same slot as the other dependency audits: reputation and vulnerability
+  # data are fetched live, so a dependency that goes archived — or gets an
+  # advisory — after the last commit still trips CI the next morning.
+  schedule:
+    - cron: "50 23 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+# Anonymous vuln.mlab.sh allows 8 scans/hour and one run spends 3, so a PR
+# pushed to three times in quick succession would throttle itself. Superseded
+# runs are cancelled rather than left to burn the quota.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: true
+jobs:
+  rust:
+    name: postmortem — Rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write # upload SARIF to the Security tab
+      actions: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # Pinned to the v2.0.1 commit. `version` (the scanner binary the composite
+      # action downloads from the release assets) is pinned separately and must
+      # stay at a tag that actually publishes binaries — v2.0.1 ships none, so
+      # it resolves to the v2.0.0 release, which is also the action's default.
+      # The same version is pinned in mise.toml, so local and CI gate alike.
+      #
+      # soft-fail is on *by design*: the action's internal SARIF upload is the
+      # step after the scan, so a hard failure there would skip it and the
+      # findings would never reach the Security tab. The scan reports, the gate
+      # step below fails the job — same report-then-gate shape as `semgrep.yaml`.
+      #
+      # Two caveats the SHA pin does *not* cover, both inside the composite
+      # action: it installs the scanner with `curl | tar` and no checksum
+      # verification (mise.lock does record a sha256 for the local install), and
+      # its SARIF upload calls `github/codeql-action/upload-sarif@v3` — a
+      # floating tag, where every other codeql-action use in this repo is pinned
+      # by SHA. Both would need an upstream change or a fork to close.
+      #
+      # `fail-on-vuln: high` is the same bar as `pnpm audit --audit-level high`
+      # and the Trivy image gate. The reputation thresholds (max-risk / max-dep /
+      # max-high / max-sus) are deliberately left unset: a first full run scores
+      # this tree well above any round number one would think to pick, so they
+      # need a real baseline, not a guess. The scores still reach SARIF.
+      - name: postmortem supply-chain scan (Rust)
+        id: scan
+        uses: mlab-sh/postmortem@1ef19477f79b71738f53fe38b3b6b1d1325e9028 # v2.0.1
+        with:
+          path: "."
+          version: v2.0.0
+          online: "true" # source-repo reputation (uses github-token below)
+          vulns: "true" # known advisories via vuln.mlab.sh
+          fail-on-vuln: high
+          sarif: "true"
+          soft-fail: "true"
+          github-token: ${{ github.token }}
+          # Optional but recommended: anonymous vuln.mlab.sh is capped at 8
+          # scans/hour, and this workflow spends 3 per run — a couple of PRs
+          # pushed in the same hour will start getting throttled. An absent
+          # secret resolves to an empty string, i.e. anonymous, which is what
+          # the action defaults to anyway, so this is safe to leave unset.
+          vuln-token: ${{ secrets.VULN_MLAB_TOKEN }}
+      # exit-code: 0 pass · 1 gate tripped · 2 misconfig / no ecosystem detected.
+      # A 2 is a real failure here — every scanned path is known to hold a
+      # lockfile, so "no ecosystem" means the scan silently covered nothing.
+      # Read through the environment, never interpolated into the script: bare
+      # `exit` with an empty argument returns the *previous* command's status,
+      # so a missing output would turn a lost verdict into a silent pass.
+      - name: Gate
+        env:
+          CODE: ${{ steps.scan.outputs.exit-code }}
+        run: exit "${CODE:-1}"
+
+  ui:
+    name: postmortem — UI
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: postmortem supply-chain scan (UI)
+        id: scan
+        uses: mlab-sh/postmortem@1ef19477f79b71738f53fe38b3b6b1d1325e9028 # v2.0.1
+        with:
+          path: ui
+          version: v2.0.0
+          online: "true"
+          vulns: "true"
+          fail-on-vuln: high
+          sarif: "true"
+          soft-fail: "true"
+          github-token: ${{ github.token }}
+          vuln-token: ${{ secrets.VULN_MLAB_TOKEN }}
+      - name: Gate
+        env:
+          CODE: ${{ steps.scan.outputs.exit-code }}
+        run: exit "${CODE:-1}"
+
+  website:
+    name: postmortem — Website
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: postmortem supply-chain scan (Website)
+        id: scan
+        uses: mlab-sh/postmortem@1ef19477f79b71738f53fe38b3b6b1d1325e9028 # v2.0.1
+        with:
+          path: website
+          version: v2.0.0
+          online: "true"
+          vulns: "true"
+          fail-on-vuln: high
+          sarif: "true"
+          soft-fail: "true"
+          github-token: ${{ github.token }}
+          vuln-token: ${{ secrets.VULN_MLAB_TOKEN }}
+      # Report-only, for the same reason `dep-audit-frontend.yaml` runs the
+      # website audit with `--prod`: vitepress and its transitive build tooling
+      # carry advisories with no upstream fix for 1.x, and none of it ships or
+      # runs as a service. postmortem has no prod-only filter, so a non-blocking
+      # gate is the equivalent expression — findings still land in the Security
+      # tab and the run summary, they just don't fail the build.
+      - name: Gate (report-only)
+        if: ${{ steps.scan.outputs.exit-code != '0' }}
+        env:
+          CODE: ${{ steps.scan.outputs.exit-code }}
+        run: echo "::warning::postmortem exited ${CODE} for website — reported, not blocking"

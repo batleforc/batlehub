@@ -17,11 +17,14 @@ syft = "latest"                     # SBOM generation for built images
 gitleaks = "latest"                 # secret scanning
 semgrep = "latest"                  # static analysis (Rust / TS / secrets rulesets)
 "cargo:cargo-cyclonedx" = "latest"  # CycloneDX SBOM of the Rust workspace
+"cargo:cargo-audit" = "latest"      # RUSTSEC advisories
+# Dependency supply chain: source-repo reputation + vulns, from the lockfiles.
+# Pinned, not "latest": the same version is pinned in the CI action's `version`
+# input (.github/workflows/postmortem.yaml), so both run the identical gate.
+"github:mlab-sh/postmortem" = "2.0.0"
 uv = "latest"
-"cargo:cargo-audit" = "latest"
 python = "latest"
 pnpm = "11" # package manager for ui/ and website/ (settings in pnpm-workspace.yaml + packageManager field)
-"github:mlab-sh/postmortem" = "2.0.0"
 
 #"github:batleforc/batlehub" = { version = "latest", asset_pattern = "batlehub-cli-*" }
 
