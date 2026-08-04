@@ -1,6 +1,26 @@
 # pnpm settings for the VitePress docs site.
 # See ui/pnpm-workspace.yaml for why settings live here and not in package.json.
 
+# Transitive-dependency pins. vitepress 1.6.4 (the latest 1.x) depends on
+# `vite: ^5.4.14`, and the Vite 5 line is end-of-life — it gets no security
+# patches, so the docs site inherits every open vite/esbuild advisory:
+#
+#   * GHSA-fx2h-pf6j-xcff (high) — `server.fs.deny` bypass on Windows alternate
+#     paths, patched in vite 6.4.3.
+#   * path traversal in optimized-deps `.map` handling, patched in vite 6.4.2.
+#   * launch-editor NTLMv2 hash disclosure via UNC paths, patched in vite 6.4.3.
+#   * esbuild dev-server request forgery, patched in esbuild 0.24.3 (vite 6
+#     already depends on esbuild 0.25).
+#   * PostCSS GHSA-6g55-p6wh-862q follow-up, patched in postcss 8.5.23.
+#
+# vite is therefore forced onto the 6.x line, one major above what vitepress
+# declares. VitePress 1.6.4 works against it — `pnpm run docs:build` and
+# `pnpm run docs:dev` were both verified with the pin in place. Drop it once
+# vitepress 2.x ships stable, since that already targets a supported Vite line.
+overrides:
+  vite: ^6.4.3
+  postcss: ^8.5.25
+
 # Install-time lifecycle scripts are denied by default (supply-chain hardening).
 # Packages are opted in here one by one, with a reason.
 #

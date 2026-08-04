@@ -8,15 +8,18 @@
 # merge-key chains force quadratic CPU consumption); it reaches us through
 # @hey-api/openapi-ts and eslint 8.
 #
-# brace-expansion <= 5.0.8 is GHSA-mh99-v99m-4gvg (unbounded expansion length
-# OOMs the process). Only 5.0.8 is considered patched by the advisory, and the
-# 5.x line exports `{ expand }` instead of a callable default — so the fix is to
-# retire the old `minimatch` majors that pull brace-expansion 1.x/2.x, not to
-# force brace-expansion itself:
+# brace-expansion is covered by two advisories: GHSA-mh99-v99m-4gvg (unbounded
+# expansion length OOMs the process, fixed in 5.0.8) and GHSA-rgw5-rvv9-x895
+# (fixed in 5.0.9). The 5.x line exports `{ expand }` instead of a callable
+# default, so the old 1.x/2.x majors cannot simply be force-upgraded — they have
+# to be retired by upgrading whatever pulls them in. Both pins are needed:
 #
 #   * `minimatch: ^10.2.6` — minimatch 10 already depends on brace-expansion
 #     ^5.0.8. This replaces minimatch 9 under js-beautify (`editorconfig`,
 #     `glob@10`), which reaches us through @vue/test-utils.
+#   * `brace-expansion: ^5.0.9` — minimatch 10.2.6 still declares `^5.0.8`, so
+#     without this the tree resolves to the vulnerable 5.0.8. 5.0.9 satisfies
+#     minimatch's own range, so this is a patch bump inside the same major.
 #   * `@microsoft/eslint-formatter-sarif>eslint` — the formatter declares
 #     `eslint: ^8.9.0` as a regular dependency (it should be a peer): at runtime
 #     it only does `require.main.require('eslint')`, i.e. it resolves eslint
@@ -27,6 +30,7 @@ overrides:
   undici: ^7.28.0
   js-yaml: ^4.3.0
   minimatch: ^10.2.6
+  brace-expansion: ^5.0.9
   '@microsoft/eslint-formatter-sarif>eslint': ^10.8.0
 
 # Install-time lifecycle scripts are denied by default (supply-chain hardening:

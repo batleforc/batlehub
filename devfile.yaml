@@ -1,6 +1,6 @@
 schemaVersion: 2.3.0
 metadata:
-  name: compose-conversion
+  name: batlehub
 parent:
   uri: https://raw.githubusercontent.com/batleforc/WeeboDevImage/refs/heads/main/che-min-mise/devfile.yaml
   components:

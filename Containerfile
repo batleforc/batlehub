@@ -42,13 +42,13 @@ RUN cargo build --release -p batlehub-server -p batlehub-cli
 RUN mkdir -p /var/cache/batlehub
 
 # ── Frontend build stage ───────────────────────────────────────────────────────
-FROM node:26-slim@sha256:715e55e4b84e4bb0ff48e49b398a848f08e55daed8eb6a0ea1839ae53bc57583 AS ui-builder
+FROM node:26-slim@sha256:deae974a69e140f44f434ab29cb519fb5f8fe250fd364b8ca446bd0761acdc6a AS ui-builder
 
 WORKDIR /ui
 # Corepack is no longer distributed with Node (removed in Node 25), so pnpm is
 # installed explicitly. Keep this version in sync with the `packageManager`
 # field in ui/package.json.
-RUN npm install -g pnpm@11.15.1
+RUN npm install -g pnpm@11.20.0
 COPY ui/package.json ui/pnpm-lock.yaml ui/pnpm-workspace.yaml ./
 # --frozen-lockfile is the `npm ci` equivalent: it fails rather than silently
 # resolving something the committed lockfile does not describe.

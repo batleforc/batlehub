@@ -21,6 +21,8 @@ uv = "latest"
 "cargo:cargo-audit" = "latest"
 python = "latest"
 pnpm = "11" # package manager for ui/ and website/ (settings in pnpm-workspace.yaml + packageManager field)
+"github:mlab-sh/postmortem" = "2.0.0"
+
 #"github:batleforc/batlehub" = { version = "latest", asset_pattern = "batlehub-cli-*" }
 
 # ── Routing this repo's own toolchain through BatleHub (dogfooding) ───────────
