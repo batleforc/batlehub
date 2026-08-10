@@ -195,7 +195,7 @@ services:
     command: redis-server --save "" --appendonly no
 
   batlehub:
-    image: ghcr.io/batleforc/batlehub:1.0.0
+    image: ghcr.io/batleforc/batlehub:1.1.0
     deploy:
       replicas: 2
       restart_policy:
@@ -256,7 +256,7 @@ replicaCount: 3
 
 image:
   repository: ghcr.io/batleforc/batlehub
-  tag: "1.0.0"    # pin to a specific version
+  tag: "1.1.0"    # pin to a specific version
 
 database:
   url: "postgresql://batlehub:changeme@postgres-svc:5432/batlehub"

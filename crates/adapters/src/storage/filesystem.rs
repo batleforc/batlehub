@@ -25,6 +25,52 @@ async fn ensure_parent_dir(path: &Path) -> Result<(), CoreError> {
     Ok(())
 }
 
+/// Path of a uniquely-named staging file next to `path`.
+///
+/// Writes land here first and are renamed onto `path` only once complete, so a
+/// `retrieve` racing a `store` sees either the previous artifact or the new one
+/// and never a prefix of the bytes in flight. Being a sibling matters: `rename`
+/// is only atomic within a filesystem, and a temp directory elsewhere may be a
+/// different mount.
+///
+/// The suffix is deliberately not `.dat`, so an in-flight write stays invisible
+/// to `walk_dat_files` — and therefore to `list_keys`/`stat_by_prefix`.
+fn staging_path_for(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}.tmp", uuid::Uuid::new_v4()));
+    path.with_file_name(name)
+}
+
+/// Removes an abandoned staging file. Only ever the staging file: a write that
+/// fails part-way must leave whatever was already at the key untouched, since a
+/// failed overwrite is no reason to lose a complete artifact.
+///
+/// Cleanup failures are logged rather than returned — the caller is already
+/// propagating the more interesting error.
+async fn discard_staging(tmp: &Path, context: &'static str) {
+    if let Err(rm) = tokio::fs::remove_file(tmp).await {
+        if rm.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(path = %tmp.display(), error = %rm, context, "failed to remove staging file");
+        }
+    }
+}
+
+/// Publishes a completed staging file onto its final path, cleaning the staging
+/// file up if the rename itself fails.
+async fn publish_staging(tmp: &Path, path: &Path) -> Result<(), CoreError> {
+    match tokio::fs::rename(tmp, path).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            discard_staging(tmp, "publish").await;
+            Err(CoreError::Storage(format!(
+                "publish {} -> {}: {e}",
+                tmp.display(),
+                path.display()
+            )))
+        }
+    }
+}
+
 /// Recursively walks `dir` (depth-first via an explicit stack — async fns can't
 /// recurse without boxing) and returns every `.dat` file found. A missing or
 /// unreadable directory yields no entries, matching callers that tolerate a
@@ -97,35 +143,33 @@ impl StorageBackend for FilesystemStorageBackend {
     async fn store(&self, key: &str, data: Bytes, _meta: StorageMeta) -> Result<(), CoreError> {
         let path = self.key_to_path(key)?;
         ensure_parent_dir(&path).await?;
-        let mut file = tokio::fs::File::create(&path)
+        let tmp = staging_path_for(&path);
+        let mut file = tokio::fs::File::create(&tmp)
             .await
-            .map_err(|e| CoreError::Storage(format!("create file {}: {e}", path.display())))?;
+            .map_err(|e| CoreError::Storage(format!("create file {}: {e}", tmp.display())))?;
 
         // `tokio::fs::File` buffers writes and completes them on a background
         // task, so `write_all` returning does not mean the bytes reached the OS —
-        // and dropping the handle does not flush them. Without the explicit flush
-        // a `retrieve` racing this `store` can observe a zero-length or truncated
-        // file. On failure the partial file is removed so a later `retrieve` can
-        // never serve a truncated artifact (same guarantee as `store_streaming`).
+        // and dropping the handle does not flush them. Flush before the rename,
+        // or the file published at the key can still be short.
         let write_result = async {
             file.write_all(&data)
                 .await
-                .map_err(|e| CoreError::Storage(format!("write file {}: {e}", path.display())))?;
+                .map_err(|e| CoreError::Storage(format!("write file {}: {e}", tmp.display())))?;
             file.flush()
                 .await
-                .map_err(|e| CoreError::Storage(format!("flush file {}: {e}", path.display())))
+                .map_err(|e| CoreError::Storage(format!("flush file {}: {e}", tmp.display())))
         }
         .await;
+        // Close before renaming: on Windows a rename can fail while a handle is
+        // still open, and the flush above has already done the work that matters.
+        drop(file);
 
         if let Err(e) = write_result {
-            drop(file);
-            if let Err(rm) = tokio::fs::remove_file(&path).await {
-                if rm.kind() != std::io::ErrorKind::NotFound {
-                    tracing::warn!(path = %path.display(), error = %rm, "failed to remove partial artifact after store error");
-                }
-            }
+            discard_staging(&tmp, "store").await;
             return Err(e);
         }
+        publish_staging(&tmp, &path).await?;
 
         tracing::debug!(key = %key, bytes = data.len(), "stored artifact on filesystem");
         Ok(())
@@ -141,14 +185,16 @@ impl StorageBackend for FilesystemStorageBackend {
     ) -> Result<StoreOutcome, CoreError> {
         let path = self.key_to_path(key)?;
         ensure_parent_dir(&path).await?;
-        let mut file = tokio::fs::File::create(&path)
+        let tmp = staging_path_for(&path);
+        let mut file = tokio::fs::File::create(&tmp)
             .await
-            .map_err(|e| CoreError::Storage(format!("create file {}: {e}", path.display())))?;
+            .map_err(|e| CoreError::Storage(format!("create file {}: {e}", tmp.display())))?;
 
-        // Write the stream to disk, hashing incrementally. On any mid-stream
-        // failure (e.g. an upstream error or a size-limit abort surfaced through
-        // the stream) the partially-written file is removed so a later
-        // `retrieve` can never serve a truncated artifact.
+        // Write the stream to the staging file, hashing incrementally. On any
+        // mid-stream failure (e.g. an upstream error or a size-limit abort
+        // surfaced through the stream) the staging file is discarded and the key
+        // is never touched, so a later `retrieve` can neither serve a truncated
+        // artifact nor find a previously-cached one missing.
         let mut hasher = Sha256::new();
         let mut size: u64 = 0;
         let write_result: Result<(), CoreError> = async {
@@ -157,24 +203,21 @@ impl StorageBackend for FilesystemStorageBackend {
                 hasher.update(&chunk);
                 size += chunk.len() as u64;
                 file.write_all(&chunk).await.map_err(|e| {
-                    CoreError::Storage(format!("write file {}: {e}", path.display()))
+                    CoreError::Storage(format!("write file {}: {e}", tmp.display()))
                 })?;
             }
             file.flush()
                 .await
-                .map_err(|e| CoreError::Storage(format!("flush file {}: {e}", path.display())))
+                .map_err(|e| CoreError::Storage(format!("flush file {}: {e}", tmp.display())))
         }
         .await;
+        drop(file);
 
         if let Err(e) = write_result {
-            drop(file);
-            if let Err(rm) = tokio::fs::remove_file(&path).await {
-                if rm.kind() != std::io::ErrorKind::NotFound {
-                    tracing::warn!(path = %path.display(), error = %rm, "failed to remove partial artifact after store_streaming error");
-                }
-            }
+            discard_staging(&tmp, "store_streaming").await;
             return Err(e);
         }
+        publish_staging(&tmp, &path).await?;
 
         tracing::debug!(key = %key, bytes = size, "streamed artifact to filesystem");
         Ok(StoreOutcome {
@@ -301,7 +344,10 @@ impl StorageBackend for FilesystemStorageBackend {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    };
 
     use bytes::Bytes;
     use futures::StreamExt;
@@ -463,6 +509,66 @@ mod tests {
         // No truncated file must be left behind at the key.
         assert!(!b.exists("artifact:npm/aborted").await.unwrap());
         assert!(b.retrieve("artifact:npm/aborted").await.unwrap().is_none());
+    }
+
+    /// A `retrieve` racing a `store` on the same key must observe a complete
+    /// artifact — the one being replaced or the one replacing it, never a prefix
+    /// of the bytes in flight. Writing straight to the key fails this: `create`
+    /// truncates first, so a reader that arrives mid-write gets a short file.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_retrieve_never_observes_a_partial_artifact() {
+        const KEY: &str = "artifact:npm/racing";
+        const ROUNDS: usize = 40;
+
+        let b = Arc::new(make_backend().await);
+        // Several read chunks' worth, so a torn read is wide enough to catch.
+        let payload = Bytes::from(vec![0xCDu8; crate::storage::READ_CHUNK * 4]);
+
+        // Seed the key: the race under test is the overwrite, and this way every
+        // read has something to observe rather than a legitimate `None`.
+        b.store(KEY, payload.clone(), StorageMeta::default())
+            .await
+            .unwrap();
+
+        let writing = Arc::new(AtomicBool::new(true));
+        let writer = {
+            let (b, payload, writing) = (Arc::clone(&b), payload.clone(), Arc::clone(&writing));
+            tokio::spawn(async move {
+                for _ in 0..ROUNDS {
+                    b.store(KEY, payload.clone(), StorageMeta::default())
+                        .await
+                        .unwrap();
+                }
+                writing.store(false, Ordering::Release);
+            })
+        };
+
+        let reader = {
+            let (b, expected, writing) = (Arc::clone(&b), payload.clone(), Arc::clone(&writing));
+            tokio::spawn(async move {
+                let mut reads = 0usize;
+                while writing.load(Ordering::Acquire) {
+                    let artifact = b
+                        .retrieve(KEY)
+                        .await
+                        .unwrap()
+                        .expect("a seeded key must never vanish under an overwrite");
+                    let got = collect(artifact).await;
+                    assert_eq!(
+                        got.len(),
+                        expected.len(),
+                        "retrieve observed a partial artifact"
+                    );
+                    assert_eq!(got, expected.as_ref(), "retrieve observed corrupt bytes");
+                    reads += 1;
+                }
+                reads
+            })
+        };
+
+        writer.await.unwrap();
+        let reads = reader.await.unwrap();
+        assert!(reads > 0, "the reader never ran, so nothing was exercised");
     }
 
     #[tokio::test]

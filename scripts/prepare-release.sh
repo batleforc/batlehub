@@ -12,7 +12,11 @@ fi
 
 REPO_URL="https://git.batleforc.fr/batleforc/batlehub"
 SEMVER_RE='^[0-9]+\.[0-9]+\.[0-9]+$'
-RELEASE_FILES=(Cargo.toml Cargo.lock ui/package.json helm/batlehub/Chart.yaml CHANGELOG.md)
+RELEASE_FILES=(
+    Cargo.toml Cargo.lock
+    ui/package.json ui/openapi.json website/package.json
+    helm/batlehub/Chart.yaml CHANGELOG.md
+)
 
 # ── Usage ─────────────────────────────────────────────────────────────────────
 usage() {
@@ -172,6 +176,15 @@ ok "Cargo.toml"
 
 sed -i "0,/\"version\":/{s/\"version\": \"[^\"]*\"/\"version\": \"${NEW_VERSION}\"/}" ui/package.json
 ok "ui/package.json"
+
+sed -i "0,/\"version\":/{s/\"version\": \"[^\"]*\"/\"version\": \"${NEW_VERSION}\"/}" website/package.json
+ok "website/package.json"
+
+# The spec's info.version comes from the workspace version via utoipa, so a
+# `task dump-spec` would produce this same edit — done inline here so a release
+# does not depend on having a server running.
+sed -i "0,/\"version\":/{s/\"version\": \"[^\"]*\"/\"version\": \"${NEW_VERSION}\"/}" ui/openapi.json
+ok "ui/openapi.json"
 
 sed -i \
     -e "s/^version: .*/version: ${NEW_VERSION}/" \
