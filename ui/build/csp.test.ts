@@ -13,6 +13,12 @@ const API_ORIGIN = "https://api.example.com";
  * the pattern CodeQL's `js/incomplete-url-substring-sanitization` flags, and it
  * is the wrong assertion here regardless: a CSP source is a whole token, so the
  * test should compare whole tokens.
+ *
+ * Comparisons against a token use an explicit `=== API_ORIGIN` rather than
+ * `.includes(API_ORIGIN)`. The two are equivalent on an array of strings, but
+ * that query matches any `.includes(<url>)` call without checking whether the
+ * receiver is an array or a string, so the explicit equality is both what the
+ * test means and the form that reads unambiguously.
  */
 function directives(csp: string): Record<string, string[]> {
   return Object.fromEntries(
@@ -93,7 +99,7 @@ describe("buildCsp", () => {
   it("widens only connect-src for the API origin", () => {
     const parsed = directives(buildCsp(API_ORIGIN));
     const widened = Object.entries(parsed)
-      .filter(([, sources]) => sources.includes(API_ORIGIN))
+      .filter(([, sources]) => sources.some((source) => source === API_ORIGIN))
       .map(([name]) => name);
     expect(widened).toEqual(["connect-src"]);
   });
