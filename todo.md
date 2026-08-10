@@ -56,8 +56,8 @@ a breaking behaviour change (documented in a `### Breaking` CHANGELOG section).
         as `/healthz`, neither carries a `#[utoipa::path]`)
   - [x] ~~Regenerate `sbom-rust.cdx.json`~~ — **not needed**: `*.cdx.json` is gitignored
         (`.gitignore:45`), it is a CI build artifact, not a tracked file. Plan item was wrong.
-  - [ ] Promote `[Unreleased]` → `[1.1.0]` — **deferred to the end**, after PRs 3–5 have added
-        their entries (incl. the `### Breaking` CORS section)
+  - [x] Promoted `[Unreleased]` → `[1.1.0] - 2026-08-10` once PRs 3–5 had added their entries
+        (incl. the `### Breaking` CORS section)
 
 ## PR 2 — Container and pod hardening ✅ done
 
@@ -76,8 +76,8 @@ a breaking behaviour change (documented in a `### Breaking` CHANGELOG section).
         **confirmed on a real pod** in the scratch-namespace step of the verification gate;
         if it trips, mount an `emptyDir` at `/tmp` rather than relaxing the flag.
 - [x] **2.3 Availability templates**
-  - [x] `pdb.yaml`, rendered only when `replicaCount > 1`; fails the render if both
-        `minAvailable` and `maxUnavailable` are set
+  - [x] `pdb.yaml`, rendered only when `replicaCount > 1`. (The "both fields set" guard was
+        removed during review — see finding 7 below; `maxUnavailable` now takes precedence.)
   - [x] `networkpolicy.yaml`, opt-in, always emits a DNS egress rule first (a default-deny
         Egress policy without one breaks every upstream fetch)
   - [x] Documented the RWO-vs-multi-replica trap on `persistence`
@@ -89,45 +89,75 @@ a breaking behaviour change (documented in a `### Breaking` CHANGELOG section).
 
 ## PR 3 — HTTP response hardening ✅ done (landed in 6ae42db)
 
-- [ ] **3.1 Global security headers** — `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`
+- [x] **3.1 Global security headers** — `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`
       via a `DefaultHeaders` wrap near-outermost; HSTS documented at the ingress instead
-- [ ] **3.2 Default `Content-Type`** on `proxy_stream` (`common.rs:249`) — one change covers
+- [x] **3.2 Default `Content-Type`** on `proxy_stream` (`common.rs:249`) — one change covers
       `github.rs:46`, `gitlab.rs:44,288`, `forgejo.rs:59`, `npm/read.rs:60,130`, `openvsx.rs:101`,
       `jetbrains_marketplace/files.rs:562`
-- [ ] **3.3 CSP for the SPA** only (not `/proxy/*`); enforced if the bundle is clean, else report-only
-- [ ] **3.4 CORS flip (breaking)**
-  - [ ] `build_cors`: empty → same-origin; `["*"]` → explicit any-origin
-  - [ ] `AppConfig::warnings()` entry when `["*"]` is set
-  - [ ] `values.yaml` documented key + `CHANGELOG` Breaking + `docs/configuration.md` upgrade note
+- [x] **3.3 CSP for the SPA** only (not `/proxy/*`) — **implemented differently than planned.**
+      It cannot be a response header: `/scalar` loads its bundle from a CDN and dies under
+      `script-src 'self'`, and `actix_files::Files` takes no per-service middleware. Shipped as
+      a `<meta http-equiv>` built at build time by `ui/build/csp.ts`. Enforced, not report-only —
+      the bundle is clean under it.
+- [x] **3.4 CORS flip (breaking)**
+  - [x] `build_cors`: empty → same-origin; `["*"]` → explicit any-origin
+  - [x] `AppConfig::warnings()` entry when `["*"]` is set
+  - [x] `values.yaml` documented key + `CHANGELOG` Breaking + `docs/configuration.md` upgrade note
 
 ## PR 4 — Explore visibility filter ✅ done (landed in 6ae42db)
 
-- [ ] `ExploreFilter` gains viewer descriptor (`is_admin`, `is_authenticated`, `groups`)
-- [ ] `db/packages/explore.rs`: filter `local_pkgs` CTE, mirroring `check_team_visibility`
+- [x] `ExploreFilter` gains viewer descriptor (`is_admin`, `is_authenticated`, `groups`)
+- [x] `db/packages/explore.rs`: filter `local_pkgs` CTE, mirroring `check_team_visibility`
       exactly (longest-prefix claim wins; `team` with no claim = deny)
-- [ ] Same predicate in `count_explore_packages` and `registry_explore_stats`
-- [ ] `explore_package_detail`: `check_visibility` → **404** (not 403)
-- [ ] Populate viewer in `list.rs` / `detail.rs` / `stats.rs`
-- [ ] Fix stale doc comment on `check_visibility` (`read.rs` ~368)
-- [ ] Postgres-backed regression test (in-memory repo returns `Ok(vec![])`, cannot catch this)
-      + `task test:pg-explore` + CI wiring
+- [x] Same predicate in `count_explore_packages` (so the total matches the page)
+- [!] `registry_explore_stats` — **deliberately not filtered.** It takes `accessible_registries`,
+      not an `ExploreFilter`, so filtering needs the viewer plumbed through a second signature
+      for a count that names no package. Residual: a non-public package still contributes +1 to
+      its registry's sidebar total.
+- [x] `explore_package_detail`: `check_visibility` → **404** (not 403)
+- [x] Populate viewer in `list.rs` / `detail.rs` / `stats.rs`
+- [x] Fix stale doc comment on `check_visibility` (`read.rs` ~368)
+- [x] Postgres-backed regression test written (in-memory repo returns `Ok(vec![])`, so it
+      cannot catch this) — 8 tests + `task test:pg-explore`; CI needs no wiring, the
+      integration job already runs `-p batlehub-adapters --test '*'` with `DATABASE_URL`
+- [x] **Unplanned, found while implementing:** `packages_cache_key` ignored the viewer. With
+      viewer-dependent results the first caller to populate an entry would have had their view
+      served to everyone after them — the same leak by another route. Key now includes a
+      viewer component.
+- [ ] ⚠️ **The 8 tests have never actually run.** No container runtime here and a source build
+      of Postgres failed (ICU, then bison, no root). They compile, link, and *skip* without
+      `DATABASE_URL` — so they report "ok" without executing a line of the new SQL. **The
+      predicate is unverified; CI's integration job is the gate.**
 
 ## PR 5 — Small correctness fixes ✅ done (landed in 6ae42db)
 
-- [ ] `inbound_webhook.rs:103` → ProxyTrust-aware `client_ip`
-- [ ] `clippy.toml` `disallowed-methods` for `realip_remote_addr` / `connection_info`,
+- [x] `inbound_webhook.rs:103` → ProxyTrust-aware `client_ip`
+- [x] `clippy.toml` `disallowed-methods` for `realip_remote_addr` / `connection_info`,
       allowlisted only in `middleware/proxy_trust.rs`
-- [ ] `extractors.rs`: percent-decode query params + test
+- [x] `extractors.rs`: percent-decode query params + test
 
-## PR 6 — Production values (config only) ✅ done (landed in 6ae42db)
+## PR 6 — Production hardening guide ✅ doc done · ⬜ cluster values are yours
 
-- [ ] `[server].trusted_proxies` = ingress CIDR
-- [ ] `cors_allowed_origins` = real SPA origin(s)
-- [ ] Rate limiting + IP blocking on, Redis/Postgres store
-- [ ] `/metrics` restricted at the ingress
-- [ ] All secrets via `secretKeyRef`; no `change-me-*` placeholders
-- [ ] TLS SANs cover `ingress.extraHosts` incl. wildcard
-- [ ] `replicaCount >= 2` + PDB + S3 storage (not the RWO PVC)
+Written up as `docs/production-hardening.md`: every default that is deliberately permissive or
+off, why, and what to set — proxy trust, CORS, rate limiting, IP blocking, unauthenticated
+`/metrics`, HSTS-at-the-ingress, secrets (incl. the `change-me-*` grep), storage-vs-replicas,
+pod security. Ends with a two-command audit.
+
+- [x] `docs/production-hardening.md`
+- [x] `docs/high-availability.md` §3.4 CORS rewritten for the new default
+- [x] `website/guide/high-availability.md` CORS section — a hand-maintained copy that had
+      already drifted; a breaking change could not be left contradicting itself between them
+- [ ] **Applying these to the real production values.** Needs your cluster's CIDRs, hostnames
+      and secret references, so it is not something I can land blind. The checklist items
+      below are the operator's to tick, not mine:
+  - [ ] `[server].trusted_proxies` = ingress CIDR
+  - [ ] `cors_allowed_origins` = real SPA origin(s), if the UI is served cross-origin
+  - [ ] Rate limiting + IP blocking on, with the Redis/Postgres store
+  - [ ] `/metrics` restricted at the ingress
+  - [ ] All secrets via `secretKeyRef`; no `change-me-*` placeholders
+  - [ ] TLS SANs cover `ingress.extraHosts` incl. wildcard
+  - [ ] `replicaCount >= 2` + PDB + S3 storage (not the RWO PVC)
+
 
 ---
 
@@ -153,11 +183,23 @@ accuracy fixes.
 `Taskfile.yml` share the unbounded pattern fixed in mine. They are pre-existing and outside this
 PR's diff; fixing them here turns a security release into a Taskfile refactor. Worth a follow-up.
 
+### Second review pass on `1f1efab` — 3 findings, all addressed
+
+| # | File | Verdict | Action |
+|---|---|---|---|
+| 3 | `ui/build/csp.test.ts` | **valid** | The best catch of the two rounds. `toContain("script-src 'self'")` is a substring match: it stays green if someone widens the directive to `script-src 'self' 'unsafe-inline'` — exactly the regression the test claimed to block. My second assertion checked a directive ordering that can never occur, so it guarded nothing. Now pins the whole directive with its `;` terminator, plus a new test asserting the API origin widens **only** `connect-src`. Mutation-tested: injecting `'unsafe-inline'` into `buildCsp` now fails the suite. |
+| 1 | `todo.md` | valid | PR 3–6 headings said done while every child box was unticked. **First fix was wrong** — a blanket tick marked PR 6 (your cluster's values) and two items I deliberately skipped as complete. Rewritten to state what actually happened. |
+| 2 | `todo.md` | valid | Added `sh` to the bare fence (markdownlint MD040). |
+
+**Note on `todo.md`:** it is a working tracker, and it got committed in `1f1efab` — so CodeRabbit
+now reviews it as a source file. Happy to `git rm` it and keep it local if you would rather the
+repo not carry it.
+
 ---
 
 ## Pre-tag verification gate
 
-```
+```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace

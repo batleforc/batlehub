@@ -49,12 +49,33 @@ describe("buildCsp", () => {
     expect(buildCsp("   ")).toContain("connect-src 'self';");
   });
 
+  /**
+   * Asserted with the trailing `;` on purpose, so the directive is pinned
+   * *whole*. A bare `toContain("script-src 'self'")` is a substring match and
+   * stays green if someone later widens it to `script-src 'self' 'unsafe-inline'`
+   * — which is precisely the regression this test exists to block, and the one
+   * an earlier version of it failed to catch.
+   */
   it("never allows inline or remote script", () => {
     const csp = buildCsp("https://api.example.com");
-    expect(csp).toContain("script-src 'self'");
-    expect(csp).not.toContain("'unsafe-inline'; script-src");
-    expect(csp).toContain("object-src 'none'");
-    expect(csp).toContain("base-uri 'self'");
+    expect(csp).toContain("script-src 'self';");
+    expect(csp).toContain("object-src 'none';");
+    expect(csp).toContain("base-uri 'self';");
+    expect(csp).toContain("default-src 'self';");
+  });
+
+  /**
+   * The API origin is allowed to widen `connect-src` and nothing else. Without
+   * this, a future change that appended it to every directive — or to
+   * `script-src` — would still satisfy the connect-src test above.
+   */
+  it("widens only connect-src for the API origin", () => {
+    const csp = buildCsp("https://api.example.com");
+    const widened = csp
+      .split("; ")
+      .filter((directive) => directive.includes("https://api.example.com"))
+      .map((directive) => directive.split(" ")[0]);
+    expect(widened).toEqual(["connect-src"]);
   });
 
   /**
