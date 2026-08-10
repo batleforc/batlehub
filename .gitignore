@@ -44,3 +44,7 @@ ui/eslint-results.sarif
 /sbom-rust.cdx.json
 *.cdx.json
 .env
+
+# Local working notes (release trackers, scratch checklists). Kept out of the
+# tree so they do not turn up as review surface on a PR.
+/todo.md

@@ -131,7 +131,11 @@ max_connections = 5   # recommended per replica when using a connection pooler
 
 ### 3.4 CORS
 
-Set `cors_allowed_origins` to the load-balancer hostname so browser clients are not blocked by CORS:
+Since 1.1.0 an unset `cors_allowed_origins` means **same-origin only**. If the SPA is served
+by BatleHub itself — the default, and what the Helm chart does — you need nothing here, because
+same-origin requests never consult CORS.
+
+Set it when a browser client is served from a *different* origin than the API:
 
 ```toml
 [server]
@@ -139,6 +143,9 @@ host                 = "0.0.0.0"
 port                 = 8080
 cors_allowed_origins = ["https://batlehub.example.com"]
 ```
+
+`["*"]` restores the pre-1.1.0 "any origin" behaviour and raises a `cors.any-origin` config
+warning. See [Configuration → CORS](configuration.md#cors) for the upgrade note.
 
 ### 3.5 Complete multi-instance config example
 
@@ -204,7 +211,7 @@ services:
     command: redis-server --save "" --appendonly no
 
   batlehub:
-    image: ghcr.io/batleforc/batlehub:1.0.0
+    image: ghcr.io/batleforc/batlehub:1.1.0
     deploy:
       replicas: 2
       restart_policy:
@@ -263,7 +270,7 @@ replicaCount: 3
 
 image:
   repository: ghcr.io/batleforc/batlehub
-  tag: "1.0.0"    # pin to a specific version
+  tag: "1.1.0"    # pin to a specific version
 
 database:
   url: "postgresql://batlehub:changeme@postgres-svc:5432/batlehub"
@@ -377,10 +384,15 @@ The Helm chart configures liveness and readiness probes automatically:
 
 | Probe | Endpoint | Initial delay | Period |
 |-------|----------|--------------|--------|
-| Readiness | `GET /api/v1/admin/health` | 5 s | 10 s |
-| Liveness | `GET /api/v1/admin/health` | 10 s | 30 s |
+| Readiness | `GET /healthz` | 5 s | 10 s |
+| Liveness | `GET /livez` | 10 s | 30 s |
 
-The health endpoint does **not** require an `Authorization` header. Kubernetes can reach it directly from the kubelet.
+Neither endpoint requires an `Authorization` header — they are the two probe routes deliberately exempt from auth, so the kubelet can reach them directly. (`/metrics` is also unauthenticated by design; see [Production hardening](production-hardening.md) for why it should still be restricted at the ingress.) Do **not** point a probe at `/api/v1/admin/health`: that endpoint is `require_admin`-gated, the kubelet sends no credentials, and the resulting `403` means the pod never becomes Ready.
+
+The two probes check deliberately different things:
+
+- **`/livez`** answers `200` as long as the process is up. It performs no I/O. A liveness probe's only remedy is to restart the container, and restarting reaches neither an unavailable database nor an unavailable object store — so a dependency check here would convert a brief Postgres outage into a CrashLoopBackOff across every replica at once.
+- **`/healthz`** verifies database and storage connectivity and answers `503` when either is unreachable. As a readiness probe this drops the affected pod out of the Service endpoints while leaving it running, so it rejoins on its own once the dependency recovers.
 
 Traffic is only routed to a pod once its readiness probe passes — so clients are never sent to a replica that is still applying migrations or warming its cache.
 

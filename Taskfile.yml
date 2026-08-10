@@ -70,6 +70,40 @@ tasks:
       - until podman exec {{.PG_CONTAINER}} pg_isready -U postgres; do sleep 1; done
       - cargo test -p batlehub-adapters --test pg_vulnerability -- --nocapture
 
+  test:pg-explore:
+    desc: Run explore per-package visibility integration tests (starts a temporary Postgres container via Podman)
+    vars:
+      PG_CONTAINER: batlehub-test-pg-explore
+      PG_PORT: "15434"
+      PG_PASSWORD: testpass
+      CONF_OVERRIDE: /tmp/batlehub-containers.conf
+    env:
+      CONTAINERS_CONF_OVERRIDE: "{{.CONF_OVERRIDE}}"
+      DATABASE_URL: "postgresql://postgres:{{.PG_PASSWORD}}@127.0.0.1:{{.PG_PORT}}/postgres"
+    cmds:
+      - printf '[network]\ndefault_rootless_network_cmd = "pasta"\n' > {{.CONF_OVERRIDE}}
+      - defer: podman rm -f {{.PG_CONTAINER}} 2>/dev/null || true
+      - podman run -d --name {{.PG_CONTAINER}} -p {{.PG_PORT}}:5432 -e POSTGRES_PASSWORD={{.PG_PASSWORD}} postgres:17-alpine
+      # Bounded, and probing TCP rather than the Unix socket. Two failure modes
+      # this avoids, both of which an unbounded `until … pg_isready` walks into:
+      # a container that never starts (bad image pull, port already bound) hangs
+      # the task forever with no output; and the postgres image runs a temporary
+      # server on the *socket only* during initdb, so a socket probe can report
+      # ready just before the real server restarts, handing the test a refused
+      # connection. `-h 127.0.0.1` forces the TCP listener, which only the final
+      # server binds.
+      - |
+        for _ in $(seq 1 60); do
+          if podman exec {{.PG_CONTAINER}} pg_isready -U postgres -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
+            exit 0
+          fi
+          sleep 1
+        done
+        echo "postgres did not become ready within 60s" >&2
+        podman logs {{.PG_CONTAINER}} >&2 || true
+        exit 1
+      - cargo test -p batlehub-adapters --test pg_explore_visibility -- --nocapture
+
   test:pg-local-registry:
     desc: Run PostgresLocalRegistry integration tests (starts a temporary Postgres container via Podman)
     vars:

@@ -65,3 +65,9 @@ pub const PROXY_TRUST_INVALID_DEPRECATED_ENTRY: &str = "proxy-trust.invalid-depr
 /// `[subdomain_routing]` is enabled but a registry name is not a valid DNS
 /// label, so no wildcard host is derived for it.
 pub const SUBDOMAIN_INVALID_DNS_LABEL: &str = "subdomain.invalid-dns-label";
+
+/// `[server].cors_allowed_origins` contains `"*"`, so any website may issue
+/// cross-origin requests to this server and read the responses. Legitimate for a
+/// public mirror, rarely what an internal deployment wants — and since 1.1.0 it
+/// only happens when someone wrote it down, which is the point of the warning.
+pub const CORS_ANY_ORIGIN: &str = "cors.any-origin";

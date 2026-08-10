@@ -1,8 +1,21 @@
 import { defineConfig } from "vitest/config";
+import { loadEnv, type Plugin } from "vite";
 import vue from "@vitejs/plugin-vue";
 import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
 import { readdirSync, existsSync } from "node:fs";
+
+import { buildCsp } from "./build/csp.ts";
+
+/** Injects the derived CSP into the `%VITE_CSP%` placeholder in index.html. */
+function cspPlugin(apiBaseUrl: string): Plugin {
+  return {
+    name: "batlehub-csp",
+    transformIndexHtml(html) {
+      return html.replace(/%VITE_CSP%/g, buildCsp(apiBaseUrl));
+    },
+  };
+}
 
 /**
  * Derive the coverage allow-list from co-located test files, so it stays in sync
@@ -54,8 +67,14 @@ function coverageIncludeFromTests(): string[] {
   return [...included].sort((a, b) => a.localeCompare(b));
 }
 
-export default defineConfig({
-  plugins: [vue(), tailwindcss()],
+export default defineConfig(({ mode }) => ({
+  // `loadEnv` reads .env files the same way Vite does for `import.meta.env`, so
+  // the CSP sees exactly the value the SDK will be built with.
+  plugins: [
+    vue(),
+    tailwindcss(),
+    cspPlugin(loadEnv(mode, __dirname, "VITE_").VITE_API_BASE_URL ?? ""),
+  ],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
@@ -86,4 +105,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));

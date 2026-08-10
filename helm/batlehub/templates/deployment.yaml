@@ -80,10 +80,21 @@ spec:
               - key: config.toml
                 path: config.toml
           {{- end }}
-        {{- if and .Values.persistence.enabled (eq .Values.config.storage.type "filesystem") }}
+        {{- if eq .Values.config.storage.type "filesystem" }}
         - name: cache
+          {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:
             claimName: {{ .Values.persistence.existingClaim | default (printf "%s-cache" (include "batlehub.fullname" .)) }}
+          {{- else }}
+          # Filesystem storage with persistence disabled: the cache is ephemeral
+          # and dies with the pod, which is the documented behaviour. It still
+          # needs a *writable* path — `readOnlyRootFilesystem: true` means the
+          # container filesystem cannot supply one, so every artifact write would
+          # fail on a deployment that used to work. An emptyDir restores exactly
+          # the previous semantics without giving up the read-only root.
+          emptyDir:
+            sizeLimit: {{ .Values.persistence.ephemeralSizeLimit | default "1Gi" }}
+          {{- end }}
         {{- end }}
         {{- range .Values.externalManifest }}
         {{- if and (eq (include "batlehub.manifestEnabled" .) "true") .mount (not .mount.asConfig) }}
@@ -126,15 +137,24 @@ spec:
             - name: http
               containerPort: {{ .Values.config.server.port }}
               protocol: TCP
+          # Probes must stay on unauthenticated endpoints: the kubelet sends no
+          # credentials, so anything under /api/v1/admin answers 403 and the pod
+          # never becomes Ready. /livez and /healthz are the only two routes
+          # exempt from auth by design.
+          #
+          # Liveness checks the process only. Readiness is what reacts to a
+          # dependency outage — /healthz answers 503 when Postgres or the object
+          # store is unreachable, which drops the pod from the Service endpoints
+          # without restarting it. Restarting would not reach the dependency.
           livenessProbe:
             httpGet:
-              path: /api/v1/admin/health
+              path: /livez
               port: http
             initialDelaySeconds: 10
             periodSeconds: 30
           readinessProbe:
             httpGet:
-              path: /api/v1/admin/health
+              path: /healthz
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -144,7 +164,7 @@ spec:
             - name: config
               mountPath: /etc/batlehub
               readOnly: true
-            {{- if and .Values.persistence.enabled (eq .Values.config.storage.type "filesystem") }}
+            {{- if eq .Values.config.storage.type "filesystem" }}
             - name: cache
               mountPath: {{ .Values.config.storage.path }}
             {{- end }}

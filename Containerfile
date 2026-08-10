@@ -68,10 +68,20 @@ FROM gcr.io/distroless/cc-debian12:latest@sha256:7ee09f36862efbdbf70422db263e411
 
 COPY --from=builder  /build/target/release/batlehub     /usr/local/bin/batlehub
 COPY --from=builder  /build/target/release/batlehub-cli /usr/local/bin/batlehub-cli
-COPY --from=builder  /var/cache/batlehub                /var/cache/batlehub
+# The cache directory is the one path the process writes to when
+# `[storage] type = "filesystem"`, so it must be owned by the runtime user.
+# Everything else (the binaries, the SPA bundle) stays root-owned and
+# read-only to that user, which is what we want.
+COPY --from=builder --chown=65532:65532 /var/cache/batlehub /var/cache/batlehub
 COPY --from=ui-builder /ui/dist                         /app/ui/dist
 
 EXPOSE 8080
+
+# 65532 is distroless's `nonroot` user. Declared numerically because the image
+# ships no shell and no /etc/passwd lookup is guaranteed at runtime; Kubernetes
+# also needs a numeric UID to satisfy `runAsNonRoot` without resolving names.
+# The chart pins the same UID in its podSecurityContext — keep the two in sync.
+USER 65532:65532
 
 ENTRYPOINT ["batlehub"]
 CMD ["--config", "/etc/batlehub/config.toml"]

@@ -1,0 +1,46 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "batlehub.fullname" . }}
+  labels:
+    {{- include "batlehub.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "batlehub.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # With `ingressFrom` empty this rule carries no `from`, which the
+    # NetworkPolicy spec reads as "any source" — the port is constrained, the
+    # peer is not. That is deliberately the default (a policy that locked out
+    # the ingress controller on first enable would be worse), but it means an
+    # empty list is not a restriction. See values.yaml.
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.config.server.port }}
+      {{- with .Values.networkPolicy.ingressFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  egress:
+    # DNS first and unconditionally. Selecting Egress at all makes the policy
+    # default-deny, and without name resolution every upstream registry fetch,
+    # database connection and object-store call fails — a failure mode that
+    # looks like "the proxy is broken", not "the policy is too strict".
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- with .Values.networkPolicy.egressTo }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

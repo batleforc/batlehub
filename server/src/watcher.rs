@@ -13,6 +13,30 @@ use batlehub_web::services::ConfigReloadService;
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
 
+/// The explicit opt-out for "any origin may read responses from this server".
+pub(super) const CORS_WILDCARD: &str = "*";
+
+/// Build the CORS policy from `[server].cors_allowed_origins`.
+///
+/// Three cases, and the first one changed in 1.1.0:
+///
+/// | `cors_allowed_origins` | Policy                                    |
+/// |------------------------|-------------------------------------------|
+/// | empty / unset          | same-origin only — **no** CORS headers    |
+/// | `["*"]`                | any origin (explicit opt-out)             |
+/// | `["https://ui.…", …]`  | exactly those origins                     |
+///
+/// **Breaking change.** An empty list used to mean `allow_any_origin()`, so any
+/// website a user happened to visit could issue cross-origin requests to this
+/// server and read the responses. Credentials are not allowed, so this was never
+/// a token-theft path — but for a registry proxy sitting inside a private network
+/// it meant a public page could enumerate internal package metadata using the
+/// victim's browser as the network position. Defaulting to closed and requiring
+/// `["*"]` to reopen it makes that a decision someone writes down.
+///
+/// Deployments serving the SPA from the same origin as the API — the default
+/// layout, since the server hosts `ui/dist` itself — are unaffected either way:
+/// same-origin requests never consult CORS.
 pub(super) fn build_cors(allowed_origins: &[String]) -> Cors {
     let base = Cors::default()
         .allowed_methods(vec!["GET", "POST", "PUT", "HEAD", "OPTIONS", "DELETE"])
@@ -22,13 +46,13 @@ pub(super) fn build_cors(allowed_origins: &[String]) -> Cors {
             http::header::ACCEPT,
         ])
         .max_age(3600);
-    if allowed_origins.is_empty() {
-        base.allow_any_origin()
-    } else {
-        allowed_origins
-            .iter()
-            .fold(base, |c, origin| c.allowed_origin(origin))
+
+    if allowed_origins.iter().any(|o| o == CORS_WILDCARD) {
+        return base.allow_any_origin();
     }
+    allowed_origins
+        .iter()
+        .fold(base, |c, origin| c.allowed_origin(origin))
 }
 
 // ── Startup warming ───────────────────────────────────────────────────────────
@@ -269,6 +293,80 @@ fn build_otlp_provider(cfg: &OtelConfig) -> anyhow::Result<sdktrace::SdkTracerPr
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `actix_web::test` is both a module and an attribute macro, so importing it
+    // unqualified shadows the built-in `#[test]` attribute for this whole module
+    // and the plain sync tests below stop compiling. Alias it.
+    use actix_web::test as actix_test;
+    use actix_web::{dev::Service, http::header, web, App, HttpResponse};
+
+    /// Send a cross-origin GET and report the `Access-Control-Allow-Origin` the
+    /// policy produced, if any. That header is what actually decides whether a
+    /// browser hands the response body to the calling page.
+    async fn allow_origin_for(allowed: &[String], request_origin: &str) -> Option<String> {
+        let app = actix_test::init_service(
+            App::new()
+                .wrap(build_cors(allowed))
+                .route("/", web::get().to(|| async { HttpResponse::Ok().finish() })),
+        )
+        .await;
+
+        let req = actix_test::TestRequest::get()
+            .uri("/")
+            .insert_header((header::ORIGIN, request_origin))
+            .to_request();
+
+        app.call(req).await.ok().and_then(|resp| {
+            resp.headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        })
+    }
+
+    /// The 1.1.0 behaviour change: an empty list is same-origin only. Before, it
+    /// meant `allow_any_origin()`.
+    #[actix_web::test]
+    async fn empty_list_allows_no_cross_origin_reader() {
+        assert_eq!(allow_origin_for(&[], "https://evil.example").await, None);
+    }
+
+    /// `allow_any_origin()` echoes the requesting origin rather than emitting a
+    /// literal `*` — either form tells the browser the response is readable, so
+    /// the assertion is "the caller's own origin came back", not "we saw a star".
+    #[actix_web::test]
+    async fn wildcard_is_the_explicit_opt_out() {
+        assert_eq!(
+            allow_origin_for(&[CORS_WILDCARD.to_owned()], "https://anywhere.example").await,
+            Some("https://anywhere.example".to_owned()),
+        );
+    }
+
+    #[actix_web::test]
+    async fn listed_origin_is_allowed_and_others_are_not() {
+        let allowed = vec!["https://ui.example".to_owned()];
+        assert_eq!(
+            allow_origin_for(&allowed, "https://ui.example").await,
+            Some("https://ui.example".to_owned()),
+        );
+        assert_eq!(
+            allow_origin_for(&allowed, "https://evil.example").await,
+            None
+        );
+    }
+
+    /// A wildcard mixed into a list of real origins still opens everything, so it
+    /// must be detected wherever it appears — otherwise the config warning and
+    /// the actual policy would disagree.
+    #[actix_web::test]
+    async fn wildcard_anywhere_in_the_list_wins() {
+        let allowed = vec!["https://ui.example".to_owned(), CORS_WILDCARD.to_owned()];
+        assert_eq!(
+            allow_origin_for(&allowed, "https://evil.example").await,
+            Some("https://evil.example".to_owned()),
+            "a wildcard mixed into the list must still open the policy, or the \
+             config warning and the real behaviour would disagree",
+        );
+    }
 
     #[test]
     fn limiter_trips_after_max_events_within_window() {

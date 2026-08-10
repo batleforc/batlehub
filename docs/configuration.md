@@ -154,9 +154,42 @@ port = 8080             # default
 | `host` | string | `"0.0.0.0"` | Bind address |
 | `port` | u16 | `8080` | TCP port |
 | `static_dir` | string | — | Path to the built SPA; when set, the server serves the frontend at `/` |
-| `cors_allowed_origins` | string[] | — | When set, only these origins receive CORS headers |
+| `cors_allowed_origins` | string[] | *absent* → same-origin only | Origins allowed to read cross-origin responses. `["*"]` opts back in to any origin. See [CORS](#cors) |
 | `cli_binary_path` | string | — | Path to `batlehub-cli`, served at `GET /api/v1/cli/download` |
 | `trusted_proxies` | string[] | *absent* | CIDR ranges (or bare IPs) of reverse proxies whose `X-Forwarded-*` headers are believed |
+
+#### CORS
+
+| `cors_allowed_origins` | Behaviour |
+|---|---|
+| absent or `[]` | Same-origin only — no CORS headers are emitted |
+| `["*"]` | Any origin may read responses (explicit opt-out; raises a `cors.any-origin` config warning) |
+| `["https://ui.example", …]` | Exactly those origins |
+
+Most deployments need nothing here. The server hosts the SPA itself when
+`static_dir` is set, and same-origin requests never consult CORS — so the UI
+keeps working with the field unset. Set it only when the UI is served from a
+different origin than the API.
+
+> **Changed in 1.1.0 — breaking.** An empty or absent list used to allow *every*
+> origin. Any website a visitor happened to open could then issue cross-origin
+> requests to this server and read the responses. Credentials are never sent
+> cross-origin, so this was not a route to stealing a token — but for a registry
+> proxy inside a private network it meant a public page could enumerate internal
+> package metadata using the visitor's browser as its network position.
+>
+> **Upgrading:** if your UI is served from the same origin as the API (the
+> default, including every Helm-chart deployment), there is nothing to do. If it
+> is served from a different origin, add that origin explicitly:
+>
+> ```toml
+> [server]
+> cors_allowed_origins = ["https://ui.example.com"]
+> ```
+>
+> To keep the pre-1.1.0 behaviour verbatim, set `cors_allowed_origins = ["*"]`.
+> The server will start and log a `cors.any-origin` warning, visible at
+> `GET /api/v1/admin/config/warnings` and on the Config Reload admin page.
 
 #### Proxy trust
 

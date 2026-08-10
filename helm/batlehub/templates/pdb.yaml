@@ -1,0 +1,40 @@
+{{- if and .Values.podDisruptionBudget.enabled (gt (int .Values.replicaCount) 1) }}
+{{- /*
+  Test whether each field was *configured*, not whether it is truthy.
+  `maxUnavailable: 0` is a valid, meaningful setting — a zero-disruption budget —
+  but Helm treats 0 as false, so a truthiness test silently discards it and falls
+  through to `minAvailable`, rendering the opposite of what was asked for. The
+  same trap applies to `minAvailable: 0`. An empty string counts as unset so the
+  commented-out placeholder in values.yaml can be uncommented without breaking
+  the render.
+*/}}
+{{- $minRaw := .Values.podDisruptionBudget.minAvailable }}
+{{- $maxRaw := .Values.podDisruptionBudget.maxUnavailable }}
+{{- $minSet := and (not (kindIs "invalid" $minRaw)) (ne (toString $minRaw) "") }}
+{{- $maxSet := and (not (kindIs "invalid" $maxRaw)) (ne (toString $maxRaw) "") }}
+{{- /*
+  A PDB may carry only one of the two fields, so `maxUnavailable` takes
+  precedence when set. It is precedence rather than a "you set both" error
+  because values.yaml ships a default `minAvailable: 1`: erroring would make
+  `--set podDisruptionBudget.maxUnavailable=…` impossible without also nulling
+  the default, which is a trap rather than a safeguard.
+*/}}
+{{- if not (or $minSet $maxSet) }}
+{{- fail "podDisruptionBudget: set either minAvailable or maxUnavailable" }}
+{{- end }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "batlehub.fullname" . }}
+  labels:
+    {{- include "batlehub.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "batlehub.selectorLabels" . | nindent 6 }}
+  {{- if $maxSet }}
+  maxUnavailable: {{ $maxRaw }}
+  {{- else }}
+  minAvailable: {{ $minRaw }}
+  {{- end }}
+{{- end }}

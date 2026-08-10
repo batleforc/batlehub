@@ -3,6 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!--
+      Content-Security-Policy for the SPA document. Built by `buildCsp()` in
+      vite.config.ts and substituted here at build time — see that function for
+      why the policy lives in the document rather than in a response header, and
+      why `connect-src` is derived from VITE_API_BASE_URL rather than hard-coded.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="%VITE_CSP%" />
+
     <title>BatleHub</title>
     <meta name="description" content="Your package hub. Proxy, cache, and host npm, Cargo, Go, Maven, Terraform, and RubyGems registries." />
     <meta name="theme-color" content="#dc2626" />

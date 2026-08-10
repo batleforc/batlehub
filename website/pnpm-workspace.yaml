@@ -17,9 +17,16 @@
 # declares. VitePress 1.6.4 works against it — `pnpm run docs:build` and
 # `pnpm run docs:dev` were both verified with the pin in place. Drop it once
 # vitepress 2.x ships stable, since that already targets a supported Vite line.
+#   * GHSA-2v37-7h3g-55p8 (high) — nanoid < 3.3.17 loops forever when a custom
+#     generator is given size 0. Reaches the tree through postcss under both
+#     vite and @vue/compiler-sfc. The CI audit for this workspace runs with
+#     `--prod`, which filters it out, so pinning it here is belt-and-braces:
+#     it keeps `pnpm audit` (no flag) clean locally and means the `--prod`
+#     flag is not the only thing holding the job green.
 overrides:
   vite: ^6.4.3
   postcss: ^8.5.25
+  nanoid: ^3.3.17
 
 # Install-time lifecycle scripts are denied by default (supply-chain hardening).
 # Packages are opted in here one by one, with a reason.

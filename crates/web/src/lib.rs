@@ -421,9 +421,10 @@ use batlehub_core::{
 use metrics_exporter_prometheus::PrometheusHandle;
 
 pub use handlers::front_office::cli_download::CliBinaryPath;
-pub use handlers::healthz::healthz;
+pub use handlers::healthz::{healthz, livez};
 pub use handlers::metrics::prometheus_metrics;
 pub use handlers::proxy::cargo::CargoIndexProxy;
+pub use middleware::security_headers;
 pub use middleware::AuthMiddlewareFactory;
 pub use middleware::HostRoutingMiddlewareFactory;
 pub use middleware::IpBlockMiddlewareFactory;

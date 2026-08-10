@@ -14,6 +14,27 @@ pub(crate) fn clamp_pagination(page: u64, per_page: u64) -> (u64, u64) {
     (page.min(10_000), per_page.clamp(1, 100))
 }
 
+/// Project an [`Identity`] onto the subset the explore queries need to apply
+/// per-package visibility.
+///
+/// One helper so the list, count and stats queries cannot disagree about who the
+/// caller is — a listing built from a wider viewer than its own count query would
+/// report a total that does not match its rows, and one built from a wider viewer
+/// than the download path would leak exactly what the filter exists to hide.
+///
+/// Mirrors `LocalRegistryService::check_visibility`: admins bypass everything,
+/// `Internal` needs at least `Role::User`, `Team` needs group membership.
+pub(crate) fn explore_viewer_for(
+    identity: &batlehub_core::entities::Identity,
+) -> batlehub_core::entities::ExploreViewer {
+    use batlehub_core::entities::Role;
+    batlehub_core::entities::ExploreViewer {
+        is_admin: identity.is_admin(),
+        is_authenticated: identity.has_role_at_least(&Role::User),
+        groups: identity.groups.clone(),
+    }
+}
+
 /// Sanitise a filename for use in a `Content-Disposition: attachment; filename="..."` value.
 ///
 /// Replaces `"`, `\`, `/`, non-ASCII characters, and ASCII control characters

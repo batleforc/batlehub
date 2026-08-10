@@ -242,10 +242,25 @@ pub async fn proxy_gem_specs(
     .await
 }
 
+/// `Content-Type` for a streamed artifact whose handler did not name one.
+///
+/// Not merely a tidy default — a security-relevant one. Artifacts are served
+/// from the same origin as the admin SPA, which keeps bearer tokens in
+/// `localStorage`. Several routes stream bytes an outsider controls: raw
+/// repository files from GitHub / GitLab / Forgejo, npm tarballs, `.vsix`
+/// bundles. With no `Content-Type` at all the browser falls back to MIME
+/// sniffing, so a "raw file" containing HTML executes as a document on the
+/// BatleHub origin. Declaring a non-renderable type (together with the
+/// `X-Content-Type-Options: nosniff` sent by [`crate::security_headers`])
+/// removes the sniffing step entirely.
+const DEFAULT_ARTIFACT_CONTENT_TYPE: &str = "application/octet-stream";
+
 /// Send a proxy request and stream the result back to the HTTP client.
 ///
-/// Pass `content_type = Some("application/json")` to set an explicit `Content-Type`
-/// header on the response; pass `None` to let actix-web use its default.
+/// Pass `content_type = Some("application/json")` to set an explicit
+/// `Content-Type` header on the response; pass `None` to fall back to
+/// [`DEFAULT_ARTIFACT_CONTENT_TYPE`]. `None` never means "send no
+/// `Content-Type`" — see that constant for why.
 pub async fn proxy_stream(
     svc: web::Data<Arc<ProxyService>>,
     pkg: PackageId,
@@ -265,11 +280,9 @@ pub async fn proxy_stream(
         ProxyResponse::Stream(stream) => {
             let body = stream
                 .filter_map(|chunk| async move { chunk.ok().map(Ok::<Bytes, actix_web::Error>) });
-            let mut resp = HttpResponse::Ok();
-            if let Some(ct) = content_type {
-                resp.content_type(ct);
-            }
-            Ok(resp.streaming(body))
+            Ok(HttpResponse::Ok()
+                .content_type(content_type.unwrap_or(DEFAULT_ARTIFACT_CONTENT_TYPE))
+                .streaming(body))
         }
     }
 }

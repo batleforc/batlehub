@@ -8,6 +8,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-10
+
+### Breaking
+
+- **`[server].cors_allowed_origins` now defaults to same-origin only.** An empty
+  or absent list previously meant `allow_any_origin()`: any website a visitor
+  opened could issue cross-origin requests to this server and read the responses.
+  Credentials are never sent cross-origin, so this was never a path to stealing a
+  token — but for a registry proxy inside a private network it let a public page
+  enumerate internal package metadata using the visitor's browser as its network
+  position.
+
+  **Nothing to do** if the UI is served from the same origin as the API — the
+  default, and what every Helm-chart deployment does, since same-origin requests
+  never consult CORS. If the UI lives on another origin, name it:
+
+  ```toml
+  [server]
+  cors_allowed_origins = ["https://ui.example.com"]
+  ```
+
+  `cors_allowed_origins = ["*"]` restores the old behaviour verbatim and is now
+  the explicit opt-out. It raises a `cors.any-origin` config warning, surfaced at
+  `GET /api/v1/admin/config/warnings` and on the Config Reload page, so a
+  wildcard copied forward from an old config does not stay invisible.
+
 ### Added
 
 - **Host-based (subdomain) registry routing.** A registry can now be bound to one
@@ -46,6 +72,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   caller to find out from a `404 No pending reload` at apply time. `false` for
   `/config/validate` (a dry run) and for `/config/reload` and
   `/config/pending/apply` (which consume a pending rather than leave one).
+- **`GET /livez`** — unauthenticated liveness probe. Answers `200` with the running
+  version as long as the process is up, and performs no I/O. `/healthz` remains the
+  readiness endpoint: it checks database and storage and answers `503` when either
+  is unreachable, which removes the pod from the Service without restarting it.
+  Splitting the two matters because restarting a container reaches neither an
+  unavailable database nor an unavailable object store — a dependency check on the
+  liveness path turns a brief Postgres outage into a CrashLoopBackOff across every
+  replica simultaneously.
+- Helm: `podDisruptionBudget` (rendered only when `replicaCount > 1`, since a PDB
+  over a single replica blocks node drains without buying availability) and an
+  opt-in `networkPolicy`. The network policy is off by default because the correct
+  egress set depends on which upstreams you proxy; when enabled it always emits a
+  DNS egress rule first, as a default-deny policy without one breaks every upstream
+  lookup. `podDisruptionBudget.maxUnavailable` takes precedence over `minAvailable`
+  when set, including an explicit `0`.
+- Helm: filesystem storage with `persistence.enabled: false` now mounts an
+  `emptyDir` at the cache path, sized by `persistence.ephemeralSizeLimit`
+  (default `1Gi`). The cache stays ephemeral as before, but `readOnlyRootFilesystem:
+  true` means the container filesystem can no longer supply a writable path of its
+  own, and without a mount every artifact write would fail.
 
 ### Changed
 
@@ -89,6 +135,67 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `POST /config/from-content` reports the warnings of the config submitted rather
   than of the one still in force when the content matches the last load attempt.
   An admin staging a config with warnings could see an empty warning panel.
+- **The Helm chart's liveness and readiness probes no longer target an
+  authenticated endpoint.** Both pointed at `GET /api/v1/admin/health`, which is
+  `require_admin`-gated; the kubelet sends no credentials, so every probe was
+  answered `403`. A fresh install never became Ready and liveness restarted the
+  container on a loop. Readiness now uses `/healthz` and liveness the new
+  `/livez`. A rendered-manifest check in CI (`.github/workflows/helm-lint.yaml`)
+  fails the build if a probe path moves back under `/api/`.
+- **The package explorer no longer lists packages the caller cannot download.**
+  `GET /api/v1/explore/packages` and `/api/v1/explore/packages/{registry}/{name}`
+  gated on *registry*-level access only, so the name, version count and download
+  total of an `internal` or `team` package were visible to anyone who could explore
+  that registry — even though the same caller got a `403` from the download path,
+  where `check_visibility` has always been enforced. Artifact contents were never
+  exposed; the leak was metadata, which for a private registry is often the
+  sensitive part.
+
+  The listing now applies the same three rules in SQL (`public` → everyone,
+  `internal` → authenticated, `team` → member of the longest-prefix namespace
+  claim, admins bypass), and the detail endpoint answers **404** rather than 403
+  so a denial does not confirm the package exists. The paginated count query
+  applies the identical predicate, so totals match the rows returned.
+
+  The explore result cache is keyed on the viewer as well — without that, the
+  first caller to populate an entry would have their filtered view served to
+  everyone who followed.
+- **Baseline security headers on every response** — `X-Content-Type-Options:
+  nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`. Applied
+  outside the IP-block and rate-limit layers so their `403`/`429` responses carry
+  them too. A handler that sets its own value keeps it.
+- **Streamed artifacts always declare a `Content-Type`.** Eight routes — raw
+  repository files from GitHub, GitLab and Forgejo, npm tarballs, `.vsix` bundles,
+  JetBrains plugin archives — passed `None` to `proxy_stream`, which sent no
+  `Content-Type` at all, leaving the browser to MIME-sniff. Artifacts are served
+  from the same origin as the admin SPA, which holds bearer tokens in
+  `localStorage`, so a "raw file" containing HTML could execute as a document on
+  that origin. `proxy_stream` now falls back to `application/octet-stream`, and
+  `nosniff` removes the sniffing step entirely; the two together close the path.
+- The SPA declares a `Content-Security-Policy` (`script-src 'self'`,
+  `object-src 'none'`) in `ui/index.html`. It lives in the document rather than a
+  response header because it must not apply to `/scalar`, whose bundle is loaded
+  from a CDN. `frame-ancestors` is ignored in meta form, which is why
+  `X-Frame-Options` is sent for every response instead.
+- **Both container images now run as a non-root user** (`USER 65532:65532`). Neither
+  `Containerfile` nor `Containerfile.hardened` declared a `USER`, so the server ran
+  as root with a writable root filesystem and the full default capability set. The
+  artifact-cache directory is copied in already owned by that UID; the binaries and
+  the SPA bundle stay root-owned and read-only to the runtime user.
+- **The Helm chart ships a real security context.** `podSecurityContext` and
+  `securityContext` were both `{}`, so nothing stopped the workload from running as
+  root even on a cluster that could have enforced otherwise. Defaults are now
+  `runAsNonRoot` / `runAsUser: 65532` / `fsGroup: 65532` (so the cache PVC is
+  writable) / `seccompProfile: RuntimeDefault`, plus `allowPrivilegeEscalation:
+  false`, `readOnlyRootFilesystem: true` and `capabilities.drop: [ALL]`. The pod is
+  admissible in a Pod Security Admission `restricted` namespace unmodified.
+- Pinned `js-yaml` to `^4.3.1` and `nanoid` to `^3.3.17` in `ui/`. The existing
+  `js-yaml: ^4.3.0` pin covered GHSA-52cp-r559-cp3m but still resolved 4.3.0,
+  leaving GHSA-5p4m-2wfm-xmqj open; `nanoid` (GHSA-2v37-7h3g-55p8) had no pin and
+  arrives through postcss on 27 paths. Both are build-time only, but the `ui` leg
+  of `dep-audit-frontend` audits the whole tree, so the job was failing. `website/`
+  gets the same `nanoid` pin so its green result does not depend solely on the
+  `--prod` filter.
 
 ### Deprecated
 
@@ -264,6 +371,8 @@ First stable release.
 
 ---
 
-[Unreleased]: https://git.batleforc.fr/batleforc/batlehub/compare/v0.5.0...HEAD
+[Unreleased]: https://git.batleforc.fr/batleforc/batlehub/compare/v1.1.0...HEAD
+[1.1.0]: https://git.batleforc.fr/batleforc/batlehub/compare/v1.0.0...v1.1.0
+[1.0.0]: https://git.batleforc.fr/batleforc/batlehub/compare/v0.5.0...v1.0.0
 [0.5.0]: https://git.batleforc.fr/batleforc/batlehub/compare/v0.2.0...v0.5.0
 [0.2.0]: https://git.batleforc.fr/batleforc/batlehub/releases/tag/v0.2.0

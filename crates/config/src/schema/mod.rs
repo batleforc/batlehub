@@ -296,7 +296,32 @@ impl AppConfig {
         let mut out = Vec::new();
         self.proxy_trust_warnings(&mut out);
         self.subdomain_warnings(&mut out);
+        self.cors_warnings(&mut out);
         out
+    }
+
+    /// `cors_allowed_origins = ["*"]` reopens what 1.1.0 closed by default. It is
+    /// a legitimate choice for a public mirror, so this warns rather than
+    /// refusing — but an operator who copied the wildcard from an old config
+    /// without meaning to should see it named.
+    fn cors_warnings(&self, out: &mut Vec<ConfigWarning>) {
+        let origins = self
+            .server
+            .cors_allowed_origins
+            .as_deref()
+            .unwrap_or_default();
+        if !origins.iter().any(|o| o == "*") {
+            return;
+        }
+        out.push(ConfigWarning::new(
+            warnings::CORS_ANY_ORIGIN,
+            "server.cors_allowed_origins",
+            "'*' allows any website to make cross-origin requests to this server and read \
+             the responses. Credentials are never sent cross-origin, so this is not a \
+             token-theft path, but on a private network it lets a public page enumerate \
+             internal package metadata through a visitor's browser. Replace it with the \
+             explicit origin(s) that serve the UI unless this is a public mirror.",
+        ));
     }
 
     /// `[subdomain_routing]` is on but a registry name cannot become a DNS label.

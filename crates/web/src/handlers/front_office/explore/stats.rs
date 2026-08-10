@@ -158,6 +158,11 @@ pub async fn explore_upstream_search(
         sort_by: ExploreSortBy::Name,
         limit: 500,
         offset: 0,
+        // Same viewer as the listing: this set decides the `already_cached` flag
+        // on upstream search results, and marking a package the caller cannot see
+        // as "already cached" would disclose its existence just as surely as
+        // listing it.
+        viewer: crate::handlers::explore_viewer_for(&identity),
     };
     let (known, _) = admin_svc
         .explore_packages(known_filter)

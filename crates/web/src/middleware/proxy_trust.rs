@@ -188,8 +188,15 @@ pub fn peer_trust_of_service(req: &ServiceRequest) -> PeerTrust {
 /// render into URLs, not the routing key. Use [`normalise_host`] for lookups.
 pub fn trusted_origin(req: &HttpRequest) -> (String, String) {
     if peer_trust(req).honours_forwarded_origin() {
+        // The one sanctioned use of `ConnectionInfo`'s forwarded-header readers
+        // in the workspace — `clippy.toml` disallows them everywhere else so the
+        // trust decision cannot be bypassed by reaching for them directly. Here
+        // it is guarded: we already established the peer may set those headers.
+        #[allow(clippy::disallowed_methods)]
         let conn = req.connection_info();
-        (conn.scheme().to_owned(), conn.host().to_owned())
+        #[allow(clippy::disallowed_methods)]
+        let origin = (conn.scheme().to_owned(), conn.host().to_owned());
+        origin
     } else {
         (connection_scheme(req).to_owned(), connection_host(req))
     }
