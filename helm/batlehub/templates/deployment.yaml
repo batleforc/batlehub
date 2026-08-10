@@ -80,10 +80,21 @@ spec:
               - key: config.toml
                 path: config.toml
           {{- end }}
-        {{- if and .Values.persistence.enabled (eq .Values.config.storage.type "filesystem") }}
+        {{- if eq .Values.config.storage.type "filesystem" }}
         - name: cache
+          {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:
             claimName: {{ .Values.persistence.existingClaim | default (printf "%s-cache" (include "batlehub.fullname" .)) }}
+          {{- else }}
+          # Filesystem storage with persistence disabled: the cache is ephemeral
+          # and dies with the pod, which is the documented behaviour. It still
+          # needs a *writable* path — `readOnlyRootFilesystem: true` means the
+          # container filesystem cannot supply one, so every artifact write would
+          # fail on a deployment that used to work. An emptyDir restores exactly
+          # the previous semantics without giving up the read-only root.
+          emptyDir:
+            sizeLimit: {{ .Values.persistence.ephemeralSizeLimit | default "1Gi" }}
+          {{- end }}
         {{- end }}
         {{- range .Values.externalManifest }}
         {{- if and (eq (include "batlehub.manifestEnabled" .) "true") .mount (not .mount.asConfig) }}
@@ -153,7 +164,7 @@ spec:
             - name: config
               mountPath: /etc/batlehub
               readOnly: true
-            {{- if and .Values.persistence.enabled (eq .Values.config.storage.type "filesystem") }}
+            {{- if eq .Values.config.storage.type "filesystem" }}
             - name: cache
               mountPath: {{ .Values.config.storage.path }}
             {{- end }}

@@ -13,6 +13,11 @@ spec:
     - Ingress
     - Egress
   ingress:
+    # With `ingressFrom` empty this rule carries no `from`, which the
+    # NetworkPolicy spec reads as "any source" — the port is constrained, the
+    # peer is not. That is deliberately the default (a policy that locked out
+    # the ingress controller on first enable would be worse), but it means an
+    # empty list is not a restriction. See values.yaml.
     - ports:
         - protocol: TCP
           port: {{ .Values.config.server.port }}

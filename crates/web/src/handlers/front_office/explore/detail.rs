@@ -115,13 +115,13 @@ pub async fn explore_package_detail(
         .accessible_registries_for(&identity)
         .contains(registry);
 
-    // Gate: per-package visibility. The listing filters `private`/`team`
+    // Gate: per-package visibility. The listing filters `internal`/`team`
     // packages out entirely, so the detail view has to agree — otherwise the
     // name is hidden from the index while remaining readable to anyone who
     // guesses or is told the URL, and the filter buys nothing.
     //
     // 404 rather than 403 on purpose: a 403 confirms the package exists, which
-    // is the fact a `private` package is trying not to disclose. Denied and
+    // is the fact a non-public package is trying not to disclose. Denied and
     // absent look identical from outside.
     if let Err(e) = local_svc.check_visibility(registry, name, &identity).await {
         tracing::debug!(

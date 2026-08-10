@@ -387,7 +387,7 @@ The Helm chart configures liveness and readiness probes automatically:
 | Readiness | `GET /healthz` | 5 s | 10 s |
 | Liveness | `GET /livez` | 10 s | 30 s |
 
-Neither endpoint requires an `Authorization` header — they are the only two routes deliberately exempt from auth, so the kubelet can reach them directly. Do **not** point a probe at `/api/v1/admin/health`: that endpoint is `require_admin`-gated, the kubelet sends no credentials, and the resulting `403` means the pod never becomes Ready.
+Neither endpoint requires an `Authorization` header — they are the two probe routes deliberately exempt from auth, so the kubelet can reach them directly. (`/metrics` is also unauthenticated by design; see [Production hardening](production-hardening.md) for why it should still be restricted at the ingress.) Do **not** point a probe at `/api/v1/admin/health`: that endpoint is `require_admin`-gated, the kubelet sends no credentials, and the resulting `403` means the pod never becomes Ready.
 
 The two probes check deliberately different things:
 

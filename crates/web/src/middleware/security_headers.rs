@@ -32,10 +32,10 @@
 //!   `script-src 'self'` policy. It also cannot be attached to the static-file
 //!   service alone, because `actix_files::Files` is not a `ServiceFactory` and
 //!   takes no middleware. The SPA therefore declares its own policy in a
-//!   `<meta http-equiv="Content-Security-Policy">` tag in `ui/index.html`, which
-//!   scopes it to exactly the document that needs it. `frame-ancestors` is
-//!   ignored in meta form, which is precisely why `X-Frame-Options` is sent here
-//!   for every response.
+//!   `<meta http-equiv="Content-Security-Policy">` tag, built at build time by
+//!   `ui/build/csp.ts` so `connect-src` can track the configured API origin.
+//!   `frame-ancestors` is ignored in meta form, which is precisely why
+//!   `X-Frame-Options` is sent here for every response.
 //!
 //! [`DefaultHeaders`] only inserts a header the response does not already carry,
 //! so a handler that sets its own value (the OIDC callback's stricter

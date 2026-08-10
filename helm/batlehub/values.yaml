@@ -279,7 +279,10 @@ config:
 podDisruptionBudget:
   enabled: true
   minAvailable: 1
-  # maxUnavailable: ""   # set one or the other, not both
+  # A PDB carries only one of the two fields. `maxUnavailable` wins when set,
+  # including an explicit `0` (a zero-disruption budget), which is why the
+  # template tests whether it was configured rather than whether it is truthy.
+  # maxUnavailable: 0
 
 # ── Network policy ────────────────────────────────────────────────────────────
 # Off by default: the correct egress set depends on which upstream registries you
@@ -288,8 +291,12 @@ podDisruptionBudget:
 # allowed or *every* upstream lookup fails.
 networkPolicy:
   enabled: false
-  # Ingress is restricted to these sources when set; empty means "any source in
-  # the cluster" (the ingress controller's namespace is the usual entry).
+  # Peers allowed to reach the service port. Leaving this empty renders an
+  # ingress rule with no `from`, which in the NetworkPolicy spec means **any
+  # source** — not "anything in the cluster". The port restriction still
+  # applies, but the policy places no limit on who may connect to it, so an
+  # empty list gives you far less than it looks like. Name the ingress
+  # controller (or whatever fronts BatleHub) to actually narrow it.
   ingressFrom: []
   #  - namespaceSelector:
   #      matchLabels:
@@ -316,6 +323,12 @@ persistence:
   accessMode: ReadWriteOnce
   size: 10Gi
   # existingClaim: ""
+  # With filesystem storage and `enabled: false` the cache is an emptyDir —
+  # ephemeral, but still writable, which `readOnlyRootFilesystem: true` makes a
+  # requirement rather than a nicety. Cap it below the container's
+  # `resources.limits.ephemeral-storage` or the node evicts the pod instead of
+  # the cache evicting itself.
+  ephemeralSizeLimit: 1Gi
 
 # ── Extra / external manifests ────────────────────────────────────────────────
 # 0..N additional Kubernetes manifests rendered by this chart. Each entry:

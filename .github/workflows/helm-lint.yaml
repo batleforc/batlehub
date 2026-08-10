@@ -42,10 +42,18 @@ jobs:
             exit 1
           fi
 
+      # Scoped to each probe block on purpose. Two independent global greps both
+      # pass when the paths are *swapped* — liveness on /healthz would then
+      # restart every replica on a database blip, exactly the failure this guard
+      # exists to prevent, while the check stayed green.
       - name: Probes must target /livez and /healthz
         run: |
-          grep -q 'path: /livez'   /tmp/rendered.yaml || { echo "::error::liveness probe is not /livez"; exit 1; }
-          grep -q 'path: /healthz' /tmp/rendered.yaml || { echo "::error::readiness probe is not /healthz"; exit 1; }
+          grep -A3 -E '^[[:space:]]+livenessProbe:' /tmp/rendered.yaml \
+            | grep -qE '^[[:space:]]+path: /livez$' \
+            || { echo "::error::liveness probe is not /livez"; exit 1; }
+          grep -A3 -E '^[[:space:]]+readinessProbe:' /tmp/rendered.yaml \
+            | grep -qE '^[[:space:]]+path: /healthz$' \
+            || { echo "::error::readiness probe is not /healthz"; exit 1; }
 
       # The image has no USER of its own baked in for every base we ship, so the
       # chart is the backstop that keeps the workload off uid 0.

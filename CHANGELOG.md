@@ -85,7 +85,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   opt-in `networkPolicy`. The network policy is off by default because the correct
   egress set depends on which upstreams you proxy; when enabled it always emits a
   DNS egress rule first, as a default-deny policy without one breaks every upstream
-  lookup.
+  lookup. `podDisruptionBudget.maxUnavailable` takes precedence over `minAvailable`
+  when set, including an explicit `0`.
+- Helm: filesystem storage with `persistence.enabled: false` now mounts an
+  `emptyDir` at the cache path, sized by `persistence.ephemeralSizeLimit`
+  (default `1Gi`). The cache stays ephemeral as before, but `readOnlyRootFilesystem:
+  true` means the container filesystem can no longer supply a writable path of its
+  own, and without a mount every artifact write would fail.
 
 ### Changed
 
@@ -139,7 +145,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **The package explorer no longer lists packages the caller cannot download.**
   `GET /api/v1/explore/packages` and `/api/v1/explore/packages/{registry}/{name}`
   gated on *registry*-level access only, so the name, version count and download
-  total of a `private` or `team` package were visible to anyone who could explore
+  total of an `internal` or `team` package were visible to anyone who could explore
   that registry — even though the same caller got a `403` from the download path,
   where `check_visibility` has always been enforced. Artifact contents were never
   exposed; the leak was metadata, which for a private registry is often the

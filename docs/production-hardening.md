@@ -53,7 +53,7 @@ enforcement         = "block"
 
 **Default: `enabled = false`.** Turn it on for internet-facing deployments. It depends on the
 client IP being correct, so it is only meaningful once §1 is set — otherwise a client can
-name whichever address it wants blocked.
+name whichever address it wants to have blocked.
 
 ## 5. `/metrics` is unauthenticated
 
@@ -126,6 +126,13 @@ curl -sH "Authorization: Bearer $ADMIN_TOKEN" \
   https://batlehub.example.com/api/v1/admin/config/warnings | jq
 ```
 
-`GET /api/v1/admin/config/warnings` is the fastest check — an unstated proxy-trust policy and a
-wildcard CORS origin both surface there, each with a stable `code` and the `path` of the
-offending key.
+`GET /api/v1/admin/config/warnings` is the fastest check, but it reports **non-fatal** problems
+only — the server has to be running to answer it. Each warning carries a stable `code` and the
+`path` of the offending key. A wildcard CORS origin (`cors.any-origin`) surfaces there, as does
+an unstated proxy-trust policy (`proxy-trust.unconfigured`) on a deployment without host-based
+routing.
+
+Hard validation failures never reach that endpoint. Combining host-based routing with no
+`trusted_proxies` is one: routing would be decided by a header with no policy about who may set
+it, so `AppConfig::validate` refuses to start and prints the reason. Read the startup log for
+those.

@@ -245,11 +245,11 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
                     // `script-src 'self'` policy would break `/scalar` — and
                     // `actix_files::Files` is not a `ServiceFactory`, so it cannot
                     // be wrapped individually either. The SPA therefore carries
-                    // its own policy in a `<meta http-equiv>` tag in
-                    // `ui/index.html`, which applies to exactly the one document
-                    // that needs it. `frame-ancestors` is ignored in meta form,
-                    // which is why `security_headers()` sends `X-Frame-Options:
-                    // DENY` for every response.
+                    // its own policy in a `<meta http-equiv>` tag, generated at
+                    // build time by `ui/build/csp.ts` so that `connect-src` can
+                    // follow the configured API origin. `frame-ancestors` is
+                    // ignored in meta form, which is why `security_headers()`
+                    // sends `X-Frame-Options: DENY` for every response.
                     cfg.service(
                         actix_files::Files::new("/", dir)
                             .index_file("index.html")

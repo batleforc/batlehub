@@ -98,7 +98,7 @@ pub async fn explore_packages(
     let (page, per_page) = crate::handlers::clamp_pagination(query.page, query.per_page);
 
     // Registry-level access (above) is the coarse gate; this is the per-package
-    // one. Without it a `private`/`team` package's name and version count are
+    // one. Without it an `internal`/`team` package's name and version count are
     // listed to anyone who can explore the registry, even though the same caller
     // gets a 403 trying to download it.
     let viewer = crate::handlers::explore_viewer_for(&identity);

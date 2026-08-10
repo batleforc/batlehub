@@ -38,7 +38,7 @@ pub struct ExploreEntry {
 /// `ExploreFilter::registries`. This type carries what is needed to apply the
 /// *package*-level `Visibility` rule — the same rule
 /// `LocalRegistryService::check_visibility` enforces on the download path — to a
-/// listing, so a `private`/`team` package does not surface its name and version
+/// listing, so an `internal`/`team` package does not surface its name and version
 /// count to someone who could never download it.
 ///
 /// [`Default`] is the anonymous viewer: not an admin, not authenticated, no
