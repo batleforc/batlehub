@@ -20,9 +20,30 @@ struct HealthResponse {
     version: &'static str,
 }
 
+/// Liveness probe — answers `200` as long as the process is running and the
+/// HTTP server is accepting requests. Unauthenticated, no I/O.
+///
+/// Deliberately checks **nothing** beyond that. A liveness probe's only correct
+/// remedy is "restart the pod", and restarting fixes neither an unreachable
+/// database nor an unreachable object store — pointing liveness at [`healthz`]
+/// would turn a Postgres blip into a CrashLoopBackOff across every replica.
+/// Readiness is what should react to dependency health, so that is where
+/// [`healthz`] belongs.
+#[get("/livez")]
+pub async fn livez() -> impl Responder {
+    HttpResponse::Ok().json(serde_json::json!({
+        "ok": true,
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
+}
+
 /// Infrastructure health check — verifies DB and storage connectivity, and
-/// reports the running version. Unauthenticated; intended for Kubernetes
-/// liveness/readiness probes as well as UI/CLI version display.
+/// reports the running version. Unauthenticated; intended for the Kubernetes
+/// **readiness** probe (see [`livez`] for liveness) as well as UI/CLI version
+/// display.
+///
+/// Returns `503` when a dependency is unreachable, which drops the pod out of
+/// the Service endpoints without restarting it.
 #[get("/healthz")]
 pub async fn healthz(
     pool: Option<web::Data<PgPool>>,
@@ -67,4 +88,37 @@ pub async fn healthz(
         storage,
         version: env!("CARGO_PKG_VERSION"),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::{test, App};
+
+    #[actix_web::test]
+    async fn livez_is_unauthenticated_and_always_ok() {
+        let app = test::init_service(App::new().service(livez)).await;
+        let req = test::TestRequest::get().uri("/livez").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["ok"], serde_json::json!(true));
+        assert_eq!(
+            body["version"],
+            serde_json::json!(env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    /// `livez` takes no `web::Data`, so it cannot 500 on a half-wired app the
+    /// way a dependency-checking handler would. Guards against someone later
+    /// adding a DB check here and reintroducing restart-on-outage.
+    #[actix_web::test]
+    async fn livez_needs_no_app_data() {
+        let app = test::init_service(App::new().service(livez)).await;
+        for _ in 0..3 {
+            let req = test::TestRequest::get().uri("/livez").to_request();
+            assert_eq!(test::call_service(&app, req).await.status(), StatusCode::OK);
+        }
+    }
 }

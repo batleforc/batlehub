@@ -21,10 +21,10 @@ use batlehub_web::handlers::back_office::ops::eviction::EvictionServiceMap;
 use batlehub_web::handlers::back_office::ops::warming::WarmingServiceMap;
 use batlehub_web::services::{BannerService, ConfigReloadService, NotificationService};
 use batlehub_web::{
-    configure_app, healthz, prometheus_metrics, AccessConfigLock, ApiDoc, CargoIndexMap,
-    CliBinaryPath, HostRoutingMiddlewareFactory, IpBlockMiddlewareFactory, ProxyTrust,
-    RateLimitMiddlewareFactory, RateLimitService, RegistryHostMap, RegistryMap, RegistryModeMap,
-    UpstreamMap, UserBlockMiddlewareFactory, VulnDbMap,
+    configure_app, healthz, livez, prometheus_metrics, security_headers, AccessConfigLock, ApiDoc,
+    CargoIndexMap, CliBinaryPath, HostRoutingMiddlewareFactory, IpBlockMiddlewareFactory,
+    ProxyTrust, RateLimitMiddlewareFactory, RateLimitService, RegistryHostMap, RegistryMap,
+    RegistryModeMap, UpstreamMap, UserBlockMiddlewareFactory, VulnDbMap,
 };
 
 // ── Tracing span builder ──────────────────────────────────────────────────────
@@ -32,6 +32,13 @@ use batlehub_web::{
 pub(super) struct BatleHubSpanBuilder;
 
 impl RootSpanBuilder for BatleHubSpanBuilder {
+    // `root_span!` expands to `ConnectionInfo::scheme`/`::host` calls, which
+    // `clippy.toml` disallows so no request-handling code reads a forwarded
+    // header without going through `proxy_trust`. This is third-party macro
+    // output and it only labels a tracing span — a spoofed host here mislabels a
+    // trace, it does not decide routing, URLs or a ban. Nothing else in the
+    // workspace carries this allow; see clippy.toml for why.
+    #[allow(clippy::disallowed_methods)]
     fn on_request_start(request: &actix_web::dev::ServiceRequest) -> tracing::Span {
         tracing_actix_web::root_span!(level = tracing::Level::INFO, request)
     }
@@ -195,7 +202,8 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
             .app_data(web::Data::new(proxy_trust.clone()))
             .app_data(web::Data::new(registry_host_map.clone()))
             .service(prometheus_metrics)
-            .service(healthz);
+            .service(healthz)
+            .service(livez);
 
         if let Some(path) = cli_binary_path_inner {
             app = app.app_data(web::Data::new(CliBinaryPath(path)));
@@ -218,6 +226,10 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
                 enabled,
                 IpBlockMiddlewareFactory::new(Arc::clone(&ip_block_store), ip_block_cfg_for_mw),
             ))
+            // Outside the IP-block layer so its 403 — and the rate limiter's 429,
+            // and anything the static-file service returns — carry the baseline
+            // headers too, not just handler responses.
+            .wrap(security_headers())
             // Outermost, so the URI rewrite lands before route matching and the
             // proxy-trust verdict before anything that reads a forwarded header.
             // `.wrap` builds inside-out, so this must stay the last call.
@@ -228,6 +240,16 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
             .service(batlehub_web::scalar(openapi))
             .configure(move |cfg| {
                 if let Some(ref dir) = static_dir_inner {
+                    // No CSP header here on purpose. It cannot be global — the
+                    // Scalar API-docs page loads its bundle from a CDN, so a
+                    // `script-src 'self'` policy would break `/scalar` — and
+                    // `actix_files::Files` is not a `ServiceFactory`, so it cannot
+                    // be wrapped individually either. The SPA therefore carries
+                    // its own policy in a `<meta http-equiv>` tag in
+                    // `ui/index.html`, which applies to exactly the one document
+                    // that needs it. `frame-ancestors` is ignored in meta form,
+                    // which is why `security_headers()` sends `X-Frame-Options:
+                    // DENY` for every response.
                     cfg.service(
                         actix_files::Files::new("/", dir)
                             .index_file("index.html")

@@ -55,16 +55,17 @@ pub fn raw_auth_from_request(req: &HttpRequest) -> batlehub_core::ports::RawAuth
         }
     }
 
-    let query_params = req
-        .query_string()
-        .split('&')
-        .filter(|pair| !pair.is_empty())
-        .filter_map(|pair| {
-            let mut parts = pair.splitn(2, '=');
-            let key = parts.next().filter(|k| !k.is_empty())?.to_owned();
-            let val = parts.next().unwrap_or("").to_owned();
-            Some((key, val))
-        })
+    // Percent-decoded, with `+` read as a space, per
+    // `application/x-www-form-urlencoded` — which is what a query string is.
+    //
+    // No `AuthProvider` reads query params today; every one of them is
+    // header-only. But the field is part of the `RawAuthRequest` contract, and a
+    // provider added later would otherwise compare a still-encoded string against
+    // a decoded secret and silently never match — the kind of bug that looks like
+    // "auth is broken for some tokens and not others".
+    let query_params = form_urlencoded::parse(req.query_string().as_bytes())
+        .filter(|(key, _)| !key.is_empty())
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
         .collect::<HashMap<_, _>>();
 
     batlehub_core::ports::RawAuthRequest {
@@ -125,5 +126,43 @@ mod tests {
             !raw.query_params.contains_key(""),
             "trailing & must not insert empty key"
         );
+    }
+
+    /// A token carrying `+`, `/` or `=` (base64 alphabet, and every padded
+    /// base64 secret ends in `=`) has to survive the round trip, or a future
+    /// query-param provider would compare an encoded string to a decoded secret.
+    #[test]
+    fn percent_encoded_values_are_decoded() {
+        let req = TestRequest::get()
+            .uri("/?token=a%2Bb%2Fc%3D%3D&scope=read%20write")
+            .to_http_request();
+        let raw = raw_auth_from_request(&req);
+        assert_eq!(
+            raw.query_params.get("token").map(String::as_str),
+            Some("a+b/c==")
+        );
+        assert_eq!(
+            raw.query_params.get("scope").map(String::as_str),
+            Some("read write")
+        );
+    }
+
+    /// `+` is a space in a query string, not a literal plus — the distinction
+    /// that makes hand-rolled splitting wrong.
+    #[test]
+    fn plus_is_decoded_as_space() {
+        let req = TestRequest::get().uri("/?q=hello+world").to_http_request();
+        let raw = raw_auth_from_request(&req);
+        assert_eq!(
+            raw.query_params.get("q").map(String::as_str),
+            Some("hello world")
+        );
+    }
+
+    #[test]
+    fn valueless_key_yields_empty_string() {
+        let req = TestRequest::get().uri("/?flag").to_http_request();
+        let raw = raw_auth_from_request(&req);
+        assert_eq!(raw.query_params.get("flag").map(String::as_str), Some(""));
     }
 }

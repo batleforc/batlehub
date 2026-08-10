@@ -12,8 +12,17 @@ host = "0.0.0.0"
 port = 8080
 # Serve the built SPA from this directory (optional).
 # static_dir = "./ui/dist"
-# Restrict CORS to specific frontend origins in production.
-# When absent, all origins are allowed (fine for local dev).
+# Origins allowed to make cross-origin requests and read the responses.
+#
+# Absent or empty (the default since 1.1.0) means same-origin only: no CORS
+# headers are emitted at all. The default deployment serves the SPA from this
+# same server, and same-origin requests never consult CORS, so most setups need
+# nothing here. Set it only when the UI is served from a different origin.
+#
+# "*" is the explicit opt-out — any website may then read responses from this
+# server. Reasonable for a public mirror; on a private network it lets a public
+# page enumerate internal package metadata through a visitor's browser. The
+# server raises a `cors.any-origin` config warning when it is set.
 # cors_allowed_origins = ["https://batlehub.example.com"]
 #
 # ── Proxy trust ───────────────────────────────────────────────────────────────

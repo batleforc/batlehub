@@ -32,8 +32,32 @@ serviceAccount:
     autoTokenReview: true
 
 podAnnotations: {}
-podSecurityContext: {}
-securityContext: {}
+
+# ── Security context ──────────────────────────────────────────────────────────
+# Both container images declare `USER 65532:65532`, so these values match what
+# the image already does — they exist so the *cluster* enforces it too, and so a
+# Pod Security Admission "restricted" namespace admits the pod unmodified.
+#
+# fsGroup makes the artifact-cache PVC writable by that UID; without it a
+# filesystem-storage deployment fails its first write. Drop the whole block only
+# if you have a specific reason, and know the workload then runs as root.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+# readOnlyRootFilesystem is safe here: the server writes only to the cache mount
+# (its own volume) and never to a temp directory. If you add a feature that needs
+# scratch space, mount an emptyDir rather than relaxing this.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
 
 service:
   type: ClusterIP
@@ -128,6 +152,12 @@ config:
     host: "0.0.0.0"
     port: 8080
     # static_dir: "/app/ui/dist"
+    #
+    # Origins allowed to make cross-origin requests and read the responses.
+    # Absent or empty (the default since 1.1.0) means same-origin only. The chart
+    # serves the SPA from the same origin as the API, so leave this unset unless
+    # your UI lives elsewhere. "*" reopens it to every origin and raises a
+    # `cors.any-origin` config warning.
     # cors_allowed_origins:
     #   - "https://batlehub.example.com"
     #
@@ -243,7 +273,43 @@ config:
   #   violation_window_secs: 300
   #   ban_duration_secs: 3600
 
+# ── Disruption budget ─────────────────────────────────────────────────────────
+# Only rendered when replicaCount > 1 — a PDB over a single replica blocks node
+# drains without buying any availability.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+  # maxUnavailable: ""   # set one or the other, not both
+
+# ── Network policy ────────────────────────────────────────────────────────────
+# Off by default: the correct egress set depends on which upstream registries you
+# proxy, and a default-deny policy written without that list silently breaks every
+# cache miss. Turn it on once you know your egress, and note that DNS must be
+# allowed or *every* upstream lookup fails.
+networkPolicy:
+  enabled: false
+  # Ingress is restricted to these sources when set; empty means "any source in
+  # the cluster" (the ingress controller's namespace is the usual entry).
+  ingressFrom: []
+  #  - namespaceSelector:
+  #      matchLabels:
+  #        kubernetes.io/metadata.name: ingress-nginx
+  # Extra egress rules, appended to the always-present DNS rule.
+  egressTo: []
+  #  - to:
+  #      - ipBlock:
+  #          cidr: 0.0.0.0/0
+  #    ports:
+  #      - protocol: TCP
+  #        port: 443
+
 # ── Persistent storage for the artifact cache (filesystem mode) ───────────────
+#
+# NOTE: `ReadWriteOnce` cannot be shared by replicas scheduled on different
+# nodes. Filesystem storage is therefore effectively single-replica. For a
+# multi-replica deployment either switch `config.storage` to `s3` (recommended —
+# it is the only backend all replicas can write to concurrently) or supply a
+# storageClass that provides `ReadWriteMany` and set accessMode accordingly.
 persistence:
   enabled: true
   storageClass: ""

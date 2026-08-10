@@ -112,7 +112,11 @@ max_connections = 5   # recommended per replica when using a connection pooler
 
 ### CORS {#config-cors}
 
-Set `cors_allowed_origins` to the load-balancer hostname so browser clients are not blocked by CORS:
+Since 1.1.0 an unset `cors_allowed_origins` means **same-origin only**. If BatleHub serves the
+SPA itself — the default, and what the Helm chart does — you need nothing here: same-origin
+requests never consult CORS.
+
+Set it when a browser client is served from a *different* origin than the API:
 
 ```toml
 [server]
@@ -120,6 +124,12 @@ host                 = "0.0.0.0"
 port                 = 8080
 cors_allowed_origins = ["https://batlehub.example.com"]
 ```
+
+::: warning Breaking change in 1.1.0
+An empty or absent list previously allowed **every** origin. Setting
+`cors_allowed_origins = ["*"]` restores that behaviour and raises a `cors.any-origin` config
+warning.
+:::
 
 ### Complete multi-instance config example
 

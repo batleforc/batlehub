@@ -32,6 +32,38 @@ pub struct ExploreEntry {
     pub has_blocked: bool,
 }
 
+/// Who is asking, for the purpose of per-package visibility filtering.
+///
+/// Registry-level access is a separate, coarser gate handled by
+/// `ExploreFilter::registries`. This type carries what is needed to apply the
+/// *package*-level `Visibility` rule — the same rule
+/// `LocalRegistryService::check_visibility` enforces on the download path — to a
+/// listing, so a `private`/`team` package does not surface its name and version
+/// count to someone who could never download it.
+///
+/// [`Default`] is the anonymous viewer: not an admin, not authenticated, no
+/// groups. That is the safe default for a filter built without thinking about
+/// it — it sees only `public` packages.
+#[derive(Debug, Clone, Default)]
+pub struct ExploreViewer {
+    /// Admins bypass visibility entirely, matching `check_visibility`.
+    pub is_admin: bool,
+    /// Any non-anonymous identity. Gates `Visibility::Internal`.
+    pub is_authenticated: bool,
+    /// The caller's group memberships, used for `Visibility::Team`.
+    pub groups: Vec<String>,
+}
+
+impl ExploreViewer {
+    /// Group ids with spaces removed, matching how `check_team_visibility`
+    /// compares them (`g.replace(' ', "")`). Pre-normalising here keeps the
+    /// comparison identical on the SQL side, where doing it per row would be
+    /// both slower and easy to get subtly different.
+    pub fn normalised_groups(&self) -> Vec<String> {
+        self.groups.iter().map(|g| g.replace(' ', "")).collect()
+    }
+}
+
 /// Filter for explore queries.
 #[derive(Debug, Clone, Default)]
 pub struct ExploreFilter {
@@ -42,6 +74,8 @@ pub struct ExploreFilter {
     pub sort_by: ExploreSortBy,
     pub limit: u64,
     pub offset: u64,
+    /// Package-level visibility gate. See [`ExploreViewer`].
+    pub viewer: ExploreViewer,
 }
 
 /// Per-registry statistics for the explorer sidebar.

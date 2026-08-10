@@ -14,7 +14,7 @@ pub use access_log::{AccessAction, AccessEvent, AccessResult, EventFilter};
 pub use banner::{BannerLevel, GlobalBanner};
 pub use explore::{
     ExploreEntry, ExploreFilter, ExplorePackageDetail, ExploreSortBy, ExploreVersionEntry,
-    FirewallInfo, GateInfo, PackageSource, RegistryStat,
+    ExploreViewer, FirewallInfo, GateInfo, PackageSource, RegistryStat,
 };
 pub use identity::{Identity, Role};
 pub use local_package::{CargoDep, CargoIndexEntry, PublishedPackage, Visibility};

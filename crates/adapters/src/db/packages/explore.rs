@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use super::{
     map_explore_entry, prepare_registries_param, sort_order_for, str_to_action, str_to_role,
     AccessEvent, AccessResult, CoreError, DbResultExt, EventFilter, ExploreEntry, ExploreFilter,
-    PackageId, PgPool, RegistryStat, Row,
+    PackageId, PgPool, RegistryStat, Row, LOCAL_VISIBILITY_PREDICATE,
 };
 
 pub(super) async fn list_events_impl(
@@ -126,6 +126,8 @@ pub(super) async fn explore_packages_impl(
 ) -> Result<Vec<ExploreEntry>, CoreError> {
     let order = sort_order_for(&filter.sort_by);
     let registries = prepare_registries_param(&filter.registries);
+    let groups = filter.viewer.normalised_groups();
+    let visibility = LOCAL_VISIBILITY_PREDICATE;
 
     let sql = format!(
         r#"
@@ -156,6 +158,7 @@ pub(super) async fn explore_packages_impl(
               AND ($1::text IS NULL OR lp.registry = $1)
               AND ($2::text IS NULL OR lp.name ILIKE '%' || $2 || '%')
               AND ($3::text[] IS NULL OR lp.registry = ANY($3::text[]))
+              {visibility}
             GROUP BY lp.registry, lp.name
         ),
         combined AS (
@@ -190,14 +193,22 @@ pub(super) async fn explore_packages_impl(
             WHERE registry = agg.registry AND package_name = agg.package_name
         ) ae ON true
         ORDER BY {order}
-        LIMIT $4 OFFSET $5
+        LIMIT $7 OFFSET $8
         "#
     );
 
+    // $4/$5/$6 are the viewer parameters consumed by LOCAL_VISIBILITY_PREDICATE.
+    // They sit before limit/offset so the same fragment can be spliced into this
+    // query and into `count_explore_packages_impl` (which has no limit/offset)
+    // without renumbering — the two must apply an identical predicate or the
+    // reported total would not match the rows returned.
     let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(&filter.registry)
         .bind(&filter.name_contains)
         .bind(registries)
+        .bind(filter.viewer.is_admin)
+        .bind(filter.viewer.is_authenticated)
+        .bind(&groups)
         .bind(filter.limit as i64)
         .bind(filter.offset as i64)
         .fetch_all(pool)
@@ -212,8 +223,13 @@ pub(super) async fn count_explore_packages_impl(
     filter: ExploreFilter,
 ) -> Result<u64, CoreError> {
     let registries = prepare_registries_param(&filter.registries);
+    let groups = filter.viewer.normalised_groups();
+    let visibility = LOCAL_VISIBILITY_PREDICATE;
 
-    let row = sqlx::query(
+    // Must apply exactly the same visibility predicate as
+    // `explore_packages_impl`, or the pagination total would count rows the page
+    // itself filters out — the UI would show "37 packages" over an empty page.
+    let sql = format!(
         r#"
         WITH proxied AS (
             SELECT registry, package_name
@@ -223,26 +239,32 @@ pub(super) async fn count_explore_packages_impl(
               AND ($3::text[] IS NULL OR registry = ANY($3::text[]))
         ),
         local_pkgs AS (
-            SELECT registry, name AS package_name
-            FROM local_packages
-            WHERE status = 'published'
-              AND ($1::text IS NULL OR registry = $1)
-              AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%')
-              AND ($3::text[] IS NULL OR registry = ANY($3::text[]))
+            SELECT lp.registry, lp.name AS package_name
+            FROM local_packages lp
+            WHERE lp.status = 'published'
+              AND ($1::text IS NULL OR lp.registry = $1)
+              AND ($2::text IS NULL OR lp.name ILIKE '%' || $2 || '%')
+              AND ($3::text[] IS NULL OR lp.registry = ANY($3::text[]))
+              {visibility}
         )
         SELECT COUNT(*) AS total FROM (
             SELECT registry, package_name FROM proxied
             UNION
             SELECT registry, package_name FROM local_pkgs
         ) combined
-        "#,
-    )
-    .bind(&filter.registry)
-    .bind(&filter.name_contains)
-    .bind(registries)
-    .fetch_one(pool)
-    .await
-    .db_err()?;
+        "#
+    );
+
+    let row = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(&filter.registry)
+        .bind(&filter.name_contains)
+        .bind(registries)
+        .bind(filter.viewer.is_admin)
+        .bind(filter.viewer.is_authenticated)
+        .bind(&groups)
+        .fetch_one(pool)
+        .await
+        .db_err()?;
 
     let count: i64 = row.try_get("total").unwrap_or(0);
     Ok(count as u64)

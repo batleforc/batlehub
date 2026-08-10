@@ -64,6 +64,65 @@ pub(super) fn map_package_summary(r: PgRow) -> PackageSummary {
     }
 }
 
+/// SQL predicate restricting `local_packages lp` to rows the viewer may see.
+///
+/// This is the listing-side counterpart of
+/// `LocalRegistryService::check_visibility`, and it has to agree with it exactly
+/// — a listing that is *more* permissive leaks the names and version counts of
+/// packages the same caller would get a `403` for on download, which is the whole
+/// bug this exists to fix.
+///
+/// The three rules, mirrored one for one:
+///
+/// | `visibility` | Rust (`check_visibility`)          | here                       |
+/// |--------------|------------------------------------|----------------------------|
+/// | `public`     | always allowed                     | `true`                     |
+/// | `internal`   | `has_role_at_least(User)`          | viewer is authenticated    |
+/// | `team`       | `check_team_visibility`            | longest-prefix claim match |
+///
+/// Admins bypass everything, as they do in `check_visibility`.
+///
+/// The `team` branch reproduces `find_namespace`'s matcher **character for
+/// character** — `N = prefix` or `SUBSTRING(N, 1, LENGTH(prefix)+1) = prefix ||
+/// '/'`, ordered by `LENGTH(prefix) DESC LIMIT 1`. Two details matter:
+///
+/// - `SUBSTRING(...)` rather than `LIKE prefix || '/%'`: a prefix containing `%`
+///   or `_` would otherwise act as a wildcard here while staying literal in
+///   Rust, making the listing more permissive than the download path.
+/// - Longest prefix **wins outright**. If the most specific claim belongs to a
+///   group the viewer is not in, access is denied even when a shorter claim would
+///   have matched. An `EXISTS` over *all* matching claims would quietly widen it.
+///
+/// A `team` package with no claim at all is denied, matching
+/// `check_team_visibility`'s `None` arm (which denies rather than falling back).
+/// That follows here for free: the subquery yields no row.
+///
+/// Placeholders: `$4` = is_admin (bool), `$5` = is_authenticated (bool),
+/// `$6` = viewer's space-stripped group ids (text[]).
+pub(super) const LOCAL_VISIBILITY_PREDICATE: &str = r#"
+            AND (
+                $4::boolean
+                OR lp.visibility = 'public'
+                OR (lp.visibility = 'internal' AND $5::boolean)
+                OR (
+                    lp.visibility = 'team'
+                    AND EXISTS (
+                        SELECT 1 FROM (
+                            SELECT tn.group_id
+                            FROM team_namespaces tn
+                            WHERE tn.registry = lp.registry
+                              AND (lp.name = tn.prefix
+                                   OR (LENGTH(lp.name) > LENGTH(tn.prefix)
+                                       AND SUBSTRING(lp.name, 1, LENGTH(tn.prefix) + 1)
+                                           = tn.prefix || '/'))
+                            ORDER BY LENGTH(tn.prefix) DESC
+                            LIMIT 1
+                        ) claim
+                        WHERE REPLACE(claim.group_id, ' ', '') = ANY($6::text[])
+                    )
+                )
+            )"#;
+
 pub(super) fn sort_order_for(sort_by: &ExploreSortBy) -> &'static str {
     match sort_by {
         ExploreSortBy::Name => "package_name ASC",

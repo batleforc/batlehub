@@ -36,6 +36,10 @@ RUN touch crates/*/src/lib.rs server/src/main.rs cli/src/main.rs
 
 RUN cargo build --release -p batlehub-server -p batlehub-cli
 
+# Pre-create runtime directories here so they can be copied, already owned by the
+# runtime UID, into a runtime image that may have no usable shell.
+RUN mkdir -p /var/cache/batlehub
+
 # ── Frontend build stage ───────────────────────────────────────────────────────
 FROM registry.access.redhat.com/hi/nodejs:latest-builder@sha256:8be7c653f1049270af4f01fbc995db199356ed2d0801bd03629ab8598f40baf9 AS ui-builder
 
@@ -64,9 +68,18 @@ FROM registry.access.redhat.com/hi/core-runtime:latest@sha256:ff4c6de2e0bfc0d1cd
 
 COPY --from=builder   /build/target/release/batlehub     /usr/local/bin/batlehub
 COPY --from=builder   /build/target/release/batlehub-cli /usr/local/bin/batlehub-cli
+# Only path the process writes to under `[storage] type = "filesystem"`.
+COPY --from=builder --chown=65532:65532 /var/cache/batlehub /var/cache/batlehub
 COPY --from=ui-builder /ui/dist                          /app/ui/dist
 
 EXPOSE 8080
+
+# Same numeric UID as the distroless Containerfile, deliberately: the Helm chart
+# pins one `runAsUser`, and it has to be correct whichever image is deployed.
+# 65532 has no /etc/passwd entry on this base — that is fine, nothing in the
+# server resolves its own user — but it does mean $HOME is unset, so do not add
+# anything here that expects a home directory.
+USER 65532:65532
 
 ENTRYPOINT ["batlehub"]
 CMD ["--config", "/etc/batlehub/config.toml"]

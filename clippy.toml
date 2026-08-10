@@ -1,0 +1,22 @@
+# Methods that must not be called directly anywhere in the workspace.
+#
+# `ConnectionInfo::realip_remote_addr` honours `X-Forwarded-For` from *any* TCP
+# peer. Every IP-consuming path in BatleHub — the fail2ban IP-block middleware,
+# the anonymous rate-limit bucket key, the inbound-webhook audit record — must
+# instead go through `middleware::proxy_trust::client_ip`, which only believes
+# the header when the peer falls inside `[server].trusted_proxies`. Mixing the
+# two is how a spoofable client IP gets reintroduced one handler at a time: the
+# header says one thing to the middleware that bans you and another to the record
+# that names you.
+#
+# `ConnectionInfo::scheme` and `::host` have the same problem for
+# `X-Forwarded-Proto` / `X-Forwarded-Host`, which decide the host in every
+# self-referencing URL the server generates. Use `proxy_trust::trusted_origin`.
+#
+# `middleware/proxy_trust.rs` is the one module allowed to call these — it is
+# where the trust decision is made — and it carries `#[allow]` at the call sites.
+disallowed-methods = [
+  { path = "actix_web::dev::ConnectionInfo::realip_remote_addr", reason = "spoofable by any peer; use middleware::proxy_trust::client_ip(req, peer_trust(req))" },
+  { path = "actix_web::dev::ConnectionInfo::scheme", reason = "honours X-Forwarded-Proto from any peer; use middleware::proxy_trust::trusted_origin(req)" },
+  { path = "actix_web::dev::ConnectionInfo::host", reason = "honours X-Forwarded-Host from any peer; use middleware::proxy_trust::trusted_origin(req)" },
+]

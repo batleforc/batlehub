@@ -2,10 +2,10 @@
 
 ## Supported versions
 
-BatleHub is pre-1.0 (currently `0.x`). Only the **latest published release**
-is supported with security fixes — there is no long-term-support branch and
-no backport guarantee for older `0.x` versions. Upgrading to the latest
-release is the recommended way to pick up a fix.
+Only the **latest published release** is supported with security fixes. There
+is no long-term-support branch and no backport guarantee for any earlier
+release, including earlier patch releases of the current minor. Upgrading to
+the latest release is the recommended way to pick up a fix.
 
 ## Reporting a vulnerability
 

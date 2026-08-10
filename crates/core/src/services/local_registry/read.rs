@@ -364,11 +364,19 @@ impl LocalRegistryService {
     ///
     /// - `Public`   → always allowed (even anonymous).
     /// - `Internal` → requires at least `Role::User`.
-    /// - `Team`     → requires membership in the group that owns the namespace.
-    ///   Falls back to `Internal` semantics when no claim exists.
+    /// - `Team`     → requires membership in the group owning the longest-prefix
+    ///   namespace claim covering this package. When **no** claim covers it,
+    ///   access is **denied** — see `check_team_visibility`, which refuses rather
+    ///   than falling back to `Internal`, so a deleted or never-created claim
+    ///   cannot silently widen a team package to every authenticated user.
     ///
     /// Admins bypass all checks. When no `team_namespace` port is configured,
     /// access is always permitted.
+    ///
+    /// The explore listing applies the same three rules in SQL — see
+    /// `LOCAL_VISIBILITY_PREDICATE` in `crates/adapters/src/db/packages/mod.rs`.
+    /// The two must stay in agreement: a listing more permissive than this
+    /// discloses the names of packages this method would refuse to serve.
     pub async fn check_visibility(
         &self,
         registry: &str,

@@ -3,6 +3,38 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!--
+      Content-Security-Policy for the SPA document.
+
+      Declared here rather than as a response header for two reasons: it must NOT
+      apply to /scalar (the API-docs page loads its bundle from a CDN and would
+      break under `script-src 'self'`), and actix-files' `Files` service cannot be
+      wrapped with per-service middleware. A meta policy applies to exactly this
+      document, which is the scope we want.
+
+      `frame-ancestors` is ignored in meta form — the server sends
+      `X-Frame-Options: DENY` on every response to cover clickjacking instead
+      (see crates/web/src/middleware/security_headers.rs).
+
+      `style-src` needs 'unsafe-inline': the Vue/Tailwind build emits inline style
+      attributes and shiki injects inline styles for syntax highlighting. Scripts
+      get no such exemption — the bundle is entirely external files, and that is
+      the half of this policy that stops an injected artifact from executing.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self';
+               script-src 'self';
+               style-src 'self' 'unsafe-inline';
+               img-src 'self' data:;
+               font-src 'self' data:;
+               connect-src 'self';
+               object-src 'none';
+               base-uri 'self';
+               form-action 'self'"
+    />
+
     <title>BatleHub</title>
     <meta name="description" content="Your package hub. Proxy, cache, and host npm, Cargo, Go, Maven, Terraform, and RubyGems registries." />
     <meta name="theme-color" content="#dc2626" />

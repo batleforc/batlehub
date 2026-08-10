@@ -158,14 +158,41 @@ pub fn packages_cache_key(filter: &ExploreFilter) -> String {
         ExploreSortBy::Recent => "recent",
     };
     format!(
-        "exp:pkg:{}:{}:{}:{}:{}:{}",
+        "exp:pkg:{}:{}:{}:{}:{}:{}:{}",
         filter.registry.as_deref().unwrap_or(""),
         filter.name_contains.as_deref().unwrap_or(""),
         sort,
         filter.limit,
         filter.offset,
         regs.join(","),
+        viewer_key_part(filter),
     )
+}
+
+/// The viewer's contribution to the package-list cache key.
+///
+/// **Load-bearing for correctness, not just hit rate.** Since the result set is
+/// filtered by per-package visibility, two callers with different privileges get
+/// legitimately different answers to the same query. A key that ignored the
+/// viewer would serve whichever of them populated the entry first to the other —
+/// handing an anonymous visitor a team member's cached view of a private package
+/// listing, which is precisely the leak the visibility filter exists to stop.
+///
+/// Groups are sorted so membership order (which varies between tokens from the
+/// same provider) does not fragment the cache.
+fn viewer_key_part(filter: &ExploreFilter) -> String {
+    if filter.viewer.is_admin {
+        // Admins bypass visibility entirely, so every admin shares one entry
+        // regardless of group membership.
+        return "admin".to_owned();
+    }
+    if !filter.viewer.is_authenticated && filter.viewer.groups.is_empty() {
+        return "anon".to_owned();
+    }
+    let mut groups = filter.viewer.normalised_groups();
+    groups.sort();
+    groups.dedup();
+    format!("u:{}", groups.join(","))
 }
 
 /// Registries that a package-list query touches (used for invalidation tracking).
@@ -189,7 +216,7 @@ pub fn stats_cache_key(accessible_registries: &[String]) -> String {
 mod tests {
     use super::*;
     use crate::entities::{
-        ExploreEntry, ExploreFilter, ExploreSortBy, PackageSource, RegistryStat,
+        ExploreEntry, ExploreFilter, ExploreSortBy, ExploreViewer, PackageSource, RegistryStat,
     };
 
     fn sample_entries() -> Vec<ExploreEntry> {
@@ -382,6 +409,7 @@ mod tests {
             sort_by: ExploreSortBy::Downloads,
             limit: 20,
             offset: 0,
+            viewer: ExploreViewer::default(),
         };
         let f2 = ExploreFilter {
             registries: vec!["npm".into(), "cargo".into()], // reversed
@@ -399,6 +427,7 @@ mod tests {
             sort_by: ExploreSortBy::Downloads,
             limit: 20,
             offset: 0,
+            viewer: ExploreViewer::default(),
         };
 
         let with_name = ExploreFilter {

@@ -4,9 +4,21 @@
 # overrides and settings live here. Putting them back in package.json makes pnpm
 # ignore them with only a warning, which would silently drop the pins below.
 
-# Transitive-dependency pins. js-yaml < 4.3.0 is GHSA-52cp-r559-cp3m (YAML
-# merge-key chains force quadratic CPU consumption); it reaches us through
-# @hey-api/openapi-ts and eslint 8.
+# Transitive-dependency pins. js-yaml is covered by two advisories and needs
+# the higher floor of the two; it reaches us through @hey-api/openapi-ts and
+# eslint 8:
+#
+#   * GHSA-52cp-r559-cp3m — YAML merge-key chains force quadratic CPU
+#     consumption, fixed in 4.3.0.
+#   * GHSA-5p4m-2wfm-xmqj — fixed in 4.3.1. A `^4.3.0` pin still resolves 4.3.0
+#     and leaves this one open, which is exactly what happened before this
+#     comment was rewritten. Bump the floor, not just the caret.
+#
+# nanoid < 3.3.17 is GHSA-2v37-7h3g-55p8 (a custom generator with size 0 loops
+# forever). It arrives via postcss, which every vite/@vue/compiler-sfc path
+# depends on — 27 paths in this tree, none of them direct. Build-time only, but
+# `pnpm audit` is not scoped to runtime deps for this workspace, so an unpinned
+# nanoid fails CI.
 #
 # brace-expansion is covered by two advisories: GHSA-mh99-v99m-4gvg (unbounded
 # expansion length OOMs the process, fixed in 5.0.8) and GHSA-rgw5-rvv9-x895
@@ -28,7 +40,8 @@
 #     (minimatch 3, glob 7, rimraf 3 → brace-expansion 1.1.16).
 overrides:
   undici: ^7.28.0
-  js-yaml: ^4.3.0
+  js-yaml: ^4.3.1
+  nanoid: ^3.3.17
   minimatch: ^10.2.6
   brace-expansion: ^5.0.9
   '@microsoft/eslint-formatter-sarif>eslint': ^10.8.0

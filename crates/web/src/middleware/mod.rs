@@ -3,6 +3,7 @@ pub mod host_routing;
 pub mod ip_block;
 pub mod proxy_trust;
 pub mod rate_limit;
+pub mod security_headers;
 pub mod user_block;
 
 /// Extract the registry name from a canonical proxy path like
@@ -37,4 +38,5 @@ pub use ip_block::IpBlockMiddlewareFactory;
 pub use proxy_trust::{PeerTrust, ProxyTrust};
 pub use rate_limit::RateLimitMiddlewareFactory;
 pub use rate_limit::RateLimitService;
+pub use security_headers::security_headers;
 pub use user_block::UserBlockMiddlewareFactory;

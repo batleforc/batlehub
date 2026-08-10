@@ -1,0 +1,68 @@
+name: Helm chart lint
+# The publish workflow (.forgejo/workflows/helm.yaml) only runs on push to main,
+# so it cannot gate a pull request. This job renders the chart on every PR that
+# touches it and asserts the invariants that are easy to break silently and
+# expensive to discover in the cluster.
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "helm/**"
+      - ".github/workflows/helm-lint.yaml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "helm/**"
+      - ".github/workflows/helm-lint.yaml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  lint:
+    name: helm lint + rendered-manifest assertions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
+      - name: helm lint
+        run: helm lint helm/batlehub
+
+      - name: Render default values
+        run: helm template batlehub helm/batlehub > /tmp/rendered.yaml
+
+      # A probe path under /api/v1/admin is answered with 403 for the kubelet
+      # (it sends no credentials), so the pod never becomes Ready and liveness
+      # restarts it forever. /livez and /healthz are the only auth-exempt routes.
+      - name: Probes must not target an authenticated endpoint
+        run: |
+          if grep -A2 -E 'livenessProbe:|readinessProbe:' /tmp/rendered.yaml \
+             | grep -E 'path:\s*/api/'; then
+            echo "::error::A probe targets an authenticated endpoint. Use /livez (liveness) or /healthz (readiness)."
+            exit 1
+          fi
+
+      - name: Probes must target /livez and /healthz
+        run: |
+          grep -q 'path: /livez'   /tmp/rendered.yaml || { echo "::error::liveness probe is not /livez"; exit 1; }
+          grep -q 'path: /healthz' /tmp/rendered.yaml || { echo "::error::readiness probe is not /healthz"; exit 1; }
+
+      # The image has no USER of its own baked in for every base we ship, so the
+      # chart is the backstop that keeps the workload off uid 0.
+      - name: Pod must be non-root by default
+        run: |
+          for key in 'runAsNonRoot: true' 'allowPrivilegeEscalation: false' 'readOnlyRootFilesystem: true'; do
+            grep -q "$key" /tmp/rendered.yaml || { echo "::error::default values dropped '$key'"; exit 1; }
+          done
+
+      # Rendering with a non-default combination catches template errors that
+      # the default path never reaches (ingress rules, PDB, extra manifests).
+      - name: Render a non-default configuration
+        run: |
+          helm template batlehub helm/batlehub \
+            --set replicaCount=3 \
+            --set ingress.enabled=true \
+            --set 'ingress.extraHosts[0]=*.batlehub.example.com' \
+            --set persistence.enabled=false \
+            --set config.storage.type=s3 \
+            > /dev/null
