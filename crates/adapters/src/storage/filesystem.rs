@@ -100,9 +100,33 @@ impl StorageBackend for FilesystemStorageBackend {
         let mut file = tokio::fs::File::create(&path)
             .await
             .map_err(|e| CoreError::Storage(format!("create file {}: {e}", path.display())))?;
-        file.write_all(&data)
-            .await
-            .map_err(|e| CoreError::Storage(format!("write file {}: {e}", path.display())))?;
+
+        // `tokio::fs::File` buffers writes and completes them on a background
+        // task, so `write_all` returning does not mean the bytes reached the OS —
+        // and dropping the handle does not flush them. Without the explicit flush
+        // a `retrieve` racing this `store` can observe a zero-length or truncated
+        // file. On failure the partial file is removed so a later `retrieve` can
+        // never serve a truncated artifact (same guarantee as `store_streaming`).
+        let write_result = async {
+            file.write_all(&data)
+                .await
+                .map_err(|e| CoreError::Storage(format!("write file {}: {e}", path.display())))?;
+            file.flush()
+                .await
+                .map_err(|e| CoreError::Storage(format!("flush file {}: {e}", path.display())))
+        }
+        .await;
+
+        if let Err(e) = write_result {
+            drop(file);
+            if let Err(rm) = tokio::fs::remove_file(&path).await {
+                if rm.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(path = %path.display(), error = %rm, "failed to remove partial artifact after store error");
+                }
+            }
+            return Err(e);
+        }
+
         tracing::debug!(key = %key, bytes = data.len(), "stored artifact on filesystem");
         Ok(())
     }
