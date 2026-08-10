@@ -2,6 +2,27 @@ import { describe, expect, it } from "vitest";
 
 import { buildCsp } from "./csp.ts";
 
+const API_ORIGIN = "https://api.example.com";
+
+/**
+ * Split a policy into `{ directive -> source tokens }`.
+ *
+ * Assertions go through this rather than substring-matching the whole policy
+ * string. Matching `csp.includes(API_ORIGIN)` would also accept
+ * `https://api.example.com.evil.test` — a substring check on a URL is exactly
+ * the pattern CodeQL's `js/incomplete-url-substring-sanitization` flags, and it
+ * is the wrong assertion here regardless: a CSP source is a whole token, so the
+ * test should compare whole tokens.
+ */
+function directives(csp: string): Record<string, string[]> {
+  return Object.fromEntries(
+    csp.split("; ").map((directive) => {
+      const [name, ...sources] = directive.split(" ");
+      return [name, sources];
+    }),
+  );
+}
+
 /**
  * `buildCsp` decides whether the shipped SPA can talk to its API at all, and a
  * mistake here fails at runtime in the browser console rather than at build
@@ -36,8 +57,8 @@ describe("buildCsp", () => {
   });
 
   it("does not duplicate the origin when it is already same-origin-ish", () => {
-    const csp = buildCsp("https://api.example.com");
-    expect(csp.match(/https:\/\/api\.example\.com/g)).toHaveLength(1);
+    const sources = directives(buildCsp(API_ORIGIN))["connect-src"];
+    expect(sources.filter((source) => source === API_ORIGIN)).toHaveLength(1);
   });
 
   /** A relative base is same-origin, which `'self'` already covers. */
@@ -70,11 +91,10 @@ describe("buildCsp", () => {
    * `script-src` — would still satisfy the connect-src test above.
    */
   it("widens only connect-src for the API origin", () => {
-    const csp = buildCsp("https://api.example.com");
-    const widened = csp
-      .split("; ")
-      .filter((directive) => directive.includes("https://api.example.com"))
-      .map((directive) => directive.split(" ")[0]);
+    const parsed = directives(buildCsp(API_ORIGIN));
+    const widened = Object.entries(parsed)
+      .filter(([, sources]) => sources.includes(API_ORIGIN))
+      .map(([name]) => name);
     expect(widened).toEqual(["connect-src"]);
   });
 
