@@ -1,5 +1,5 @@
 # ── Build stage ───────────────────────────────────────────────────────────────
-FROM registry.access.redhat.com/hi/rust:latest-builder@sha256:3b4a613b671cc37beca7a5629cfbf1a16997d7d9d40e86927f04d5942b567346 AS builder
+FROM registry.access.redhat.com/hi/rust:latest-builder@sha256:66561eb898128631af552296fdbde59b08750c1ffbebbcac5d93feee5d878650 AS builder
 
 RUN dnf install -y openssl-devel pkgconfig make gcc awk && dnf clean all
 
@@ -41,7 +41,7 @@ RUN cargo build --release -p batlehub-server -p batlehub-cli
 RUN mkdir -p /var/cache/batlehub
 
 # ── Frontend build stage ───────────────────────────────────────────────────────
-FROM registry.access.redhat.com/hi/nodejs:latest-builder@sha256:8be7c653f1049270af4f01fbc995db199356ed2d0801bd03629ab8598f40baf9 AS ui-builder
+FROM registry.access.redhat.com/hi/nodejs:latest-builder@sha256:ed60f9a15812e5120a790d1f1e9818b6cbf5ad7c5c4795f7fcce3255a8249310 AS ui-builder
 
 USER root
 WORKDIR /ui
@@ -64,7 +64,7 @@ RUN batlehub --config /etc/batlehub/config.toml dump-spec > openapi.json && \
     pnpm run build
 
 # ── Runtime image ─────────────────────────────────────────────────────────────
-FROM registry.access.redhat.com/hi/core-runtime:latest@sha256:ff4c6de2e0bfc0d1cd771e8fad858ccbeff5dec01c55d18124f56653ee93eb79 AS runtime
+FROM registry.access.redhat.com/hi/core-runtime:latest@sha256:d885d5c40a938c5f7179538fd415c0b5a057b7823d2bd3593c428764ca920e96 AS runtime
 
 COPY --from=builder   /build/target/release/batlehub     /usr/local/bin/batlehub
 COPY --from=builder   /build/target/release/batlehub-cli /usr/local/bin/batlehub-cli
