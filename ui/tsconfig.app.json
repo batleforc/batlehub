@@ -18,5 +18,8 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx", "src/**/*.vue"]
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx", "src/**/*.vue"],
+  // Reads tokens.css off disk to assert the design system's contrast and
+  // gamut rules, so it is a node-context file and lives in tsconfig.node.json.
+  "exclude": ["src/design/tokens.test.ts"]
 }

@@ -43,13 +43,13 @@
   --rule-soft:oklch(0.34 0.03 25);     /* separators only, never a control edge */
   --rule-strong:oklch(0.52 0.06 25);   /* 3.68:1 — every interactive boundary */
 
-  /* Authored at max in-gamut chroma for sRGB (0.2359 at L .65 H 25 → #ff333c).
+  /* Authored at max in-gamut chroma for sRGB (0.2359 at L .65 H 25 → #ff343d).
      Monofolio ships oklch(0.65 0.26 25), which is OUTSIDE sRGB: engines then
      disagree — naive clipping paints #ff0e30 (5.32:1), CSS Color 4 chroma
-     reduction paints ~#ff333c (5.76:1). A token that leaves the gamut cannot
+     reduction paints ~#ff343d (5.76:1). A token that leaves the gamut cannot
      carry a contrast guarantee, so the value is clamped rather than caveated.
-     Provenance: Monofolio --primary, chroma 0.26 → 0.236. */
-  --accent:oklch(0.65 0.236 25);
+     Provenance: Monofolio --primary, chroma 0.26 → 0.235. */
+  --accent:oklch(0.65 0.235 25);
   --accent-ink:oklch(0.10 0.02 18);
   --copper:oklch(0.72 0.14 52);
   --focus:oklch(0.85 0.16 85);
@@ -80,7 +80,7 @@
    that L and H is 0.2108.
 
    Measured on paper: ink 16.64:1 · ink-dim 7.24:1 · accent 5.63:1 ·
-   copper 5.74:1 · accent-ink on accent 5.97:1 · rule-strong 3.41:1 · focus 4.46:1.
+   copper 5.74:1 · accent-ink on accent 5.97:1 · rule-strong 3.41:1 · focus 4.48:1.
 
    Copper darkens from Monofolio's L .58 to L .50: at .58 it reads 4.2:1 on paper,
    under the body-text floor. The hue relationship survives; the lightness cannot.
@@ -92,7 +92,7 @@
 :root[data-theme="light"]{
   --ground:oklch(0.97 0.008 18);
   --ground-raised:oklch(0.935 0.010 18);
-  --ground-sunk:oklch(0.99 0.005 18);
+  --ground-sunk:oklch(0.99 0.004 18);
 
   --ink:oklch(0.20 0.022 20);
   --ink-dim:oklch(0.44 0.04 25);
@@ -100,9 +100,9 @@
   --rule-strong:oklch(0.62 0.05 25);
 
   --accent:oklch(0.52 0.21 25);        /* max in-gamut 0.2108 at this L/H */
-  --accent-ink:oklch(0.99 0.005 18);
+  --accent-ink:oklch(0.99 0.004 18);
   --copper:oklch(0.50 0.12 52);
-  --focus:oklch(0.55 0.16 85);
+  --focus:oklch(0.55 0.11 85);
 }
 /* The plate is ink on paper and glow on black — the same screen, the ink of its
    own ground. Lower opacity on paper because dark dots on light carry further. */

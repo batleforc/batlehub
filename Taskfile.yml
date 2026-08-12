@@ -446,6 +446,22 @@ tasks:
     cmds:
       - pnpm run generate
 
+  ui:tokens:
+    desc: Copy the design tokens to the docs site (single source is ui/src/design/tokens.css)
+    cmds:
+      - cp ui/src/design/tokens.css website/.vitepress/theme/tokens.css
+
+  ui:tokens:check:
+    desc: Fail if the docs site's token copy has drifted from ui/src/design/tokens.css
+    cmds:
+      - task: ui:tokens
+      - |
+        if ! git diff --quiet -- website/.vitepress/theme/tokens.css; then
+          echo "website token copy is stale — run 'task ui:tokens' and commit the result" >&2
+          git --no-pager diff -- website/.vitepress/theme/tokens.css >&2
+          exit 1
+        fi
+
   ui:dev:
     desc: Start the Vite dev server (proxies /api and /proxy to localhost:8080)
     dir: ui

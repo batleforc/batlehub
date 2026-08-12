@@ -9,21 +9,21 @@ colors:
   ink-dim: "oklch(0.62 0.045 30)"
   rule-soft: "oklch(0.34 0.03 25)"
   rule-strong: "oklch(0.52 0.06 25)"
-  accent: "oklch(0.65 0.236 25)"
+  accent: "oklch(0.65 0.235 25)"
   accent-ink: "oklch(0.10 0.02 18)"
   copper: "oklch(0.72 0.14 52)"
   focus: "oklch(0.85 0.16 85)"
   light-ground: "oklch(0.97 0.008 18)"
   light-ground-raised: "oklch(0.935 0.010 18)"
-  light-ground-sunk: "oklch(0.99 0.005 18)"
+  light-ground-sunk: "oklch(0.99 0.004 18)"
   light-ink: "oklch(0.20 0.022 20)"
   light-ink-dim: "oklch(0.44 0.04 25)"
   light-rule-soft: "oklch(0.80 0.02 25)"
   light-rule-strong: "oklch(0.62 0.05 25)"
   light-accent: "oklch(0.52 0.21 25)"
-  light-accent-ink: "oklch(0.99 0.005 18)"
+  light-accent-ink: "oklch(0.99 0.004 18)"
   light-copper: "oklch(0.50 0.12 52)"
-  light-focus: "oklch(0.55 0.16 85)"
+  light-focus: "oklch(0.55 0.11 85)"
 typography:
   display:
     fontFamily: "Silkscreen, monospace"
@@ -263,8 +263,8 @@ rendition moves it toward its own opposite pole.
 
 ### Primary
 
-- **Signal Crimson** — `--accent`, the one synthetic colour in the world. `#ff333c` as painted on
-  near-black at **5.76:1**; `#c6001f` as painted on paper at **5.63:1**. Load-bearing exactly four
+- **Signal Crimson** — `--accent`, the one synthetic colour in the world. `#ff343d` as painted on
+  near-black at **5.76:1**; `#c50220` as painted on paper at **5.63:1**. Load-bearing exactly four
   ways and no more: link text, the fill under counter-ink on the one primary action, the `blocked`
   state, and the 1px lit edge on the selected registry. Both renditions' authored values are clamped
   to the sRGB gamut — see The In-Gamut Rule, which this token has now confirmed twice.
@@ -284,7 +284,7 @@ rendition moves it toward its own opposite pole.
 
 ### Tertiary
 
-- **Signal Amber** — `--focus`, **13.07:1** on near-black and **4.46:1** on paper. Reserved entirely
+- **Signal Amber** — `--focus`, **13.07:1** on near-black and **4.48:1** on paper. Reserved entirely
   for the focus ring (`2px solid`, `2px` offset). It appears nowhere else, at no other size, for no
   other reason. On paper it is a darker amber than on black for the same reason copper is: the hue
   survives the crossing, the lightness does not.
