@@ -23,6 +23,16 @@ impl AppError {
         }
     }
 
+    /// The caller could not be identified at all — distinct from
+    /// [`forbidden`](Self::forbidden), which means "we know who you are and the
+    /// answer is no".
+    pub fn unauthorized(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            message: msg.into(),
+        }
+    }
+
     pub fn forbidden(msg: impl Into<String>) -> Self {
         Self {
             status: StatusCode::FORBIDDEN,

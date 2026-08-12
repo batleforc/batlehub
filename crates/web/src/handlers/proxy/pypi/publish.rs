@@ -12,6 +12,7 @@ use crate::handlers::proxy::common::{
     extract_signature_headers, publish_and_respond, require_local_mode, require_registry_type,
     MAX_UPLOAD_BYTES,
 };
+use crate::handlers::schemas::MessageResponse;
 use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
     RegistryModeMap,
@@ -28,7 +29,7 @@ use crate::{
     tag = "proxy/pypi",
     params(("registry" = String, Path, description = "Registry name")),
     responses(
-        (status = 200, description = "File uploaded"),
+        (status = 200, description = "File uploaded", body = MessageResponse),
         (status = 403, description = "Access denied or quota exceeded"),
         (status = 409, description = "Version already published"),
         (status = 422, description = "Invalid payload"),
@@ -147,9 +148,7 @@ pub async fn pypi_publish(
             signature_type,
         },
         actix_web::http::StatusCode::OK,
-        serde_json::json!({
-            "message": format!("File uploaded: {filename}")
-        }),
+        MessageResponse::new(format!("File uploaded: {filename}")),
     )
     .await
 }

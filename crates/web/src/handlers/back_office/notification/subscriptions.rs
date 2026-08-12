@@ -7,6 +7,7 @@ use uuid::Uuid;
 use batlehub_core::entities::NotificationSubscription;
 
 use crate::handlers::back_office::require_admin;
+use crate::handlers::schemas::OkResponse;
 use crate::{error::AppError, extractors::AuthIdentity, services::NotificationService};
 
 use super::{
@@ -234,7 +235,7 @@ pub async fn delete_subscription(
     tag = "back-office",
     params(("id" = Uuid, Path, description = "Subscription ID")),
     responses(
-        (status = 200, description = "Test sent"),
+        (status = 200, description = "Test sent", body = OkResponse),
         (status = 400, description = "Dispatch failed"),
         (status = 403, description = "Admin role required"),
         (status = 404, description = "Not found"),
@@ -263,5 +264,5 @@ pub async fn test_subscription(
         );
         AppError::bad_request("test dispatch failed: check server logs")
     })?;
-    Ok(HttpResponse::Ok().finish())
+    Ok(HttpResponse::Ok().json(OkResponse::new()))
 }

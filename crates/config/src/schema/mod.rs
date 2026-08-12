@@ -99,6 +99,72 @@ pub struct AppConfig {
     /// still declare explicit `hosts`.
     #[serde(default)]
     pub subdomain_routing: Option<SubdomainRoutingConfig>,
+    /// What numbers this instance keeps and publishes. Absent means today's
+    /// behaviour: `/metrics` served, history recorded, 30 days retained.
+    #[serde(default)]
+    pub stats: StatsConfig,
+}
+
+// ── Stats ─────────────────────────────────────────────────────────────────────
+
+fn default_history_retention_days() -> u32 {
+    30
+}
+
+/// Both of the instance's statistical outputs, in one block.
+///
+/// They live together because an operator deciding "do I want this instance
+/// keeping numbers" is asking one question, not two (RFC 0004 R9) — even though
+/// the two flags answer different halves of it: `metrics_enabled` is about
+/// *exposure*, `history_enabled` is about *storage*.
+///
+/// ```toml
+/// [stats]
+/// # The rollup behind the dashboard's trend.
+/// history_enabled        = true   # default
+/// history_retention_days = 30     # 0 disables retention pruning
+///
+/// # The Prometheus recorder and the /metrics endpoint.
+/// metrics_enabled        = true   # default: today's behaviour
+/// ```
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StatsConfig {
+    /// Record the hourly cache-statistics rollup that backs the admin
+    /// dashboard's trend. `false` restores the pre-RFC-0004 dashboard, which
+    /// shows only counters since the current process started.
+    #[serde(default = "default_true")]
+    pub history_enabled: bool,
+
+    /// How many days of rollup rows to keep. `0` disables pruning rather than
+    /// disabling history — that is what `history_enabled = false` is for.
+    ///
+    /// One row per registry per hour is under 9 000 rows a year per registry,
+    /// so this is a tidiness setting, not a storage argument (RFC 0004 R9).
+    #[serde(default = "default_history_retention_days")]
+    pub history_retention_days: u32,
+
+    /// Install the Prometheus recorder and serve `/metrics`.
+    ///
+    /// **This is a security control, not a preference** (RFC 0004 §7).
+    /// `/metrics` is unauthenticated and, before RFC 0004, unconditional: it
+    /// publishes cache hit rates, per-registry pull volumes and upstream
+    /// latencies to anyone who can reach the port. That is defensible behind an
+    /// ingress that does not route it, and indefensible for a self-hoster who
+    /// had no way to turn it off. Defaults to `true` so no existing scrape
+    /// breaks on upgrade.
+    #[serde(default = "default_true")]
+    pub metrics_enabled: bool,
+}
+
+impl Default for StatsConfig {
+    fn default() -> Self {
+        Self {
+            history_enabled: true,
+            history_retention_days: default_history_retention_days(),
+            metrics_enabled: true,
+        }
+    }
 }
 
 // ── Vulnerability scan ──────────────────────────────────────────────────────────

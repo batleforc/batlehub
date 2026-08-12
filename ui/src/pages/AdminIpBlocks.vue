@@ -2,7 +2,7 @@
 import { useI18n } from "vue-i18n";
 import { ref } from "vue";
 import { listBlockedIps, blockIp, unblockIp } from "@/client/sdk.gen";
-import type { BlockedIpDto } from "@/lib/registry-types";
+import type { BlockedIpDto } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
 import SectionTabs from "@/components/admin/SectionTabs.vue";

@@ -140,7 +140,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Paginated access events"
+            "description": "Paginated access events",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditLogResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "Admin role required"
@@ -257,7 +264,22 @@
         ],
         "responses": {
           "200": {
-            "description": "Audit log export (JSON or CSV)"
+            "description": "Audit log export; `?format=csv` selects CSV, anything else JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AccessEvent"
+                  }
+                }
+              },
+              "text/csv": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
           },
           "403": {
             "description": "Admin role required"
@@ -289,7 +311,14 @@
         },
         "responses": {
           "200": {
-            "description": "Banner set"
+            "description": "Banner set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "Admin role required"
@@ -681,7 +710,14 @@
         },
         "responses": {
           "200": {
-            "description": "Cache invalidated"
+            "description": "Cache invalidated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "Admin role required"
@@ -735,7 +771,17 @@
         "operationId": "list_blocked_ips",
         "responses": {
           "200": {
-            "description": "List of blocked IPs"
+            "description": "List of blocked IPs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BlockedIpDto"
+                  }
+                }
+              }
+            }
           },
           "403": {
             "description": "Admin role required"
@@ -1120,7 +1166,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Test sent"
+            "description": "Test sent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
           },
           "400": {
             "description": "Dispatch failed"
@@ -1203,7 +1256,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Full package listing with statuses, paginated"
+            "description": "Full package listing with statuses, paginated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPackageListResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "Admin role required"
@@ -1547,7 +1607,17 @@
         "operationId": "list_quota",
         "responses": {
           "200": {
-            "description": "All quota usage rows"
+            "description": "All quota usage rows",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/QuotaUsageDto"
+                  }
+                }
+              }
+            }
           },
           "403": {
             "description": "Admin role required"
@@ -1580,7 +1650,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Quota usage rows for registry"
+            "description": "Quota usage rows for registry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/QuotaUsageDto"
+                  }
+                }
+              }
+            }
           },
           "403": {
             "description": "Admin role required"
@@ -1622,7 +1702,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Quota usage for the user"
+            "description": "Quota usage for the user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuotaUsageDto"
+                }
+              }
+            }
           },
           "403": {
             "description": "Admin role required"
@@ -1662,7 +1749,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Quota reset"
+            "description": "Quota reset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "Admin role required"
@@ -1695,7 +1789,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Member list"
+            "description": "Member list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BetaChannelMemberDto"
+                  }
+                }
+              }
+            }
           },
           "403": {
             "description": "Admin role required"
@@ -2086,7 +2190,14 @@
         },
         "responses": {
           "200": {
-            "description": "Version deprecated"
+            "description": "Version deprecated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "Admin role required"
@@ -2162,7 +2273,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Namespace list"
+            "description": "Namespace list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TeamNamespaceDto"
+                  }
+                }
+              }
+            }
           },
           "403": {
             "description": "Admin role required"
@@ -2291,7 +2412,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Owner list"
+            "description": "Owner list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OwnerEntryDto"
+                  }
+                }
+              }
+            }
           },
           "403": {
             "description": "Admin role required"
@@ -2456,7 +2587,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Current visibility"
+            "description": "Current visibility",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VisibilityResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "Admin role or namespace membership required"
@@ -2553,7 +2691,14 @@
         },
         "responses": {
           "200": {
-            "description": "Version relisted"
+            "description": "Version relisted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "Admin role required"
@@ -2596,7 +2741,14 @@
         },
         "responses": {
           "200": {
-            "description": "Version undeprecated"
+            "description": "Version undeprecated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "Admin role required"
@@ -2639,7 +2791,14 @@
         },
         "responses": {
           "200": {
-            "description": "Version unlisted"
+            "description": "Version unlisted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "Admin role required"
@@ -2719,6 +2878,50 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/StatsResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin role required"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/stats/history": {
+      "get": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "Persisted cache statistics over a window (admin).",
+        "description": "Answers the question `/api/v1/admin/stats` structurally cannot: its counters\nare `since_startup` and reset with the process, so \"is the hit rate\nimproving\" has no answer there (RFC 0004 §2.3). This reads the hourly rollup\ninstead, which is bounded per window and survives a deploy.",
+        "operationId": "admin_stats_history",
+        "parameters": [
+          {
+            "name": "window",
+            "in": "query",
+            "description": "How far back to read, as a day count with an optional `d` suffix\n(`30`, `30d`, `7d`). Clamped to 1–365; defaults to 30.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Persisted cache statistics for the window, with the trend against the previous one",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsHistoryResponse"
                 }
               }
             }
@@ -2917,7 +3120,14 @@
         ],
         "responses": {
           "200": {
-            "description": "OIDC is configured (probe response when state is absent)"
+            "description": "OIDC is configured (probe response when state is absent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
           },
           "302": {
             "description": "Redirect to OIDC authorization endpoint"
@@ -3142,7 +3352,14 @@
         "operationId": "download_cli",
         "responses": {
           "200": {
-            "description": "CLI binary (application/octet-stream)"
+            "description": "CLI binary",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "404": {
             "description": "No CLI binary configured on this server"
@@ -3387,6 +3604,98 @@
         ]
       }
     },
+    "/api/v1/me/advisories": {
+      "get": {
+        "tags": [
+          "user"
+        ],
+        "summary": "Advisories affecting the caller: what they pulled, and what they own.",
+        "description": "The join happens here rather than in the browser on purpose (RFC 0004 §5.3):\nasking the client to fetch findings per coordinate would be N requests, and\nit would write the caller's package list into the network log of whatever\nmachine they are sitting at.\n\nTakes no `user_id`. Both halves are scoped by ports that cannot be called\nwithout a subject — `list_own_downloads` and `list_owned_by`.",
+        "operationId": "my_advisories",
+        "responses": {
+          "200": {
+            "description": "Advisories on the caller's recent pulls and owned packages",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MyAdvisoriesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/me/downloads": {
+      "get": {
+        "tags": [
+          "user"
+        ],
+        "summary": "What the caller has downloaded, most recent first.",
+        "description": "Only this caller's own rows, only successful downloads. The filter is in\n`PackageRepository::list_own_downloads` rather than assembled here, so no\nfuture caller of that port can forget it (RFC 0004 §6.2).\n\nTakes no `user_id`. `/api/v1/admin/audit-log` is the endpoint for reading\nanyone else's, and it is admin-only.",
+        "operationId": "my_downloads",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum rows to return. Clamped to 1–200; defaults to 50.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "description": "How many days back to look. Clamped to 1–365; defaults to 30.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller's recent downloads, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MyDownloadDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
     "/api/v1/me/namespaces": {
       "get": {
         "tags": [
@@ -3396,7 +3705,17 @@
         "operationId": "my_namespaces",
         "responses": {
           "200": {
-            "description": "Namespaces owned by the caller's groups"
+            "description": "Namespaces owned by the caller's groups",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TeamNamespaceDto"
+                  }
+                }
+              }
+            }
           },
           "403": {
             "description": "Authentication required"
@@ -3470,6 +3789,39 @@
           },
           "403": {
             "description": "Authentication or group membership required"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/me/quota": {
+      "get": {
+        "tags": [
+          "user"
+        ],
+        "summary": "The caller's own publish quota, per registry.",
+        "description": "Only registries that both have a quota configured **and** are accessible to\nthe caller appear. A registry with no quota has nothing to measure, and one\nthe caller cannot reach is not theirs to learn about from here.\n\nTakes no `user_id`: the subject is the token's. `/api/v1/admin/quota/…` is\nthe endpoint for reading someone else's, and it is admin-only for a reason\n(RFC 0004 R3) — one endpoint serving two authorisation rules is how the\nwrong row gets returned.",
+        "operationId": "my_quota",
+        "responses": {
+          "200": {
+            "description": "The caller's usage against their limits, per quota-gated registry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MyQuotaDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
           }
         },
         "security": [
@@ -3700,7 +4052,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Merged SBOM document (JSON attachment)"
+            "description": "Merged SBOM document (JSON attachment)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SbomDocument"
+                }
+              }
+            }
           },
           "400": {
             "description": "Unknown format"
@@ -3763,7 +4122,14 @@
         ],
         "responses": {
           "200": {
-            "description": "SBOM document (JSON)"
+            "description": "SBOM document (JSON)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SbomDocument"
+                }
+              }
+            }
           },
           "400": {
             "description": "Unknown format"
@@ -3803,7 +4169,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Event received"
+            "description": "Event received",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
           },
           "400": {
             "description": "Unknown webhook name"
@@ -3842,7 +4215,14 @@
         },
         "responses": {
           "200": {
-            "description": "Bulk audit advisory data from upstream"
+            "description": "Bulk audit advisory data from upstream",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "404": {
             "description": "Unknown or non-npm registry"
@@ -3886,7 +4266,14 @@
         },
         "responses": {
           "200": {
-            "description": "Audit advisory data from upstream"
+            "description": "Audit advisory data from upstream",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "404": {
             "description": "Unknown or non-npm registry"
@@ -3932,7 +4319,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Package file"
+            "description": "Package file",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -3995,7 +4389,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Version yanked"
+            "description": "Version yanked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -4040,7 +4441,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Plugin object"
+            "description": "Plugin object",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "404": {
             "description": "Unknown registry or plugin"
@@ -4082,7 +4490,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Array of updates"
+            "description": "Array of updates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UpstreamDocument"
+                  }
+                }
+              }
+            }
           },
           "404": {
             "description": "Unknown registry or plugin"
@@ -4124,7 +4542,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Comments"
+            "description": "Comments",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UpstreamDocument"
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4163,7 +4591,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Aggregation values"
+            "description": "Aggregation values",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4212,7 +4647,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Search results"
+            "description": "Search results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "404": {
             "description": "Unknown or non-marketplace registry"
@@ -4253,7 +4695,17 @@
         },
         "responses": {
           "200": {
-            "description": "Array of compatible updates"
+            "description": "Array of compatible updates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UpstreamDocument"
+                  }
+                }
+              }
+            }
           },
           "404": {
             "description": "Unknown or non-marketplace registry"
@@ -4305,7 +4757,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Search results"
+            "description": "Search results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "404": {
             "description": "Unknown or non-marketplace registry"
@@ -4339,7 +4798,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Security advisory JSON from upstream"
+            "description": "Security advisory JSON from upstream",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "404": {
             "description": "Registry not found or not a Composer registry"
@@ -4360,8 +4826,6 @@
         "tags": [
           "proxy/jetbrains-marketplace"
         ],
-        "summary": "Publish a plugin archive (local/hybrid registries only).",
-        "description": "Accepts the marketplace upload form: `file` (the `.jar`/`.zip`), an\noptional `xmlId`/`pluginId` (must match the descriptor when present),\n`channel`, and `isHidden` (stored as `unlisted`: hidden from listings,\ndownloadable by exact coordinate).",
         "operationId": "jbm_upload",
         "parameters": [
           {
@@ -4376,7 +4840,14 @@
         ],
         "responses": {
           "201": {
-            "description": "Plugin version published"
+            "description": "Plugin version published",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginPublishResponse"
+                }
+              }
+            }
           },
           "400": {
             "description": "Malformed upload or xmlId mismatch"
@@ -4428,7 +4899,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Package published successfully"
+            "description": "Package published successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComposerPublishResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied or quota exceeded"
@@ -4473,7 +4951,14 @@
         },
         "responses": {
           "200": {
-            "description": "Crate published successfully"
+            "description": "Crate published successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CratePublishResponse"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid publish payload"
@@ -4521,7 +5006,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Owner list"
+            "description": "Owner list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CargoOwnersResponse"
+                }
+              }
+            }
           },
           "404": {
             "description": "Crate not found"
@@ -4572,7 +5064,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Unyanked"
+            "description": "Unyanked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -4623,7 +5122,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Yanked"
+            "description": "Yanked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -4657,7 +5163,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Gem published successfully"
+            "description": "Gem published successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied or quota exceeded"
@@ -4714,7 +5227,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Gem unyanked"
+            "description": "Gem unyanked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -4768,7 +5288,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Gem yanked"
+            "description": "Gem yanked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -4813,7 +5340,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Gem info JSON"
+            "description": "Gem info JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -4858,7 +5392,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Gem versions JSON array"
+            "description": "Gem versions JSON array",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UpstreamDocument"
+                  }
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -4904,7 +5448,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Package file"
+            "description": "Package file",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -4958,7 +5509,14 @@
         ],
         "responses": {
           "201": {
-            "description": "Package published; indexes regenerated"
+            "description": "Package published; indexes regenerated",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid .deb"
@@ -5006,7 +5564,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Repository file"
+            "description": "Repository file",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -5069,7 +5634,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Package ZIP artifact"
+            "description": "Package ZIP artifact",
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -5105,7 +5677,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Feature implementations"
+            "description": "Feature implementations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UpstreamDocument"
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5135,7 +5717,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Blob content"
+            "description": "Blob content",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "404": {
             "description": "Unknown or non-marketplace registry"
@@ -5168,7 +5757,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Blob content"
+            "description": "Blob content",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "404": {
             "description": "Unknown or non-marketplace registry"
@@ -5201,7 +5797,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Blob content"
+            "description": "Blob content",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "404": {
             "description": "Unknown or non-marketplace registry"
@@ -5234,7 +5837,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Array of plugin xmlIds"
+            "description": "Array of plugin xmlIds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
           },
           "404": {
             "description": "Unknown or non-marketplace registry"
@@ -5276,7 +5889,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Plugin metadata"
+            "description": "Plugin metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "404": {
             "description": "Unknown registry or plugin"
@@ -5327,7 +5947,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Update metadata"
+            "description": "Update metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "404": {
             "description": "Unknown registry, plugin, or version"
@@ -5387,7 +6014,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Artifact bytes"
+            "description": "Artifact bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "404": {
             "description": "Unknown registry or artifact"
@@ -5429,7 +6063,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Gem binary"
+            "description": "Gem binary",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -5474,7 +6115,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Artifact streamed from upstream (cached)"
+            "description": "Artifact streamed from upstream (cached)",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "400": {
             "description": "Unsafe path"
@@ -5522,7 +6170,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Artifact streamed from upstream (cached)"
+            "description": "Artifact streamed from upstream (cached)",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -5558,7 +6213,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Gzip-compressed binary latest-specs index"
+            "description": "Gzip-compressed binary latest-specs index",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "404": {
             "description": "Not available for local-only registries"
@@ -5592,7 +6254,14 @@
         ],
         "responses": {
           "200": {
-            "description": "File uploaded"
+            "description": "File uploaded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied or quota exceeded"
@@ -5641,7 +6310,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Maven artifact or metadata"
+            "description": "Maven artifact or metadata",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid Maven path"
@@ -5688,10 +6364,24 @@
         ],
         "responses": {
           "200": {
-            "description": "Accepted (maven-metadata.xml silently ignored)"
+            "description": "Accepted (maven-metadata.xml silently ignored)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
           },
           "201": {
-            "description": "Artifact stored"
+            "description": "Artifact stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid Maven path or malformed POM"
@@ -5734,7 +6424,14 @@
         ],
         "responses": {
           "201": {
-            "description": "Package published"
+            "description": "Package published",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid or missing .nupkg"
@@ -5838,7 +6535,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Version list JSON"
+            "description": "Version list JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "404": {
             "description": "Package not found"
@@ -5898,7 +6602,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Artifact bytes"
+            "description": "Artifact bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "404": {
             "description": "Artifact not found"
@@ -5932,7 +6643,14 @@
         ],
         "responses": {
           "200": {
-            "description": "NuGet v3 service index"
+            "description": "NuGet v3 service index",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "404": {
             "description": "Registry not found or not a NuGet registry"
@@ -5995,7 +6713,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Search results JSON"
+            "description": "Search results JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6035,7 +6760,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Registration index JSON"
+            "description": "Registration index JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "404": {
             "description": "Package not found"
@@ -6069,7 +6801,17 @@
         ],
         "responses": {
           "200": {
-            "description": "NuGet vulnerability index JSON"
+            "description": "NuGet vulnerability index JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UpstreamDocument"
+                  }
+                }
+              }
+            }
           },
           "404": {
             "description": "Registry not found or not a NuGet registry"
@@ -6115,7 +6857,14 @@
         ],
         "responses": {
           "200": {
-            "description": "NuGet vulnerability page JSON"
+            "description": "NuGet vulnerability page JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid page identifier"
@@ -6164,7 +6913,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Packagist v2 metadata JSON"
+            "description": "Packagist v2 metadata JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "404": {
             "description": "Package not found"
@@ -6198,7 +6954,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Composer packages.json index"
+            "description": "Composer packages.json index",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "404": {
             "description": "Unknown registry"
@@ -6240,7 +7003,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Distribution bytes"
+            "description": "Distribution bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "404": {
             "description": "File not found"
@@ -6276,7 +7046,14 @@
         ],
         "responses": {
           "201": {
-            "description": "Package published; repo database regenerated"
+            "description": "Package published; repo database regenerated",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid package"
@@ -6324,7 +7101,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Repository file"
+            "description": "Repository file",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -6387,7 +7171,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Plugin archive bytes"
+            "description": "Plugin archive bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "404": {
             "description": "Unknown registry or plugin"
@@ -6447,7 +7238,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Plugin archive bytes"
+            "description": "Plugin archive bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "400": {
             "description": "Unsupported action"
@@ -6494,7 +7292,11 @@
           "200": {
             "description": "Plugin repository XML",
             "content": {
-              "application/xml": {}
+              "application/xml": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
             }
           },
           "404": {
@@ -6528,7 +7330,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Gzip-compressed binary prerelease-specs index"
+            "description": "Gzip-compressed binary prerelease-specs index",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "404": {
             "description": "Not available for local-only registries"
@@ -6570,7 +7379,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Zlib-compressed gemspec"
+            "description": "Zlib-compressed gemspec",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -6606,7 +7422,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Sparse registry configuration"
+            "description": "Sparse registry configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "404": {
             "description": "No cargo registry configured"
@@ -6648,7 +7471,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Sparse index entry (newline-delimited JSON)"
+            "description": "Sparse index entry (newline-delimited JSON)",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
           },
           "404": {
             "description": "Crate not found in index"
@@ -6681,7 +7511,14 @@
         ],
         "responses": {
           "201": {
-            "description": "Package published; repodata regenerated"
+            "description": "Package published; repodata regenerated",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid .rpm"
@@ -6729,7 +7566,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Repository file"
+            "description": "Repository file",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -6765,7 +7609,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Simple index HTML"
+            "description": "Simple index HTML",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
           },
           "404": {
             "description": "Registry not found"
@@ -6808,7 +7659,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Simple index page with rewritten file URLs"
+            "description": "Simple index page with rewritten file URLs",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
           },
           "404": {
             "description": "Package not found"
@@ -6841,7 +7699,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Gzip-compressed binary specs index"
+            "description": "Gzip-compressed binary specs index",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "404": {
             "description": "Not available for local-only registries"
@@ -6876,7 +7741,11 @@
           "200": {
             "description": "Custom repository XML",
             "content": {
-              "application/xml": {}
+              "application/xml": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
             }
           },
           "404": {
@@ -6919,7 +7788,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Vulnerability OSV record JSON"
+            "description": "Vulnerability OSV record JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid vulnerability ID"
@@ -6959,7 +7835,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Vulnerability database index JSON"
+            "description": "Vulnerability database index JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "404": {
             "description": "Registry not found or vuln DB disabled"
@@ -7022,7 +7905,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Module versions JSON"
+            "description": "Module versions JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -7095,7 +7985,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Version yanked"
+            "description": "Version yanked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Authentication required"
@@ -7170,7 +8067,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Version unyanked"
+            "description": "Version unyanked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Authentication required"
@@ -7246,7 +8150,14 @@
         ],
         "responses": {
           "201": {
-            "description": "Module uploaded"
+            "description": "Module uploaded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Authentication required"
@@ -7328,7 +8239,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Module tarball"
+            "description": "Module tarball",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "404": {
             "description": "Module not found"
@@ -7452,7 +8370,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Provider versions JSON"
+            "description": "Provider versions JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -7505,7 +8430,14 @@
         ],
         "responses": {
           "201": {
-            "description": "Provider version manifest stored"
+            "description": "Provider version manifest stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Authentication required"
@@ -7578,7 +8510,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Version yanked"
+            "description": "Version yanked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Authentication required"
@@ -7644,7 +8583,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Version unyanked"
+            "description": "Version unyanked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Authentication required"
@@ -7728,7 +8674,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Provider binary"
+            "description": "Provider binary",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "404": {
             "description": "Binary not found"
@@ -7804,7 +8757,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Binary stored"
+            "description": "Binary stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Authentication required"
@@ -7885,7 +8845,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Provider download info JSON (includes binary URL and checksums)"
+            "description": "Provider download info JSON (includes binary URL and checksums)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -7928,7 +8895,14 @@
         },
         "responses": {
           "200": {
-            "description": "Matching vulnerability records"
+            "description": "Matching vulnerability records",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "404": {
             "description": "Registry not found or vuln DB disabled"
@@ -7983,7 +8957,14 @@
         ],
         "responses": {
           "200": {
-            "description": "VS Code extension VSIX package"
+            "description": "VS Code extension VSIX package",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -8042,7 +9023,14 @@
         },
         "responses": {
           "200": {
-            "description": "Extension published"
+            "description": "Extension published",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid payload"
@@ -8090,7 +9078,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Latest version info JSON"
+            "description": "Latest version info JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -8135,7 +9130,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Newline-separated version list"
+            "description": "Newline-separated version list",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -8189,7 +9191,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Requested module file"
+            "description": "Requested module file — `.info` (JSON), `.mod` (text) or `.zip`, per the requested extension",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "400": {
             "description": "Unknown file type"
@@ -8251,7 +9260,14 @@
         },
         "responses": {
           "200": {
-            "description": "Module published"
+            "description": "Module published",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid payload or filename"
@@ -8275,8 +9291,6 @@
         "tags": [
           "proxy/npm"
         ],
-        "summary": "Publish a new npm package version (`npm publish`).",
-        "description": "Accepts the standard npm publish wire format: a JSON body containing the\npackage metadata under `versions` and the base64-encoded tarball under\n`_attachments`.",
         "operationId": "npm_publish",
         "parameters": [
           {
@@ -8306,7 +9320,14 @@
         },
         "responses": {
           "200": {
-            "description": "Package published"
+            "description": "Package published",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NpmPublishResponse"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid payload"
@@ -8363,7 +9384,14 @@
         ],
         "responses": {
           "200": {
-            "description": ".crate file stream"
+            "description": ".crate file stream",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -8435,7 +9463,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Raw file content"
+            "description": "Raw file content",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -8489,7 +9524,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Release list (GitHub API JSON)"
+            "description": "Release list (GitHub API JSON)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UpstreamDocument"
+                  }
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -8555,7 +9600,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Asset binary stream"
+            "description": "Asset binary stream",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -8627,7 +9679,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Asset binary stream"
+            "description": "Asset binary stream",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -8690,7 +9749,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Release metadata"
+            "description": "Release metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -8753,7 +9819,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Source tarball stream"
+            "description": "Source tarball stream",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -8816,7 +9889,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Zip archive stream"
+            "description": "Zip archive stream",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -8861,7 +9941,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Package metadata JSON"
+            "description": "Package metadata JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -8915,7 +10002,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Version metadata JSON"
+            "description": "Version metadata JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -8969,7 +10063,14 @@
         ],
         "responses": {
           "200": {
-            "description": "npm .tgz tarball"
+            "description": "npm .tgz tarball",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -9015,7 +10116,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Package published"
+            "description": "Package published",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied or quota exceeded"
@@ -9063,7 +10171,14 @@
         ],
         "responses": {
           "200": {
-            "description": "current_repodata.json"
+            "description": "current_repodata.json",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "404": {
             "description": "Not found"
@@ -9106,7 +10221,14 @@
         ],
         "responses": {
           "200": {
-            "description": "repodata.json"
+            "description": "repodata.json",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -9160,7 +10282,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Package bytes"
+            "description": "Package bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "404": {
             "description": "Package not found"
@@ -9220,7 +10349,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Source archive stream"
+            "description": "Source archive stream",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -9283,7 +10419,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Raw file content"
+            "description": "Raw file content",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -9328,7 +10471,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Release list (GitLab API JSON)"
+            "description": "Release list (GitLab API JSON)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UpstreamDocument"
+                  }
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -9382,7 +10535,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Release metadata"
+            "description": "Release metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -9445,7 +10605,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Asset binary stream"
+            "description": "Asset binary stream",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
           },
           "403": {
             "description": "Access denied"
@@ -9464,6 +10631,35 @@
   },
   "components": {
     "schemas": {
+      "AccessAction": {
+        "type": "string",
+        "enum": [
+          "download",
+          "viewmetadata",
+          "block",
+          "unblock",
+          "delete",
+          "addowner",
+          "removeowner",
+          "setvisibility",
+          "blockuser",
+          "unblockuser",
+          "blockip",
+          "unblockip",
+          "auditpurge",
+          "yank",
+          "unyank",
+          "deprecate",
+          "undeprecate",
+          "unlist",
+          "relist",
+          "addbetamember",
+          "removebetamember",
+          "claimnamespace",
+          "releasenamespace",
+          "resetquota"
+        ]
+      },
       "AccessCheckRequest": {
         "type": "object",
         "required": [
@@ -9535,6 +10731,120 @@
             ]
           }
         }
+      },
+      "AccessEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "user_role",
+          "action",
+          "result",
+          "timestamp"
+        ],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/AccessAction"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "ip_address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Caller's IP address (from X-Forwarded-For / RemoteAddr)."
+          },
+          "package_id": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PackageId",
+                "description": "The package coordinate this event is about, when applicable.\n\n`None` for account-wide/network-wide admin actions that are not scoped\nto a specific package (e.g. blocking a user or an IP address)."
+              }
+            ]
+          },
+          "result": {
+            "$ref": "#/components/schemas/AccessResult"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "user_agent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "HTTP User-Agent from the request."
+          },
+          "user_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_role": {
+            "$ref": "#/components/schemas/Role"
+          }
+        }
+      },
+      "AccessResult": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "allowed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "reason",
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "denied"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "reason",
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "error"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          }
+        ]
       },
       "AccessSimulationResponse": {
         "type": "object",
@@ -9622,6 +10932,47 @@
           }
         }
       },
+      "AdminPackageListResponse": {
+        "type": "object",
+        "description": "Paginated envelope for `GET /api/v1/admin/packages`, matching the shape of\nits sibling list endpoints (`PackageListResponse`/`ExplorePackageListResponse`)\ninstead of returning a bare array with no way to tell if more pages exist.",
+        "required": [
+          "items",
+          "total",
+          "page",
+          "per_page"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PackageSummary"
+            }
+          },
+          "page": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "per_page": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "AdvisoryRelation": {
+        "type": "string",
+        "description": "Why a coordinate is in the caller's list.\n\nThe two are different relationships and are labelled rather than merged: you\nare *exposed to* what you pulled, and you can *fix* what you own (RFC 0004\nR7). The same coordinate can be both, in which case it appears once under\n`owned` — the actionable relationship wins. A version you pulled and a\ndifferent version you own are two coordinates and stay two rows (R15).",
+        "enum": [
+          "pulled",
+          "owned"
+        ]
+      },
       "AggregateStats": {
         "type": "object",
         "required": [
@@ -9656,6 +11007,45 @@
           }
         }
       },
+      "ArtifactBytes": {
+        "type": "string",
+        "format": "binary",
+        "description": "Raw artifact bytes — a tarball, wheel, `.crate`, `.nupkg`, `.gem`, `.vsix`,\npackage archive or signature — streamed from cache storage or from the\nconfigured upstream.\n\nThe `Content-Type` is the one the registry protocol calls for; the payload is\nnever parsed by this server on the read path.",
+        "example": "<binary artifact>"
+      },
+      "AuditLogResponse": {
+        "type": "object",
+        "description": "Paginated envelope for `GET /api/v1/admin/audit-log`, matching the shape of\nits sibling list endpoints (`AdminPackageListResponse`) instead of returning\na bare array with no way to tell if more pages exist.",
+        "required": [
+          "items",
+          "total",
+          "page",
+          "per_page"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccessEvent"
+            }
+          },
+          "page": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "per_page": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "BannerLevel": {
         "type": "string",
         "enum": [
@@ -9663,6 +11053,27 @@
           "warning",
           "error"
         ]
+      },
+      "BetaChannelMemberDto": {
+        "type": "object",
+        "required": [
+          "principal_type",
+          "principal_id"
+        ],
+        "properties": {
+          "granted_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "principal_id": {
+            "type": "string"
+          },
+          "principal_type": {
+            "type": "string"
+          }
+        }
       },
       "BlockIpRequest": {
         "type": "object",
@@ -9727,6 +11138,33 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "BlockedIpDto": {
+        "type": "object",
+        "required": [
+          "ip",
+          "blocked_at",
+          "unblock_at",
+          "reason"
+        ],
+        "properties": {
+          "blocked_at": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "ip": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "unblock_at": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -9976,6 +11414,42 @@
           }
         }
       },
+      "CargoOwner": {
+        "type": "object",
+        "description": "One owner. `id` is a position in this list, not a stable identifier — this\nserver keys ownership by principal, and `cargo` only ever displays the field.",
+        "required": [
+          "id",
+          "login",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "login": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "CargoOwnersResponse": {
+        "type": "object",
+        "description": "`cargo owner --list`'s response, in the shape crates.io defines.",
+        "required": [
+          "users"
+        ],
+        "properties": {
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CargoOwner"
+            }
+          }
+        }
+      },
       "ChangedRegistry": {
         "type": "object",
         "required": [
@@ -10036,6 +11510,26 @@
             "type": "integer",
             "description": "Number of artifacts removed from storage.",
             "minimum": 0
+          }
+        }
+      },
+      "ComposerPublishResponse": {
+        "type": "object",
+        "description": "Composer's publish acknowledgement. `status` is always `\"success\"` — a\nfailure is a non-2xx, not a `\"status\": \"error\"` body.",
+        "required": [
+          "status",
+          "name",
+          "version"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
           }
         }
       },
@@ -10169,6 +11663,47 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ConfigWarning"
+            }
+          }
+        }
+      },
+      "CratePublishResponse": {
+        "type": "object",
+        "description": "`cargo publish`'s acknowledgement, in the shape crates.io defines: a\n`warnings` object the client prints back to the user.\n\nThis server does not validate categories or badges, so all three lists are\nalways empty — but the client reads the keys, so they are always present.",
+        "required": [
+          "warnings"
+        ],
+        "properties": {
+          "warnings": {
+            "$ref": "#/components/schemas/CratePublishWarnings"
+          }
+        }
+      },
+      "CratePublishWarnings": {
+        "type": "object",
+        "description": "The three warning buckets `cargo` looks for in a publish response.",
+        "required": [
+          "invalid_categories",
+          "invalid_badges",
+          "other"
+        ],
+        "properties": {
+          "invalid_badges": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "invalid_categories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "other": {
+            "type": "array",
+            "items": {
+              "type": "string"
             }
           }
         }
@@ -10814,6 +12349,216 @@
           }
         }
       },
+      "MessageResponse": {
+        "type": "object",
+        "description": "`{\"message\": \"…\"}` — the acknowledgement the publish, yank and unyank paths\nreturn for registries whose CLI shows the string back to the user (twine,\n`gem push`, `terraform login`, `dotnet nuget push`).\n\nThe text is for a human; nothing parses it, and no client should.",
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "Human-readable confirmation of what happened."
+          }
+        }
+      },
+      "MyAdvisoriesResponse": {
+        "type": "object",
+        "description": "Known advisories on what the caller recently pulled and on what they own.",
+        "required": [
+          "advisories",
+          "window_days",
+          "scanning_available"
+        ],
+        "properties": {
+          "advisories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MyAdvisoryDto"
+            },
+            "description": "Coordinates with findings, worst severity first. Empty means exactly\nthat: nothing you pulled recently or own has a known advisory."
+          },
+          "scanning_available": {
+            "type": "boolean",
+            "description": "True when this instance records no vulnerability findings at all\n(no SBOM re-scan configured). An empty list then means \"we do not know\",\nnot \"you are clear\" — a distinction the widget must not blur."
+          },
+          "window_days": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many days back \"recently pulled\" reaches, so a reader knows what\nthe empty case is a statement about."
+          }
+        }
+      },
+      "MyAdvisoryDto": {
+        "type": "object",
+        "description": "One coordinate with known advisories, and why it concerns the caller.",
+        "required": [
+          "registry",
+          "name",
+          "version",
+          "relation",
+          "highest_severity",
+          "findings"
+        ],
+        "properties": {
+          "findings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MyAdvisoryFindingDto"
+            }
+          },
+          "highest_severity": {
+            "$ref": "#/components/schemas/Severity",
+            "description": "The worst severity among `findings`, so a caller can rank rows without\nreducing the list themselves."
+          },
+          "name": {
+            "type": "string"
+          },
+          "registry": {
+            "type": "string"
+          },
+          "relation": {
+            "$ref": "#/components/schemas/AdvisoryRelation"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "MyAdvisoryFindingDto": {
+        "type": "object",
+        "description": "One advisory finding, flattened to what a reader needs to act.",
+        "required": [
+          "osv_id",
+          "severity",
+          "summary"
+        ],
+        "properties": {
+          "fixed_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "First version that fixes it, when the database reports one."
+          },
+          "osv_id": {
+            "type": "string",
+            "description": "Identifier in the source database (`RUSTSEC-…`, `GHSA-…`, `CVE-…`)."
+          },
+          "severity": {
+            "$ref": "#/components/schemas/Severity"
+          },
+          "summary": {
+            "type": "string"
+          }
+        }
+      },
+      "MyDownloadDto": {
+        "type": "object",
+        "description": "One artifact the caller downloaded.",
+        "required": [
+          "registry",
+          "name",
+          "version",
+          "downloaded_at"
+        ],
+        "properties": {
+          "artifact": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The sub-artifact within the coordinate, where the registry has one\n(a GitHub asset id, `tarball`, `vsix`, …)."
+          },
+          "downloaded_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "name": {
+            "type": "string"
+          },
+          "registry": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "MyQuotaDto": {
+        "type": "object",
+        "description": "One registry's quota, as it applies to the caller.\n\nA limit of `null` means that dimension is unlimited for this registry — the\nother one is what the quota measures.",
+        "required": [
+          "registry",
+          "bytes_used",
+          "packages_used",
+          "warn_threshold_pct",
+          "state"
+        ],
+        "properties": {
+          "bytes_limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "bytes_state": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/QuotaStateDto",
+                "description": "This dimension's own verdict, or `null` when it has no limit. Present so\na reader can see *which* threshold was crossed (RFC 0004 §4.2) — a\nregistry whose versions are at 82% while its storage sits at 68% is not\n\"at 82%\" in both."
+              }
+            ]
+          },
+          "bytes_used": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "packages_limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "packages_state": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/QuotaStateDto",
+                "description": "This dimension's own verdict, or `null` when it has no limit."
+              }
+            ]
+          },
+          "packages_used": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "registry": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/QuotaStateDto",
+            "description": "The worse of the two dimensions — what the registry as a whole is at."
+          },
+          "warn_threshold_pct": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The percentage of a limit at which a `state` becomes `warning`.",
+            "minimum": 0
+          }
+        }
+      },
       "NamespacePackageDto": {
         "type": "object",
         "required": [
@@ -10839,7 +12584,7 @@
             "type": "string"
           },
           "visibility": {
-            "type": "string"
+            "$ref": "#/components/schemas/Visibility"
           },
           "yanked": {
             "type": "boolean"
@@ -10941,6 +12686,10 @@
           }
         }
       },
+      "NpmPublishResponse": {
+        "type": "object",
+        "description": "Publish a new npm package version (`npm publish`).\n\nAccepts the standard npm publish wire format: a JSON body containing the\npackage metadata under `versions` and the base64-encoded tarball under\n`_attachments`.\nnpm's publish acknowledgement: an empty JSON object.\n\n`npm publish` reports success from the status code and the quota headers;\nthe body carries nothing, and this type says so rather than leaving the\nresponse undocumented."
+      },
       "OidcProviderInfo": {
         "type": "object",
         "required": [
@@ -10950,6 +12699,44 @@
           "name": {
             "type": "string",
             "description": "Configured provider name (e.g. `\"oidc\"`, `\"oidc2\"`)."
+          }
+        }
+      },
+      "OkResponse": {
+        "type": "object",
+        "description": "`{\"ok\": true}` — the acknowledgement several write endpoints return when the\nprotocol they implement expects a JSON body but has nothing to say in it.",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always `true`; a failure is reported by the status code, not by this field."
+          }
+        }
+      },
+      "OwnerEntryDto": {
+        "type": "object",
+        "required": [
+          "principal_type",
+          "principal_id",
+          "role"
+        ],
+        "properties": {
+          "granted_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "principal_id": {
+            "type": "string"
+          },
+          "principal_type": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
           }
         }
       },
@@ -11033,6 +12820,32 @@
           }
         }
       },
+      "PackageId": {
+        "type": "object",
+        "description": "Uniquely identifies a package (or sub-artifact) in a registry.\n\nExamples:\n- GitHub release asset: `{ registry: \"github\", name: \"rust-lang/rust\", version: \"v1.80.0\", artifact: Some(\"12345678\") }`\n- Cargo crate:          `{ registry: \"cargo\",  name: \"tokio\",           version: \"1.38.0\",  artifact: None }`",
+        "required": [
+          "registry",
+          "name",
+          "version"
+        ],
+        "properties": {
+          "artifact": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "registry": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
       "PackageIdentifierDto": {
         "type": "object",
         "required": [
@@ -11088,6 +12901,52 @@
             "minimum": 0
           }
         }
+      },
+      "PackageStatus": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "available"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "reason",
+              "blocked_by",
+              "blocked_at",
+              "status"
+            ],
+            "properties": {
+              "blocked_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "blocked_by": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "blocked"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Administrative status of a package in this proxy."
       },
       "PackageStatusDetail": {
         "oneOf": [
@@ -11169,6 +13028,47 @@
             }
           }
         ]
+      },
+      "PackageSummary": {
+        "type": "object",
+        "description": "Lightweight summary used in listing endpoints.",
+        "required": [
+          "id",
+          "package_id",
+          "status",
+          "access_count"
+        ],
+        "properties": {
+          "access_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "last_accessed": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "last_accessed_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "User who last successfully downloaded this package. `None` means anonymous."
+          },
+          "package_id": {
+            "$ref": "#/components/schemas/PackageId"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PackageStatus"
+          }
+        }
       },
       "PackageSummaryDto": {
         "type": "object",
@@ -11334,6 +13234,35 @@
           }
         }
       },
+      "PluginPublishResponse": {
+        "type": "object",
+        "description": "Publish a plugin archive (local/hybrid registries only).\n\nAccepts the marketplace upload form: `file` (the `.jar`/`.zip`), an\noptional `xmlId`/`pluginId` (must match the descriptor when present),\n`channel`, and `isHidden` (stored as `unlisted`: hidden from listings,\ndownloadable by exact coordinate).\nThe marketplace upload acknowledgement, in the shape the JetBrains plugin\npublish API returns. `id` and `pluginId` are the same xmlId under both of\nthe names clients have been seen to read.",
+        "required": [
+          "id",
+          "pluginId",
+          "version",
+          "channel"
+        ],
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "pluginId": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "ProtocolDocument": {
+        "type": "string",
+        "description": "A non-JSON registry protocol document — `maven-metadata.xml`,\n`updatePlugins.xml`, a PyPI simple-index HTML page, an APT `Release` file, a\nGo `go.mod`, a plain-text token or version list.\n\nAs with [`UpstreamDocument`], the format belongs to the registry protocol.\nThe `Content-Type` header identifies which one.",
+        "example": "<registry protocol document>"
+      },
       "PurgeResponse": {
         "type": "object",
         "required": [
@@ -11344,6 +13273,42 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "QuotaStateDto": {
+        "type": "string",
+        "description": "How close the caller is to a registry's quota.",
+        "enum": [
+          "ok",
+          "warning",
+          "at_limit"
+        ]
+      },
+      "QuotaUsageDto": {
+        "type": "object",
+        "required": [
+          "user_id",
+          "registry",
+          "bytes_published",
+          "packages_count"
+        ],
+        "properties": {
+          "bytes_published": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "packages_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "registry": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
           }
         }
       },
@@ -11623,6 +13588,25 @@
           }
         }
       },
+      "RegistryStatsHistoryDto": {
+        "type": "object",
+        "description": "One registry's series over the requested window.",
+        "required": [
+          "registry",
+          "points"
+        ],
+        "properties": {
+          "points": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StatsHistoryPointDto"
+            }
+          },
+          "registry": {
+            "type": "string"
+          }
+        }
+      },
       "ReloadDiff": {
         "type": "object",
         "required": [
@@ -11698,6 +13682,10 @@
           "admin"
         ]
       },
+      "SbomDocument": {
+        "type": "object",
+        "description": "An SPDX 2.3 or CycloneDX 1.5 document.\n\nThe shape is the SBOM standard's, not this API's — which format you get is\ndecided by the `format` query parameter, and each is specified elsewhere."
+      },
       "SetBannerRequest": {
         "type": "object",
         "required": [
@@ -11724,6 +13712,85 @@
           }
         }
       },
+      "Severity": {
+        "type": "string",
+        "description": "Severity bucket for a vulnerability finding, ordered from least to most severe.\n\n`Ord` is derived from declaration order, so `Critical > High > Medium > Low > Unknown`.\nThis lets the CVE gate compare a finding's severity against a configured minimum\nwith a plain `>=`.",
+        "enum": [
+          "unknown",
+          "low",
+          "medium",
+          "high",
+          "critical"
+        ]
+      },
+      "StatsHistoryPointDto": {
+        "type": "object",
+        "description": "One hour of one registry's cache activity.",
+        "required": [
+          "window_start",
+          "hits",
+          "misses",
+          "cached_bytes"
+        ],
+        "properties": {
+          "cached_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bytes in storage at the end of the window. A level, not a delta.",
+            "minimum": 0
+          },
+          "hits": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Hits **in this window**, not a running total — which is the whole point\nof the table: a counter since process start cannot survive a deploy.",
+            "minimum": 0
+          },
+          "misses": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "window_start": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "StatsHistoryResponse": {
+        "type": "object",
+        "required": [
+          "window_days",
+          "from",
+          "to",
+          "trend",
+          "per_registry"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "per_registry": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RegistryStatsHistoryDto"
+            },
+            "description": "Per registry, oldest point first. Registries with no rows in the window\nare absent rather than present-and-empty."
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "trend": {
+            "$ref": "#/components/schemas/StatsTrendDto"
+          },
+          "window_days": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The window actually used, after clamping."
+          }
+        }
+      },
       "StatsResponse": {
         "type": "object",
         "required": [
@@ -11745,6 +13812,75 @@
             "type": "string",
             "format": "date-time",
             "description": "When this process started (counters reset on restart)."
+          }
+        }
+      },
+      "StatsTrendDto": {
+        "type": "object",
+        "description": "The dashboard's trend: this window against the one before it.\n\nBoth halves are computed server-side so the two numbers being compared are\nalways derived the same way. A client differencing two separate requests\nwould be one off-by-one away from comparing 30 days with 29.",
+        "required": [
+          "hits",
+          "misses"
+        ],
+        "properties": {
+          "delta": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "`hit_rate - previous_hit_rate`, or `null` when either side is unknown.\nPresent so a reader is not left subtracting two nullable numbers."
+          },
+          "hit_rate": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Hit rate in [0, 1] for the requested window, or `null` when it saw no\ntraffic at all — which is not the same as a hit rate of zero."
+          },
+          "hits": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "misses": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "previous_hit_rate": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The same rate over the equally-long window immediately before it, or\n`null` when there is no history that far back yet."
+          }
+        }
+      },
+      "TeamNamespaceDto": {
+        "type": "object",
+        "required": [
+          "registry",
+          "prefix",
+          "group_id"
+        ],
+        "properties": {
+          "claimed_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "prefix": {
+            "type": "string"
+          },
+          "registry": {
+            "type": "string"
           }
         }
       },
@@ -11837,6 +13973,9 @@
           }
         }
       },
+      "UpstreamDocument": {
+        "description": "A JSON document produced by the registry protocol rather than by this\nserver's own API.\n\nIn `proxy` mode it is the upstream's response forwarded (with URLs rewritten\nwhere the protocol requires it); in `local` mode this server generates the\nsame protocol document. Either way the shape is the registry protocol's to\ndefine, not this API's — npm's packument, NuGet's registration index and\nComposer's `packages.json` are each specified by their own ecosystem, and\nthis server does not narrow them.\n\nDocumented as an unconstrained JSON value rather than an object: several of\nthese protocols answer with a top-level array, and a client that trusted a\nfabricated object schema would be wrong about half of them. Where the shape\n*is* known to be a list, the endpoint declares `Vec<UpstreamDocument>`."
+      },
       "UpstreamPackageDto": {
         "type": "object",
         "required": [
@@ -11904,6 +14043,27 @@
           },
           "user_id": {
             "type": "string"
+          }
+        }
+      },
+      "Visibility": {
+        "type": "string",
+        "description": "Visibility level for a locally published package.",
+        "enum": [
+          "public",
+          "internal",
+          "team"
+        ]
+      },
+      "VisibilityResponse": {
+        "type": "object",
+        "required": [
+          "visibility"
+        ],
+        "properties": {
+          "visibility": {
+            "$ref": "#/components/schemas/Visibility",
+            "description": "The three-valued enum, not a free string: the console narrowed this by\nhand until RFC 0004, and a narrowing the client invents is one the\nserver can break without noticing."
           }
         }
       },
@@ -12113,6 +14273,10 @@
     {
       "name": "front-office",
       "description": "User-facing package information"
+    },
+    {
+      "name": "user",
+      "description": "Caller-scoped reads — quota, downloads and advisories for whoever holds the token, never for anyone else"
     },
     {
       "name": "explore",

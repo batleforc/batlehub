@@ -3,6 +3,7 @@ use super::{
     Arc, AuthIdentity, HttpResponse, LocalRegistryService, NotificationEventType,
     NotificationService, PackageId, ProxyService, RegistryMap, RegistryMode, RegistryModeMap,
 };
+use crate::handlers::schemas::MessageResponse;
 
 /// The data describing a single Terraform yank/unyank request — everything
 /// [`terraform_set_yanked`] needs about *what* is being (un)yanked, grouped so
@@ -57,9 +58,10 @@ pub async fn terraform_set_yanked(
         &actor,
     );
 
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "message": format!("{verb} {}@{}", req.display_name, req.version)
-    })))
+    Ok(HttpResponse::Ok().json(MessageResponse::new(format!(
+        "{verb} {}@{}",
+        req.display_name, req.version
+    ))))
 }
 
 /// Shared versions-listing flow for Terraform modules and providers: if `local_result`

@@ -25,6 +25,14 @@ use super::require_npm;
 /// Accepts the standard npm publish wire format: a JSON body containing the
 /// package metadata under `versions` and the base64-encoded tarball under
 /// `_attachments`.
+/// npm's publish acknowledgement: an empty JSON object.
+///
+/// `npm publish` reports success from the status code and the quota headers;
+/// the body carries nothing, and this type says so rather than leaving the
+/// response undocumented.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct NpmPublishResponse {}
+
 #[utoipa::path(
     put,
     path = "/proxy/{registry}/{name}",
@@ -33,7 +41,7 @@ use super::require_npm;
            ("name" = String, Path, description = "Package name")),
     request_body(content_type = "application/json", description = "npm publish payload"),
     responses(
-        (status = 200, description = "Package published"),
+        (status = 200, description = "Package published", body = NpmPublishResponse),
         (status = 400, description = "Invalid payload"),
         (status = 403, description = "Access denied"),
         (status = 409, description = "Version already published"),
@@ -132,5 +140,5 @@ pub async fn npm_publish(
     for (k, v) in quota.headers() {
         resp.insert_header((k, v));
     }
-    Ok(resp.json(serde_json::json!({})))
+    Ok(resp.json(NpmPublishResponse {}))
 }

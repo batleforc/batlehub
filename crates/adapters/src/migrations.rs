@@ -116,6 +116,11 @@ pub fn embedded_migrator() -> Migrator {
             "access events nullable target",
             "../migrations/030_access_events_nullable_target.sql"
         ),
+        mig!(
+            31,
+            "stats history rollup",
+            "../migrations/031_stats_history.sql"
+        ),
     ])
 }
 

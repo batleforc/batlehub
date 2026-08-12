@@ -12,6 +12,7 @@ use crate::handlers::proxy::common::{
     registry_public_base, require_registry_type, serve_local_or_proxy_artifact,
     serve_local_or_proxy_json, LocalOrProxyArtifactOpts,
 };
+use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
 
 // ── packages.json ─────────────────────────────────────────────────────────────
@@ -27,7 +28,7 @@ use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryMode
     tag = "proxy/composer",
     params(("registry" = String, Path, description = "Registry name")),
     responses(
-        (status = 200, description = "Composer packages.json index"),
+        (status = 200, description = "Composer packages.json index", body = UpstreamDocument),
         (status = 404, description = "Unknown registry"),
     ),
     security(("bearer_token" = [])),
@@ -86,7 +87,7 @@ pub async fn composer_packages_json(
         ("path"     = String, Path, description = "Vendor/package path, e.g. symfony/console.json"),
     ),
     responses(
-        (status = 200, description = "Packagist v2 metadata JSON"),
+        (status = 200, description = "Packagist v2 metadata JSON", body = UpstreamDocument),
         (status = 404, description = "Package not found"),
     ),
     security(("bearer_token" = [])),
@@ -156,7 +157,7 @@ pub async fn composer_p2_metadata(
         ("version"  = String, Path, description = "Version string"),
     ),
     responses(
-        (status = 200, description = "Package ZIP artifact"),
+        (status = 200, description = "Package ZIP artifact", body = ArtifactBytes, content_type = "application/zip"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Package or version not found"),
     ),
@@ -212,7 +213,7 @@ pub async fn composer_dist(
         ("registry" = String, Path, description = "Registry name (must be a composer registry)"),
     ),
     responses(
-        (status = 200, description = "Security advisory JSON from upstream"),
+        (status = 200, description = "Security advisory JSON from upstream", body = UpstreamDocument),
         (status = 404, description = "Registry not found or not a Composer registry"),
         (status = 502, description = "Upstream Packagist error"),
     ),

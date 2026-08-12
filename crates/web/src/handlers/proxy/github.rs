@@ -5,6 +5,7 @@ use actix_web::{get, web, HttpRequest, Responder};
 use batlehub_core::{entities::PackageId, services::ProxyService};
 
 use super::common::proxy_stream;
+use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
 /// Forgejo/Gitea expose an identical release URL scheme (`{owner}/{repo}/releases…`)
@@ -57,7 +58,7 @@ async fn github_proxy(
         ("repo"     = String, Path, description = "Repository name"),
     ),
     responses(
-        (status = 200, description = "Release list (GitHub API JSON)"),
+        (status = 200, description = "Release list (GitHub API JSON)", body = Vec<UpstreamDocument>),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Unknown registry"),
         (status = 500, description = "Internal error"),
@@ -97,7 +98,7 @@ pub async fn list_releases(
         ("tag"      = String, Path, description = "Release tag"),
     ),
     responses(
-        (status = 200, description = "Release metadata"),
+        (status = 200, description = "Release metadata", body = UpstreamDocument),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Unknown registry"),
     ),
@@ -136,7 +137,7 @@ pub async fn get_release(
         ("asset_id"  = String, Path, description = "Asset ID"),
     ),
     responses(
-        (status = 200, description = "Asset binary stream"),
+        (status = 200, description = "Asset binary stream", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Unknown registry"),
     ),
@@ -182,7 +183,7 @@ pub async fn download_asset(
         ("filename"  = String, Path, description = "Asset filename"),
     ),
     responses(
-        (status = 200, description = "Asset binary stream"),
+        (status = 200, description = "Asset binary stream", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 404, description = "Asset not found or unknown registry"),
         (status = 403, description = "Access denied"),
     ),
@@ -221,7 +222,7 @@ pub async fn download_asset_by_name(
         ("tag"      = String, Path, description = "Release tag"),
     ),
     responses(
-        (status = 200, description = "Source tarball stream"),
+        (status = 200, description = "Source tarball stream", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Unknown registry"),
     ),
@@ -261,7 +262,7 @@ pub async fn download_tarball(
         ("tag"      = String, Path, description = "Release tag"),
     ),
     responses(
-        (status = 200, description = "Zip archive stream"),
+        (status = 200, description = "Zip archive stream", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Unknown registry"),
     ),
@@ -301,7 +302,7 @@ pub async fn download_zipball(
         ("path"     = String, Path, description = "File path within the repository"),
     ),
     responses(
-        (status = 200, description = "Raw file content"),
+        (status = 200, description = "Raw file content", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 404, description = "File not found or unknown registry"),
         (status = 403, description = "Access denied"),
     ),

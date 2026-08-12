@@ -6,7 +6,7 @@ import { listRegistries, myNamespaces as myNamespacesApi } from "@/client/sdk.ge
 import type { RegistryInfo } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
-import type { TeamNamespaceDto } from "@/lib/registry-types";
+import type { TeamNamespaceDto } from "@/client/types.gen";
 import { PageHeader } from "@/components/ui/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";

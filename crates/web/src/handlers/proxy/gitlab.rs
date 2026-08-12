@@ -5,6 +5,7 @@ use actix_web::{get, web, Responder};
 use batlehub_core::{entities::PackageId, services::ProxyService};
 
 use super::common::proxy_stream;
+use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
 fn require_gitlab(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
@@ -69,7 +70,7 @@ fn archive_format(filename: &str) -> &'static str {
         ("project"  = String, Path, description = "Full project path (group/subgroup/project)"),
     ),
     responses(
-        (status = 200, description = "Release list (GitLab API JSON)"),
+        (status = 200, description = "Release list (GitLab API JSON)", body = Vec<UpstreamDocument>),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Unknown registry"),
     ),
@@ -107,7 +108,7 @@ pub async fn gl_list_releases(
         ("tag"      = String, Path, description = "Release tag"),
     ),
     responses(
-        (status = 200, description = "Release metadata"),
+        (status = 200, description = "Release metadata", body = UpstreamDocument),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Unknown registry"),
     ),
@@ -146,7 +147,7 @@ pub async fn gl_get_release(
         ("name"     = String, Path, description = "Release link name"),
     ),
     responses(
-        (status = 200, description = "Asset binary stream"),
+        (status = 200, description = "Asset binary stream", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 404, description = "Asset not found or unknown registry"),
         (status = 403, description = "Access denied"),
     ),
@@ -185,7 +186,7 @@ pub async fn gl_download_link(
         ("filename" = String, Path, description = "Archive filename (format inferred from suffix)"),
     ),
     responses(
-        (status = 200, description = "Source archive stream"),
+        (status = 200, description = "Source archive stream", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Unknown registry"),
     ),
@@ -225,7 +226,7 @@ pub async fn gl_download_archive(
         ("path"     = String, Path, description = "File path within the repository"),
     ),
     responses(
-        (status = 200, description = "Raw file content"),
+        (status = 200, description = "Raw file content", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 404, description = "File not found or unknown registry"),
         (status = 403, description = "Access denied"),
     ),
@@ -267,7 +268,7 @@ pub async fn gl_download_raw(
         ("path" = String, Path, description = "GitLab API path under /api/v4/ (e.g. projects/{id}/packages/generic/...)"),
     ),
     responses(
-        (status = 200, description = "Package file"),
+        (status = 200, description = "Package file", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 404, description = "Not found or unknown registry"),
         (status = 403, description = "Access denied"),
     ),

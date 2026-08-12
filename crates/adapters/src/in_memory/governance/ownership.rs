@@ -130,6 +130,25 @@ impl OwnershipPort for InMemoryOwnershipStore {
             .cloned()
             .unwrap_or_default())
     }
+
+    async fn list_owned_by(&self, identity: &Identity) -> Result<Vec<(String, String)>, CoreError> {
+        let map = self.data.read().await;
+        let mut owned: Vec<(String, String)> = map
+            .iter()
+            .filter(|(_, owners)| {
+                owners.iter().any(|e| match e.principal_type.as_str() {
+                    "user" => identity.user_id.as_deref() == Some(e.principal_id.as_str()),
+                    "group" => identity.groups.contains(&e.principal_id),
+                    _ => false,
+                })
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        // A HashMap has no order; sort so the same identity gets the same list
+        // twice running, which the handler's "5 most recent" cap depends on.
+        owned.sort();
+        Ok(owned)
+    }
 }
 
 #[cfg(test)]

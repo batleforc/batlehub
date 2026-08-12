@@ -112,6 +112,48 @@ pub(super) fn spawn_periodic_vuln_scan(
     });
 }
 
+/// Spawn the hourly cache-statistics rollup (RFC 0004 §6.4, R9).
+///
+/// The interval is fixed at one hour rather than configured: it is the
+/// resolution the data is *kept* at, and a deployment wanting daily figures
+/// aggregates on read — daily figures can always be derived from hourly ones,
+/// never recovered from them.
+///
+/// The first tick fires immediately (tokio's `interval` does), which is what
+/// makes a freshly started instance record its startup window rather than
+/// nothing for an hour.
+pub(super) fn spawn_stats_rollup(
+    rollup: Arc<batlehub_core::services::StatsRollupService>,
+    proxy_svc: Arc<batlehub_core::services::ProxyService>,
+    registries: Vec<String>,
+) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(3_600));
+        loop {
+            ticker.tick().await;
+
+            // `cached_bytes` is a level read from storage, not something the
+            // counters know; the rollup takes it as input rather than reaching
+            // into a storage backend from `core`.
+            let mut cached = std::collections::HashMap::new();
+            for registry in &registries {
+                let prefix = format!("artifact:{registry}/");
+                if let Ok((_, bytes)) = proxy_svc.storage.stat_by_prefix(&prefix).await {
+                    cached.insert(registry.clone(), bytes);
+                }
+            }
+
+            match rollup.tick_now(&cached).await {
+                Ok(n) => tracing::debug!(rows = n, "stats-rollup: window recorded"),
+                // A failed rollup costs one hour of chart, never a request:
+                // this is a detached task and nothing on the request path
+                // waits for it.
+                Err(e) => tracing::warn!(error = %e, "stats-rollup: window failed"),
+            }
+        }
+    });
+}
+
 // ── Config file watcher ───────────────────────────────────────────────────────
 
 /// OS-thread body: owns the blocking `notify` watcher and forwards change events

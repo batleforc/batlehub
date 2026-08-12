@@ -63,4 +63,20 @@ pub trait OwnershipPort: Send + Sync {
         registry: &str,
         package: &str,
     ) -> Result<Vec<OwnerEntry>, CoreError>;
+
+    /// The reverse of [`list_owners`](OwnershipPort::list_owners): every
+    /// `(registry, package)` this identity owns, whether directly or through
+    /// one of its groups.
+    ///
+    /// `list_owners` answers "who owns this package", which is the question the
+    /// admin surfaces ask. `GET /api/v1/me/advisories` asks the other one —
+    /// "what does this principal own" — and nothing answered it before
+    /// RFC 0004 (§6.2, R7).
+    ///
+    /// Group membership is read from `identity.groups`, so a store cannot
+    /// disagree with the request's own view of who the caller is.
+    async fn list_owned_by(&self, identity: &Identity) -> Result<Vec<(String, String)>, CoreError> {
+        let _ = identity;
+        Ok(vec![])
+    }
 }

@@ -269,6 +269,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use batlehub_core::{entities::PackageId, services::{ProxyRequest, ProxyResponse, ProxyService}};
 use crate::{RegistryMap, error::AppError, extractors::AuthIdentity};
+use crate::handlers::schemas::ArtifactBytes;
 
 pub fn require_myregistry(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry) {
@@ -288,7 +289,7 @@ pub fn require_myregistry(registry: &str, map: &RegistryMap) -> Result<(), AppEr
         ("version"  = String, Path, description = "Version"),
     ),
     responses(
-        (status = 200, description = "Package artifact"),
+        (status = 200, description = "Package artifact", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Not found"),
     ),
@@ -361,6 +362,23 @@ cfg.service(download_myext);
 )]
 pub struct ApiDoc;
 ```
+
+**Every `200`/`201` must declare a body.** `crates/web/tests/openapi_contract.rs` walks the
+generated document and fails on any success response that has only a `description` — a response
+with no schema makes the generated TypeScript client emit `unknown`, and leaves the docs site's
+API reference blank for that endpoint. Point `body` at a real DTO where the handler has one;
+otherwise use the shared markers in `crates/web/src/handlers/schemas.rs`:
+
+| Marker | For |
+| --- | --- |
+| `ArtifactBytes` | artifact bytes streamed from storage or upstream |
+| `UpstreamDocument` | a JSON document the registry protocol defines (`Vec<UpstreamDocument>` when it is a list) |
+| `ProtocolDocument` | a non-JSON protocol document — XML, HTML, plain text |
+| `OkResponse` / `MessageResponse` | `{"ok": true}` / `{"message": "…"}` acknowledgements |
+
+If the handler builds an ad-hoc `json!` of its own invention, that is the finding: give it a named
+struct deriving `ToSchema` in the same module and serialise *that*, so the documented schema and
+the bytes on the wire come from one type.
 
 ---
 

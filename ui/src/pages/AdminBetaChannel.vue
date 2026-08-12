@@ -2,7 +2,7 @@
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { listBetaMembers, addBetaMember, removeBetaMember } from "@/client/sdk.gen";
-import type { BetaChannelMemberDto } from "@/lib/registry-types";
+import type { BetaChannelMemberDto } from "@/client/types.gen";
 import { useAdminCrudList } from "@/composables/useAdminCrudList";
 import SectionTabs from "@/components/admin/SectionTabs.vue";
 import { NAMESPACES_TABS } from "@/config/adminSections";

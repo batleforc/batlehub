@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
 import { listNamespaces, claimNamespace, releaseNamespace } from "@/client/sdk.gen";
-import type { TeamNamespaceDto } from "@/lib/registry-types";
+import type { TeamNamespaceDto } from "@/client/types.gen";
 import { useAdminCrudList } from "@/composables/useAdminCrudList";
 import SectionTabs from "@/components/admin/SectionTabs.vue";
 import { NAMESPACES_TABS } from "@/config/adminSections";

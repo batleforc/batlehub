@@ -53,6 +53,28 @@ pub trait PackageRepository: Send + Sync {
     /// Count matching access events without applying `limit`/`offset`. Used for accurate pagination totals.
     async fn count_events(&self, filter: EventFilter) -> Result<u64, CoreError>;
 
+    /// The caller's own successful downloads, newest first.
+    ///
+    /// Deliberately *not* `list_events` with a filter: this backs
+    /// `GET /api/v1/me/downloads`, and the scoping that keeps one user out of
+    /// another's history belongs here rather than in a handler, where a
+    /// forgotten `user_id` would leak the whole log (RFC 0004 §6.2, §7). The
+    /// three constraints — this principal, `AccessAction::Download`, allowed
+    /// only — are the method's contract, not the caller's to assemble.
+    ///
+    /// `since` bounds how far back to look; `limit` caps the rows returned.
+    /// Anonymous callers have no history: there is no `user_id` to scope by, so
+    /// the handler must not call this for them.
+    async fn list_own_downloads(
+        &self,
+        user_id: &str,
+        since: DateTime<Utc>,
+        limit: u64,
+    ) -> Result<Vec<AccessEvent>, CoreError> {
+        let (_, _, _) = (user_id, since, limit);
+        Ok(vec![])
+    }
+
     /// Delete access-event rows older than `before`. Returns the number of rows deleted.
     async fn purge_events_before(&self, before: DateTime<Utc>) -> Result<u64, CoreError> {
         let _ = before;

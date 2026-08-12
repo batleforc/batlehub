@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 /// Uniquely identifies a package (or sub-artifact) in a registry.
@@ -8,7 +9,7 @@ use uuid::Uuid;
 /// Examples:
 /// - GitHub release asset: `{ registry: "github", name: "rust-lang/rust", version: "v1.80.0", artifact: Some("12345678") }`
 /// - Cargo crate:          `{ registry: "cargo",  name: "tokio",           version: "1.38.0",  artifact: None }`
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 pub struct PackageId {
     pub registry: String,
     pub name: String,
@@ -89,7 +90,7 @@ impl PackageMetadata {
 }
 
 /// Administrative status of a package in this proxy.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "status", rename_all = "lowercase")]
 pub enum PackageStatus {
     Available,
@@ -107,7 +108,7 @@ impl PackageStatus {
 }
 
 /// Lightweight summary used in listing endpoints.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PackageSummary {
     pub id: Uuid,
     pub package_id: PackageId,

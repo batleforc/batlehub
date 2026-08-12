@@ -8,6 +8,8 @@ mod tests;
 use std::future::Future;
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
+
 use crate::entities::{
     AccessAction, AccessEvent, AccessResult, ArtifactVulnerability, Identity, PackageId,
 };
@@ -19,6 +21,15 @@ use crate::services::explore_cache::ExploreCache;
 /// avoid a large selection (thousands of packages) opening more concurrent DB
 /// connections than the pool can serve.
 const BULK_ACTION_CONCURRENCY: usize = 16;
+
+/// How many download rows to read per package wanted by
+/// [`AdminService::recent_own_packages`]. Repeated pulls of one package are the
+/// normal case, so the newest rows skew heavily towards a handful of names.
+const RECENT_DOWNLOAD_SCAN_FACTOR: u64 = 40;
+
+/// Hard ceiling on that scan, so a large `max_packages` cannot turn one widget
+/// into an unbounded read of the audit trail.
+const RECENT_DOWNLOAD_SCAN_CAP: u64 = 500;
 
 pub struct BulkBlockItem {
     pub package_id: PackageId,
@@ -67,6 +78,94 @@ impl AdminService {
             Some(repo) => repo.list_for_coordinate(registry, name, version).await,
             None => Ok(vec![]),
         }
+    }
+
+    /// List recorded findings for many coordinates in one go.
+    /// Returns an empty list when no vulnerability repository is attached.
+    pub async fn list_vulnerabilities_for(
+        &self,
+        coordinates: &[PackageId],
+    ) -> Result<Vec<(PackageId, Vec<ArtifactVulnerability>)>, CoreError> {
+        match &self.vuln_repo {
+            Some(repo) => repo.list_for_coordinates(coordinates).await,
+            None => Ok(vec![]),
+        }
+    }
+
+    /// The caller's own successful downloads, newest first.
+    ///
+    /// A thin delegate: the scoping that makes this safe lives in
+    /// [`PackageRepository::list_own_downloads`], not here (RFC 0004 §6.2).
+    pub async fn list_own_downloads(
+        &self,
+        user_id: &str,
+        since: DateTime<Utc>,
+        limit: u64,
+    ) -> Result<Vec<AccessEvent>, CoreError> {
+        self.repo.list_own_downloads(user_id, since, limit).await
+    }
+
+    /// The `max_coordinates` most recently pulled *coordinates*, each with the
+    /// time it was last pulled.
+    ///
+    /// RFC 0004 R6 bounds "recently pulled" on both axes — a window and a count
+    /// — because either alone degenerates: a count is meaningless for a busy
+    /// user, and a window is unbounded for one.
+    ///
+    /// Collapsing is by the full `(registry, name, version)` coordinate
+    /// (RFC 0004 R15): repeated pulls of one version become one row, and two
+    /// versions of a package stay two rows. An advisory is a fact about a
+    /// version, so the version is what a reader has to see — a row that named
+    /// only the package would leave them guessing which of the versions they
+    /// pulled is the affected one.
+    ///
+    /// `artifact` is dropped from the key and from the result. It names a file
+    /// within a coordinate (a tarball, a `.vsix`, a GitHub asset id), and
+    /// findings are recorded per coordinate, so keeping it would split one
+    /// version into several rows that all carry the same advisories.
+    pub async fn recent_own_coordinates(
+        &self,
+        user_id: &str,
+        since: DateTime<Utc>,
+        max_coordinates: usize,
+    ) -> Result<Vec<(PackageId, DateTime<Utc>)>, CoreError> {
+        if max_coordinates == 0 {
+            return Ok(vec![]);
+        }
+        // Scan more rows than we keep: repeatedly pulling the same version is
+        // the common case (a CI job with a warm lockfile), so the newest N rows
+        // are often one coordinate N times.
+        let scan_limit = (max_coordinates as u64)
+            .saturating_mul(RECENT_DOWNLOAD_SCAN_FACTOR)
+            .min(RECENT_DOWNLOAD_SCAN_CAP);
+
+        let events = self
+            .repo
+            .list_own_downloads(user_id, since, scan_limit)
+            .await?;
+
+        let mut seen: Vec<(String, String, String)> = Vec::with_capacity(max_coordinates);
+        let mut out = Vec::with_capacity(max_coordinates);
+        // `list_own_downloads` returns newest first, so the first row for a
+        // coordinate is the most recent pull of it.
+        for event in events {
+            let Some(pkg) = event.package_id else {
+                continue;
+            };
+            let key = (pkg.registry.clone(), pkg.name.clone(), pkg.version.clone());
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            out.push((
+                PackageId::new(pkg.registry, pkg.name, pkg.version),
+                event.timestamp,
+            ));
+            if out.len() == max_coordinates {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     /// Shared audit-write path for admin actions that don't otherwise touch

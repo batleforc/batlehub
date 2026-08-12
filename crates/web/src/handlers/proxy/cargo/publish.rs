@@ -5,6 +5,25 @@ use super::{
     NotificationEventType, NotificationService, PublishRequest, RegistryMap, RegistryModeMap,
     Responder, Sha256,
 };
+use crate::handlers::schemas::OkResponse;
+
+/// `cargo publish`'s acknowledgement, in the shape crates.io defines: a
+/// `warnings` object the client prints back to the user.
+///
+/// This server does not validate categories or badges, so all three lists are
+/// always empty — but the client reads the keys, so they are always present.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct CratePublishResponse {
+    pub warnings: CratePublishWarnings,
+}
+
+/// The three warning buckets `cargo` looks for in a publish response.
+#[derive(Default, serde::Serialize, utoipa::ToSchema)]
+pub struct CratePublishWarnings {
+    pub invalid_categories: Vec<String>,
+    pub invalid_badges: Vec<String>,
+    pub other: Vec<String>,
+}
 
 /// Publish a new crate version (`cargo publish`).
 #[utoipa::path(
@@ -14,7 +33,7 @@ use super::{
     params(("registry" = String, Path, description = "Registry name")),
     request_body(content_type = "application/octet-stream", description = "Cargo publish binary payload (length-prefixed metadata + .crate bytes)"),
     responses(
-        (status = 200, description = "Crate published successfully"),
+        (status = 200, description = "Crate published successfully", body = CratePublishResponse),
         (status = 400, description = "Invalid publish payload"),
         (status = 403, description = "Access denied"),
         (status = 409, description = "Version already published"),
@@ -101,13 +120,9 @@ pub async fn cargo_publish(
     for (k, v) in quota.headers() {
         resp.insert_header((k, v));
     }
-    Ok(resp.json(serde_json::json!({
-        "warnings": {
-            "invalid_categories": [],
-            "invalid_badges": [],
-            "other": []
-        }
-    })))
+    Ok(resp.json(CratePublishResponse {
+        warnings: CratePublishWarnings::default(),
+    }))
 }
 
 /// Yank a published crate version.
@@ -121,7 +136,7 @@ pub async fn cargo_publish(
         ("version"  = String, Path, description = "Version"),
     ),
     responses(
-        (status = 200, description = "Yanked"),
+        (status = 200, description = "Yanked", body = OkResponse),
         (status = 403, description = "Access denied"),
     ),
     security(("bearer_token" = [])),
@@ -151,7 +166,7 @@ pub async fn cargo_yank(
         Some(version),
         &actor,
     );
-    Ok(HttpResponse::Ok().json(serde_json::json!({ "ok": true })))
+    Ok(HttpResponse::Ok().json(OkResponse::new()))
 }
 
 /// Unyank a previously yanked crate version.
@@ -165,7 +180,7 @@ pub async fn cargo_yank(
         ("version"  = String, Path, description = "Version"),
     ),
     responses(
-        (status = 200, description = "Unyanked"),
+        (status = 200, description = "Unyanked", body = OkResponse),
         (status = 403, description = "Access denied"),
     ),
     security(("bearer_token" = [])),
@@ -195,5 +210,5 @@ pub async fn cargo_unyank(
         Some(version),
         &actor,
     );
-    Ok(HttpResponse::Ok().json(serde_json::json!({ "ok": true })))
+    Ok(HttpResponse::Ok().json(OkResponse::new()))
 }

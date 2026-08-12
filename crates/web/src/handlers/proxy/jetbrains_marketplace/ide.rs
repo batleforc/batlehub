@@ -24,6 +24,7 @@ use super::cached_forward::{
 };
 use super::render::{plugin_json, search_hit_json, update_json, ExtraMeta, RenderEntry};
 use super::{require_jbm, require_single_segment, STABLE_CHANNEL};
+use crate::handlers::schemas::UpstreamDocument;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
 
 const DEFAULT_SEARCH_MAX: usize = 50;
@@ -96,7 +97,7 @@ async fn forward_search(
         ("max" = Option<usize>, Query, description = "Maximum hits"),
     ),
     responses(
-        (status = 200, description = "Search results"),
+        (status = 200, description = "Search results", body = UpstreamDocument),
         (status = 404, description = "Unknown or non-marketplace registry"),
     ),
     security(("bearer_token" = [])),
@@ -180,7 +181,7 @@ pub async fn jbm_search_plugins_ide(
         ("max" = Option<usize>, Query, description = "Maximum hits"),
     ),
     responses(
-        (status = 200, description = "Search results"),
+        (status = 200, description = "Search results", body = UpstreamDocument),
         (status = 404, description = "Unknown or non-marketplace registry"),
     ),
     security(("bearer_token" = [])),
@@ -261,7 +262,7 @@ pub struct CompatibleUpdatesRequest {
     params(("registry" = String, Path, description = "Registry name")),
     request_body = serde_json::Value,
     responses(
-        (status = 200, description = "Array of compatible updates"),
+        (status = 200, description = "Array of compatible updates", body = Vec<UpstreamDocument>),
         (status = 404, description = "Unknown or non-marketplace registry"),
     ),
     security(("bearer_token" = [])),
@@ -401,7 +402,7 @@ async fn plugin_entries(
         ("id" = String, Path, description = "Plugin xmlId"),
     ),
     responses(
-        (status = 200, description = "Plugin object"),
+        (status = 200, description = "Plugin object", body = UpstreamDocument),
         (status = 404, description = "Unknown registry or plugin"),
     ),
     security(("bearer_token" = [])),
@@ -438,7 +439,7 @@ pub async fn jbm_plugin_info(
         ("id" = String, Path, description = "Plugin xmlId"),
     ),
     responses(
-        (status = 200, description = "Array of updates"),
+        (status = 200, description = "Array of updates", body = Vec<UpstreamDocument>),
         (status = 404, description = "Unknown registry or plugin"),
     ),
     security(("bearer_token" = [])),
@@ -495,7 +496,7 @@ async fn empty_or_forward(
         ("registry" = String, Path, description = "Registry name"),
         ("field" = String, Path, description = "Aggregation field"),
     ),
-    responses((status = 200, description = "Aggregation values")),
+    responses((status = 200, description = "Aggregation values", body = UpstreamDocument)),
     security(("bearer_token" = [])),
 )]
 #[get("/proxy/{registry}/api/search/aggregation/{field}")]
@@ -530,7 +531,7 @@ pub async fn jbm_aggregation(
     path = "/proxy/{registry}/feature/getImplementations",
     tag = "proxy/jetbrains-marketplace",
     params(("registry" = String, Path, description = "Registry name")),
-    responses((status = 200, description = "Feature implementations")),
+    responses((status = 200, description = "Feature implementations", body = Vec<UpstreamDocument>)),
     security(("bearer_token" = [])),
 )]
 #[get("/proxy/{registry}/feature/getImplementations")]
@@ -566,7 +567,7 @@ pub async fn jbm_feature_implementations(
         ("registry" = String, Path, description = "Registry name"),
         ("id" = String, Path, description = "Plugin xmlId"),
     ),
-    responses((status = 200, description = "Comments")),
+    responses((status = 200, description = "Comments", body = Vec<UpstreamDocument>)),
     security(("bearer_token" = [])),
 )]
 #[get("/proxy/{registry}/api/products/intellij/plugins/{id}/comments")]

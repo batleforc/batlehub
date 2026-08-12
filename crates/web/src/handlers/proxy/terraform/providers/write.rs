@@ -5,6 +5,7 @@ use super::{
     NotificationService, PublishPolicyRequest, PublishRequest, RegistryMap, RegistryModeMap,
     Responder, Sha256, StorageMeta, TerraformYankRequest,
 };
+use crate::handlers::schemas::{MessageResponse, OkResponse};
 
 /// Upload a Terraform provider version manifest (JSON describing version + platforms).
 ///
@@ -21,7 +22,7 @@ use super::{
         ("ptype"     = String, Path, description = "Provider type"),
     ),
     responses(
-        (status = 201, description = "Provider version manifest stored"),
+        (status = 201, description = "Provider version manifest stored", body = MessageResponse),
         (status = 401, description = "Authentication required"),
         (status = 403, description = "Quota exceeded or ownership denied"),
         (status = 404, description = "Registry not found or not in local/hybrid mode"),
@@ -83,7 +84,7 @@ pub async fn terraform_provider_upload(
             signature_type,
         },
         actix_web::http::StatusCode::CREATED,
-        serde_json::json!({"message": "provider version published"}),
+        MessageResponse::new("provider version published"),
     )
     .await
 }
@@ -102,7 +103,7 @@ pub async fn terraform_provider_upload(
         ("arch"      = String, Path, description = "Target architecture"),
     ),
     responses(
-        (status = 200, description = "Binary stored"),
+        (status = 200, description = "Binary stored", body = OkResponse),
         (status = 401, description = "Authentication required"),
         (status = 404, description = "Registry not found or not in local/hybrid mode"),
     ),
@@ -177,7 +178,7 @@ pub async fn terraform_provider_binary_upload(
         return Err(AppError::from(e));
     }
 
-    Ok(HttpResponse::Ok().finish())
+    Ok(HttpResponse::Ok().json(OkResponse::new()))
 }
 
 /// Yank a Terraform provider version (local/hybrid registries only).
@@ -194,7 +195,7 @@ pub async fn terraform_provider_binary_upload(
         ("version"   = String, Path, description = "Provider version to yank"),
     ),
     responses(
-        (status = 200, description = "Version yanked"),
+        (status = 200, description = "Version yanked", body = MessageResponse),
         (status = 401, description = "Authentication required"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Version not found"),
@@ -242,7 +243,7 @@ pub async fn terraform_provider_yank(
         ("version"   = String, Path, description = "Provider version to unyank"),
     ),
     responses(
-        (status = 200, description = "Version unyanked"),
+        (status = 200, description = "Version unyanked", body = MessageResponse),
         (status = 401, description = "Authentication required"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Version not found"),

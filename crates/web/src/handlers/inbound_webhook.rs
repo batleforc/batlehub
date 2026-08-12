@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::{
     error::AppError, extractors::AuthIdentity, handlers::back_office::require_admin,
-    services::verify_inbound_hmac,
+    handlers::schemas::OkResponse, services::verify_inbound_hmac,
 };
 use batlehub_core::ports::NotificationPort;
 
@@ -28,7 +28,7 @@ use batlehub_core::ports::NotificationPort;
     tag = "notifications",
     params(("name" = String, Path, description = "Inbound webhook name")),
     responses(
-        (status = 200, description = "Event received"),
+        (status = 200, description = "Event received", body = OkResponse),
         (status = 400, description = "Unknown webhook name"),
         (status = 401, description = "HMAC signature mismatch"),
     ),
@@ -120,7 +120,7 @@ pub async fn receive_inbound_webhook(
 
     notification_store.record_inbound_event(event).await?;
 
-    Ok(HttpResponse::Ok().finish())
+    Ok(HttpResponse::Ok().json(OkResponse::new()))
 }
 
 // ── Admin: list inbound events ────────────────────────────────────────────────

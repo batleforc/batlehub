@@ -1713,6 +1713,51 @@ export PROXY_CACHE__PROXY__NO_PROXY="localhost,10.0.0.0/8"
 
 ---
 
+### 3.8a `[stats]` (optional)
+
+What numbers this instance keeps, and what it publishes. Two flags, one block,
+because "do I want this instance keeping numbers" is one operator question —
+even though the halves differ: `metrics_enabled` is about **exposure**,
+`history_*` is about **storage**.
+
+```toml
+[stats]
+history_enabled        = true   # default
+history_retention_days = 30     # default; 0 disables pruning, not history
+metrics_enabled        = true   # default: pre-RFC-0004 behaviour
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `history_enabled` | bool | `true` | Record the hourly cache rollup behind the admin dashboard's trend. `false` restores the pre-RFC-0004 dashboard, which shows only counters since the current process started |
+| `history_retention_days` | u32 | `30` | Delete rollup rows older than this. `0` keeps every row — it disables *pruning*, not history |
+| `metrics_enabled` | bool | `true` | Install the Prometheus recorder and serve `/metrics`. `false` makes `/metrics` answer `503 metrics not configured` |
+
+**`metrics_enabled` is a security control, not a preference.** `/metrics` is
+unauthenticated and, before this block existed, unconditional: it publishes
+cache hit rates, per-registry pull volumes and upstream latencies to anyone who
+can reach the port. That is a defensible default behind an ingress that does not
+route it, and indefensible for a self-hoster who had no way to close it. It
+defaults to `true` so no existing scrape breaks on upgrade.
+
+**Why the rollup rather than the access log.** The access log already holds every
+download, so a 30-day hit rate could in principle be derived from it. It is not,
+deliberately: that table is an *audit* trail with its own retention and purge
+semantics, and deriving an operational chart from it would let an audit purge
+silently rewrite a dashboard. A hit/miss ratio is also a counter question, and
+scanning an audit table per dashboard load is fine at ten thousand rows and a
+problem at ten million.
+
+The interval is fixed at one hour and is not configurable: it is the resolution
+the data is *kept* at, daily figures can always be aggregated on read but never
+recovered, and two instances with different intervals would have incomparable
+histories. One row per registry per hour is under 9 000 rows a year.
+
+The table holds no principal and no coordinate — registry, window, counters — so
+its retention is an operational choice rather than a privacy one.
+
+---
+
 ### 3.9 `[subdomain_routing]` (optional)
 
 Every registry is always reachable at `/proxy/{name}/…`. This section adds a

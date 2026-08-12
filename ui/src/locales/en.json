@@ -116,7 +116,11 @@
     "nothingIsCachedOrServed": "Nothing is cached or served until a registry exists. Add a [[registries]] block to config.toml and reload.",
     "openConfig": "Open config",
     "openHealth": "Open health",
-    "perRegistry": "Per registry"
+    "perRegistry": "Per registry",
+    "trendDown": "Over the last {days} days the cache served {rate} of downloads — {points} points worse than the {days} days before.",
+    "trendFlat": "Over the last {days} days the cache served {rate} of downloads, unchanged from the {days} days before.",
+    "trendNoBaseline": "Over the last {days} days the cache served {rate} of downloads. There is not enough history yet to compare it with the period before.",
+    "trendUp": "Over the last {days} days the cache served {rate} of downloads — {points} points better than the {days} days before."
   },
   "adminExploreCache": {
     "10Min": "10 min",
@@ -324,6 +328,16 @@
     "removeArtifactHelp": "Remove a single proxy-cached artifact from storage. The next request will re-download it from upstream. Use {path} mode for path-addressed registries (jetbrains/deb/rpm); use {package} mode for all others.",
     "warmNow": "Warm Now",
     "warming": "Warming…"
+  },
+  "advisoriesWidget": {
+    "clearBody": "Nothing you pulled in the last {days} days, and nothing you own, has a known advisory.",
+    "clearTitle": "Nothing affected",
+    "fixedIn": "fixed in {version}",
+    "noScanningBody": "This instance is not re-scanning cached artifacts, so it has no findings to report. An empty list here means unknown, not clear.",
+    "noScanningTitle": "No advisory data on this instance",
+    "owned": "Owned",
+    "pulled": "Pulled",
+    "title": "Advisories"
   },
   "appFooter": {
     "reportABug": "Report a bug",
@@ -686,6 +700,14 @@
     "registryType": "Registry type",
     "urlMapper": "URL Mapper"
   },
+  "quotaWidget": {
+    "approaching": "Past {pct}% of a limit. Publishing still works.",
+    "atLimit": "At the limit. The next publish may be refused.",
+    "ofLimit": "{used} of {limit}",
+    "storage": "Storage",
+    "title": "Your quota",
+    "versions": "Versions"
+  },
   "registryPathForm": {
     "registryName": "Registry name"
   },
@@ -714,6 +736,13 @@
     "openConfig": "Open config",
     "personalApiToken": "personal API token",
     "setupGuide": "Setup Guide"
+  },
+  "severity": {
+    "critical": "Critical",
+    "high": "High",
+    "low": "Low",
+    "medium": "Medium",
+    "unknown": "Unknown"
   },
   "theme": {
     "dark": "Theme: dark",

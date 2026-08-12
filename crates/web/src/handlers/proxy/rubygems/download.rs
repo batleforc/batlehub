@@ -3,6 +3,7 @@ use super::{
     serve_local_or_proxy_json, web, AppError, Arc, AuthIdentity, LocalOrProxyArtifactOpts,
     LocalRegistryService, PackageId, ProxyService, RegistryMap, RegistryModeMap, Responder,
 };
+use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 
 /// Download a gem file.
 #[utoipa::path(
@@ -14,7 +15,7 @@ use super::{
         ("filename" = String, Path, description = "Gem filename, e.g. rails-7.1.0.gem"),
     ),
     responses(
-        (status = 200, description = "Gem binary"),
+        (status = 200, description = "Gem binary", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Gem not found"),
     ),
@@ -69,7 +70,7 @@ pub async fn gem_download(
         ("name"     = String, Path, description = "Gem name"),
     ),
     responses(
-        (status = 200, description = "Gem info JSON"),
+        (status = 200, description = "Gem info JSON", body = UpstreamDocument),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Gem not found"),
     ),
@@ -118,7 +119,7 @@ pub async fn gem_info(
         ("name"     = String, Path, description = "Gem name"),
     ),
     responses(
-        (status = 200, description = "Gem versions JSON array"),
+        (status = 200, description = "Gem versions JSON array", body = Vec<UpstreamDocument>),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Gem not found"),
     ),
@@ -167,7 +168,7 @@ pub async fn gem_versions(
         ("filename" = String, Path, description = "Gemspec filename, e.g. rails-7.1.0.gemspec.rz"),
     ),
     responses(
-        (status = 200, description = "Zlib-compressed gemspec"),
+        (status = 200, description = "Zlib-compressed gemspec", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Gemspec not found"),
     ),

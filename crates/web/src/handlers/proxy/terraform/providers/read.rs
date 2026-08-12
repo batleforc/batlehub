@@ -5,6 +5,7 @@ use super::{
     LocalRegistryService, PackageId, ProxyService, RegistryMap, RegistryMode, RegistryModeMap,
     Responder, TerraformPlatform,
 };
+use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 
 /// List available versions for a Terraform provider.
 #[utoipa::path(
@@ -17,7 +18,7 @@ use super::{
         ("ptype"     = String, Path, description = "Provider type"),
     ),
     responses(
-        (status = 200, description = "Provider versions JSON"),
+        (status = 200, description = "Provider versions JSON", body = UpstreamDocument),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Provider not found"),
     ),
@@ -65,7 +66,7 @@ pub async fn terraform_provider_versions(
         ("arch"      = String, Path, description = "Target architecture"),
     ),
     responses(
-        (status = 200, description = "Provider download info JSON (includes binary URL and checksums)"),
+        (status = 200, description = "Provider download info JSON (includes binary URL and checksums)", body = UpstreamDocument),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Provider not found"),
     ),
@@ -159,7 +160,7 @@ pub(super) async fn try_local_provider_download(
         ("arch"      = String, Path, description = "Target architecture"),
     ),
     responses(
-        (status = 200, description = "Provider binary"),
+        (status = 200, description = "Provider binary", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 404, description = "Binary not found"),
     ),
     security(("bearer_token" = [])),

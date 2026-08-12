@@ -22,8 +22,9 @@ use batlehub_adapters::auth::StaticTokenAuthProvider;
 use batlehub_adapters::cache::InMemoryCacheStore;
 pub use batlehub_adapters::in_memory::InMemoryTeamNamespaceStore;
 use batlehub_adapters::in_memory::{
-    InMemoryPackageRepository as InMemoryRepo, InMemoryStorageBackend as InMemoryStorage,
-    NoopArtifactMetaRepository as NoopArtifactMeta, NullUserTokenRepository as NullTokenRepository,
+    InMemoryPackageRepository as InMemoryRepo, InMemoryStatsHistory,
+    InMemoryStorageBackend as InMemoryStorage, NoopArtifactMetaRepository as NoopArtifactMeta,
+    NullUserTokenRepository as NullTokenRepository,
 };
 use batlehub_adapters::local_registry::InMemoryLocalRegistry;
 use batlehub_adapters::notification::InMemoryNotificationStore;
@@ -31,7 +32,7 @@ use batlehub_config::schema::{NotificationsConfig, RegistryMode};
 use batlehub_core::entities::{NamespacePackage, TeamNamespace, Visibility};
 use batlehub_core::ports::BannerPort;
 use batlehub_core::ports::NotificationPort;
-use batlehub_core::ports::{IpBlockStore, TeamNamespacePort};
+use batlehub_core::ports::{IpBlockStore, StatsHistoryRepository, TeamNamespacePort};
 use batlehub_core::{
     entities::{PackageId, PackageMetadata, Role},
     error::CoreError,
@@ -304,7 +305,10 @@ pub async fn finish_test_app(
         .app_data(actix_web::web::Data::new(local_svc))
         .app_data(actix_web::web::Data::new(mode_map))
         .app_data(actix_web::web::Data::new(RepoSignerMap::default()))
-        .app_data(actix_web::web::Data::new(batlehub_web::VulnDbMap::default()));
+        .app_data(actix_web::web::Data::new(batlehub_web::VulnDbMap::default()))
+        .app_data(actix_web::web::Data::new(
+            InMemoryStatsHistory::new() as Arc<dyn StatsHistoryRepository>
+        ));
 
     init_service(app.wrap(AuthMiddlewareFactory::new(auth_providers))).await
 }
@@ -615,6 +619,44 @@ pub fn empty_app_parts() -> EmptyAppParts {
         cargo_indexes: batlehub_web::CargoIndexMap::default(),
         local_svc,
     }
+}
+
+/// Build a test app whose stats-history repository is caller-supplied, so a
+/// test can seed rollup rows before reading `/api/v1/admin/stats/history`.
+///
+/// `make_app` registers a fresh, empty one instead — enough for every test that
+/// does not read the series, and the reason those tests need no changes.
+pub async fn make_app_with_stats_history(
+    history: Arc<dyn StatsHistoryRepository>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let EmptyAppParts {
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        cargo_indexes,
+        local_svc,
+    } = empty_app_parts();
+
+    finish_test_app_with_extra(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        RegistryModeMap::default(),
+        cargo_indexes,
+        ConfigureAppDefaults::default(),
+        history,
+        test_auth_providers(),
+    )
+    .await
 }
 
 pub async fn make_app_with_ip_store(

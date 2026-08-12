@@ -5,6 +5,7 @@ use super::{
     NotificationService, PackageId, ProxyService, PublishPolicyRequest, PublishRequest,
     RegistryMap, RegistryMode, RegistryModeMap, Responder, Sha256, StorageMeta,
 };
+use crate::handlers::schemas::{ArtifactBytes, OkResponse};
 
 /// Proxy or serve a Maven repository request.
 ///
@@ -22,7 +23,7 @@ use super::{
         ("path"     = String, Path, description = "Maven repository path"),
     ),
     responses(
-        (status = 200, description = "Maven artifact or metadata"),
+        (status = 200, description = "Maven artifact or metadata", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 400, description = "Invalid Maven path"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Artifact not found"),
@@ -110,8 +111,8 @@ pub async fn maven_get(
         ("path"     = String, Path, description = "Maven repository path"),
     ),
     responses(
-        (status = 200, description = "Accepted (maven-metadata.xml silently ignored)"),
-        (status = 201, description = "Artifact stored"),
+        (status = 200, description = "Accepted (maven-metadata.xml silently ignored)", body = OkResponse),
+        (status = 201, description = "Artifact stored", body = OkResponse),
         (status = 400, description = "Invalid Maven path or malformed POM"),
         (status = 401, description = "Authentication required"),
         (status = 404, description = "Registry not found or not in local/hybrid mode"),
@@ -139,7 +140,7 @@ pub async fn maven_put(
     match kind {
         MavenPathKind::Metadata { .. } => {
             // Silently accept and ignore client-uploaded metadata.xml — generated dynamically.
-            Ok(HttpResponse::Ok().finish())
+            Ok(HttpResponse::Ok().json(OkResponse::new()))
         }
         MavenPathKind::Artifact {
             name,
@@ -149,7 +150,7 @@ pub async fn maven_put(
             let bytes = collect_payload(payload).await?;
 
             if filename == "maven-metadata.xml" {
-                return Ok(HttpResponse::Ok().finish());
+                return Ok(HttpResponse::Ok().json(OkResponse::new()));
             }
 
             if !filename.ends_with(".pom") {
@@ -192,7 +193,7 @@ pub async fn maven_put(
                         .await;
                     return Err(AppError::from(e));
                 }
-                return Ok(HttpResponse::Created().finish());
+                return Ok(HttpResponse::Created().json(OkResponse::new()));
             }
 
             // .pom file: parse XML + run three-phase publish. The URL path is

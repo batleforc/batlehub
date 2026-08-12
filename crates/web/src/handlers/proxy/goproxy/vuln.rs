@@ -1,5 +1,6 @@
 use actix_web::{get, post, web, HttpResponse, Responder};
 
+use crate::handlers::schemas::UpstreamDocument;
 use crate::{
     error::AppError,
     extractors::AuthIdentity,
@@ -30,7 +31,7 @@ fn vuln_db_base_or_disabled(vuln_db: &VulnDbMap, registry: &str) -> Result<Strin
         ("registry" = String, Path, description = "Registry name (must be a goproxy registry)"),
     ),
     responses(
-        (status = 200, description = "Vulnerability database index JSON"),
+        (status = 200, description = "Vulnerability database index JSON", body = UpstreamDocument),
         (status = 404, description = "Registry not found or vuln DB disabled"),
         (status = 502, description = "Upstream vuln DB error"),
     ),
@@ -62,7 +63,7 @@ pub async fn goproxy_vuln_index(
         ("id"       = String, Path, description = "Vulnerability ID, e.g. GO-2023-1234"),
     ),
     responses(
-        (status = 200, description = "Vulnerability OSV record JSON"),
+        (status = 200, description = "Vulnerability OSV record JSON", body = UpstreamDocument),
         (status = 400, description = "Invalid vulnerability ID"),
         (status = 404, description = "Registry not found, vuln DB disabled, or ID unknown"),
         (status = 502, description = "Upstream vuln DB error"),
@@ -108,7 +109,7 @@ pub async fn goproxy_vuln_entry(
     ),
     request_body(content_type = "application/json", description = "govulncheck query payload"),
     responses(
-        (status = 200, description = "Matching vulnerability records"),
+        (status = 200, description = "Matching vulnerability records", body = UpstreamDocument),
         (status = 404, description = "Registry not found or vuln DB disabled"),
         (status = 502, description = "Upstream vuln DB error"),
     ),

@@ -817,3 +817,16 @@ anonymous = ["releases:read"]
 # [otel]
 # endpoint = "http://localhost:4317"
 # service_name = "batlehub"
+
+# ── Statistics (optional) ─────────────────────────────────────────────────────
+# Both of this instance's statistical outputs. Defaults reproduce the behaviour
+# from before RFC 0004, so the block can be omitted entirely.
+
+# [stats]
+# history_enabled        = true   # hourly cache rollup behind the dashboard trend
+# history_retention_days = 30     # 0 keeps every row (disables pruning, not history)
+#
+# /metrics is unauthenticated: it publishes cache hit rates, per-registry pull
+# volumes and upstream latencies to anyone who can reach the port. Leave this on
+# if Prometheus scrapes you; turn it off if nothing does.
+# metrics_enabled        = true

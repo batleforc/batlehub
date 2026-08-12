@@ -4,7 +4,7 @@ use actix_web::http::header::{ContentDisposition, DispositionParam, DispositionT
 use actix_web::{delete, get, web, HttpResponse, Responder};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use utoipa::IntoParams;
+use utoipa::{IntoParams, ToSchema};
 
 use batlehub_core::{
     entities::{AccessEvent, EventFilter},
@@ -13,7 +13,7 @@ use batlehub_core::{
 };
 
 use super::require_admin;
-use crate::{error::AppError, extractors::AuthIdentity};
+use crate::{error::AppError, extractors::AuthIdentity, handlers::schemas::ProtocolDocument};
 
 #[derive(Deserialize, IntoParams)]
 pub struct AuditQuery {
@@ -35,7 +35,7 @@ fn default_per_page() -> u64 {
 /// Paginated envelope for `GET /api/v1/admin/audit-log`, matching the shape of
 /// its sibling list endpoints (`AdminPackageListResponse`) instead of returning
 /// a bare array with no way to tell if more pages exist.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct AuditLogResponse {
     pub items: Vec<AccessEvent>,
     pub total: u64,
@@ -50,7 +50,7 @@ pub struct AuditLogResponse {
     tag = "back-office",
     params(AuditQuery),
     responses(
-        (status = 200, description = "Paginated access events"),
+        (status = 200, description = "Paginated access events", body = AuditLogResponse),
         (status = 403, description = "Admin role required"),
     ),
     security(("bearer_token" = [])),
@@ -125,7 +125,10 @@ fn default_export_format(fmt: &str) -> &'static str {
     tag = "back-office",
     params(ExportQuery),
     responses(
-        (status = 200, description = "Audit log export (JSON or CSV)"),
+        (status = 200, description = "Audit log export; `?format=csv` selects CSV, anything else JSON", content(
+            (Vec<AccessEvent> = "application/json"),
+            (ProtocolDocument = "text/csv"),
+        )),
         (status = 403, description = "Admin role required"),
     ),
     security(("bearer_token" = [])),

@@ -60,12 +60,36 @@ const ADMIN_ROUTES = [
 ];
 
 // `/me/tokens` needs `auth_provider` set, which a static token satisfies.
-const USER_ROUTES = ["/me/profile", "/me/tokens", "/me/namespace", "/me/cli"];
+//
+// `/` is here as well as in the unauthenticated scan, and both are needed: the
+// quota and advisory widgets (RFC 0004 §4.2) render *only* for a signed-in
+// viewer, so the anonymous pass measures a home page that is missing them —
+// including the one meter in the system, whose whole point is an accessibility
+// contract.
+const USER_ROUTES = ["/", "/me/profile", "/me/tokens", "/me/namespace", "/me/cli"];
 
 const plans = [
   { role: "admin", token: process.env.BATLEHUB_ADMIN_TOKEN, routes: [...ADMIN_ROUTES, ...USER_ROUTES] },
   { role: "user", token: process.env.BATLEHUB_USER_TOKEN, routes: USER_ROUTES },
 ];
+
+/**
+ * Coverage is asserted, not merely regenerated (RFC 0004 §10).
+ *
+ * This list growing is expected — every route a future pass adds or splits
+ * extends it. It *shrinking* is the failure this catches: a route quietly
+ * dropped from the arrays above would make the gate pass by measuring less,
+ * which reads identically to measuring clean.
+ */
+const EXPECTED_COMBINATIONS = 25;
+const planned = plans.reduce((n, p) => n + p.routes.length, 0);
+if (planned < EXPECTED_COMBINATIONS) {
+  console.error(
+    `coverage shrank: ${planned} route/role combinations, expected at least ${EXPECTED_COMBINATIONS}. ` +
+      `If a route was deliberately removed, lower EXPECTED_COMBINATIONS in the same commit.`,
+  );
+  process.exit(2);
+}
 
 const missing = plans.filter((p) => !p.token).map((p) => p.role);
 if (missing.length) {

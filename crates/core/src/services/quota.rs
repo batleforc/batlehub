@@ -227,6 +227,122 @@ impl QuotaService {
     pub fn max_storage_bytes(&self, registry: &str) -> Option<u64> {
         self.configs.get(registry)?.max_storage_bytes_per_user
     }
+
+    /// One user's usage against their limits, for every quota-gated registry in
+    /// `registries`.
+    ///
+    /// Backs `GET /api/v1/me/quota` (RFC 0004 §4.2). Three things are decided
+    /// here rather than by the caller:
+    ///
+    /// - **Registries with no quota are omitted.** A meter with no limit has
+    ///   nothing to measure, and the widget does not render one.
+    /// - **`registries` is the caller's accessible set**, intersected with the
+    ///   quota-gated ones. A user should not learn the names of registries they
+    ///   cannot reach from a quota listing.
+    /// - **The threshold verdict is the server's.** `warn_threshold` lives in
+    ///   config next to the limits, so recomputing it client-side is a second
+    ///   copy of a rule that can drift from the one enforcement uses.
+    pub async fn status_for_user(
+        &self,
+        user_id: &str,
+        registries: &[String],
+    ) -> Result<Vec<RegistryQuotaStatus>, CoreError> {
+        let mut out = Vec::new();
+        for registry in registries {
+            let Some(config) = self.configs.get(registry) else {
+                continue; // no quota here — nothing to measure
+            };
+            if config.max_storage_bytes_per_user.is_none() && config.max_packages_per_user.is_none()
+            {
+                continue; // a quota block with neither limit set is not a quota
+            }
+
+            let usage = self.repo.get_usage(user_id, registry).await?;
+            let bytes_used = usage.bytes_published;
+            let packages_used = usage.packages_count;
+
+            // Per dimension, so a reader can see *which* threshold was crossed
+            // (RFC 0004 §4.2). A registry whose versions are at 82% while its
+            // storage sits at 68% is not "at 82%" — colouring both meters the
+            // same would say it was.
+            let bytes_state = dimension_state(
+                bytes_used,
+                config.max_storage_bytes_per_user,
+                config.warn_threshold,
+            );
+            let packages_state = dimension_state(
+                u64::from(packages_used),
+                config.max_packages_per_user.map(u64::from),
+                config.warn_threshold,
+            );
+
+            out.push(RegistryQuotaStatus {
+                registry: registry.clone(),
+                bytes_used,
+                bytes_limit: config.max_storage_bytes_per_user,
+                bytes_state,
+                packages_used,
+                packages_limit: config.max_packages_per_user,
+                packages_state,
+                warn_threshold_pct: (config.warn_threshold * 100.0).round().clamp(0.0, 100.0) as u8,
+                // The row's own verdict is the worse of its dimensions: one
+                // limit reached is enough to refuse the next publish.
+                state: [bytes_state, packages_state]
+                    .into_iter()
+                    .flatten()
+                    .max()
+                    .unwrap_or(QuotaState::Ok),
+            });
+        }
+        out.sort_by(|a, b| a.registry.cmp(&b.registry));
+        Ok(out)
+    }
+}
+
+/// How close one user is to one registry's quota.
+///
+/// `Ord` runs from least to most urgent, so the worse of two dimensions is
+/// `max()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum QuotaState {
+    /// Below the warning threshold.
+    Ok,
+    /// At or past `warn_threshold_pct` of a limit, but publishes still succeed.
+    Warning,
+    /// A limit is reached. Under `enforcement = "block"` the next publish is
+    /// refused; under `"warn"` it succeeds and is logged.
+    AtLimit,
+}
+
+/// One registry's quota, as it applies to one user.
+#[derive(Debug, Clone)]
+pub struct RegistryQuotaStatus {
+    pub registry: String,
+    pub bytes_used: u64,
+    pub bytes_limit: Option<u64>,
+    /// This dimension's own verdict, or `None` when it has no limit.
+    pub bytes_state: Option<QuotaState>,
+    pub packages_used: u32,
+    pub packages_limit: Option<u32>,
+    /// This dimension's own verdict, or `None` when it has no limit.
+    pub packages_state: Option<QuotaState>,
+    /// The percentage of a limit at which [`QuotaState::Warning`] begins.
+    pub warn_threshold_pct: u8,
+    /// The worse of the two dimensions — what the registry as a whole is at.
+    pub state: QuotaState,
+}
+
+/// One dimension's verdict. `None` in, `None` out: a dimension with no limit
+/// has nothing to be near.
+fn dimension_state(used: u64, limit: Option<u64>, threshold: f64) -> Option<QuotaState> {
+    let max = limit?;
+    Some(if used >= max {
+        QuotaState::AtLimit
+    } else if is_warning(used, Some(max), threshold) {
+        QuotaState::Warning
+    } else {
+        QuotaState::Ok
+    })
 }
 
 fn is_warning(used: u64, limit: Option<u64>, threshold: f64) -> bool {
@@ -518,5 +634,138 @@ mod tests {
         );
         let svc = QuotaService::new(MockQuotaRepo::new(0, 0), configs);
         assert_eq!(svc.max_storage_bytes("cargo"), None);
+    }
+
+    // ── status_for_user (RFC 0004 §4.2) ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn status_for_user_omits_registries_without_a_quota() {
+        let svc = svc_with(block_config(1_000, 10), 100, 1);
+        let rows = svc
+            .status_for_user("alice", &["cargo".to_owned(), "npm".to_owned()])
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "npm has no quota configured");
+        assert_eq!(rows[0].registry, "cargo");
+    }
+
+    #[tokio::test]
+    async fn status_for_user_omits_a_quota_block_with_no_limits() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            "cargo".to_owned(),
+            RegistryQuotaConfig {
+                max_storage_bytes_per_user: None,
+                max_packages_per_user: None,
+                warn_threshold: 0.8,
+                enforcement: QuotaEnforcement::Warn,
+            },
+        );
+        let svc = QuotaService::new(MockQuotaRepo::new(500, 5), configs);
+        let rows = svc
+            .status_for_user("alice", &["cargo".to_owned()])
+            .await
+            .unwrap();
+        assert!(rows.is_empty(), "neither limit set is not a quota");
+    }
+
+    #[tokio::test]
+    async fn status_for_user_never_reports_a_registry_the_caller_cannot_reach() {
+        let svc = svc_with(block_config(1_000, 10), 100, 1);
+        let rows = svc.status_for_user("alice", &[]).await.unwrap();
+        assert!(
+            rows.is_empty(),
+            "the accessible set is the whole input; an empty one yields nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_for_user_reports_each_threshold_state() {
+        for (bytes, expected) in [
+            (0u64, QuotaState::Ok),
+            (799, QuotaState::Ok),
+            (800, QuotaState::Warning),
+            (999, QuotaState::Warning),
+            (1_000, QuotaState::AtLimit),
+            (1_500, QuotaState::AtLimit),
+        ] {
+            let svc = svc_with(block_config(1_000, 10), bytes, 1);
+            let rows = svc
+                .status_for_user("alice", &["cargo".to_owned()])
+                .await
+                .unwrap();
+            assert_eq!(
+                rows[0].state, expected,
+                "{bytes} bytes against a 1000 limit"
+            );
+            assert_eq!(rows[0].warn_threshold_pct, 80);
+        }
+    }
+
+    #[tokio::test]
+    async fn status_for_user_crosses_on_the_package_limit_too() {
+        // Bytes are nowhere near their limit; packages are at theirs.
+        let svc = svc_with(block_config(1_000_000, 10), 10, 10);
+        let rows = svc
+            .status_for_user("alice", &["cargo".to_owned()])
+            .await
+            .unwrap();
+        assert_eq!(
+            rows[0].state,
+            QuotaState::AtLimit,
+            "either dimension reaching its limit is at-limit"
+        );
+    }
+
+    /// RFC 0004 §4.2 asks *which* threshold was crossed, so the two dimensions
+    /// carry their own verdicts and the row's is the worse of them.
+    #[tokio::test]
+    async fn status_for_user_reports_each_dimension_separately() {
+        // Storage at 68% of its limit; versions at 82% of theirs.
+        let svc = svc_with(block_config(1_000, 50), 680, 41);
+        let row = svc
+            .status_for_user("alice", &["cargo".to_owned()])
+            .await
+            .unwrap()
+            .remove(0);
+
+        assert_eq!(
+            row.bytes_state,
+            Some(QuotaState::Ok),
+            "68% is not a warning"
+        );
+        assert_eq!(row.packages_state, Some(QuotaState::Warning));
+        assert_eq!(
+            row.state,
+            QuotaState::Warning,
+            "the row takes the worse of its dimensions"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_for_user_leaves_an_unlimited_dimension_stateless() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            "cargo".to_owned(),
+            RegistryQuotaConfig {
+                max_storage_bytes_per_user: Some(1_000),
+                max_packages_per_user: None,
+                warn_threshold: 0.8,
+                enforcement: QuotaEnforcement::Block,
+            },
+        );
+        let svc = QuotaService::new(MockQuotaRepo::new(900, 99), configs);
+        let row = svc
+            .status_for_user("alice", &["cargo".to_owned()])
+            .await
+            .unwrap()
+            .remove(0);
+
+        assert_eq!(row.bytes_state, Some(QuotaState::Warning));
+        assert_eq!(
+            row.packages_state, None,
+            "a dimension with no limit has nothing to be near"
+        );
+        assert_eq!(row.state, QuotaState::Warning);
     }
 }

@@ -21,7 +21,7 @@ pub struct AdminPackageQuery {
 /// Paginated envelope for `GET /api/v1/admin/packages`, matching the shape of
 /// its sibling list endpoints (`PackageListResponse`/`ExplorePackageListResponse`)
 /// instead of returning a bare array with no way to tell if more pages exist.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct AdminPackageListResponse {
     pub items: Vec<batlehub_core::entities::PackageSummary>,
     pub total: u64,
@@ -36,7 +36,7 @@ pub struct AdminPackageListResponse {
     tag = "back-office",
     params(AdminPackageQuery),
     responses(
-        (status = 200, description = "Full package listing with statuses, paginated"),
+        (status = 200, description = "Full package listing with statuses, paginated", body = AdminPackageListResponse),
         (status = 403, description = "Admin role required"),
     ),
     security(("bearer_token" = [])),

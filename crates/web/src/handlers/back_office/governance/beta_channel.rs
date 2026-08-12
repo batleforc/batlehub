@@ -44,7 +44,7 @@ pub struct AddBetaMemberRequest {
     tag = "back-office",
     params(("registry" = String, Path, description = "Registry name")),
     responses(
-        (status = 200, description = "Member list"),
+        (status = 200, description = "Member list", body = Vec<BetaChannelMemberDto>),
         (status = 403, description = "Admin role required"),
     ),
     security(("bearer_token" = [])),

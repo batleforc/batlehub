@@ -50,7 +50,7 @@ pub struct BlockIpRequest {
     path = "/api/v1/admin/ip-blocks",
     tag = "back-office",
     responses(
-        (status = 200, description = "List of blocked IPs"),
+        (status = 200, description = "List of blocked IPs", body = Vec<BlockedIpDto>),
         (status = 403, description = "Admin role required"),
     ),
     security(("bearer_token" = [])),

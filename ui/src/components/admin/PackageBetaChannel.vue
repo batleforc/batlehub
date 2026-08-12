@@ -2,7 +2,7 @@
 import { useI18n } from "vue-i18n";
 import { ref } from "vue";
 import { listBetaMembers } from "@/client/sdk.gen";
-import type { BetaChannelMemberDto } from "@/lib/registry-types";
+import type { BetaChannelMemberDto } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
 import { Button } from "@/components/ui/button";

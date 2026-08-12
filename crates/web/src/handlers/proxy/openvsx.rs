@@ -11,6 +11,7 @@ use batlehub_core::{
 };
 
 use super::common::{collect_payload, extract_signature_headers, proxy_stream, require_local_mode};
+use crate::handlers::schemas::{ArtifactBytes, OkResponse};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 pub fn require_openvsx(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
@@ -38,7 +39,7 @@ pub fn require_openvsx(registry: &str, map: &RegistryMap) -> Result<(), AppError
         ("version"      = String, Path, description = "Version"),
     ),
     responses(
-        (status = 200, description = "VS Code extension VSIX package"),
+        (status = 200, description = "VS Code extension VSIX package", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Unknown registry or extension"),
     ),
@@ -123,7 +124,7 @@ pub async fn download_vsix(
     ),
     request_body(content_type = "application/octet-stream", description = "Raw VSIX bytes"),
     responses(
-        (status = 200, description = "Extension published"),
+        (status = 200, description = "Extension published", body = OkResponse),
         (status = 400, description = "Invalid payload"),
         (status = 403, description = "Access denied"),
         (status = 409, description = "Version already published"),
@@ -180,5 +181,5 @@ pub async fn vsix_publish(
     for (name, value) in quota.headers() {
         resp.insert_header((name, value));
     }
-    Ok(resp.json(serde_json::json!({ "ok": true })))
+    Ok(resp.json(OkResponse::new()))
 }

@@ -64,6 +64,34 @@ impl PackageRepository for MemRepo {
     async fn count_events(&self, _f: EventFilter) -> Result<u64, CoreError> {
         Ok(self.events.lock().unwrap().len() as u64)
     }
+    /// Mirrors the real adapters' contract: this caller only, allowed
+    /// downloads only, newest first (RFC 0004 §6.2).
+    async fn list_own_downloads(
+        &self,
+        user_id: &str,
+        since: chrono::DateTime<Utc>,
+        limit: u64,
+    ) -> Result<Vec<AccessEvent>, CoreError> {
+        let mut rows: Vec<AccessEvent> = self
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| {
+                e.user_id.as_deref() == Some(user_id)
+                    && matches!(e.action, crate::entities::AccessAction::Download)
+                    && matches!(e.result, AccessResult::Allowed)
+                    && e.timestamp >= since
+                    && e.package_id.is_some()
+            })
+            .cloned()
+            .collect();
+        rows.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
+        if limit > 0 {
+            rows.truncate(limit as usize);
+        }
+        Ok(rows)
+    }
     async fn delete_package(&self, pkg: &PackageId) -> Result<bool, CoreError> {
         Ok(self
             .statuses
@@ -829,4 +857,127 @@ async fn list_vulnerabilities_delegates_to_repo() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].osv_id, "RUSTSEC-2021-0001");
     assert_eq!(out[0].fixed_version.as_deref(), Some("0.3.1"));
+}
+
+// ── recent_own_coordinates: the R6/R15 collapse rule ─────────────────────────
+
+fn seed_pull(repo: &Arc<MemRepo>, user: &str, name: &str, version: &str, ago_secs: i64) {
+    let mut event = AccessEvent::allowed_download(
+        PackageId::new("npm", name, version),
+        Some(user.to_owned()),
+        Role::User,
+    );
+    event.timestamp = Utc::now() - chrono::Duration::seconds(ago_secs);
+    repo.events.lock().unwrap().push(event);
+}
+
+#[tokio::test]
+async fn recent_own_coordinates_collapses_repeated_pulls_of_one_version() {
+    let repo = MemRepo::new();
+    // A CI job with a warm lockfile: the same version, twenty times.
+    for i in 0..20 {
+        seed_pull(&repo, "alice", "busy", "1.0.0", 100 - i);
+    }
+    seed_pull(&repo, "alice", "other", "2.0.0", 500);
+
+    let svc = AdminService::new(repo);
+    let out = svc
+        .recent_own_coordinates("alice", Utc::now() - chrono::Duration::days(7), 5)
+        .await
+        .unwrap();
+
+    let rows: Vec<(&str, &str)> = out
+        .iter()
+        .map(|(p, _)| (p.name.as_str(), p.version.as_str()))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![("busy", "1.0.0"), ("other", "2.0.0")],
+        "twenty pulls of one version are one coordinate"
+    );
+}
+
+#[tokio::test]
+async fn recent_own_coordinates_keeps_each_version_as_its_own_row() {
+    let repo = MemRepo::new();
+    // Three versions of one package: three coordinates, not one (RFC 0004 R15).
+    // An advisory is a fact about a version, so the version has to survive.
+    for i in 0..3 {
+        seed_pull(&repo, "alice", "lib", &format!("1.0.{i}"), 100 - i);
+    }
+
+    let svc = AdminService::new(repo);
+    let out = svc
+        .recent_own_coordinates("alice", Utc::now() - chrono::Duration::days(7), 5)
+        .await
+        .unwrap();
+
+    let versions: Vec<&str> = out.iter().map(|(p, _)| p.version.as_str()).collect();
+    assert_eq!(
+        versions,
+        vec!["1.0.2", "1.0.1", "1.0.0"],
+        "distinct versions stay distinct, newest first"
+    );
+}
+
+#[tokio::test]
+async fn recent_own_coordinates_drops_the_artifact_from_the_key() {
+    let repo = MemRepo::new();
+    // The same version fetched as two different files within it. Findings are
+    // recorded per coordinate, so these must not become two rows.
+    for artifact in ["tarball", "metadata"] {
+        let mut event = AccessEvent::allowed_download(
+            PackageId::new("npm", "lib", "1.0.0").with_artifact(artifact),
+            Some("alice".to_owned()),
+            Role::User,
+        );
+        event.timestamp = Utc::now() - chrono::Duration::seconds(10);
+        repo.events.lock().unwrap().push(event);
+    }
+
+    let svc = AdminService::new(repo);
+    let out = svc
+        .recent_own_coordinates("alice", Utc::now() - chrono::Duration::days(7), 5)
+        .await
+        .unwrap();
+
+    assert_eq!(out.len(), 1, "one version is one coordinate");
+    assert_eq!(
+        out[0].0.artifact, None,
+        "the artifact is not part of a coordinate the findings table knows about"
+    );
+}
+
+#[tokio::test]
+async fn recent_own_coordinates_caps_at_max_and_excludes_other_users() {
+    let repo = MemRepo::new();
+    for i in 0..8 {
+        seed_pull(&repo, "alice", &format!("pkg-{i}"), "1.0.0", 100 - i);
+    }
+    seed_pull(&repo, "bob", "bobs-pkg", "1.0.0", 1);
+
+    let svc = AdminService::new(repo);
+    let out = svc
+        .recent_own_coordinates("alice", Utc::now() - chrono::Duration::days(7), 5)
+        .await
+        .unwrap();
+
+    assert_eq!(out.len(), 5, "capped at max_coordinates");
+    let names: Vec<&str> = out.iter().map(|(p, _)| p.name.as_str()).collect();
+    assert!(
+        !names.contains(&"bobs-pkg"),
+        "another user's pull is not the caller's, got {names:?}"
+    );
+}
+
+#[tokio::test]
+async fn recent_own_coordinates_zero_max_reads_nothing() {
+    let repo = MemRepo::new();
+    seed_pull(&repo, "alice", "pkg", "1.0.0", 1);
+    let svc = AdminService::new(repo);
+    let out = svc
+        .recent_own_coordinates("alice", Utc::now() - chrono::Duration::days(7), 0)
+        .await
+        .unwrap();
+    assert!(out.is_empty());
 }

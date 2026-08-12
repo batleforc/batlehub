@@ -9,6 +9,7 @@ use actix_web::{get, web, Responder};
 use batlehub_core::{entities::PackageId, services::ProxyService};
 
 use super::common::proxy_stream;
+use crate::handlers::schemas::ArtifactBytes;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
 fn require_forgejo(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
@@ -38,7 +39,7 @@ fn require_forgejo(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
         ("path" = String, Path, description = "Path under /api/packages/ (e.g. {owner}/generic/{name}/{version}/{file})"),
     ),
     responses(
-        (status = 200, description = "Package file"),
+        (status = 200, description = "Package file", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 404, description = "Not found or unknown registry"),
         (status = 403, description = "Access denied"),
     ),

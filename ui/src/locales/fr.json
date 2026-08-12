@@ -116,7 +116,11 @@
     "nothingIsCachedOrServed": "Rien n'est mis en cache ni servi tant qu'aucun registre n'existe. Ajoutez un bloc [[registries]] à config.toml puis rechargez.",
     "openConfig": "Ouvrir la configuration",
     "openHealth": "Ouvrir l'état de santé",
-    "perRegistry": "Par registre"
+    "perRegistry": "Par registre",
+    "trendDown": "Sur les {days} derniers jours, le cache a servi {rate} des téléchargements — {points} points de moins que les {days} jours précédents.",
+    "trendFlat": "Sur les {days} derniers jours, le cache a servi {rate} des téléchargements, comme les {days} jours précédents.",
+    "trendNoBaseline": "Sur les {days} derniers jours, le cache a servi {rate} des téléchargements. L'historique est encore insuffisant pour comparer avec la période précédente.",
+    "trendUp": "Sur les {days} derniers jours, le cache a servi {rate} des téléchargements — {points} points de mieux que les {days} jours précédents."
   },
   "adminExploreCache": {
     "10Min": "10 min",
@@ -324,6 +328,16 @@
     "removeArtifactHelp": "Retire du stockage un seul artefact mis en cache par le proxy. La requête suivante le retéléchargera depuis l'upstream. Utilisez le mode {path} pour les registres adressés par chemin (jetbrains/deb/rpm) ; utilisez le mode {package} pour tous les autres.",
     "warmNow": "Préchauffer maintenant",
     "warming": "Préchauffage…"
+  },
+  "advisoriesWidget": {
+    "clearBody": "Aucune alerte connue ne touche ce que vous avez téléchargé ces {days} derniers jours, ni ce dont vous êtes propriétaire.",
+    "clearTitle": "Rien de concerné",
+    "fixedIn": "corrigé en {version}",
+    "noScanningBody": "Cette instance ne réanalyse pas les artefacts en cache : elle n'a donc aucun résultat à signaler. Une liste vide ici signifie « inconnu », pas « aucun problème ».",
+    "noScanningTitle": "Aucune donnée d'alerte sur cette instance",
+    "owned": "Vous en êtes propriétaire",
+    "pulled": "Téléchargé",
+    "title": "Alertes de sécurité"
   },
   "appFooter": {
     "reportABug": "Signaler un bug",
@@ -686,6 +700,14 @@
     "registryType": "Type de registre",
     "urlMapper": "Mappage d'URL"
   },
+  "quotaWidget": {
+    "approaching": "Au-delà de {pct} % d'une limite. La publication fonctionne toujours.",
+    "atLimit": "Limite atteinte. La prochaine publication peut être refusée.",
+    "ofLimit": "{used} sur {limit}",
+    "storage": "Stockage",
+    "title": "Votre quota",
+    "versions": "Versions"
+  },
   "registryPathForm": {
     "registryName": "Nom du registre"
   },
@@ -714,6 +736,13 @@
     "openConfig": "Ouvrir la configuration",
     "personalApiToken": "token d'API personnel",
     "setupGuide": "Guide de configuration"
+  },
+  "severity": {
+    "critical": "Critique",
+    "high": "Élevée",
+    "low": "Faible",
+    "medium": "Moyenne",
+    "unknown": "Inconnue"
   },
   "theme": {
     "dark": "Thème : sombre",

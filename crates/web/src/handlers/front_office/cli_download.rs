@@ -7,6 +7,7 @@ use batlehub_core::error::CoreError;
 
 use crate::error::AppError;
 use crate::handlers::sanitize_filename;
+use crate::handlers::schemas::ArtifactBytes;
 
 /// Registered path to the `batlehub-cli` binary.
 ///
@@ -25,7 +26,7 @@ pub struct CliBinaryPath(pub PathBuf);
     path = "/api/v1/cli/download",
     tag = "front-office",
     responses(
-        (status = 200, description = "CLI binary (application/octet-stream)"),
+        (status = 200, description = "CLI binary", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 404, description = "No CLI binary configured on this server"),
     ),
 )]

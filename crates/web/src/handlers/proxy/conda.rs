@@ -14,6 +14,7 @@ use super::common::{
     collect_payload, extract_signature_headers, proxy_stream, require_local_mode,
     require_registry_type,
 };
+use crate::handlers::schemas::{ArtifactBytes, MessageResponse, UpstreamDocument};
 use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
     RegistryModeMap,
@@ -36,7 +37,7 @@ use crate::{
         ("platform" = String, Path, description = "Platform string, e.g. linux-64 or noarch"),
     ),
     responses(
-        (status = 200, description = "repodata.json"),
+        (status = 200, description = "repodata.json", body = UpstreamDocument),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Channel not found"),
     ),
@@ -158,7 +159,7 @@ fn merge_repodata(upstream_bytes: &[u8], local: &serde_json::Value) -> Vec<u8> {
         ("platform" = String, Path, description = "Platform string"),
     ),
     responses(
-        (status = 200, description = "current_repodata.json"),
+        (status = 200, description = "current_repodata.json", body = UpstreamDocument),
         (status = 404, description = "Not found"),
     ),
     security(("bearer_token" = [])),
@@ -203,7 +204,7 @@ pub async fn conda_current_repodata(
         ("filename" = String, Path, description = "Package filename"),
     ),
     responses(
-        (status = 200, description = "Package bytes"),
+        (status = 200, description = "Package bytes", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 404, description = "Package not found"),
     ),
     security(("bearer_token" = [])),
@@ -324,7 +325,7 @@ fn conda_version_from_filename(filename: &str) -> Option<String> {
         ("platform" = String, Path, description = "Target platform, e.g. linux-64"),
     ),
     responses(
-        (status = 200, description = "Package published"),
+        (status = 200, description = "Package published", body = MessageResponse),
         (status = 403, description = "Access denied or quota exceeded"),
         (status = 409, description = "Version already published"),
         (status = 422, description = "Invalid conda package"),
@@ -398,9 +399,7 @@ pub async fn conda_publish(
             signature_type,
         },
         actix_web::http::StatusCode::OK,
-        serde_json::json!({
-            "message": format!("Conda package published: {filename}")
-        }),
+        MessageResponse::new(format!("Conda package published: {filename}")),
     )
     .await
 }

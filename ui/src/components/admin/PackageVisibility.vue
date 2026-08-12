@@ -2,8 +2,8 @@
 import { useI18n } from "vue-i18n";
 import { computed, ref, watch } from "vue";
 import { getPackageVisibility, setPackageVisibility } from "@/client/sdk.gen";
-import type { Visibility } from "@/lib/registry-types";
-import { VISIBILITY_OPTIONS } from "@/lib/registry-types";
+import type { Visibility } from "@/client/types.gen";
+import { VISIBILITY_OPTIONS } from "@/config/visibility";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
 import { Button } from "@/components/ui/button";

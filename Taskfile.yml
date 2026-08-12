@@ -76,6 +76,40 @@ tasks:
       - until podman exec {{.PG_CONTAINER}} pg_isready -U postgres; do sleep 1; done
       - cargo test -p batlehub-adapters --test pg_vulnerability -- --nocapture
 
+  test:pg-stats-history:
+    desc: Run PgStatsHistoryRepository integration tests (starts a temporary Postgres container via Podman)
+    vars:
+      PG_CONTAINER: batlehub-test-pg-stats
+      PG_PORT: "15436"
+      PG_PASSWORD: testpass
+      CONF_OVERRIDE: /tmp/batlehub-containers.conf
+    env:
+      CONTAINERS_CONF_OVERRIDE: "{{.CONF_OVERRIDE}}"
+      DATABASE_URL: "postgresql://postgres:{{.PG_PASSWORD}}@127.0.0.1:{{.PG_PORT}}/postgres"
+    cmds:
+      - printf '[network]\ndefault_rootless_network_cmd = "pasta"\n' > {{.CONF_OVERRIDE}}
+      - defer: podman rm -f {{.PG_CONTAINER}} 2>/dev/null || true
+      - podman run -d --name {{.PG_CONTAINER}} -p {{.PG_PORT}}:5432 -e POSTGRES_PASSWORD={{.PG_PASSWORD}} postgres:17-alpine
+      - until podman exec {{.PG_CONTAINER}} pg_isready -U postgres; do sleep 1; done
+      - cargo test -p batlehub-adapters --test pg_stats_history -- --nocapture
+
+  test:pg-me-scoping:
+    desc: Run the /api/v1/me scoping integration tests (starts a temporary Postgres container via Podman)
+    vars:
+      PG_CONTAINER: batlehub-test-pg-me
+      PG_PORT: "15435"
+      PG_PASSWORD: testpass
+      CONF_OVERRIDE: /tmp/batlehub-containers.conf
+    env:
+      CONTAINERS_CONF_OVERRIDE: "{{.CONF_OVERRIDE}}"
+      DATABASE_URL: "postgresql://postgres:{{.PG_PASSWORD}}@127.0.0.1:{{.PG_PORT}}/postgres"
+    cmds:
+      - printf '[network]\ndefault_rootless_network_cmd = "pasta"\n' > {{.CONF_OVERRIDE}}
+      - defer: podman rm -f {{.PG_CONTAINER}} 2>/dev/null || true
+      - podman run -d --name {{.PG_CONTAINER}} -p {{.PG_PORT}}:5432 -e POSTGRES_PASSWORD={{.PG_PASSWORD}} postgres:17-alpine
+      - until podman exec {{.PG_CONTAINER}} pg_isready -U postgres; do sleep 1; done
+      - cargo test -p batlehub-adapters --test pg_me_scoping -- --nocapture
+
   test:pg-explore:
     desc: Run explore per-package visibility integration tests (starts a temporary Postgres container via Podman)
     vars:

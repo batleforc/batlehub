@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 use batlehub_core::{
-    entities::{AccessAction, Role, TeamNamespace},
+    entities::{AccessAction, Role, TeamNamespace, Visibility},
     ports::TeamNamespacePort,
     services::AdminService,
 };
@@ -47,7 +47,7 @@ pub struct ClaimNamespaceRequest {
     tag = "back-office",
     params(("registry" = String, Path, description = "Registry name")),
     responses(
-        (status = 200, description = "Namespace list"),
+        (status = 200, description = "Namespace list", body = Vec<TeamNamespaceDto>),
         (status = 403, description = "Admin role required"),
     ),
     security(("bearer_token" = [])),
@@ -164,7 +164,7 @@ pub async fn release_namespace(
     path = "/api/v1/me/namespaces",
     tag = "user",
     responses(
-        (status = 200, description = "Namespaces owned by the caller's groups"),
+        (status = 200, description = "Namespaces owned by the caller's groups", body = Vec<TeamNamespaceDto>),
         (status = 403, description = "Authentication required"),
     ),
     security(("bearer_token" = [])),
@@ -216,7 +216,7 @@ pub struct NamespacePackageListResponse {
 pub struct NamespacePackageDto {
     pub name: String,
     pub version: String,
-    pub visibility: String,
+    pub visibility: Visibility,
     pub published_by: String,
     pub published_at: DateTime<Utc>,
     pub yanked: bool,
@@ -287,7 +287,7 @@ pub async fn my_namespace_packages(
         .map(|p| NamespacePackageDto {
             name: p.name,
             version: p.version,
-            visibility: p.visibility.to_string(),
+            visibility: p.visibility.clone(),
             published_by: p.published_by,
             published_at: p.published_at,
             yanked: p.yanked,

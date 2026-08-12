@@ -150,13 +150,15 @@ pub fn dispatch_notification(
 /// response carrying the publish quota headers.
 ///
 /// Collapses the publish→notify→respond tail shared by every local/hybrid publish
-/// handler. `status` is the success status (200/201) and `body` the JSON payload.
+/// handler. `status` is the success status (200/201) and `body` a serialisable
+/// payload — a named DTO, so the schema the endpoint documents and the bytes it
+/// sends come from the same type (RFC 0004 §6.1).
 pub async fn publish_and_respond(
     local_svc: &LocalRegistryService,
     notification_svc: &web::Data<Option<Arc<NotificationService>>>,
     req: PublishRequest,
     status: actix_web::http::StatusCode,
-    body: serde_json::Value,
+    body: impl serde::Serialize,
 ) -> Result<HttpResponse, AppError> {
     let registry = req.registry.clone();
     let name = req.name.clone();

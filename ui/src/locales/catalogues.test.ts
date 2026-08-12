@@ -11,7 +11,7 @@ import {
   SECURITY_TABS,
 } from "@/config/adminSections";
 import { TOOLS_TABS, accountTabs, primaryNav } from "@/config/navigation";
-import { VISIBILITY_OPTIONS } from "@/lib/registry-types";
+import { VISIBILITY_OPTIONS } from "@/config/visibility";
 
 /**
  * The catalogue gate (RFC 0003 §4.6, §10).

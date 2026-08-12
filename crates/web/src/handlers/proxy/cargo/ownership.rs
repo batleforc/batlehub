@@ -3,6 +3,21 @@ use super::{
     Responder,
 };
 
+/// `cargo owner --list`'s response, in the shape crates.io defines.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct CargoOwnersResponse {
+    pub users: Vec<CargoOwner>,
+}
+
+/// One owner. `id` is a position in this list, not a stable identifier — this
+/// server keys ownership by principal, and `cargo` only ever displays the field.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct CargoOwner {
+    pub id: usize,
+    pub login: String,
+    pub name: String,
+}
+
 /// List owners of a crate (`cargo owner --list`).
 #[utoipa::path(
     get,
@@ -13,7 +28,7 @@ use super::{
         ("name"     = String, Path, description = "Crate name"),
     ),
     responses(
-        (status = 200, description = "Owner list"),
+        (status = 200, description = "Owner list", body = CargoOwnersResponse),
         (status = 404, description = "Crate not found"),
     ),
     security(("bearer_token" = [])),
@@ -32,12 +47,16 @@ pub async fn cargo_owners(
             .list_owners(&registry, &name)
             .await
             .map_err(AppError::from)?;
-        let users: Vec<_> = entries
+        let users: Vec<CargoOwner> = entries
             .into_iter()
             .enumerate()
-            .map(|(i, e)| serde_json::json!({ "id": i + 1, "login": e.principal_id, "name": e.principal_id }))
+            .map(|(i, e)| CargoOwner {
+                id: i + 1,
+                login: e.principal_id.clone(),
+                name: e.principal_id,
+            })
             .collect();
-        return Ok(HttpResponse::Ok().json(serde_json::json!({ "users": users })));
+        return Ok(HttpResponse::Ok().json(CargoOwnersResponse { users }));
     }
 
     // Fallback: derive from first-published version.
@@ -53,7 +72,11 @@ pub async fn cargo_owners(
         .published_by
         .clone()
         .unwrap_or_else(|| "unknown".to_owned());
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "users": [{ "id": 1, "login": publisher, "name": publisher }]
-    })))
+    Ok(HttpResponse::Ok().json(CargoOwnersResponse {
+        users: vec![CargoOwner {
+            id: 1,
+            login: publisher.clone(),
+            name: publisher,
+        }],
+    }))
 }

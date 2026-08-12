@@ -16,6 +16,7 @@ use super::require_admin;
 use crate::{
     error::AppError,
     extractors::AuthIdentity,
+    handlers::schemas::OkResponse,
     services::{
         BannerService, ConfigChangeRow, ConfigReloadService, PendingReloadSnapshot,
         ReloadApplyError, ReloadDiff,
@@ -401,7 +402,7 @@ pub struct SetBannerRequest {
     tag = "back-office",
     request_body = SetBannerRequest,
     responses(
-        (status = 200, description = "Banner set"),
+        (status = 200, description = "Banner set", body = OkResponse),
         (status = 403, description = "Admin role required"),
     ),
     security(("bearer_token" = [])),
@@ -427,7 +428,7 @@ pub async fn set_banner(
         })
         .await
         .map_err(AppError::from)?;
-    Ok(HttpResponse::Ok().finish())
+    Ok(HttpResponse::Ok().json(OkResponse::new()))
 }
 
 /// Clear the global admin banner.

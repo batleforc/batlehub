@@ -19,6 +19,7 @@ use actix_web::{get, web, Responder};
 use batlehub_core::{entities::PackageId, services::ProxyService};
 
 use super::common::{proxy_stream, require_registry_type};
+use crate::handlers::schemas::ArtifactBytes;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
 /// Serve a file from a JetBrains download repository
@@ -32,7 +33,7 @@ use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
         ("path" = String, Path, description = "Upstream file path (e.g. idea/idea-2026.1.tar.gz)"),
     ),
     responses(
-        (status = 200, description = "Artifact streamed from upstream (cached)"),
+        (status = 200, description = "Artifact streamed from upstream (cached)", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Not found or unknown registry"),
     ),

@@ -31,6 +31,7 @@ use actix_web::{get, web, Responder};
 use batlehub_core::{entities::PackageId, services::ProxyService};
 
 use super::common::{proxy_stream, require_registry_type};
+use crate::handlers::schemas::ArtifactBytes;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
 /// Serve a file from a generic upstream file tree
@@ -44,7 +45,7 @@ use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
         ("path" = String, Path, description = "Upstream file path (e.g. v24.18.0/node-v24.18.0-linux-x64.tar.gz)"),
     ),
     responses(
-        (status = 200, description = "Artifact streamed from upstream (cached)"),
+        (status = 200, description = "Artifact streamed from upstream (cached)", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 400, description = "Unsafe path"),
         (status = 403, description = "Access denied, or path outside the registry's path_allow allowlist"),
         (status = 404, description = "Not found or unknown registry"),

@@ -4,6 +4,7 @@ use super::{
     HttpRequest, HttpResponse, LocalOrProxyArtifactOpts, LocalRegistryService, PackageId,
     ProxyService, RegistryMap, RegistryModeMap, Responder, UpstreamMap,
 };
+use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 
 /// Fetch package metadata (all versions / packument).
 #[utoipa::path(
@@ -15,7 +16,7 @@ use super::{
         ("package"  = String, Path, description = "Package / crate name"),
     ),
     responses(
-        (status = 200, description = "Package metadata JSON"),
+        (status = 200, description = "Package metadata JSON", body = UpstreamDocument),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Unknown registry"),
     ),
@@ -78,7 +79,7 @@ pub async fn get_packument(
         ("version"  = String, Path, description = "Version"),
     ),
     responses(
-        (status = 200, description = "Version metadata JSON"),
+        (status = 200, description = "Version metadata JSON", body = UpstreamDocument),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Unknown registry"),
     ),
@@ -148,7 +149,7 @@ pub async fn get_version(
         ("version"  = String, Path, description = "Version"),
     ),
     responses(
-        (status = 200, description = "npm .tgz tarball"),
+        (status = 200, description = "npm .tgz tarball", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Unknown registry"),
     ),
@@ -196,7 +197,7 @@ pub async fn download_tarball(
     ),
     request_body = serde_json::Value,
     responses(
-        (status = 200, description = "Audit advisory data from upstream"),
+        (status = 200, description = "Audit advisory data from upstream", body = UpstreamDocument),
         (status = 404, description = "Unknown or non-npm registry"),
         (status = 502, description = "Upstream audit request failed"),
     ),
@@ -232,7 +233,7 @@ pub async fn audit_quick(
     ),
     request_body = serde_json::Value,
     responses(
-        (status = 200, description = "Bulk audit advisory data from upstream"),
+        (status = 200, description = "Bulk audit advisory data from upstream", body = UpstreamDocument),
         (status = 404, description = "Unknown or non-npm registry"),
         (status = 502, description = "Upstream audit request failed"),
     ),

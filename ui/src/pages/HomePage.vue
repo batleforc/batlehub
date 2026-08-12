@@ -25,6 +25,8 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert } from "@/components/ui/alert";
+import AdvisoriesWidget from "@/components/home/AdvisoriesWidget.vue";
+import QuotaWidget from "@/components/home/QuotaWidget.vue";
 
 const { t } = useI18n();
 
@@ -117,6 +119,15 @@ const name = computed(() => identity.value?.user_id ?? "");
           <RouterLink to="/admin/dashboard">{{ t("common.admin") }}</RouterLink>
         </Button>
       </div>
+
+      <!-- Both are about *you*, so an anonymous viewer gets neither: there is
+           no quota and no pull history attached to nobody, and rendering an
+           empty one would invite them to read it as "you have none"
+           (RFC 0004 §4.2). -->
+      <template v-if="isAuthenticated">
+        <QuotaWidget />
+        <AdvisoriesWidget />
+      </template>
     </template>
   </div>
 </template>

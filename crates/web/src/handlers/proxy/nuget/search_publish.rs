@@ -17,6 +17,7 @@ use super::super::common::{
     require_registry_type, MAX_UPLOAD_BYTES,
 };
 use super::nuspec::{extract_nuspec_from_nupkg, parse_nuspec};
+use crate::handlers::schemas::{MessageResponse, UpstreamDocument};
 use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
     RegistryModeMap,
@@ -51,7 +52,7 @@ fn default_take() -> usize {
         ("prerelease" = bool,  Query, description = "Include pre-release"),
     ),
     responses(
-        (status = 200, description = "Search results JSON"),
+        (status = 200, description = "Search results JSON", body = UpstreamDocument),
     ),
     security(("bearer_token" = [])),
 )]
@@ -120,7 +121,7 @@ pub async fn nuget_search(
     tag = "proxy/nuget",
     params(("registry" = String, Path, description = "Registry name")),
     responses(
-        (status = 201, description = "Package published"),
+        (status = 201, description = "Package published", body = MessageResponse),
         (status = 400, description = "Invalid or missing .nupkg"),
         (status = 401, description = "Authentication required"),
         (status = 409, description = "Version already published"),
@@ -221,9 +222,7 @@ pub async fn nuget_publish(
             signature_type,
         },
         actix_web::http::StatusCode::CREATED,
-        serde_json::json!({
-            "message": format!("Successfully published {id_lower} {version}")
-        }),
+        MessageResponse::new(format!("Successfully published {id_lower} {version}")),
     )
     .await
 }

@@ -39,55 +39,98 @@ pub(super) async fn list_events_impl(
     .await
     .db_err()?;
 
-    rows.into_iter()
-        .map(|r| {
-            let outcome: String = r.get("outcome");
-            // Account-wide/network-wide events store NULL in all three coordinate
-            // columns (see migration 030); only build a `PackageId` when the row
-            // actually has one.
-            let registry: Option<String> = r.get("registry");
-            let package_name: Option<String> = r.get("package_name");
-            let package_version: Option<String> = r.get("package_version");
-            let package_artifact: Option<String> = r.get("package_artifact");
-            let package_id = match (registry, package_name, package_version) {
-                (Some(registry), Some(name), Some(version)) => Some(PackageId {
-                    registry,
-                    name,
-                    version,
-                    artifact: package_artifact,
-                }),
-                _ => None,
-            };
-            Ok(AccessEvent {
-                id: r.get("id"),
-                user_id: r.get("user_id"),
-                user_role: str_to_role(r.get::<&str, _>("user_role"))?,
-                package_id,
-                action: str_to_action(r.get::<&str, _>("action"))?,
-                result: match outcome.as_str() {
-                    "denied" => AccessResult::Denied {
-                        reason: r
-                            .get::<Option<String>, _>("deny_reason")
-                            .unwrap_or_default(),
-                    },
-                    "error" => AccessResult::ProxyError {
-                        reason: r
-                            .get::<Option<String>, _>("deny_reason")
-                            .unwrap_or_default(),
-                    },
-                    "allowed" => AccessResult::Allowed,
-                    other => {
-                        return Err(CoreError::Database(format!(
-                            "invalid access outcome in db: '{other}'"
-                        )))
-                    }
-                },
-                timestamp: r.get("created_at"),
-                ip_address: r.get("ip_address"),
-                user_agent: r.get("user_agent"),
-            })
-        })
-        .collect()
+    rows.iter().map(map_access_event).collect()
+}
+
+/// Build an [`AccessEvent`] from one `access_events` row.
+///
+/// Every query feeding this must select the same thirteen columns; sqlx 0.9
+/// rejects non-literal SQL, so the list is repeated per query rather than
+/// shared through a `const`.
+fn map_access_event(r: &sqlx::postgres::PgRow) -> Result<AccessEvent, CoreError> {
+    let outcome: String = r.get("outcome");
+    // Account-wide/network-wide events store NULL in all three coordinate
+    // columns (see migration 030); only build a `PackageId` when the row
+    // actually has one.
+    let registry: Option<String> = r.get("registry");
+    let package_name: Option<String> = r.get("package_name");
+    let package_version: Option<String> = r.get("package_version");
+    let package_artifact: Option<String> = r.get("package_artifact");
+    let package_id = match (registry, package_name, package_version) {
+        (Some(registry), Some(name), Some(version)) => Some(PackageId {
+            registry,
+            name,
+            version,
+            artifact: package_artifact,
+        }),
+        _ => None,
+    };
+    Ok(AccessEvent {
+        id: r.get("id"),
+        user_id: r.get("user_id"),
+        user_role: str_to_role(r.get::<&str, _>("user_role"))?,
+        package_id,
+        action: str_to_action(r.get::<&str, _>("action"))?,
+        result: match outcome.as_str() {
+            "denied" => AccessResult::Denied {
+                reason: r
+                    .get::<Option<String>, _>("deny_reason")
+                    .unwrap_or_default(),
+            },
+            "error" => AccessResult::ProxyError {
+                reason: r
+                    .get::<Option<String>, _>("deny_reason")
+                    .unwrap_or_default(),
+            },
+            "allowed" => AccessResult::Allowed,
+            other => {
+                return Err(CoreError::Database(format!(
+                    "invalid access outcome in db: '{other}'"
+                )))
+            }
+        },
+        timestamp: r.get("created_at"),
+        ip_address: r.get("ip_address"),
+        user_agent: r.get("user_agent"),
+    })
+}
+
+/// One principal's own allowed downloads, newest first.
+///
+/// The `user_id`, `action` and `outcome` predicates are written here rather
+/// than assembled by a caller: this is what `GET /api/v1/me/downloads` reads,
+/// and a `where` clause a handler can forget is a handler that returns someone
+/// else's history (RFC 0004 §7).
+pub(super) async fn list_own_downloads_impl(
+    pool: &PgPool,
+    user_id: &str,
+    since: DateTime<Utc>,
+    limit: u64,
+) -> Result<Vec<AccessEvent>, CoreError> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id, user_id, user_role, registry, package_name, package_version,
+            package_artifact, action, outcome, deny_reason, created_at,
+            ip_address, user_agent
+        FROM access_events
+        WHERE user_id = $1
+          AND action = 'download'
+          AND outcome = 'allowed'
+          AND created_at >= $2
+          AND package_name IS NOT NULL
+        ORDER BY created_at DESC
+        LIMIT $3
+        "#,
+    )
+    .bind(user_id)
+    .bind(since)
+    .bind(limit as i64)
+    .fetch_all(pool)
+    .await
+    .db_err()?;
+
+    rows.iter().map(map_access_event).collect()
 }
 
 pub(super) async fn count_events_impl(

@@ -15,6 +15,7 @@ use crate::handlers::proxy::common::{
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
 
 use super::parse_pypi_filename;
+use crate::handlers::schemas::{ArtifactBytes, ProtocolDocument};
 
 // ── Proxy routes ──────────────────────────────────────────────────────────────
 
@@ -25,7 +26,7 @@ use super::parse_pypi_filename;
     tag = "proxy/pypi",
     params(("registry" = String, Path, description = "Registry name")),
     responses(
-        (status = 200, description = "Simple index HTML"),
+        (status = 200, description = "Simple index HTML", body = ProtocolDocument, content_type = "text/html"),
         (status = 404, description = "Registry not found"),
     ),
     security(("bearer_token" = [])),
@@ -65,7 +66,7 @@ pub async fn pypi_simple_root(
         ("package"  = String, Path, description = "Package name"),
     ),
     responses(
-        (status = 200, description = "Simple index page with rewritten file URLs"),
+        (status = 200, description = "Simple index page with rewritten file URLs", body = ProtocolDocument, content_type = "text/html"),
         (status = 404, description = "Package not found"),
     ),
     security(("bearer_token" = [])),
@@ -156,7 +157,7 @@ pub async fn pypi_simple_package(
         ("filename" = String, Path, description = "Distribution filename"),
     ),
     responses(
-        (status = 200, description = "Distribution bytes"),
+        (status = 200, description = "Distribution bytes", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 404, description = "File not found"),
         (status = 422, description = "Cannot parse filename"),
     ),

@@ -12,8 +12,12 @@ import { useI18n } from "vue-i18n";
  */
 import { computed } from "vue";
 import { RouterLink } from "vue-router";
-import { adminStats, registryHealth } from "@/client/sdk.gen";
-import type { StatsResponse, RegistryHealthDto } from "@/client/types.gen";
+import { adminStats, adminStatsHistory, registryHealth } from "@/client/sdk.gen";
+import type {
+  StatsResponse,
+  StatsHistoryResponse,
+  RegistryHealthDto,
+} from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
 import { formatBytes as fmtBytes, formatCount } from "@/lib/format";
@@ -86,6 +90,56 @@ const totalRequests = computed(
 );
 const hitRate = computed(() => stats.value?.aggregate.hit_rate ?? null);
 const fmtPct = (n: number | null): string => (n == null ? "—" : `${(n * 100).toFixed(1)}%`);
+
+/**
+ * The trend, from the persisted rollup rather than the live counters
+ * (RFC 0004 §2.3, §4.3).
+ *
+ * `/api/v1/admin/stats` is `since_startup` and resets with the process, so the
+ * sentence above cannot answer "better or worse than before" — a deploy sets it
+ * to zero. This series is bounded per hour and survives one.
+ */
+const { data: history } = useApi<StatsHistoryResponse>(
+  () => adminStatsHistory({ query: { window: "30d" } }) as Promise<{ data?: unknown; error?: unknown }>,
+  [token],
+);
+
+/**
+ * A sentence a reader can act on, not a sparkline that only says "something
+ * changed" — the same rule the verdict above follows.
+ *
+ * Three distinct outcomes, and the third is the one worth being careful about:
+ * with no previous window to compare against, the honest answer is that there
+ * is not enough history yet, *not* that nothing changed.
+ */
+const trend = computed(() => {
+  const t0 = history.value?.trend;
+  if (!t0 || t0.hit_rate == null) return null;
+  const days = history.value?.window_days ?? 30;
+  if (t0.previous_hit_rate == null || t0.delta == null) {
+    return { tone: "unknown" as const, days, rate: t0.hit_rate, delta: null };
+  }
+  // Under a tenth of a point either way is noise, and calling it a direction
+  // would have an operator chasing a rounding artefact.
+  const tone = Math.abs(t0.delta) < 0.001 ? "flat" : t0.delta > 0 ? "up" : "down";
+  return { tone, days, rate: t0.hit_rate, delta: t0.delta };
+});
+
+const trendText = computed(() => {
+  const tr = trend.value;
+  if (!tr) return "";
+  const rate = fmtPct(tr.rate);
+  if (tr.tone === "unknown") {
+    return t("adminDashboard.trendNoBaseline", { rate, days: tr.days });
+  }
+  if (tr.tone === "flat") {
+    return t("adminDashboard.trendFlat", { rate, days: tr.days });
+  }
+  const points = Math.abs((tr.delta ?? 0) * 100).toFixed(1);
+  return tr.tone === "up"
+    ? t("adminDashboard.trendUp", { rate, days: tr.days, points })
+    : t("adminDashboard.trendDown", { rate, days: tr.days, points });
+});
 </script>
 
 <template>
@@ -152,6 +206,18 @@ const fmtPct = (n: number | null): string => (n == null ? "—" : `${(n * 100).t
             }}</span></template
           >
         </i18n-t>
+      </p>
+
+      <!-- What the counters above structurally cannot say: better or worse than
+           before. Absent until there is a rollup to read, rather than showing a
+           zero that would read as "no change". -->
+      <p
+        v-if="trendText"
+        class="text-sm"
+        :class="trend?.tone === 'down' ? 'text-copper' : 'text-muted-foreground'"
+        data-testid="dashboard-trend"
+      >
+        {{ trendText }}
       </p>
 
       <section v-if="stats && stats.per_registry.length > 0" class="space-y-2">

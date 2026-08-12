@@ -9,6 +9,7 @@ use batlehub_core::{
 };
 
 use super::super::common::{proxy_stream, registry_public_base, require_registry_type};
+use crate::handlers::schemas::UpstreamDocument;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 /// Return NuGet v3 registration metadata for a package.
@@ -24,7 +25,7 @@ use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryMode
         ("id"       = String, Path, description = "Package ID"),
     ),
     responses(
-        (status = 200, description = "Registration index JSON"),
+        (status = 200, description = "Registration index JSON", body = UpstreamDocument),
         (status = 404, description = "Package not found"),
     ),
     security(("bearer_token" = [])),

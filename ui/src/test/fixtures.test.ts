@@ -92,13 +92,15 @@ describe("stub API fixtures", () => {
   });
 
   /**
-   * Six endpoints the console calls have no documented 200 body, which is why
-   * `src/lib/registry-types.ts` hand-writes their DTOs and the generated client
-   * types them as unknown. Pinned so the number cannot grow unnoticed; it should
-   * fall to zero when the server annotates those handlers.
+   * Six endpoints the console called used to have no documented 200 body, which
+   * is why `src/lib/registry-types.ts` hand-wrote their DTOs and the generated
+   * client typed them as unknown. RFC 0004 §4.1 annotated every one of them and
+   * deleted that file, so this is an equality, not a ceiling: a new untyped
+   * endpoint is a regression, and the server-side gate
+   * (`crates/web/tests/openapi_contract.rs`) is what stops one being written.
    */
-  it("records how many called endpoints the spec leaves untyped", () => {
+  it("leaves no called endpoint untyped", () => {
     const undocumented = paths.filter((p) => !responseSchema(p));
-    expect(undocumented.length, `undocumented: ${undocumented.join(", ")}`).toBeLessThanOrEqual(6);
+    expect(undocumented, `undocumented: ${undocumented.join(", ")}`).toEqual([]);
   });
 });
