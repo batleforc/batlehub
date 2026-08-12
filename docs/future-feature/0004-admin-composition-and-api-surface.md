@@ -7,7 +7,7 @@
 | Co-author   | Claude Opus 5 (1M context) <noreply@anthropic.com>            |
 | Created     | 2026-08-12                                                    |
 | Supersedes  | —                                                             |
-| Complements | RFC 0003 (web console redesign)                               |
+| Complements | RFC 0003 (web console redesign) — takes over its open questions 2 and 4 |
 | Touches     | `crates/core`, `crates/adapters`, `crates/web`, `server`, `ui`, docs |
 
 ---
@@ -21,7 +21,9 @@ different ends: **the console cannot show what the API does not describe or does
 1. **The admin pages are laid out, not composed.** Their grammar is now correct and measured at
    every commit — faces, both ramps, the palette, tracking, contrast, one Display-step title per
    view. What no gate can judge is whether a page is *well cut*, and three of the fifteen are over
-   550 lines.
+   550 lines. That judgement is editorial, so this RFC hands it to the tool that made the world it
+   is judged against: **every admin page goes through Impeccable** (§4.4), with the authority to
+   split, merge, add or remove a page — bounded by `DESIGN.md`, which does not change.
 2. **73 % of the API's documented `200` responses declare no body.** 126 of them say only
    `description`; 47 declare a schema. The console pays for this directly: six of the twenty-one
    endpoints it calls are untyped, so `ui/src/lib/registry-types.ts` re-declares their DTOs by hand.
@@ -45,7 +47,7 @@ StatsResponse.since_startup                      ← resets on deploy
 
 # with this RFC
 /                     + quota meter (mine), + advisories on what I recently pulled
-/admin/*              re-cut around the question each page answers
+/admin/*              Impeccable pass per page: kept, updated, split, merged, removed or added
 GET /api/v1/…         every 200 declares a body; a CI gate refuses new ones that do not
 GET /api/v1/me/quota          my usage against my limits, per registry
 GET /api/v1/me/downloads      what I pulled, most recent first
@@ -75,6 +77,12 @@ Phase 6 of RFC 0003 split `AdminConfigReload`'s read-only path into its own scre
 `AdminPackages`'s three `window.confirm()` calls — both real improvements, both *surgical*. Neither
 page was re-cut around the question it answers, and `AdminNotifications` was never touched: it
 carries channels, subscriptions and inbound events on one page with a hand-rolled tab strip.
+
+Surgical is what a hand-written phase plan produces: it fixes what was listed, and lists only what
+someone already noticed. The console's world was not designed that way — RFC 0003 Phase 1 built it
+with Impeccable and documented the result in `DESIGN.md` (RFC 0003 R5). Reviewing that world with a
+different instrument than the one that built it is what leaves fifteen pages grammatically correct
+and compositionally inherited. §4.4 puts the same instrument back on the pages.
 
 ### 2.2 The API describes 27 % of what it returns
 
@@ -147,8 +155,11 @@ which needs persistence that does not exist.
 - Cache statistics that survive a restart, with enough history to answer "better or worse".
 - A user can see their own quota and their own recent pulls, and be told when one of those pulls has
   a known advisory — without an admin.
-- Each admin page is re-cut around one question, with the pages over 550 lines split along the seams
-  that already exist in them.
+- Every admin page is put through an Impeccable pass against one question, and comes out **kept,
+  updated, split, merged, removed or added** on that verdict — with the pages over 550 lines the
+  obvious starting candidates, not the whole list.
+- The pass has full authority over a page's composition and its interaction detail, and none at all
+  over the design language: `DESIGN.md` is the bound, and it is unchanged by this RFC.
 
 **Non-goals**
 
@@ -159,7 +170,9 @@ which needs persistence that does not exist.
   adds the small persisted rollup the *console* needs, not a TSDB. Adding an on/off switch for the
   exporter (§6.4) is not a replacement — it is the control that was missing.
 - **Changing the design system.** RFC 0003's DESIGN.md is the authority; this RFC composes within it
-  and adds no colour, face or step.
+  and adds no colour, face or step. The bound holds for the Impeccable pass as much as for a
+  hand-written commit: it may re-cut a page, not the world. A pass that concludes the world itself is
+  wrong produces a finding for a future RFC, not a token.
 - **Reworking the catalog or package pages.** They were re-cut in RFC 0003 Phase 5.
 - **Per-user rate limiting or quota enforcement changes.** Enforcement is unchanged; only the read
   path is added.
@@ -222,20 +235,66 @@ Restart no longer resets what is shown. `since_startup` remains in the payload, 
 since this process started" is still the honest label for the live counters; the history is a
 separate, explicitly-dated series.
 
-### 4.4 Admin composition
+### 4.4 Admin composition, run through Impeccable
 
-Each page answers one question and is cut to it. The three heaviest are split along seams that
-already exist inside them:
+Each page answers one question and is cut to it. **Every one of the fifteen goes through an
+Impeccable pass** — the skill is already installed and already knows this world, because it wrote it
+(RFC 0003 Phase 1, R5). The admin surface is **Operate** mode in Impeccable's terms: the visitor is
+completing a task, so scanability, consistency and native expectations outrank expression, and the
+brand lives in the detail rather than the gesture. That is the right lens for these pages, and it is
+not the lens a "make it look better" pass would use.
 
-| Page | Question | Cut |
+**The pass has real authority.** It is not a list of pre-approved edits: it may re-cut a page's
+composition, its information architecture, its interaction detail, its copy and its empty and error
+states. What it may not do is change the design language — faces, ramps, palette, spacing steps,
+motion — which is `DESIGN.md`'s, and unchanged (§3, R4). Inside that bound its verdict is final;
+outside it, its verdict is a finding.
+
+#### The verdict per page
+
+Each page is reviewed against one question — *what is the one thing an operator came here to do* —
+and comes out with exactly one of six verdicts:
+
+| Verdict | Meaning | Evidence required |
+| --- | --- | --- |
+| **Keep** | The page answers one question and nothing on it fails to serve that. | The question, written down. A page kept with no stated question has not been reviewed. |
+| **Update** | Right question, wrong composition — hierarchy, density, order, copy, states. | Before/after of what an operator can now see or do faster. |
+| **Split** | The page answers two questions that do not depend on each other. | The dependency argument, as in R8: what one half reads that the other produces. If they share state, they share a route. |
+| **Merge** | Two pages answer one question and force a navigation to complete one task. | The task that currently crosses a route boundary. |
+| **Remove** | The page answers a question nobody arrives with, or one another page already answers. | Where the answer lives instead, plus a `LEGACY_REDIRECTS` entry (RFC 0003 §6.3) — a removed route redirects, it does not 404. |
+| **Add** | A question operators arrive with has no page. | The question, and the data path that answers it — if the API cannot answer it, the finding belongs in §11 as a new row, not in a page. |
+
+The three heaviest pages already have seams visible from outside, and they are the pass's **starting
+hypothesis, not its conclusion** — the review may cut them differently, or not at all, provided the
+verdict carries its evidence:
+
+| Page | Question | Hypothesis |
 | --- | --- | --- |
 | `AdminPackages` (716) | "What is in this instance, and what should not be?" | The block/unblock form is a different job from the package list. The list keeps the page; blocking becomes a dialog opened from it, as `DestructiveConfirm` already is. |
 | `AdminConfigReload` (632) | "What is about to change, and do I accept it?" | Editor, validation report, pending diff and change history are four screens sharing one scroll. The diff and the history are the operator's decision surface; the editor is a tool. |
 | `AdminNotifications` (566) | "Where do events go, and what arrives?" | Three nouns behind a hand-rolled tab strip. Split by what actually depends on what (R8): **inbound events** becomes its own route, since it reads nothing the others produce; **channels and subscriptions stay one route**, because the subscription form's channel `datalist` is populated from the channel list. Routed either way, so both deep-link. |
 
-The remaining twelve are reviewed against the same test — *what is the one question, and what on
-this page does not serve it* — and re-cut only where the answer is clear. **No page is redesigned to
-look different**; the grammar is already correct and gate-enforced.
+The other twelve get the same review with no hypothesis handed to them, which is the point: three
+pages were noticed because they are long, and length is a symptom, not the diagnosis. A 91-line page
+that answers the wrong question is worse than a 400-line page that answers the right one.
+
+#### How the pass runs
+
+Per page, in one commit, so each verdict is reviewable on its own (§12 Phase 5):
+
+1. `/impeccable critique <route>` against the rendered page — the review, scored, with the page's
+   one question stated. This is what produces the verdict above.
+2. The refine command the verdict calls for, with the page's own tests as the regression signal:
+   `distill` for a page carrying more than its question, `layout` for hierarchy and rhythm,
+   `clarify` for labels and error copy, `harden` for edge cases and empty states, `adapt` where the
+   mobile tab-strip or a wide table is the actual complaint.
+3. The RFC 0003 gates, unchanged and non-negotiable: `task impeccable:detect` clean of non-advisory
+   findings, the rendered detector pass at both viewports, axe over the unauthenticated routes, and
+   the authenticated route/role matrix — extended, not bypassed, by any route this pass adds or
+   splits (§10).
+
+A verdict the gates contradict is not a verdict. That ordering is deliberate: the tool has authority
+over composition precisely *because* the measurements that bound it are automated and run after.
 
 ---
 
@@ -363,8 +422,16 @@ configured") reachable in a real server for the first time; today it exists only
   "nothing to report" case, and the meter as a new `ui/` primitive with its own test, since a
   progress meter has an accessibility contract (`role="meter"`, an accessible name, and a text
   alternative — a bar alone is not a value).
-- `AdminDashboard` gains the trend sentence.
-- The three splits in §4.4, each landing with its existing tests moved rather than rewritten.
+- `AdminDashboard` gains the trend sentence. It is also in scope for the §4.4 pass like every other
+  admin page — the trend lands first, so the pass reviews the page an operator will actually have.
+- The §4.4 Impeccable pass over all fifteen admin pages. Mechanically this touches, per page that is
+  not *kept*: the page components under `ui/src/pages/admin/`, `ui/src/config/adminSections.ts` (the
+  sidebar and mobile strip read from it, so a split, merge, removal or addition is a data change
+  there, not a template change in `AdminLayout`), the router, and `LEGACY_REDIRECTS` for any route
+  that stops existing. A page whose verdict is *update* moves no routing at all.
+- New shared surface the pass extracts rather than re-inlines: anything three pages end up wanting
+  goes to `ui/src/components/ui/` with its own colocated test, as RFC 0003 Phase 3's primitives did.
+  A fourth copy of a pattern is a finding, not a paste.
 
 ---
 
@@ -407,7 +474,9 @@ configured") reachable in a real server for the first time; today it exists only
 | Scrape Prometheus from the server for the trend | Puts a second data path and a network dependency behind a page load, to answer a question a table answers. `/metrics` stays for operators who already run a TSDB. |
 | Ship the quota widget by calling the admin endpoint | It is admin-only by design; widening it to self-service would mean one endpoint serving two authorisation rules, which is how the wrong row gets returned. |
 | Let the browser join advisories per coordinate | N requests per page load, and it leaks the coordinate list into the network log of a shared machine (§5.3). |
-| Redesign the admin pages visually as well | The grammar is correct and gate-enforced (RFC 0003 §13). Changing it here would put two variables in one change and make a regression unattributable. |
+| Re-cut the admin pages by hand, from a list written into this RFC | It is what RFC 0003 Phase 6 did, and §2.1 is the result: two surgical fixes to the two pages someone had already noticed, and a third page untouched. A list can only contain what its author spotted; the review has to happen against each page, not against the list. |
+| Let the pass change the design system where a page argues for it | The grammar is correct and gate-enforced (RFC 0003 §13). Moving the world and the pages in one change puts two variables in one commit and makes a regression unattributable — and a token added for one admin page is a token every other surface inherits untested. Findings against `DESIGN.md` are recorded for a future RFC. |
+| Cap the pass at "split the three pages over 550 lines" | Length is a symptom. It would keep the twelve shorter pages unreviewed for the one reason that has nothing to do with whether they answer their question, and it forecloses *remove*, *merge* and *add* entirely — the verdicts a line count cannot suggest. |
 
 ---
 
@@ -425,6 +494,11 @@ configured") reachable in a real server for the first time; today it exists only
   exactly as it is, so no existing scrape breaks on upgrade; `history_enabled = true` starts the
   rollup, and `history_retention_days = 0` turns pruning off rather than turning history off.
   Setting `history_enabled = false` restores today's dashboard, trend and all.
+- **Admin routes may move, and none may break.** A *split*, *merge* or *remove* verdict changes a URL
+  an operator has bookmarked or a runbook cites, so each lands with a `LEGACY_REDIRECTS` entry
+  (RFC 0003 §6.3) rather than a 404 — the mechanism already exists and already has the router wired
+  to it. `adminSections.ts` is the single source for the sidebar and the mobile strip, so navigation
+  follows the data without a second edit.
 - **One migration**, forward-only, creating one table. Rollback drops it; nothing else references it.
 - **`CURRENT_CONFIG_VERSION` moves** for the new `[stats]` block, per the repo's config-change rules.
 
@@ -442,12 +516,18 @@ configured") reachable in a real server for the first time; today it exists only
 - **Quota edges**: usage at 0, just under `warn_threshold_pct`, just over, and at the limit — the
   four states the meter renders differently.
 - **`ui`**: the meter primitive ships with its accessibility contract tested (name, value, text
-  alternative). The two widgets get the four states of RFC 0003 §4.4. The three admin splits move
-  their existing tests; a split that needs its tests rewritten has changed behaviour, which is a
-  review signal.
-- **The RFC 0003 gates stay green throughout** — detector at both viewports, axe over the
-  unauthenticated routes, and the 23 authenticated route/role combinations. New widgets and split
-  pages are new surface, so they extend the authenticated route list rather than bypassing it.
+  alternative). The two widgets get the four states of RFC 0003 §4.4.
+- **The admin pass, per page.** A *split* or *merge* moves its existing tests rather than rewriting
+  them — the assertions describe behaviour, and a re-cut that is only a re-cut keeps them. An
+  *update* may legitimately rewrite tests where the interaction itself changed; that rewrite is the
+  review surface for the verdict, and it is read as one. A *remove* keeps a redirect test, not a
+  deleted file: the route must still land somewhere. An *add* arrives with the same test set every
+  other page has, including its role gating.
+- **The RFC 0003 gates stay green throughout, and bound the pass** (§4.4) — detector at both
+  viewports, axe over the unauthenticated routes, and the 23 authenticated route/role combinations.
+  Every route the pass adds, splits or renames extends that authenticated list; every route it
+  removes leaves a redirect assertion behind. The list's length changing is expected — its coverage
+  dropping is not, so the count is asserted, not merely regenerated.
 - **`fixtures.test.ts`** flips from "at most 6 undocumented" to "none", and the fixtures for the four
   new endpoints are captured the same way the first twenty-one were.
 
@@ -462,7 +542,9 @@ configured") reachable in a real server for the first time; today it exists only
 | R1 | Fix the whole contract, or only what the console calls? | **The whole contract, with a gate.** 126 of 173 documented `200`s have no body; the console is one consumer among the docs site and every generated client. The per-endpoint fix is one clause and the DTOs already derive `ToSchema`. |
 | R2 | Where does the dashboard trend come from? | **A new rollup table**, not the access log and not Prometheus (§5.2, §8). Audit retention and operational charts must not share a lifetime. |
 | R3 | Do the `me` endpoints reuse the admin quota handler? | **No.** One endpoint serving two authorisation rules is how the wrong row gets returned. `/api/v1/me/quota` takes no `user_id`. |
-| R4 | Are the admin pages redesigned as well as re-cut? | **Re-cut only.** The grammar is gate-enforced by RFC 0003; changing both at once makes a regression unattributable. |
+| R4 | How much authority does the admin pass have, and who runs it? | **Impeccable runs it, with full authority over the pages and none over the world.** Composition, information architecture, interaction detail, copy, empty and error states are its call — including *remove*, *merge* and *add*, not only *split*. The design language is `DESIGN.md`'s and does not move here: changing the world and the pages in one commit makes a regression unattributable, and the gates that bound the pass are gates on the world. Ran by hand instead, the review is only as wide as what someone already noticed (§2.1, §8). |
+| R10 | Which pages does the pass cover — the three over 550 lines, or all fifteen? | **All fifteen, with the three as a starting hypothesis only.** Length is a symptom: it is what made three pages visible, and it is silent about a 91-line page answering the wrong question. Restricting the pass to the long pages also restricts the verdict to *split*, which is the one outcome a line count can suggest and the least likely to be the right one twelve times. |
+| R11 | What stops a page from being reviewed twice, or not at all? | **A stated question per page, and one commit per verdict.** Every page ends Phase 5 with its one question written into the commit and a verdict against it — *keep* included, which is why *keep* still requires the question to be written down. Fifteen commits, fifteen questions; a page with no question is a page nobody reviewed. |
 | R5 | Does `registry-types.ts` survive? | **No, but it is not all SDK mirror.** Four of its six exports exist only because the SDK types those responses as `unknown`, and they go once the responses are documented — a hand-written mirror of a contract is the thing most likely to drift. The other two (`Visibility`, `VISIBILITY_OPTIONS`) are UI configuration and move to `src/config/` rather than being deleted. |
 | R6 | What does "recently pulled" mean? | **The 5 most recent coordinates pulled in the last 7 days.** Bounded on both axes on purpose: a count alone degenerates the moment a CI job pulls twenty versions of one package, and a window alone is unbounded for a busy user. Distinct coordinates, so those twenty versions collapse to one row. |
 | R7 | Does the widget cover packages the user *owns*, or only ones they pulled? | **Both, labelled separately** — they are different relationships: you are *exposed to* what you pulled, and you can *fix* what you own. Note the asymmetry in cost: "packages under a namespace my groups claim" is already answerable (`GET /api/v1/me/namespaces/{registry}/{prefix}/packages`), while **explicit per-package ownership has no reverse index** — `OwnershipStore::list_owners` answers "who owns this package", and nothing answers "what does this principal own". That reverse lookup is new work, called out in §6.2. |
@@ -473,6 +555,12 @@ configured") reachable in a real server for the first time; today it exists only
 
 None. Every question this RFC opened is answered above; what remains is implementation, and
 anything discovered during it belongs in a new decision row rather than here.
+
+The fifteen per-page verdicts are the deliberate exception: they are *outputs* of Phase 5, decided
+against the rendered page with the evidence §4.4 requires, not questions this RFC could answer in
+advance without becoming the hand-written list §8 rejects. They land in the commits, one question
+per page. A verdict that turns out to need something this RFC does not provide — an endpoint, a
+token — stops and becomes a row here or a finding for a future RFC; it does not widen the pass.
 
 ---
 
@@ -487,7 +575,7 @@ Each phase leaves the tree green: `cargo test --workspace`, `cargo clippy -- -D 
 | 2 | **The `me` read paths.** Port-level scoping, three endpoints, the absence-based scoping tests. No UI. | Yes — the CLI and any external client can use them immediately. |
 | 3 | **Home widgets.** The meter primitive with its accessibility contract, the two widgets, their four states, and the authenticated gate extended to cover them. | Yes — the first user-visible result. |
 | 4 | **Stats history and `[stats]`.** Migration, port, in-memory and Postgres adapters, the hourly rollup task, the `[stats]` block wiring **both** `history_*` and `metrics_enabled`, `CURRENT_CONFIG_VERSION` bump, and the trend sentence on `AdminDashboard`. Making `metrics_enabled` real means `main.rs` consults config before installing the recorder, which it does not today. | Yes — the metrics switch stands alone even if the trend slips. |
-| 5 | **Admin composition.** The three splits in §4.4, then the twelve-page review, one page per commit so each is reviewable against its own question. | Yes — page by page. |
+| 5 | **Admin composition, through Impeccable.** `/impeccable critique` per route in Operate mode, then the refine command the verdict calls for (§4.4). The three hypothesised pages first, because their seams are already argued, then the other twelve with no hypothesis handed to them. **One page per commit**, each carrying its one question and its verdict — *keep*, *update*, *split*, *merge*, *remove* or *add* — plus the routing, `adminSections.ts` and `LEGACY_REDIRECTS` changes that verdict implies, and the gates green before the next page starts. | Yes — page by page, and a *keep* verdict is a shipped result too: it is the page's question, recorded. |
 
 Phase 1 is deliberately first and deliberately alone: it is the only phase whose absence makes the
 others harder, because every endpoint added afterwards would otherwise be added to a contract that

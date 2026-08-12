@@ -2,13 +2,15 @@
 
 | Field       | Value                                                        |
 | ----------- | ------------------------------------------------------------ |
-| Status      | Draft                                                         |
+| Status      | **Implemented** — all nine phases landed; see the implementation notes in §13 and §14 |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                       |
 | Co-author   | Claude Opus 5 (1M context) <noreply@anthropic.com>            |
 | Created     | 2026-08-11                                                    |
 | Supersedes  | —                                                             |
 | Touches     | `ui`, `website`, `PRODUCT.md`, `DESIGN.md`, CI, docs           |
 | Proof       | `ui/design-proof/` — the catalog surface built in the chosen world (R8/R9) |
+| Landed in   | `d463b84` … `b736970` on `feat/rework-ui` (pending merge to `main`) |
+| Followed by | RFC 0004 — takes over open questions 2 and 4 (§11) |
 
 ---
 
@@ -562,16 +564,29 @@ In scope only for: consuming the shared tokens (§5.1), and clearing its two det
 | R13 | Does the catalog split cached from upstream results? | **No — one list, with provenance stated per row.** The question a reader actually has is "does this instance already have it?", and two tables make that harder to answer, not easier: you would have to look in both to know. An upstream-only row carries an explicit `upstream` marker and is not navigable to a detail page, because there is nothing cached to show yet. This also matches the design system's own state grammar, where an artifact's standing is a property of the row rather than of which table it was filed under. |
 | R6 | Where do the design decisions live afterwards? | **`PRODUCT.md` (done) and `DESIGN.md` (Phase 1).** The detector reads `DESIGN.md`, so recording the world is what makes the CI gate meaningful rather than generic. |
 
-### Still open
+### Still open — none remain
 
-1. **Whether `website/` consumes tokens by build step or by published package.** §5.1 assumes a
-   committed copy produced by a `task` step, matching `task dump-spec`. A real npm package is
-   cleaner and heavier. *Recommendation:* the `task` step; revisit only if a third surface appears.
+Each is either settled by what shipped, or handed to RFC 0004 with a section reference.
+
+1. **Whether `website/` consumes tokens by build step or by published package.** **Settled by
+   default:** the `task ui:tokens` step and its drift gate have carried the whole rework without
+   friction, and no third surface appeared. Revisit only if one does.
 2. **Whether `AdminDashboard` needs API data it does not have** (per-registry savings over time,
-   cache hit-rate trend). If yes, that is a separate API RFC, not a quiet addition here.
-3. **French copy authorship.** §4.6 rules out machine translation for domain terms. Who writes and
-   reviews the French catalogue, and whether English remains the source of truth for key naming, is
-   unsettled.
+   cache hit-rate trend). **Yes, and it is RFC 0004's §2.3.** `StatsResponse`'s counters are named
+   `since_startup` and reset with the process, so the second of the operator's two questions has no
+   answer spanning a restart. That is an API change, which is why it left this RFC.
+3. **French copy authorship.** **Closed.** The catalogue was authored, reviewed by Max, and one real
+   defect was found and fixed in review — `Bulk Import` had been translated faithfully as *"Import
+   en masse"* when the page blocks and unblocks packages rather than importing anything. Both
+   catalogues now read `Bulk Block` / *"Blocage de masse"*. English remains the source of truth for
+   key naming. The lesson — name a label from what the surface does, not from the English string —
+   generalises past this RFC.
+4. **The admin pages' composition.** **Handed to RFC 0004's §2.1 and §4.4.** The grammar is applied
+   and gate-enforced here; how each page is *cut* is editorial work no gate can judge, and it needs
+   the API changes in RFC 0004 to be worth doing once rather than twice. RFC 0004 answers it by
+   putting all fifteen pages back through Impeccable — the tool that built this world in Phase 1 —
+   with authority to keep, update, split, merge, remove or add a page, bounded by this RFC's
+   `DESIGN.md` and by the gates in §13.
 
 ---
 
@@ -843,9 +858,9 @@ real finding under two hundred that must not be touched.
 
 ### Still open, continued
 
-4. **The admin pages' *composition* is the last piece, and it is the one no gate can judge.**
-   Superseded in part: the grammar itself is now applied and measured — faces, both ramps, the
-   palette under the One Synthetic Rule, the tracking ladder, contrast, and one Display-step title
-   per view, across 23 route/role combinations at every commit. What remains is whether a page is
-   *well cut*: what leads, what groups, what could go. A type-ramp check cannot answer that, and
-   nothing here pretends otherwise — it needs an eye, page by page.
+4. **The admin pages' *composition*** — the grammar is applied and measured across 23 route/role
+   combinations at every commit; whether a page is *well cut* is editorial and needs an eye. Carried
+   forward as RFC 0004 §2.1 / §4.4, which names the eye: an Impeccable pass over every admin page in
+   Operate mode, one verdict and one commit each, with the three pages over 550 lines as its opening
+   hypothesis rather than its scope. The gates here are what bound it — they run after each verdict,
+   and a verdict they contradict does not stand.
