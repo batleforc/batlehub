@@ -485,6 +485,25 @@ tasks:
       - pnpm run lint:fix
       - pnpm run format
 
+  # ── Design (Impeccable — RFC 0003) ───────────────────────────────────────────
+  # The skill is ~150 vendored files, so it is gitignored and installed on demand
+  # rather than reviewed as a diff. PRODUCT.md and DESIGN.md hold the decisions
+  # and are tracked. Reload the AI harness after installing or updating.
+  impeccable:install:
+    desc: Install the Impeccable design skill into .claude/ (project scope)
+    cmds:
+      - npx --yes impeccable install --providers=claude --scope=project
+
+  impeccable:update:
+    desc: Refresh an existing Impeccable install to the latest release
+    cmds:
+      - npx --yes impeccable update
+
+  impeccable:detect:
+    desc: Scan the UI and docs site for design anti-patterns (no LLM, no API key)
+    cmds:
+      - npx --yes impeccable detect ui/src website/.vitepress
+
   dev:
     desc: Start Rust backend and Vite frontend in parallel (requires postgres)
     deps:

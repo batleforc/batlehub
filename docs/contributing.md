@@ -15,6 +15,7 @@ This guide is the starting point for developers working on the BatleHub codebase
 7. [Running tests](#7-running-tests)
 8. [Code conventions](#8-code-conventions)
 9. [Known limitations and accepted trade-offs](#9-known-limitations-and-accepted-trade-offs)
+10. [Frontend design workflow (Impeccable)](#10-frontend-design-workflow-impeccable)
 
 ---
 
@@ -509,3 +510,42 @@ To recover manually: call `cleanup_pending` or run:
 ```sql
 DELETE FROM local_packages WHERE status = 'pending';
 ```
+
+---
+
+## 10. Frontend design workflow (Impeccable)
+
+The console's design work runs through [Impeccable](https://impeccable.style), a design skill for AI
+coding agents. See `docs/future-feature/0003-ui-rework.md` for what it is being used for.
+
+**The skill is not in the tree.** It is ~150 vendored files that turn over on every upstream
+release, so `.claude/skills/impeccable/` and `.impeccable/` are gitignored and installed on demand:
+
+```bash
+task impeccable:install   # npx impeccable install --providers=claude --scope=project
+task impeccable:update    # refresh an existing install
+task impeccable:detect    # deterministic anti-pattern scan (no LLM, no API key)
+```
+
+Reload your AI harness after installing or updating. `PRODUCT.md` (product truth) and `DESIGN.md`
+(the visual system) hold the durable decisions and **are** tracked — they are what the detector and
+future design work read.
+
+### Live mode and the CSP
+
+Impeccable's `live` mode serves a helper script from `http://localhost:<port>/live.js` so UI
+elements can be iterated on in the browser. The SPA's `<meta http-equiv="Content-Security-Policy">`
+(built by `buildCsp()` in `ui/build/csp.ts`) refuses that under `script-src 'self'`.
+
+The relaxation is **dev-only and opt-in**. Set the port live mode reports, then start the dev
+server:
+
+```bash
+VITE_IMPECCABLE_LIVE_PORT=4849 task ui:dev
+```
+
+`resolveLivePort()` requires both a non-production build *and* that variable, and `buildCsp()` takes
+a port *number* — the widest policy the opt-in can express is one localhost origin on
+`script-src`/`connect-src` plus `blob:` on `img-src`. A production build ignores the variable
+entirely and emits a policy byte-identical to the one it emitted before live mode existed; both
+halves are pinned by `ui/build/csp.test.ts`.

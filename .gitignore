@@ -48,3 +48,11 @@ ui/eslint-results.sarif
 # Local working notes (release trackers, scratch checklists). Kept out of the
 # tree so they do not turn up as review surface on a PR.
 /todo.md
+
+# Impeccable (design skill, RFC 0003). The skill itself is ~150 vendored files
+# that change on every upstream release — install it with `task impeccable:install`
+# rather than reviewing it as a diff. `.impeccable/` is per-developer state (live
+# mode's port, token and inject journal). PRODUCT.md and DESIGN.md, which are the
+# durable design decisions, ARE tracked.
+/.claude/skills/impeccable/
+/.impeccable/

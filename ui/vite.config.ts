@@ -5,14 +5,14 @@ import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
 import { readdirSync, existsSync } from "node:fs";
 
-import { buildCsp } from "./build/csp.ts";
+import { buildCsp, resolveLivePort } from "./build/csp.ts";
 
 /** Injects the derived CSP into the `%VITE_CSP%` placeholder in index.html. */
-function cspPlugin(apiBaseUrl: string): Plugin {
+function cspPlugin(apiBaseUrl: string, livePort: number | null): Plugin {
   return {
     name: "batlehub-csp",
     transformIndexHtml(html) {
-      return html.replace(/%VITE_CSP%/g, buildCsp(apiBaseUrl));
+      return html.replace(/%VITE_CSP%/g, buildCsp(apiBaseUrl, livePort));
     },
   };
 }
@@ -67,42 +67,49 @@ function coverageIncludeFromTests(): string[] {
   return [...included].sort((a, b) => a.localeCompare(b));
 }
 
-export default defineConfig(({ mode }) => ({
+export default defineConfig(({ mode }) => {
   // `loadEnv` reads .env files the same way Vite does for `import.meta.env`, so
   // the CSP sees exactly the value the SDK will be built with.
-  plugins: [
-    vue(),
-    tailwindcss(),
-    cspPlugin(loadEnv(mode, __dirname, "VITE_").VITE_API_BASE_URL ?? ""),
-  ],
-  resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
-    },
-  },
-  server: {
-    allowedHosts: [".cde.batleforc.fr","localhost"],
-    host: true
-  },
-  build: {
-    outDir: "dist",
-  },
-  test: {
-    environment: "jsdom",
-    setupFiles: ["./src/test/setup.ts"],
-    coverage: {
-      provider: "v8",
-      reporter: ["text", "lcov", "html"],
-      // Auto-derived from co-located test files (see `coverageIncludeFromTests`);
-      // the threshold below applies to this set, not the whole src/ tree. Adding a
-      // co-located `*.test.ts` enrolls its source automatically.
-      include: coverageIncludeFromTests(),
-      thresholds: {
-        lines: 80,
-        branches: 80,
-        functions: 80,
-        statements: 80,
+  const env = loadEnv(mode, __dirname, "VITE_");
+
+  return {
+    plugins: [
+      vue(),
+      tailwindcss(),
+      // The second argument is the only thing that can widen `script-src`, and
+      // `resolveLivePort` returns null for every production build — see
+      // `build/csp.ts` and RFC 0003 §7.
+      cspPlugin(env.VITE_API_BASE_URL ?? "", resolveLivePort(mode, env)),
+    ],
+    resolve: {
+      alias: {
+        "@": path.resolve(__dirname, "./src"),
       },
     },
-  },
-}));
+    server: {
+      allowedHosts: [".cde.batleforc.fr", "localhost"],
+      host: true,
+    },
+    build: {
+      outDir: "dist",
+    },
+    test: {
+      environment: "jsdom",
+      setupFiles: ["./src/test/setup.ts"],
+      coverage: {
+        provider: "v8",
+        reporter: ["text", "lcov", "html"],
+        // Auto-derived from co-located test files (see `coverageIncludeFromTests`);
+        // the threshold below applies to this set, not the whole src/ tree. Adding a
+        // co-located `*.test.ts` enrolls its source automatically.
+        include: coverageIncludeFromTests(),
+        thresholds: {
+          lines: 80,
+          branches: 80,
+          functions: 80,
+          statements: 80,
+        },
+      },
+    },
+  };
+});

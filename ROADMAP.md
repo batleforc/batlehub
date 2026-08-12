@@ -206,6 +206,7 @@ Applies to registries running in `local` or `hybrid` mode.
 - [x] User listing and block management in the admin panel (OIDC and Kubernetes-sourced identities, not just static tokens)
 - [x] Config editor with validation and apply button (integrates with hot reload)
   - [x] Read-only warning when the config file is mounted from a Kubernetes ConfigMap, with instructions for applying changes externally
+- [ ] **Web console redesign** — full rework of `ui/`: one catalog surface and one canonical package URL (today `/packages` and `/explore` duplicate the job, with two different detail URL shapes), an identity-driven shell, a designed first run for empty instances, four first-class list states (empty / filtered-empty / error / denied), a scope-and-count contract on destructive actions, one token source shared with `website/`, WCAG 2.2 AA, and French/English localisation (none exists today — every string is hardcoded English). Visual identity is reopened; the name `BatleHub.` and the Monofolio lineage stay binding. Carried out with the [Impeccable](https://impeccable.style) design skill as the working method — `PRODUCT.md` is written, `DESIGN.md` is the first deliverable, and its deterministic detector becomes a CI gate (RFC `docs/future-feature/0003-ui-rework.md`)
 
 ---
 
