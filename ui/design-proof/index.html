@@ -4,6 +4,16 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>BatleHub — catalog (design proof)</title>
+<script>
+/* Resolve the theme before first paint. Like the locale, the stored preference
+   is system|light|dark and the resolved value is what renders — so "System"
+   survives the OS flipping at sunset instead of being frozen at install time. */
+(function(){try{
+  var p=localStorage.getItem("batlehub.theme")||"system";
+  var r=p==="system"?(matchMedia("(prefers-color-scheme: light)").matches?"light":"dark"):p;
+  document.documentElement.dataset.theme=r;
+}catch(e){document.documentElement.dataset.theme="dark";}})();
+</script>
 <link rel="preload" href="fonts/silkscreen-700.woff2" as="font" type="font/woff2" crossorigin />
 <link rel="preload" href="fonts/silkscreen-400.woff2" as="font" type="font/woff2" crossorigin />
 <link rel="preload" href="fonts/jetbrainsmono-latin.woff2" as="font" type="font/woff2" crossorigin />
@@ -61,6 +71,46 @@
 
   --resolve:520ms cubic-bezier(.16,1,.3,1);
 }
+/* ── Light rendition ─────────────────────────────────────────────────────────
+   Not a filter over the dark one, and not a concession: paper IS this world's
+   home ground — the specimen board is ink on #F2F0EB, and the dark rendition is
+   the adaptation the use scene earned. Monofolio's light tokens are the
+   provenance, under the same in-gamut rule, which catches a second out-of-gamut
+   value here: light --primary ships oklch(0.52 0.24 25) and the sRGB maximum at
+   that L and H is 0.2108.
+
+   Measured on paper: ink 16.64:1 · ink-dim 7.24:1 · accent 5.63:1 ·
+   copper 5.74:1 · accent-ink on accent 5.97:1 · rule-strong 3.41:1 · focus 4.46:1.
+
+   Copper darkens from Monofolio's L .58 to L .50: at .58 it reads 4.2:1 on paper,
+   under the body-text floor. The hue relationship survives; the lightness cannot.
+
+   The Undependable Fill Rule holds in BOTH renditions — raised vs paper is
+   1.11:1, as untrustworthy as the 1.06:1 on near-black, because the WCAG ratio
+   compresses at both ends of the range. So the state grammar transfers unchanged:
+   rule weight and ink, never fill. That is the system being coherent, not lucky. */
+:root[data-theme="light"]{
+  --ground:oklch(0.97 0.008 18);
+  --ground-raised:oklch(0.935 0.010 18);
+  --ground-sunk:oklch(0.99 0.005 18);
+
+  --ink:oklch(0.20 0.022 20);
+  --ink-dim:oklch(0.44 0.04 25);
+  --rule-soft:oklch(0.80 0.02 25);
+  --rule-strong:oklch(0.62 0.05 25);
+
+  --accent:oklch(0.52 0.21 25);        /* max in-gamut 0.2108 at this L/H */
+  --accent-ink:oklch(0.99 0.005 18);
+  --copper:oklch(0.50 0.12 52);
+  --focus:oklch(0.55 0.16 85);
+}
+/* The plate is ink on paper and glow on black — the same screen, the ink of its
+   own ground. Lower opacity on paper because dark dots on light carry further. */
+:root[data-theme="light"] .plate{opacity:.20}
+@supports ((mask-image:url("halftone-plate.png")) or (-webkit-mask-image:url("halftone-plate.png"))){
+  :root[data-theme="light"] .plate{background:var(--ink)}
+}
+
 @media (min-width:640px){:root{--t-display:72px}}
 @media (min-width:880px){:root{--t-display:88px}}
 @media (min-width:1140px){:root{--t-display:104px}}
@@ -108,9 +158,30 @@ a{color:var(--accent);text-underline-offset:3px}
    ink-on-paper: the one contrast event, costing no scanning room. */
 .masthead nav a[aria-current="page"]{color:var(--ground);background:var(--ink);font-weight:700}
 .spacer{margin-left:auto;position:relative;align-self:stretch;min-width:var(--s6)}
+
+/* A preference, not a toggle: language is chosen once and remembered, the way a
+   light/dark/system setting is. Three states, because "System" (follow the
+   browser) is a real answer and a two-way switch cannot express it. */
+.settings{position:relative}
+.pop{position:absolute;right:0;top:calc(100% + var(--s2));z-index:50;min-width:264px;
+  background:var(--ground-sunk);border:1px solid var(--rule-strong);padding:var(--s4)}
+.pop h2{font-family:"Silkscreen",monospace;font-size:var(--t-px-sm);margin:0;
+  text-transform:uppercase;letter-spacing:.04em;color:var(--ink)}
+.pref-label{margin:var(--s4) 0 var(--s2);font-size:var(--t-meta);letter-spacing:.14em;
+  text-transform:uppercase;color:var(--ink-dim)}
+.pref-note{margin:var(--s2) 0 0;font-size:var(--t-meta);color:var(--ink-dim)}
+/* Same segment grammar as the primary nav, so a chosen option reads the same way
+   in both places: a reversed ink block inside one shared bounding box. */
+.segmented{display:flex;border:1px solid var(--rule-strong)}
+.segmented button{flex:1;background:transparent;border:0;border-right:1px solid var(--rule-strong);
+  color:var(--ink-dim);font:inherit;font-size:var(--t-meta);letter-spacing:.06em;
+  text-transform:uppercase;padding:var(--s2) var(--s1);cursor:pointer}
+.segmented button:last-child{border-right:0}
+.segmented button:hover{color:var(--ink)}
+.segmented button[aria-pressed="true"]{background:var(--ink);color:var(--ground);font-weight:700}
 .who{font-size:var(--t-meta);color:var(--ink-dim);display:flex;align-items:center;gap:var(--s2);margin:0}
 .who b{color:var(--copper);font-weight:500}
-.who .role{border:1px solid var(--rule-strong);padding:2px var(--s2);color:var(--ink)}
+.who .role{border:1px solid var(--rule-strong);padding:var(--s1) var(--s2);color:var(--ink);line-height:1}
 
 .ctl{background:transparent;border:1px solid var(--rule-strong);color:var(--ink-dim);
   font:inherit;font-size:var(--t-meta);letter-spacing:.1em;text-transform:uppercase;
@@ -185,7 +256,11 @@ a{color:var(--accent);text-underline-offset:3px}
   box-shadow:none;cursor:not-allowed;transform:none}
 
 /* ── Catalog ──────────────────────────────────────────────────────────────── */
-table{width:100%;border-collapse:collapse}
+/* Wide content scrolls inside its own container. The body must never scroll
+   horizontally — at 390px the fixed columns alone claimed 260px of a 358px box. */
+.table-wrap{overflow-x:auto;overscroll-behavior-x:contain}
+table{width:100%;border-collapse:collapse;min-width:0}
+.c-state{width:136px}.c-ver{width:124px}.c-size{width:96px}.c-fetch{width:124px}
 caption{text-align:left;font-size:var(--t-meta);color:var(--ink-dim);letter-spacing:.1em;
   text-transform:uppercase;padding-bottom:var(--s3)}
 thead th{text-align:left;font-size:var(--t-meta);letter-spacing:.14em;text-transform:uppercase;
@@ -195,7 +270,7 @@ tbody td{padding:var(--s3) var(--s3) var(--s3) 0;border-bottom:1px dashed var(--
   vertical-align:baseline}
 tbody tr:hover td{background:var(--ground-raised);border-bottom-style:solid;border-bottom-color:var(--rule-strong)}
 tbody tr:hover .pkg{text-decoration:underline;text-decoration-color:var(--rule-strong)}
-.pkg{font-size:var(--t-row);color:var(--ink);word-break:break-word}
+.pkg{font-size:var(--t-row);color:var(--ink);overflow-wrap:anywhere}
 .ver{color:var(--ink-dim);font-variant-numeric:tabular-nums}
 .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink-dim);white-space:nowrap}
 
@@ -221,6 +296,7 @@ tbody tr:hover .pkg{text-decoration:underline;text-decoration-color:var(--rule-s
    aria-describedby — not one note floating above the table. */
 tr.note-row td{border-bottom:1px dashed var(--rule-soft);padding-top:0}
 .note{margin:0;font-size:var(--t-body);color:var(--ink-dim);display:flex;gap:var(--s3);align-items:stretch}
+.note > span{min-width:0;overflow-wrap:anywhere}
 .note .bar{flex:none;width:1px;background:var(--rule-strong)}
 .note b{color:var(--accent);font-weight:500}
 
@@ -256,6 +332,11 @@ tr.note-row td{border-bottom:1px dashed var(--rule-soft);padding-top:0}
   .specimen{padding:var(--s5) var(--s4)}
   .plate{width:64%;opacity:.26}
   .num.drop,thead th.drop{display:none}
+  /* Content-sized columns: 260px of fixed width does not fit a 358px box. */
+  .c-state,.c-ver{width:auto}
+  .state{white-space:normal}
+  .sheet,.catalog,.toolbar,.masthead{max-width:100%}
+  .search{min-width:0}
 }
 </style>
 </head>
@@ -294,7 +375,27 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   <p class="who">hub.<b>batle.dev</b>
     <span class="role">admin</span>
     <span>m.leriche</span></p>
-  <button class="ctl" id="locale" aria-pressed="false">FR / <span id="locale-cur">EN</span></button>
+  <div class="settings">
+    <button class="ctl" id="settings-btn" aria-expanded="false" aria-controls="settings-pop"
+            data-i18n="settings">Settings</button>
+    <div class="pop" id="settings-pop" role="group" aria-labelledby="settings-h" hidden>
+      <h2 id="settings-h" data-i18n="settings.h">Settings</h2>
+      <p class="pref-label" id="lang-label" data-i18n="settings.lang">Language</p>
+      <div class="segmented" role="group" aria-labelledby="lang-label">
+        <button data-lang="system" data-i18n="settings.system">System</button>
+        <button data-lang="en">English</button>
+        <button data-lang="fr">Français</button>
+      </div>
+      <p class="pref-note" id="lang-note"></p>
+      <p class="pref-label" id="theme-label" data-i18n="settings.theme">Theme</p>
+      <div class="segmented" role="group" aria-labelledby="theme-label">
+        <button data-theme-pref="system" data-i18n="settings.system">System</button>
+        <button data-theme-pref="light" data-i18n="settings.light">Light</button>
+        <button data-theme-pref="dark" data-i18n="settings.dark">Dark</button>
+      </div>
+      <p class="pref-note" id="theme-note"></p>
+    </div>
+  </div>
 </header>
 
 <main id="main" tabindex="-1">
@@ -390,6 +491,10 @@ const STR = {
   "err.retry":"Retry now","loading":"Resolving…","pulled":"%p resolved from upstream and cached.",
   "err.back":"%r is answering again — new fetches resume.",
   "facts":"%m · %u · %c packages · %s cached","facts.local":"%m · no upstream · %c packages · %s stored",
+  "settings":"Settings","settings.h":"Settings","settings.lang":"Language","settings.system":"System",
+  "settings.theme":"Theme","settings.light":"Light","settings.dark":"Dark",
+  "settings.themenote":"System follows your device — currently %t.",
+  "settings.sysnote":"System follows your browser — currently %l.",
   "synthetic.tag":"Design proof","synthetic.body":"every package, count and timestamp is synthetic fixture data, not a real instance."},
  fr:{"skip":"Aller au catalogue","nav.packages":"Paquets","nav.setup":"Configuration","nav.admin":"Administration",
   "nav.aria":"Principale","bay.title":"Registres","catalog.title":"Catalogue de paquets",
@@ -408,10 +513,29 @@ const STR = {
   "err.retry":"Réessayer","loading":"Résolution…","pulled":"%p récupéré depuis l'amont et mis en cache.",
   "err.back":"%r répond à nouveau — les appels reprennent.",
   "facts":"%m · %u · %c paquets · %s en cache","facts.local":"%m · sans amont · %c paquets · %s stockés",
+  "settings":"Paramètres","settings.h":"Paramètres","settings.lang":"Langue","settings.system":"Système",
+  "settings.theme":"Thème","settings.light":"Clair","settings.dark":"Sombre",
+  "settings.themenote":"Système suit votre appareil — actuellement %t.",
+  "settings.sysnote":"Système suit votre navigateur — actuellement %l.",
   "synthetic.tag":"Maquette","synthetic.body":"chaque paquet, compteur et horodatage est une donnée fictive, pas une instance réelle."}
 };
 
-let lang="en", active="npm1", query="", loading=false;
+/* The stored preference is one of system|en|fr; `lang` is what it resolves to.
+   Keeping them separate is the whole point: "System" must survive a browser
+   language change, which a stored "en" would silently swallow. */
+const LOCALE_KEY="batlehub.locale";
+let langPref=(()=>{try{return localStorage.getItem(LOCALE_KEY)||"system"}catch{return "system"}})();
+const systemLang=()=>(navigator.language||"en").toLowerCase().startsWith("fr")?"fr":"en";
+const THEME_KEY="batlehub.theme";
+let themePref=(()=>{try{return localStorage.getItem(THEME_KEY)||"system"}catch{return "system"}})();
+const systemTheme=()=>matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";
+const applyTheme=()=>{document.documentElement.dataset.theme=
+  themePref==="system"?systemTheme():themePref;};
+/* Re-resolve when the OS flips, but only while the preference is still System. */
+matchMedia("(prefers-color-scheme: light)").addEventListener("change",()=>{
+  if(themePref==="system"){applyTheme();syncPrefs();}});
+let lang=langPref==="system"?systemLang():langPref;
+let active="npm1", query="", loading=false;
 const rows=PKGS.slice();
 const t=k=>STR[lang][k]??k;
 const el=s=>document.querySelector(s);
@@ -498,15 +622,15 @@ function renderSurface(animate){
     return out;
   }).join("");
 
-  host.innerHTML='<table><caption>'+
+  host.innerHTML='<div class="table-wrap"><table><caption>'+
     t("cap").replace("%n",nf().format(list.length===rows.length?reg.count:list.length))+'</caption>'+
     '<thead><tr>'+
-    '<th scope="col" style="width:136px">'+t("th.state")+'</th>'+
+    '<th scope="col" class="c-state">'+t("th.state")+'</th>'+
     '<th scope="col">'+t("th.package")+'</th>'+
-    '<th scope="col" style="width:124px">'+t("th.version")+'</th>'+
-    '<th scope="col" class="num drop" style="width:96px">'+t("th.size")+'</th>'+
-    '<th scope="col" class="num drop" style="width:124px">'+t("th.fetched")+'</th>'+
-    '</tr></thead><tbody>'+body+'</tbody></table>'+
+    '<th scope="col" class="c-ver">'+t("th.version")+'</th>'+
+    '<th scope="col" class="num drop c-size">'+t("th.size")+'</th>'+
+    '<th scope="col" class="num drop c-fetch">'+t("th.fetched")+'</th>'+
+    '</tr></thead><tbody>'+body+'</tbody></table></div>'+
     '<nav class="pager" aria-label="'+t("pager.aria")+'">'+
     '<button class="ctl" disabled>'+t("prev")+'</button>'+
     '<span class="page">01</span>'+
@@ -514,13 +638,22 @@ function renderSurface(animate){
     '<button class="ctl">'+t("next")+'</button></nav>';
 }
 
+function syncPrefs(){
+  document.querySelectorAll("[data-lang]").forEach(b=>
+    b.setAttribute("aria-pressed",String(b.dataset.lang===langPref)));
+  document.querySelectorAll("[data-theme-pref]").forEach(b=>
+    b.setAttribute("aria-pressed",String(b.dataset.themePref===themePref)));
+  el("#lang-note").textContent=langPref==="system"
+    ? t("settings.sysnote").replace("%l",systemLang().toUpperCase()) : "";
+  el("#theme-note").textContent=themePref==="system"
+    ? t("settings.themenote").replace("%t",t("settings."+systemTheme())) : "";
+}
 function applyLang(){
   document.documentElement.lang=lang;
   document.querySelectorAll("[data-i18n]").forEach(n=>n.textContent=t(n.dataset.i18n));
   document.querySelectorAll("[data-i18n-ph]").forEach(n=>n.placeholder=t(n.dataset.i18nPh));
   el("#primary-nav").setAttribute("aria-label",t("nav.aria"));
-  el("#locale-cur").textContent=lang.toUpperCase();
-  el("#locale").setAttribute("aria-pressed",String(lang==="fr"));
+  syncPrefs();
   renderHead(); renderBay(); renderSurface(false);
 }
 
@@ -533,7 +666,33 @@ el("#bay").addEventListener("click",e=>{
   a.focus();
 });
 el("#q").addEventListener("input",e=>{query=e.target.value;renderSurface(false);});
-el("#locale").addEventListener("click",()=>{lang=lang==="en"?"fr":"en";applyLang();});
+const pop=el("#settings-pop"), settingsBtn=el("#settings-btn");
+function setPop(open){
+  pop.hidden=!open; settingsBtn.setAttribute("aria-expanded",String(open));
+  if(open) pop.querySelector("[data-lang]").focus(); else settingsBtn.focus();
+}
+settingsBtn.addEventListener("click",()=>setPop(pop.hidden));
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!pop.hidden) setPop(false);});
+document.addEventListener("click",e=>{
+  if(!pop.hidden && !pop.contains(e.target) && e.target!==settingsBtn) pop.hidden=true,
+    settingsBtn.setAttribute("aria-expanded","false");
+});
+pop.addEventListener("click",e=>{
+  const th=e.target.closest("[data-theme-pref]");
+  if(th){
+    themePref=th.dataset.themePref;
+    try{localStorage.setItem(THEME_KEY,themePref)}catch{/* private mode: session only */}
+    applyTheme(); syncPrefs();
+    el("#live").textContent=t("settings.theme");
+    return;
+  }
+  const b=e.target.closest("[data-lang]"); if(!b) return;
+  langPref=b.dataset.lang;
+  try{localStorage.setItem(LOCALE_KEY,langPref)}catch{/* private mode: session only */}
+  lang=langPref==="system"?systemLang():langPref;
+  applyLang();
+  el("#live").textContent=t("settings.lang");
+});
 el("#pull").addEventListener("click",()=>{
   const p=rows.find(x=>x.s==="pending"); if(!p) return;
   p.s="cached"; p.z="4.7 MB"; p.t="now";
