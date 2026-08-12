@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref, onMounted } from "vue";
 import { useAuthFetch } from "@/composables/useAuthFetch";
 import { formatDate as fmtDate } from "@/lib/format";
@@ -19,6 +20,8 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import { Dialog } from "@/components/ui/dialog";
+
+const { t } = useI18n();
 
 interface BlockedUser {
   user_id: string;
@@ -116,34 +119,34 @@ onMounted(() => {
   <div class="space-y-6">
     <SectionTabs :tabs="SECURITY_TABS" />
     <PageHeader
-      title="User Blocks"
+      :title="t('adminUsers.userBlocks')"
       description="Block user accounts. Blocked users receive 401 responses on all authenticated requests."
     >
       <template #actions>
         <Button variant="outline" size="sm" :disabled="listLoading" @click="loadBlockedUsers">
           {{ listLoading ? "Refreshing…" : "Refresh" }}
         </Button>
-        <Button size="sm" @click="blockDialogOpen = true"> Block User </Button>
+        <Button size="sm" @click="blockDialogOpen = true">{{ t("adminUsers.blockUser") }}</Button>
       </template>
     </PageHeader>
 
     <p v-if="listLoading && blockedUsers.length === 0" class="text-sm text-muted-foreground">
-      Loading…
+      {{ t("adminUsers.loading") }}
     </p>
     <p v-else-if="listError" class="text-sm text-destructive">{{ listError }}</p>
 
     <Card v-else>
       <CardHeader>
-        <CardTitle class="text-base">Currently blocked users</CardTitle>
+        <CardTitle class="text-base">{{ t("adminUsers.currentlyBlockedUsers") }}</CardTitle>
       </CardHeader>
       <CardContent class="p-0">
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>User ID</TableHead>
+              <TableHead>{{ t("adminUsers.userId") }}</TableHead>
               <TableHead>Reason</TableHead>
-              <TableHead>Blocked at</TableHead>
-              <TableHead>Blocked by</TableHead>
+              <TableHead>{{ t("adminUsers.blockedAt") }}</TableHead>
+              <TableHead>{{ t("adminUsers.blockedBy") }}</TableHead>
               <TableHead class="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
@@ -167,7 +170,7 @@ onMounted(() => {
           </TableBody>
         </Table>
         <p v-if="blockedUsers.length === 0" class="p-6 text-sm text-muted-foreground text-center">
-          No users are currently blocked.
+          {{ t("adminUsers.noUsersAreCurrently") }}
         </p>
       </CardContent>
     </Card>
@@ -185,14 +188,14 @@ onMounted(() => {
       }
     "
   >
-    <template #title>Block user</template>
-    <template #description>
-      The user will receive 401 on all authenticated requests until unblocked.
-    </template>
+    <template #title>{{ t("adminUsers.blockUser2") }}</template>
+    <template #description>{{ t("adminUsers.theUserWillReceive") }}</template>
     <div class="space-y-4">
       <div class="space-y-3">
         <div class="space-y-1.5">
-          <Label for="userblock-id">User ID <span class="text-destructive">*</span></Label>
+          <Label for="userblock-id">
+            {{ t("adminUsers.userId") }} <span class="text-destructive">*</span>
+          </Label>
           <Input
             id="userblock-id"
             v-model="blockForm.user_id"
@@ -202,7 +205,11 @@ onMounted(() => {
         </div>
         <div class="space-y-1.5">
           <Label for="userblock-reason">Reason</Label>
-          <Input id="userblock-reason" v-model="blockForm.reason" placeholder="Optional reason" />
+          <Input
+            id="userblock-reason"
+            v-model="blockForm.reason"
+            :placeholder="t('adminUsers.optionalReason')"
+          />
         </div>
       </div>
       <p v-if="blockError" class="text-sm text-destructive">{{ blockError }}</p>
@@ -246,7 +253,7 @@ onMounted(() => {
       >Unblock <span class="font-mono">{{ unblockTarget }}</span
       >?</template
     >
-    <template #description>This user will be immediately allowed to authenticate again.</template>
+    <template #description>{{ t("adminUsers.thisUserWillBe") }}</template>
     <div class="space-y-4">
       <p v-if="unblockError" class="text-sm text-destructive">{{ unblockError }}</p>
       <div class="flex justify-end gap-2">

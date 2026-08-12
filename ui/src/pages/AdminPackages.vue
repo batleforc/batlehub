@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref, computed, watch } from "vue";
 import { useRouter } from "vue-router";
 import { Package } from "@lucide/vue";
@@ -14,6 +15,7 @@ import {
 } from "@/client/sdk.gen";
 import type { RegistryInfo } from "@/client/types.gen";
 import { useApi, extractMessage } from "@/composables/useApi";
+import { DestructiveConfirm } from "@/components/ui/destructive-confirm";
 import { useAuth } from "@/composables/useAuth";
 import { useAuthFetch } from "@/composables/useAuthFetch";
 import { formatDate as fmtDate } from "@/lib/format";
@@ -32,6 +34,8 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
+
+const { t } = useI18n();
 
 interface AdminPackageSummary {
   id: string;
@@ -142,12 +146,6 @@ async function unblock(pkg: AdminPackageSummary) {
 }
 
 async function deletePkg(pkg: AdminPackageSummary) {
-  if (
-    !confirm(
-      `Delete package record and purge cached artifact for "${pkg.package_id.name}@${pkg.package_id.version}"? This cannot be undone.`,
-    )
-  )
-    return;
   actionError.value = null;
   try {
     const res = await authFetch(`${API_BASE_URL}/api/v1/admin/packages/delete`, {
@@ -236,7 +234,6 @@ async function bulkBlock() {
 }
 
 async function bulkUnblock() {
-  if (!confirm(`Unblock ${selected.value.size} selected package(s)?`)) return;
   bulkLoading.value = true;
   bulkResultMsg.value = null;
   try {
@@ -263,12 +260,6 @@ async function bulkUnblock() {
 }
 
 async function bulkDelete() {
-  if (
-    !confirm(
-      `Delete ${selected.value.size} selected package record(s) and purge their cached artifacts? This cannot be undone.`,
-    )
-  )
-    return;
   bulkLoading.value = true;
   bulkResultMsg.value = null;
   try {
@@ -351,6 +342,63 @@ async function submitPreBlock() {
     preBlockLoading.value = false;
   }
 }
+
+/**
+ * Destructive actions go through the contract component, not `confirm()`.
+ *
+ * A native dialog cannot state scope, cannot distinguish reversible from
+ * permanent, and cannot ask for the object's name — so all three of these read
+ * the same to the operator, whether it unblocked two packages or purged forty
+ * artifacts that may no longer exist upstream (RFC 0003 section 4.5).
+ */
+type PendingAction =
+  | { kind: "delete-one"; pkg: AdminPackageSummary }
+  | { kind: "bulk-delete" }
+  | { kind: "bulk-unblock" };
+
+const pending = ref<PendingAction | null>(null);
+
+const confirmProps = computed(() => {
+  const action = pending.value;
+  if (!action) return null;
+  if (action.kind === "delete-one") {
+    const id = action.pkg.package_id;
+    return {
+      action: "Delete",
+      count: 1,
+      itemNoun: "package record",
+      scope: `${id.name}@${id.version} in ${id.registry}, and its cached artifact`,
+      reversible: false,
+      confirmName: id.name,
+    };
+  }
+  if (action.kind === "bulk-delete") {
+    return {
+      action: "Delete",
+      count: selected.value.size,
+      itemNoun: "package record",
+      scope: "the selection, purging their cached artifacts",
+      reversible: false,
+      confirmName: "delete",
+    };
+  }
+  return {
+    action: "Unblock",
+    count: selected.value.size,
+    itemNoun: "package",
+    scope: "the selection",
+    reversible: true,
+  };
+});
+
+async function runPending(): Promise<void> {
+  const action = pending.value;
+  pending.value = null;
+  if (!action) return;
+  if (action.kind === "delete-one") await deletePkg(action.pkg);
+  else if (action.kind === "bulk-delete") await bulkDelete();
+  else await bulkUnblock();
+}
 </script>
 
 <template>
@@ -359,17 +407,14 @@ async function submitPreBlock() {
     <!-- Pre-block form -->
     <Card>
       <CardHeader class="flex flex-row items-center justify-between space-y-0 pb-3">
-        <CardTitle class="text-base"> Block a package </CardTitle>
+        <CardTitle class="text-base">{{ t("adminPackages.blockAPackage") }}</CardTitle>
         <Button variant="outline" size="sm" @click="showPreBlock = !showPreBlock">
           {{ showPreBlock ? "Cancel" : "Block new package" }}
         </Button>
       </CardHeader>
 
       <CardContent v-if="showPreBlock" class="space-y-4 pt-0">
-        <p class="text-xs text-muted-foreground">
-          Pre-emptively block a package before it is downloaded. The block takes effect immediately
-          — any subsequent request for that package will be denied.
-        </p>
+        <p class="text-xs text-muted-foreground">{{ t("adminPackages.preEmptivelyBlockA") }}</p>
 
         <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div class="space-y-1">
@@ -390,12 +435,12 @@ async function submitPreBlock() {
             <Input
               id="pb-name"
               v-model="preBlock.name"
-              placeholder="owner/repo or lodash or serde"
+              :placeholder="t('adminPackages.ownerRepoOrLodash')"
               class="font-mono"
             />
           </div>
           <div class="space-y-1">
-            <Label for="pb-version">Version / tag</Label>
+            <Label for="pb-version">{{ t("adminPackages.versionTag") }}</Label>
             <Input
               id="pb-version"
               v-model="preBlock.version"
@@ -408,12 +453,13 @@ async function submitPreBlock() {
         <div class="grid grid-cols-2 gap-3">
           <div class="space-y-1">
             <Label for="pb-artifact"
-              >Artifact <span class="text-muted-foreground">(optional)</span></Label
+              >Artifact
+              <span class="text-muted-foreground">{{ t("adminPackages.optional") }}</span></Label
             >
             <Input
               id="pb-artifact"
               v-model="preBlock.artifact"
-              placeholder="tarball / 123456789 / download"
+              :placeholder="t('adminPackages.tarball123456789Download')"
               class="font-mono"
             />
           </div>
@@ -443,15 +489,23 @@ async function submitPreBlock() {
       class="sticky top-16 z-30 flex items-center gap-3 rounded-sm border bg-card px-4 py-2.5 shadow-sm"
     >
       <span class="text-sm font-medium">{{ selected.size }} selected</span>
-      <Button size="sm" variant="destructive" :disabled="bulkLoading" @click="bulkBlock">
-        Block selected
-      </Button>
-      <Button size="sm" variant="outline" :disabled="bulkLoading" @click="bulkUnblock">
-        Unblock selected
-      </Button>
-      <Button size="sm" variant="destructive" :disabled="bulkLoading" @click="bulkDelete">
-        Delete selected
-      </Button>
+      <Button size="sm" variant="destructive" :disabled="bulkLoading" @click="bulkBlock">{{
+        t("adminPackages.blockSelected")
+      }}</Button>
+      <Button
+        size="sm"
+        variant="outline"
+        :disabled="bulkLoading"
+        @click="pending = { kind: 'bulk-unblock' }"
+        >{{ t("adminPackages.unblockSelected") }}</Button
+      >
+      <Button
+        size="sm"
+        variant="destructive"
+        :disabled="bulkLoading"
+        @click="pending = { kind: 'bulk-delete' }"
+        >{{ t("adminPackages.deleteSelected") }}</Button
+      >
       <Button size="sm" variant="ghost" @click="selected = new Set()"> Clear </Button>
       <span v-if="bulkResultMsg" class="text-xs text-muted-foreground ml-auto">{{
         bulkResultMsg
@@ -463,7 +517,7 @@ async function submitPreBlock() {
       <CardHeader class="space-y-3 pb-3">
         <div class="flex flex-row items-center justify-between space-y-0">
           <CardTitle class="text-lg">
-            All packages
+            {{ t("adminPackages.allPackages") }}
             <span v-if="packages?.length" class="font-normal text-muted-foreground text-base ml-1"
               >({{ packages.length }})</span
             >
@@ -472,8 +526,8 @@ async function submitPreBlock() {
         </div>
         <Input
           v-model="search"
-          placeholder="Filter by name, registry, or version…"
-          aria-label="Filter packages"
+          :placeholder="t('adminPackages.filterByNameRegistry')"
+          :aria-label="t('adminPackages.filterPackages')"
           class="max-w-sm h-8 text-sm"
         />
       </CardHeader>
@@ -488,7 +542,9 @@ async function submitPreBlock() {
               <p class="text-sm text-muted-foreground">
                 {{ search ? "No packages match your filter." : "No packages yet." }}
               </p>
-              <p v-if="search" class="text-xs text-muted-foreground">Try clearing the filter.</p>
+              <p v-if="search" class="text-xs text-muted-foreground">
+                {{ t("adminPackages.tryClearingTheFilter") }}
+              </p>
             </div>
           </template>
 
@@ -498,7 +554,7 @@ async function submitPreBlock() {
                 <TableHead class="w-8">
                   <input
                     type="checkbox"
-                    aria-label="Select all packages"
+                    :aria-label="t('adminPackages.selectAllPackages')"
                     :checked="allSelected"
                     class="cursor-pointer"
                     @change="toggleAll"
@@ -509,8 +565,8 @@ async function submitPreBlock() {
                 <TableHead>Version</TableHead>
                 <TableHead>Artifact</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead>Last pulled</TableHead>
-                <TableHead>Last pulled by</TableHead>
+                <TableHead>{{ t("adminPackages.lastPulled") }}</TableHead>
+                <TableHead>{{ t("adminPackages.lastPulledBy") }}</TableHead>
                 <TableHead class="text-right"> Downloads </TableHead>
                 <TableHead />
                 <TableHead class="text-right"> Actions </TableHead>
@@ -575,11 +631,9 @@ async function submitPreBlock() {
                       size="sm"
                       @click="
                         router.push({
-                          path: '/admin/packages/detail',
-                          query: {
-                            registry: pkg.package_id.registry,
-                            name: pkg.package_id.name,
-                          },
+                          path: `/packages/${encodeURIComponent(
+                            pkg.package_id.registry,
+                          )}/${encodeURIComponent(pkg.package_id.name)}`,
                         })
                       "
                     >
@@ -590,10 +644,10 @@ async function submitPreBlock() {
                       size="sm"
                       @click="
                         router.push({
-                          path: '/packages/detail',
+                          path: `/packages/${encodeURIComponent(
+                            pkg.package_id.registry,
+                          )}/${encodeURIComponent(pkg.package_id.name)}`,
                           query: {
-                            registry: pkg.package_id.registry,
-                            name: pkg.package_id.name,
                             version: pkg.package_id.version,
                             ...(pkg.package_id.artifact
                               ? { artifact: pkg.package_id.artifact }
@@ -623,7 +677,7 @@ async function submitPreBlock() {
                       variant="ghost"
                       size="sm"
                       class="text-destructive hover:text-destructive hover:bg-destructive/10"
-                      @click="deletePkg(pkg)"
+                      @click="pending = { kind: 'delete-one', pkg }"
                     >
                       Delete
                     </Button>
@@ -636,4 +690,14 @@ async function submitPreBlock() {
       </CardContent>
     </Card>
   </div>
+
+  <DestructiveConfirm
+    v-if="confirmProps"
+    :open="pending !== null"
+    v-bind="confirmProps"
+    :loading="bulkLoading"
+    :error="actionError"
+    @update:open="(open: boolean) => !open && (pending = null)"
+    @confirm="runPending"
+  />
 </template>

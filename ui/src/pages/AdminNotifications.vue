@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref, computed } from "vue";
 import {
   listSubscriptions,
@@ -37,6 +38,8 @@ import {
 } from "@/components/ui/table";
 import { Dialog } from "@/components/ui/dialog";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
+
+const { t } = useI18n();
 
 const { token } = useAuth();
 
@@ -232,7 +235,7 @@ async function testSubscription(id: string) {
 <template>
   <div class="space-y-6">
     <PageHeader
-      title="Webhooks &amp; Notifications"
+      :title="t('adminNotifications.webhooksNotifications')"
       description="Manage outbound notification subscriptions and monitor inbound webhook events."
     />
 
@@ -258,7 +261,7 @@ async function testSubscription(id: string) {
     <!-- ── Subscriptions tab ── -->
     <div v-if="activeTab === 'subscriptions'" class="space-y-4">
       <div class="flex justify-end">
-        <Button size="sm" @click="openCreate"> New Subscription </Button>
+        <Button size="sm" @click="openCreate">{{ t("adminNotifications.newSubscription") }}</Button>
       </div>
 
       <AsyncState :loading="subsLoading && !subscriptions" :error="subsError">
@@ -318,7 +321,7 @@ async function testSubscription(id: string) {
               v-if="!subscriptions || subscriptions.length === 0"
               class="p-6 text-sm text-muted-foreground text-center"
             >
-              No subscriptions configured.
+              {{ t("adminNotifications.noSubscriptionsConfigured") }}
             </p>
           </CardContent>
         </Card>
@@ -339,18 +342,25 @@ async function testSubscription(id: string) {
       <AsyncState :loading="channelsLoading && !channelsResp" :error="channelsError">
         <Card>
           <CardHeader>
-            <CardTitle class="text-base">Configured Channels</CardTitle>
+            <CardTitle class="text-base">{{
+              t("adminNotifications.configuredChannels")
+            }}</CardTitle>
           </CardHeader>
           <CardContent>
             <p class="text-xs text-muted-foreground mb-4">
-              Channels are defined in <code class="font-mono text-xs">config.toml</code> under
-              <code class="font-mono text-xs">[[notifications.channels]]</code>. URLs and secrets
-              are not displayed here.
+              <i18n-t keypath="adminNotifications.channelsDefinedIn" tag="span">
+                <template #file><code class="font-mono text-xs">config.toml</code></template>
+                <template #block
+                  ><code class="font-mono text-xs">[[notifications.channels]]</code></template
+                >
+              </i18n-t>
             </p>
             <div v-if="channels.length === 0" class="text-sm text-muted-foreground">
-              No channels configured. Add
-              <code class="font-mono text-xs">[[notifications.channels]]</code> entries to
-              config.toml.
+              <i18n-t keypath="adminNotifications.noChannelsConfigured" tag="span">
+                <template #block
+                  ><code class="font-mono text-xs">[[notifications.channels]]</code></template
+                >
+              </i18n-t>
             </div>
             <div v-else class="flex flex-wrap gap-2">
               <Badge v-for="ch in channels" :key="ch.name" variant="outline">{{ ch.name }}</Badge>
@@ -375,8 +385,8 @@ async function testSubscription(id: string) {
               <TableHeader>
                 <TableRow>
                   <TableHead>Webhook</TableHead>
-                  <TableHead>Received at</TableHead>
-                  <TableHead>Source IP</TableHead>
+                  <TableHead>{{ t("adminNotifications.receivedAt") }}</TableHead>
+                  <TableHead>{{ t("adminNotifications.sourceIp") }}</TableHead>
                   <TableHead>Signature</TableHead>
                 </TableRow>
               </TableHeader>
@@ -404,7 +414,7 @@ async function testSubscription(id: string) {
               v-if="inboundEvents.length === 0"
               class="p-6 text-sm text-muted-foreground text-center"
             >
-              No inbound events received yet.
+              {{ t("adminNotifications.noInboundEventsReceived") }}
             </p>
           </CardContent>
         </Card>
@@ -427,7 +437,9 @@ async function testSubscription(id: string) {
         <div class="space-y-1.5">
           <Label for="notif-registry"
             >Registry
-            <span class="text-muted-foreground text-xs">(leave blank for all)</span></Label
+            <span class="text-muted-foreground text-xs">{{
+              t("adminNotifications.leaveBlankForAll")
+            }}</span></Label
           >
           <Input
             id="notif-registry"
@@ -438,8 +450,10 @@ async function testSubscription(id: string) {
         </div>
         <div class="space-y-1.5">
           <Label for="notif-package-name"
-            >Package name
-            <span class="text-muted-foreground text-xs">(leave blank for all)</span></Label
+            >{{ t("adminNotifications.packageName") }}
+            <span class="text-muted-foreground text-xs">{{
+              t("adminNotifications.leaveBlankForAll")
+            }}</span></Label
           >
           <Input
             id="notif-package-name"
@@ -452,7 +466,7 @@ async function testSubscription(id: string) {
           <legend
             class="font-mono text-xs font-semibold uppercase tracking-wide text-muted-foreground leading-none"
           >
-            Event types <span class="text-destructive">*</span>
+            {{ t("adminNotifications.eventTypes") }} <span class="text-destructive">*</span>
           </legend>
           <div class="flex flex-wrap gap-2">
             <button
@@ -509,7 +523,7 @@ async function testSubscription(id: string) {
   <!-- Delete confirmation -->
   <ConfirmDialog
     :open="deleteTarget !== null"
-    title="Delete subscription?"
+    :title="t('adminNotifications.deleteSubscription')"
     description="This action cannot be undone."
     confirm-label="Delete"
     loading-label="Deleting…"

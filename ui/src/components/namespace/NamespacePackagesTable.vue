@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
+import { EmptyState } from "@/components/ui/empty-state";
 import { ref, watch, toRef } from "vue";
 import { myNamespacePackages, setPackageVisibility } from "@/client/sdk.gen";
 import type { Visibility, TeamNamespaceDto, NamespacePackageDto } from "@/lib/registry-types";
@@ -17,6 +19,8 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import { Select } from "@/components/ui/select";
+
+const { t } = useI18n();
 
 const props = defineProps<{ namespace: TeamNamespaceDto }>();
 
@@ -105,10 +109,15 @@ function formatDate(iso: string) {
 </script>
 
 <template>
-  <p v-if="loading" class="text-sm text-muted-foreground">Loading…</p>
+  <p v-if="loading" class="text-sm text-muted-foreground">
+    {{ t("namespacePackagesTable.loading") }}
+  </p>
   <p v-else-if="error" class="text-sm text-destructive">{{ error }}</p>
   <p v-else-if="!pkgsData?.length" class="text-sm text-muted-foreground">
-    No published packages found under this namespace.
+    <EmptyState
+      :title="t('namespace.noPackagesTitle')"
+      :description="t('namespace.noPackagesBody')"
+    />
   </p>
   <template v-else>
     <Table>
@@ -117,7 +126,7 @@ function formatDate(iso: string) {
           <TableHead>Package</TableHead>
           <TableHead>Version</TableHead>
           <TableHead>Visibility</TableHead>
-          <TableHead>Published by</TableHead>
+          <TableHead>{{ t("namespacePackagesTable.publishedBy") }}</TableHead>
           <TableHead>Date</TableHead>
           <TableHead />
         </TableRow>
@@ -131,7 +140,9 @@ function formatDate(iso: string) {
           <TableCell class="font-mono text-xs">{{ pkg.name }}</TableCell>
           <TableCell class="font-mono text-xs">
             {{ pkg.version }}
-            <span v-if="pkg.yanked" class="ml-1 text-destructive">(yanked)</span>
+            <span v-if="pkg.yanked" class="ml-1 text-destructive">{{
+              t("namespacePackagesTable.yanked")
+            }}</span>
           </TableCell>
           <TableCell>
             <template v-if="editing[pkgKey(pkg)] !== undefined">
@@ -139,7 +150,7 @@ function formatDate(iso: string) {
                 <Select
                   v-model="editing[pkgKey(pkg)]"
                   :options="visibilityOptions"
-                  aria-label="Package visibility"
+                  :aria-label="t('namespacePackagesTable.packageVisibility')"
                   class="w-32 text-xs"
                 />
                 <Button
@@ -178,9 +189,8 @@ function formatDate(iso: string) {
               variant="ghost"
               class="text-xs h-7 px-2"
               @click="startEdit(pkg)"
+              >{{ t("namespacePackagesTable.editVisibility") }}</Button
             >
-              Edit visibility
-            </Button>
           </TableCell>
         </TableRow>
       </TableBody>

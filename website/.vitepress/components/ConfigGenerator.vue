@@ -2592,8 +2592,8 @@ textarea {
 /* ── Registry-type hints ─────────────────────────────────────────── */
 .cg-registry-hint {
   border: 1px solid var(--vp-c-brand-soft);
-  border-left: 3px solid var(--vp-c-brand-1);
-  border-radius: 5px;
+  border-left: 1px solid var(--vp-c-brand-1);
+  border-radius: 0;
   padding: 0.65rem 0.8rem;
   margin: 0.5rem 0;
   background: var(--vp-c-brand-soft);

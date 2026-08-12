@@ -1,5 +1,8 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { Alert } from "@/components/ui/alert";
+
+const { t } = useI18n();
 
 withDefaults(
   defineProps<{
@@ -15,7 +18,7 @@ withDefaults(
 <template>
   <template v-if="loading">
     <slot name="loading">
-      <p class="text-sm text-muted-foreground py-4">Loading…</p>
+      <p class="text-sm text-muted-foreground py-4">{{ t("asyncState.loading") }}</p>
     </slot>
   </template>
   <template v-else-if="error">

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import type { PackageEventDto } from "@/client/types.gen";
 import { formatDate as fmtDate } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
@@ -11,6 +12,8 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
+
+const { t } = useI18n();
 
 defineProps<{ events: PackageEventDto[] }>();
 
@@ -28,7 +31,7 @@ function fmtAction(a: string) {
 <template>
   <Card>
     <CardHeader>
-      <CardTitle class="text-base">Recent access events</CardTitle>
+      <CardTitle class="text-base">{{ t("packageEventsTable.recentAccessEvents") }}</CardTitle>
     </CardHeader>
     <CardContent class="p-0">
       <Table>
@@ -79,7 +82,7 @@ function fmtAction(a: string) {
         </TableBody>
       </Table>
       <p v-if="events.length === 0" class="p-6 text-sm text-muted-foreground text-center">
-        No events recorded yet.
+        {{ t("packageEventsTable.noEventsRecordedYet") }}
       </p>
     </CardContent>
   </Card>

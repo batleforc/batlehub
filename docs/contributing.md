@@ -549,3 +549,33 @@ a port *number* — the widest policy the opt-in can express is one localhost or
 `script-src`/`connect-src` plus `blob:` on `img-src`. A production build ignores the variable
 entirely and emits a policy byte-identical to the one it emitted before live mode existed; both
 halves are pinned by `ui/build/csp.test.ts`.
+
+### Rendered design gates and the browser sidecar
+
+Three of the four design gates are static and run anywhere (`task ui:design`).
+The fourth needs a real browser, because contrast on painted pixels, focus-ring
+visibility and reflow at 390 px cannot be measured by reading source.
+
+The workspace `devfile.yaml` declares a **`browser` sidecar**
+([che-browser](https://github.com/batleforc/WeeboDevImage/tree/main/che-browser)):
+headed Chrome behind Xvfb, in a sidecar container of the same pod. Every
+container in the pod shares one network namespace, so CDP (`9222`) and
+chromedriver (`9515`) are plain `localhost` ports from the tools container, and
+Chrome reaches the dev server on `localhost:5173` with no ingress.
+
+```bash
+task browser:check                  # is it up? prints the CDP version
+task ui:dev                         # in another terminal
+task ui:design:rendered             # detector at 2 viewports + axe
+task browser:open URL=http://localhost:5173/   # open a tab
+task browser:vnc                    # noVNC password, to watch Chrome
+```
+
+**A devfile change needs a workspace restart.** Adding the sidecar does not
+affect the pod you are already in — Che recreates the pod from the devfile on
+restart, and `task browser:check` fails with a connection error until then.
+
+Chromium cannot run in the tools container itself: the image has no
+`libglib-2.0`, and there is no root to install it. That is the gap the sidecar
+fills, rather than a preference for sidecars.
+

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref, computed } from "vue";
 import { useRouter } from "vue-router";
 import {
@@ -21,6 +22,8 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
+
+const { t } = useI18n();
 
 type BlockedStatus = Extract<PackageVersionDetail["status"], { status: "blocked" }>;
 
@@ -51,11 +54,11 @@ function severityVariant(severity: string): "default" | "destructive" | "seconda
 }
 
 function viewArtifact(v: PackageVersionDetail) {
+  /* One canonical package URL; the version and artifact stay as query, since
+     they select *within* a package rather than name a different one. */
   router.push({
-    path: "/packages/detail",
+    path: `/packages/${encodeURIComponent(props.registry)}/${encodeURIComponent(props.name)}`,
     query: {
-      registry: props.registry,
-      name: props.name,
       version: v.version,
       ...(v.artifact ? { artifact: v.artifact } : {}),
     },
@@ -194,13 +197,15 @@ async function bulkUnblock() {
     v-if="selectedIds.size > 0"
     class="sticky top-16 z-30 flex items-center gap-3 rounded-sm border bg-card px-4 py-2.5 shadow-sm"
   >
-    <span class="text-sm font-medium">{{ selectedIds.size }} version(s) selected</span>
-    <Button size="sm" variant="destructive" :disabled="bulkLoading" @click="bulkBlock"
-      >Block selected</Button
-    >
-    <Button size="sm" variant="outline" :disabled="bulkLoading" @click="bulkUnblock"
-      >Unblock selected</Button
-    >
+    <span class="text-sm font-medium">{{
+      t("packageVersionsTable.versionsSelected", selectedIds.size)
+    }}</span>
+    <Button size="sm" variant="destructive" :disabled="bulkLoading" @click="bulkBlock">{{
+      t("packageVersionsTable.blockSelected")
+    }}</Button>
+    <Button size="sm" variant="outline" :disabled="bulkLoading" @click="bulkUnblock">{{
+      t("packageVersionsTable.unblockSelected")
+    }}</Button>
     <Button size="sm" variant="ghost" @click="selectedIds = new Set()">Clear</Button>
     <span v-if="bulkMsg" class="text-xs text-muted-foreground ml-auto">{{ bulkMsg }}</span>
   </div>
@@ -208,7 +213,7 @@ async function bulkUnblock() {
   <!-- Versions table -->
   <Card>
     <CardHeader>
-      <CardTitle class="text-base">Versions &amp; artifacts</CardTitle>
+      <CardTitle class="text-base">{{ t("packageVersionsTable.versionsArtifacts") }}</CardTitle>
     </CardHeader>
     <CardContent class="p-0">
       <Table>
@@ -217,7 +222,7 @@ async function bulkUnblock() {
             <TableHead class="w-8">
               <input
                 type="checkbox"
-                aria-label="Select all versions"
+                :aria-label="t('packageVersionsTable.selectAllVersions')"
                 :checked="allSelected"
                 class="cursor-pointer"
                 @change="toggleAll"
@@ -230,8 +235,8 @@ async function bulkUnblock() {
             <TableHead>Cached</TableHead>
             <TableHead>Downloads</TableHead>
             <TableHead>Storage</TableHead>
-            <TableHead>Last accessed</TableHead>
-            <TableHead>Last pulled by</TableHead>
+            <TableHead>{{ t("packageVersionsTable.lastAccessed") }}</TableHead>
+            <TableHead>{{ t("packageVersionsTable.lastPulledBy") }}</TableHead>
             <TableHead class="text-right">Actions</TableHead>
           </TableRow>
         </TableHeader>
@@ -292,7 +297,7 @@ async function bulkUnblock() {
                   :href="v.socket_badge_url"
                   target="_blank"
                   rel="noopener noreferrer"
-                  title="Supply-chain report on socket.dev"
+                  :title="t('packageVersionsTable.supplyChainReportOn')"
                 >
                   <img :src="v.socket_badge_url" alt="socket.dev" class="h-4" />
                 </a>
@@ -330,9 +335,9 @@ async function bulkUnblock() {
             <TableCell class="text-right">
               <div class="flex justify-end gap-2">
                 <Button variant="ghost" size="sm" @click="viewArtifact(v)">View</Button>
-                <Button v-if="v.cached" variant="outline" size="sm" @click="doInvalidate(v)"
-                  >Purge cache</Button
-                >
+                <Button v-if="v.cached" variant="outline" size="sm" @click="doInvalidate(v)">{{
+                  t("packageVersionsTable.purgeCache")
+                }}</Button>
                 <Button
                   v-if="v.status.status === 'blocked'"
                   variant="outline"
@@ -347,7 +352,7 @@ async function bulkUnblock() {
         </TableBody>
       </Table>
       <p v-if="versions.length === 0" class="p-6 text-sm text-muted-foreground text-center">
-        No versions tracked yet.
+        {{ t("packageVersionsTable.noVersionsTrackedYet") }}
       </p>
     </CardContent>
   </Card>

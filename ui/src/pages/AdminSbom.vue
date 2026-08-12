@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref } from "vue";
 import { useAuthFetch } from "@/composables/useAuthFetch";
 import { API_BASE_URL } from "@/config";
@@ -9,6 +10,8 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+
+const { t } = useI18n();
 
 const { authFetch } = useAuthFetch();
 
@@ -68,7 +71,7 @@ async function exportSbom() {
 <template>
   <div class="space-y-6">
     <SectionTabs :tabs="OBSERVABILITY_TABS" />
-    <PageHeader title="SBOM Export" variant="glow" />
+    <PageHeader :title="t('adminSbom.sbomExport')" variant="glow" />
 
     <!-- Feedback -->
     <div
@@ -81,19 +84,19 @@ async function exportSbom() {
     <!-- Export card -->
     <Card>
       <CardHeader>
-        <CardTitle>Export Org-Level SBOM</CardTitle>
+        <CardTitle>{{ t("adminSbom.exportOrgLevelSbom") }}</CardTitle>
       </CardHeader>
       <CardContent class="space-y-4">
-        <p class="text-sm text-muted-foreground">
-          Generates a merged SBOM covering all artifacts served in the selected time window. Leave
-          filters empty to export everything.
-        </p>
+        <p class="text-sm text-muted-foreground">{{ t("adminSbom.generatesAMergedSbom") }}</p>
 
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-xl">
           <!-- Registry filter -->
           <div class="space-y-1.5">
             <Label for="sbom-registry"
-              >Registry <span class="text-muted-foreground font-normal">(optional)</span></Label
+              >Registry
+              <span class="text-muted-foreground font-normal">{{
+                t("adminSbom.optional")
+              }}</span></Label
             >
             <Input id="sbom-registry" v-model="registry" placeholder="e.g. crates-io" />
           </div>
@@ -106,15 +109,18 @@ async function exportSbom() {
               v-model="format"
               class="w-full border border-input rounded-sm px-2 py-2 font-mono text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
             >
-              <option value="spdx">SPDX 2.3</option>
-              <option value="cyclonedx">CycloneDX 1.4</option>
+              <option value="spdx">{{ t("adminSbom.spdx23") }}</option>
+              <option value="cyclonedx">{{ t("adminSbom.cyclonedx14") }}</option>
             </select>
           </div>
 
           <!-- From date -->
           <div class="space-y-1.5">
             <Label for="sbom-from"
-              >From <span class="text-muted-foreground font-normal">(optional)</span></Label
+              >From
+              <span class="text-muted-foreground font-normal">{{
+                t("adminSbom.optional")
+              }}</span></Label
             >
             <Input id="sbom-from" v-model="fromDate" type="date" />
           </div>
@@ -122,7 +128,10 @@ async function exportSbom() {
           <!-- To date -->
           <div class="space-y-1.5">
             <Label for="sbom-to"
-              >To <span class="text-muted-foreground font-normal">(optional)</span></Label
+              >To
+              <span class="text-muted-foreground font-normal">{{
+                t("adminSbom.optional")
+              }}</span></Label
             >
             <Input id="sbom-to" v-model="toDate" type="date" />
           </div>
@@ -137,25 +146,31 @@ async function exportSbom() {
     <!-- About card -->
     <Card>
       <CardHeader>
-        <CardTitle class="text-base">About SBOM Formats</CardTitle>
+        <CardTitle class="text-base">{{ t("adminSbom.aboutSbomFormats") }}</CardTitle>
       </CardHeader>
       <CardContent class="text-sm text-muted-foreground space-y-2">
         <p>
-          <strong class="text-foreground">SPDX 2.3</strong> — ISO/IEC standard widely used for
-          compliance and license tracking. Preferred for legal review and OpenChain-conformant
-          workflows.
+          <i18n-t keypath="adminSbom.spdxBlurb" tag="span">
+            <template #name
+              ><strong class="text-foreground">{{ t("adminSbom.spdx23") }}</strong></template
+            >
+          </i18n-t>
         </p>
         <p>
-          <strong class="text-foreground">CycloneDX 1.4</strong> — OWASP standard optimised for
-          security tooling. Preferred for vulnerability scanning and SBOM-driven dependency
-          analysis.
+          <i18n-t keypath="adminSbom.cyclonedxBlurb" tag="span">
+            <template #name
+              ><strong class="text-foreground">{{ t("adminSbom.cyclonedx14") }}</strong></template
+            >
+          </i18n-t>
         </p>
         <p>
-          Per-artifact SBOMs (SPDX or CycloneDX) are also available from the
-          <RouterLink to="/explore" class="underline hover:text-foreground"
-            >Package Explorer</RouterLink
-          >
-          version detail view.
+          <i18n-t keypath="adminSbom.perArtifactSboms" tag="span">
+            <template #catalog
+              ><RouterLink to="/packages" class="underline hover:text-foreground">{{
+                t("adminSbom.catalog")
+              }}</RouterLink></template
+            >
+          </i18n-t>
         </p>
       </CardContent>
     </Card>

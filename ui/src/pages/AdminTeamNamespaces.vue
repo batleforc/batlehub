@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { listNamespaces, claimNamespace, releaseNamespace } from "@/client/sdk.gen";
 import type { TeamNamespaceDto } from "@/lib/registry-types";
 import { useAdminCrudList } from "@/composables/useAdminCrudList";
@@ -20,6 +21,8 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import { Dialog } from "@/components/ui/dialog";
+
+const { t } = useI18n();
 
 interface ClaimForm {
   prefix: string;
@@ -69,13 +72,13 @@ const {
   <div class="space-y-6">
     <SectionTabs :tabs="NAMESPACES_TABS" />
     <PageHeader
-      title="Team Namespaces"
+      :title="t('adminTeamNamespaces.teamNamespaces')"
       description="Assign package name prefixes to auth-provider groups to control who may publish within them."
     >
       <template #actions>
-        <Button size="sm" :disabled="!selectedRegistry" @click="claimDialogOpen = true">
-          Claim namespace
-        </Button>
+        <Button size="sm" :disabled="!selectedRegistry" @click="claimDialogOpen = true">{{
+          t("adminTeamNamespaces.claimNamespace")
+        }}</Button>
       </template>
     </PageHeader>
 
@@ -85,7 +88,7 @@ const {
       <Select
         id="team-ns-registry"
         v-model="selectedRegistry"
-        placeholder="Select a registry…"
+        :placeholder="t('adminTeamNamespaces.selectARegistry')"
         :options="registryOptions"
       />
     </div>
@@ -95,7 +98,7 @@ const {
       <CardHeader>
         <div class="flex items-center justify-between">
           <CardTitle class="text-base">
-            Namespace claims
+            {{ t("adminTeamNamespaces.namespaceClaims") }}
             <span v-if="selectedRegistry" class="font-mono text-muted-foreground text-sm ml-1"
               >({{ selectedRegistry }})</span
             >
@@ -119,7 +122,7 @@ const {
             <TableRow>
               <TableHead>Prefix</TableHead>
               <TableHead>Group</TableHead>
-              <TableHead>Claimed by</TableHead>
+              <TableHead>{{ t("adminTeamNamespaces.claimedBy") }}</TableHead>
               <TableHead class="text-right"> Actions </TableHead>
             </TableRow>
           </TableHeader>
@@ -168,15 +171,20 @@ const {
       }
     "
   >
-    <template #title>Claim namespace</template>
+    <template #title>{{ t("adminTeamNamespaces.claimNamespace") }}</template>
     <template #description>
-      Restrict publishing under a prefix in
-      <span class="font-mono">{{ selectedRegistry }}</span> to a specific group.
+      <i18n-t keypath="adminTeamNamespaces.restrictPublishingIn" tag="span">
+        <template #registry
+          ><span class="font-mono">{{ selectedRegistry }}</span></template
+        >
+      </i18n-t>
     </template>
     <div class="space-y-4">
       <div class="space-y-3">
         <div class="space-y-1.5">
-          <Label for="team-ns-prefix">Prefix <span class="text-destructive">*</span></Label>
+          <Label for="team-ns-prefix">
+            {{ t("adminTeamNamespaces.prefix") }} <span class="text-destructive">*</span>
+          </Label>
           <Input
             id="team-ns-prefix"
             v-model="claimForm.prefix"
@@ -184,12 +192,15 @@ const {
             class="font-mono"
           />
           <p class="text-xs text-muted-foreground">
-            Packages whose name equals or starts with <span class="font-mono">prefix/</span> will be
-            restricted.
+            <i18n-t keypath="adminTeamNamespaces.packagesStartingWith" tag="span">
+              <template #prefix><span class="font-mono">prefix/</span></template>
+            </i18n-t>
           </p>
         </div>
         <div class="space-y-1.5">
-          <Label for="team-ns-group-id">Group ID <span class="text-destructive">*</span></Label>
+          <Label for="team-ns-group-id">
+            {{ t("adminTeamNamespaces.groupId") }} <span class="text-destructive">*</span>
+          </Label>
           <Input
             id="team-ns-group-id"
             v-model="claimForm.group_id"
@@ -197,15 +208,15 @@ const {
             class="font-mono"
           />
           <p class="text-xs text-muted-foreground">
-            Must match the group name in your auth provider's claims.
+            {{ t("adminTeamNamespaces.mustMatchTheGroup") }}
           </p>
         </div>
         <div class="space-y-1.5">
-          <Label for="team-ns-claimed-by">Claimed by</Label>
+          <Label for="team-ns-claimed-by">{{ t("adminTeamNamespaces.claimedBy") }}</Label>
           <Input
             id="team-ns-claimed-by"
             v-model="claimForm.claimed_by"
-            placeholder="Optional — your user ID"
+            :placeholder="t('adminTeamNamespaces.optionalYourUserId')"
           />
         </div>
       </div>
@@ -247,11 +258,16 @@ const {
       }
     "
   >
-    <template #title>Release namespace claim?</template>
+    <template #title>{{ t("adminTeamNamespaces.releaseNamespaceClaim") }}</template>
     <template #description>
-      The prefix <span class="font-mono">{{ releaseTarget?.prefix }}</span> will no longer be
-      restricted to group <span class="font-mono">{{ releaseTarget?.group_id }}</span
-      >. Any authenticated user will be able to publish packages under this prefix.
+      <i18n-t keypath="adminTeamNamespaces.releaseExplanation" tag="span">
+        <template #prefix
+          ><span class="font-mono">{{ releaseTarget?.prefix }}</span></template
+        >
+        <template #group
+          ><span class="font-mono">{{ releaseTarget?.group_id }}</span></template
+        >
+      </i18n-t>
     </template>
     <div class="space-y-4">
       <p v-if="releaseError" class="text-sm text-destructive">

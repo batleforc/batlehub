@@ -70,3 +70,17 @@ Element.prototype.scrollIntoView ??= vi.fn();
 Element.prototype.hasPointerCapture ??= () => false;
 Element.prototype.releasePointerCapture ??= () => {};
 Element.prototype.setPointerCapture ??= () => {};
+
+/**
+ * Install the real i18n catalogue for every mount.
+ *
+ * Any component that calls `useI18n()` throws without the plugin, so this would
+ * otherwise have to be repeated in every test that mounts anything translated.
+ * Using the *real* catalogues rather than a stub is deliberate: assertions then
+ * read the strings a user actually sees, and a test that quietly passes against
+ * `t('some.key')` echoed back tells us nothing.
+ */
+import { config } from "@vue/test-utils";
+import { i18n } from "@/i18n";
+
+config.global.plugins = [...(config.global.plugins ?? []), i18n];

@@ -51,7 +51,7 @@ async function mountComp(versions: PackageVersionDetail[]) {
     history: createMemoryHistory(),
     routes: [
       { path: "/", component: { template: "<div />" } },
-      { path: "/packages/detail", component: { template: "<div />" } },
+      { path: "/packages/:registry/:name", component: { template: "<div />" } },
     ],
   });
   await router.push("/");
@@ -125,9 +125,11 @@ describe("PackageVersionsTable", () => {
     const push = vi.spyOn(router, "push");
     const viewBtn = wrapper.findAll("button").find((b) => b.text() === "View")!;
     await viewBtn.trigger("click");
+    /* The package is named by the path now; version and artifact stay as query
+       because they select within a package rather than name a different one. */
     expect(push).toHaveBeenCalledWith({
-      path: "/packages/detail",
-      query: { registry: "npm", name: "pkg", version: "1.0.0", artifact: "pkg-1.0.0.tgz" },
+      path: "/packages/npm/pkg",
+      query: { version: "1.0.0", artifact: "pkg-1.0.0.tgz" },
     });
   });
 
@@ -191,7 +193,8 @@ describe("PackageVersionsTable", () => {
     const { wrapper } = await mountComp([version(), version({ id: "v2", version: "2.0.0" })]);
     const selectAll = wrapper.find('input[aria-label="Select all versions"]');
     await selectAll.setValue(true);
-    expect(wrapper.text()).toContain("2 version(s) selected");
+    /* Real plural forms now, rather than "(s)" — vue-i18n picks the form. */
+    expect(wrapper.text()).toContain("2 versions selected");
 
     const bulkBlockBtn = wrapper.findAll("button").find((b) => b.text() === "Block selected")!;
     await bulkBlockBtn.trigger("click");

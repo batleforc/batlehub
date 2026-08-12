@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
+import { useRoute } from "vue-router";
 import { ref } from "vue";
 import { checkAccess } from "@/client/sdk.gen";
 import type { AccessCheckResponse } from "@/client/types.gen";
@@ -9,10 +11,25 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 
-const registry = ref("github");
-const name = ref("");
-const version = ref("");
-const artifact = ref("");
+const { t } = useI18n();
+
+/**
+ * Prefilled from the query when arriving from a denial (RFC 0003 §4.4).
+ *
+ * This is the one place the diagnostics earn their keep: someone reaches this
+ * page because something was refused, and asking them to retype the coordinate
+ * they just looked at is how a tool becomes the thing nobody opens.
+ */
+const route = useRoute();
+const q = (key: string, fallback = ""): string => {
+  const value = route.query[key];
+  return typeof value === "string" && value ? value : fallback;
+};
+
+const registry = ref(q("registry", "github"));
+const name = ref(q("name"));
+const version = ref(q("version"));
+const artifact = ref(q("artifact"));
 const result = ref<AccessCheckResponse | null>(null);
 const error = ref<string | null>(null);
 const loading = ref(false);
@@ -46,7 +63,7 @@ async function check() {
 <template>
   <Card class="max-w-lg">
     <CardHeader>
-      <CardTitle class="text-lg"> Access Check </CardTitle>
+      <CardTitle class="text-lg">{{ t("accessCheck.accessCheck") }}</CardTitle>
     </CardHeader>
     <CardContent class="space-y-4">
       <div class="grid gap-3">
@@ -55,7 +72,7 @@ async function check() {
           <Input id="registry" v-model="registry" placeholder="github" />
         </div>
         <div class="space-y-1">
-          <Label for="name">Name (owner/repo)</Label>
+          <Label for="name">{{ t("accessCheck.nameOwnerRepo") }}</Label>
           <Input id="name" v-model="name" placeholder="owner/repo" />
         </div>
         <div class="space-y-1">
@@ -63,7 +80,7 @@ async function check() {
           <Input id="version" v-model="version" placeholder="v1.0.0" />
         </div>
         <div class="space-y-1">
-          <Label for="artifact">Artifact (optional)</Label>
+          <Label for="artifact">{{ t("accessCheck.artifactOptional") }}</Label>
           <Input id="artifact" v-model="artifact" placeholder="12345678" />
         </div>
       </div>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref, onMounted } from "vue";
 import { useAuthFetch } from "@/composables/useAuthFetch";
 import { extractMessage } from "@/composables/useApi";
@@ -12,6 +13,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+
+const { t } = useI18n();
 
 interface WarmableRegistry {
   name: string;
@@ -159,7 +162,7 @@ onMounted(() => void loadStatus());
   <div class="space-y-6">
     <SectionTabs :tabs="OPERATIONS_TABS" />
     <PageHeader
-      title="Cache Warming"
+      :title="t('adminWarming.cacheWarming')"
       description="Registries with warming configured. Trigger a warm run to pre-fetch artifacts into the local cache."
     >
       <template #actions>
@@ -176,8 +179,10 @@ onMounted(() => void loadStatus());
     >
       <template #empty>
         <p class="text-sm text-muted-foreground">
-          No registries have warming configured. Add <code>warm_packages</code> or
-          <code>warm_paths</code> to a registry in your config.
+          <i18n-t keypath="adminWarming.noWarmingConfigured" tag="span">
+            <template #packages><code>warm_packages</code></template>
+            <template #paths><code>warm_paths</code></template>
+          </i18n-t>
         </p>
       </template>
 
@@ -197,11 +202,11 @@ onMounted(() => void loadStatus());
               <Input
                 :id="`pkg-${reg.name}`"
                 v-model="packageInputs[reg.name]"
-                placeholder="lodash, react@18.0.0"
+                :placeholder="t('adminWarming.lodashReact180')"
                 class="font-mono text-xs"
               />
               <p class="text-[11px] text-muted-foreground">
-                Comma-separated. Omit version to warm latest_n.
+                {{ t("adminWarming.commaSeparatedOmitVersion") }}
               </p>
             </div>
             <div class="space-y-1.5">
@@ -213,7 +218,7 @@ onMounted(() => void loadStatus());
                 class="font-mono text-xs"
               />
               <p class="text-[11px] text-muted-foreground">
-                Comma-separated. For path-addressed registries.
+                {{ t("adminWarming.commaSeparatedForPath") }}
               </p>
             </div>
 
@@ -249,11 +254,16 @@ onMounted(() => void loadStatus());
     <!-- Delete cached artifact -->
     <Card>
       <CardHeader>
-        <CardTitle>Delete Cached Artifact</CardTitle>
+        <CardTitle>{{ t("adminWarming.deleteCachedArtifact") }}</CardTitle>
         <CardDescription>
-          Remove a single proxy-cached artifact from storage. The next request will re-download it
-          from upstream. Use <strong>Path</strong> mode for path-addressed registries
-          (jetbrains/deb/rpm); use <strong>Package</strong> mode for all others.
+          <i18n-t keypath="adminWarming.removeArtifactHelp" tag="span">
+            <template #path
+              ><strong>{{ t("adminWarming.pathMode") }}</strong></template
+            >
+            <template #package
+              ><strong>{{ t("adminWarming.packageMode") }}</strong></template
+            >
+          </i18n-t>
         </CardDescription>
       </CardHeader>
       <CardContent class="space-y-4">

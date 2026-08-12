@@ -1,12 +1,15 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref, computed } from "vue";
 import { RouterLink } from "vue-router";
-import { API_BASE_URL } from "@/config";
+import { API_BASE_URL, DOCS_URL } from "@/config";
 import { listRegistries } from "@/client/sdk.gen";
 import type { RegistryInfo } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
 import { PageHeader } from "@/components/ui/page-header";
+import { Input } from "@/components/ui/input";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select } from "@/components/ui/select";
@@ -19,10 +22,12 @@ import {
   type SnippetContext,
 } from "@/config/registryTypes";
 
+const { t } = useI18n();
+
 const base = computed(() => API_BASE_URL || globalThis.location.origin);
 const copied = ref<string | null>(null);
 
-const { token, identity, isAuthenticated, expiresAt } = useAuth();
+const { token, identity, isAuthenticated, isAdmin, expiresAt } = useAuth();
 
 function hostnameOf(url: string): string {
   try {
@@ -113,6 +118,20 @@ const activeDefs = computed(() =>
   }),
 );
 
+/**
+ * The tool filter. With 21 registry types the tab strip stopped being a chooser
+ * and became a wall — this narrows it by name so the thing you came for is one
+ * keystroke away rather than one scan away (RFC 0003 §2.9).
+ */
+const toolFilter = ref("");
+const visibleDefs = computed(() => {
+  const q = toolFilter.value.trim().toLowerCase();
+  if (!q) return activeDefs.value;
+  return activeDefs.value.filter(
+    (d) => d.label.toLowerCase().includes(q) || d.id.toLowerCase().includes(q),
+  );
+});
+
 const defaultTab = computed(
   () => activeDefs.value[0]?.id ?? (isAuthenticated.value ? "netrc" : ""),
 );
@@ -172,30 +191,56 @@ async function copy(key: string, text: string) {
 <template>
   <div class="max-w-7xl space-y-8">
     <PageHeader
-      title="Setup Guide"
+      :title="t('setupGuide.setupGuide')"
       description="Configure your tools to route package downloads through this proxy. Snippets are pre-filled with this server's address and your configured registries."
       variant="glow"
     />
 
     <!-- Loading state -->
-    <div v-if="loading" class="text-sm text-muted-foreground">Loading registries…</div>
+    <div v-if="loading" class="text-sm text-muted-foreground">
+      {{ t("setupGuide.loadingRegistries") }}
+    </div>
 
     <!-- No registries configured -->
-    <div
-      v-else-if="activeDefs.length === 0 && !isAuthenticated"
-      class="text-sm text-muted-foreground"
-    >
-      No registries are configured yet, or you don't have access to any. Contact your administrator
-      or check your
-      <code class="font-mono bg-muted px-1 rounded">config.toml</code>.
+    <div v-else-if="activeDefs.length === 0 && !isAuthenticated">
+      <EmptyState
+        :title="t('setupGuide.nothingToConnectTo')"
+        description="No registries are configured on this instance, or none that your account can reach. Until one exists there is no URL for a tool to point at."
+      >
+        <template #action>
+          <Button v-if="isAdmin" as-child size="sm">
+            <RouterLink to="/admin/operations/config-reload">{{
+              t("setupGuide.openConfig")
+            }}</RouterLink>
+          </Button>
+          <Button as-child size="sm" variant="outline">
+            <a :href="DOCS_URL" target="_blank" rel="noopener noreferrer">{{
+              t("setupGuide.configurationGuide")
+            }}</a>
+          </Button>
+        </template>
+      </EmptyState>
     </div>
 
     <!-- Tabs -->
     <Tabs v-else :default-value="defaultTab">
+      <div v-if="activeDefs.length > 6" class="mb-3 max-w-xs">
+        <label class="sr-only" for="tool-filter">{{ t("setupGuide.filterTools") }}</label>
+        <Input
+          id="tool-filter"
+          v-model="toolFilter"
+          type="search"
+          :placeholder="t('setupGuide.filterTools2')"
+        />
+      </div>
+      <p v-if="toolFilter && visibleDefs.length === 0" class="mb-3 text-sm text-muted-foreground">
+        {{ t("setup.noToolMatch", { query: toolFilter }) }}
+      </p>
+
       <TabsList
         class="flex flex-wrap h-auto gap-1 justify-start bg-transparent border-none p-0 mb-2"
       >
-        <TabsTrigger v-for="def in activeDefs" :key="def.id" :value="def.id" class="rounded-sm">
+        <TabsTrigger v-for="def in visibleDefs" :key="def.id" :value="def.id" class="rounded-sm">
           {{ def.label }}
         </TabsTrigger>
         <TabsTrigger v-if="isAuthenticated" value="netrc" class="rounded-sm"> .netrc </TabsTrigger>
@@ -272,10 +317,16 @@ async function copy(key: string, text: string) {
           <CardHeader>
             <div class="flex items-center justify-between">
               <CardDescription>
-                Credentials for tools that use HTTP Basic Auth (curl, wget, …). Place in
-                <code class="text-xs font-mono bg-muted px-1 rounded">~/.netrc</code>
-                and restrict permissions with
-                <code class="text-xs font-mono bg-muted px-1 rounded">chmod 600 ~/.netrc</code>.
+                <i18n-t keypath="setupGuide.netrcHelp" tag="span">
+                  <template #file
+                    ><code class="text-xs font-mono bg-muted px-1 rounded">~/.netrc</code></template
+                  >
+                  <template #chmod
+                    ><code class="text-xs font-mono bg-muted px-1 rounded"
+                      >chmod 600 ~/.netrc</code
+                    ></template
+                  >
+                </i18n-t>
               </CardDescription>
               <Badge variant="outline" class="shrink-0 font-mono text-xs ml-4"> ~/.netrc </Badge>
             </div>
@@ -292,15 +343,15 @@ async function copy(key: string, text: string) {
               </Button>
             </CodeBlock>
             <p v-if="isOidc" class="text-xs text-muted-foreground">
-              Your current token is a short-lived OIDC session token. For long-lived automation,
-              create a
-              <RouterLink
-                to="/tokens"
-                class="underline underline-offset-2 hover:text-foreground transition-colors"
-              >
-                personal API token
-              </RouterLink>
-              and use that as the password.
+              <i18n-t keypath="setupGuide.oidcTokenNote" tag="span">
+                <template #link
+                  ><RouterLink
+                    to="/me/tokens"
+                    class="underline underline-offset-2 hover:text-foreground transition-colors"
+                    >{{ t("setupGuide.personalApiToken") }}</RouterLink
+                  ></template
+                >
+              </i18n-t>
             </p>
           </CardContent>
         </Card>

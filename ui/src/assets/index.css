@@ -1,8 +1,15 @@
 @import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap");
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "../design/tokens.css";
 
-@custom-variant dark (&:where(.dark, .dark *));
+/* Dark is the BASE rendition in ui/src/design/tokens.css — bare `:root` — and
+   light overrides at `:root[data-theme="light"]`. The variant has to mirror
+   that exactly, so it matches "not explicitly light" rather than "explicitly
+   dark": with the latter, a document whose data-theme is not yet set (first
+   paint, or JS disabled) renders dark tokens while every `dark:` utility stays
+   inactive, putting light-variant styles on a dark ground. */
+@custom-variant dark (&:where(:root:not([data-theme="light"]), :root:not([data-theme="light"]) *));
 
 @theme {
   --font-family-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
@@ -61,60 +68,48 @@
   max-width: 1400px;
 }
 
-/* ── Light mode (warm Monofolio adaptation) ──────────────────────────────── */
-:root {
-  --background: oklch(0.97 0.008 18);
-  --foreground: oklch(0.12 0.022 20);
-  --card: oklch(0.95 0.006 18);
-  --card-foreground: oklch(0.12 0.022 20);
-  --popover: oklch(0.95 0.006 18);
-  --popover-foreground: oklch(0.12 0.022 20);
-  --primary: oklch(0.52 0.24 25);
-  --primary-foreground: oklch(0.97 0.01 0);
-  --secondary: oklch(0.92 0.01 18);
-  --secondary-foreground: oklch(0.52 0.24 25);
-  --muted: oklch(0.92 0.01 18);
-  --muted-foreground: oklch(0.44 0.04 25);
-  --accent: oklch(0.52 0.24 25 / 0.1);
-  --accent-foreground: oklch(0.52 0.24 25);
-  --copper: oklch(0.58 0.12 52);
-  --destructive: oklch(0.5 0.26 25);
-  --destructive-foreground: oklch(0.97 0.01 0);
-  --border: oklch(0.52 0.24 25 / 0.2);
-  --input: oklch(0.52 0.24 25 / 0.1);
-  --ring: oklch(0.52 0.24 25 / 0.4);
-  --radius: 0.125rem;
-  --grid-line: oklch(0.52 0.24 25 / 0.06);
-  --cyber-glow: 0 0 6px oklch(0.52 0.24 25 / 0.5), 0 0 20px oklch(0.52 0.24 25 / 0.18);
-  --steam-glow: 0 0 6px oklch(0.58 0.12 52 / 0.5), 0 0 20px oklch(0.58 0.12 52 / 0.18);
-}
+/* ── Bridge: legacy names → the design system ─────────────────────────────────
+   The values live in ui/src/design/tokens.css and nowhere else; these aliases
+   exist only so the 29 existing pages adopt the system without being rewritten,
+   and they retire as components are re-cut (RFC 0003 Phase 3+).
 
-/* ── Dark mode (full Monofolio cyberpunk) ─────────────────────────────────── */
-.dark {
-  --background: oklch(0.07 0.018 18);
-  --foreground: oklch(0.93 0.018 25);
-  --card: oklch(0.1 0.018 18);
-  --card-foreground: oklch(0.93 0.018 25);
-  --popover: oklch(0.1 0.018 18);
-  --popover-foreground: oklch(0.93 0.018 25);
-  --primary: oklch(0.65 0.26 25);
-  --primary-foreground: oklch(0.97 0.01 0);
-  --secondary: oklch(0.14 0.022 18);
-  --secondary-foreground: oklch(0.65 0.26 25);
-  --muted: oklch(0.13 0.016 18);
-  --muted-foreground: oklch(0.58 0.04 30);
-  --accent: oklch(0.65 0.26 25 / 0.12);
-  --accent-foreground: oklch(0.65 0.26 25);
-  --copper: oklch(0.72 0.14 52);
-  --destructive: oklch(0.55 0.28 25);
-  --destructive-foreground: oklch(0.97 0.01 0);
-  --border: oklch(0.65 0.26 25 / 0.22);
-  --input: oklch(0.65 0.26 25 / 0.12);
-  --ring: oklch(0.65 0.26 25 / 0.45);
-  --radius: 0.125rem;
-  --grid-line: oklch(0.65 0.26 25 / 0.06);
-  --cyber-glow: 0 0 6px oklch(0.65 0.26 25 / 0.65), 0 0 22px oklch(0.65 0.26 25 / 0.3);
-  --steam-glow: 0 0 6px oklch(0.72 0.14 52 / 0.6), 0 0 22px oklch(0.72 0.14 52 / 0.25);
+   Three mappings are deliberate corrections rather than renames:
+     - --primary-foreground now resolves to --accent-ink. It was near-white on
+       crimson at 3.58:1, an AA failure on every filled button in the app.
+     - --border and --input resolve to --rule-strong (3.68:1) rather than to a
+       soft separator, so control edges meet 1.4.11. Legacy used one token for
+       both jobs; erring toward the contrast-carrying one is the safe direction.
+     - --accent was the primary hue at 10-12% alpha used as a hover fill. Fill
+       is not a dependable state channel (see The Undependable Fill Rule), so it
+       maps to --ground-raised and hover carries on ink and rule weight.
+   ──────────────────────────────────────────────────────────────────────────── */
+:root {
+  --background: var(--ground);
+  --foreground: var(--ink);
+  --card: var(--ground-raised);
+  --card-foreground: var(--ink);
+  --popover: var(--ground-sunk);
+  --popover-foreground: var(--ink);
+  --primary: var(--accent);
+  --primary-foreground: var(--accent-ink);
+  --secondary: var(--ground-raised);
+  --secondary-foreground: var(--ink);
+  --muted: var(--ground-raised);
+  --muted-foreground: var(--ink-dim);
+  --accent: var(--ground-raised);
+  --accent-foreground: var(--ink);
+  --destructive: var(--accent);
+  --destructive-foreground: var(--accent-ink);
+  --border: var(--rule-strong);
+  --input: var(--rule-strong);
+  --ring: var(--focus);
+
+  /* The two-axis grid is gone (RFC 0003 R8): a flagged generated-UI tell, and
+     the system's divider language is the hairline rule. The glows survive as
+     tokens because the world is dark and they are how a surface reads as lit —
+     but they are shadows now, not a tiled line-field. */
+  --cyber-glow: 0 0 6px color-mix(in oklab, var(--accent) 55%, transparent);
+  --steam-glow: 0 0 6px color-mix(in oklab, var(--copper) 55%, transparent);
 }
 
 @layer base {
@@ -129,14 +124,25 @@
   }
 }
 
-/* ── Signature effect utilities ──────────────────────────────────────────── */
-
-.cyber-grid-bg {
-  background-image:
-    linear-gradient(var(--grid-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
-  background-size: 48px 48px;
+/* ── Reduced motion ───────────────────────────────────────────────────────────
+   A blanket neutraliser rather than per-component `motion-safe:`, because the
+   animations that matter most here come from radix's data-[state] transitions
+   and tw-animate-css, which no utility on our side can reach. Near-zero rather
+   than `none` so animation/transition *end* events still fire and any logic
+   waiting on them does not hang. WCAG 2.2 AA, 2.3.3.
+   ────────────────────────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
+
+/* ── Signature effect utilities ──────────────────────────────────────────── */
 
 .cyber-text-glow {
   text-shadow: var(--cyber-glow);
@@ -165,8 +171,8 @@
   background-color: var(--shiki-light-bg);
 }
 
-.dark .shiki-wrapper .shiki,
-.dark .shiki-wrapper .shiki span {
+[data-theme="dark"] .shiki-wrapper .shiki,
+[data-theme="dark"] .shiki-wrapper .shiki span {
   color: var(--shiki-dark);
   background-color: var(--shiki-dark-bg);
 }

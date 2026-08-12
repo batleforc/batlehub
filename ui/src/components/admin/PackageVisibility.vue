@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref, watch } from "vue";
 import { getPackageVisibility, setPackageVisibility } from "@/client/sdk.gen";
 import type { Visibility } from "@/lib/registry-types";
@@ -9,6 +10,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
 import { Select } from "@/components/ui/select";
+
+const { t } = useI18n();
 
 const props = defineProps<{ registry: string; name: string }>();
 
@@ -51,11 +54,8 @@ async function save() {
 <template>
   <Card>
     <CardHeader>
-      <CardTitle class="text-base">Package visibility</CardTitle>
-      <CardDescription
-        >Controls who can download this package (all versions share the same
-        setting).</CardDescription
-      >
+      <CardTitle class="text-base">{{ t("packageVisibility.packageVisibility") }}</CardTitle>
+      <CardDescription>{{ t("packageVisibility.controlsWhoCanDownload") }}</CardDescription>
     </CardHeader>
     <CardContent>
       <div class="flex items-center gap-3 flex-wrap">
@@ -71,7 +71,7 @@ async function save() {
         <Select
           v-model="selected"
           :options="[...VISIBILITY_OPTIONS]"
-          aria-label="Package visibility"
+          :aria-label="t('packageVisibility.packageVisibility')"
           class="w-72"
         />
         <Button

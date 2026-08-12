@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref, onMounted, computed } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { client } from "@/client/client.gen";
@@ -11,6 +12,8 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/com
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+
+const { t } = useI18n();
 
 const router = useRouter();
 const route = useRoute();
@@ -98,11 +101,13 @@ function providerLabel(name: string): string {
 </script>
 
 <template>
-  <div class="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4 cyber-grid-bg">
+  <div class="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
     <Card class="w-full max-w-sm [box-shadow:var(--cyber-glow)]">
       <CardHeader class="space-y-1">
-        <CardTitle class="font-mono text-2xl font-bold cyber-text-glow"> Sign in </CardTitle>
-        <CardDescription> Authenticate to access protected resources. </CardDescription>
+        <CardTitle class="font-mono text-2xl font-bold cyber-text-glow">{{
+          t("loginPage.signIn")
+        }}</CardTitle>
+        <CardDescription>{{ t("loginPage.authenticateToAccessProtected") }}</CardDescription>
       </CardHeader>
 
       <CardContent class="space-y-4">
@@ -132,9 +137,9 @@ function providerLabel(name: string): string {
               <span class="w-full border-t border-border/60" />
             </div>
             <div class="relative flex justify-center text-xs uppercase">
-              <span class="bg-card px-2 font-mono text-muted-foreground tracking-widest"
-                >or use a token</span
-              >
+              <span class="bg-card px-2 font-mono text-muted-foreground tracking-widest">{{
+                t("loginPage.orUseAToken")
+              }}</span>
             </div>
           </div>
         </template>
@@ -142,12 +147,12 @@ function providerLabel(name: string): string {
         <!-- Static-token form -->
         <form class="space-y-4" @submit.prevent="submit">
           <div class="space-y-2">
-            <Label for="token">Bearer token</Label>
+            <Label for="token">{{ t("loginPage.bearerToken") }}</Label>
             <Input
               id="token"
               v-model="inputToken"
               type="password"
-              placeholder="Paste your token here"
+              :placeholder="t('loginPage.pasteYourTokenHere')"
               autocomplete="current-password"
             />
           </div>
@@ -161,9 +166,9 @@ function providerLabel(name: string): string {
           </Button>
         </form>
 
-        <Button type="button" variant="ghost" class="w-full" @click="continueAnonymously">
-          Continue without signing in
-        </Button>
+        <Button type="button" variant="ghost" class="w-full" @click="continueAnonymously">{{
+          t("loginPage.continueWithoutSigningIn")
+        }}</Button>
       </CardContent>
     </Card>
   </div>

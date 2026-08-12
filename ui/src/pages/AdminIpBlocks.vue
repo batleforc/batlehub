@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref } from "vue";
 import { listBlockedIps, blockIp, unblockIp } from "@/client/sdk.gen";
 import type { BlockedIpDto } from "@/lib/registry-types";
@@ -21,6 +22,8 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import { Dialog } from "@/components/ui/dialog";
+
+const { t } = useI18n();
 
 const { token } = useAuth();
 
@@ -91,34 +94,36 @@ function isExpired(unblock_at: number): boolean {
   <div class="space-y-6">
     <SectionTabs :tabs="SECURITY_TABS" />
     <PageHeader
-      title="IP Blocks"
+      :title="t('adminIpBlocks.ipBlocks')"
       description="Manage manually blocked IP addresses. Blocked IPs receive 403 responses on all requests."
     >
       <template #actions>
         <Button variant="outline" size="sm" :disabled="loading" @click="reload">
           {{ loading ? "Refreshing…" : "Refresh" }}
         </Button>
-        <Button size="sm" @click="blockDialogOpen = true"> Block IP </Button>
+        <Button size="sm" @click="blockDialogOpen = true">{{ t("adminIpBlocks.blockIp") }}</Button>
       </template>
     </PageHeader>
 
-    <p v-if="loading && !data" class="text-sm text-muted-foreground">Loading…</p>
+    <p v-if="loading && !data" class="text-sm text-muted-foreground">
+      {{ t("adminIpBlocks.loading") }}
+    </p>
     <p v-else-if="error" class="text-sm text-destructive">
       {{ error }}
     </p>
 
     <Card v-else>
       <CardHeader>
-        <CardTitle class="text-base"> Currently blocked IPs </CardTitle>
+        <CardTitle class="text-base">{{ t("adminIpBlocks.currentlyBlockedIps") }}</CardTitle>
       </CardHeader>
       <CardContent class="p-0">
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>IP address</TableHead>
+              <TableHead>{{ t("adminIpBlocks.ipAddress") }}</TableHead>
               <TableHead>Reason</TableHead>
-              <TableHead>Blocked at</TableHead>
-              <TableHead>Unblocks at</TableHead>
+              <TableHead>{{ t("adminIpBlocks.blockedAt") }}</TableHead>
+              <TableHead>{{ t("adminIpBlocks.unblocksAt") }}</TableHead>
               <TableHead class="text-right"> Actions </TableHead>
             </TableRow>
           </TableHeader>
@@ -155,7 +160,7 @@ function isExpired(unblock_at: number): boolean {
           </TableBody>
         </Table>
         <p v-if="!data || data.length === 0" class="p-6 text-sm text-muted-foreground text-center">
-          No IPs are currently blocked.
+          {{ t("adminIpBlocks.noIpsAreCurrently") }}
         </p>
       </CardContent>
     </Card>
@@ -173,14 +178,14 @@ function isExpired(unblock_at: number): boolean {
       }
     "
   >
-    <template #title>Block IP address</template>
-    <template #description>
-      The IP will be blocked for the specified duration and receive 403 on all requests.
-    </template>
+    <template #title>{{ t("adminIpBlocks.blockIpAddress") }}</template>
+    <template #description>{{ t("adminIpBlocks.theIpWillBe") }}</template>
     <div class="space-y-4">
       <div class="space-y-3">
         <div class="space-y-1.5">
-          <Label for="ipblock-ip">IP address <span class="text-destructive">*</span></Label>
+          <Label for="ipblock-ip">
+            {{ t("adminIpBlocks.ipAddress") }} <span class="text-destructive">*</span>
+          </Label>
           <Input
             id="ipblock-ip"
             v-model="blockForm.ip"
@@ -190,10 +195,14 @@ function isExpired(unblock_at: number): boolean {
         </div>
         <div class="space-y-1.5">
           <Label for="ipblock-reason">Reason</Label>
-          <Input id="ipblock-reason" v-model="blockForm.reason" placeholder="Optional reason" />
+          <Input
+            id="ipblock-reason"
+            v-model="blockForm.reason"
+            :placeholder="t('adminIpBlocks.optionalReason')"
+          />
         </div>
         <div class="space-y-1.5">
-          <Label for="ipblock-duration">Duration (seconds)</Label>
+          <Label for="ipblock-duration">{{ t("adminIpBlocks.durationSeconds") }}</Label>
           <Input
             id="ipblock-duration"
             v-model.number="blockForm.duration_secs"
@@ -201,7 +210,7 @@ function isExpired(unblock_at: number): boolean {
             min="60"
             placeholder="3600"
           />
-          <p class="text-xs text-muted-foreground">Default: 3600 s (1 hour)</p>
+          <p class="text-xs text-muted-foreground">{{ t("adminIpBlocks.default3600S1") }}</p>
         </div>
       </div>
       <p v-if="blockError" class="text-sm text-destructive">
@@ -247,7 +256,7 @@ function isExpired(unblock_at: number): boolean {
       >Unblock <span class="font-mono">{{ unblockTarget }}</span
       >?</template
     >
-    <template #description>This IP will be immediately allowed to send requests again.</template>
+    <template #description>{{ t("adminIpBlocks.thisIpWillBe") }}</template>
     <div class="space-y-4">
       <p v-if="unblockError" class="text-sm text-destructive">
         {{ unblockError }}

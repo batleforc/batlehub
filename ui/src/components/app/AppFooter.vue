@@ -1,6 +1,9 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { onMounted, ref } from "vue";
 import { API_BASE_URL, REPORT_BUG_URL, REPORT_SECURITY_URL } from "@/config";
+
+const { t } = useI18n();
 
 const appVersion = ref<string | null>(null);
 
@@ -22,7 +25,7 @@ onMounted(async () => {
     <div
       class="container mx-auto flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-xs font-mono text-muted-foreground"
     >
-      <span v-if="appVersion">BatleHub v{{ appVersion }}</span>
+      <span v-if="appVersion">{{ t("appFooter.version", { version: appVersion }) }}</span>
       <span v-else />
       <div class="flex items-center gap-3">
         <a
@@ -30,17 +33,15 @@ onMounted(async () => {
           target="_blank"
           rel="noopener noreferrer"
           class="hover:text-accent-foreground transition-colors"
+          >{{ t("appFooter.reportABug") }}</a
         >
-          Report a bug
-        </a>
         <a
           :href="REPORT_SECURITY_URL"
           target="_blank"
           rel="noopener noreferrer"
           class="hover:text-accent-foreground transition-colors"
+          >{{ t("appFooter.reportASecurityIssue") }}</a
         >
-          Report a security issue
-        </a>
       </div>
     </div>
   </footer>

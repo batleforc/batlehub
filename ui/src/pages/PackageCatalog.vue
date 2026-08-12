@@ -1,11 +1,15 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref, computed, onMounted } from "vue";
-import { useRouter } from "vue-router";
+import { RouterLink, useRouter } from "vue-router";
 import { useExploreCache } from "@/composables/useExploreCache";
 import { extractMessage } from "@/composables/useApi";
 import { formatCount } from "@/lib/format";
 import { sourceVariant } from "@/lib/badge-variants";
 import { PageHeader } from "@/components/ui/page-header";
+import { Facet } from "@/components/ui/facet";
+import { EmptyState } from "@/components/ui/empty-state";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Pagination } from "@/components/ui/pagination";
 import { Search, Package, RefreshCw } from "@lucide/vue";
 import {
@@ -33,6 +37,8 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import { Card, CardContent } from "@/components/ui/card";
+
+const { t } = useI18n();
 
 // ── Unified row type for the table ────────────────────────────────────────────
 
@@ -71,6 +77,15 @@ const sidebarRegistries = computed(() =>
   allRegistries.value.map((r) => ({
     name: r.name,
     package_count: registryStats.value.get(r.name)?.package_count ?? 0,
+  })),
+);
+
+/** The facet's options, from the same merged list the sidebar rendered. */
+const facetOptions = computed(() =>
+  sidebarRegistries.value.map((r) => ({
+    value: r.name,
+    label: r.name,
+    count: r.package_count,
   })),
 );
 
@@ -218,7 +233,7 @@ function onSortChange(val: string) {
 function goToDetail(row: ExploreRow) {
   if (row.kind !== "cached") return;
   router.push({
-    path: `/explore/packages/${encodeURIComponent(row.registry)}/${encodeURIComponent(row.name)}`,
+    path: `/packages/${encodeURIComponent(row.registry)}/${encodeURIComponent(row.name)}`,
   });
 }
 
@@ -237,46 +252,16 @@ onMounted(() => {
 
 <template>
   <div class="flex gap-6 min-h-[60vh]">
-    <!-- Sidebar: full registry list (including those with 0 packages) -->
-    <aside class="hidden md:flex flex-col w-56 shrink-0 gap-0.5 border-r border-border/60 pr-4">
-      <p class="font-mono text-xs font-semibold text-copper uppercase tracking-wider px-2 mb-2">
-        Registries
-      </p>
-
-      <button
-        :class="[
-          'flex items-center justify-between px-2 py-1.5 rounded-sm font-mono text-sm transition-colors w-full text-left',
-          selectedRegistry === null
-            ? 'bg-accent text-accent-foreground font-semibold'
-            : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
-        ]"
-        @click="selectRegistry(null)"
-      >
-        <span>All registries</span>
-        <Badge variant="outline" class="text-xs ml-1">{{ totalPackages }}</Badge>
-      </button>
-
-      <button
-        v-for="reg in sidebarRegistries"
-        :key="reg.name"
-        :class="[
-          'flex items-center justify-between px-2 py-1.5 rounded-sm font-mono text-sm transition-colors w-full text-left',
-          selectedRegistry === reg.name
-            ? 'bg-accent text-accent-foreground font-semibold'
-            : reg.package_count === 0
-              ? 'text-muted-foreground/50 hover:bg-accent/60 hover:text-accent-foreground'
-              : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
-        ]"
-        @click="selectRegistry(reg.name)"
-      >
-        <span class="truncate">{{ reg.name }}</span>
-        <Badge
-          :variant="reg.package_count === 0 ? 'outline' : 'outline'"
-          :class="['text-xs ml-1 shrink-0', reg.package_count === 0 ? 'opacity-40' : '']"
-        >
-          {{ reg.package_count }}
-        </Badge>
-      </button>
+    <!-- The registry facet, now the shared primitive rather than 40 lines of
+         inline buttons. Selection rides on ink and a lit edge, not a fill. -->
+    <aside class="hidden md:block w-56 shrink-0 border-r border-border/60 pr-4">
+      <Facet
+        :model-value="selectedRegistry"
+        :options="facetOptions"
+        label="Registries"
+        :all-label="`All registries (${totalPackages})`"
+        @update:model-value="selectRegistry"
+      />
     </aside>
 
     <!-- Main content -->
@@ -285,7 +270,7 @@ onMounted(() => {
       <PageHeader variant="glow">
         <template #title>
           <Package class="h-5 w-5 text-primary" />
-          Package Explorer
+          Packages
         </template>
         <template #actions>
           <Button
@@ -311,21 +296,21 @@ onMounted(() => {
           <Search class="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input
             class="pl-8"
-            placeholder="Search packages…"
-            aria-label="Search packages"
+            :placeholder="t('packageCatalog.searchPackages')"
+            :aria-label="t('packageCatalog.searchPackages2')"
             :value="search"
             @input="onSearchInput(($event.target as HTMLInputElement).value)"
           />
         </div>
         <select
-          aria-label="Sort packages"
+          :aria-label="t('packageCatalog.sortPackages')"
           class="h-9 rounded-sm border border-input bg-background px-3 font-mono text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
           :value="sort"
           @change="onSortChange(($event.target as HTMLSelectElement).value)"
         >
-          <option value="downloads">Most Downloaded</option>
-          <option value="name">Name A–Z</option>
-          <option value="recent">Recently Accessed</option>
+          <option value="downloads">{{ t("packageCatalog.mostDownloaded") }}</option>
+          <option value="name">{{ t("packageCatalog.nameAZ") }}</option>
+          <option value="recent">{{ t("packageCatalog.recentlyAccessed") }}</option>
         </select>
       </div>
 
@@ -349,16 +334,42 @@ onMounted(() => {
             <TableBody>
               <template v-if="loading">
                 <TableRow>
-                  <TableCell colspan="6" class="text-center text-muted-foreground py-8">
-                    Loading…
+                  <TableCell colspan="6" class="py-4">
+                    <Skeleton :lines="6" />
                   </TableCell>
                 </TableRow>
               </template>
 
+              <!-- Empty is two states, and telling them apart is the point: a
+                   user shown "no packages" while a filter is applied concludes
+                   the registry is broken. -->
               <template v-else-if="tableRows.length === 0 && !loadingUpstream">
                 <TableRow>
-                  <TableCell colspan="6" class="text-center text-muted-foreground py-8">
-                    No packages found
+                  <TableCell colspan="6" class="py-6">
+                    <EmptyState
+                      :filtered="Boolean(search.trim())"
+                      :title="
+                        search.trim() ? 'Nothing matches that search' : 'No packages cached yet'
+                      "
+                      :description="
+                        search.trim()
+                          ? 'No package in this view matches. Upstream results appear here too when the registry supports search.'
+                          : 'Packages appear here once something pulls them through this instance, or once they are published to it.'
+                      "
+                    >
+                      <template v-if="search.trim()" #action>
+                        <Button size="sm" variant="outline" @click="search = ''">{{
+                          t("packageCatalog.clearSearch")
+                        }}</Button>
+                      </template>
+                      <template v-else #action>
+                        <Button size="sm" variant="outline" as-child>
+                          <RouterLink to="/setup">{{
+                            t("packageCatalog.pointAToolAt")
+                          }}</RouterLink>
+                        </Button>
+                      </template>
+                    </EmptyState>
                   </TableCell>
                 </TableRow>
               </template>
@@ -370,7 +381,18 @@ onMounted(() => {
                 :class="row.kind === 'cached' ? 'cursor-pointer' : 'cursor-default opacity-70'"
                 @click="goToDetail(row)"
               >
-                <TableCell class="font-mono text-sm font-medium">{{ row.name }}</TableCell>
+                <TableCell class="font-mono text-sm font-medium">
+                  {{ row.name }}
+                  <!-- One list, provenance stated per row. The question a reader
+                       actually has is "does this instance already have it?", and
+                       splitting the table into two makes that harder to answer,
+                       not easier. -->
+                  <span
+                    v-if="row.kind === 'upstream'"
+                    class="ml-2 font-mono text-xs uppercase tracking-wider text-muted-foreground"
+                    >upstream</span
+                  >
+                </TableCell>
                 <TableCell>
                   <Badge variant="outline" class="text-xs">{{ row.registry }}</Badge>
                 </TableCell>
@@ -395,9 +417,9 @@ onMounted(() => {
                     <Badge :variant="sourceVariant(row.source)" class="text-xs">
                       {{ sourceLabel(row.source) }}
                     </Badge>
-                    <Badge v-if="row.has_blocked" variant="destructive" class="text-xs ml-1">
-                      Has blocked
-                    </Badge>
+                    <Badge v-if="row.has_blocked" variant="destructive" class="text-xs ml-1">{{
+                      t("packageCatalog.hasBlocked")
+                    }}</Badge>
                   </template>
                   <span v-else class="text-xs text-muted-foreground truncate max-w-[14rem] block">
                     {{ row.description ?? "—" }}
@@ -417,9 +439,8 @@ onMounted(() => {
                     v-else
                     variant="outline"
                     class="text-xs whitespace-nowrap border-dashed text-muted-foreground"
+                    >{{ t("packageCatalog.notYetProxied") }}</Badge
                   >
-                    Not Yet Proxied
-                  </Badge>
                 </TableCell>
               </TableRow>
 
@@ -428,9 +449,8 @@ onMounted(() => {
                 <TableCell
                   colspan="6"
                   class="text-center text-muted-foreground py-2 text-xs italic"
+                  >{{ t("packageCatalog.searchingUpstreamRegistries") }}</TableCell
                 >
-                  Searching upstream registries…
-                </TableCell>
               </TableRow>
             </TableBody>
           </Table>
@@ -442,7 +462,7 @@ onMounted(() => {
         v-if="total > perPage"
         class="flex items-center justify-between text-sm text-muted-foreground"
       >
-        <span>{{ total }} cached packages total</span>
+        <span>{{ t("packageCatalog.cachedPackagesTotal", total) }}</span>
         <Pagination :page="page" :total-pages="totalPages" @update:page="goToPage" />
       </div>
     </div>

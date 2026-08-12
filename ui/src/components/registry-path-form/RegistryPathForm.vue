@@ -1,9 +1,12 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { computed } from "vue";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { PathFieldDef, RegistryPathTypeDef } from "@/config/registryPathFields";
+
+const { t } = useI18n();
 
 const props = defineProps<{
   typeDef: RegistryPathTypeDef;
@@ -32,7 +35,7 @@ const rows = computed<PathFieldDef[][]>(() => {
 <template>
   <div class="space-y-4">
     <div class="space-y-1">
-      <Label :for="`${typeDef.id}-registry`">Registry name</Label>
+      <Label :for="`${typeDef.id}-registry`">{{ t("registryPathForm.registryName") }}</Label>
       <Input
         :id="`${typeDef.id}-registry`"
         v-model="registryName"

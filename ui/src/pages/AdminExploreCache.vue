@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref, onMounted } from "vue";
 import { registryHealth, invalidateExploreCache } from "@/client/sdk.gen";
 import SectionTabs from "@/components/admin/SectionTabs.vue";
@@ -7,6 +8,8 @@ import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+
+const { t } = useI18n();
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -82,12 +85,13 @@ onMounted(fetchRegistries);
 <template>
   <div class="space-y-6">
     <SectionTabs :tabs="OPERATIONS_TABS" />
-    <PageHeader title="Explore Cache">
+    <PageHeader :title="t('adminExploreCache.exploreCache')">
       <template #description>
-        The package explorer caches database query results for
-        <Badge variant="outline" class="font-mono text-xs">10 min</Badge>
-        to avoid expensive scans on large registries. Stale entries are kept and served if the
-        database becomes unreachable.
+        {{ t("adminExploreCache.cachesQueryResultsFor") }}
+        <Badge variant="outline" class="font-mono text-xs">{{
+          t("adminExploreCache.10Min")
+        }}</Badge>
+        {{ t("adminExploreCache.toAvoidExpensiveScans") }}
       </template>
     </PageHeader>
 
@@ -108,11 +112,8 @@ onMounted(fetchRegistries);
     <!-- Per-registry invalidation -->
     <Card>
       <CardHeader>
-        <CardTitle>Invalidate by Registry</CardTitle>
-        <CardDescription>
-          Clears only the entries belonging to one registry. Use this after a manual data fix or
-          forced re-index without triggering a full publish.
-        </CardDescription>
+        <CardTitle>{{ t("adminExploreCache.invalidateByRegistry") }}</CardTitle>
+        <CardDescription>{{ t("adminExploreCache.clearsOnlyTheEntries") }}</CardDescription>
       </CardHeader>
       <CardContent class="space-y-3">
         <div class="flex gap-2 flex-wrap items-end">
@@ -136,7 +137,7 @@ onMounted(fetchRegistries);
             <label
               for="explore-cache-registry-input"
               class="text-xs text-muted-foreground font-medium"
-              >Registry name</label
+              >{{ t("adminExploreCache.registryName") }}</label
             >
             <input
               id="explore-cache-registry-input"
@@ -155,7 +156,7 @@ onMounted(fetchRegistries);
         </div>
 
         <p class="text-xs text-muted-foreground">
-          Cache is also invalidated automatically when a package is published to this registry.
+          {{ t("adminExploreCache.cacheIsAlsoInvalidated") }}
         </p>
       </CardContent>
     </Card>
@@ -163,18 +164,15 @@ onMounted(fetchRegistries);
     <!-- Full cache flush -->
     <Card>
       <CardHeader>
-        <CardTitle>Invalidate Entire Cache</CardTitle>
-        <CardDescription>
-          Forces every explore endpoint to re-query the database on the next request. Use after bulk
-          data imports or registry restructuring.
-        </CardDescription>
+        <CardTitle>{{ t("adminExploreCache.invalidateEntireCache") }}</CardTitle>
+        <CardDescription>{{ t("adminExploreCache.forcesEveryExploreEndpoint") }}</CardDescription>
       </CardHeader>
       <CardContent class="space-y-3">
         <Button variant="destructive" :disabled="loadingAll" @click="invalidateAll">
           {{ loadingAll ? "Clearing…" : "Invalidate All Registries" }}
         </Button>
         <p class="text-xs text-muted-foreground">
-          The cache repopulates automatically on the next request — no downtime.
+          {{ t("adminExploreCache.theCacheRepopulatesAutomatically") }}
         </p>
       </CardContent>
     </Card>
@@ -182,26 +180,23 @@ onMounted(fetchRegistries);
     <!-- Behaviour reference -->
     <Card>
       <CardHeader>
-        <CardTitle>How the Cache Works</CardTitle>
+        <CardTitle>{{ t("adminExploreCache.howTheCacheWorks") }}</CardTitle>
       </CardHeader>
       <CardContent>
         <ul class="text-sm space-y-1.5 text-muted-foreground list-disc list-inside">
-          <li>Results are cached per query (registry filter, search term, sort, page).</li>
+          <li>{{ t("adminExploreCache.resultsAreCachedPer") }}</li>
+          <li>{{ t("adminExploreCache.ttlIs10Minutes") }}</li>
           <li>
-            TTL is 10 minutes. Expired entries are served stale if the database is unreachable.
+            <i18n-t keypath="adminExploreCache.upstreamUnavailableFlag" tag="span">
+              <template #flag
+                ><code class="text-xs bg-muted px-1 rounded">{{
+                  "upstream_unavailable: true"
+                }}</code></template
+              >
+            </i18n-t>
           </li>
-          <li>
-            When the database is unreachable and no cached entry exists, the response includes
-            <code class="text-xs bg-muted px-1 rounded">upstream_unavailable: true</code>
-            so the UI can display a warning.
-          </li>
-          <li>
-            Publishing a package invalidates all cached entries for that registry automatically.
-          </li>
-          <li>
-            The cache is in-memory and per-instance — a server restart or horizontal scale-out
-            starts with an empty cache.
-          </li>
+          <li>{{ t("adminExploreCache.publishingAPackageInvalidates") }}</li>
+          <li>{{ t("adminExploreCache.theCacheIsIn") }}</li>
         </ul>
       </CardContent>
     </Card>

@@ -101,26 +101,26 @@ describe("router navigation guards (integration)", () => {
 
   it("preserves the original destination as a ?redirect query", async () => {
     await setAuth(ANON, "");
-    await router.push("/profile");
+    await router.push("/me/profile");
     await router.isReady();
-    expect(router.currentRoute.value.query.redirect).toBe("/profile");
+    expect(router.currentRoute.value.query.redirect).toBe("/me/profile");
   });
 
   it("lets an authenticated user reach a requiresAuth route", async () => {
     await setAuth(USER, "tok");
-    expect(await go("/profile")).toBe("/profile");
+    expect(await go("/me/profile")).toBe("/me/profile");
   });
 
   // ── requiresOidcAuth ────────────────────────────────────────────────────────
 
   it("redirects a token-only (non-OIDC) user away from a requiresOidcAuth route", async () => {
     await setAuth(USER, "tok"); // authenticated but no auth_provider
-    expect(await go("/tokens")).toBe("/login");
+    expect(await go("/me/tokens")).toBe("/login");
   });
 
   it("lets an OIDC-authenticated user reach a requiresOidcAuth route", async () => {
     await setAuth(USER_OIDC, "tok");
-    expect(await go("/tokens")).toBe("/tokens");
+    expect(await go("/me/tokens")).toBe("/me/tokens");
   });
 
   // ── requiresAdmin ─────────────────────────────────────────────────────────
@@ -231,20 +231,18 @@ describe("router navigation guards (integration)", () => {
 
     const paths = [
       "/packages",
-      "/packages/detail",
-      "/explore",
-      "/explore/packages/npm/lodash",
-      "/access-check",
-      "/path-mapper",
+      "/packages/npm1/left-pad",
       "/setup",
-      "/tokens",
-      "/profile",
-      "/my-namespace",
-      "/cli",
+      "/",
+      "/tools/access-check",
+      "/tools/url-mapper",
+      "/me/profile",
+      "/me/tokens",
+      "/me/namespace",
+      "/me/cli",
       "/admin/dashboard",
       "/admin/packages/all",
       "/admin/packages/bulk",
-      "/admin/packages/detail",
       "/admin/security/users",
       "/admin/security/ip-blocks",
       "/admin/security/access-check",
@@ -263,7 +261,195 @@ describe("router navigation guards (integration)", () => {
       expect(await go(p)).toBe(p);
     }
 
-    // "/" redirects to "/packages".
-    expect(await go("/")).toBe("/packages");
+    // "/" is a real surface now, not a redirect: it adapts to the viewer and to
+    // whether the instance has been configured yet (RFC 0003 §4.3).
+    expect(await go("/packages")).toBe("/packages");
   }, 15000);
+});
+
+// ── Information architecture (RFC 0003 §4.2, §9) ────────────────────────────
+
+describe("information architecture", () => {
+  /* Own reset: the suite above owns its beforeEach, and without one here each
+     test inherits wherever the last one finished — where push() to the current
+     path is a duplicate navigation that never runs a guard. */
+  beforeEach(async () => {
+    meMock.mockReset().mockResolvedValue({ data: ANON });
+    useAuth().logout();
+    localStorage.clear();
+    sessionStorage.clear();
+    await setAuth(ANON, "");
+    await router.replace("/login");
+  });
+
+  /**
+   * Deep links in docs/, bookmarks and CI scripts point at the old paths, so a
+   * redirect that drops one is a review blocker. These assert the whole §9 table,
+   * not a sample — the table is data, and data is exactly what rots silently.
+   */
+  describe("legacy paths keep resolving", () => {
+    const ACCOUNT: [string, string][] = [
+      ["/profile", "/me/profile"],
+      ["/my-namespace", "/me/namespace"],
+      ["/cli", "/me/cli"],
+    ];
+
+    it.each(ACCOUNT)("%s lands on %s", async (from, to) => {
+      await setAuth(USER, "tok");
+      expect(await go(from)).toBe(to);
+    });
+
+    const ADMIN_ALIASES: [string, string][] = [
+      ["/admin/bulk", "/admin/packages/bulk"],
+      ["/admin/users", "/admin/security/users"],
+      ["/admin/ip-blocks", "/admin/security/ip-blocks"],
+      ["/admin/access-check", "/admin/security/access-check"],
+      ["/admin/team-namespaces", "/admin/namespaces/team-namespaces"],
+      ["/admin/beta-channel", "/admin/namespaces/beta-channel"],
+      ["/admin/config-reload", "/admin/operations/config-reload"],
+      ["/admin/warming", "/admin/operations/warming"],
+      ["/admin/explore-cache", "/admin/operations/explore-cache"],
+      ["/admin/health", "/admin/observability/health"],
+      ["/admin/sbom", "/admin/observability/sbom"],
+      ["/admin/audit-log", "/admin/observability/audit-log"],
+    ];
+
+    it.each(ADMIN_ALIASES)("%s lands on %s", async (from, to) => {
+      await setAuth(ADMIN, "tok");
+      expect(await go(from)).toBe(to);
+    });
+
+    const DIAGNOSTICS: [string, string][] = [
+      ["/access-check", "/tools/access-check"],
+      ["/path-mapper", "/tools/url-mapper"],
+    ];
+
+    it.each(DIAGNOSTICS)("%s lands on %s", async (from, to) => {
+      await setAuth(ANON, "");
+      expect(await go(from)).toBe(to);
+    });
+
+    /** A bookmark carries its query; losing it silently changes what you see. */
+    it("preserves the query string across a redirect", async () => {
+      await setAuth(ADMIN, "tok");
+      await router.push("/admin/warming?registry=npm1");
+      await router.isReady();
+      expect(router.currentRoute.value.path).toBe("/admin/operations/warming");
+      expect(router.currentRoute.value.query.registry).toBe("npm1");
+    });
+
+    const SECTIONS: [string, string][] = [
+      ["/me", "/me/profile"],
+      ["/tools", "/tools/access-check"],
+      ["/admin", "/admin/dashboard"],
+      ["/admin/packages", "/admin/packages/all"],
+      ["/admin/security", "/admin/security/users"],
+      ["/admin/namespaces", "/admin/namespaces/team-namespaces"],
+      ["/admin/operations", "/admin/operations/config-reload"],
+      ["/admin/observability", "/admin/observability/health"],
+    ];
+
+    it.each(SECTIONS)("section index %s lands on %s", async (from, to) => {
+      await setAuth(ADMIN, "tok");
+      expect(await go(from)).toBe(to);
+    });
+  });
+
+  describe("the hubs keep their guards", () => {
+    /** Moving a route must not weaken what protected it. */
+    it("sends an unauthenticated visitor from an account tab to /login", async () => {
+      await setAuth(ANON, "");
+      expect(await go("/me/namespace")).toBe("/login");
+    });
+
+    it("keeps /me/tokens OIDC-only after the move", async () => {
+      await setAuth(USER, "tok"); // authenticated, but no auth_provider
+      expect(await go("/me/tokens")).toBe("/login");
+    });
+
+    it("lets an OIDC user reach /me/tokens", async () => {
+      await setAuth(USER_OIDC, "tok");
+      expect(await go("/me/tokens")).toBe("/me/tokens");
+    });
+
+    it("keeps the admin guard on a legacy admin alias", async () => {
+      await setAuth(USER, "tok");
+      expect(await go("/admin/users")).toBe("/login");
+    });
+
+    /** Diagnostics are public; a denied request is where they get linked from. */
+    it("lets an anonymous visitor use the diagnostics hub", async () => {
+      await setAuth(ANON, "");
+      expect(await go("/tools/url-mapper")).toBe("/tools/url-mapper");
+    });
+  });
+
+  describe("the catalog has one address", () => {
+    /**
+     * A package used to have two URLs — `/packages/detail?registry=&name=` and
+     * `/explore/packages/:registry/:name` — and only one survived a copy-paste.
+     * Both now resolve to the canonical path form (RFC 0003 §9).
+     */
+    it("sends /explore to the merged catalog", async () => {
+      await setAuth(ANON, "");
+      expect(await go("/explore")).toBe("/packages");
+    });
+
+    it("converts the explore detail URL to the canonical one", async () => {
+      await setAuth(ANON, "");
+      expect(await go("/explore/packages/npm1/left-pad")).toBe("/packages/npm1/left-pad");
+    });
+
+    it("converts the query-param detail URL to the canonical one", async () => {
+      await setAuth(ANON, "");
+      expect(await go("/packages/detail?registry=npm1&name=left-pad")).toBe(
+        "/packages/npm1/left-pad",
+      );
+    });
+
+    it("converts the admin detail URL to the same canonical page", async () => {
+      await setAuth(ADMIN, "tok");
+      expect(await go("/admin/packages/detail?registry=npm1&name=left-pad")).toBe(
+        "/packages/npm1/left-pad",
+      );
+    });
+
+    /** Version and artifact select *within* a package, so they stay as query. */
+    it("keeps the version and artifact query across the conversion", async () => {
+      await setAuth(ANON, "");
+      await router.push(
+        "/packages/detail?registry=npm1&name=left-pad&version=1.3.0&artifact=x.tgz",
+      );
+      await router.isReady();
+      expect(router.currentRoute.value.path).toBe("/packages/npm1/left-pad");
+      expect(router.currentRoute.value.query.version).toBe("1.3.0");
+      expect(router.currentRoute.value.query.artifact).toBe("x.tgz");
+      expect(router.currentRoute.value.query.registry).toBeUndefined();
+    });
+
+    /** Without both parts we cannot name a package; the catalog is honest. */
+    it("falls back to the catalog when the old URL names no package", async () => {
+      await setAuth(ANON, "");
+      expect(await go("/packages/detail")).toBe("/packages");
+    });
+
+    it("round-trips a scoped npm name", async () => {
+      await setAuth(ANON, "");
+      expect(await go("/packages/detail?registry=npm1&name=%40scope%2Fpkg")).toBe(
+        "/packages/npm1/%40scope%2Fpkg",
+      );
+    });
+  });
+
+  describe("the home route", () => {
+    it("no longer redirects — it renders for whoever asks", async () => {
+      await setAuth(ANON, "");
+      expect(await go("/")).toBe("/");
+    });
+
+    it("is still closed to an anonymous viewer with no registry access", async () => {
+      await setAuth(ANON_NO_ACCESS, "");
+      expect(await go("/")).toBe("/login");
+    });
+  });
 });

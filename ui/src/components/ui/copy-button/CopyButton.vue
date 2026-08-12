@@ -40,7 +40,18 @@ defineOptions({ inheritAttrs: false });
 </script>
 
 <template>
-  <Button :variant="variant" :size="size" v-bind="$attrs" @click="copy">
+  <!-- `aria-label` before `$attrs`, so a caller can still override it. In icon
+       size the visible label is an icon, which leaves the control unnamed;
+       naming it here means no caller can forget. The name also flips to the
+       copied label, which assistive tech announces for the focused element —
+       a separate live region here would just say the same word twice. -->
+  <Button
+    :variant="variant"
+    :size="size"
+    :aria-label="copied ? copiedLabel : label"
+    v-bind="$attrs"
+    @click="copy"
+  >
     <slot :copied="copied">{{ copied ? copiedLabel : label }}</slot>
   </Button>
 </template>

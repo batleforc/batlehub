@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { computed } from "vue";
 import { RouterLink, useRouter } from "vue-router";
 import { User, KeyRound, FolderKey, Terminal, LogOut, ChevronDown } from "@lucide/vue";
@@ -12,6 +13,8 @@ import {
 } from "radix-vue";
 import { useAuth } from "@/composables/useAuth";
 import { Badge } from "@/components/ui/badge";
+
+const { t } = useI18n();
 
 const { identity, isAdmin, isAuthenticated, logout } = useAuth();
 const router = useRouter();
@@ -64,38 +67,38 @@ function handleLogout() {
         <DropdownMenuSeparator class="my-1 h-px bg-border" />
         <DropdownMenuItem as-child>
           <RouterLink
-            to="/profile"
+            to="/me/profile"
             class="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm cursor-pointer hover:bg-accent hover:text-accent-foreground outline-none transition-colors"
           >
             <User class="h-3.5 w-3.5" />
-            My Profile
+            {{ t("userMenu.myProfile") }}
           </RouterLink>
         </DropdownMenuItem>
         <DropdownMenuItem v-if="isOidcUser" as-child>
           <RouterLink
-            to="/tokens"
+            to="/me/tokens"
             class="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm cursor-pointer hover:bg-accent hover:text-accent-foreground outline-none transition-colors"
           >
             <KeyRound class="h-3.5 w-3.5" />
-            My Tokens
+            {{ t("userMenu.myTokens") }}
           </RouterLink>
         </DropdownMenuItem>
         <DropdownMenuItem as-child>
           <RouterLink
-            to="/my-namespace"
+            to="/me/namespace"
             class="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm cursor-pointer hover:bg-accent hover:text-accent-foreground outline-none transition-colors"
           >
             <FolderKey class="h-3.5 w-3.5" />
-            My Namespace
+            {{ t("userMenu.myNamespace") }}
           </RouterLink>
         </DropdownMenuItem>
         <DropdownMenuItem as-child>
           <RouterLink
-            to="/cli"
+            to="/me/cli"
             class="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm cursor-pointer hover:bg-accent hover:text-accent-foreground outline-none transition-colors"
           >
             <Terminal class="h-3.5 w-3.5" />
-            Download CLI
+            {{ t("userMenu.downloadCli") }}
           </RouterLink>
         </DropdownMenuItem>
         <DropdownMenuSeparator class="my-1 h-px bg-border" />
@@ -104,7 +107,7 @@ function handleLogout() {
           @select="handleLogout"
         >
           <LogOut class="h-3.5 w-3.5" />
-          Sign out
+          {{ t("userMenu.signOut") }}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenuRoot>
@@ -113,7 +116,6 @@ function handleLogout() {
     v-else
     to="/login"
     class="font-mono text-sm text-muted-foreground hover:text-primary transition-colors"
+    >{{ t("userMenu.signIn") }}</RouterLink
   >
-    Sign in
-  </RouterLink>
 </template>

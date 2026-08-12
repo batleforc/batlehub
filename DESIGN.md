@@ -270,7 +270,7 @@ rendition moves it toward its own opposite pole.
   to the sRGB gamut — see The In-Gamut Rule, which this token has now confirmed twice.
 - **Counter-Ink** — `--accent-ink`, the foreground that rides on a crimson fill and nowhere else
   (plus the near edge of the pixel step on `:active`). Near-black at chroma 0.02 in the dark
-  rendition, measuring **5.69:1** on the fill; near-white at chroma 0.005 in the light rendition,
+  rendition, measuring **5.69:1** on the fill; near-white at chroma 0.004 in the light rendition,
   measuring **5.97:1** on its darker crimson. Never a background.
 
 ### Secondary

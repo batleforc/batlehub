@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref, computed, onMounted } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { RouterLink, useRoute, useRouter } from "vue-router";
 import {
   ArrowLeft,
   ShieldCheck,
@@ -15,12 +16,20 @@ import {
 import { explorePackageDetail, listRegistries } from "@/client/sdk.gen";
 import type { ExplorePackageDetailResponse, FirewallDto, RegistryInfo } from "@/client/types.gen";
 import { useAuth } from "@/composables/useAuth";
+import { packageDetail } from "@/client/sdk.gen";
+import type { PackageDetailResponse } from "@/client/types.gen";
+import PackageVersionsTable from "@/components/admin/PackageVersionsTable.vue";
+import PackageBetaChannel from "@/components/admin/PackageBetaChannel.vue";
+import PackageVisibility from "@/components/admin/PackageVisibility.vue";
+import PackageEventsTable from "@/components/admin/PackageEventsTable.vue";
+import { Separator } from "@/components/ui/separator";
 import { useAuthFetch } from "@/composables/useAuthFetch";
 import { useApi, extractMessage } from "@/composables/useApi";
 import { API_BASE_URL } from "@/config";
 import { formatCount } from "@/lib/format";
 import { firewallVariant, severityVariant } from "@/lib/badge-variants";
 import { Badge } from "@/components/ui/badge";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -32,7 +41,9 @@ import {
   TableCell,
 } from "@/components/ui/table";
 
-const { token } = useAuth();
+const { t } = useI18n();
+
+const { token, isAdmin } = useAuth();
 const { authFetch } = useAuthFetch();
 const route = useRoute();
 const router = useRouter();
@@ -107,7 +118,7 @@ async function fetchDetail() {
 
 function goBack() {
   router.push({
-    path: "/explore",
+    path: "/packages",
     query: { registry: registry.value },
   });
 }
@@ -167,6 +178,30 @@ function downloadUrl(version: string): string | null {
 }
 
 onMounted(fetchDetail);
+
+/**
+ * Administration is a *section of this page* now, not a parallel page at another
+ * URL with its own layout and its own back button. One package, one address
+ * (RFC 0003 §4.2).
+ *
+ * Fetched only when the viewer is an admin: the endpoint is admin-only
+ * server-side, so firing it for everyone would mean a 403 on every package view.
+ * Hiding the section is a rendering decision — the server still refuses.
+ */
+const {
+  data: adminData,
+  error: adminError,
+  reload: reloadAdmin,
+} = useApi<PackageDetailResponse>(
+  () =>
+    isAdmin.value
+      ? (packageDetail({ query: { registry: registry.value, name: name.value } }) as Promise<{
+          data?: unknown;
+          error?: unknown;
+        }>)
+      : Promise.resolve({ data: undefined }),
+  [token, registry, name],
+);
 </script>
 
 <template>
@@ -177,11 +212,11 @@ onMounted(fetchDetail);
       @click="goBack"
     >
       <ArrowLeft class="h-4 w-4" />
-      Back to Explorer
+      {{ t("packageDetailPage.backToCatalog") }}
     </button>
 
     <template v-if="loading">
-      <p class="text-muted-foreground text-sm">Loading…</p>
+      <p class="text-muted-foreground text-sm">{{ t("packageDetailPage.loading") }}</p>
     </template>
 
     <template v-else-if="error">
@@ -198,7 +233,7 @@ onMounted(fetchDetail);
             <Badge variant="outline">{{ data.registry }}</Badge>
           </div>
           <p class="text-sm text-muted-foreground mt-1">
-            {{ data.versions.length }} known version{{ data.versions.length !== 1 ? "s" : "" }}
+            {{ t("packageDetailPage.knownVersions", data.versions.length) }}
           </p>
         </div>
         <Button variant="outline" size="sm" @click="fetchDetail"> Refresh </Button>
@@ -207,7 +242,7 @@ onMounted(fetchDetail);
       <!-- Gate summary card -->
       <Card>
         <CardHeader class="pb-2">
-          <CardTitle class="text-base">Access Gate</CardTitle>
+          <CardTitle class="text-base">{{ t("packageDetailPage.accessGate") }}</CardTitle>
         </CardHeader>
         <CardContent>
           <div class="space-y-2">
@@ -218,7 +253,7 @@ onMounted(fetchDetail);
                 :class="data.gate.registry_accessible ? 'text-primary' : 'text-destructive'"
                 class="h-4 w-4 shrink-0"
               />
-              <span class="text-muted-foreground">Registry access:</span>
+              <span class="text-muted-foreground">{{ t("packageDetailPage.registryAccess") }}</span>
               <span
                 :class="
                   data.gate.registry_accessible
@@ -237,7 +272,7 @@ onMounted(fetchDetail);
                 :class="data.gate.beta_member ? 'text-primary' : 'text-muted-foreground'"
                 class="h-4 w-4 shrink-0"
               />
-              <span class="text-muted-foreground">Beta channel:</span>
+              <span class="text-muted-foreground">{{ t("packageDetailPage.betaChannel") }}</span>
               <span
                 :class="
                   data.gate.beta_member ? 'text-primary font-medium' : 'text-muted-foreground'
@@ -263,7 +298,7 @@ onMounted(fetchDetail);
                 <TableHead>Source</TableHead>
                 <TableHead>Firewall</TableHead>
                 <TableHead class="text-right">Downloads</TableHead>
-                <TableHead>Last Accessed</TableHead>
+                <TableHead>{{ t("packageDetailPage.lastAccessed") }}</TableHead>
                 <TableHead>Published</TableHead>
                 <TableHead>Security</TableHead>
                 <TableHead v-if="token">SBOM</TableHead>
@@ -302,6 +337,15 @@ onMounted(fetchDetail);
                   </Badge>
                 </TableCell>
                 <TableCell>
+                  <RouterLink
+                    v-if="ver.firewall.status === 'blocked'"
+                    :to="{
+                      path: '/tools/access-check',
+                      query: { registry, name, version: ver.version },
+                    }"
+                    class="mr-2 font-mono text-xs underline underline-offset-4 text-muted-foreground hover:text-foreground"
+                    >{{ t("packageDetailPage.why") }}</RouterLink
+                  >
                   <span v-if="ver.firewall.status === 'blocked'" class="group relative">
                     <Badge variant="destructive" class="text-xs cursor-help">Blocked</Badge>
                     <span
@@ -342,7 +386,8 @@ onMounted(fetchDetail);
                         ><br />
                         {{ vuln.summary }}
                         <template v-if="vuln.fixed_version">
-                          <br /><strong>Fixed in:</strong> {{ vuln.fixed_version }}
+                          <br /><strong>{{ t("packageDetailPage.fixedIn") }}</strong>
+                          {{ vuln.fixed_version }}
                         </template>
                       </span>
                     </span>
@@ -351,7 +396,7 @@ onMounted(fetchDetail);
                       :href="ver.socket_badge_url"
                       target="_blank"
                       rel="noopener noreferrer"
-                      title="Supply-chain report on socket.dev"
+                      :title="t('packageDetailPage.supplyChainReportOn')"
                     >
                       <img :src="ver.socket_badge_url" alt="socket.dev" class="h-4" />
                     </a>
@@ -367,14 +412,13 @@ onMounted(fetchDetail);
                   <span
                     v-if="sbomMissing.has(`${registry}/${name}/${ver.version}`)"
                     class="text-muted-foreground text-xs"
+                    >{{ t("packageDetailPage.noSbom") }}</span
                   >
-                    No SBOM
-                  </span>
                   <div v-else class="flex gap-1">
                     <button
                       :disabled="sbomLoading === `${registry}/${name}/${ver.version}:spdx`"
                       class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs hover:bg-accent disabled:opacity-50"
-                      title="Download SPDX 2.3"
+                      :title="t('packageDetailPage.downloadSpdx23')"
                       @click="downloadSbom(ver.version, 'spdx')"
                     >
                       <FileJson class="h-3 w-3" />
@@ -383,7 +427,7 @@ onMounted(fetchDetail);
                     <button
                       :disabled="sbomLoading === `${registry}/${name}/${ver.version}:cyclonedx`"
                       class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs hover:bg-accent disabled:opacity-50"
-                      title="Download CycloneDX 1.4"
+                      :title="t('packageDetailPage.downloadCyclonedx14')"
                       @click="downloadSbom(ver.version, 'cyclonedx')"
                     >
                       <FileCode class="h-3 w-3" />
@@ -409,7 +453,10 @@ onMounted(fetchDetail);
               </TableRow>
               <TableRow v-if="data.versions.length === 0">
                 <TableCell :colspan="token ? 9 : 8" class="text-center text-muted-foreground py-6">
-                  No versions found
+                  <EmptyState
+                    :title="t('packageDetailPage.noVersionsYet')"
+                    description="Nothing has been pulled through or published to this registry under this name."
+                  />
                 </TableCell>
               </TableRow>
             </TableBody>
@@ -418,4 +465,32 @@ onMounted(fetchDetail);
       </Card>
     </template>
   </div>
+
+  <!-- ── Administration ──────────────────────────────────────────────────
+         Everything AdminPackageDetail used to be, in place. -->
+  <template v-if="isAdmin">
+    <Separator class="my-6" />
+    <section class="space-y-4" aria-labelledby="admin-heading">
+      <h2
+        id="admin-heading"
+        class="font-mono text-sm font-semibold uppercase tracking-wider text-copper"
+      >
+        Administration
+      </h2>
+
+      <p v-if="adminError" class="text-sm text-destructive">{{ adminError }}</p>
+
+      <template v-else-if="adminData">
+        <PackageVersionsTable
+          :registry="registry"
+          :name="name"
+          :versions="adminData.versions"
+          @reload="reloadAdmin"
+        />
+        <PackageBetaChannel :registry="registry" />
+        <PackageVisibility :registry="registry" :name="name" />
+        <PackageEventsTable :events="adminData.recent_events" />
+      </template>
+    </section>
+  </template>
 </template>

@@ -1,14 +1,19 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { computed } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import { Menu, X, Package, ShieldCheck, BookOpen, FolderKey } from "@lucide/vue";
 import { useAuth } from "@/composables/useAuth";
+import { primaryNav } from "@/config/navigation";
 import { DOCS_URL } from "@/config";
 import { Button } from "@/components/ui/button";
 import ThemeToggle from "@/components/ThemeToggle.vue";
+import LocaleToggle from "@/components/LocaleToggle.vue";
 import AppNav from "./AppNav.vue";
 import UserMenu from "./UserMenu.vue";
 import GlobalBanner from "./GlobalBanner.vue";
+
+const { t } = useI18n();
 
 const mobileOpen = defineModel<boolean>("mobileOpen", { default: false });
 
@@ -18,13 +23,19 @@ const router = useRouter();
 
 const isOidcUser = computed(() => isAuthenticated.value && !!identity.value?.auth_provider);
 
-const userLinks = [
-  { to: "/packages", label: "Packages" },
-  { to: "/explore", label: "Explore" },
-  { to: "/access-check", label: "Access Check" },
-  { to: "/path-mapper", label: "URL Mapper" },
-  { to: "/setup", label: "Setup" },
-];
+/* The bar follows the viewer (RFC 0003 §4.1): an item appears when it can be
+   used, so nothing here leads to a redirect. Diagnostics moved to /tools —
+   they are linked from the errors that motivate them instead of holding
+   primary-nav weight for the rest of the year. */
+const navLinks = computed(() =>
+  primaryNav({
+    isAuthenticated: isAuthenticated.value,
+    isAdmin: isAdmin.value,
+    hasRegistryAccess: identity.value?.has_registry_access !== false,
+  }),
+);
+const userLinks = computed(() => navLinks.value.filter((l) => l.to !== "/admin"));
+const adminLink = computed(() => navLinks.value.find((l) => l.to === "/admin"));
 
 function isActive(to: string) {
   return route.path === to || route.path.startsWith(to + "/");
@@ -38,9 +49,7 @@ function handleLogout() {
 </script>
 
 <template>
-  <header
-    class="sticky top-0 z-40 cyber-grid-bg border-b border-border/60 bg-background/90 backdrop-blur-md"
-  >
+  <header class="sticky top-0 z-40 border-b border-border/60 bg-background/90 backdrop-blur-md">
     <div class="container mx-auto flex h-14 items-center gap-4 px-4">
       <!-- Logo -->
       <RouterLink
@@ -54,10 +63,10 @@ function handleLogout() {
       <AppNav :links="userLinks" variant="desktop" />
 
       <!-- Admin entry point (desktop) -->
-      <div v-if="isAdmin" class="hidden md:flex items-center gap-1">
+      <div v-if="adminLink" class="hidden md:flex items-center gap-1">
         <div class="mx-2 h-4 w-px bg-border" />
         <RouterLink
-          to="/admin/packages"
+          to="/admin"
           :class="[
             'flex items-center gap-1.5 px-3 py-1.5 rounded-sm font-mono text-sm transition-colors',
             isActive('/admin')
@@ -81,12 +90,21 @@ function handleLogout() {
           <BookOpen class="h-3.5 w-3.5" />
           Docs
         </a>
+        <LocaleToggle />
         <ThemeToggle />
 
         <UserMenu />
 
         <!-- Mobile menu toggle -->
-        <Button variant="ghost" size="icon" class="md:hidden" @click="mobileOpen = !mobileOpen">
+        <Button
+          variant="ghost"
+          size="icon"
+          class="md:hidden"
+          :aria-label="mobileOpen ? 'Close menu' : 'Open menu'"
+          :aria-expanded="mobileOpen"
+          aria-controls="mobile-nav"
+          @click="mobileOpen = !mobileOpen"
+        >
           <X v-if="mobileOpen" class="h-4 w-4" />
           <Menu v-else class="h-4 w-4" />
         </Button>
@@ -94,51 +112,53 @@ function handleLogout() {
     </div>
 
     <!-- Mobile nav -->
-    <div v-if="mobileOpen" class="md:hidden border-t border-border/60 bg-card px-4 py-3 space-y-1">
+    <div
+      v-if="mobileOpen"
+      id="mobile-nav"
+      class="md:hidden border-t border-border/60 bg-card px-4 py-3 space-y-1"
+    >
       <AppNav :links="userLinks" variant="mobile" @navigate="mobileOpen = false" />
       <RouterLink
         v-if="isOidcUser"
-        to="/tokens"
+        to="/me/tokens"
         :class="[
           'block px-3 py-2 rounded-sm font-mono text-sm transition-colors',
-          isActive('/tokens')
+          isActive('/me/tokens')
             ? 'bg-accent text-accent-foreground font-semibold'
             : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
         ]"
         @click="mobileOpen = false"
+        >{{ t("appHeader.myTokens") }}</RouterLink
       >
-        My Tokens
-      </RouterLink>
       <RouterLink
         v-if="isAuthenticated"
-        to="/profile"
+        to="/me/profile"
         :class="[
           'block px-3 py-2 rounded-sm font-mono text-sm transition-colors',
-          isActive('/profile')
+          isActive('/me/profile')
             ? 'bg-accent text-accent-foreground font-semibold'
             : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
         ]"
         @click="mobileOpen = false"
+        >{{ t("appHeader.myProfile") }}</RouterLink
       >
-        My Profile
-      </RouterLink>
       <RouterLink
         v-if="isAuthenticated"
-        to="/my-namespace"
+        to="/me/namespace"
         :class="[
           'flex items-center gap-2 px-3 py-2 rounded-sm font-mono text-sm transition-colors',
-          isActive('/my-namespace')
+          isActive('/me/namespace')
             ? 'bg-accent text-accent-foreground font-semibold'
             : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
         ]"
         @click="mobileOpen = false"
       >
         <FolderKey class="h-4 w-4" />
-        My Namespace
+        {{ t("appHeader.myNamespace") }}
       </RouterLink>
       <RouterLink
         v-if="isAdmin"
-        to="/admin/packages"
+        to="/admin"
         :class="[
           'flex items-center gap-2 px-3 py-2 rounded-sm font-mono text-sm transition-colors',
           isActive('/admin')
@@ -165,7 +185,7 @@ function handleLogout() {
           class="block w-full text-left px-3 py-2 rounded-sm font-mono text-sm text-destructive hover:bg-destructive/10 transition-colors"
           @click="handleLogout"
         >
-          Sign out
+          {{ t("appHeader.signOut") }}
         </button>
       </div>
     </div>

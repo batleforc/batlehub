@@ -1,9 +1,12 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref } from "vue";
 import { useAuth } from "@/composables/useAuth";
 import SectionTabs from "@/components/admin/SectionTabs.vue";
 import { SECURITY_TABS } from "@/config/adminSections";
 import { PageHeader } from "@/components/ui/page-header";
+
+const { t } = useI18n();
 
 const { token } = useAuth();
 
@@ -62,7 +65,7 @@ async function simulate() {
   <div class="space-y-6">
     <SectionTabs :tabs="SECURITY_TABS" />
     <PageHeader
-      title="RBAC Access Check"
+      :title="t('adminAccessCheck.rbacAccessCheck')"
       description="Simulate whether an identity would be allowed to access a package resource under the current registry policy — without making a real request."
     />
 
@@ -79,7 +82,9 @@ async function simulate() {
           />
         </div>
         <div class="space-y-1">
-          <label for="aac-package" class="text-sm font-medium">Package name</label>
+          <label for="aac-package" class="text-sm font-medium">{{
+            t("adminAccessCheck.packageName")
+          }}</label>
           <input
             id="aac-package"
             v-model="packageName"
@@ -99,7 +104,9 @@ async function simulate() {
           />
         </div>
         <div class="space-y-1">
-          <label for="aac-resource-type" class="text-sm font-medium">Resource type</label>
+          <label for="aac-resource-type" class="text-sm font-medium">{{
+            t("adminAccessCheck.resourceType")
+          }}</label>
           <select
             id="aac-resource-type"
             v-model="resourceType"
@@ -113,7 +120,7 @@ async function simulate() {
       <hr class="border-border" />
 
       <p class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-        Simulated identity
+        {{ t("adminAccessCheck.simulatedIdentity") }}
       </p>
 
       <div class="grid grid-cols-2 gap-4">
@@ -131,7 +138,8 @@ async function simulate() {
         </div>
         <div class="space-y-1">
           <label for="aac-user-id" class="text-sm font-medium"
-            >User ID <span class="text-muted-foreground">(optional)</span></label
+            >{{ t("adminAccessCheck.userId") }}
+            <span class="text-muted-foreground">{{ t("adminAccessCheck.optional") }}</span></label
           >
           <input
             id="aac-user-id"
@@ -142,12 +150,15 @@ async function simulate() {
         </div>
         <div class="col-span-2 space-y-1">
           <label for="aac-groups" class="text-sm font-medium"
-            >Groups <span class="text-muted-foreground">(comma-separated)</span></label
+            >Groups
+            <span class="text-muted-foreground">{{
+              t("adminAccessCheck.commaSeparated")
+            }}</span></label
           >
           <input
             id="aac-groups"
             v-model="groups"
-            placeholder="oidc1:team-a, team-b"
+            :placeholder="t('adminAccessCheck.oidc1TeamATeam')"
             class="w-full rounded border border-border bg-background px-3 py-1.5 text-sm"
           />
         </div>

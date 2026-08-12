@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import {
   discardPendingReload,
@@ -15,6 +16,7 @@ import { useBanner } from "@/composables/useBanner";
 import { formatDate } from "@/lib/format";
 import { API_BASE_URL } from "@/config";
 import SectionTabs from "@/components/admin/SectionTabs.vue";
+import ConfigReadOnlyView from "@/components/admin/ConfigReadOnlyView.vue";
 import { OPERATIONS_TABS } from "@/config/adminSections";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -22,6 +24,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+
+const { t } = useI18n();
 
 const { authFetch } = useAuthFetch();
 const { banner } = useBanner();
@@ -319,12 +323,14 @@ onUnmounted(() => {
 <template>
   <div class="space-y-6">
     <SectionTabs :tabs="OPERATIONS_TABS" />
-    <PageHeader title="Config Reload" />
+    <PageHeader :title="t('adminConfigReload.configReload')" />
 
     <!-- Config warnings: valid config, but something an operator should know -->
     <Card v-if="visibleWarnings.length">
       <CardHeader>
-        <CardTitle>Configuration warnings ({{ visibleWarnings.length }})</CardTitle>
+        <CardTitle>{{
+          t("adminConfigReload.configurationWarnings", { count: visibleWarnings.length })
+        }}</CardTitle>
       </CardHeader>
       <CardContent class="space-y-2">
         <div
@@ -347,18 +353,13 @@ onUnmounted(() => {
     </Card>
 
     <!-- Config Editor -->
-    <Card>
+    <!-- Editing only exists when the config is writable; the read-only case is
+         its own screen rather than this one with the controls greyed out. -->
+    <Card v-if="!configReadonly">
       <CardHeader>
-        <CardTitle>Config Editor</CardTitle>
+        <CardTitle>{{ t("adminConfigReload.configEditor") }}</CardTitle>
       </CardHeader>
       <CardContent class="space-y-3">
-        <div
-          v-if="configReadonly"
-          class="rounded-sm border border-yellow-400 bg-yellow-50 dark:bg-yellow-900/20 px-4 py-2 text-sm text-yellow-800 dark:text-yellow-300"
-        >
-          This config is mounted read-only (e.g. Kubernetes ConfigMap). Changes must be applied
-          externally. You can still view the current content below.
-        </div>
         <p v-if="configLoadError" class="text-sm text-destructive">{{ configLoadError }}</p>
         <textarea
           v-model="configContent"
@@ -366,7 +367,7 @@ onUnmounted(() => {
           :readonly="configReadonly"
           class="w-full rounded-sm border border-input bg-background font-mono text-xs p-3 focus:outline-none focus:ring-2 focus:ring-ring resize-y"
           spellcheck="false"
-          aria-label="Config TOML content"
+          :aria-label="t('adminConfigReload.configTomlContent')"
           @input="validatedContent = null"
         />
         <div
@@ -383,7 +384,9 @@ onUnmounted(() => {
         </div>
         <div v-if="candidateWarnings.length" class="space-y-2">
           <p class="text-sm text-muted-foreground">
-            This config is valid but raises {{ candidateWarnings.length }} warning(s):
+            <i18n-t keypath="adminConfigReload.validWithWarnings" tag="span">
+              <template #count>{{ candidateWarnings.length }}</template>
+            </i18n-t>
           </p>
           <div
             v-for="w in candidateWarnings"
@@ -420,17 +423,22 @@ onUnmounted(() => {
           >
             {{ editorCreating ? "Creating…" : "Create Pending Reload" }}
           </Button>
-          <Button variant="outline" @click="loadConfigContent"> Reload from Disk </Button>
+          <Button variant="outline" @click="loadConfigContent">{{
+            t("adminConfigReload.reloadFromDisk")
+          }}</Button>
         </div>
       </CardContent>
     </Card>
+
+    <ConfigReadOnlyView v-else :content="configContent" :error="configLoadError" />
 
     <!-- Status: hot reload disabled -->
     <Card v-if="hotReloadEnabled === false" class="border-yellow-400">
       <CardContent class="pt-4">
         <p class="text-copper font-medium">
-          Hot reload is disabled on this instance (<code>BATLEHUB_DISABLE_HOT_RELOAD=1</code>).
-          Config changes require a server restart.
+          <i18n-t keypath="adminConfigReload.hotReloadDisabled" tag="span">
+            <template #flag><code>BATLEHUB_DISABLE_HOT_RELOAD=1</code></template>
+          </i18n-t>
         </p>
       </CardContent>
     </Card>
@@ -452,20 +460,22 @@ onUnmounted(() => {
     <!-- Pending Reload Card -->
     <Card v-if="hotReloadEnabled !== false">
       <CardHeader>
-        <CardTitle>Pending Reload</CardTitle>
+        <CardTitle>{{ t("adminConfigReload.pendingReload") }}</CardTitle>
       </CardHeader>
       <CardContent>
         <div v-if="loadingPending && !pendingReload" class="text-sm text-muted-foreground">
-          Loading…
+          {{ t("adminConfigReload.loading") }}
         </div>
         <div v-else-if="!pendingReload" class="text-sm text-muted-foreground">
-          No pending reload. The file watcher will populate this when a config change is detected.
+          {{ t("adminConfigReload.noPendingReloadThe") }}
         </div>
         <div v-else class="space-y-3">
           <div class="flex gap-4 text-sm">
             <span><strong>Source:</strong> {{ pendingReload.source }}</span>
             <span><strong>Created:</strong> {{ formatDate(pendingReload.created_at) }}</span>
-            <span><strong>Expires in:</strong> {{ expiresIn }}</span>
+            <span
+              ><strong>{{ t("adminConfigReload.expiresIn") }}</strong> {{ expiresIn }}</span
+            >
           </div>
           <div class="flex gap-2 flex-wrap">
             <Badge
@@ -486,9 +496,9 @@ onUnmounted(() => {
               class="bg-copper/10 text-copper"
               >~{{ r.name }}</Badge
             >
-            <Badge v-if="pendingReload.diff.limits_changed" class="bg-purple-100 text-purple-800"
-              >limits changed</Badge
-            >
+            <Badge v-if="pendingReload.diff.limits_changed" class="bg-purple-100 text-purple-800">{{
+              t("adminConfigReload.limitsChanged")
+            }}</Badge>
           </div>
           <div class="flex gap-2">
             <Button size="sm" :disabled="loadingApply" @click="applyPending">
@@ -505,12 +515,10 @@ onUnmounted(() => {
     <!-- Force Reload Card -->
     <Card v-if="hotReloadEnabled !== false">
       <CardHeader>
-        <CardTitle>Force Reload Now</CardTitle>
+        <CardTitle>{{ t("adminConfigReload.forceReloadNow") }}</CardTitle>
       </CardHeader>
       <CardContent class="space-y-2">
-        <p class="text-sm text-muted-foreground">
-          Re-reads the config file, validates it, and applies it immediately — no confirmation step.
-        </p>
+        <p class="text-sm text-muted-foreground">{{ t("adminConfigReload.reReadsTheConfig") }}</p>
         <Button :disabled="loadingForce" @click="forceReload">
           {{ loadingForce ? "Reloading…" : "Reload Now" }}
         </Button>
@@ -520,21 +528,27 @@ onUnmounted(() => {
     <!-- Global Banner Card -->
     <Card>
       <CardHeader>
-        <CardTitle>Global Banner</CardTitle>
+        <CardTitle>{{ t("adminConfigReload.globalBanner") }}</CardTitle>
       </CardHeader>
       <CardContent class="space-y-4">
         <div v-if="banner" class="rounded-sm border px-3 py-2 text-sm">
           <strong>Current:</strong> [{{ banner.level }}] {{ banner.message }}
-          <span class="text-muted-foreground ml-2">— set by {{ banner.set_by }}</span>
+          <span class="text-muted-foreground ml-2">
+            <i18n-t keypath="adminConfigReload.setBy" tag="span">
+              <template #user>{{ banner.set_by }}</template>
+            </i18n-t>
+          </span>
         </div>
-        <div v-else class="text-sm text-muted-foreground">No banner currently set.</div>
+        <div v-else class="text-sm text-muted-foreground">
+          {{ t("adminConfigReload.noBannerCurrentlySet") }}
+        </div>
         <div class="flex gap-2 items-end flex-wrap">
           <div class="flex-1 min-w-[16rem] space-y-1">
             <Label for="banner-message">Message</Label>
             <Input
               id="banner-message"
               v-model="bannerMessage"
-              placeholder="Maintenance in progress…"
+              :placeholder="t('adminConfigReload.maintenanceInProgress')"
             />
           </div>
           <div class="space-y-1">
@@ -566,12 +580,14 @@ onUnmounted(() => {
     <!-- Change History -->
     <Card>
       <CardHeader>
-        <CardTitle>Change History</CardTitle>
+        <CardTitle>{{ t("adminConfigReload.changeHistory") }}</CardTitle>
       </CardHeader>
       <CardContent>
-        <div v-if="loadingHistory" class="text-sm text-muted-foreground">Loading…</div>
+        <div v-if="loadingHistory" class="text-sm text-muted-foreground">
+          {{ t("adminConfigReload.loading") }}
+        </div>
         <div v-else-if="changeHistory.length === 0" class="text-sm text-muted-foreground">
-          No changes recorded yet.
+          {{ t("adminConfigReload.noChangesRecordedYet") }}
         </div>
         <table v-else class="w-full text-sm">
           <thead>

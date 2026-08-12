@@ -1,0 +1,113 @@
+name: Frontend Design Gates
+# The design system's rules, enforced (RFC 0003 Phase 9).
+#
+# Four gates, and the split between them is deliberate. Three are static and run
+# anywhere; the fourth needs a real browser, which is the whole reason it lives
+# in CI rather than in a pre-commit hook:
+#
+#   - impeccable detect  — anti-pattern rules over source
+#   - i18n:check         — no hardcoded user-visible strings (pinned at 0)
+#   - ui:tokens:check    — the docs site's token copy has not drifted
+#   - rendered pass      — the detector against real pages at two viewports,
+#                          plus axe. Contrast on painted pixels, focus rings and
+#                          reflow cannot be checked by reading source, and a
+#                          rule that is never executed is not a rule.
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "ui/**"
+      - "website/**"
+      - "DESIGN.md"
+      - ".github/workflows/front-design.yaml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "ui/**"
+      - "website/**"
+      - "DESIGN.md"
+      - ".github/workflows/front-design.yaml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  static:
+    name: Static design gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: ui
+
+      # Anti-pattern rules over source. No LLM, no API key, no network.
+      - name: Impeccable detector
+        run: npx --yes impeccable detect ui/src website/.vitepress
+
+      # Pinned at 0: a new hardcoded user-visible string fails here.
+      - name: No untranslated strings
+        run: pnpm run i18n:check
+        working-directory: ui
+
+      # The tokens are declared once; the docs site holds a committed copy.
+      # A drift means someone edited one of the two and not the other.
+      - name: Design tokens in sync
+        run: |
+          cp ui/src/design/tokens.css website/.vitepress/theme/tokens.css
+          if ! git diff --quiet -- website/.vitepress/theme/tokens.css; then
+            echo "::error::website token copy is stale — run 'task ui:tokens' and commit"
+            git --no-pager diff -- website/.vitepress/theme/tokens.css
+            exit 1
+          fi
+
+  rendered:
+    name: Rendered page gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: ui
+
+      - name: Build the SPA
+        run: pnpm run build
+        working-directory: ui
+
+      # Served as static files: these checks are about what the page *renders*,
+      # and none of them need the API. The pages fall back to their error and
+      # empty states, which is itself part of what is being checked.
+      - name: Serve the build
+        run: |
+          npx --yes serve -s ui/dist -l 4173 &
+          npx --yes wait-on http://127.0.0.1:4173 -t 60000
+
+      # Two viewports, because the failures differ: contrast and hierarchy are
+      # width-independent, overflow and reflow are not.
+      - name: Impeccable detector — desktop
+        run: npx --yes impeccable detect --viewport 1440x900 http://127.0.0.1:4173/
+      - name: Impeccable detector — mobile
+        run: npx --yes impeccable detect --viewport 390x844 http://127.0.0.1:4173/
+
+      # PRODUCT.md makes WCAG 2.2 AA binding. tokens.test.ts proves the palette
+      # can clear it; only a rendered page proves the pages actually do.
+      - name: axe accessibility scan
+        run: |
+          npx --yes @axe-core/cli http://127.0.0.1:4173/ \
+            --exit \
+            --tags wcag2a,wcag2aa,wcag21a,wcag21aa,wcag22aa

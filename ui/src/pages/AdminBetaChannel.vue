@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { listBetaMembers, addBetaMember, removeBetaMember } from "@/client/sdk.gen";
 import type { BetaChannelMemberDto } from "@/lib/registry-types";
 import { useAdminCrudList } from "@/composables/useAdminCrudList";
@@ -20,6 +21,8 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import { Dialog } from "@/components/ui/dialog";
+
+const { t } = useI18n();
 
 interface AddMemberForm {
   principal_type: string;
@@ -73,13 +76,13 @@ const principalTypeOptions = [
   <div class="space-y-6">
     <SectionTabs :tabs="NAMESPACES_TABS" />
     <PageHeader
-      title="Beta Channel"
+      :title="t('adminBetaChannel.betaChannel')"
       description="Manage who can access pre-release versions in each registry."
     >
       <template #actions>
-        <Button size="sm" :disabled="!selectedRegistry" @click="addDialogOpen = true">
-          Add member
-        </Button>
+        <Button size="sm" :disabled="!selectedRegistry" @click="addDialogOpen = true">{{
+          t("adminBetaChannel.addMember")
+        }}</Button>
       </template>
     </PageHeader>
 
@@ -89,7 +92,7 @@ const principalTypeOptions = [
       <Select
         id="beta-registry"
         v-model="selectedRegistry"
-        placeholder="Select a registry…"
+        :placeholder="t('adminBetaChannel.selectARegistry')"
         :options="registryOptions"
       />
     </div>
@@ -117,8 +120,8 @@ const principalTypeOptions = [
           <TableHeader>
             <TableRow>
               <TableHead>Type</TableHead>
-              <TableHead>Principal ID</TableHead>
-              <TableHead>Granted by</TableHead>
+              <TableHead>{{ t("adminBetaChannel.principalId") }}</TableHead>
+              <TableHead>{{ t("adminBetaChannel.grantedBy") }}</TableHead>
               <TableHead class="text-right"> Actions </TableHead>
             </TableRow>
           </TableHeader>
@@ -170,11 +173,13 @@ const principalTypeOptions = [
       }
     "
   >
-    <template #title>Add beta channel member</template>
+    <template #title>{{ t("adminBetaChannel.addBetaChannelMember") }}</template>
     <template #description>
-      Add a user or group to the beta channel for
-      <span class="font-mono">{{ selectedRegistry }}</span
-      >.
+      <i18n-t keypath="adminBetaChannel.addToBetaChannelFor" tag="span">
+        <template #registry
+          ><span class="font-mono">{{ selectedRegistry }}</span></template
+        >
+      </i18n-t>
     </template>
     <div class="space-y-4">
       <div class="space-y-3">
@@ -188,7 +193,7 @@ const principalTypeOptions = [
         </div>
         <div class="space-y-1.5">
           <Label for="beta-principal-id"
-            >Principal ID <span class="text-destructive">*</span></Label
+            >{{ t("adminBetaChannel.principalId") }} <span class="text-destructive">*</span></Label
           >
           <Input
             id="beta-principal-id"
@@ -198,11 +203,11 @@ const principalTypeOptions = [
           />
         </div>
         <div class="space-y-1.5">
-          <Label for="beta-granted-by">Granted by</Label>
+          <Label for="beta-granted-by">{{ t("adminBetaChannel.grantedBy") }}</Label>
           <Input
             id="beta-granted-by"
             v-model="addForm.granted_by"
-            placeholder="Optional — your user ID"
+            :placeholder="t('adminBetaChannel.optionalYourUserId')"
           />
         </div>
       </div>
@@ -240,12 +245,16 @@ const principalTypeOptions = [
       }
     "
   >
-    <template #title>Remove member?</template>
+    <template #title>{{ t("adminBetaChannel.removeMember") }}</template>
     <template #description>
-      <span class="font-mono">{{ removeTarget?.principal_id }}</span>
-      will lose access to pre-release versions in
-      <span class="font-mono">{{ selectedRegistry }}</span
-      >.
+      <i18n-t keypath="adminBetaChannel.willLoseAccess" tag="span">
+        <template #principal
+          ><span class="font-mono">{{ removeTarget?.principal_id }}</span></template
+        >
+        <template #registry
+          ><span class="font-mono">{{ selectedRegistry }}</span></template
+        >
+      </i18n-t>
     </template>
     <div class="space-y-4">
       <p v-if="removeError" class="text-sm text-destructive">

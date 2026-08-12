@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref, computed } from "vue";
 import { Terminal, Download, Package, AlertCircle } from "@lucide/vue";
 import { useAuth } from "@/composables/useAuth";
@@ -9,6 +10,8 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/com
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Alert } from "@/components/ui/alert";
+
+const { t } = useI18n();
 
 const { token } = useAuth();
 
@@ -161,7 +164,9 @@ const usageSnippets = [
       <Terminal class="h-6 w-6 text-primary shrink-0" />
       <PageHeader title="CLI" class="flex-1">
         <template #description>
-          Download and configure <code class="font-mono text-xs">batlehub-cli</code>
+          <i18n-t keypath="cliDownload.downloadAndConfigure" tag="span">
+            <template #cli><code class="font-mono text-xs">batlehub-cli</code></template>
+          </i18n-t>
         </template>
       </PageHeader>
     </div>
@@ -173,9 +178,7 @@ const usageSnippets = [
           <Download class="h-4 w-4" />
           Download
         </CardTitle>
-        <CardDescription>
-          Get the pre-built binary served by this server, or build from source.
-        </CardDescription>
+        <CardDescription>{{ t("cliDownload.getThePreBuilt") }}</CardDescription>
       </CardHeader>
       <CardContent class="space-y-4">
         <!-- Error alert -->
@@ -233,8 +236,14 @@ const usageSnippets = [
           Configuration
         </CardTitle>
         <CardDescription>
-          Create <code class="font-mono text-xs">~/.config/batlehub/config.toml</code> or run
-          <code class="font-mono text-xs">batlehub-cli config init</code>.
+          <i18n-t keypath="cliDownload.createConfigOrRun" tag="span">
+            <template #path
+              ><code class="font-mono text-xs">~/.config/batlehub/config.toml</code></template
+            >
+            <template #command
+              ><code class="font-mono text-xs">batlehub-cli config init</code></template
+            >
+          </i18n-t>
         </CardDescription>
       </CardHeader>
       <CardContent class="space-y-4">
@@ -251,7 +260,7 @@ const usageSnippets = [
         </div>
 
         <p class="text-xs text-muted-foreground">
-          Override any setting with environment variables:
+          {{ t("cliDownload.overrideWithEnv") }}
           <code class="font-mono">BATLEHUB_SERVER</code>,
           <code class="font-mono">BATLEHUB_TOKEN</code>,
           <code class="font-mono">BATLEHUB_REGISTRY</code>.
@@ -264,9 +273,9 @@ const usageSnippets = [
       <CardHeader>
         <CardTitle class="flex items-center gap-2 text-base">
           <Terminal class="h-4 w-4" />
-          Quick reference
+          {{ t("cliDownload.quickReference") }}
         </CardTitle>
-        <CardDescription>Common commands to get started.</CardDescription>
+        <CardDescription>{{ t("cliDownload.commonCommandsToGet") }}</CardDescription>
       </CardHeader>
       <CardContent>
         <div class="space-y-3">

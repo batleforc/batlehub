@@ -482,6 +482,76 @@ tasks:
       - pnpm run lint:eslint
       - pnpm run format:check
 
+  ui:i18n:
+    desc: Report user-visible text still hardcoded in templates
+    dir: ui
+    cmds:
+      - pnpm run i18n:audit
+
+  ui:i18n:check:
+    desc: Fail if the untranslated-string count rises above the current budget
+    dir: ui
+    cmds:
+      - pnpm run i18n:check
+
+  # ── Browser sidecar (che-browser) ────────────────────────────────────────────
+  # Headed Chrome in a sidecar of this pod. CDP and chromedriver are plain
+  # localhost ports because the pod shares one network namespace; only the
+  # things that exist *inside* the sidecar need the kubectl exec hop.
+  browser:check:
+    desc: Verify the browser sidecar is up, and print its CDP version
+    cmds:
+      - curl -sf http://localhost:9222/json/version
+
+  browser:tabs:
+    desc: List the browser's open tabs
+    cmds:
+      - curl -s http://localhost:9222/json
+
+  browser:open:
+    desc: 'Open a URL in the sidecar browser (task browser:open URL=http://localhost:5173)'
+    requires:
+      vars: [URL]
+    cmds:
+      - curl -s -X PUT "http://localhost:9222/json/new?{{.URL}}"
+
+  browser:vnc:
+    desc: Print the noVNC password (open the `novnc` endpoint to watch Chrome)
+    cmds:
+      - cat /projects/.sidecar/vnc-password-browser.txt
+
+  browser:restart:
+    desc: Kill Chrome; the sidecar respawns it with a clean window
+    cmds:
+      - kubectl exec ${DEVWORKSPACE_NAMESPACE:+-n ${DEVWORKSPACE_NAMESPACE}} ${HOSTNAME} -c browser -- pkill -f /opt/chrome/chrome
+
+  browser:logs:
+    desc: Follow the browser sidecar log
+    cmds:
+      - kubectl logs -f ${DEVWORKSPACE_NAMESPACE:+-n ${DEVWORKSPACE_NAMESPACE}} ${HOSTNAME} -c browser
+
+  ui:design:rendered:
+    desc: Run the rendered design gates against a running dev server (needs the browser sidecar)
+    deps: [browser:check]
+    cmds:
+      # The same two viewports CI uses: contrast and hierarchy are width-blind,
+      # overflow and reflow are not.
+      - npx --yes impeccable detect --viewport 1440x900 http://localhost:5173/
+      - npx --yes impeccable detect --viewport 390x844 http://localhost:5173/
+      - npx --yes @axe-core/cli http://localhost:5173/ --exit --tags wcag2a,wcag2aa,wcag21a,wcag21aa,wcag22aa
+
+  ui:design:
+    desc: Run the static design gates locally (detector, i18n, token drift)
+    cmds:
+      - npx --yes impeccable detect ui/src website/.vitepress
+      - task: ui:i18n:check
+      - task: ui:tokens:check
+
+  ui:i18n:review:
+    desc: Regenerate the French review sheet from the catalogues
+    cmds:
+      - python3 scripts/i18n-review.py
+
   ui:test:
     desc: Run the frontend test suite
     dir: ui

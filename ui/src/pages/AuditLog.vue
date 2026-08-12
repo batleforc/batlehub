@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref, computed } from "vue";
 import { auditLog } from "@/client/sdk.gen";
 import type { PackageIdentifierDto } from "@/client/types.gen";
@@ -19,6 +20,8 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
+
+const { t } = useI18n();
 
 interface AccessEvent {
   id: string;
@@ -88,7 +91,7 @@ const actionOptions = computed(() => {
       <CardHeader class="space-y-3 pb-3">
         <div class="flex flex-row items-center justify-between space-y-0">
           <CardTitle class="text-lg">
-            Audit Log
+            {{ t("auditLog.auditLog") }}
             <span v-if="data?.length" class="font-normal text-muted-foreground text-base ml-1">
               ({{ data.length }})
             </span>
@@ -96,7 +99,7 @@ const actionOptions = computed(() => {
           <div class="flex gap-2 items-center">
             <select
               v-model="exportFormat"
-              aria-label="Export format"
+              :aria-label="t('auditLog.exportFormat')"
               class="h-8 rounded-sm border border-input bg-transparent px-2 text-sm shadow-sm text-foreground"
             >
               <option value="csv">CSV</option>
@@ -111,16 +114,16 @@ const actionOptions = computed(() => {
         <div class="flex gap-2 flex-wrap">
           <Input
             v-model="userFilter"
-            placeholder="Filter by user…"
-            aria-label="Filter by user"
+            :placeholder="t('auditLog.filterByUser')"
+            :aria-label="t('auditLog.filterByUser2')"
             class="h-8 text-sm max-w-[200px]"
           />
           <select
             v-model="actionFilter"
-            aria-label="Filter by action"
+            :aria-label="t('auditLog.filterByAction')"
             class="h-8 rounded-sm border border-input bg-transparent px-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring text-foreground"
           >
-            <option value="">All actions</option>
+            <option value="">{{ t("auditLog.allActions") }}</option>
             <option v-for="a in actionOptions" :key="a" :value="a">
               {{ a }}
             </option>
@@ -128,7 +131,7 @@ const actionOptions = computed(() => {
         </div>
       </CardHeader>
       <CardContent class="p-0">
-        <p v-if="loading" class="p-6 text-sm text-muted-foreground">Loading…</p>
+        <p v-if="loading" class="p-6 text-sm text-muted-foreground">{{ t("auditLog.loading") }}</p>
         <p v-else-if="error" class="p-6 text-sm text-destructive">
           {{ error }}
         </p>

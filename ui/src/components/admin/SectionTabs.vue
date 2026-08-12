@@ -19,7 +19,7 @@ function isActive(to: string) {
       :key="tab.to"
       :to="tab.to"
       :class="[
-        'px-3 py-1.5 rounded-t-sm font-mono text-sm whitespace-nowrap transition-colors border-b-2 -mb-px',
+        'px-3 py-1.5 font-mono text-sm whitespace-nowrap transition-colors border-b-2 -mb-px',
         isActive(tab.to)
           ? 'border-primary text-foreground font-semibold'
           : 'border-transparent text-muted-foreground hover:text-accent-foreground',

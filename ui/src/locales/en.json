@@ -1,0 +1,526 @@
+{
+  "a11y": {
+    "closeMenu": "Close menu",
+    "openMenu": "Open menu",
+    "pagination": "Pagination",
+    "primaryNav": "Primary",
+    "sectionsOf": "{title} sections",
+    "skipToContent": "Skip to content"
+  },
+  "accessCheck": {
+    "accessCheck": "Access Check",
+    "artifactOptional": "Artifact (optional)",
+    "nameOwnerRepo": "Name (owner/repo)"
+  },
+  "account": {
+    "cli": "CLI",
+    "description": "Your profile, tokens, namespace and CLI.",
+    "namespace": "Namespace",
+    "profile": "Profile",
+    "title": "My account",
+    "tokens": "Tokens"
+  },
+  "adminAccessCheck": {
+    "commaSeparated": "(comma-separated)",
+    "oidc1TeamATeam": "oidc1:team-a, team-b",
+    "optional": "(optional)",
+    "packageName": "Package name",
+    "rbacAccessCheck": "RBAC Access Check",
+    "resourceType": "Resource type",
+    "simulatedIdentity": "Simulated identity",
+    "userId": "User ID"
+  },
+  "adminBetaChannel": {
+    "addBetaChannelMember": "Add beta channel member",
+    "addMember": "Add member",
+    "addToBetaChannelFor": "Add a user or group to the beta channel for {registry}.",
+    "betaChannel": "Beta Channel",
+    "grantedBy": "Granted by",
+    "optionalYourUserId": "Optional — your user ID",
+    "principalId": "Principal ID",
+    "removeMember": "Remove member?",
+    "selectARegistry": "Select a registry…",
+    "willLoseAccess": "{principal} will lose access to pre-release versions in {registry}."
+  },
+  "adminBulk": {
+    "bulkImport": "Bulk Import",
+    "configureImport": "Configure import",
+    "csvFormat": "CSV format",
+    "csvNotes": "Header row is optional. {artifact} may be left blank for version-level blocks. {reason} is used only for block actions.",
+    "defaultReason": "Default reason",
+    "doneSummary": "Done — {succeeded} succeeded, {failed} failed",
+    "orPasteAbove": "or paste above",
+    "pasteCsv": "Paste CSV",
+    "previewRows": "Preview rows",
+    "uploadCsvFile": "Upload .csv file",
+    "usedWhenTheCsv": "(used when the CSV row has no reason)",
+    "validInvalid": "{valid} valid, {invalid} invalid"
+  },
+  "adminConfigReload": {
+    "changeHistory": "Change History",
+    "configEditor": "Config Editor",
+    "configReload": "Config Reload",
+    "configTomlContent": "Config TOML content",
+    "configurationWarnings": "Configuration warnings ({count})",
+    "expiresIn": "Expires in:",
+    "forceReloadNow": "Force Reload Now",
+    "globalBanner": "Global Banner",
+    "hotReloadDisabled": "Hot reload is disabled on this instance ({flag}). Config changes require a server restart.",
+    "limitsChanged": "limits changed",
+    "loading": "Loading…",
+    "maintenanceInProgress": "Maintenance in progress…",
+    "noBannerCurrentlySet": "No banner currently set.",
+    "noChangesRecordedYet": "No changes recorded yet.",
+    "noPendingReloadThe": "No pending reload. The file watcher will populate this when a config change is detected.",
+    "pendingReload": "Pending Reload",
+    "reReadsTheConfig": "Re-reads the config file, validates it, and applies it immediately — no confirmation step.",
+    "reloadFromDisk": "Reload from Disk",
+    "setBy": "— set by {user}",
+    "validWithWarnings": "This config is valid but raises {count} warning(s):"
+  },
+  "adminDashboard": {
+    "cacheSummary": "{rate} of {total} artifact downloads were served from cache since this process started {since}, holding {size} of artifacts.",
+    "hitRate": "Hit rate",
+    "noRegistriesConfiguredYet": "No registries configured yet",
+    "openConfig": "Open config",
+    "openHealth": "Open health",
+    "perRegistry": "Per registry"
+  },
+  "adminExploreCache": {
+    "10Min": "10 min",
+    "cacheIsAlsoInvalidated": "Cache is also invalidated automatically when a package is published to this registry.",
+    "cachesQueryResultsFor": "The package explorer caches database query results for",
+    "clearsOnlyTheEntries": "Clears only the entries belonging to one registry. Use this after a manual data fix or\n          forced re-index without triggering a full publish.",
+    "exploreCache": "Explore Cache",
+    "forcesEveryExploreEndpoint": "Forces every explore endpoint to re-query the database on the next request. Use after bulk\n          data imports or registry restructuring.",
+    "howTheCacheWorks": "How the Cache Works",
+    "invalidateByRegistry": "Invalidate by Registry",
+    "invalidateEntireCache": "Invalidate Entire Cache",
+    "publishingAPackageInvalidates": "Publishing a package invalidates all cached entries for that registry automatically.",
+    "registryName": "Registry name",
+    "resultsAreCachedPer": "Results are cached per query (registry filter, search term, sort, page).",
+    "theCacheIsIn": "The cache is in-memory and per-instance — a server restart or horizontal scale-out\n            starts with an empty cache.",
+    "theCacheRepopulatesAutomatically": "The cache repopulates automatically on the next request — no downtime.",
+    "toAvoidExpensiveScans": "to avoid expensive scans on large registries. Stale entries are kept and served if the database becomes unreachable.",
+    "ttlIs10Minutes": "TTL is 10 minutes. Expired entries are served stale if the database is unreachable.",
+    "upstreamUnavailableFlag": "When the database is unreachable and no cached entry exists, the response includes {flag} so the UI can display a warning."
+  },
+  "adminHealth": {
+    "allCachedArtifactsFor": "All cached artifacts for this registry will be permanently removed. Packages will be\n      re-fetched from upstream on the next request.",
+    "artifactRequests": "artifact requests",
+    "cacheHitRate": "Cache hit rate",
+    "cacheHits": "Cache hits",
+    "cacheMisses": "Cache misses",
+    "cachePerformanceSinceLast": "Cache performance since last restart",
+    "cacheSize": "Cache size",
+    "clearCache": "Clear Cache",
+    "clearCacheFor": "Clear cache for {registry}?",
+    "errorsIn24h": "{count} error in 24 h | {count} errors in 24 h",
+    "fetchedFromUpstream": "fetched from upstream",
+    "inStorage": "in storage",
+    "lastPull": "Last pull",
+    "noAccessConfigured": "No access configured",
+    "noErrors24h": "No errors in the last 24 h",
+    "pullsDay": "Pulls / day",
+    "pullsHour": "Pulls / hour",
+    "registryHealth": "Registry Health",
+    "restrictedNoPublicAccess": "⚠ Restricted — no public access",
+    "servedFromCache": "served from cache",
+    "totalCached": "Total cached",
+    "whoHasAccess": "Who has access"
+  },
+  "adminIpBlocks": {
+    "blockIp": "Block IP",
+    "blockIpAddress": "Block IP address",
+    "blockedAt": "Blocked at",
+    "currentlyBlockedIps": "Currently blocked IPs",
+    "default3600S1": "Default: 3600 s (1 hour)",
+    "durationSeconds": "Duration (seconds)",
+    "ipAddress": "IP address",
+    "ipBlocks": "IP Blocks",
+    "loading": "Loading…",
+    "noIpsAreCurrently": "No IPs are currently blocked.",
+    "optionalReason": "Optional reason",
+    "theIpWillBe": "The IP will be blocked for the specified duration and receive 403 on all requests.",
+    "thisIpWillBe": "This IP will be immediately allowed to send requests again.",
+    "unblocksAt": "Unblocks at"
+  },
+  "adminNotifications": {
+    "channelsDefinedIn": "Channels are defined in {file} under {block}. URLs and secrets are not displayed here.",
+    "configuredChannels": "Configured Channels",
+    "deleteSubscription": "Delete subscription?",
+    "eventTypes": "Event types",
+    "leaveBlankForAll": "(leave blank for all)",
+    "newSubscription": "New Subscription",
+    "noChannelsConfigured": "No channels configured. Add {block} entries to config.toml.",
+    "noInboundEventsReceived": "No inbound events received yet.",
+    "noSubscriptionsConfigured": "No subscriptions configured.",
+    "packageName": "Package name",
+    "receivedAt": "Received at",
+    "sourceIp": "Source IP",
+    "webhooksNotifications": "Webhooks & Notifications"
+  },
+  "adminPackages": {
+    "allPackages": "All packages",
+    "blockAPackage": "Block a package",
+    "blockSelected": "Block selected",
+    "deleteSelected": "Delete selected",
+    "filterByNameRegistry": "Filter by name, registry, or version…",
+    "filterPackages": "Filter packages",
+    "lastPulled": "Last pulled",
+    "lastPulledBy": "Last pulled by",
+    "optional": "(optional)",
+    "ownerRepoOrLodash": "owner/repo or lodash or serde",
+    "preEmptivelyBlockA": "Pre-emptively block a package before it is downloaded. The block takes effect immediately\n          — any subsequent request for that package will be denied.",
+    "selectAllPackages": "Select all packages",
+    "tarball123456789Download": "tarball / 123456789 / download",
+    "tryClearingTheFilter": "Try clearing the filter.",
+    "unblockSelected": "Unblock selected",
+    "versionTag": "Version / tag"
+  },
+  "adminSbom": {
+    "aboutSbomFormats": "About SBOM Formats",
+    "catalog": "catalog",
+    "cyclonedx14": "CycloneDX 1.4",
+    "cyclonedxBlurb": "{name} — OWASP standard optimised for security tooling. Preferred for vulnerability scanning and SBOM-driven dependency analysis.",
+    "exportOrgLevelSbom": "Export Org-Level SBOM",
+    "generatesAMergedSbom": "Generates a merged SBOM covering all artifacts served in the selected time window. Leave\n          filters empty to export everything.",
+    "optional": "(optional)",
+    "perArtifactSboms": "Per-artifact SBOMs (SPDX or CycloneDX) are also available from the {catalog} version detail view.",
+    "sbomExport": "SBOM Export",
+    "spdx23": "SPDX 2.3",
+    "spdxBlurb": "{name} — ISO/IEC standard widely used for compliance and license tracking. Preferred for legal review and OpenChain-conformant workflows."
+  },
+  "adminTeamNamespaces": {
+    "claimNamespace": "Claim namespace",
+    "claimedBy": "Claimed by",
+    "groupId": "Group ID",
+    "mustMatchTheGroup": "Must match the group name in your auth provider's claims.",
+    "namespaceClaims": "Namespace claims",
+    "optionalYourUserId": "Optional — your user ID",
+    "packagesStartingWith": "Packages whose name equals or starts with {prefix} will be restricted.",
+    "prefix": "Prefix",
+    "releaseExplanation": "The prefix {prefix} will no longer be restricted to group {group}. Any authenticated user will be able to publish packages under this prefix.",
+    "releaseNamespaceClaim": "Release namespace claim?",
+    "restrictPublishingIn": "Restrict publishing under a prefix in {registry} to a specific group.",
+    "selectARegistry": "Select a registry…",
+    "teamNamespaces": "Team Namespaces"
+  },
+  "adminUsers": {
+    "blockUser": "Block User",
+    "blockUser2": "Block user",
+    "blockedAt": "Blocked at",
+    "blockedBy": "Blocked by",
+    "currentlyBlockedUsers": "Currently blocked users",
+    "loading": "Loading…",
+    "noUsersAreCurrently": "No users are currently blocked.",
+    "optionalReason": "Optional reason",
+    "theUserWillReceive": "The user will receive 401 on all authenticated requests until unblocked.",
+    "thisUserWillBe": "This user will be immediately allowed to authenticate again.",
+    "userBlocks": "User Blocks",
+    "userId": "User ID"
+  },
+  "adminWarming": {
+    "cacheWarming": "Cache Warming",
+    "commaSeparatedForPath": "Comma-separated. For path-addressed registries.",
+    "commaSeparatedOmitVersion": "Comma-separated. Omit version to warm latest_n.",
+    "deleteCachedArtifact": "Delete Cached Artifact",
+    "lodashReact180": "lodash, react@18.0.0",
+    "noWarmingConfigured": "No registries have warming configured. Add {packages} or {paths} to a registry in your config.",
+    "packageMode": "Package",
+    "pathMode": "Path",
+    "removeArtifactHelp": "Remove a single proxy-cached artifact from storage. The next request will re-download it from upstream. Use {path} mode for path-addressed registries (jetbrains/deb/rpm); use {package} mode for all others."
+  },
+  "appFooter": {
+    "reportABug": "Report a bug",
+    "reportASecurityIssue": "Report a security issue",
+    "version": "BatleHub v{version}"
+  },
+  "appHeader": {
+    "myNamespace": "My Namespace",
+    "myProfile": "My Profile",
+    "myTokens": "My Tokens",
+    "signOut": "Sign out"
+  },
+  "asyncState": {
+    "loading": "Loading…"
+  },
+  "auditLog": {
+    "allActions": "All actions",
+    "auditLog": "Audit Log",
+    "exportFormat": "Export format",
+    "filterByAction": "Filter by action",
+    "filterByUser": "Filter by user…",
+    "filterByUser2": "Filter by user",
+    "loading": "Loading…"
+  },
+  "catalog": {
+    "allRegistries": "All registries ({count})",
+    "clearSearch": "Clear search",
+    "emptyBody": "Packages appear here once something pulls them through this instance, or once they are published to it.",
+    "emptyFilteredBody": "No package in this view matches. Upstream results appear here too when the registry supports search.",
+    "emptyFilteredTitle": "Nothing matches that search",
+    "emptyTitle": "No packages cached yet",
+    "registries": "Registries",
+    "upstream": "upstream"
+  },
+  "cliDownload": {
+    "commonCommandsToGet": "Common commands to get started.",
+    "createConfigOrRun": "Create {path} or run {command}.",
+    "downloadAndConfigure": "Download and configure {cli}",
+    "getThePreBuilt": "Get the pre-built binary served by this server, or build from source.",
+    "overrideWithEnv": "Override any setting with environment variables:",
+    "quickReference": "Quick reference"
+  },
+  "common": {
+    "cancel": "Cancel",
+    "clear": "Clear filter",
+    "close": "Close",
+    "copied": "Copied!",
+    "copy": "Copy",
+    "loading": "Loading…",
+    "retry": "Retry"
+  },
+  "config": {
+    "copyToml": "Copy TOML",
+    "readOnlyBody": "This instance's config is mounted read-only, so it cannot be edited here. Change it where it is defined — the ConfigMap, Helm values, or the file on the host — and the server picks the change up on its next reload.",
+    "readOnlyTitle": "Configuration (read-only)"
+  },
+  "dashboard": {
+    "allAnswering": "All {count} registries are answering.",
+    "freshBody": "Nothing is cached or served until a registry exists. Add a [[registries]] block to config.toml and reload.",
+    "freshTitle": "No registries configured yet",
+    "healthUnknown": "Health could not be read.",
+    "openHealth": "Open health",
+    "perRegistry": "Per registry",
+    "someDegraded": "{failing} of {total} registries reported errors: {names}.",
+    "title": "Dashboard"
+  },
+  "destructive": {
+    "canUndo": "This can be undone afterwards.",
+    "cannotUndo": "This cannot be undone. The artifacts and their metadata are removed permanently.",
+    "typeToConfirm": "Type {name} to confirm"
+  },
+  "home": {
+    "admin": "Admin",
+    "browse": "Browse packages",
+    "configGuide": "Configuration guide",
+    "freshBodyAdmin": "Add a [[registries]] block to config.toml, then reload the configuration. Nothing is cached or served until a registry exists.",
+    "freshBodyOther": "An administrator has not configured any registries. Until one exists there is nothing to pull or publish.",
+    "freshTitleAdmin": "No registries configured yet",
+    "freshTitleOther": "This instance has no registries yet",
+    "myNamespace": "My namespace",
+    "openConfig": "Open config",
+    "pointTool": "Point a tool at this instance",
+    "signedInAs": "Signed in as {user}.",
+    "statPublishing": "Accepting publishes",
+    "statRegistries": "Registries",
+    "statYou": "You",
+    "tagline": "A cache and registry for the packages your builds pull."
+  },
+  "homePage": {
+    "aCacheAndRegistry": "A cache and registry for the packages your builds pull.",
+    "acceptingPublishes": "Accepting publishes",
+    "browsePackages": "Browse packages",
+    "configurationGuide": "Configuration guide",
+    "myNamespace": "My namespace",
+    "openConfig": "Open config",
+    "pointAToolAt": "Point a tool at this instance"
+  },
+  "locale": {
+    "en": "English",
+    "fr": "Français",
+    "label": "Language",
+    "system": "System",
+    "systemNote": "System follows your browser — currently {locale}."
+  },
+  "loginPage": {
+    "authenticateToAccessProtected": "Authenticate to access protected resources.",
+    "bearerToken": "Bearer token",
+    "continueWithoutSigningIn": "Continue without signing in",
+    "orUseAToken": "or use a token",
+    "pasteYourTokenHere": "Paste your token here",
+    "signIn": "Sign in"
+  },
+  "myNamespace": {
+    "clickARowTo": "Click a row to browse its packages.",
+    "loading": "Loading…",
+    "myNamespaces": "My namespaces",
+    "publishANewPackage": "Publish a new package to one of your registries.",
+    "teamNamespace": "Team Namespace",
+    "uploadPackage": "Upload package",
+    "youAreNotA": "You are not a member of any groups. Contact your administrator to be added to a team\n          namespace.",
+    "yourGroups": "Your groups"
+  },
+  "myProfile": {
+    "authProvider": "Auth provider",
+    "dynamicGroups": "Dynamic groups assigned by your identity provider. Groups with a provider prefix (e.g. {example}) are scoped to that provider; unprefixed values were mapped directly to a role.",
+    "groupsArePopulatedWhen": "Groups are populated when you authenticate via an OIDC or Kubernetes provider that\n            includes group claims.",
+    "noGroupsAssignedTo": "No groups assigned to this session.",
+    "tokenAnonymous": "Token / anonymous",
+    "userId": "User ID",
+    "yourCurrentSessionInformation": "Your current session information."
+  },
+  "namespace": {
+    "noClaimsBody": "None of your groups own a package-name prefix on this instance. An administrator assigns these under Team Namespaces.",
+    "noClaimsTitle": "No namespace claims",
+    "noPackagesBody": "Packages appear once someone publishes under this namespace prefix.",
+    "noPackagesTitle": "Nothing published here yet"
+  },
+  "namespacePackagesTable": {
+    "editVisibility": "Edit visibility",
+    "loading": "Loading…",
+    "packageVisibility": "Package visibility",
+    "publishedBy": "Published by",
+    "yanked": "(yanked)"
+  },
+  "namespaceUpload": {
+    "cliInstructions": "CLI instructions",
+    "extensionId": "Extension ID",
+    "fileUpload": "File upload",
+    "modulePath": "Module path",
+    "noRegistriesInLocal": "No registries in Local or Hybrid mode are configured.",
+    "publishedSuccessfully": "Published successfully.",
+    "publisherName": "(publisher.name)",
+    "selectRegistry": "Select registry…",
+    "suite": "(suite)"
+  },
+  "nav": {
+    "admin": "Admin",
+    "docs": "Docs",
+    "packages": "Packages",
+    "setup": "Setup",
+    "signOut": "Sign out"
+  },
+  "packageBetaChannel": {
+    "betaChannelAccess": "Beta Channel Access",
+    "grantedBy": "Granted by",
+    "noBetaChannelMembers": "No beta channel members — pre-release versions are not accessible to anyone.",
+    "preReleaseVersionsAre": "Pre-release versions are only accessible to the users and groups listed here.",
+    "principalId": "Principal ID"
+  },
+  "packageCatalog": {
+    "cachedPackagesTotal": "{count} cached package total | {count} cached packages total",
+    "clearSearch": "Clear search",
+    "hasBlocked": "Has blocked",
+    "mostDownloaded": "Most Downloaded",
+    "nameAZ": "Name A–Z",
+    "notYetProxied": "Not Yet Proxied",
+    "pointAToolAt": "Point a tool at this instance",
+    "recentlyAccessed": "Recently Accessed",
+    "searchPackages": "Search packages…",
+    "searchPackages2": "Search packages",
+    "searchingUpstreamRegistries": "Searching upstream registries…",
+    "sortPackages": "Sort packages"
+  },
+  "packageDetail": {
+    "administration": "Administration",
+    "noVersionsBody": "Nothing has been pulled through or published to this registry under this name.",
+    "noVersionsTitle": "No versions yet",
+    "why": "Why?"
+  },
+  "packageDetailPage": {
+    "accessGate": "Access Gate",
+    "backToCatalog": "Back to catalog",
+    "betaChannel": "Beta channel:",
+    "downloadCyclonedx14": "Download CycloneDX 1.4",
+    "downloadSpdx23": "Download SPDX 2.3",
+    "fixedIn": "Fixed in:",
+    "knownVersions": "{count} known version | {count} known versions",
+    "lastAccessed": "Last Accessed",
+    "loading": "Loading…",
+    "noSbom": "No SBOM",
+    "noVersionsYet": "No versions yet",
+    "registryAccess": "Registry access:",
+    "supplyChainReportOn": "Supply-chain report on socket.dev",
+    "why": "Why?"
+  },
+  "packageEventsTable": {
+    "noEventsRecordedYet": "No events recorded yet.",
+    "recentAccessEvents": "Recent access events"
+  },
+  "packageVersionsTable": {
+    "blockSelected": "Block selected",
+    "lastAccessed": "Last accessed",
+    "lastPulledBy": "Last pulled by",
+    "noVersionsTrackedYet": "No versions tracked yet.",
+    "purgeCache": "Purge cache",
+    "selectAllVersions": "Select all versions",
+    "supplyChainReportOn": "Supply-chain report on socket.dev",
+    "unblockSelected": "Unblock selected",
+    "versionsArtifacts": "Versions & artifacts",
+    "versionsSelected": "{count} version selected | {count} versions selected"
+  },
+  "packageVisibility": {
+    "controlsWhoCanDownload": "Controls who can download this package (all versions share the same setting).",
+    "packageVisibility": "Package visibility"
+  },
+  "pathMapper": {
+    "httpsPypiOrgProject": "https://pypi.org/project/requests/… or https://github.com/owner/repo/…",
+    "pasteAnUpstreamUrl": "Paste an upstream URL to auto-fill",
+    "registryType": "Registry type",
+    "urlMapper": "URL Mapper"
+  },
+  "registryPathForm": {
+    "registryName": "Registry name"
+  },
+  "registryPathResults": {
+    "fillInTheFields": "Fill in the fields above to see the proxy paths.",
+    "needsMoreFields": "needs more fields",
+    "proxyPaths": "Proxy paths"
+  },
+  "setup": {
+    "filterLabel": "Filter tools",
+    "filterPlaceholder": "Filter tools…",
+    "freshBody": "No registries are configured on this instance, or none that your account can reach. Until one exists there is no URL for a tool to point at.",
+    "freshTitle": "Nothing to connect to yet",
+    "noToolMatch": "No tool matches “{query}”."
+  },
+  "setupGuide": {
+    "configurationGuide": "Configuration guide",
+    "filterTools": "Filter tools",
+    "filterTools2": "Filter tools…",
+    "loadingRegistries": "Loading registries…",
+    "netrcHelp": "Credentials for tools that use HTTP Basic Auth (curl, wget, …). Place in {file} and restrict permissions with {chmod}.",
+    "nothingToConnectTo": "Nothing to connect to yet",
+    "oidcTokenNote": "Your current token is a short-lived OIDC session token. For long-lived automation, create a {link} and use that as the password.",
+    "openConfig": "Open config",
+    "personalApiToken": "personal API token",
+    "setupGuide": "Setup Guide"
+  },
+  "theme": {
+    "dark": "Theme: dark",
+    "light": "Theme: light",
+    "system": "Theme: follow system"
+  },
+  "tokensPage": {
+    "activeTokens": "Active Tokens",
+    "chooseANameRole": "Choose a name, role, and lifetime for your token.",
+    "createApiToken": "Create API Token",
+    "createLongLivedTokens": "Create long-lived tokens for programmatic access. Tokens inherit your current role (or\n        lower). Maximum lifetime is 90 days. The raw token is shown only once on creation — store it\n        securely.",
+    "createToken": "Create token",
+    "creating": "Creating…",
+    "customTokenExpiryIn": "Custom token expiry in days",
+    "dismissAutoClearsIn": "Dismiss (auto-clears in 60 s)",
+    "noActiveTokensCreate": "No active tokens. Create one to get started.",
+    "orCustom": "or custom:",
+    "personalApiTokens": "Personal API Tokens",
+    "selectRole": "Select role",
+    "tokenCreatedCopyIt": "Token created — copy it now, it won't be shown again.",
+    "tokensThatHaveNot": "Tokens that have not been revoked and have not yet expired."
+  },
+  "tools": {
+    "accessCheck": "Access Check",
+    "description": "Work out why a request was allowed or refused, and what URL a client should use.",
+    "title": "Tools",
+    "urlMapper": "URL Mapper"
+  },
+  "userMenu": {
+    "downloadCli": "Download CLI",
+    "myNamespace": "My Namespace",
+    "myProfile": "My Profile",
+    "myTokens": "My Tokens",
+    "signIn": "Sign in",
+    "signOut": "Sign out"
+  }
+}

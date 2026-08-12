@@ -1,5 +1,8 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { RouterLink, useRoute } from "vue-router";
+
+const { t } = useI18n();
 
 defineProps<{
   links: { to: string; label: string }[];
@@ -28,7 +31,7 @@ function isActive(to: string) {
           : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
       ]"
     >
-      {{ link.label }}
+      {{ t(link.label) }}
     </RouterLink>
   </nav>
   <template v-else>
@@ -44,7 +47,7 @@ function isActive(to: string) {
       ]"
       @click="emit('navigate')"
     >
-      {{ link.label }}
+      {{ t(link.label) }}
     </RouterLink>
   </template>
 </template>

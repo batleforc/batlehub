@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref } from "vue";
 import { registryHealth, adminStats, clearRegistryCache } from "@/client/sdk.gen";
 import type { RegistryHealthDto, StatsResponse } from "@/client/types.gen";
@@ -27,6 +28,8 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
+
+const { t } = useI18n();
 
 const { token } = useAuth();
 
@@ -82,7 +85,7 @@ const ROLE_LABELS: Record<string, string> = {
   <div class="space-y-6">
     <SectionTabs :tabs="OBSERVABILITY_TABS" />
     <PageHeader
-      title="Registry Health"
+      :title="t('adminHealth.registryHealth')"
       description="Live snapshot of each registry — packages, cache, pull rates, and recent errors."
       variant="glow"
     >
@@ -103,9 +106,9 @@ const ROLE_LABELS: Record<string, string> = {
       <Card v-if="statsData" class="border-muted/60">
         <CardHeader class="pb-2">
           <div class="flex items-center justify-between">
-            <CardTitle class="text-sm font-medium text-muted-foreground uppercase tracking-wide">
-              Cache performance since last restart
-            </CardTitle>
+            <CardTitle class="text-sm font-medium text-muted-foreground uppercase tracking-wide">{{
+              t("adminHealth.cachePerformanceSinceLast")
+            }}</CardTitle>
             <span class="text-xs text-muted-foreground"
               >since {{ fmtRelative(statsData.since_startup) }}</span
             >
@@ -114,7 +117,7 @@ const ROLE_LABELS: Record<string, string> = {
         <CardContent>
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-              <p class="text-xs text-muted-foreground">Cache hit rate</p>
+              <p class="text-xs text-muted-foreground">{{ t("adminHealth.cacheHitRate") }}</p>
               <p
                 class="text-2xl font-semibold tabular-nums"
                 :class="
@@ -131,28 +134,30 @@ const ROLE_LABELS: Record<string, string> = {
                     : "—"
                 }}
               </p>
-              <p class="text-xs text-muted-foreground">artifact requests</p>
+              <p class="text-xs text-muted-foreground">{{ t("adminHealth.artifactRequests") }}</p>
             </div>
             <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-              <p class="text-xs text-muted-foreground">Cache hits</p>
+              <p class="text-xs text-muted-foreground">{{ t("adminHealth.cacheHits") }}</p>
               <p class="text-2xl font-semibold tabular-nums text-primary">
                 {{ formatCount(statsData.aggregate.artifact_hits) }}
               </p>
-              <p class="text-xs text-muted-foreground">served from cache</p>
+              <p class="text-xs text-muted-foreground">{{ t("adminHealth.servedFromCache") }}</p>
             </div>
             <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-              <p class="text-xs text-muted-foreground">Cache misses</p>
+              <p class="text-xs text-muted-foreground">{{ t("adminHealth.cacheMisses") }}</p>
               <p class="text-2xl font-semibold tabular-nums">
                 {{ formatCount(statsData.aggregate.artifact_misses) }}
               </p>
-              <p class="text-xs text-muted-foreground">fetched from upstream</p>
+              <p class="text-xs text-muted-foreground">
+                {{ t("adminHealth.fetchedFromUpstream") }}
+              </p>
             </div>
             <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-              <p class="text-xs text-muted-foreground">Total cached</p>
+              <p class="text-xs text-muted-foreground">{{ t("adminHealth.totalCached") }}</p>
               <p class="text-2xl font-semibold">
                 {{ fmtBytes(statsData.aggregate.cached_bytes) }}
               </p>
-              <p class="text-xs text-muted-foreground">in storage</p>
+              <p class="text-xs text-muted-foreground">{{ t("adminHealth.inStorage") }}</p>
             </div>
           </div>
         </CardContent>
@@ -181,9 +186,8 @@ const ROLE_LABELS: Record<string, string> = {
                   size="sm"
                   class="text-xs h-6 px-2"
                   @click="clearTarget = reg.registry"
+                  >{{ t("adminHealth.clearCache") }}</Button
                 >
-                  Clear Cache
-                </Button>
               </div>
             </div>
           </CardHeader>
@@ -202,7 +206,7 @@ const ROLE_LABELS: Record<string, string> = {
 
               <!-- Cache size -->
               <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-                <p class="text-xs text-muted-foreground">Cache size</p>
+                <p class="text-xs text-muted-foreground">{{ t("adminHealth.cacheSize") }}</p>
                 <p class="text-xl font-semibold">
                   {{ fmtBytes(reg.total_size_bytes ?? null) }}
                 </p>
@@ -213,7 +217,7 @@ const ROLE_LABELS: Record<string, string> = {
 
               <!-- Last pull -->
               <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-                <p class="text-xs text-muted-foreground">Last pull</p>
+                <p class="text-xs text-muted-foreground">{{ t("adminHealth.lastPull") }}</p>
                 <p class="text-base font-semibold">
                   {{ fmtRelative(reg.last_pull_at ?? null) }}
                 </p>
@@ -224,7 +228,7 @@ const ROLE_LABELS: Record<string, string> = {
 
               <!-- Pulls / hour -->
               <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-                <p class="text-xs text-muted-foreground">Pulls / hour</p>
+                <p class="text-xs text-muted-foreground">{{ t("adminHealth.pullsHour") }}</p>
                 <p
                   class="text-xl font-semibold tabular-nums"
                   :class="reg.pulls_last_hour > 0 ? 'text-primary' : 'text-muted-foreground'"
@@ -235,7 +239,7 @@ const ROLE_LABELS: Record<string, string> = {
 
               <!-- Pulls / day -->
               <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-                <p class="text-xs text-muted-foreground">Pulls / day</p>
+                <p class="text-xs text-muted-foreground">{{ t("adminHealth.pullsDay") }}</p>
                 <p class="text-xl font-semibold tabular-nums">
                   {{ formatCount(reg.pulls_last_day) }}
                 </p>
@@ -254,16 +258,15 @@ const ROLE_LABELS: Record<string, string> = {
                 >
                   <span class="relative flex h-2 w-2 shrink-0">
                     <span
-                      class="animate-ping absolute inline-flex h-full w-full rounded-sm bg-green-500 opacity-75"
+                      class="motion-safe:animate-ping absolute inline-flex h-full w-full rounded-sm bg-green-500 opacity-75"
                     />
                     <span class="relative inline-flex h-2 w-2 rounded-sm bg-green-500" />
                   </span>
-                  No errors in the last 24 h
+                  {{ t("adminHealth.noErrors24h") }}
                 </span>
                 <span v-else class="flex items-center gap-1.5 text-destructive">
                   <span class="inline-block h-2 w-2 rounded-sm bg-destructive" />
-                  {{ reg.recent_errors.length }} error{{ reg.recent_errors.length > 1 ? "s" : "" }}
-                  in 24 h
+                  {{ t("adminHealth.errorsIn24h", reg.recent_errors.length) }}
                   <span class="text-muted-foreground text-xs ml-auto">
                     {{ expandedErrors.has(reg.registry) ? "▲ hide" : "▼ show" }}
                   </span>
@@ -323,7 +326,7 @@ const ROLE_LABELS: Record<string, string> = {
             <!-- Who has access -->
             <div class="space-y-1.5">
               <p class="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                Who has access
+                {{ t("adminHealth.whoHasAccess") }}
               </p>
               <div class="flex flex-wrap gap-1.5">
                 <Badge
@@ -346,17 +349,15 @@ const ROLE_LABELS: Record<string, string> = {
                   v-if="reg.access.roles.length === 0 && reg.access.groups.length === 0"
                   variant="destructive"
                   class="text-xs"
+                  >{{ t("adminHealth.noAccessConfigured") }}</Badge
                 >
-                  No access configured
-                </Badge>
                 <span
                   v-else-if="
                     !reg.access.roles.includes('anonymous') && !reg.access.roles.includes('user')
                   "
                   class="text-xs text-copper flex items-center gap-1"
+                  >{{ t("adminHealth.restrictedNoPublicAccess") }}</span
                 >
-                  ⚠ Restricted — no public access
-                </span>
               </div>
             </div>
           </CardContent>
@@ -384,12 +385,12 @@ const ROLE_LABELS: Record<string, string> = {
     @confirm="confirmClearCache"
   >
     <template #title>
-      Clear cache for <span class="font-mono">{{ clearTarget }}</span
-      >?
+      <i18n-t keypath="adminHealth.clearCacheFor" tag="span">
+        <template #registry
+          ><span class="font-mono">{{ clearTarget }}</span></template
+        >
+      </i18n-t>
     </template>
-    <template #description>
-      All cached artifacts for this registry will be permanently removed. Packages will be
-      re-fetched from upstream on the next request.
-    </template>
+    <template #description>{{ t("adminHealth.allCachedArtifactsFor") }}</template>
   </ConfirmDialog>
 </template>

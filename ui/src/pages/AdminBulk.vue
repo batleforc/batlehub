@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref, computed } from "vue";
 import { Upload, CheckCircle2, XCircle } from "@lucide/vue";
 import SectionTabs from "@/components/admin/SectionTabs.vue";
@@ -23,6 +24,8 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
+
+const { t } = useI18n();
 
 type Action = "block" | "unblock";
 
@@ -141,7 +144,7 @@ function reset() {
   <div class="space-y-6 max-w-4xl">
     <SectionTabs :tabs="PACKAGES_TABS" />
     <PageHeader
-      title="Bulk Import"
+      :title="t('adminBulk.bulkImport')"
       description="Block or unblock multiple packages at once by pasting or uploading a CSV file."
       variant="glow"
     />
@@ -149,7 +152,9 @@ function reset() {
     <!-- Format reference -->
     <Card>
       <CardHeader class="pb-2">
-        <CardTitle class="text-sm font-medium text-muted-foreground"> CSV format </CardTitle>
+        <CardTitle class="text-sm font-medium text-muted-foreground">{{
+          t("adminBulk.csvFormat")
+        }}</CardTitle>
       </CardHeader>
       <CardContent>
         <pre class="text-xs font-mono bg-muted rounded p-3 overflow-x-auto">
@@ -158,9 +163,10 @@ npm,lodash,4.17.21,,CVE-2021-23337
 cargo,serde,1.0.0,,License issue
 github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
         <p class="text-xs text-muted-foreground mt-2">
-          Header row is optional. <code class="font-mono">artifact</code> may be left blank for
-          version-level blocks. <code class="font-mono">reason</code> is used only for block
-          actions.
+          <i18n-t keypath="adminBulk.csvNotes" tag="span">
+            <template #artifact><code class="font-mono">artifact</code></template>
+            <template #reason><code class="font-mono">reason</code></template>
+          </i18n-t>
         </p>
       </CardContent>
     </Card>
@@ -168,7 +174,7 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
     <!-- Action + input -->
     <Card>
       <CardHeader class="pb-3">
-        <CardTitle class="text-base"> Configure import </CardTitle>
+        <CardTitle class="text-base">{{ t("adminBulk.configureImport") }}</CardTitle>
       </CardHeader>
       <CardContent class="space-y-4">
         <!-- Action selector -->
@@ -200,8 +206,8 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
         <!-- Default reason (block only) -->
         <div v-if="action === 'block'" class="space-y-1 max-w-md">
           <Label for="default-reason"
-            >Default reason
-            <span class="text-muted-foreground">(used when the CSV row has no reason)</span></Label
+            >{{ t("adminBulk.defaultReason") }}
+            <span class="text-muted-foreground">{{ t("adminBulk.usedWhenTheCsv") }}</span></Label
           >
           <Input
             id="default-reason"
@@ -212,7 +218,7 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
 
         <!-- CSV textarea -->
         <div class="space-y-1">
-          <Label for="csv-input">Paste CSV</Label>
+          <Label for="csv-input">{{ t("adminBulk.pasteCsv") }}</Label>
           <textarea
             id="csv-input"
             v-model="csvText"
@@ -228,10 +234,10 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
             class="flex items-center gap-2 px-3 py-1.5 rounded-sm border border-input text-sm cursor-pointer hover:bg-accent transition-colors"
           >
             <Upload class="h-3.5 w-3.5" />
-            Upload .csv file
+            {{ t("adminBulk.uploadCsvFile") }}
             <input type="file" accept=".csv,text/csv" class="sr-only" @change="handleFileUpload" />
           </label>
-          <span class="text-xs text-muted-foreground">or paste above</span>
+          <span class="text-xs text-muted-foreground">{{ t("adminBulk.orPasteAbove") }}</span>
         </div>
 
         <p v-if="parseError" class="text-xs text-destructive">
@@ -239,7 +245,7 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
         </p>
 
         <div class="flex gap-2">
-          <Button variant="outline" @click="parseCSV"> Preview rows </Button>
+          <Button variant="outline" @click="parseCSV">{{ t("adminBulk.previewRows") }}</Button>
           <Button variant="ghost" size="sm" @click="reset"> Reset </Button>
         </div>
       </CardContent>
@@ -252,7 +258,10 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
           <CardTitle class="text-base">
             Preview
             <span class="font-normal text-muted-foreground ml-1 text-sm">
-              {{ validRows.length }} valid, {{ invalidRows.length }} invalid
+              <i18n-t keypath="adminBulk.validInvalid" tag="span">
+                <template #valid>{{ validRows.length }}</template>
+                <template #invalid>{{ invalidRows.length }}</template>
+              </i18n-t>
             </span>
           </CardTitle>
           <Button :disabled="validRows.length === 0 || submitting" @click="submit">
@@ -314,7 +323,10 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
       <CardHeader class="pb-3">
         <CardTitle class="text-base flex items-center gap-2">
           <CheckCircle2 class="h-4 w-4 text-primary" />
-          Done — {{ result.succeeded_count }} succeeded, {{ result.failed_count }} failed
+          <i18n-t keypath="adminBulk.doneSummary" tag="span">
+            <template #succeeded>{{ result.succeeded_count }}</template>
+            <template #failed>{{ result.failed_count }}</template>
+          </i18n-t>
         </CardTitle>
       </CardHeader>
       <CardContent v-if="result.failures.length > 0" class="p-0">

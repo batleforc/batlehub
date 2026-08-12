@@ -30,15 +30,18 @@ function next() {
 </script>
 
 <template>
-  <div class="flex items-center justify-between">
+  <!-- A navigation landmark, so it is reachable by landmark rather than only by
+       tabbing to it; the indicator is a live region because paging changes the
+       table underneath it without moving focus. -->
+  <nav class="flex items-center justify-between" aria-label="Pagination">
     <Button variant="outline" size="sm" :disabled="disabled || !hasPrev" @click="prev">
       Previous
     </Button>
-    <span class="text-xs text-muted-foreground">
+    <span class="text-xs text-muted-foreground" role="status" aria-live="polite">
       Page {{ page + 1 }}<template v-if="totalPages !== undefined"> of {{ totalPages }}</template>
     </span>
     <Button variant="outline" size="sm" :disabled="disabled || !canGoNext" @click="next">
       Next
     </Button>
-  </div>
+  </nav>
 </template>
