@@ -90,7 +90,7 @@ const fmtPct = (n: number | null): string => (n == null ? "—" : `${(n * 100).t
 
 <template>
   <div class="space-y-6">
-    <PageHeader :title="t('dashboard.title')" />
+    <PageHeader variant="display" :title="t('dashboard.title')" />
 
     <Skeleton v-if="healthLoading" :lines="3" />
 

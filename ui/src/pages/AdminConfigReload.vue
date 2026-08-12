@@ -323,7 +323,7 @@ onUnmounted(() => {
 <template>
   <div class="space-y-6">
     <SectionTabs :tabs="OPERATIONS_TABS" />
-    <PageHeader :title="t('adminConfigReload.configReload')" />
+    <PageHeader variant="display" :title="t('adminConfigReload.configReload')" />
 
     <!-- Config warnings: valid config, but something an operator should know -->
     <Card v-if="visibleWarnings.length">
@@ -336,13 +336,11 @@ onUnmounted(() => {
         <div
           v-for="w in visibleWarnings"
           :key="`${w.code}@${w.path}`"
-          class="flex items-start gap-3 rounded-sm border border-yellow-400 bg-yellow-50 dark:bg-yellow-900/20 px-4 py-2 text-sm text-yellow-800 dark:text-yellow-300"
+          class="flex items-start gap-3 rounded-sm border border-copper/50 px-4 py-2 text-sm text-copper"
         >
           <div class="flex-1 space-y-1">
             <div class="flex items-center gap-2">
-              <code class="font-mono text-xs bg-yellow-100 dark:bg-yellow-900/40 px-1 rounded">{{
-                w.path
-              }}</code>
+              <code class="font-mono text-xs bg-muted px-1 rounded">{{ w.path }}</code>
               <Badge variant="outline">{{ w.code }}</Badge>
             </div>
             <p>{{ w.message }}</p>
@@ -374,13 +372,13 @@ onUnmounted(() => {
         />
         <div
           v-if="editorSuccess"
-          class="rounded-sm bg-primary/10 border border-primary/30 px-4 py-2 text-primary text-sm"
+          class="rounded-sm border border-foreground/40 px-4 py-2 text-foreground text-sm"
         >
           {{ editorSuccess }}
         </div>
         <div
           v-if="editorNotice"
-          class="rounded-sm border border-yellow-400 bg-yellow-50 dark:bg-yellow-900/20 px-4 py-2 text-sm text-yellow-800 dark:text-yellow-300"
+          class="rounded-sm border border-copper/50 px-4 py-2 text-sm text-copper"
         >
           {{ editorNotice }}
         </div>
@@ -393,14 +391,14 @@ onUnmounted(() => {
           <div
             v-for="w in candidateWarnings"
             :key="`${w.code}@${w.path}`"
-            class="rounded-sm border border-yellow-400 bg-yellow-50 dark:bg-yellow-900/20 px-4 py-2 text-sm text-yellow-800 dark:text-yellow-300"
+            class="rounded-sm border border-copper/50 px-4 py-2 text-sm text-copper"
           >
             <code class="font-mono text-xs">{{ w.path }}</code> — {{ w.message }}
           </div>
         </div>
         <div
           v-if="editorError"
-          class="rounded-sm bg-destructive/10 border border-destructive/30 px-4 py-2 text-destructive text-sm"
+          class="rounded-sm border border-destructive/40 px-4 py-2 text-destructive text-sm"
         >
           {{ editorError }}
         </div>
@@ -439,7 +437,7 @@ onUnmounted(() => {
     <ConfigReadOnlyView v-else :content="configContent" :error="configLoadError" />
 
     <!-- Status: hot reload disabled -->
-    <Card v-if="hotReloadEnabled === false" class="border-yellow-400">
+    <Card v-if="hotReloadEnabled === false" class="border-copper/50">
       <CardContent class="pt-4">
         <p class="text-copper font-medium">
           <i18n-t keypath="adminConfigReload.hotReloadDisabled" tag="span">
@@ -452,13 +450,13 @@ onUnmounted(() => {
     <!-- Feedback -->
     <div
       v-if="successMsg"
-      class="rounded-sm bg-primary/10 border border-primary/30 px-4 py-2 text-primary text-sm"
+      class="rounded-sm border border-foreground/40 px-4 py-2 text-foreground text-sm"
     >
       {{ successMsg }}
     </div>
     <div
       v-if="errorMsg"
-      class="rounded-sm bg-destructive/10 border border-destructive/30 px-4 py-2 text-destructive text-sm"
+      class="rounded-sm border border-destructive/40 px-4 py-2 text-destructive text-sm"
     >
       {{ errorMsg }}
     </div>
@@ -484,25 +482,16 @@ onUnmounted(() => {
             >
           </div>
           <div class="flex gap-2 flex-wrap">
-            <Badge
-              v-for="r in pendingReload.diff.added_registries"
-              :key="r"
-              class="bg-primary/10 text-primary"
+            <Badge v-for="r in pendingReload.diff.added_registries" :key="r" variant="copper"
               >+{{ r }}</Badge
             >
-            <Badge
-              v-for="r in pendingReload.diff.removed_registries"
-              :key="r"
-              class="bg-destructive/10 text-destructive"
+            <Badge v-for="r in pendingReload.diff.removed_registries" :key="r" variant="copper"
               >-{{ r }}</Badge
             >
-            <Badge
-              v-for="r in pendingReload.diff.changed_registries"
-              :key="r.name"
-              class="bg-copper/10 text-copper"
+            <Badge v-for="r in pendingReload.diff.changed_registries" :key="r.name" variant="copper"
               >~{{ r.name }}</Badge
             >
-            <Badge v-if="pendingReload.diff.limits_changed" class="bg-purple-100 text-purple-800">{{
+            <Badge v-if="pendingReload.diff.limits_changed" variant="copper">{{
               t("adminConfigReload.limitsChanged")
             }}</Badge>
           </div>
@@ -621,13 +610,7 @@ onUnmounted(() => {
                 <td class="py-2 pr-4">{{ formatDate(row.triggered_at) }}</td>
                 <td class="py-2 pr-4">{{ row.triggered_by }}</td>
                 <td class="py-2 pr-4">
-                  <Badge
-                    :class="
-                      row.status === 'applied'
-                        ? 'bg-green-100 text-primary'
-                        : 'bg-destructive/10 text-destructive'
-                    "
-                  >
+                  <Badge :class="row.status === 'applied' ? 'text-foreground' : 'text-destructive'">
                     {{ row.status }}
                   </Badge>
                 </td>

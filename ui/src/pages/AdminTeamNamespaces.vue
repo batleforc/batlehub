@@ -72,6 +72,7 @@ const {
   <div class="space-y-6">
     <SectionTabs :tabs="NAMESPACES_TABS" />
     <PageHeader
+      variant="display"
       :title="t('adminTeamNamespaces.teamNamespaces')"
       :description="t('adminTeamNamespaces.assignPackageNamePrefixesTo')"
     >

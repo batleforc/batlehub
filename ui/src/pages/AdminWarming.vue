@@ -162,6 +162,7 @@ onMounted(() => void loadStatus());
   <div class="space-y-6">
     <SectionTabs :tabs="OPERATIONS_TABS" />
     <PageHeader
+      variant="display"
       :title="t('adminWarming.cacheWarming')"
       :description="t('adminWarming.registriesWithWarmingConfiguredTrigger')"
     >
@@ -205,7 +206,7 @@ onMounted(() => void loadStatus());
                 :placeholder="t('adminWarming.lodashReact180')"
                 class="font-mono text-xs"
               />
-              <p class="text-[11px] text-muted-foreground">
+              <p class="text-xs text-muted-foreground">
                 {{ t("adminWarming.commaSeparatedOmitVersion") }}
               </p>
             </div>
@@ -217,7 +218,7 @@ onMounted(() => void loadStatus());
                 placeholder="idea/idea-2026.1.3.tar.gz"
                 class="font-mono text-xs"
               />
-              <p class="text-[11px] text-muted-foreground">
+              <p class="text-xs text-muted-foreground">
                 {{ t("adminWarming.commaSeparatedForPath") }}
               </p>
             </div>
@@ -225,16 +226,14 @@ onMounted(() => void loadStatus());
             <p v-if="errors[reg.name]" class="text-xs text-destructive">{{ errors[reg.name] }}</p>
 
             <div v-if="results[reg.name]" class="flex gap-2 flex-wrap">
-              <Badge class="bg-primary/10 text-primary text-xs">
-                {{ results[reg.name].warmed }} warmed
-              </Badge>
+              <Badge class="text-xs"> {{ results[reg.name].warmed }} warmed </Badge>
               <Badge class="bg-muted text-muted-foreground text-xs">
                 {{ results[reg.name].skipped }} skipped
               </Badge>
               <Badge
                 :class="
                   results[reg.name].errors > 0
-                    ? 'bg-destructive/10 text-destructive'
+                    ? 'text-destructive'
                     : 'bg-muted text-muted-foreground'
                 "
                 class="text-xs"
@@ -341,9 +340,7 @@ onMounted(() => void loadStatus());
         <p v-if="deleteError" class="text-xs text-destructive">{{ deleteError }}</p>
         <div v-if="deleteResult" class="space-y-1">
           <Badge
-            :class="
-              deleteResult.deleted ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
-            "
+            :class="deleteResult.deleted ? 'text-foreground' : 'bg-muted text-muted-foreground'"
             class="text-xs"
           >
             {{
@@ -352,7 +349,7 @@ onMounted(() => void loadStatus());
                 : t("adminWarming.notCachedNothingToRemove")
             }}
           </Badge>
-          <p class="text-[11px] text-muted-foreground font-mono break-all">
+          <p class="text-xs text-muted-foreground font-mono break-all">
             {{ deleteResult.artifact_key }}
           </p>
         </div>

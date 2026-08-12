@@ -623,8 +623,183 @@ reminder that a green rendered gate is only as broad as the states it managed to
 
 **The lesson worth keeping:** every one of findings 6–9 sat on a code path the earlier scan never
 reached, because the page under test was showing an error. A rendered gate that only ever sees one
-state is a gate over one state — which is why §12's remaining open item is extending these gates
-past `/`.
+state is a gate over one state.
+
+### Extending the gates past `/`
+
+Acting on exactly that, the gates now scan **every route reachable without a session** — `/`,
+`/login`, `/packages`, `/setup`, `/tools/access-check`, `/tools/url-mapper` — at both viewports,
+plus axe over all six. Two properties of the gate itself had to be fixed before the results meant
+anything, and both had been quietly falsifying it:
+
+- **The batched scan was non-deterministic.** Passing every URL to one `impeccable detect` run
+  reuses a single browser session with a ~100 ms settle, and an SPA that hydrates asynchronously is
+  then sometimes measured mid-hydration: three identical runs returned **1, 2 and 1** findings.
+  One invocation per route is slower and repeatable. A gate that fails at random is a gate people
+  retry until it passes.
+- **`sprig`'s `quote` uses double quotes**, so every `$var` in the sidecar command was expanded by
+  the *outer* shell before kubectl saw it — `$V` and `$fail` arrived empty, the viewport silently
+  fell back to the default and the failure flag never set. The task reported success no matter what
+  it found. `squote` keeps them literal. Same trap the `PATH` construction had already avoided.
+
+What the extended scan then caught, none of it visible from `/` alone:
+
+| Finding | What it was |
+| --- | --- |
+| `low-contrast` on `/packages`, `/setup` — nav labels at **1.3:1** | The sticky header carried `bg-background/90 backdrop-blur-md`. DESIGN.md's Elevation rule allows this system **no blurs and no layered surfaces**, so it was the same class of violation as the glow — and the translucency is what put the nav labels below AA against whatever scrolled beneath them. The bar is now opaque; the hairline rule already separated it from the sheet. |
+| `skipped-heading` on `/tools` — `h1` then `h3` | `CardTitle` hardcoded `<h3>`, so every page whose title is an `h1` skipped `h2`. The level is now a prop defaulting to `h2`, which is where a card directly under the page title belongs. |
+| `body-text-viewport-edge` at 390 px — a `<p>` overflowing by 113 px | The catalog's empty state lived in a `<td colspan="6">`, so it inherited the table's ~900 px width: on a phone, the message telling you there is nothing here sat off-screen behind a horizontal scroll — the one thing the Own-Container Overflow Rule forbids the body to do. It now renders outside the table. |
+| `line-length` ~180 chars on `/setup` | Page descriptions had no measure. `PageHeader` now caps them at 64ch, DESIGN.md's panel-copy width. |
+| `all-caps-body` on `/tools/url-mapper` | `Label` applies the Meta step's uppercase, which is right for a label and wrong for a 34-character instruction. The string became an actual label (`Upstream URL`); the hint it carried is already in the placeholder. |
+| axe `scrollable-region-focusable` on `/packages` | The table's scroll container was not keyboard reachable, so its overflow was unreachable content for anyone not using a pointer. It now carries `tabindex="0"`, `role="region"` and a name — §4.7 makes tables keyboard-operable explicitly. |
+| `cramped-padding` on `/packages` | **Waived, measured.** The flagged box is the `Card` around the table (`CardContent p-0`, the edge-to-edge pattern used in 13 places); the inset comes from the cells' `p-4` one level down. Measured in-browser at **17 px left / 13 px top** against an 8 px floor. Scoped to `cramped-padding` on `*/packages` in `.impeccable/config.json`, so the rule — which caught the button padding above — stays live everywhere else. |
+
+### The gate was scanning an empty shell in CI
+
+Extending the routes exposed something larger. Against a **production build served without an API**
+— which is exactly what the CI job does — every page rendered as an empty shell: header, footer,
+nothing between. The console logged `TypeError: q.value.filter is not a function`.
+
+That is finding 1 again, in the form the note under it predicted: `serve -s` answers `/api/…` with
+the SPA's own `index.html`, the generated client hands that text back as `data`, and the first
+component to call `.filter()` on a string throws during render. Fixing the environment in this
+workspace had made it invisible here, not absent.
+
+So the CI rendered gate had been reporting "0 findings" over **six pages that never rendered**. The
+comment in the workflow — "the pages fall back to their error and empty states, which is itself part
+of what is being checked" — was an assumption, and it was false.
+
+`useApi` now treats a string payload as an error, because every endpoint in this API answers with
+JSON. The same build now renders the wordmark, the tagline and a stated error, with no page
+exception — a designed error state rather than a blank page, which is also what a real deployment
+whose reverse proxy does not route `/api` will now show its users. Pinned by a test.
+
+### Reaching the routes that need a session
+
+`/me/*` and `/admin/*` — 19 routes, the largest surface in the console — were the last unmeasured
+ground. Both `impeccable detect` and `@axe-core/cli` scan by URL with no way to carry a session, so
+they would have graded the login page nineteen times.
+
+`ui/build/a11y-authed.mjs` closes that: it connects to the already-running Chrome over CDP
+(`puppeteer-core`, so no second browser is downloaded), seeds the access token into `localStorage`
+via `evaluateOnNewDocument` — before the app's first script, because `initAuth` reads it
+synchronously and the router resolves identity once — then runs axe-core in the page. It uses only
+public APIs, and it **verifies the landed path**: a redirect means the session did not take, and is
+reported rather than counted as a pass. Tokens come from the environment and are never written to a
+file. **23 route/role combinations, now clean.** Three real defects on the way there:
+
+| Finding | What it was |
+| --- | --- |
+| `/admin/operations/warming` threw **`Message compilation error: Invalid linked format`** | `@` opens a linked-message reference in vue-i18n (`@:other.key`), and the placeholder `react@18.0.0` is not valid linked syntax — so the message failed to *compile* and took the page's messages with it. Escaped as `{'@'}`, and pinned by a test: nothing type-checks catalogue syntax, and no test rendered that page, so only an authenticated scan could have found it. |
+| `color-contrast` ×15 on `/admin/observability/health` | The healthy-registry indicator was `text-green-600 dark:text-green-400` with a pinging dot. This palette **has no green** — DESIGN.md's colours are ground/ink/rule/accent/copper/focus — so it was a design-system violation that also failed AA. It now mirrors the degraded branch in ink, quiet on purpose so the degraded state stays the loud one (§6.4); the ping went with it, since the only authored motion in this world is the resolve transition. |
+| `color-contrast` on the destructive `Badge`, both renditions | `bg-destructive/10` put accent text on a 10% tint of itself: `#c50220` on `#ecd0d3` is **4.26:1** at 12px, under the AA floor. It is R10's finding in a second place, and precisely what the Undependable Fill Rule exists to prevent — a fill is not a state channel. All three accent variants dropped the fill; the border already carries the state and the text measures 5.6:1 on the card ground. |
+
+### Wired into CI, by stubbing the API
+
+The obstacle was that the CI job served the build with no API, so identity never resolved and every
+guard redirected. The fix is a **stubbed read-only API served on the same origin as the build**
+(`ui/build/stub-server.mjs`), and the reason to stub rather than boot the real server is not
+convenience:
+
+> A fresh backend is an **empty** backend. Every admin list falls to its empty state — and an empty
+> page is exactly what we already know measures nothing.
+
+That is not a prediction. Capturing the twenty-one endpoints the authenticated routes call, against
+a *populated* development instance, **eight already returned `[]`**. A CI-fresh database would return
+nothing anywhere. So the fixtures are populated on purpose: rows are what expose contrast, reflow,
+truncation and unlabelled controls.
+
+Three properties keep that honest:
+
+- **The fixtures were captured from a real backend**, not invented, and `fixtures.test.ts` checks
+  each one against `openapi.json` — so the existing spec-sync gate is what catches drift, rather
+  than a second source of truth. It also pins that no collection is empty, since an empty fixture
+  silently returns the gate to measuring nothing.
+- **The harness still verifies the landed path**, so a stub that stops authenticating shows up as
+  "session not applied" rather than as a pass.
+- **No repository secrets.** The stub answers `/api/v1/me` with an admin identity whatever token is
+  presented, because what is under test is rendering, not authentication.
+
+What it deliberately does not test is that the server returns those shapes; that stays the Rust
+integration tests' job. **Two defects surfaced the moment the lists had rows in them**, neither
+reachable before: `/me/tokens` dimmed already-dim ink with `opacity-70`, landing at **3.33:1** — 
+below the AA floor and below DESIGN.md's "always `--ink-dim` or better"; and every subscription row
+on `/admin/notifications` carried a `Switch` with **no accessible name**, announced to a screen
+reader as "button" with nothing to say what it toggled.
+
+A side finding, pinned rather than fixed: **six of the endpoints the console calls have no
+documented 200 body** in `openapi.json` (`admin/packages`, `admin/ip-blocks`, `admin/audit-log`,
+the two per-registry namespace/beta-channel routes, and `me/namespaces`). That is why
+`src/lib/registry-types.ts` hand-writes their DTOs and the generated client types them as unknown.
+`fixtures.test.ts` holds the count at six so it cannot grow quietly; it should fall to zero when the
+handlers are annotated.
+
+### The One Synthetic Rule, applied and made executable
+
+The colour sweep that followed was not a judgement call after all: DESIGN.md already states the
+grammar, and it had simply never been applied.
+
+> **The One Synthetic Rule.** Crimson is the world's only invented colour and stays on its four jobs.
+> Copper carries "waiting"; ink carries "known"; dim ink carries everything ordinary. A fifth hue
+> does not get added to signal a fifth condition — the dot pattern does that.
+
+So the mapping is read off the document, not invented: **refused → crimson**, **waiting → copper**,
+**known → ink**, **ordinary → dim ink**. Tailwind ships a full palette, so a fifth hue is always one
+utility away, and **32** of them had accumulated across six files — green for "healthy" and
+"allowed", yellow for configuration warnings, red beside the crimson that already meant refused, and
+one purple. Two pairings failed WCAG AA; none had ever been measured, because a colour that is not a
+token cannot be.
+
+Three findings inside that sweep were more than a re-colouring:
+
+- **Success was rendering in the colour of failure.** `AdminConfigReload` and `AdminExploreCache`
+  drew their success notices in `--primary`, which resolves to `--accent` — the same crimson as the
+  error notice beside them. "Configuration applied" and "Configuration rejected" were the same
+  colour. Success is *known*: ink.
+- **`+`/`-`/`~` already carried the diff.** The pending-reload badges used four hues (crimson,
+  crimson, copper, purple) to distinguish added/removed/changed/limits, while the sign glyph in each
+  label already said which was which — and two of those four hues were the same colour anyway. A
+  pending reload is one condition, *waiting*, so it is one colour; the pattern differentiates. That
+  is the rule's own escape hatch, used as written.
+- **The alpha-fill pattern was systemic.** `bg-…/10` under accent text appeared in 12 more places
+  after the Badge fix, including hover fills under `--destructive` text. All removed: the border
+  carries the state, the text sits on the ground where it measures.
+
+**The rule is now a test** (`tokens.test.ts`), scanning `src/` for any off-palette colour utility.
+Source-level rather than rendered, because that is where the hue enters and a rendered scan only sees
+what happens to be on screen. It earned itself immediately: it caught the purple badge that a
+hand-written grep had missed, because I had not thought to search for `purple`.
+
+### The admin pages, measured rather than asserted
+
+Phase 6 recorded that "the other 14 admin pages are not visually redrawn in the specimen grammar" and
+deferred it. With the authenticated harness in place that stopped being an assertion, so the harness
+gained a **type-ramp check** alongside axe: per route it reports the sizes actually painted, whether
+there is an `h1`, and whether that `h1` is in the display face. DESIGN.md declares two ramps —
+JetBrains Mono at 12/13/15/16/20 and Silkscreen on its 8px em at 16/24/56/72/88/104 — so a size
+outside that set is a step nobody decided.
+
+What it found, and what changed:
+
+| Finding | What it was |
+| --- | --- |
+| Page titles were inconsistent three ways | 3 pages used `PageHeader variant="display"`, 10 used `PageHeader` plain, and **2 had no `h1` at all** — `AdminPackages` and `AuditLog` went straight from the tab strip into a Card, so those documents had no top-level heading. (axe did not catch it: `page-has-heading-one` is a best-practice rule, outside the WCAG tags the gate runs.) Every page now carries one Display-step title. |
+| Two pages then said their own name twice | Adding a page title left `AdminPackages` and `AuditLog` with a Card repeating it. The only information in those card titles was a **count**, so the count moved up into the title slot and the card header kept just its actions. "One per view", as DESIGN.md puts it. |
+| `Label` and `TableHead` were under-tracked by two thirds | The Tracking Ladder Rule gives exact values — **0.14em** for table column heads and preference labels. Tailwind's `tracking-wide` is 0.025em and `tracking-wider` 0.05em, and those two primitives carry the Meta step across the whole console. |
+| `/admin/operations/warming` painted at **11px** | Three `text-[11px]` hints, under the Meta step's stated floor: "Always `--ink-dim` or better; **never below 12px**". |
+
+**A decision this needed, recorded here because DESIGN.md deliberately does not make it.** Its
+Typography section says of the Head and Sub steps: *"declared in the ramp but not exercised by this
+surface … treat their usage as unset, not as established."* The page-title treatment was therefore
+genuinely open. **Decision: one Display-step title per view, on every routed page**, in the bitmap
+face at Pixel Medium. Two reasons: the bitmap face is what makes a page read as part of this world at
+all, and a ramp of 12/13/15/20 spans only 1.67× across four steps, which the detector reads — 
+correctly — as no hierarchy. The alternative, JetBrains Mono at the Head step, would have kept the
+pages flat and left Silkscreen to the wordmark alone.
+
+**23 route/role combinations now pass both checks** — WCAG 2.2 AA and the type ramp. What remains
+genuinely unmeasured is composition: whether a page's *layout* is well cut is not something a ramp
+check can answer, and no gate here claims to.
 
 ## 14. The i18n gate was measuring almost nothing
 
@@ -668,7 +843,9 @@ real finding under two hundred that must not be touched.
 
 ### Still open, continued
 
-4. **The other 14 admin pages are still not redrawn in the specimen grammar.** They now inherit the
-   faces, the ramp and the shadow vocabulary, so they are no longer *wrong* — but they were laid out
-   for the old scale and have not been re-cut for this one. The rendered gates only scan `/` today;
-   extending them per-route is what would make this measurable rather than asserted.
+4. **The admin pages' *composition* is the last piece, and it is the one no gate can judge.**
+   Superseded in part: the grammar itself is now applied and measured — faces, both ramps, the
+   palette under the One Synthetic Rule, the tracking ladder, contrast, and one Display-step title
+   per view, across 23 route/role combinations at every commit. What remains is whether a page is
+   *well cut*: what leads, what groups, what could go. A type-ramp check cannot answer that, and
+   nothing here pretends otherwise — it needs an eye, page by page.

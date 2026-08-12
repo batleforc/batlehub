@@ -89,25 +89,86 @@ jobs:
         run: pnpm run build
         working-directory: ui
 
-      # Served as static files: these checks are about what the page *renders*,
-      # and none of them need the API. The pages fall back to their error and
-      # empty states, which is itself part of what is being checked.
-      - name: Serve the build
+      # The build plus a stubbed read-only API on one origin.
+      #
+      # This replaces `serve -s ui/dist`, and the comment that used to sit here
+      # was wrong: it claimed the pages "fall back to their error and empty
+      # states". They did not. With no API the identity fetch never resolves,
+      # every guard redirects and every page rendered as an empty shell — six
+      # pages reported clean while none of them existed.
+      #
+      # Stubbed rather than a real backend, deliberately: a fresh backend is an
+      # *empty* backend, and an empty page is exactly what measures nothing.
+      # Eight of the twenty-one endpoints returned `[]` even against a populated
+      # development instance. The fixtures carry rows, because rows are what
+      # expose contrast, reflow and truncation — and `fixtures.test.ts` checks
+      # them against openapi.json so they cannot drift from the contract.
+      - name: Serve the build with a stubbed API
         run: |
-          npx --yes serve -s ui/dist -l 4173 &
+          node ui/build/stub-server.mjs --port 4173 --dist ui/dist &
           npx --yes wait-on http://127.0.0.1:4173 -t 60000
 
       # Two viewports, because the failures differ: contrast and hierarchy are
       # width-independent, overflow and reflow are not.
-      - name: Impeccable detector — desktop
-        run: npx --yes impeccable detect --viewport 1440x900 http://127.0.0.1:4173/
-      - name: Impeccable detector — mobile
-        run: npx --yes impeccable detect --viewport 390x844 http://127.0.0.1:4173/
+      #
+      # Every route reachable without a session. `/me/*` and `/admin/*` sit
+      # behind router guards and would redirect, so scanning them here would
+      # measure the login page over and over — see RFC 0003 §13.
+      #
+      # One `detect` invocation per route, deliberately: passing every URL to a
+      # single run reuses one browser session with a ~100ms settle, and an SPA
+      # that hydrates asynchronously then gets measured mid-hydration. Three
+      # identical batched runs returned 1, 2 and 1 findings. A gate that fails
+      # at random is a gate people retry until it passes.
+      - name: Impeccable detector — desktop and mobile
+        run: |
+          fail=0
+          for viewport in 1440x900 390x844; do
+            for route in / /login /packages /setup /tools/access-check /tools/url-mapper; do
+              echo "::group::$viewport $route"
+              npx --yes impeccable detect --viewport "$viewport" "http://127.0.0.1:4173$route" || fail=1
+              echo "::endgroup::"
+            done
+          done
+          exit $fail
 
       # PRODUCT.md makes WCAG 2.2 AA binding. tokens.test.ts proves the palette
-      # can clear it; only a rendered page proves the pages actually do.
+      # can clear it; only a rendered page proves the pages actually do. axe
+      # reloads per URL, so batching it is stable.
       - name: axe accessibility scan
         run: |
-          npx --yes @axe-core/cli http://127.0.0.1:4173/ \
+          urls=""
+          for route in / /login /packages /setup /tools/access-check /tools/url-mapper; do
+            urls="$urls http://127.0.0.1:4173$route"
+          done
+          npx --yes @axe-core/cli $urls \
             --exit \
             --tags wcag2a,wcag2aa,wcag21a,wcag21aa,wcag22aa
+
+      # The authenticated harness drives an existing browser over CDP rather
+      # than launching its own — locally that is the workspace's `che-browser`
+      # sidecar, and here it is this. Same contract either way: something is
+      # listening on 9222.
+      - name: Start a headless browser
+        run: |
+          google-chrome --headless=new --no-sandbox --disable-gpu \
+            --remote-debugging-port=9222 >/dev/null 2>&1 &
+          npx --yes wait-on http://127.0.0.1:9222/json/version -t 60000
+
+      # The 15 admin pages and 4 account pages — the largest surface in the
+      # console, and the one no URL-based scanner can reach: they sit behind
+      # router guards, so scanning them by URL grades the login page nineteen
+      # times. This harness seeds a token into localStorage before the app
+      # boots, then runs axe and a type-ramp check in the page.
+      #
+      # The tokens are not secrets. The stub answers /api/v1/me with an admin
+      # identity whatever is presented, because what is under test is rendering,
+      # not authentication — so there is nothing here worth protecting, and the
+      # gate needs no repository secrets to run.
+      - name: Rendered gates — authenticated routes
+        env:
+          BATLEHUB_ADMIN_TOKEN: stub
+          BATLEHUB_USER_TOKEN: stub
+          BASE: http://127.0.0.1:4173
+        run: node build/design-authed.mjs
+        working-directory: ui

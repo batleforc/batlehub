@@ -11,10 +11,10 @@ const { banner } = useBanner();
     :class="[
       'border-t px-4 py-1.5 flex items-center gap-2 text-sm font-mono font-medium',
       banner.level === 'error'
-        ? 'bg-destructive/10 border-destructive/40 text-destructive'
+        ? 'border-destructive/40 text-destructive'
         : banner.level === 'warning'
-          ? 'bg-copper/10 border-copper/40 text-copper'
-          : 'bg-primary/10 border-primary/30 text-primary',
+          ? 'border-copper/40 text-copper'
+          : 'border-foreground/40 text-foreground',
     ]"
   >
     <XCircle v-if="banner.level === 'error'" class="h-3.5 w-3.5 shrink-0" />

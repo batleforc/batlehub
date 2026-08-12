@@ -144,7 +144,7 @@ function reset() {
   <div class="space-y-6 max-w-4xl">
     <SectionTabs :tabs="PACKAGES_TABS" />
     <PageHeader
-      :title="t('adminBulk.bulkImport')"
+      :title="t('adminBulk.bulkBlock')"
       :description="t('adminBulk.blockOrUnblockMultiplePackages')"
       variant="display"
     />
@@ -174,7 +174,7 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
     <!-- Action + input -->
     <Card>
       <CardHeader class="pb-3">
-        <CardTitle class="text-base">{{ t("adminBulk.configureImport") }}</CardTitle>
+        <CardTitle class="text-base">{{ t("adminBulk.configureAction") }}</CardTitle>
       </CardHeader>
       <CardContent class="space-y-4">
         <!-- Action selector -->

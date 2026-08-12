@@ -619,16 +619,56 @@ tasks:
         sh: dirname "$(readlink -f "$(command -v node)")"
       # 5174, not 5173: the gates run inside the pod, and that is the front
       # wired to the API on localhost (`task ui:dev:local`).
-      URL: '{{.URL | default "http://localhost:5174/"}}'
+      BASE: '{{.BASE | default "http://localhost:5174"}}'
+      # Every route reachable without a session. `/me/*` and `/admin/*` sit
+      # behind requiresAuth/requiresAdmin and would redirect to /login, so
+      # scanning them would measure the login page 14 times over — see the
+      # note in RFC 0003 §13 about what this gate still cannot see.
+      ROUTES: '{{.ROUTES | default "/ /login /packages /setup /tools/access-check /tools/url-mapper"}}'
       # cd into the repo so the detector loads DESIGN.md and .impeccable/ — a
       # design-system-aware scan is the whole point of R6.
       ENV: 'export PATH={{.NODE_BIN}}:/usr/local/bin:/usr/bin:/bin PUPPETEER_EXECUTABLE_PATH=/opt/chrome/chrome CI=1; cd {{.ROOT_DIR}};'
+      # One invocation per route, deliberately. Passing every URL to a single
+      # `detect` run reuses one browser session with a ~100ms settle, and an SPA
+      # that hydrates asynchronously then gets measured mid-hydration: three
+      # identical batched runs returned 1, 2 and 1 findings. Per-route is slower
+      # and repeatable, and a gate that fails at random is a gate people retry
+      # until it passes.
+      SCAN: 'for r in {{.ROUTES}}; do echo "→ $r"; npx --yes impeccable detect --viewport "$V" "{{.BASE}}$r" || fail=1; done; [ -z "$fail" ]'
     cmds:
       # The same two viewports CI uses: contrast and hierarchy are width-blind,
       # overflow and reflow are not.
-      - '{{.BROWSER_EXEC}} sh -c {{printf "%s npx --yes impeccable detect --viewport 1440x900 %s" .ENV .URL | quote}}'
-      - '{{.BROWSER_EXEC}} sh -c {{printf "%s npx --yes impeccable detect --viewport 390x844 %s" .ENV .URL | quote}}'
-      - '{{.BROWSER_EXEC}} sh -c {{printf "%s npx --yes @axe-core/cli %s --exit --chromedriver-path /usr/local/bin/chromedriver --chrome-path /opt/chrome/chrome --chrome-options=no-sandbox,disable-dev-shm-usage --tags wcag2a,wcag2aa,wcag21a,wcag21aa,wcag22aa" .ENV .URL | quote}}'
+      - '{{.BROWSER_EXEC}} sh -c {{printf "%s V=1440x900; %s" .ENV .SCAN | squote}}'
+      - '{{.BROWSER_EXEC}} sh -c {{printf "%s V=390x844; %s" .ENV .SCAN | squote}}'
+      # axe reloads the page per URL, so it is batched — its own runs are stable.
+      - '{{.BROWSER_EXEC}} sh -c {{printf "%s urls=\"\"; for r in %s; do urls=\"$urls %s$r\"; done; npx --yes @axe-core/cli $urls --exit --chromedriver-path /usr/local/bin/chromedriver --chrome-path /opt/chrome/chrome --chrome-options=no-sandbox,disable-dev-shm-usage --tags wcag2a,wcag2aa,wcag21a,wcag21aa,wcag22aa" .ENV .ROUTES .BASE | squote}}'
+
+  # The 15 admin pages and the 4 account pages are the largest surface in the
+  # console and were never measured: they sit behind router guards, and both
+  # `impeccable detect` and `@axe-core/cli` scan by URL with no way to carry a
+  # session, so scanning them graded the login page over and over.
+  #
+  # Tokens come from the environment and are never written to a file — they are
+  # credentials for a running instance. Pass them per invocation:
+  #
+  #   BATLEHUB_ADMIN_TOKEN=… BATLEHUB_USER_TOKEN=… task ui:design:rendered:authed
+  ui:design:rendered:authed:
+    desc: Run axe over the routes that need a session (needs BATLEHUB_{ADMIN,USER}_TOKEN)
+    deps: [browser:check]
+    dir: ui
+    vars:
+      NODE_BIN:
+        sh: dirname "$(readlink -f "$(command -v node)")"
+      BASE: '{{.BASE | default "http://localhost:5174"}}'
+    cmds:
+      - |
+        if [ -z "$BATLEHUB_ADMIN_TOKEN" ] || [ -z "$BATLEHUB_USER_TOKEN" ]; then
+          echo "set BATLEHUB_ADMIN_TOKEN and BATLEHUB_USER_TOKEN" >&2
+          exit 2
+        fi
+        {{.BROWSER_EXEC}} sh -c "export PATH={{.NODE_BIN}}:/usr/bin:/bin BASE={{.BASE}} \
+          BATLEHUB_ADMIN_TOKEN=$BATLEHUB_ADMIN_TOKEN BATLEHUB_USER_TOKEN=$BATLEHUB_USER_TOKEN; \
+          cd {{.ROOT_DIR}}/ui && node build/design-authed.mjs"
 
   ui:design:
     desc: Run the static design gates locally (detector, i18n, token drift)

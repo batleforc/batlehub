@@ -23,7 +23,7 @@ Translate the sentence, never the domain term. A French UI that renames `yank`,
 `latest`, a registry mode, or a config key leaves the reader unable to search for
 it, type it, or match it against the docs — which is worse than English.
 
-## Strings (646)
+## Strings (647)
 
 | Key | English | French | Note |
 | --- | --- | --- | --- |
@@ -34,6 +34,7 @@ it, type it, or match it against the docs — which is worse than English.
 | `a11y.primaryNav` | Primary | Principale |  |
 | `a11y.sectionsOf` | {title} sections | Sections : {title} |  |
 | `a11y.skipToContent` | Skip to content | Aller au contenu | Screen-reader only. Never seen visually, but read aloud. |
+| `a11y.tableScroll` | Table, scrollable | Tableau, défilable |  |
 | `accessCheck.accessCheck` | Access Check | Vérification d'accès |  |
 | `accessCheck.allowed` | Allowed | Autorisé |  |
 | `accessCheck.artifactOptional` | Artifact (optional) | Artefact (facultatif) |  |
@@ -76,8 +77,8 @@ it, type it, or match it against the docs — which is worse than English.
 | `adminBetaChannel.selectARegistryToView` | Select a registry to view members. | Choisissez un registre pour voir les membres. | **32% longer than English** — check it does not overflow. |
 | `adminBetaChannel.willLoseAccess` | {principal} will lose access to pre-release versions in {registry}. | {principal} perdra l'accès aux versions pre-release dans {registry}. |  |
 | `adminBulk.blockOrUnblockMultiplePackages` | Block or unblock multiple packages at once by pasting or uploading a CSV file. | Bloquer ou débloquer plusieurs paquets à la fois en collant ou en téléversant un fichier CSV. |  |
-| `adminBulk.bulkImport` | Bulk Import | Import en masse |  |
-| `adminBulk.configureImport` | Configure import | Configurer l'import |  |
+| `adminBulk.bulkBlock` | Bulk Block | Blocage de masse |  |
+| `adminBulk.configureAction` | Configure action | Configurer l'action |  |
 | `adminBulk.csvFormat` | CSV format | Format CSV |  |
 | `adminBulk.csvNotes` | Header row is optional. {artifact} may be left blank for version-level blocks. {reason} is used only for block actions. | La ligne d'en-tête est facultative. {artifact} peut rester vide pour les blocages au niveau version. {reason} n'est utilisé que pour les actions de blocage. | **31% longer than English** — check it does not overflow. |
 | `adminBulk.defaultReason` | Default reason | Motif par défaut |  |
@@ -196,7 +197,7 @@ it, type it, or match it against the docs — which is worse than English.
 | `adminNav.allPackages` | All Packages | Tous les paquets |  |
 | `adminNav.auditLog` | Audit Log | Journal d'audit |  |
 | `adminNav.betaChannel` | Beta Channel | Canal bêta |  |
-| `adminNav.bulkImport` | Bulk Import | Import en masse |  |
+| `adminNav.bulkBlock` | Bulk Block | Blocage de masse |  |
 | `adminNav.configReload` | Config Reload | Rechargement de config |  |
 | `adminNav.dashboard` | Dashboard | Tableau de bord |  |
 | `adminNav.exploreCache` | Explore Cache | Explorer le cache |  |
@@ -306,7 +307,7 @@ it, type it, or match it against the docs — which is worse than English.
 | `adminWarming.deleteFromCache` | Delete from Cache | Retirer du cache |  |
 | `adminWarming.deleted` | Deleted | Supprimé |  |
 | `adminWarming.deleting` | Deleting… | Suppression… |  |
-| `adminWarming.lodashReact180` | lodash, react@18.0.0 | lodash, react@18.0.0 |  |
+| `adminWarming.lodashReact180` | lodash, react{'@'}18.0.0 | lodash, react{'@'}18.0.0 |  |
 | `adminWarming.noWarmingConfigured` | No registries have warming configured. Add {packages} or {paths} to a registry in your config. | Aucun registre n'a de préchauffage configuré. Ajoutez {packages} ou {paths} à un registre dans votre configuration. |  |
 | `adminWarming.notCachedNothingToRemove` | Not cached — nothing to remove | Non mis en cache — rien à retirer |  |
 | `adminWarming.packageMode` | Package | Paquet |  |
@@ -614,7 +615,7 @@ it, type it, or match it against the docs — which is worse than English.
 | `pagination.page` | Page {page} | Page {page} |  |
 | `pagination.pageOf` | Page {page} of {total} | Page {page} sur {total} | **`sur`, not `de`** — French pagination convention is `Page 3 sur 10`. Two whole messages rather than a sentence assembled around a value, because the count is not always known. |
 | `pathMapper.httpsPypiOrgProject` | https://pypi.org/project/requests/… or https://github.com/owner/repo/… | https://pypi.org/project/requests/… ou https://github.com/owner/repo/… |  |
-| `pathMapper.pasteAnUpstreamUrl` | Paste an upstream URL to auto-fill | Collez une URL upstream pour préremplir |  |
+| `pathMapper.pasteAnUpstreamUrl` | Upstream URL | URL upstream |  |
 | `pathMapper.pasteAnUpstreamUrlOr` | Paste an upstream URL or fill in the fields to get the equivalent proxy path. | Collez une URL upstream ou remplissez les champs pour obtenir le chemin proxy équivalent. |  |
 | `pathMapper.registryType` | Registry type | Type de registre |  |
 | `pathMapper.urlMapper` | URL Mapper | Mappage d'URL |  |

@@ -126,6 +126,26 @@ describe("locale catalogues", () => {
     }
   });
 
+  /**
+   * `@` opens a linked-message reference in vue-i18n (`@:other.key`), so a
+   * literal one has to go through literal interpolation — `{'@'}`. Unescaped,
+   * the message fails to *compile*, and vue-i18n takes the surrounding messages
+   * down with it: `react@18.0.0` in a placeholder threw "Invalid linked format"
+   * and broke the admin warming page at runtime. Nothing type-checks this, and
+   * no test rendered that page, so it only surfaced under an authenticated
+   * accessibility scan.
+   */
+  it("escapes any literal @, which vue-i18n would read as a linked message", () => {
+    const offenders = enKeys.filter((key) =>
+      [en, fr].some((cat) => {
+        const value = valueAt(cat as Tree, key) as string;
+        // `{'@'}` is the escaped form; anything else containing @ is a bug.
+        return /@/.test(value.replace(/\{'@'\}/g, ""));
+      }),
+    );
+    expect(offenders, "use {'@'} for a literal @").toEqual([]);
+  });
+
   /** French runs longer than English; this is the budget the layouts assume. */
   it("keeps French within 60% of the English length", () => {
     const offenders = enKeys.filter((key) => {

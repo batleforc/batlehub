@@ -65,6 +65,7 @@ async function simulate() {
   <div class="space-y-6">
     <SectionTabs :tabs="SECURITY_TABS" />
     <PageHeader
+      variant="display"
       :title="t('adminAccessCheck.rbacAccessCheck')"
       :description="t('adminAccessCheck.simulateWhetherAnIdentityWould')"
     />
@@ -175,7 +176,7 @@ async function simulate() {
 
     <div
       v-if="error"
-      class="rounded border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+      class="rounded border border-destructive/50 px-4 py-3 text-sm text-destructive"
     >
       {{ error }}
     </div>
@@ -183,19 +184,11 @@ async function simulate() {
     <div
       v-if="result"
       class="rounded border px-4 py-3 space-y-1"
-      :class="
-        result.decision === 'allow'
-          ? 'border-green-500/50 bg-green-500/10'
-          : 'border-red-500/50 bg-red-500/10'
-      "
+      :class="result.decision === 'allow' ? 'border-foreground/50' : 'border-destructive/50'"
     >
       <p
         class="font-semibold text-sm"
-        :class="
-          result.decision === 'allow'
-            ? 'text-green-700 dark:text-green-400'
-            : 'text-red-700 dark:text-red-400'
-        "
+        :class="result.decision === 'allow' ? 'text-foreground' : 'text-destructive'"
       >
         {{ result.decision === "allow" ? t("adminAccessCheck.allow") : t("adminAccessCheck.deny") }}
       </p>

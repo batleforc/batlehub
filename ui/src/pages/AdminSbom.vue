@@ -76,7 +76,7 @@ async function exportSbom() {
     <!-- Feedback -->
     <div
       v-if="errorMsg"
-      class="rounded-sm bg-destructive/10 border border-destructive/30 px-4 py-2 text-destructive text-sm"
+      class="rounded-sm border border-destructive/40 px-4 py-2 text-destructive text-sm"
     >
       {{ errorMsg }}
     </div>

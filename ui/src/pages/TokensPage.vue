@@ -257,7 +257,7 @@ const lifetimePresets = [7, 30, 90];
                   >
                     <Clock v-if="daysUntil(tok.expires_at) <= 7" class="h-3 w-3" />
                     {{ formatDate(tok.expires_at) }}
-                    <span class="text-xs opacity-70">({{ daysUntil(tok.expires_at) }}d)</span>
+                    <span class="text-xs">({{ daysUntil(tok.expires_at) }}d)</span>
                   </span>
                 </TableCell>
                 <TableCell class="text-sm text-muted-foreground">

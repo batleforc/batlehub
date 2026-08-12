@@ -1,8 +1,12 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022"],
-    "types": ["node"],
+    "lib": [
+      "ES2022"
+    ],
+    "types": [
+      "node"
+    ],
     "module": "ESNext",
     "skipLibCheck": true,
     "moduleResolution": "bundler",
@@ -15,5 +19,10 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["vite.config.ts", "openapi-ts.config.ts", "src/design/tokens.test.ts"]
+  "include": [
+    "vite.config.ts",
+    "openapi-ts.config.ts",
+    "src/design/tokens.test.ts",
+    "src/test/fixtures.test.ts"
+  ]
 }

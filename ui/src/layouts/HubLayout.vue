@@ -25,7 +25,7 @@ const isActive = (to: string): boolean => route.path === to || route.path.starts
 <template>
   <div class="space-y-6">
     <header class="space-y-1">
-      <h1 class="font-mono text-lg font-semibold">{{ title }}</h1>
+      <h1 class="font-display text-2xl font-bold tracking-[0.04em]">{{ title }}</h1>
       <p v-if="description" class="text-sm text-muted-foreground">{{ description }}</p>
     </header>
 

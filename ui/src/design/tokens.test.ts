@@ -165,3 +165,38 @@ describe("measured palette", () => {
     expect(report, `${name}: ${report}`).toContain("--ground=");
   });
 });
+
+/**
+ * The One Synthetic Rule, made executable (DESIGN.md, Colors).
+ *
+ * "Crimson is the world's only invented colour and stays on its four jobs.
+ * Copper carries 'waiting'; ink carries 'known'; dim ink carries everything
+ * ordinary. A fifth hue does not get added to signal a fifth condition."
+ *
+ * Tailwind ships a full palette, so a fifth hue is always one utility away —
+ * and 31 of them had accumulated across five files: green for "healthy" and
+ * "allowed", yellow for config warnings, red beside the crimson that already
+ * meant refused. Two of those pairings failed WCAG AA, and none had ever been
+ * measured, because a colour that is not a token cannot be.
+ *
+ * Source-level rather than rendered: this is the point where the hue enters,
+ * and a rendered scan only sees the ones that happen to be on screen.
+ */
+describe("the One Synthetic Rule", () => {
+  const OFF_PALETTE =
+    /\b(?:text|bg|border|ring|from|to|via|outline|decoration|shadow|fill|stroke|accent|caret|divide)-(?:red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|slate|gray|zinc|neutral|stone)-\d{2,3}\b/g;
+
+  it("uses no colour outside the palette anywhere in src/", async () => {
+    const { globSync } = await import("node:fs");
+    const files = globSync("src/**/*.{vue,ts,css}", { cwd: process.cwd() }).filter(
+      (f: string) => !f.includes("/client/"),
+    );
+    const offenders: string[] = [];
+    for (const file of files) {
+      const text = readFileSync(resolve(process.cwd(), file), "utf8");
+      const hits = [...new Set(text.match(OFF_PALETTE) ?? [])];
+      if (hits.length) offenders.push(`${file}: ${hits.join(", ")}`);
+    }
+    expect(offenders, "state is crimson (refused), copper (waiting) or ink (known)").toEqual([]);
+  });
+});

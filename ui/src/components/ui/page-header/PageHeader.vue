@@ -28,7 +28,10 @@ withDefaults(
       >
         <slot name="title">{{ title }}</slot>
       </h1>
-      <p v-if="description || $slots.description" class="text-sm text-muted-foreground mt-0.5">
+      <p
+        v-if="description || $slots.description"
+        class="text-sm text-muted-foreground mt-0.5 max-w-[64ch]"
+      >
         <slot name="description">{{ description }}</slot>
       </p>
     </div>

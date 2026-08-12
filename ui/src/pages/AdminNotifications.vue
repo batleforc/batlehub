@@ -235,6 +235,7 @@ async function testSubscription(id: string) {
 <template>
   <div class="space-y-6">
     <PageHeader
+      variant="display"
       :title="t('adminNotifications.webhooksNotifications')"
       :description="t('adminNotifications.manageOutboundNotificationSubscriptionsAnd')"
     />
@@ -300,7 +301,13 @@ async function testSubscription(id: string) {
                   </TableCell>
                   <TableCell class="font-mono text-sm">{{ sub.channel_name }}</TableCell>
                   <TableCell>
-                    <Switch :model-value="sub.enabled" @update:model-value="toggleEnabled(sub)" />
+                    <Switch
+                      :model-value="sub.enabled"
+                      :aria-label="
+                        t('adminNotifications.toggleSubscription', { channel: sub.channel_name })
+                      "
+                      @update:model-value="toggleEnabled(sub)"
+                    />
                   </TableCell>
                   <TableCell class="text-right">
                     <div class="flex justify-end gap-2">
@@ -337,7 +344,7 @@ async function testSubscription(id: string) {
       <p
         v-if="testMsg"
         class="text-sm"
-        :class="testMsg.startsWith('Test failed') ? 'text-destructive' : 'text-green-600'"
+        :class="testMsg.startsWith('Test failed') ? 'text-destructive' : 'text-foreground'"
       >
         {{ testMsg }}
       </p>

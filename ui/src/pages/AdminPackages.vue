@@ -4,6 +4,7 @@ import { ref, computed, watch } from "vue";
 import { useRouter } from "vue-router";
 import { Package } from "@lucide/vue";
 import SectionTabs from "@/components/admin/SectionTabs.vue";
+import { PageHeader } from "@/components/ui/page-header";
 import { PACKAGES_TABS } from "@/config/adminSections";
 import {
   listPackages,
@@ -404,6 +405,14 @@ async function runPending(): Promise<void> {
 <template>
   <div class="space-y-4">
     <SectionTabs :tabs="PACKAGES_TABS" />
+    <PageHeader variant="display">
+      <template #title>
+        {{ t("adminNav.allPackages") }}
+        <span v-if="packages?.length" class="font-mono text-base font-normal text-muted-foreground"
+          >({{ packages.length }})</span
+        >
+      </template>
+    </PageHeader>
     <!-- Pre-block form -->
     <Card>
       <CardHeader class="flex flex-row items-center justify-between space-y-0 pb-3">
@@ -517,13 +526,7 @@ async function runPending(): Promise<void> {
     <!-- Package list -->
     <Card>
       <CardHeader class="space-y-3 pb-3">
-        <div class="flex flex-row items-center justify-between space-y-0">
-          <CardTitle class="text-lg">
-            {{ t("adminPackages.allPackages") }}
-            <span v-if="packages?.length" class="font-normal text-muted-foreground text-base ml-1"
-              >({{ packages.length }})</span
-            >
-          </CardTitle>
+        <div class="flex flex-row items-center justify-end space-y-0">
           <Button variant="outline" size="sm" @click="reload"> {{ t("common.refresh") }} </Button>
         </div>
         <Input
@@ -686,7 +689,7 @@ async function runPending(): Promise<void> {
                     <Button
                       variant="ghost"
                       size="sm"
-                      class="text-destructive hover:text-destructive hover:bg-destructive/10"
+                      class="text-destructive hover:text-destructive hover:bg-accent"
                       @click="pending = { kind: 'delete-one', pkg }"
                     >
                       {{ t("common.delete") }}

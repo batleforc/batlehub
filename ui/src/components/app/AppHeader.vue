@@ -23,7 +23,13 @@ const router = useRouter();
 
 const isOidcUser = computed(() => isAuthenticated.value && !!identity.value?.auth_provider);
 
-/* The bar follows the viewer (RFC 0003 §4.1): an item appears when it can be
+/* The bar is opaque and unblurred: DESIGN.md's Elevation rule leaves this
+   system no blurs and no layered surfaces, and a translucent sticky bar is
+   also how the nav labels were failing AA — measured at 1.3:1 against whatever
+   happened to scroll under them. The hairline rule below separates the bar
+   from the sheet; it does not need to be see-through to do that.
+
+   The bar follows the viewer (RFC 0003 §4.1): an item appears when it can be
    used, so nothing here leads to a redirect. Diagnostics moved to /tools —
    they are linked from the errors that motivate them instead of holding
    primary-nav weight for the rest of the year. */
@@ -49,7 +55,7 @@ function handleLogout() {
 </script>
 
 <template>
-  <header class="sticky top-0 z-40 border-b border-border/60 bg-background/90 backdrop-blur-md">
+  <header class="sticky top-0 z-40 border-b border-border/60 bg-background">
     <div class="container mx-auto flex h-14 items-center gap-4 px-4">
       <!-- The wordmark goes home. It pointed at /packages from when `/` was a
            blind redirect there; Phase 4 made `/` a real identity-aware surface
@@ -184,7 +190,7 @@ function handleLogout() {
       </a>
       <div v-if="isAuthenticated" class="pt-2 border-t border-border/60">
         <button
-          class="block w-full text-left px-3 py-2 rounded-sm font-mono text-sm text-destructive hover:bg-destructive/10 transition-colors"
+          class="block w-full text-left px-3 py-2 rounded-sm font-mono text-sm text-destructive hover:bg-accent transition-colors"
           @click="handleLogout"
         >
           {{ t("appHeader.signOut") }}

@@ -94,6 +94,7 @@ function isExpired(unblock_at: number): boolean {
   <div class="space-y-6">
     <SectionTabs :tabs="SECURITY_TABS" />
     <PageHeader
+      variant="display"
       :title="t('adminIpBlocks.ipBlocks')"
       :description="t('adminIpBlocks.manageManuallyBlockedIpAddresses')"
     >

@@ -79,6 +79,7 @@ const principalTypeOptions = computed(() => [
   <div class="space-y-6">
     <SectionTabs :tabs="NAMESPACES_TABS" />
     <PageHeader
+      variant="display"
       :title="t('adminBetaChannel.betaChannel')"
       :description="t('adminBetaChannel.manageWhoCanAccessPre')"
     >

@@ -119,6 +119,7 @@ onMounted(() => {
   <div class="space-y-6">
     <SectionTabs :tabs="SECURITY_TABS" />
     <PageHeader
+      variant="display"
       :title="t('adminUsers.userBlocks')"
       :description="t('adminUsers.blockUserAccountsBlockedUsers')"
     >

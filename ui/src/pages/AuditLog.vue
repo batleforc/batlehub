@@ -7,11 +7,12 @@ import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
 import { formatDate } from "@/lib/format";
 import SectionTabs from "@/components/admin/SectionTabs.vue";
+import { PageHeader } from "@/components/ui/page-header";
 import { OBSERVABILITY_TABS } from "@/config/adminSections";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Card, CardHeader, CardContent } from "@/components/ui/card";
 import {
   Table,
   TableHeader,
@@ -87,15 +88,17 @@ const actionOptions = computed(() => {
 <template>
   <div class="space-y-4">
     <SectionTabs :tabs="OBSERVABILITY_TABS" />
+    <PageHeader variant="display">
+      <template #title>
+        {{ t("adminNav.auditLog") }}
+        <span v-if="data?.length" class="font-mono text-base font-normal text-muted-foreground"
+          >({{ data.length }})</span
+        >
+      </template>
+    </PageHeader>
     <Card>
       <CardHeader class="space-y-3 pb-3">
-        <div class="flex flex-row items-center justify-between space-y-0">
-          <CardTitle class="text-lg">
-            {{ t("auditLog.auditLog") }}
-            <span v-if="data?.length" class="font-normal text-muted-foreground text-base ml-1">
-              ({{ data.length }})
-            </span>
-          </CardTitle>
+        <div class="flex flex-row items-center justify-end space-y-0">
           <div class="flex gap-2 items-center">
             <select
               v-model="exportFormat"

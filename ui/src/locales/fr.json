@@ -6,7 +6,8 @@
     "pagination": "Pagination",
     "primaryNav": "Principale",
     "sectionsOf": "Sections : {title}",
-    "skipToContent": "Aller au contenu"
+    "skipToContent": "Aller au contenu",
+    "tableScroll": "Tableau, défilable"
   },
   "accessCheck": {
     "accessCheck": "Vérification d'accès",
@@ -59,8 +60,8 @@
   },
   "adminBulk": {
     "blockOrUnblockMultiplePackages": "Bloquer ou débloquer plusieurs paquets à la fois en collant ou en téléversant un fichier CSV.",
-    "bulkImport": "Import en masse",
-    "configureImport": "Configurer l'import",
+    "bulkBlock": "Blocage de masse",
+    "configureAction": "Configurer l'action",
     "csvFormat": "Format CSV",
     "csvNotes": "La ligne d'en-tête est facultative. {artifact} peut rester vide pour les blocages au niveau version. {reason} n'est utilisé que pour les actions de blocage.",
     "defaultReason": "Motif par défaut",
@@ -191,7 +192,7 @@
     "allPackages": "Tous les paquets",
     "auditLog": "Journal d'audit",
     "betaChannel": "Canal bêta",
-    "bulkImport": "Import en masse",
+    "bulkBlock": "Blocage de masse",
     "configReload": "Rechargement de config",
     "dashboard": "Tableau de bord",
     "exploreCache": "Explorer le cache",
@@ -228,6 +229,7 @@
     "sourceIp": "IP source",
     "subscriptions": "Abonnements",
     "thisActionCannotBeUndone": "Cette action est irréversible.",
+    "toggleSubscription": "Activer les notifications vers {channel}",
     "update": "Mettre à jour",
     "webhooksNotifications": "Webhooks et notifications"
   },
@@ -313,7 +315,7 @@
     "deleteFromCache": "Retirer du cache",
     "deleted": "Supprimé",
     "deleting": "Suppression…",
-    "lodashReact180": "lodash, react@18.0.0",
+    "lodashReact180": "lodash, react{'@'}18.0.0",
     "noWarmingConfigured": "Aucun registre n'a de préchauffage configuré. Ajoutez {packages} ou {paths} à un registre dans votre configuration.",
     "notCachedNothingToRemove": "Non mis en cache — rien à retirer",
     "packageMode": "Paquet",
@@ -679,7 +681,7 @@
   },
   "pathMapper": {
     "httpsPypiOrgProject": "https://pypi.org/project/requests/… ou https://github.com/owner/repo/…",
-    "pasteAnUpstreamUrl": "Collez une URL upstream pour préremplir",
+    "pasteAnUpstreamUrl": "URL upstream",
     "pasteAnUpstreamUrlOr": "Collez une URL upstream ou remplissez les champs pour obtenir le chemin proxy équivalent.",
     "registryType": "Type de registre",
     "urlMapper": "Mappage d'URL"

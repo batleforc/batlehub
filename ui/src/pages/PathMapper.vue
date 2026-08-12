@@ -110,7 +110,7 @@ watch(pastedUrl, parseUrl);
     <!-- Universal paste input -->
     <Card>
       <CardContent class="pt-5">
-        <Label for="paste-url" class="text-xs uppercase tracking-wide text-muted-foreground">{{
+        <Label for="paste-url" class="text-xs text-muted-foreground">{{
           t("pathMapper.pasteAnUpstreamUrl")
         }}</Label>
         <Input

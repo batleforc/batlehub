@@ -59,8 +59,24 @@ describe("useApi", () => {
     expect(state.data.value).toBeNull();
   });
 
+  /**
+   * The failure this pins killed the page rather than showing anything: a
+   * reverse proxy (or `serve -s` in CI) answers /api with the SPA's own
+   * index.html, the generated client hands that text back as `data`, and the
+   * first component to call `.filter()` on it throws during render. The CI
+   * rendered gate was scanning an empty shell and reporting it clean.
+   */
+  it("treats a non-JSON payload as an error rather than as data", async () => {
+    const fn = vi.fn().mockResolvedValue({ data: "<!doctype html><html>…" });
+    const [state] = withSetup(() => useApi(fn));
+
+    await vi.waitFor(() => expect(state.loading.value).toBe(false));
+    expect(state.data.value).toBeNull();
+    expect(state.error.value).toContain("non-JSON");
+  });
+
   it("reload() re-invokes fn", async () => {
-    const fn = vi.fn().mockResolvedValue({ data: "ok" });
+    const fn = vi.fn().mockResolvedValue({ data: { ok: true } });
     const [state] = withSetup(() => useApi(fn));
 
     await vi.waitFor(() => expect(fn).toHaveBeenCalledTimes(1));

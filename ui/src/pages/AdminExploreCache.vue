@@ -85,7 +85,7 @@ onMounted(fetchRegistries);
 <template>
   <div class="space-y-6">
     <SectionTabs :tabs="OPERATIONS_TABS" />
-    <PageHeader :title="t('adminExploreCache.exploreCache')">
+    <PageHeader variant="display" :title="t('adminExploreCache.exploreCache')">
       <template #description>
         {{ t("adminExploreCache.cachesQueryResultsFor") }}
         <Badge variant="outline" class="font-mono text-xs">{{
@@ -98,13 +98,13 @@ onMounted(fetchRegistries);
     <!-- Feedback -->
     <div
       v-if="successMsg"
-      class="rounded-sm bg-primary/10 border border-primary/30 px-4 py-2 text-primary text-sm"
+      class="rounded-sm border border-foreground/40 px-4 py-2 text-foreground text-sm"
     >
       {{ successMsg }}
     </div>
     <div
       v-if="errorMsg"
-      class="rounded-sm bg-destructive/10 border border-destructive/30 px-4 py-2 text-destructive text-sm"
+      class="rounded-sm border border-destructive/40 px-4 py-2 text-destructive text-sm"
     >
       {{ errorMsg }}
     </div>

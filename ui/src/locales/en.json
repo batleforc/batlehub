@@ -6,7 +6,8 @@
     "pagination": "Pagination",
     "primaryNav": "Primary",
     "sectionsOf": "{title} sections",
-    "skipToContent": "Skip to content"
+    "skipToContent": "Skip to content",
+    "tableScroll": "Table, scrollable"
   },
   "accessCheck": {
     "accessCheck": "Access Check",
@@ -59,8 +60,8 @@
   },
   "adminBulk": {
     "blockOrUnblockMultiplePackages": "Block or unblock multiple packages at once by pasting or uploading a CSV file.",
-    "bulkImport": "Bulk Import",
-    "configureImport": "Configure import",
+    "bulkBlock": "Bulk Block",
+    "configureAction": "Configure action",
     "csvFormat": "CSV format",
     "csvNotes": "Header row is optional. {artifact} may be left blank for version-level blocks. {reason} is used only for block actions.",
     "defaultReason": "Default reason",
@@ -191,7 +192,7 @@
     "allPackages": "All Packages",
     "auditLog": "Audit Log",
     "betaChannel": "Beta Channel",
-    "bulkImport": "Bulk Import",
+    "bulkBlock": "Bulk Block",
     "configReload": "Config Reload",
     "dashboard": "Dashboard",
     "exploreCache": "Explore Cache",
@@ -228,6 +229,7 @@
     "sourceIp": "Source IP",
     "subscriptions": "Subscriptions",
     "thisActionCannotBeUndone": "This action cannot be undone.",
+    "toggleSubscription": "Enable notifications to {channel}",
     "update": "Update",
     "webhooksNotifications": "Webhooks & Notifications"
   },
@@ -313,7 +315,7 @@
     "deleteFromCache": "Delete from Cache",
     "deleted": "Deleted",
     "deleting": "Deleting…",
-    "lodashReact180": "lodash, react@18.0.0",
+    "lodashReact180": "lodash, react{'@'}18.0.0",
     "noWarmingConfigured": "No registries have warming configured. Add {packages} or {paths} to a registry in your config.",
     "notCachedNothingToRemove": "Not cached — nothing to remove",
     "packageMode": "Package",
@@ -679,7 +681,7 @@
   },
   "pathMapper": {
     "httpsPypiOrgProject": "https://pypi.org/project/requests/… or https://github.com/owner/repo/…",
-    "pasteAnUpstreamUrl": "Paste an upstream URL to auto-fill",
+    "pasteAnUpstreamUrl": "Upstream URL",
     "pasteAnUpstreamUrlOr": "Paste an upstream URL or fill in the fields to get the equivalent proxy path.",
     "registryType": "Registry type",
     "urlMapper": "URL Mapper"

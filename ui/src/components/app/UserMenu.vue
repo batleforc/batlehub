@@ -103,7 +103,7 @@ function handleLogout() {
         </DropdownMenuItem>
         <DropdownMenuSeparator class="my-1 h-px bg-border" />
         <DropdownMenuItem
-          class="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm cursor-pointer hover:bg-destructive/10 text-destructive hover:text-destructive outline-none transition-colors"
+          class="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm cursor-pointer hover:bg-accent text-destructive hover:text-destructive outline-none transition-colors"
           @select="handleLogout"
         >
           <LogOut class="h-3.5 w-3.5" />

@@ -340,38 +340,6 @@ onMounted(() => {
                 </TableRow>
               </template>
 
-              <!-- Empty is two states, and telling them apart is the point: a
-                   user shown "no packages" while a filter is applied concludes
-                   the registry is broken. -->
-              <template v-else-if="tableRows.length === 0 && !loadingUpstream">
-                <TableRow>
-                  <TableCell colspan="6" class="py-6">
-                    <EmptyState
-                      :filtered="Boolean(search.trim())"
-                      :title="
-                        search.trim() ? t('catalog.emptyFilteredTitle') : t('catalog.emptyTitle')
-                      "
-                      :description="
-                        search.trim() ? t('catalog.emptyFilteredBody') : t('catalog.emptyBody')
-                      "
-                    >
-                      <template v-if="search.trim()" #action>
-                        <Button size="sm" variant="outline" @click="search = ''">{{
-                          t("packageCatalog.clearSearch")
-                        }}</Button>
-                      </template>
-                      <template v-else #action>
-                        <Button size="sm" variant="outline" as-child>
-                          <RouterLink to="/setup">{{
-                            t("packageCatalog.pointAToolAt")
-                          }}</RouterLink>
-                        </Button>
-                      </template>
-                    </EmptyState>
-                  </TableCell>
-                </TableRow>
-              </template>
-
               <!-- Cached packages -->
               <TableRow
                 v-for="row in tableRows"
@@ -454,6 +422,32 @@ onMounted(() => {
           </Table>
         </CardContent>
       </Card>
+      <!-- Empty is two states, and telling them apart is the point: a user
+           shown "no packages" while a filter is applied concludes the registry
+           is broken.
+
+           Outside the table on purpose: in a `<td colspan>` this inherits the
+           table's width, so at 390px the "nothing here" message sat off-screen
+           behind a horizontal scroll — the one thing DESIGN.md's Own-Container
+           Overflow Rule forbids the body to do. -->
+      <div v-if="tableRows.length === 0 && !loadingUpstream && !loading" class="mt-4">
+        <EmptyState
+          :filtered="Boolean(search.trim())"
+          :title="search.trim() ? t('catalog.emptyFilteredTitle') : t('catalog.emptyTitle')"
+          :description="search.trim() ? t('catalog.emptyFilteredBody') : t('catalog.emptyBody')"
+        >
+          <template v-if="search.trim()" #action>
+            <Button size="sm" variant="outline" @click="search = ''">{{
+              t("packageCatalog.clearSearch")
+            }}</Button>
+          </template>
+          <template v-else #action>
+            <Button size="sm" variant="outline" as-child>
+              <RouterLink to="/setup">{{ t("packageCatalog.pointAToolAt") }}</RouterLink>
+            </Button>
+          </template>
+        </EmptyState>
+      </div>
 
       <!-- Pagination (cached results only) -->
       <div

@@ -1,5 +1,13 @@
 import { ref, watchEffect, type Ref } from "vue";
 
+/**
+ * Deliberately not a catalogue key: this fires when the API is unreachable or
+ * misrouted, which is a deployment fault the operator has to read, and it sits
+ * beside the file's existing "Unknown error" literal. Recorded in RFC 0003 §13.
+ */
+const NOT_JSON =
+  "The API returned a non-JSON response. Check VITE_API_BASE_URL and that /api is routed to the backend.";
+
 export function extractMessage(err: unknown): string {
   if (err == null) return "Unknown error";
   if (typeof err === "string") return err;
@@ -35,6 +43,21 @@ export function useApi<T>(
       const result = await fn();
       if (result.error) {
         error.value = extractMessage(result.error);
+        data.value = null;
+      } else if (typeof result.data === "string") {
+        /*
+         * Every endpoint in this API answers with JSON, so a string here means
+         * something else replied: a reverse proxy's HTML error page, or the
+         * SPA's own index.html when `/api` is not routed to the backend. The
+         * generated client hands that text back as `data`, and a component then
+         * calls `.filter()` on a string and throws during render — which kills
+         * the page rather than showing anything.
+         *
+         * That is not hypothetical: it is what a production build served
+         * without an API does, and it is why the CI rendered gate was scanning
+         * an empty shell while reporting the pages clean.
+         */
+        error.value = NOT_JSON;
         data.value = null;
       } else {
         data.value = result.data as T;

@@ -34,7 +34,7 @@ export const ADMIN_SIDEBAR = [
 
 export const PACKAGES_TABS = [
   { to: "/admin/packages/all", label: "adminNav.allPackages" },
-  { to: "/admin/packages/bulk", label: "adminNav.bulkImport" },
+  { to: "/admin/packages/bulk", label: "adminNav.bulkBlock" },
 ];
 
 export const SECURITY_TABS = [

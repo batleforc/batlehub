@@ -252,16 +252,17 @@ const ROLE_LABELS: Record<string, string> = {
                 class="flex items-center gap-2 w-full text-left font-mono text-sm font-medium py-1 hover:text-accent-foreground transition-colors"
                 @click="toggleErrors(reg.registry)"
               >
+                <!-- Healthy mirrors the degraded branch below, in ink rather
+                     than in green: this palette has no green, and the pair was
+                     failing AA at 15 nodes. Quiet on purpose — the degraded
+                     state has to stay the loud one (§6.4). The ping went with
+                     it; the only authored motion in this world is the resolve
+                     transition. -->
                 <span
                   v-if="reg.recent_errors.length === 0"
-                  class="flex items-center gap-1.5 text-green-600 dark:text-green-400"
+                  class="flex items-center gap-1.5 text-muted-foreground"
                 >
-                  <span class="relative flex h-2 w-2 shrink-0">
-                    <span
-                      class="motion-safe:animate-ping absolute inline-flex h-full w-full rounded-sm bg-green-500 opacity-75"
-                    />
-                    <span class="relative inline-flex h-2 w-2 rounded-sm bg-green-500" />
-                  </span>
+                  <span class="inline-block h-2 w-2 rounded-sm bg-muted-foreground" />
                   {{ t("adminHealth.noErrors24h") }}
                 </span>
                 <span v-else class="flex items-center gap-1.5 text-destructive">
