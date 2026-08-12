@@ -55,8 +55,8 @@ const form = ref({
 
 const roleOptions = computed(() => {
   const r = identity.value?.role;
-  const opts = [{ value: "user", label: "User" }];
-  if (r === "admin") opts.push({ value: "admin", label: "Admin" });
+  const opts = [{ value: "user", label: t("common.user") }];
+  if (r === "admin") opts.push({ value: "admin", label: t("common.admin") });
   return opts;
 });
 
@@ -162,7 +162,7 @@ const lifetimePresets = [7, 30, 90];
 
 <template>
   <div class="space-y-6">
-    <PageHeader variant="glow">
+    <PageHeader variant="display">
       <template #title>
         <Key class="h-5 w-5 text-primary" />
         {{ t("tokensPage.personalApiTokens") }}
@@ -229,10 +229,10 @@ const lifetimePresets = [7, 30, 90];
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Role</TableHead>
-                <TableHead>Expires</TableHead>
-                <TableHead>Created</TableHead>
+                <TableHead>{{ t("common.name") }}</TableHead>
+                <TableHead>{{ t("common.role") }}</TableHead>
+                <TableHead>{{ t("common.expires") }}</TableHead>
+                <TableHead>{{ t("common.created") }}</TableHead>
                 <TableHead class="w-16" />
               </TableRow>
             </TableHeader>
@@ -269,8 +269,8 @@ const lifetimePresets = [7, 30, 90];
                     size="icon"
                     class="h-7 w-7 text-muted-foreground hover:text-destructive"
                     :disabled="revoking === tok.id"
-                    :title="`Revoke token ${tok.name}`"
-                    :aria-label="`Revoke token ${tok.name}`"
+                    :title="t('tokensPage.revokeTokenNamed', { name: tok.name })"
+                    :aria-label="t('tokensPage.revokeTokenNamed', { name: tok.name })"
                     @click="revokeToken(tok.id)"
                   >
                     <Trash2 class="h-3.5 w-3.5" />
@@ -289,7 +289,7 @@ const lifetimePresets = [7, 30, 90];
       <template #description>{{ t("tokensPage.chooseANameRole") }}</template>
       <div class="space-y-4">
         <div class="space-y-1.5">
-          <Label for="token-name">Name</Label>
+          <Label for="token-name">{{ t("common.name") }}</Label>
           <Input
             id="token-name"
             v-model="form.name"
@@ -299,7 +299,7 @@ const lifetimePresets = [7, 30, 90];
         </div>
 
         <div class="space-y-1.5">
-          <Label for="token-role">Role</Label>
+          <Label for="token-role">{{ t("common.role") }}</Label>
           <Select
             id="token-role"
             v-model="form.role"
@@ -312,7 +312,7 @@ const lifetimePresets = [7, 30, 90];
           <legend
             class="font-mono text-xs font-semibold uppercase tracking-wide text-muted-foreground leading-none"
           >
-            Lifetime
+            {{ t("common.lifetime") }}
           </legend>
           <div class="flex gap-2">
             <Button
@@ -352,7 +352,7 @@ const lifetimePresets = [7, 30, 90];
 
         <div class="flex justify-end gap-2 pt-2">
           <Button variant="outline" :disabled="creating" @click="showCreate = false">
-            Cancel
+            {{ t("common.cancel") }}
           </Button>
           <Button :disabled="creating" @click="submitCreate">
             {{ creating ? t("tokensPage.creating") : t("tokensPage.createToken") }}

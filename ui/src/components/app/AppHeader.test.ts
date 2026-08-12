@@ -60,6 +60,18 @@ describe("AppHeader", () => {
     expect(wrapper.find("#mobile-nav").exists()).toBe(true);
   });
 
+  /**
+   * The wordmark pointed at /packages for as long as `/` was a blind redirect
+   * there, and kept pointing at it after Phase 4 gave `/` a real surface — so
+   * the one control everyone uses to "go home" skipped the home page. Nothing
+   * failed when that drifted, which is why it is pinned here.
+   */
+  it("sends the wordmark home, not to the catalog", () => {
+    const logo = mountHeader().find("a");
+    expect(logo.text()).toContain("BatleHub");
+    expect(logo.attributes("href")).toBe("/");
+  });
+
   it("is a banner landmark containing a labelled nav", () => {
     const wrapper = mountHeader();
     expect(wrapper.element.tagName).toBe("HEADER");

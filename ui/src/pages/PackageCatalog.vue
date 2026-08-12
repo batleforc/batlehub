@@ -258,8 +258,8 @@ onMounted(() => {
       <Facet
         :model-value="selectedRegistry"
         :options="facetOptions"
-        label="Registries"
-        :all-label="`All registries (${totalPackages})`"
+        :label="t('packageCatalog.registries')"
+        :all-label="t('packageCatalog.allRegistries', { count: totalPackages })"
         @update:model-value="selectRegistry"
       />
     </aside>
@@ -267,10 +267,10 @@ onMounted(() => {
     <!-- Main content -->
     <div class="flex-1 min-w-0 space-y-4">
       <!-- Header -->
-      <PageHeader variant="glow">
+      <PageHeader variant="display">
         <template #title>
           <Package class="h-5 w-5 text-primary" />
-          Packages
+          {{ t("common.packages") }}
         </template>
         <template #actions>
           <Button
@@ -285,7 +285,7 @@ onMounted(() => {
             "
           >
             <RefreshCw class="h-4 w-4 mr-1" />
-            Refresh
+            {{ t("common.refresh") }}
           </Button>
         </template>
       </PageHeader>
@@ -323,12 +323,12 @@ onMounted(() => {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Package</TableHead>
-                <TableHead>Registry</TableHead>
-                <TableHead class="text-right">Versions</TableHead>
-                <TableHead class="text-right">Downloads</TableHead>
-                <TableHead>Source</TableHead>
-                <TableHead>Proxy</TableHead>
+                <TableHead>{{ t("common.package") }}</TableHead>
+                <TableHead>{{ t("common.registry") }}</TableHead>
+                <TableHead class="text-right">{{ t("common.versions") }}</TableHead>
+                <TableHead class="text-right">{{ t("common.downloads") }}</TableHead>
+                <TableHead>{{ t("common.source") }}</TableHead>
+                <TableHead>{{ t("common.proxy") }}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -349,12 +349,10 @@ onMounted(() => {
                     <EmptyState
                       :filtered="Boolean(search.trim())"
                       :title="
-                        search.trim() ? 'Nothing matches that search' : 'No packages cached yet'
+                        search.trim() ? t('catalog.emptyFilteredTitle') : t('catalog.emptyTitle')
                       "
                       :description="
-                        search.trim()
-                          ? 'No package in this view matches. Upstream results appear here too when the registry supports search.'
-                          : 'Packages appear here once something pulls them through this instance, or once they are published to it.'
+                        search.trim() ? t('catalog.emptyFilteredBody') : t('catalog.emptyBody')
                       "
                     >
                       <template v-if="search.trim()" #action>
@@ -433,7 +431,7 @@ onMounted(() => {
                     variant="secondary"
                     class="text-xs whitespace-nowrap"
                   >
-                    Proxied
+                    {{ t("common.proxied") }}
                   </Badge>
                   <Badge
                     v-else

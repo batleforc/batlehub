@@ -53,8 +53,8 @@ function selectNamespace(ns: TeamNamespaceDto) {
   <div class="space-y-6 max-w-4xl">
     <PageHeader
       :title="t('myNamespace.teamNamespace')"
-      description="View and manage the packages and namespaces owned by your groups."
-      variant="glow"
+      :description="t('myNamespace.viewAndManageThePackages')"
+      variant="display"
     />
 
     <Card v-if="!hasGroups">
@@ -98,9 +98,9 @@ function selectNamespace(ns: TeamNamespaceDto) {
           <Table v-else>
             <TableHeader>
               <TableRow>
-                <TableHead>Registry</TableHead>
-                <TableHead>Prefix</TableHead>
-                <TableHead>Group</TableHead>
+                <TableHead>{{ t("common.registry") }}</TableHead>
+                <TableHead>{{ t("common.prefix") }}</TableHead>
+                <TableHead>{{ t("common.group") }}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -130,7 +130,7 @@ function selectNamespace(ns: TeamNamespaceDto) {
       <Card>
         <CardHeader>
           <CardTitle class="text-base">
-            Packages
+            {{ t("common.packages") }}
             <span
               v-if="selectedNs"
               class="ml-2 font-mono text-muted-foreground text-sm font-normal"
@@ -141,8 +141,8 @@ function selectNamespace(ns: TeamNamespaceDto) {
           <CardDescription>
             {{
               selectedNs
-                ? "Published versions under the selected namespace."
-                : "Select a namespace row above to browse its packages."
+                ? t("myNamespace.publishedVersionsUnderTheSelected")
+                : t("myNamespace.selectANamespaceRowAbove")
             }}
           </CardDescription>
         </CardHeader>

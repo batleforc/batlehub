@@ -568,8 +568,27 @@ task browser:check                  # is it up? prints the CDP version
 task ui:dev                         # in another terminal
 task ui:design:rendered             # detector at 2 viewports + axe
 task browser:open URL=http://localhost:5173/   # open a tab
+task browser:tabs                   # list tabs (id, type, title, url)
+task browser:close ID=<id>          # close one
 task browser:vnc                    # noVNC password, to watch Chrome
 ```
+
+Chrome itself is gated behind a flag file the sidecar's respawn loop watches, so
+it can be parked without taking the VNC stack or chromedriver down with it —
+useful when you want the ~1 GiB back between design passes:
+
+```bash
+task browser:status                 # running | starting | parked
+task browser:stop                   # park Chrome
+task browser:start                  # relaunch, waits for CDP to answer
+task browser:restart                # both, for a clean window
+task browser:logs                   # follow the sidecar log
+task browser:exec CMD="ps -ef"      # run a command inside the sidecar
+task browser:shell                  # interactive shell in the sidecar
+```
+
+The last four hop through `kubectl exec`/`logs` into the `browser` container of
+this workspace pod; everything above them is a plain `localhost` port.
 
 **A devfile change needs a workspace restart.** Adding the sidecar does not
 affect the pod you are already in — Che recreates the pod from the devfile on

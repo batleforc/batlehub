@@ -71,7 +71,7 @@ async function exportSbom() {
 <template>
   <div class="space-y-6">
     <SectionTabs :tabs="OBSERVABILITY_TABS" />
-    <PageHeader :title="t('adminSbom.sbomExport')" variant="glow" />
+    <PageHeader :title="t('adminSbom.sbomExport')" variant="display" />
 
     <!-- Feedback -->
     <div
@@ -93,7 +93,7 @@ async function exportSbom() {
           <!-- Registry filter -->
           <div class="space-y-1.5">
             <Label for="sbom-registry"
-              >Registry
+              >{{ t("common.registry") }}
               <span class="text-muted-foreground font-normal">{{
                 t("adminSbom.optional")
               }}</span></Label
@@ -103,7 +103,7 @@ async function exportSbom() {
 
           <!-- Format -->
           <div class="space-y-1.5">
-            <Label for="sbom-format">Format</Label>
+            <Label for="sbom-format">{{ t("common.format") }}</Label>
             <select
               id="sbom-format"
               v-model="format"
@@ -117,7 +117,7 @@ async function exportSbom() {
           <!-- From date -->
           <div class="space-y-1.5">
             <Label for="sbom-from"
-              >From
+              >{{ t("common.from") }}
               <span class="text-muted-foreground font-normal">{{
                 t("adminSbom.optional")
               }}</span></Label
@@ -138,7 +138,7 @@ async function exportSbom() {
         </div>
 
         <Button :disabled="loading" @click="exportSbom">
-          {{ loading ? "Exporting…" : "Download SBOM" }}
+          {{ loading ? t("adminSbom.exporting") : t("adminSbom.downloadSbom") }}
         </Button>
       </CardContent>
     </Card>

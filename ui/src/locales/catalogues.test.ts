@@ -2,6 +2,16 @@ import { describe, expect, it } from "vitest";
 
 import en from "./en.json";
 import fr from "./fr.json";
+import {
+  ADMIN_SIDEBAR,
+  NAMESPACES_TABS,
+  OBSERVABILITY_TABS,
+  OPERATIONS_TABS,
+  PACKAGES_TABS,
+  SECURITY_TABS,
+} from "@/config/adminSections";
+import { TOOLS_TABS, accountTabs, primaryNav } from "@/config/navigation";
+import { VISIBILITY_OPTIONS } from "@/lib/registry-types";
 
 /**
  * The catalogue gate (RFC 0003 §4.6, §10).
@@ -79,6 +89,40 @@ describe("locale catalogues", () => {
           expect(target, `${key} drops the domain term "${term}"`).toContain(term);
         }
       }
+    }
+  });
+
+  /**
+   * Navigation labels are catalogue *keys*, resolved with `t()` at render.
+   * They used to be English literals, and because the i18n audit only read
+   * templates it could not see them: the entire admin navigation rendered in
+   * English while the gate reported zero untranslated strings. A key that stops
+   * resolving renders as the literal text `adminNav.users`, so this is the test
+   * that turns that back into a build failure.
+   */
+  it("resolves every navigation label to a real key in both catalogues", () => {
+    const viewers = [
+      { isAuthenticated: true, isAdmin: true, hasRegistryAccess: true },
+      { isAuthenticated: false, isAdmin: false, hasRegistryAccess: true },
+    ];
+    const labels = [
+      ...ADMIN_SIDEBAR,
+      ...PACKAGES_TABS,
+      ...SECURITY_TABS,
+      ...NAMESPACES_TABS,
+      ...OPERATIONS_TABS,
+      ...OBSERVABILITY_TABS,
+      ...TOOLS_TABS,
+      ...VISIBILITY_OPTIONS,
+      ...accountTabs({ isOidc: true }),
+      ...viewers.flatMap((v) => primaryNav(v)),
+    ].map((entry) => entry.label);
+
+    expect(labels.length).toBeGreaterThan(20);
+    for (const label of labels) {
+      expect(label, `"${label}" is a literal, not a catalogue key`).toMatch(/^[a-z]\w*(\.\w+)+$/);
+      expect(enKeys, `en is missing ${label}`).toContain(label);
+      expect(frKeys, `fr is missing ${label}`).toContain(label);
     }
   });
 

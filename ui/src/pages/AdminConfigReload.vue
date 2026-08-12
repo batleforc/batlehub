@@ -347,7 +347,9 @@ onUnmounted(() => {
             </div>
             <p>{{ w.message }}</p>
           </div>
-          <Button variant="ghost" size="sm" @click="dismissWarning(w)">Dismiss</Button>
+          <Button variant="ghost" size="sm" @click="dismissWarning(w)">{{
+            t("common.dismiss")
+          }}</Button>
         </div>
       </CardContent>
     </Card>
@@ -409,7 +411,9 @@ onUnmounted(() => {
             "
             @click="validateConfigContent"
           >
-            {{ editorValidating ? "Validating…" : "Validate" }}
+            {{
+              editorValidating ? t("adminConfigReload.validating") : t("adminConfigReload.validate")
+            }}
           </Button>
           <Button
             :disabled="
@@ -421,7 +425,9 @@ onUnmounted(() => {
             "
             @click="createPendingFromContent"
           >
-            {{ editorCreating ? "Creating…" : "Create Pending Reload" }}
+            {{
+              editorCreating ? t("tokensPage.creating") : t("adminConfigReload.createPendingReload")
+            }}
           </Button>
           <Button variant="outline" @click="loadConfigContent">{{
             t("adminConfigReload.reloadFromDisk")
@@ -502,10 +508,12 @@ onUnmounted(() => {
           </div>
           <div class="flex gap-2">
             <Button size="sm" :disabled="loadingApply" @click="applyPending">
-              {{ loadingApply ? "Applying…" : "Apply" }}
+              {{ loadingApply ? t("adminConfigReload.applying") : t("adminConfigReload.apply") }}
             </Button>
             <Button size="sm" variant="outline" :disabled="loadingDiscard" @click="discardPending">
-              {{ loadingDiscard ? "Discarding…" : "Discard" }}
+              {{
+                loadingDiscard ? t("adminConfigReload.discarding") : t("adminConfigReload.discard")
+              }}
             </Button>
           </div>
         </div>
@@ -520,7 +528,7 @@ onUnmounted(() => {
       <CardContent class="space-y-2">
         <p class="text-sm text-muted-foreground">{{ t("adminConfigReload.reReadsTheConfig") }}</p>
         <Button :disabled="loadingForce" @click="forceReload">
-          {{ loadingForce ? "Reloading…" : "Reload Now" }}
+          {{ loadingForce ? t("adminConfigReload.reloading") : t("adminConfigReload.reloadNow") }}
         </Button>
       </CardContent>
     </Card>
@@ -544,7 +552,7 @@ onUnmounted(() => {
         </div>
         <div class="flex gap-2 items-end flex-wrap">
           <div class="flex-1 min-w-[16rem] space-y-1">
-            <Label for="banner-message">Message</Label>
+            <Label for="banner-message">{{ t("common.message") }}</Label>
             <Input
               id="banner-message"
               v-model="bannerMessage"
@@ -552,26 +560,32 @@ onUnmounted(() => {
             />
           </div>
           <div class="space-y-1">
-            <Label for="banner-level">Level</Label>
+            <Label for="banner-level">{{ t("common.level") }}</Label>
             <select
               id="banner-level"
               v-model="bannerLevel"
               class="border border-input rounded-sm px-2 py-2 font-mono text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
             >
-              <option value="info">Info</option>
-              <option value="warning">Warning</option>
-              <option value="error">Error</option>
+              <option value="info">{{ t("common.info") }}</option>
+              <option value="warning">{{ t("common.warning") }}</option>
+              <option value="error">{{ t("common.error") }}</option>
             </select>
           </div>
           <Button :disabled="loadingSetBanner || !bannerMessage.trim()" @click="setBannerAction">
-            {{ loadingSetBanner ? "Setting…" : "Set Banner" }}
+            {{
+              loadingSetBanner ? t("adminConfigReload.setting") : t("adminConfigReload.setBanner")
+            }}
           </Button>
           <Button
             variant="outline"
             :disabled="loadingClearBanner || !banner"
             @click="clearBannerAction"
           >
-            {{ loadingClearBanner ? "Clearing…" : "Clear Banner" }}
+            {{
+              loadingClearBanner
+                ? t("adminConfigReload.clearing")
+                : t("adminConfigReload.clearBanner")
+            }}
           </Button>
         </div>
       </CardContent>
@@ -592,10 +606,10 @@ onUnmounted(() => {
         <table v-else class="w-full text-sm">
           <thead>
             <tr class="text-left border-b">
-              <th class="pb-2 pr-4">Date</th>
+              <th class="pb-2 pr-4">{{ t("common.date") }}</th>
               <th class="pb-2 pr-4">By</th>
-              <th class="pb-2 pr-4">Status</th>
-              <th class="pb-2">Summary</th>
+              <th class="pb-2 pr-4">{{ t("common.status") }}</th>
+              <th class="pb-2">{{ t("common.summary") }}</th>
             </tr>
           </thead>
           <tbody>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { listBetaMembers, addBetaMember, removeBetaMember } from "@/client/sdk.gen";
 import type { BetaChannelMemberDto } from "@/lib/registry-types";
@@ -66,10 +67,12 @@ const {
   canSubmitAdd: (form) => !!form.principal_id.trim(),
 });
 
-const principalTypeOptions = [
-  { value: "user", label: "User" },
-  { value: "group", label: "Group" },
-];
+// computed, not a bare const: a const is evaluated once at module load and
+// would keep the English labels after a locale change.
+const principalTypeOptions = computed(() => [
+  { value: "user", label: t("common.user") },
+  { value: "group", label: t("common.group") },
+]);
 </script>
 
 <template>
@@ -77,7 +80,7 @@ const principalTypeOptions = [
     <SectionTabs :tabs="NAMESPACES_TABS" />
     <PageHeader
       :title="t('adminBetaChannel.betaChannel')"
-      description="Manage who can access pre-release versions in each registry."
+      :description="t('adminBetaChannel.manageWhoCanAccessPre')"
     >
       <template #actions>
         <Button size="sm" :disabled="!selectedRegistry" @click="addDialogOpen = true">{{
@@ -88,7 +91,7 @@ const principalTypeOptions = [
 
     <!-- Registry selector -->
     <div class="space-y-1.5 max-w-xs">
-      <Label for="beta-registry">Registry</Label>
+      <Label for="beta-registry">{{ t("common.registry") }}</Label>
       <Select
         id="beta-registry"
         v-model="selectedRegistry"
@@ -102,13 +105,13 @@ const principalTypeOptions = [
       <CardHeader>
         <div class="flex items-center justify-between">
           <CardTitle class="text-base">
-            Members
+            {{ t("common.members") }}
             <span v-if="selectedRegistry" class="font-mono text-muted-foreground text-sm ml-1"
               >({{ selectedRegistry }})</span
             >
           </CardTitle>
           <Button variant="outline" size="sm" :disabled="membersLoading" @click="reloadMembers">
-            {{ membersLoading ? "Loading…" : "Refresh" }}
+            {{ membersLoading ? t("common.loading") : t("common.refresh") }}
           </Button>
         </div>
       </CardHeader>
@@ -119,10 +122,10 @@ const principalTypeOptions = [
         <Table v-else>
           <TableHeader>
             <TableRow>
-              <TableHead>Type</TableHead>
+              <TableHead>{{ t("common.type") }}</TableHead>
               <TableHead>{{ t("adminBetaChannel.principalId") }}</TableHead>
               <TableHead>{{ t("adminBetaChannel.grantedBy") }}</TableHead>
-              <TableHead class="text-right"> Actions </TableHead>
+              <TableHead class="text-right"> {{ t("common.actions") }} </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -142,7 +145,9 @@ const principalTypeOptions = [
                 {{ m.granted_by ?? "—" }}
               </TableCell>
               <TableCell class="text-right">
-                <Button variant="outline" size="sm" @click="removeTarget = m"> Remove </Button>
+                <Button variant="outline" size="sm" @click="removeTarget = m">
+                  {{ t("common.remove") }}
+                </Button>
               </TableCell>
             </TableRow>
           </TableBody>
@@ -153,8 +158,8 @@ const principalTypeOptions = [
         >
           {{
             selectedRegistry
-              ? "No beta channel members for this registry."
-              : "Select a registry to view members."
+              ? t("adminBetaChannel.noBetaChannelMembersFor")
+              : t("adminBetaChannel.selectARegistryToView")
           }}
         </p>
       </CardContent>
@@ -184,7 +189,7 @@ const principalTypeOptions = [
     <div class="space-y-4">
       <div class="space-y-3">
         <div class="space-y-1.5">
-          <Label for="beta-principal-type">Type</Label>
+          <Label for="beta-principal-type">{{ t("common.type") }}</Label>
           <Select
             id="beta-principal-type"
             v-model="addForm.principal_type"
@@ -224,10 +229,10 @@ const principalTypeOptions = [
             addError = null;
           "
         >
-          Cancel
+          {{ t("common.cancel") }}
         </Button>
         <Button size="sm" :disabled="addLoading || !addForm.principal_id.trim()" @click="submitAdd">
-          {{ addLoading ? "Adding…" : "Add member" }}
+          {{ addLoading ? t("adminBetaChannel.adding") : t("adminBetaChannel.addMember") }}
         </Button>
       </div>
     </div>
@@ -270,10 +275,10 @@ const principalTypeOptions = [
             removeError = null;
           "
         >
-          Cancel
+          {{ t("common.cancel") }}
         </Button>
         <Button variant="destructive" size="sm" :disabled="removeLoading" @click="confirmRemove">
-          {{ removeLoading ? "Removing…" : "Remove" }}
+          {{ removeLoading ? t("adminBetaChannel.removing") : t("common.remove") }}
         </Button>
       </div>
     </div>

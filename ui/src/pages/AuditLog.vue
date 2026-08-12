@@ -106,9 +106,9 @@ const actionOptions = computed(() => {
               <option value="json">JSON</option>
             </select>
             <Button variant="outline" size="sm" :disabled="exporting" @click="exportAuditLog">
-              {{ exporting ? "Exporting…" : "Export" }}
+              {{ exporting ? t("adminSbom.exporting") : t("auditLog.export") }}
             </Button>
-            <Button variant="outline" size="sm" @click="reload"> Refresh </Button>
+            <Button variant="outline" size="sm" @click="reload"> {{ t("common.refresh") }} </Button>
           </div>
         </div>
         <div class="flex gap-2 flex-wrap">
@@ -139,12 +139,12 @@ const actionOptions = computed(() => {
         <Table v-else-if="filteredItems.length">
           <TableHeader>
             <TableRow>
-              <TableHead>Time</TableHead>
-              <TableHead>User</TableHead>
-              <TableHead>Registry</TableHead>
-              <TableHead>Package</TableHead>
-              <TableHead>Action</TableHead>
-              <TableHead>Result</TableHead>
+              <TableHead>{{ t("common.time") }}</TableHead>
+              <TableHead>{{ t("common.user") }}</TableHead>
+              <TableHead>{{ t("common.registry") }}</TableHead>
+              <TableHead>{{ t("common.package") }}</TableHead>
+              <TableHead>{{ t("common.action") }}</TableHead>
+              <TableHead>{{ t("common.result") }}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -176,7 +176,11 @@ const actionOptions = computed(() => {
               </TableCell>
               <TableCell class="max-w-[220px]">
                 <Badge :variant="ev.result.outcome === 'denied' ? 'destructive' : 'secondary'">
-                  {{ ev.result.outcome === "denied" ? "Denied" : "Allowed" }}
+                  {{
+                    ev.result.outcome === "denied"
+                      ? t("accessCheck.denied")
+                      : t("accessCheck.allowed")
+                  }}
                 </Badge>
                 <p
                   v-if="ev.result.outcome === 'denied'"
@@ -193,8 +197,8 @@ const actionOptions = computed(() => {
         <div v-else-if="!loading" class="p-6 text-sm text-muted-foreground text-center">
           {{
             userFilter || actionFilter
-              ? "No events match the current filters."
-              : "No events recorded yet."
+              ? t("auditLog.noEventsMatchTheCurrent")
+              : t("packageEventsTable.noEventsRecordedYet")
           }}
         </div>
       </CardContent>

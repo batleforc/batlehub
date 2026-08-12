@@ -44,7 +44,11 @@ const name = computed(() => identity.value?.user_id ?? "");
 <template>
   <div class="space-y-6">
     <header class="space-y-1">
-      <h1 class="font-mono text-lg font-semibold">BatleHub<span class="text-primary">.</span></h1>
+      <!-- Pixel Medium: DESIGN.md reserves this step for the wordmark, and the
+           home route is the one view whose title *is* the wordmark. -->
+      <h1 class="font-display text-2xl font-bold tracking-[0.04em]">
+        BatleHub<span class="text-primary">.</span>
+      </h1>
       <p class="text-sm text-muted-foreground">
         <template v-if="isAuthenticated">{{ t("home.signedInAs", { user: name }) }}</template>
         <template v-else>{{ t("homePage.aCacheAndRegistry") }}</template>
@@ -59,12 +63,8 @@ const name = computed(() => identity.value?.user_id ?? "");
          only they are told how; everyone else is told what it means for them. -->
     <EmptyState
       v-else-if="isFresh"
-      :title="isAdmin ? 'No registries configured yet' : 'This instance has no registries yet'"
-      :description="
-        isAdmin
-          ? 'Add a [[registries]] block to config.toml, then reload the configuration. Nothing is cached or served until a registry exists.'
-          : 'An administrator has not configured any registries. Until one exists there is nothing to pull or publish.'
-      "
+      :title="isAdmin ? t('adminDashboard.noRegistriesConfiguredYet') : t('home.freshTitleOther')"
+      :description="isAdmin ? t('home.freshBodyAdmin') : t('home.freshBodyOther')"
     >
       <template v-if="isAdmin" #action>
         <Button as-child size="sm">
@@ -85,7 +85,7 @@ const name = computed(() => identity.value?.user_id ?? "");
       <dl class="grid gap-px border border-border bg-border sm:grid-cols-3">
         <div class="bg-background p-4">
           <dt class="font-mono text-xs uppercase tracking-wider text-muted-foreground">
-            Registries
+            {{ t("common.registries") }}
           </dt>
           <dd class="mt-1 font-mono text-2xl tabular-nums">{{ registries.length }}</dd>
         </div>
@@ -96,7 +96,9 @@ const name = computed(() => identity.value?.user_id ?? "");
           <dd class="mt-1 font-mono text-2xl tabular-nums">{{ publishable }}</dd>
         </div>
         <div class="bg-background p-4">
-          <dt class="font-mono text-xs uppercase tracking-wider text-muted-foreground">You</dt>
+          <dt class="font-mono text-xs uppercase tracking-wider text-muted-foreground">
+            {{ t("common.you") }}
+          </dt>
           <dd class="mt-1 font-mono text-2xl">{{ identity?.role ?? "anonymous" }}</dd>
         </div>
       </dl>
@@ -112,7 +114,7 @@ const name = computed(() => identity.value?.user_id ?? "");
           <RouterLink to="/me/namespace">{{ t("homePage.myNamespace") }}</RouterLink>
         </Button>
         <Button v-if="isAdmin" as-child size="sm" variant="outline">
-          <RouterLink to="/admin/dashboard">Admin</RouterLink>
+          <RouterLink to="/admin/dashboard">{{ t("common.admin") }}</RouterLink>
         </Button>
       </div>
     </template>

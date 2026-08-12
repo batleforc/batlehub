@@ -409,7 +409,7 @@ async function runPending(): Promise<void> {
       <CardHeader class="flex flex-row items-center justify-between space-y-0 pb-3">
         <CardTitle class="text-base">{{ t("adminPackages.blockAPackage") }}</CardTitle>
         <Button variant="outline" size="sm" @click="showPreBlock = !showPreBlock">
-          {{ showPreBlock ? "Cancel" : "Block new package" }}
+          {{ showPreBlock ? t("common.cancel") : t("adminPackages.blockNewPackage") }}
         </Button>
       </CardHeader>
 
@@ -418,7 +418,7 @@ async function runPending(): Promise<void> {
 
         <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div class="space-y-1">
-            <Label for="pb-registry">Registry</Label>
+            <Label for="pb-registry">{{ t("common.registry") }}</Label>
             <select
               id="pb-registry"
               v-model="preBlock.registry"
@@ -431,7 +431,7 @@ async function runPending(): Promise<void> {
             </select>
           </div>
           <div class="space-y-1 sm:col-span-2">
-            <Label for="pb-name">Name</Label>
+            <Label for="pb-name">{{ t("common.name") }}</Label>
             <Input
               id="pb-name"
               v-model="preBlock.name"
@@ -453,7 +453,7 @@ async function runPending(): Promise<void> {
         <div class="grid grid-cols-2 gap-3">
           <div class="space-y-1">
             <Label for="pb-artifact"
-              >Artifact
+              >{{ t("common.artifact") }}
               <span class="text-muted-foreground">{{ t("adminPackages.optional") }}</span></Label
             >
             <Input
@@ -464,7 +464,7 @@ async function runPending(): Promise<void> {
             />
           </div>
           <div class="space-y-1">
-            <Label for="pb-reason">Reason</Label>
+            <Label for="pb-reason">{{ t("common.reason") }}</Label>
             <Input
               id="pb-reason"
               v-model="preBlock.reason"
@@ -478,7 +478,7 @@ async function runPending(): Promise<void> {
         </p>
 
         <Button :disabled="preBlockLoading" @click="submitPreBlock">
-          {{ preBlockLoading ? "Blocking…" : "Block package" }}
+          {{ preBlockLoading ? t("adminIpBlocks.blocking") : t("adminPackages.blockPackage") }}
         </Button>
       </CardContent>
     </Card>
@@ -506,7 +506,9 @@ async function runPending(): Promise<void> {
         @click="pending = { kind: 'bulk-delete' }"
         >{{ t("adminPackages.deleteSelected") }}</Button
       >
-      <Button size="sm" variant="ghost" @click="selected = new Set()"> Clear </Button>
+      <Button size="sm" variant="ghost" @click="selected = new Set()">
+        {{ t("common.clearAction") }}
+      </Button>
       <span v-if="bulkResultMsg" class="text-xs text-muted-foreground ml-auto">{{
         bulkResultMsg
       }}</span>
@@ -522,7 +524,7 @@ async function runPending(): Promise<void> {
               >({{ packages.length }})</span
             >
           </CardTitle>
-          <Button variant="outline" size="sm" @click="reload"> Refresh </Button>
+          <Button variant="outline" size="sm" @click="reload"> {{ t("common.refresh") }} </Button>
         </div>
         <Input
           v-model="search"
@@ -540,7 +542,11 @@ async function runPending(): Promise<void> {
             <div class="py-12 text-center space-y-2">
               <Package class="h-8 w-8 mx-auto text-muted-foreground/50" />
               <p class="text-sm text-muted-foreground">
-                {{ search ? "No packages match your filter." : "No packages yet." }}
+                {{
+                  search
+                    ? t("adminPackages.noPackagesMatchYourFilter")
+                    : t("adminPackages.noPackagesYet")
+                }}
               </p>
               <p v-if="search" class="text-xs text-muted-foreground">
                 {{ t("adminPackages.tryClearingTheFilter") }}
@@ -560,16 +566,16 @@ async function runPending(): Promise<void> {
                     @change="toggleAll"
                   />
                 </TableHead>
-                <TableHead>Registry</TableHead>
-                <TableHead>Name</TableHead>
-                <TableHead>Version</TableHead>
-                <TableHead>Artifact</TableHead>
-                <TableHead>Status</TableHead>
+                <TableHead>{{ t("common.registry") }}</TableHead>
+                <TableHead>{{ t("common.name") }}</TableHead>
+                <TableHead>{{ t("common.version") }}</TableHead>
+                <TableHead>{{ t("common.artifact") }}</TableHead>
+                <TableHead>{{ t("common.status") }}</TableHead>
                 <TableHead>{{ t("adminPackages.lastPulled") }}</TableHead>
                 <TableHead>{{ t("adminPackages.lastPulledBy") }}</TableHead>
-                <TableHead class="text-right"> Downloads </TableHead>
+                <TableHead class="text-right"> {{ t("common.downloads") }} </TableHead>
                 <TableHead />
-                <TableHead class="text-right"> Actions </TableHead>
+                <TableHead class="text-right"> {{ t("common.actions") }} </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -581,7 +587,7 @@ async function runPending(): Promise<void> {
                 <TableCell class="w-8">
                   <input
                     type="checkbox"
-                    :aria-label="`Select ${pkg.package_id.name}`"
+                    :aria-label="t('adminPackages.selectPackage', { name: pkg.package_id.name })"
                     :checked="selected.has(pkgKey(pkg))"
                     class="cursor-pointer"
                     @change="toggleOne(pkg)"
@@ -602,7 +608,11 @@ async function runPending(): Promise<void> {
                 <TableCell>
                   <div class="space-y-0.5">
                     <Badge :variant="pkg.status.status === 'blocked' ? 'destructive' : 'secondary'">
-                      {{ pkg.status.status === "blocked" ? "Blocked" : "Available" }}
+                      {{
+                        pkg.status.status === "blocked"
+                          ? t("common.blocked")
+                          : t("packageVersionsTable.available")
+                      }}
                     </Badge>
                     <p v-if="pkg.status.status === 'blocked'" class="text-xs text-muted-foreground">
                       {{ pkg.status.reason }}
@@ -637,7 +647,7 @@ async function runPending(): Promise<void> {
                         })
                       "
                     >
-                      Details
+                      {{ t("common.details") }}
                     </Button>
                     <Button
                       variant="ghost"
@@ -656,7 +666,7 @@ async function runPending(): Promise<void> {
                         })
                       "
                     >
-                      Artifact
+                      {{ t("common.artifact") }}
                     </Button>
                   </div>
                 </TableCell>
@@ -668,10 +678,10 @@ async function runPending(): Promise<void> {
                       size="sm"
                       @click="unblock(pkg)"
                     >
-                      Unblock
+                      {{ t("common.unblock") }}
                     </Button>
                     <Button v-else variant="destructive" size="sm" @click="block(pkg)">
-                      Block
+                      {{ t("common.block") }}
                     </Button>
                     <Button
                       variant="ghost"
@@ -679,7 +689,7 @@ async function runPending(): Promise<void> {
                       class="text-destructive hover:text-destructive hover:bg-destructive/10"
                       @click="pending = { kind: 'delete-one', pkg }"
                     >
-                      Delete
+                      {{ t("common.delete") }}
                     </Button>
                   </div>
                 </TableCell>

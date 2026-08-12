@@ -73,7 +73,7 @@ const {
     <SectionTabs :tabs="NAMESPACES_TABS" />
     <PageHeader
       :title="t('adminTeamNamespaces.teamNamespaces')"
-      description="Assign package name prefixes to auth-provider groups to control who may publish within them."
+      :description="t('adminTeamNamespaces.assignPackageNamePrefixesTo')"
     >
       <template #actions>
         <Button size="sm" :disabled="!selectedRegistry" @click="claimDialogOpen = true">{{
@@ -84,7 +84,7 @@ const {
 
     <!-- Registry selector -->
     <div class="space-y-1.5 max-w-xs">
-      <Label for="team-ns-registry">Registry</Label>
+      <Label for="team-ns-registry">{{ t("common.registry") }}</Label>
       <Select
         id="team-ns-registry"
         v-model="selectedRegistry"
@@ -109,7 +109,7 @@ const {
             :disabled="namespacesLoading"
             @click="reloadNamespaces"
           >
-            {{ namespacesLoading ? "Loading…" : "Refresh" }}
+            {{ namespacesLoading ? t("common.loading") : t("common.refresh") }}
           </Button>
         </div>
       </CardHeader>
@@ -120,10 +120,10 @@ const {
         <Table v-else>
           <TableHeader>
             <TableRow>
-              <TableHead>Prefix</TableHead>
-              <TableHead>Group</TableHead>
+              <TableHead>{{ t("common.prefix") }}</TableHead>
+              <TableHead>{{ t("common.group") }}</TableHead>
               <TableHead>{{ t("adminTeamNamespaces.claimedBy") }}</TableHead>
-              <TableHead class="text-right"> Actions </TableHead>
+              <TableHead class="text-right"> {{ t("common.actions") }} </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -140,7 +140,9 @@ const {
                 {{ ns.claimed_by ?? "—" }}
               </TableCell>
               <TableCell class="text-right">
-                <Button variant="outline" size="sm" @click="releaseTarget = ns"> Release </Button>
+                <Button variant="outline" size="sm" @click="releaseTarget = ns">
+                  {{ t("common.release") }}
+                </Button>
               </TableCell>
             </TableRow>
           </TableBody>
@@ -151,8 +153,8 @@ const {
         >
           {{
             selectedRegistry
-              ? "No namespace claims for this registry."
-              : "Select a registry to view namespace claims."
+              ? t("adminTeamNamespaces.noNamespaceClaimsForThis")
+              : t("adminTeamNamespaces.selectARegistryToView")
           }}
         </p>
       </CardContent>
@@ -233,14 +235,18 @@ const {
             claimError = null;
           "
         >
-          Cancel
+          {{ t("common.cancel") }}
         </Button>
         <Button
           size="sm"
           :disabled="claimLoading || !claimForm.prefix.trim() || !claimForm.group_id.trim()"
           @click="submitClaim"
         >
-          {{ claimLoading ? "Claiming…" : "Claim namespace" }}
+          {{
+            claimLoading
+              ? t("adminTeamNamespaces.claiming")
+              : t("adminTeamNamespaces.claimNamespace")
+          }}
         </Button>
       </div>
     </div>
@@ -283,10 +289,14 @@ const {
             releaseError = null;
           "
         >
-          Cancel
+          {{ t("common.cancel") }}
         </Button>
         <Button variant="destructive" size="sm" :disabled="releaseLoading" @click="confirmRelease">
-          {{ releaseLoading ? "Releasing…" : "Release claim" }}
+          {{
+            releaseLoading
+              ? t("adminTeamNamespaces.releasing")
+              : t("adminTeamNamespaces.releaseClaim")
+          }}
         </Button>
       </div>
     </div>

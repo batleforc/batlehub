@@ -47,14 +47,14 @@ const {
         >
           {{ t("packageBetaChannel.betaChannelAccess") }}
           <span class="text-muted-foreground text-xs font-normal">{{
-            expanded ? "▲ hide" : "▼ show"
+            expanded ? t("packageBetaChannel.hide") : t("packageBetaChannel.show")
           }}</span>
           <Badge v-if="members && members.length > 0" variant="secondary" class="text-xs ml-1">
             {{ members.length }} member{{ members.length > 1 ? "s" : "" }}
           </Badge>
         </button>
         <Button v-if="expanded" variant="outline" size="sm" :disabled="loading" @click="reload">
-          {{ loading ? "Loading…" : "Refresh" }}
+          {{ loading ? t("common.loading") : t("common.refresh") }}
         </Button>
       </div>
     </CardHeader>
@@ -65,7 +65,7 @@ const {
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Type</TableHead>
+            <TableHead>{{ t("common.type") }}</TableHead>
             <TableHead>{{ t("packageBetaChannel.principalId") }}</TableHead>
             <TableHead>{{ t("packageBetaChannel.grantedBy") }}</TableHead>
           </TableRow>

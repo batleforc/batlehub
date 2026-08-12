@@ -102,11 +102,9 @@ function providerLabel(name: string): string {
 
 <template>
   <div class="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
-    <Card class="w-full max-w-sm [box-shadow:var(--cyber-glow)]">
+    <Card class="w-full max-w-sm">
       <CardHeader class="space-y-1">
-        <CardTitle class="font-mono text-2xl font-bold cyber-text-glow">{{
-          t("loginPage.signIn")
-        }}</CardTitle>
+        <CardTitle class="font-mono text-2xl font-bold">{{ t("loginPage.signIn") }}</CardTitle>
         <CardDescription>{{ t("loginPage.authenticateToAccessProtected") }}</CardDescription>
       </CardHeader>
 
@@ -124,9 +122,9 @@ function providerLabel(name: string): string {
           >
             {{
               oidcLoadingProvider === p.name
-                ? "Redirecting…"
+                ? t("loginPage.redirecting")
                 : oidcProviders.length === 1
-                  ? "Sign in with OIDC"
+                  ? t("loginPage.signInWithOidc")
                   : `Sign in with ${providerLabel(p.name)}`
             }}
           </Button>
@@ -162,7 +160,7 @@ function providerLabel(name: string): string {
           </p>
 
           <Button type="submit" class="w-full" :disabled="loading">
-            {{ loading ? "Signing in…" : "Sign in with token" }}
+            {{ loading ? t("loginPage.signingIn") : t("loginPage.signInWithToken") }}
           </Button>
         </form>
 

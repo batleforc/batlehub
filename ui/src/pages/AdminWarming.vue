@@ -163,11 +163,11 @@ onMounted(() => void loadStatus());
     <SectionTabs :tabs="OPERATIONS_TABS" />
     <PageHeader
       :title="t('adminWarming.cacheWarming')"
-      description="Registries with warming configured. Trigger a warm run to pre-fetch artifacts into the local cache."
+      :description="t('adminWarming.registriesWithWarmingConfiguredTrigger')"
     >
       <template #actions>
         <Button variant="outline" size="sm" :disabled="loading" @click="loadStatus">
-          {{ loading ? "Loading…" : "Refresh" }}
+          {{ loading ? t("common.loading") : t("common.refresh") }}
         </Button>
       </template>
     </PageHeader>
@@ -198,7 +198,7 @@ onMounted(() => void loadStatus());
           </CardHeader>
           <CardContent class="space-y-3">
             <div class="space-y-1.5">
-              <Label :for="`pkg-${reg.name}`" class="text-xs">Packages</Label>
+              <Label :for="`pkg-${reg.name}`" class="text-xs">{{ t("common.packages") }}</Label>
               <Input
                 :id="`pkg-${reg.name}`"
                 v-model="packageInputs[reg.name]"
@@ -210,7 +210,7 @@ onMounted(() => void loadStatus());
               </p>
             </div>
             <div class="space-y-1.5">
-              <Label :for="`path-${reg.name}`" class="text-xs">Paths</Label>
+              <Label :for="`path-${reg.name}`" class="text-xs">{{ t("common.paths") }}</Label>
               <Input
                 :id="`path-${reg.name}`"
                 v-model="pathInputs[reg.name]"
@@ -244,7 +244,7 @@ onMounted(() => void loadStatus());
             </div>
 
             <Button size="sm" :disabled="warming[reg.name]" @click="triggerWarm(reg.name)">
-              {{ warming[reg.name] ? "Warming…" : "Warm Now" }}
+              {{ warming[reg.name] ? t("adminWarming.warming") : t("adminWarming.warmNow") }}
             </Button>
           </CardContent>
         </Card>
@@ -269,7 +269,7 @@ onMounted(() => void loadStatus());
       <CardContent class="space-y-4">
         <!-- Registry -->
         <div class="space-y-1.5">
-          <Label for="del-registry" class="text-xs">Registry</Label>
+          <Label for="del-registry" class="text-xs">{{ t("common.registry") }}</Label>
           <Input
             id="del-registry"
             v-model="deleteRegistry"
@@ -289,7 +289,7 @@ onMounted(() => void loadStatus());
             ]"
             @click="deleteMode = 'package'"
           >
-            Package
+            {{ t("common.package") }}
           </button>
           <button
             :class="[
@@ -300,14 +300,14 @@ onMounted(() => void loadStatus());
             ]"
             @click="deleteMode = 'path'"
           >
-            Path
+            {{ t("common.path") }}
           </button>
         </div>
 
         <!-- Package mode -->
         <div v-if="deleteMode === 'package'" class="flex gap-3 flex-wrap">
           <div class="space-y-1.5">
-            <Label for="del-name" class="text-xs">Name</Label>
+            <Label for="del-name" class="text-xs">{{ t("common.name") }}</Label>
             <Input
               id="del-name"
               v-model="deleteName"
@@ -316,7 +316,7 @@ onMounted(() => void loadStatus());
             />
           </div>
           <div class="space-y-1.5">
-            <Label for="del-version" class="text-xs">Version</Label>
+            <Label for="del-version" class="text-xs">{{ t("common.version") }}</Label>
             <Input
               id="del-version"
               v-model="deleteVersion"
@@ -328,7 +328,7 @@ onMounted(() => void loadStatus());
 
         <!-- Path mode -->
         <div v-else class="space-y-1.5">
-          <Label for="del-path" class="text-xs">Path</Label>
+          <Label for="del-path" class="text-xs">{{ t("common.path") }}</Label>
           <Input
             id="del-path"
             v-model="deletePath"
@@ -346,7 +346,11 @@ onMounted(() => void loadStatus());
             "
             class="text-xs"
           >
-            {{ deleteResult.deleted ? "Deleted" : "Not cached — nothing to remove" }}
+            {{
+              deleteResult.deleted
+                ? t("adminWarming.deleted")
+                : t("adminWarming.notCachedNothingToRemove")
+            }}
           </Badge>
           <p class="text-[11px] text-muted-foreground font-mono break-all">
             {{ deleteResult.artifact_key }}
@@ -354,7 +358,7 @@ onMounted(() => void loadStatus());
         </div>
 
         <Button variant="destructive" size="sm" :disabled="deleting" @click="triggerDelete">
-          {{ deleting ? "Deleting…" : "Delete from Cache" }}
+          {{ deleting ? t("adminWarming.deleting") : t("adminWarming.deleteFromCache") }}
         </Button>
       </CardContent>
     </Card>

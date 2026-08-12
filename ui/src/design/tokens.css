@@ -51,6 +51,11 @@
   --s5: 24px;
   --s6: 40px;
 
+  /* The two faces. Names only — the @font-face declarations that load them are
+     ui-local (index.css), since the docs site resolves its own font paths. */
+  --face-display: "Silkscreen", monospace;
+  --face-text: "JetBrains Mono", ui-monospace, monospace;
+
   /* Two ramps, because the display face has a constraint the text face does
      not: Silkscreen is drawn on an 8px em, so its square pixel only stays
      square at integer multiples. --t-display is therefore discrete, never

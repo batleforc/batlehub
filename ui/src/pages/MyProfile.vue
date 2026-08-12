@@ -40,7 +40,7 @@ function roleVariant(role: string) {
       <CardHeader>
         <CardTitle class="flex items-center gap-2 text-lg">
           <User class="h-4 w-4" />
-          Identity
+          {{ t("common.identity") }}
         </CardTitle>
         <CardDescription>{{ t("myProfile.yourCurrentSessionInformation") }}</CardDescription>
       </CardHeader>
@@ -51,7 +51,7 @@ function roleVariant(role: string) {
             {{ identity?.user_id ?? "—" }}
           </dd>
 
-          <dt class="text-muted-foreground font-medium">Role</dt>
+          <dt class="text-muted-foreground font-medium">{{ t("common.role") }}</dt>
           <dd>
             <Badge :variant="roleVariant(identity?.role ?? 'anonymous')">
               {{ identity?.role ?? "anonymous" }}
@@ -75,7 +75,7 @@ function roleVariant(role: string) {
       <CardHeader>
         <CardTitle class="flex items-center gap-2 text-lg">
           <Users class="h-4 w-4" />
-          Groups
+          {{ t("common.groups") }}
           <span v-if="parsedGroups.length" class="ml-1 text-muted-foreground font-normal text-base">
             ({{ parsedGroups.length }})
           </span>

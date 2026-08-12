@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import { Button } from "@/components/ui/button";
 
 type ButtonVariant = "default" | "destructive" | "outline" | "secondary" | "ghost" | "link";
@@ -15,13 +16,20 @@ const props = withDefaults(
     resetMs?: number;
   }>(),
   {
-    label: "Copy",
-    copiedLabel: "Copied!",
+    // Left undefined so the catalogue supplies the default: a literal here
+    // would be evaluated once, in English, and never follow a locale change.
+    label: undefined,
+    copiedLabel: undefined,
     size: "sm",
     variant: "ghost",
     resetMs: 2000,
   },
 );
+
+const { t } = useI18n();
+
+const resolvedLabel = computed(() => props.label ?? t("common.copy"));
+const resolvedCopiedLabel = computed(() => props.copiedLabel ?? t("common.copied"));
 
 const emit = defineEmits<{ copied: [] }>();
 
@@ -48,10 +56,10 @@ defineOptions({ inheritAttrs: false });
   <Button
     :variant="variant"
     :size="size"
-    :aria-label="copied ? copiedLabel : label"
+    :aria-label="copied ? resolvedCopiedLabel : resolvedLabel"
     v-bind="$attrs"
     @click="copy"
   >
-    <slot :copied="copied">{{ copied ? copiedLabel : label }}</slot>
+    <slot :copied="copied">{{ copied ? resolvedCopiedLabel : resolvedLabel }}</slot>
   </Button>
 </template>

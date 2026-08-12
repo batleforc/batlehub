@@ -90,7 +90,7 @@ const fmtPct = (n: number | null): string => (n == null ? "—" : `${(n * 100).t
 
 <template>
   <div class="space-y-6">
-    <PageHeader title="Dashboard" />
+    <PageHeader :title="t('dashboard.title')" />
 
     <Skeleton v-if="healthLoading" :lines="3" />
 
@@ -115,7 +115,7 @@ const fmtPct = (n: number | null): string => (n == null ? "—" : `${(n * 100).t
     <EmptyState
       v-if="isFresh"
       :title="t('adminDashboard.noRegistriesConfiguredYet')"
-      description="Nothing is cached or served until a registry exists. Add a [[registries]] block to config.toml and reload."
+      :description="t('adminDashboard.nothingIsCachedOrServed')"
     >
       <template #action>
         <Button as-child size="sm">
@@ -161,12 +161,12 @@ const fmtPct = (n: number | null): string => (n == null ? "—" : `${(n * 100).t
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Registry</TableHead>
+              <TableHead>{{ t("common.registry") }}</TableHead>
               <TableHead class="text-right">{{ t("adminDashboard.hitRate") }}</TableHead>
-              <TableHead class="text-right">Hits</TableHead>
-              <TableHead class="text-right">Misses</TableHead>
-              <TableHead class="text-right">Cached</TableHead>
-              <TableHead>State</TableHead>
+              <TableHead class="text-right">{{ t("common.hits") }}</TableHead>
+              <TableHead class="text-right">{{ t("common.misses") }}</TableHead>
+              <TableHead class="text-right">{{ t("common.cached") }}</TableHead>
+              <TableHead>{{ t("common.state") }}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -190,7 +190,7 @@ const fmtPct = (n: number | null): string => (n == null ? "—" : `${(n * 100).t
                   variant="destructive"
                   class="text-xs"
                 >
-                  Errors
+                  {{ t("common.errors") }}
                 </Badge>
                 <span v-else class="text-xs text-muted-foreground">OK</span>
               </TableCell>

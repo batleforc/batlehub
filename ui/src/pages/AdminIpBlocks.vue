@@ -95,11 +95,11 @@ function isExpired(unblock_at: number): boolean {
     <SectionTabs :tabs="SECURITY_TABS" />
     <PageHeader
       :title="t('adminIpBlocks.ipBlocks')"
-      description="Manage manually blocked IP addresses. Blocked IPs receive 403 responses on all requests."
+      :description="t('adminIpBlocks.manageManuallyBlockedIpAddresses')"
     >
       <template #actions>
         <Button variant="outline" size="sm" :disabled="loading" @click="reload">
-          {{ loading ? "Refreshing…" : "Refresh" }}
+          {{ loading ? t("adminHealth.refreshing") : t("common.refresh") }}
         </Button>
         <Button size="sm" @click="blockDialogOpen = true">{{ t("adminIpBlocks.blockIp") }}</Button>
       </template>
@@ -121,10 +121,10 @@ function isExpired(unblock_at: number): boolean {
           <TableHeader>
             <TableRow>
               <TableHead>{{ t("adminIpBlocks.ipAddress") }}</TableHead>
-              <TableHead>Reason</TableHead>
+              <TableHead>{{ t("common.reason") }}</TableHead>
               <TableHead>{{ t("adminIpBlocks.blockedAt") }}</TableHead>
               <TableHead>{{ t("adminIpBlocks.unblocksAt") }}</TableHead>
-              <TableHead class="text-right"> Actions </TableHead>
+              <TableHead class="text-right"> {{ t("common.actions") }} </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -147,13 +147,13 @@ function isExpired(unblock_at: number): boolean {
               </TableCell>
               <TableCell>
                 <Badge v-if="isExpired(entry.unblock_at)" variant="outline" class="text-xs">
-                  Expired
+                  {{ t("common.expired") }}
                 </Badge>
                 <span v-else class="text-xs">{{ fmtTs(entry.unblock_at) }}</span>
               </TableCell>
               <TableCell class="text-right">
                 <Button variant="outline" size="sm" @click="unblockTarget = entry.ip">
-                  Unblock
+                  {{ t("common.unblock") }}
                 </Button>
               </TableCell>
             </TableRow>
@@ -194,7 +194,7 @@ function isExpired(unblock_at: number): boolean {
           />
         </div>
         <div class="space-y-1.5">
-          <Label for="ipblock-reason">Reason</Label>
+          <Label for="ipblock-reason">{{ t("common.reason") }}</Label>
           <Input
             id="ipblock-reason"
             v-model="blockForm.reason"
@@ -226,7 +226,7 @@ function isExpired(unblock_at: number): boolean {
             blockError = null;
           "
         >
-          Cancel
+          {{ t("common.cancel") }}
         </Button>
         <Button
           variant="destructive"
@@ -234,7 +234,7 @@ function isExpired(unblock_at: number): boolean {
           :disabled="blockLoading || !blockForm.ip.trim()"
           @click="submitBlock"
         >
-          {{ blockLoading ? "Blocking…" : "Block IP" }}
+          {{ blockLoading ? t("adminIpBlocks.blocking") : t("adminIpBlocks.blockIp") }}
         </Button>
       </div>
     </div>
@@ -253,7 +253,7 @@ function isExpired(unblock_at: number): boolean {
     "
   >
     <template #title
-      >Unblock <span class="font-mono">{{ unblockTarget }}</span
+      >{{ t("common.unblock") }} <span class="font-mono">{{ unblockTarget }}</span
       >?</template
     >
     <template #description>{{ t("adminIpBlocks.thisIpWillBe") }}</template>
@@ -271,10 +271,10 @@ function isExpired(unblock_at: number): boolean {
             unblockError = null;
           "
         >
-          Cancel
+          {{ t("common.cancel") }}
         </Button>
         <Button size="sm" :disabled="unblockLoading" @click="confirmUnblock">
-          {{ unblockLoading ? "Unblocking…" : "Unblock" }}
+          {{ unblockLoading ? t("adminIpBlocks.unblocking") : t("common.unblock") }}
         </Button>
       </div>
     </div>

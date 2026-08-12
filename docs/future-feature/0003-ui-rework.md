@@ -589,5 +589,86 @@ every boundary.
 | 5 | **Catalog and package pages.** ✅ Done. `PackageList` deleted and `PackageExplorer` → `PackageCatalog` at `/packages`, now using the `Facet`, `EmptyState` and `Skeleton` primitives. The three detail pages became one `PackageDetailPage` at `/packages/:registry/:name`, with administration as a *section* of it rather than a parallel page — admin data is fetched only when the viewer is an admin, since the endpoint is admin-only server-side. The deferred §9 redirects landed, including the query→path conversion, with `version`/`artifact` preserved as query because they select *within* a package. `/explore` left the primary bar, since it is now the same surface. | Yes — the single biggest usability win in §2. |
 | 6 | **Admin surfaces.** ✅ Done for the three named items. `AdminDashboard` rebuilt around the operator's two real questions — a verdict sentence leads, numbers support it, and a degraded registry no longer looks identical to a healthy one. `AdminConfigReload`'s read-only path became its own screen (`ConfigReadOnlyView`) instead of a banner above a textarea that still looked editable with Validate and Apply beneath it. `AdminPackages`'s three `window.confirm()` calls became `DestructiveConfirm`, so a bulk purge now names its scope and count and demands a typed confirmation — the whole reason Phase 3 built it. No native `confirm()` remains in any admin page. **Not done:** the other 14 admin pages are not visually redrawn in the specimen grammar; they inherit the palette, the a11y fixes and the primitives, and their redraw is deferred rather than claimed. | Partially — best after 3 and 4. |
 | 7 | **Setup and first run.** ✅ Done. The 403 → diagnostics path exists: a blocked version links into `/tools/access-check` with the coordinate prefilled, and `AccessCheck` reads it (ignoring array-valued params rather than rendering them). The fresh-instance path is designed on all three surfaces that can be empty — `/`, the admin dashboard, and the setup guide — each saying what would put something there and linking to it, with only admins told *how*, since only they can act. The setup guide gained a tool filter, because a strip built for six registry types is a wall at 21. Remaining hand-rolled empty states (`MyNamespace`, `NamespacePackagesTable`, the package page's version list) now use `EmptyState`. | Yes. |
-| 8 | **i18n extraction and the French catalogue.** ✅ Done. `vue-i18n` wired with the same preference model as the theme (stored `system|en|fr`, resolved value renders, `<html lang>` set from it — it had been hardcoded `en`). **Every user-visible string is extracted: the audit reads 0, and `task ui:i18n:check` is pinned there**, so a new hardcoded string fails the build. Both catalogues are complete, with real plural forms replacing `"(s)"` ternaries and `<i18n-t>` wherever a sentence wraps a value — French does not put the placeholder where English does. The gate covers key parity, empty values, placeholder survival, verbatim domain terms and a French length budget; it rejected three over-long strings during authoring. The French is drafted at `docs/i18n-review-fr.md` for review — four judgement calls are decided and recorded, the rest await sign-off. | No — it is the closing gate on §4.6. |
-| 9 | **Verification and CI.** 🔶 Gates built; the rendered pass is wired but unexecuted here. `.github/workflows/front-design.yaml` adds four gates in two jobs. **Static, and passing now:** the Impeccable detector over `ui/src` + `website/.vitepress` (**0 findings** — the five that motivated §2.8 are fixed: both 3 px side stripes reduced to 1 px, and the two-axis grid retired from `.cyber-grid-bg`, the VitePress hero and its two remaining usages, per R8), `i18n:check` pinned at 0, and the token-drift check. `task ui:design` runs the three locally. **Rendered, and not yet executed:** the detector at 1440×900 and 390×844, plus an axe scan against `wcag2a…wcag22aa`. Chromium cannot run in the tools container (no `libglib-2.0`, no root), so `devfile.yaml` now declares the **`che-browser` sidecar** — headed Chrome in the same pod, reachable over CDP at `localhost:9222` — and `task ui:design:rendered` runs the gates against it. **A devfile change requires a workspace restart**, so these remain written-and-wired rather than verified until the pod is recreated; CI runs them regardless. Docs screenshot refresh: **not applicable**, the repository contains no UI screenshots. | No — it is the acceptance phase. |
+| 8 | **i18n extraction and the French catalogue.** ✅ Done, then **re-done**: the gate this phase pinned at 0 was measuring almost nothing, and 384 user-visible strings were sitting behind it. See §14. `vue-i18n` wired with the same preference model as the theme (stored `system|en|fr`, resolved value renders, `<html lang>` set from it — it had been hardcoded `en`). Every user-visible string is extracted and `task ui:i18n:check` is pinned at 0 — now across text nodes, human-facing attributes *and component props*, literals inside template expressions, and literals in `<script>`. Both catalogues are complete, with real plural forms replacing `"(s)"` ternaries and `<i18n-t>` wherever a sentence wraps a value — French does not put the placeholder where English does. The gate covers key parity, empty values, placeholder survival, verbatim domain terms and a French length budget; it rejected three over-long strings during authoring. The French is drafted at `docs/i18n-review-fr.md` for review — four judgement calls are decided and recorded, the rest await sign-off. | No — it is the closing gate on §4.6. |
+| 9 | **Verification and CI.** ✅ Done — and executing the rendered pass changed the result, which is the entire argument for having built it. `.github/workflows/front-design.yaml` runs four gates in two jobs. **Static:** the Impeccable detector over `ui/src` + `website/.vitepress` (0 findings), `i18n:check` pinned at 0, and the token-drift check; `task ui:design` runs the three locally. **Rendered, now executed:** the detector at 1440×900 and 390×844 plus an axe scan against `wcag2a…wcag22aa`, green against both the dev server and a served production build. What it caught on first execution is recorded in §13. Docs screenshot refresh: **not applicable**, the repository contains no UI screenshots. | No — it is the acceptance phase. |
+
+---
+
+## 13. What the rendered gates caught on first execution
+
+Phase 9 was written as "gates built, rendered pass wired but unexecuted" because Chromium could not
+run in the tools container. Once the `che-browser` sidecar existed and the pass actually ran, it
+returned five findings on `/` — none of which the static gates, the token tests, the 508 unit tests
+or human review had surfaced. They are recorded here because the gap between "wired" and "executed"
+is exactly what this section exists to close.
+
+| # | Finding | What it actually was |
+| --- | --- | --- |
+| 1 | `script-error` — `registries.value.filter is not a function` | A dead page, not a style issue. `ui/.env` did not exist, so `API_BASE_URL` was empty and the generated client requested `/api/v1/registries` from the **dev server**, which answers every unmatched path with `index.html`. The SPA got a string where it expected an array and threw during render. Fixed by providing `ui/.env` from `.env.example`. The class of bug is real beyond this environment: a reverse proxy that serves the SPA on a 404 reproduces it in production. |
+| 2, 3 | `dark-glow` ×2 — zero-offset `text-shadow` (`#c50220`) and `box-shadow` (`#ff343d`) | A direct violation of the project's own system. DESIGN.md's Elevation section states "no glow — the Monofolio `--cyber-glow` / `--steam-glow` utilities do not survive into this world", and the Flat-At-Rest Rule allows exactly two box-shadows, both hard-edged and both on the primary action. Both utilities and all six usages had survived Phases 2–6, because a glow is not a source-level anti-pattern — **only a rendered page shows that it is still painting.** Replaced with the documented Action ring (`:hover`) and Pixel step (`:active`), and `PageHeader`'s `glow` variant renamed to `display`. |
+| 4 | `flat-type-hierarchy` — 12/14/16/18 px, ratio 1.5:1 | The specimen typography had never been adopted. `ui/src` loaded **IBM Plex Sans** — a face DESIGN.md does not declare — from Google Fonts, while the documented pairing is self-hosted Silkscreen + JetBrains Mono. Worse, `font-src` is `'self' data:`, so **our own CSP had been refusing the Google Fonts request all along**: the design's text face had never painted on any surface, and everything was falling back to `ui-monospace`. Separately, `@theme` declared `--font-family-sans`/`-mono`, which is Tailwind 3 naming that generates no utility in Tailwind 4, so `font-mono` resolved to the browser default. Fixed by self-hosting the three `woff2` files, correcting the namespace to `--font-*`, mapping the data ramp (`--t-meta/body/row/head`) onto the `text-*` utilities the components already use, and opting the wordmark and page titles into the display face. |
+| 5 | `cream-palette` — `rgb(250, 243, 243)` | A **false positive against a measured decision.** That value is `--ground` in the light rendition, `oklch(0.97 0.008 18)` — R12's "ink on paper", declared in DESIGN.md's own frontmatter, and the ground every light-rendition contrast ratio in this RFC was measured against. Waived rather than changed (R14). |
+
+### The second wave: what only a *working* page showed
+
+The first pass scanned a page stuck in its error state, because the API call was failing. Once the
+data path worked and the success branch actually rendered, the same gates found four more — a
+reminder that a green rendered gate is only as broad as the states it managed to reach.
+
+| # | Finding | What it actually was |
+| --- | --- | --- |
+| 6 | **`--accent` resolved to `oklch(0.155 0.022 18)`** — `--ground-raised`, not the crimson | The most serious defect of the whole phase, and invisible to every static check. The alias bridge in `index.css` maps shadcn's `--accent` — which means "subtle hover fill" — to `--ground-raised`, a deliberate and documented decision. But it declared it in the **same `:root` scope** as the design system's `--accent`, the one synthetic accent, so the later declaration won and *every* `var(--accent)` reference resolved to near-black: `--primary`, `--destructive`, and the new action ring with it. The crimson that R9/R11 spent two decisions measuring **had never painted in either rendition**, and the destructive alert was rendering near-black on near-black at 1.06:1. Found by probing resolved token values in the browser after a screenshot showed an unreadable error banner. Fixed by giving the shadcn alias its own name (`--surface-hover`), so `bg-accent` keeps its meaning and `var(--accent)` keeps its colour. `--accent` now paints `#ff343d`, exactly R11's clamped value. |
+| 7, 8 | axe: `nested-interactive` ×2 and `target-size` ×4 (WCAG 2.2 AA 2.5.8) | `Button` never implemented `as-child`. It always rendered a `<button>`, so the 15 call sites that pass `as-child` with a `RouterLink` inside produced `<button><a>` — nested interactive controls, announced unreliably by screen readers, with the inner link too small to be a valid target. Fixed by rendering through radix's `Primitive`, which is what `as-child` always assumed. |
+| 9 | `cramped-padding` — 0px vertical padding for 12px text | The `sm` and `lg` button sizes set a fixed height and horizontal padding but no vertical padding, unlike `default`'s `py-2`. The fixed height plus inline-flex centring *happened* to space the label; nothing declared that it should. Both now declare it. |
+
+**The lesson worth keeping:** every one of findings 6–9 sat on a code path the earlier scan never
+reached, because the page under test was showing an error. A rendered gate that only ever sees one
+state is a gate over one state — which is why §12's remaining open item is extending these gates
+past `/`.
+
+## 14. The i18n gate was measuring almost nothing
+
+Phase 8 closed on "**every user-visible string is extracted: the audit reads 0, and
+`task ui:i18n:check` is pinned there**". The audit did read 0. It was also blind to three of the four
+places text actually lives, and a fourth rule inside the one place it did read excluded most of it.
+
+| # | Hole | Why it was invisible | Found |
+| --- | --- | --- | --- |
+| 1 | **Every bare capitalised word** — `Registries`, `You`, `Version`, `Cancel` | `NOT_PROSE` contained `/^[a-z0-9_.-]+$/i`. The `i` flag plus no space requirement made *every* unspaced word an identifier. It was meant to skip `latest` and `package.json`; it skipped `Registries` too. | **211 strings, 33 files** |
+| 2 | **Component props** — `<Facet label="Registries">`, `<PageHeader description="…">` | The attribute pass listed four HTML attributes (`title`, `placeholder`, `aria-label`, `alt`) and no component prop, though a prop is exactly as visible. | **17 strings, 15 files** |
+| 3 | **Literals inside expressions** — `{{ busy ? 'Loading…' : 'Refresh' }}`, `:title="hit ? 'A' : 'B'"` | Attribute values are blanked before the tag split (a `>` inside an expression would end the tag early) and interpolations are stripped, so nothing in either survived to be tested. The catalog's four empty states and the entire fresh-instance path were here. | **140 strings, 27 files** |
+| 4 | **Literals in `<script>`** — `{ to: "/admin/users", label: "Users" }` | Only `.vue` templates were scanned. `adminSections.ts` and `AdminLayout.vue`'s sidebar array reach the screen through `{{ link.label }}`, so **the whole admin navigation rendered in English in both locales** behind a green gate. | **16 strings, 6 files** |
+
+Total: **384 user-visible strings** that the gate reported as zero. The catalogue went from 418 keys
+to 646.
+
+Distinguishing a label from a domain term is the whole difficulty, and it is done by shape, not by
+listing: a bare word is an identifier if it carries `_ . / : @` or a digit, a domain term if it is
+all-lowercase (`latest`, `yank`, `npm`), a verb or acronym if it is all-caps (`GET`, `SBOM`), and a
+label otherwise. Names that are capitalised *like* labels but must stay verbatim — `NuGet`,
+`JetBrains`, `Linux x86_64` — cannot be told apart by shape and are named explicitly in
+`DOMAIN_NOUNS` / `DOMAIN_PHRASES`. Two exclusions keep the gate readable rather than merely large:
+`:class`/`:style` literals are Tailwind lists, not prose, and `registryTypes.ts` /
+`registryPathFields.ts` are the setup-snippet data §6.7 keeps as data — scanning them would bury a
+real finding under two hundred that must not be touched.
+
+### Resolved, continued
+
+| # | Question | Decision |
+| --- | --- | --- |
+| R16 | Navigation labels: strings or keys? | **Keys, everywhere.** `navigation.ts` already stored keys (`"nav.packages"`) and was correct; `adminSections.ts` and `AdminLayout.vue` stored English. Both now store keys, and `AdminLayout`'s sidebar array moved into `adminSections.ts` as `ADMIN_SIDEBAR` for one reason: `catalogues.test.ts` can only prove a label resolves if it can import it, and an array inside `<script setup>` cannot be imported. A new test asserts every navigation label matches a key shape *and* exists in both catalogues — the regression signal that was missing, since a broken key renders as the literal text `adminNav.users` rather than failing anything. |
+| R17 | Component prop defaults that are user-visible text | **Resolved from the catalogue, never defaulted to a literal.** `withDefaults(..., { label: "Copy" })` is evaluated once at setup, so it renders English forever and ignores a locale change. `CopyButton` and `Breadcrumb` now default the prop to `undefined` and resolve `props.label ?? t(key)` in a `computed`. Same reason a module-level `const` of options became a `computed` in `AdminBetaChannel`. |
+
+### Resolved, continued
+
+| # | Question | Decision |
+| --- | --- | --- |
+| R14 | How is a rendered-scan waiver persisted? | **`.impeccable/config.json`, tracked, one rule.** The finding carries no `ignoreValue`, so `ignoreRules` is the only lever the detector offers for it; the reason lives here and in DESIGN.md rather than in the JSON, which has no comments. This required a narrow exception to R5's blanket `/.impeccable/` ignore: a waiver that lives on one developer's machine fails CI for everyone else, so `config.json` — and only it — is tracked, while `config.local.json` and the regenerated `design.json` stay ignored. The residual risk is that the whole `cream-palette` rule is off rather than one value; acceptable because the ground is a single token pinned by `tokens.test.ts`. |
+| R15 | Does the console adopt the specimen typography, or defer it again? | **Adopt.** Phases 3–6 each deferred the redraw ("not yet redrawn in the specimen grammar"), which was defensible while the ramp was only a document — but Phase 2 had already authored the full ramp in `tokens.css`, so adoption was wiring, not design. Deferring once more would have left DESIGN.md and `ui/src` disagreeing about the product's own face while the acceptance phase declared itself done. |
+
+### Still open, continued
+
+4. **The other 14 admin pages are still not redrawn in the specimen grammar.** They now inherit the
+   faces, the ramp and the shadow vocabulary, so they are no longer *wrong* — but they were laid out
+   for the old scale and have not been re-cut for this one. The rendered gates only scan `/` today;
+   extending them per-route is what would make this measurable rather than asserted.

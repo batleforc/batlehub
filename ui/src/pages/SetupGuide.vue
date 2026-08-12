@@ -192,8 +192,8 @@ async function copy(key: string, text: string) {
   <div class="max-w-7xl space-y-8">
     <PageHeader
       :title="t('setupGuide.setupGuide')"
-      description="Configure your tools to route package downloads through this proxy. Snippets are pre-filled with this server's address and your configured registries."
-      variant="glow"
+      :description="t('setupGuide.configureYourToolsToRoute')"
+      variant="display"
     />
 
     <!-- Loading state -->
@@ -205,7 +205,7 @@ async function copy(key: string, text: string) {
     <div v-else-if="activeDefs.length === 0 && !isAuthenticated">
       <EmptyState
         :title="t('setupGuide.nothingToConnectTo')"
-        description="No registries are configured on this instance, or none that your account can reach. Until one exists there is no URL for a tool to point at."
+        :description="t('setupGuide.noRegistriesAreConfiguredOn')"
       >
         <template #action>
           <Button v-if="isAdmin" as-child size="sm">
@@ -295,7 +295,7 @@ async function copy(key: string, text: string) {
                     class="absolute top-2 right-2 h-7 px-2 text-xs"
                     @click="copy(snippet.key, snippet.template(ctxFor(def)))"
                   >
-                    {{ copied === snippet.key ? "Copied!" : "Copy" }}
+                    {{ copied === snippet.key ? t("common.copied") : t("common.copy") }}
                   </Button>
                 </CodeBlock>
                 <p
@@ -339,7 +339,7 @@ async function copy(key: string, text: string) {
                 class="absolute top-2 right-2 h-7 px-2 text-xs"
                 @click="copy('netrc', netrcSnippet)"
               >
-                {{ copied === "netrc" ? "Copied!" : "Copy" }}
+                {{ copied === "netrc" ? t("common.copied") : t("common.copy") }}
               </Button>
             </CodeBlock>
             <p v-if="isOidc" class="text-xs text-muted-foreground">

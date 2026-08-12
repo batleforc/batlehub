@@ -68,7 +68,7 @@ async function check() {
     <CardContent class="space-y-4">
       <div class="grid gap-3">
         <div class="space-y-1">
-          <Label for="registry">Registry</Label>
+          <Label for="registry">{{ t("common.registry") }}</Label>
           <Input id="registry" v-model="registry" placeholder="github" />
         </div>
         <div class="space-y-1">
@@ -76,7 +76,7 @@ async function check() {
           <Input id="name" v-model="name" placeholder="owner/repo" />
         </div>
         <div class="space-y-1">
-          <Label for="version">Version</Label>
+          <Label for="version">{{ t("common.version") }}</Label>
           <Input id="version" v-model="version" placeholder="v1.0.0" />
         </div>
         <div class="space-y-1">
@@ -86,7 +86,7 @@ async function check() {
       </div>
 
       <Button :disabled="loading" class="w-full" @click="check">
-        {{ loading ? "Checking…" : "Check Access" }}
+        {{ loading ? t("accessCheck.checking") : t("accessCheck.checkAccess") }}
       </Button>
 
       <p v-if="error" class="text-sm text-destructive">
@@ -96,10 +96,10 @@ async function check() {
       <div v-if="result" class="rounded-sm border p-4 space-y-2">
         <div class="flex items-center gap-2">
           <Badge :variant="result.can_access ? 'default' : 'destructive'">
-            {{ result.can_access ? "Allowed" : "Denied" }}
+            {{ result.can_access ? t("accessCheck.allowed") : t("accessCheck.denied") }}
           </Badge>
           <span v-if="!result.can_access" class="text-sm text-muted-foreground">
-            {{ result.reason ?? "no reason given" }}
+            {{ result.reason ?? t("accessCheck.noReasonGiven") }}
           </span>
         </div>
         <p v-if="result.proxy_url" class="text-xs text-muted-foreground break-all">

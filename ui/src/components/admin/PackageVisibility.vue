@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { getPackageVisibility, setPackageVisibility } from "@/client/sdk.gen";
 import type { Visibility } from "@/lib/registry-types";
 import { VISIBILITY_OPTIONS } from "@/lib/registry-types";
@@ -12,6 +12,10 @@ import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/com
 import { Select } from "@/components/ui/select";
 
 const { t } = useI18n();
+
+const visibilityOptions = computed(() =>
+  VISIBILITY_OPTIONS.map((o) => ({ value: o.value, label: t(o.label) })),
+);
 
 const props = defineProps<{ registry: string; name: string }>();
 
@@ -70,7 +74,7 @@ async function save() {
         </Badge>
         <Select
           v-model="selected"
-          :options="[...VISIBILITY_OPTIONS]"
+          :options="visibilityOptions"
           :aria-label="t('packageVisibility.packageVisibility')"
           class="w-72"
         />
@@ -79,7 +83,7 @@ async function save() {
           :disabled="saving || selected === (visibilityData?.visibility ?? 'public')"
           @click="save"
         >
-          {{ saving ? "Saving…" : "Save" }}
+          {{ saving ? t("packageVisibility.saving") : t("packageVisibility.save") }}
         </Button>
       </div>
       <p v-if="error" class="mt-2 text-sm text-destructive">{{ error }}</p>

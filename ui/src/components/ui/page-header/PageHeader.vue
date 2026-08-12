@@ -5,7 +5,7 @@ withDefaults(
   defineProps<{
     title?: string;
     description?: string;
-    variant?: "default" | "glow";
+    variant?: "default" | "display";
   }>(),
   { variant: "default" },
 );
@@ -18,7 +18,11 @@ withDefaults(
         :class="
           cn(
             'text-2xl font-semibold flex items-center gap-2',
-            variant === 'glow' && 'font-mono font-bold cyber-text-glow',
+            // The bitmap face at Pixel Medium — one per view, and the only step
+            // above the data ramp. It carries no glow: depth in this world is
+            // inked, not lit. Tracked 0.04em because Silkscreen's square pixel
+            // sets tight at its own em.
+            variant === 'display' && 'font-display font-bold tracking-[0.04em]',
           )
         "
       >

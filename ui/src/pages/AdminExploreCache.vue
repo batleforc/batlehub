@@ -122,7 +122,7 @@ onMounted(fetchRegistries);
             <label
               for="explore-cache-registry-select"
               class="text-xs text-muted-foreground font-medium"
-              >Registry</label
+              >{{ t("common.registry") }}</label
             >
             <select
               id="explore-cache-registry-select"
@@ -151,7 +151,11 @@ onMounted(fetchRegistries);
             :disabled="loadingRegistry || !selectedRegistry.trim()"
             @click="invalidateRegistry"
           >
-            {{ loadingRegistry ? "Invalidating…" : "Invalidate Registry" }}
+            {{
+              loadingRegistry
+                ? t("adminExploreCache.invalidating")
+                : t("adminExploreCache.invalidateRegistry")
+            }}
           </Button>
         </div>
 
@@ -169,7 +173,11 @@ onMounted(fetchRegistries);
       </CardHeader>
       <CardContent class="space-y-3">
         <Button variant="destructive" :disabled="loadingAll" @click="invalidateAll">
-          {{ loadingAll ? "Clearing…" : "Invalidate All Registries" }}
+          {{
+            loadingAll
+              ? t("adminConfigReload.clearing")
+              : t("adminExploreCache.invalidateAllRegistries")
+          }}
         </Button>
         <p class="text-xs text-muted-foreground">
           {{ t("adminExploreCache.theCacheRepopulatesAutomatically") }}
@@ -190,7 +198,7 @@ onMounted(fetchRegistries);
             <i18n-t keypath="adminExploreCache.upstreamUnavailableFlag" tag="span">
               <template #flag
                 ><code class="text-xs bg-muted px-1 rounded">{{
-                  "upstream_unavailable: true"
+                  t("adminExploreCache.upstream_unavailableTrue")
                 }}</code></template
               >
             </i18n-t>

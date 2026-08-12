@@ -6,6 +6,12 @@ includes:
 
 dotenv: [ .env ]
 
+vars:
+  # kubectl hops into the che-browser sidecar of this workspace pod — see the
+  # "Browser sidecar" task group below.
+  BROWSER_EXEC: kubectl exec ${DEVWORKSPACE_NAMESPACE:+-n ${DEVWORKSPACE_NAMESPACE}} ${HOSTNAME} -c browser --
+  BROWSER_LOGS: kubectl logs ${DEVWORKSPACE_NAMESPACE:+-n ${DEVWORKSPACE_NAMESPACE}} ${HOSTNAME} -c browser
+
 tasks:
   init:
     desc: Init project
@@ -495,50 +501,134 @@ tasks:
       - pnpm run i18n:check
 
   # ── Browser sidecar (che-browser) ────────────────────────────────────────────
-  # Headed Chrome in a sidecar of this pod. CDP and chromedriver are plain
-  # localhost ports because the pod shares one network namespace; only the
-  # things that exist *inside* the sidecar need the kubectl exec hop.
+  # Headed Chrome in a sidecar of this pod. CDP (9222), chromedriver (9515) and
+  # noVNC (6080) are plain localhost ports because the pod shares one network
+  # namespace; only what lives *inside* the sidecar needs the kubectl exec hop,
+  # which is what BROWSER_EXEC is. Both env vars it reads are exported into every
+  # Che workspace container: $HOSTNAME is the pod name, $DEVWORKSPACE_NAMESPACE
+  # the namespace (the `:+` guard keeps this working outside a workspace too).
   browser:check:
     desc: Verify the browser sidecar is up, and print its CDP version
     cmds:
       - curl -sf http://localhost:9222/json/version
 
   browser:tabs:
-    desc: List the browser's open tabs
+    desc: List the browser's open tabs (id, type, title, url)
     cmds:
-      - curl -s http://localhost:9222/json
+      - |
+        curl -s http://localhost:9222/json | python3 -c '
+        import json, sys
+        for t in json.load(sys.stdin):
+            print("%-34s %-10s %-40s %s" % (t["id"], t["type"], t["title"][:40], t["url"]))
+        '
 
   browser:open:
-    desc: 'Open a URL in the sidecar browser (task browser:open URL=http://localhost:5173)'
+    desc: 'Open a URL in a new tab (task browser:open URL=http://localhost:5173)'
     requires:
       vars: [URL]
     cmds:
       - curl -s -X PUT "http://localhost:9222/json/new?{{.URL}}"
 
+  browser:close:
+    desc: 'Close a tab by id (task browser:close ID=<id from browser:tabs>)'
+    requires:
+      vars: [ID]
+    cmds:
+      - curl -sf "http://localhost:9222/json/close/{{.ID}}"
+
   browser:vnc:
     desc: Print the noVNC password (open the `novnc` endpoint to watch Chrome)
     cmds:
-      - cat /projects/.sidecar/vnc-password-browser.txt
+      # Written by the sidecar entrypoint at boot onto the shared /projects
+      # mount; the log is the fallback if that mount ever goes away.
+      - |
+        cat /projects/.sidecar/vnc-password-browser.txt 2>/dev/null \
+          || {{.BROWSER_LOGS}} | grep -m1 'noVNC password:'
+      - "echo '→ open the novnc endpoint of this workspace and log in with it'"
+
+  # Chrome is gated behind a flag file the entrypoint's respawn loop watches, so
+  # it can be parked (freeing ~1 GiB) without taking the VNC stack down with it.
+  # `sidecar-app stop` group-kills the whole Chrome process tree — a bare pkill
+  # on the child processes leaves the parent to be respawned in a half state.
+  browser:status:
+    desc: Report whether Chrome is running, parked or starting
+    cmds:
+      - '{{.BROWSER_EXEC}} sidecar-app status'
+
+  browser:start:
+    desc: Launch Chrome in the sidecar and wait for CDP to answer
+    cmds:
+      - '{{.BROWSER_EXEC}} sidecar-app start'
+      - |
+        for _ in $(seq 1 30); do
+          curl -sf http://localhost:9222/json/version >/dev/null && exit 0
+          sleep 1
+        done
+        echo "CDP did not come up within 30s — check 'task browser:logs'" >&2
+        exit 1
+
+  browser:stop:
+    desc: Park Chrome (frees its memory; noVNC and chromedriver stay up)
+    cmds:
+      - '{{.BROWSER_EXEC}} sidecar-app stop'
 
   browser:restart:
-    desc: Kill Chrome; the sidecar respawns it with a clean window
+    desc: Park Chrome and relaunch it with a clean window
     cmds:
-      - kubectl exec ${DEVWORKSPACE_NAMESPACE:+-n ${DEVWORKSPACE_NAMESPACE}} ${HOSTNAME} -c browser -- pkill -f /opt/chrome/chrome
+      - task: browser:stop
+      - task: browser:start
+
+  browser:exec:
+    desc: 'Run a command inside the sidecar (task browser:exec CMD="ps -ef")'
+    requires:
+      vars: [CMD]
+    cmds:
+      - '{{.BROWSER_EXEC}} sh -c {{.CMD | quote}}'
+
+  browser:shell:
+    desc: Open an interactive shell in the browser sidecar
+    interactive: true
+    cmds:
+      - kubectl exec -it ${DEVWORKSPACE_NAMESPACE:+-n ${DEVWORKSPACE_NAMESPACE}} ${HOSTNAME} -c browser -- bash
 
   browser:logs:
     desc: Follow the browser sidecar log
     cmds:
-      - kubectl logs -f ${DEVWORKSPACE_NAMESPACE:+-n ${DEVWORKSPACE_NAMESPACE}} ${HOSTNAME} -c browser
+      - '{{.BROWSER_LOGS}} -f'
 
+  # Chromium cannot run in the tools container (no libglib-2.0, and no root to
+  # install it), so these run *inside* the browser sidecar. That works because
+  # the pod shares one network namespace — the sidecar reaches the dev server on
+  # plain localhost — and shares /home and /projects, so it runs the same
+  # mise-installed node and the same npx cache as every other task here.
+  #
+  # Two env details are load-bearing. PUPPETEER_EXECUTABLE_PATH reuses the
+  # sidecar's Chrome instead of letting puppeteer download a second copy into
+  # the shared cache. CI=1 is what makes impeccable pass --no-sandbox, which
+  # Chrome needs here for exactly the reason it does on a GitHub runner:
+  # unprivileged user namespaces are unavailable, and without it Chrome aborts
+  # with "No usable sandbox!".
   ui:design:rendered:
     desc: Run the rendered design gates against a running dev server (needs the browser sidecar)
     deps: [browser:check]
+    vars:
+      # mise pins the node version, so resolve the bin dir rather than hardcode
+      # it. PATH is then set to a literal (no $PATH) so nothing expands in the
+      # outer shell before kubectl hands the string to the sidecar.
+      NODE_BIN:
+        sh: dirname "$(readlink -f "$(command -v node)")"
+      # 5174, not 5173: the gates run inside the pod, and that is the front
+      # wired to the API on localhost (`task ui:dev:local`).
+      URL: '{{.URL | default "http://localhost:5174/"}}'
+      # cd into the repo so the detector loads DESIGN.md and .impeccable/ — a
+      # design-system-aware scan is the whole point of R6.
+      ENV: 'export PATH={{.NODE_BIN}}:/usr/local/bin:/usr/bin:/bin PUPPETEER_EXECUTABLE_PATH=/opt/chrome/chrome CI=1; cd {{.ROOT_DIR}};'
     cmds:
       # The same two viewports CI uses: contrast and hierarchy are width-blind,
       # overflow and reflow are not.
-      - npx --yes impeccable detect --viewport 1440x900 http://localhost:5173/
-      - npx --yes impeccable detect --viewport 390x844 http://localhost:5173/
-      - npx --yes @axe-core/cli http://localhost:5173/ --exit --tags wcag2a,wcag2aa,wcag21a,wcag21aa,wcag22aa
+      - '{{.BROWSER_EXEC}} sh -c {{printf "%s npx --yes impeccable detect --viewport 1440x900 %s" .ENV .URL | quote}}'
+      - '{{.BROWSER_EXEC}} sh -c {{printf "%s npx --yes impeccable detect --viewport 390x844 %s" .ENV .URL | quote}}'
+      - '{{.BROWSER_EXEC}} sh -c {{printf "%s npx --yes @axe-core/cli %s --exit --chromedriver-path /usr/local/bin/chromedriver --chrome-path /opt/chrome/chrome --chrome-options=no-sandbox,disable-dev-shm-usage --tags wcag2a,wcag2aa,wcag21a,wcag21aa,wcag22aa" .ENV .URL | quote}}'
 
   ui:design:
     desc: Run the static design gates locally (detector, i18n, token drift)
@@ -551,6 +641,49 @@ tasks:
     desc: Regenerate the French review sheet from the catalogues
     cmds:
       - python3 scripts/i18n-review.py
+
+  # ── Dev servers ──────────────────────────────────────────────────────────────
+  # Two fronts, because the browser deciding what "localhost" means is not the
+  # same browser in the two cases:
+  #
+  #   5173  reached through the workspace's public `front` endpoint, from a real
+  #         browser on your machine. There, `localhost:8080` is *your* laptop, so
+  #         the API has to be named by its public FQDN — which is per-user and
+  #         per-workspace, hence generated by `url` rather than committed.
+  #   5174  reached from inside the pod (the browser sidecar, the rendered design
+  #         gates). The pod shares one network namespace, so plain localhost is
+  #         both correct and faster — no ingress, no TLS, no CORS preflight to a
+  #         public name.
+  #
+  # They differ only by which env file Vite loads: a `--mode` file outranks
+  # `.env`, so one working tree serves both without either clobbering the other.
+  # Both tasks state VITE_API_BASE_URL explicitly, and must. This Taskfile sets
+  # `dotenv: [ .env ]`, so the repo-root `.env` is injected into every task's
+  # environment — and Vite gives `process.env` priority over its own `.env`
+  # files. An inherited value therefore beats `ui/.env.localhost`, which is
+  # exactly how both fronts silently ended up on the same API. Naming it here is
+  # what makes each front's target a property of the task rather than of
+  # whatever happens to be in the root `.env`.
+  ui:dev:
+    desc: Front on 5173 → API via the workspace FQDN (open the `front` endpoint)
+    dir: ui
+    env:
+      # `url back` prints a trailing slash; the generated SDK appends
+      # "/api/v1/…", so leaving it produces a double slash in every request.
+      VITE_API_BASE_URL:
+        sh: url back | sed 's#/$##'
+    cmds:
+      - 'echo "API → $VITE_API_BASE_URL"'
+      - pnpm run dev:fqdn
+
+  ui:dev:local:
+    desc: 'Front on 5174 → API on localhost:8080 (in-pod: sidecar, rendered gates)'
+    dir: ui
+    env:
+      VITE_API_BASE_URL: http://localhost:8080
+    cmds:
+      - 'echo "API → $VITE_API_BASE_URL"'
+      - pnpm run dev:local
 
   ui:test:
     desc: Run the frontend test suite

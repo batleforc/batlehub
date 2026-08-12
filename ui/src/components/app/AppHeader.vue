@@ -51,10 +51,12 @@ function handleLogout() {
 <template>
   <header class="sticky top-0 z-40 border-b border-border/60 bg-background/90 backdrop-blur-md">
     <div class="container mx-auto flex h-14 items-center gap-4 px-4">
-      <!-- Logo -->
+      <!-- The wordmark goes home. It pointed at /packages from when `/` was a
+           blind redirect there; Phase 4 made `/` a real identity-aware surface
+           (RFC 0003 §4.3), so the logo had been skipping past it ever since. -->
       <RouterLink
-        to="/packages"
-        class="flex items-center gap-2 shrink-0 font-mono font-bold text-base text-primary cyber-text-glow hover:text-primary/80 transition-colors"
+        to="/"
+        class="flex items-center gap-2 shrink-0 font-display font-bold text-base tracking-[0.04em] text-primary hover:text-primary/80 transition-colors"
       >
         <Package class="h-4 w-4" />
         BatleHub.
@@ -75,7 +77,7 @@ function handleLogout() {
           ]"
         >
           <ShieldCheck class="h-3.5 w-3.5" />
-          Admin
+          {{ t("common.admin") }}
         </RouterLink>
       </div>
 
@@ -88,7 +90,7 @@ function handleLogout() {
           class="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-sm font-mono text-sm text-muted-foreground transition-colors hover:bg-accent/60 hover:text-accent-foreground"
         >
           <BookOpen class="h-3.5 w-3.5" />
-          Docs
+          {{ t("common.docs") }}
         </a>
         <LocaleToggle />
         <ThemeToggle />
@@ -100,7 +102,7 @@ function handleLogout() {
           variant="ghost"
           size="icon"
           class="md:hidden"
-          :aria-label="mobileOpen ? 'Close menu' : 'Open menu'"
+          :aria-label="mobileOpen ? t('a11y.closeMenu') : t('a11y.openMenu')"
           :aria-expanded="mobileOpen"
           aria-controls="mobile-nav"
           @click="mobileOpen = !mobileOpen"
@@ -168,7 +170,7 @@ function handleLogout() {
         @click="mobileOpen = false"
       >
         <ShieldCheck class="h-4 w-4" />
-        Admin
+        {{ t("common.admin") }}
       </RouterLink>
       <a
         :href="DOCS_URL"
@@ -178,7 +180,7 @@ function handleLogout() {
         @click="mobileOpen = false"
       >
         <BookOpen class="h-4 w-4" />
-        Documentation
+        {{ t("common.documentation") }}
       </a>
       <div v-if="isAuthenticated" class="pt-2 border-t border-border/60">
         <button

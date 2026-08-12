@@ -86,12 +86,12 @@ const ROLE_LABELS: Record<string, string> = {
     <SectionTabs :tabs="OBSERVABILITY_TABS" />
     <PageHeader
       :title="t('adminHealth.registryHealth')"
-      description="Live snapshot of each registry — packages, cache, pull rates, and recent errors."
-      variant="glow"
+      :description="t('adminHealth.liveSnapshotOfEachRegistry')"
+      variant="display"
     >
       <template #actions>
         <Button variant="outline" size="sm" :disabled="loading" @click="reload">
-          {{ loading ? "Refreshing…" : "Refresh" }}
+          {{ loading ? t("adminHealth.refreshing") : t("common.refresh") }}
         </Button>
       </template>
     </PageHeader>
@@ -197,7 +197,7 @@ const ROLE_LABELS: Record<string, string> = {
             <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
               <!-- Packages -->
               <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-                <p class="text-xs text-muted-foreground">Packages</p>
+                <p class="text-xs text-muted-foreground">{{ t("common.packages") }}</p>
                 <p class="text-xl font-semibold tabular-nums">
                   {{ formatCount(reg.package_count) }}
                 </p>
@@ -268,7 +268,11 @@ const ROLE_LABELS: Record<string, string> = {
                   <span class="inline-block h-2 w-2 rounded-sm bg-destructive" />
                   {{ t("adminHealth.errorsIn24h", reg.recent_errors.length) }}
                   <span class="text-muted-foreground text-xs ml-auto">
-                    {{ expandedErrors.has(reg.registry) ? "▲ hide" : "▼ show" }}
+                    {{
+                      expandedErrors.has(reg.registry)
+                        ? t("packageBetaChannel.hide")
+                        : t("packageBetaChannel.show")
+                    }}
                   </span>
                 </span>
               </button>
@@ -280,11 +284,11 @@ const ROLE_LABELS: Record<string, string> = {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead class="text-xs"> When </TableHead>
-                      <TableHead class="text-xs"> User </TableHead>
-                      <TableHead class="text-xs"> Package </TableHead>
-                      <TableHead class="text-xs"> Type </TableHead>
-                      <TableHead class="text-xs"> Reason </TableHead>
+                      <TableHead class="text-xs"> {{ t("common.when") }} </TableHead>
+                      <TableHead class="text-xs"> {{ t("common.user") }} </TableHead>
+                      <TableHead class="text-xs"> {{ t("common.package") }} </TableHead>
+                      <TableHead class="text-xs"> {{ t("common.type") }} </TableHead>
+                      <TableHead class="text-xs"> {{ t("common.reason") }} </TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -308,7 +312,11 @@ const ROLE_LABELS: Record<string, string> = {
                           :variant="err.error_type === 'error' ? 'destructive' : 'secondary'"
                           class="text-xs"
                         >
-                          {{ err.error_type === "error" ? "Upstream error" : "Denied" }}
+                          {{
+                            err.error_type === "error"
+                              ? t("adminHealth.upstreamError")
+                              : t("accessCheck.denied")
+                          }}
                         </Badge>
                       </TableCell>
                       <TableCell

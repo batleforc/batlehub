@@ -236,7 +236,9 @@ const {
             {{ t("packageDetailPage.knownVersions", data.versions.length) }}
           </p>
         </div>
-        <Button variant="outline" size="sm" @click="fetchDetail"> Refresh </Button>
+        <Button variant="outline" size="sm" @click="fetchDetail">
+          {{ t("common.refresh") }}
+        </Button>
       </div>
 
       <!-- Gate summary card -->
@@ -261,7 +263,9 @@ const {
                     : 'text-destructive font-medium'
                 "
               >
-                {{ data.gate.registry_accessible ? "Allowed" : "Denied" }}
+                {{
+                  data.gate.registry_accessible ? t("accessCheck.allowed") : t("accessCheck.denied")
+                }}
               </span>
             </div>
 
@@ -278,7 +282,11 @@ const {
                   data.gate.beta_member ? 'text-primary font-medium' : 'text-muted-foreground'
                 "
               >
-                {{ data.gate.beta_member ? "Member — pre-release versions visible" : "Non-member" }}
+                {{
+                  data.gate.beta_member
+                    ? t("packageDetailPage.memberPreReleaseVersionsVisible")
+                    : t("packageDetailPage.nonMember")
+                }}
               </span>
             </div>
           </div>
@@ -288,21 +296,21 @@ const {
       <!-- Versions table -->
       <Card>
         <CardHeader class="pb-2">
-          <CardTitle class="text-base">Versions</CardTitle>
+          <CardTitle class="text-base">{{ t("common.versions") }}</CardTitle>
         </CardHeader>
         <CardContent class="p-0">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Version</TableHead>
-                <TableHead>Source</TableHead>
-                <TableHead>Firewall</TableHead>
-                <TableHead class="text-right">Downloads</TableHead>
+                <TableHead>{{ t("common.version") }}</TableHead>
+                <TableHead>{{ t("common.source") }}</TableHead>
+                <TableHead>{{ t("common.firewall") }}</TableHead>
+                <TableHead class="text-right">{{ t("common.downloads") }}</TableHead>
                 <TableHead>{{ t("packageDetailPage.lastAccessed") }}</TableHead>
-                <TableHead>Published</TableHead>
-                <TableHead>Security</TableHead>
+                <TableHead>{{ t("common.published") }}</TableHead>
+                <TableHead>{{ t("common.security") }}</TableHead>
                 <TableHead v-if="token">SBOM</TableHead>
-                <TableHead>Download</TableHead>
+                <TableHead>{{ t("common.download") }}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -320,7 +328,7 @@ const {
                     v-if="ver.deprecated"
                     variant="destructive"
                     class="ml-1 text-xs cursor-help"
-                    :title="ver.deprecation_message ?? 'Deprecated'"
+                    :title="ver.deprecation_message ?? t('packageDetailPage.deprecated')"
                   >
                     deprecated
                   </Badge>
@@ -333,7 +341,9 @@ const {
                     :variant="ver.source === 'local' ? 'secondary' : 'outline'"
                     class="text-xs"
                   >
-                    {{ ver.source === "local" ? "Local" : "Proxied" }}
+                    {{
+                      ver.source === "local" ? t("packageDetailPage.local") : t("common.proxied")
+                    }}
                   </Badge>
                 </TableCell>
                 <TableCell>
@@ -347,7 +357,9 @@ const {
                     >{{ t("packageDetailPage.why") }}</RouterLink
                   >
                   <span v-if="ver.firewall.status === 'blocked'" class="group relative">
-                    <Badge variant="destructive" class="text-xs cursor-help">Blocked</Badge>
+                    <Badge variant="destructive" class="text-xs cursor-help">{{
+                      t("common.blocked")
+                    }}</Badge>
                     <span
                       class="absolute bottom-full left-0 mb-1 hidden group-hover:block z-10 w-64 rounded-sm bg-popover border p-2 text-xs text-popover-foreground shadow-md"
                     >
@@ -443,10 +455,10 @@ const {
                     target="_blank"
                     rel="noopener noreferrer"
                     class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs hover:bg-accent"
-                    :title="`Download ${ver.version} via proxy`"
+                    :title="t('packageDetailPage.downloadViaProxy', { version: ver.version })"
                   >
                     <Download class="h-3 w-3" />
-                    Download
+                    {{ t("common.download") }}
                   </a>
                   <span v-else class="text-muted-foreground text-xs">—</span>
                 </TableCell>
@@ -455,7 +467,7 @@ const {
                 <TableCell :colspan="token ? 9 : 8" class="text-center text-muted-foreground py-6">
                   <EmptyState
                     :title="t('packageDetailPage.noVersionsYet')"
-                    description="Nothing has been pulled through or published to this registry under this name."
+                    :description="t('packageDetailPage.nothingHasBeenPulledThrough')"
                   />
                 </TableCell>
               </TableRow>
@@ -475,7 +487,7 @@ const {
         id="admin-heading"
         class="font-mono text-sm font-semibold uppercase tracking-wider text-copper"
       >
-        Administration
+        {{ t("common.administration") }}
       </h2>
 
       <p v-if="adminError" class="text-sm text-destructive">{{ adminError }}</p>

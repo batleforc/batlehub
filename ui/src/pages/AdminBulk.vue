@@ -145,8 +145,8 @@ function reset() {
     <SectionTabs :tabs="PACKAGES_TABS" />
     <PageHeader
       :title="t('adminBulk.bulkImport')"
-      description="Block or unblock multiple packages at once by pasting or uploading a CSV file."
-      variant="glow"
+      :description="t('adminBulk.blockOrUnblockMultiplePackages')"
+      variant="display"
     />
 
     <!-- Format reference -->
@@ -188,7 +188,7 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
               result = null;
             "
           >
-            Block
+            {{ t("common.block") }}
           </Button>
           <Button
             :variant="action === 'unblock' ? 'default' : 'outline'"
@@ -199,7 +199,7 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
               result = null;
             "
           >
-            Unblock
+            {{ t("common.unblock") }}
           </Button>
         </div>
 
@@ -246,7 +246,7 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
 
         <div class="flex gap-2">
           <Button variant="outline" @click="parseCSV">{{ t("adminBulk.previewRows") }}</Button>
-          <Button variant="ghost" size="sm" @click="reset"> Reset </Button>
+          <Button variant="ghost" size="sm" @click="reset"> {{ t("common.reset") }} </Button>
         </div>
       </CardContent>
     </Card>
@@ -256,7 +256,7 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
       <CardHeader class="pb-3">
         <div class="flex items-center justify-between">
           <CardTitle class="text-base">
-            Preview
+            {{ t("common.preview") }}
             <span class="font-normal text-muted-foreground ml-1 text-sm">
               <i18n-t keypath="adminBulk.validInvalid" tag="span">
                 <template #valid>{{ validRows.length }}</template>
@@ -267,8 +267,8 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
           <Button :disabled="validRows.length === 0 || submitting" @click="submit">
             {{
               submitting
-                ? "Processing…"
-                : `${action === "block" ? "Block" : "Unblock"} ${validRows.length} package${validRows.length !== 1 ? "s" : ""}`
+                ? t("adminBulk.processing")
+                : `${action === "block" ? t("common.block") : t("common.unblock")} ${validRows.length} package${validRows.length !== 1 ? "s" : ""}`
             }}
           </Button>
         </div>
@@ -277,12 +277,12 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Registry</TableHead>
-              <TableHead>Name</TableHead>
-              <TableHead>Version</TableHead>
-              <TableHead>Artifact</TableHead>
-              <TableHead v-if="action === 'block'"> Reason </TableHead>
-              <TableHead>Status</TableHead>
+              <TableHead>{{ t("common.registry") }}</TableHead>
+              <TableHead>{{ t("common.name") }}</TableHead>
+              <TableHead>{{ t("common.version") }}</TableHead>
+              <TableHead>{{ t("common.artifact") }}</TableHead>
+              <TableHead v-if="action === 'block'"> {{ t("common.reason") }} </TableHead>
+              <TableHead>{{ t("common.status") }}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -333,10 +333,10 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Registry</TableHead>
-              <TableHead>Name</TableHead>
-              <TableHead>Version</TableHead>
-              <TableHead>Error</TableHead>
+              <TableHead>{{ t("common.registry") }}</TableHead>
+              <TableHead>{{ t("common.name") }}</TableHead>
+              <TableHead>{{ t("common.version") }}</TableHead>
+              <TableHead>{{ t("common.error") }}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>

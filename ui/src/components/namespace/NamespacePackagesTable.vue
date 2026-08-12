@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
 import { EmptyState } from "@/components/ui/empty-state";
-import { ref, watch, toRef } from "vue";
+import { computed, ref, watch, toRef } from "vue";
 import { myNamespacePackages, setPackageVisibility } from "@/client/sdk.gen";
 import type { Visibility, TeamNamespaceDto, NamespacePackageDto } from "@/lib/registry-types";
 import { VISIBILITY_OPTIONS } from "@/lib/registry-types";
@@ -56,10 +56,11 @@ const editing = ref<Record<string, Visibility>>({});
 const saving = ref<Record<string, boolean>>({});
 const saveError = ref<Record<string, string>>({});
 
-const visibilityOptions = VISIBILITY_OPTIONS.map((o) => ({
-  value: o.value,
-  label: o.label.split(" —")[0],
-}));
+// The short form is its own message rather than the long one cut at the dash:
+// French does not put the dash where English does.
+const visibilityOptions = computed(() =>
+  VISIBILITY_OPTIONS.map((o) => ({ value: o.value, label: t(`visibilityShort.${o.value}`) })),
+);
 
 function pkgKey(pkg: NamespacePackageDto) {
   return `${props.namespace.registry}|${pkg.name}|${pkg.version}`;
@@ -123,11 +124,11 @@ function formatDate(iso: string) {
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>Package</TableHead>
-          <TableHead>Version</TableHead>
-          <TableHead>Visibility</TableHead>
+          <TableHead>{{ t("common.package") }}</TableHead>
+          <TableHead>{{ t("common.version") }}</TableHead>
+          <TableHead>{{ t("common.visibility") }}</TableHead>
           <TableHead>{{ t("namespacePackagesTable.publishedBy") }}</TableHead>
-          <TableHead>Date</TableHead>
+          <TableHead>{{ t("common.date") }}</TableHead>
           <TableHead />
         </TableRow>
       </TableHeader>
@@ -162,8 +163,12 @@ function formatDate(iso: string) {
                 >
                   {{ saving[pkgKey(pkg)] ? "…" : "Save" }}
                 </Button>
-                <Button size="sm" variant="ghost" class="text-xs h-7 px-2" @click="cancelEdit(pkg)"
-                  >Cancel</Button
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="text-xs h-7 px-2"
+                  @click="cancelEdit(pkg)"
+                  >{{ t("common.cancel") }}</Button
                 >
               </div>
               <p v-if="saveError[pkgKey(pkg)]" class="text-xs text-destructive mt-0.5">

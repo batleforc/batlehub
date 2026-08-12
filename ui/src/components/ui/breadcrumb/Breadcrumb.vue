@@ -6,18 +6,25 @@
  * pair of labels.
  */
 import { RouterLink } from "vue-router";
-import { type HTMLAttributes } from "vue";
+import { computed, type HTMLAttributes } from "vue";
+import { useI18n } from "vue-i18n";
 import { cn } from "@/lib/utils";
 import type { Crumb } from "./types";
 
-const props = withDefaults(
-  defineProps<{ items: Crumb[]; label?: string; class?: HTMLAttributes["class"] }>(),
-  { label: "Breadcrumb" },
-);
+// The landmark name defaults from the catalogue rather than from a literal,
+// which would be fixed in English at setup and ignore a locale change.
+const props = defineProps<{
+  items: Crumb[];
+  label?: string;
+  class?: HTMLAttributes["class"];
+}>();
+
+const { t } = useI18n();
+const resolvedLabel = computed(() => props.label ?? t("a11y.breadcrumb"));
 </script>
 
 <template>
-  <nav :aria-label="label" :class="cn('font-mono text-xs', props.class)">
+  <nav :aria-label="resolvedLabel" :class="cn('font-mono text-xs', props.class)">
     <ol class="flex flex-wrap items-center gap-1.5">
       <li
         v-for="(item, index) in items"

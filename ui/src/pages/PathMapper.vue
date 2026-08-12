@@ -103,8 +103,8 @@ watch(pastedUrl, parseUrl);
   <div class="max-w-2xl space-y-6">
     <PageHeader
       :title="t('pathMapper.urlMapper')"
-      description="Paste an upstream URL or fill in the fields to get the equivalent proxy path."
-      variant="glow"
+      :description="t('pathMapper.pasteAnUpstreamUrlOr')"
+      variant="display"
     />
 
     <!-- Universal paste input -->

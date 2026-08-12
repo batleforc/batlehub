@@ -236,7 +236,7 @@ async function testSubscription(id: string) {
   <div class="space-y-6">
     <PageHeader
       :title="t('adminNotifications.webhooksNotifications')"
-      description="Manage outbound notification subscriptions and monitor inbound webhook events."
+      :description="t('adminNotifications.manageOutboundNotificationSubscriptionsAnd')"
     />
 
     <!-- Tab switcher -->
@@ -253,7 +253,11 @@ async function testSubscription(id: string) {
         @click="activeTab = tab"
       >
         {{
-          tab === "inbound" ? "Inbound Events" : tab === "channels" ? "Channels" : "Subscriptions"
+          tab === "inbound"
+            ? t("adminNotifications.inboundEvents")
+            : tab === "channels"
+              ? t("adminNotifications.channels")
+              : t("adminNotifications.subscriptions")
         }}
       </button>
     </div>
@@ -270,12 +274,12 @@ async function testSubscription(id: string) {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Registry</TableHead>
-                  <TableHead>Package</TableHead>
-                  <TableHead>Events</TableHead>
-                  <TableHead>Channel</TableHead>
-                  <TableHead>Enabled</TableHead>
-                  <TableHead class="text-right">Actions</TableHead>
+                  <TableHead>{{ t("common.registry") }}</TableHead>
+                  <TableHead>{{ t("common.package") }}</TableHead>
+                  <TableHead>{{ t("common.events") }}</TableHead>
+                  <TableHead>{{ t("common.channel") }}</TableHead>
+                  <TableHead>{{ t("common.enabled") }}</TableHead>
+                  <TableHead class="text-right">{{ t("common.actions") }}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -308,10 +312,12 @@ async function testSubscription(id: string) {
                       >
                         {{ testLoading === sub.id ? "…" : "Test" }}
                       </Button>
-                      <Button variant="outline" size="sm" @click="openEdit(sub)">Edit</Button>
-                      <Button variant="destructive" size="sm" @click="deleteTarget = sub.id"
-                        >Delete</Button
-                      >
+                      <Button variant="outline" size="sm" @click="openEdit(sub)">{{
+                        t("common.edit")
+                      }}</Button>
+                      <Button variant="destructive" size="sm" @click="deleteTarget = sub.id">{{
+                        t("common.delete")
+                      }}</Button>
                     </div>
                   </TableCell>
                 </TableRow>
@@ -374,7 +380,7 @@ async function testSubscription(id: string) {
     <div v-if="activeTab === 'inbound'" class="space-y-4">
       <div class="flex justify-end">
         <Button variant="outline" size="sm" :disabled="inboundLoading" @click="reloadInbound">
-          {{ inboundLoading ? "Refreshing…" : "Refresh" }}
+          {{ inboundLoading ? t("adminHealth.refreshing") : t("common.refresh") }}
         </Button>
       </div>
 
@@ -384,10 +390,10 @@ async function testSubscription(id: string) {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Webhook</TableHead>
+                  <TableHead>{{ t("common.webhook") }}</TableHead>
                   <TableHead>{{ t("adminNotifications.receivedAt") }}</TableHead>
                   <TableHead>{{ t("adminNotifications.sourceIp") }}</TableHead>
-                  <TableHead>Signature</TableHead>
+                  <TableHead>{{ t("common.signature") }}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -396,14 +402,14 @@ async function testSubscription(id: string) {
                   <TableCell class="text-xs">{{ fmtTs(ev.received_at) }}</TableCell>
                   <TableCell class="font-mono text-xs">{{ ev.source_ip ?? "—" }}</TableCell>
                   <TableCell>
-                    <Badge v-if="ev.signature_valid === true" variant="default" class="text-xs"
-                      >Valid</Badge
-                    >
+                    <Badge v-if="ev.signature_valid === true" variant="default" class="text-xs">{{
+                      t("common.valid")
+                    }}</Badge>
                     <Badge
                       v-else-if="ev.signature_valid === false"
                       variant="destructive"
                       class="text-xs"
-                      >Invalid</Badge
+                      >{{ t("common.invalid") }}</Badge
                     >
                     <span v-else class="text-xs text-muted-foreground">—</span>
                   </TableCell>
@@ -431,12 +437,14 @@ async function testSubscription(id: string) {
       }
     "
   >
-    <template #title>{{ editingId ? "Edit Subscription" : "New Subscription" }}</template>
+    <template #title>{{
+      editingId ? t("adminNotifications.editSubscription") : t("adminNotifications.newSubscription")
+    }}</template>
     <div class="space-y-4">
       <div class="space-y-3">
         <div class="space-y-1.5">
           <Label for="notif-registry"
-            >Registry
+            >{{ t("common.registry") }}
             <span class="text-muted-foreground text-xs">{{
               t("adminNotifications.leaveBlankForAll")
             }}</span></Label
@@ -486,7 +494,9 @@ async function testSubscription(id: string) {
           </div>
         </fieldset>
         <div class="space-y-1.5">
-          <Label for="notif-channel">Channel <span class="text-destructive">*</span></Label>
+          <Label for="notif-channel"
+            >{{ t("common.channel") }} <span class="text-destructive">*</span></Label
+          >
           <Input
             id="notif-channel"
             v-model="form.channel_name"
@@ -500,21 +510,27 @@ async function testSubscription(id: string) {
         </div>
         <div class="flex items-center gap-2">
           <Switch id="notif-enabled" v-model="form.enabled" />
-          <Label for="notif-enabled">Enabled</Label>
+          <Label for="notif-enabled">{{ t("common.enabled") }}</Label>
         </div>
       </div>
 
       <p v-if="formError" class="text-sm text-destructive">{{ formError }}</p>
       <div class="flex justify-end gap-2">
-        <Button variant="outline" size="sm" :disabled="formLoading" @click="dialogOpen = false"
-          >Cancel</Button
-        >
+        <Button variant="outline" size="sm" :disabled="formLoading" @click="dialogOpen = false">{{
+          t("common.cancel")
+        }}</Button>
         <Button
           size="sm"
           :disabled="formLoading || !form.channel_name.trim() || form.event_types.length === 0"
           @click="submitForm"
         >
-          {{ formLoading ? "Saving…" : editingId ? "Update" : "Create" }}
+          {{
+            formLoading
+              ? t("packageVisibility.saving")
+              : editingId
+                ? t("adminNotifications.update")
+                : t("adminNotifications.create")
+          }}
         </Button>
       </div>
     </div>
@@ -524,7 +540,7 @@ async function testSubscription(id: string) {
   <ConfirmDialog
     :open="deleteTarget !== null"
     :title="t('adminNotifications.deleteSubscription')"
-    description="This action cannot be undone."
+    :description="t('adminNotifications.thisActionCannotBeUndone')"
     confirm-label="Delete"
     loading-label="Deleting…"
     destructive

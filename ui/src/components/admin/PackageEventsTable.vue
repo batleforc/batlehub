@@ -37,14 +37,14 @@ function fmtAction(a: string) {
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>When</TableHead>
-            <TableHead>User</TableHead>
-            <TableHead>Role</TableHead>
-            <TableHead>Version</TableHead>
-            <TableHead>Artifact</TableHead>
-            <TableHead>Action</TableHead>
-            <TableHead>Outcome</TableHead>
-            <TableHead>Reason</TableHead>
+            <TableHead>{{ t("common.when") }}</TableHead>
+            <TableHead>{{ t("common.user") }}</TableHead>
+            <TableHead>{{ t("common.role") }}</TableHead>
+            <TableHead>{{ t("common.version") }}</TableHead>
+            <TableHead>{{ t("common.artifact") }}</TableHead>
+            <TableHead>{{ t("common.action") }}</TableHead>
+            <TableHead>{{ t("common.outcome") }}</TableHead>
+            <TableHead>{{ t("common.reason") }}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>

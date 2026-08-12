@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Alert } from "@/components/ui/alert";
 
-const { t } = useI18n();
+const { t, te } = useI18n();
 
 const { token } = useAuth();
 
@@ -70,7 +70,7 @@ const installSnippets: Record<string, { label: string; lang: string; code: strin
 mise use "github:batleforc/batlehub[asset_pattern=batlehub-cli-*]"`,
   },
   server: {
-    label: "From this server",
+    label: "cliDownload.fromThisServer",
     lang: "bash",
     get code() {
       return `# Download the binary served by this BatleHub instance
@@ -116,7 +116,7 @@ Expand-Archive batlehub-cli.zip -DestinationPath .
 Move-Item batlehub-cli.exe "$env:LOCALAPPDATA\Microsoft\WindowsApps\batlehub-cli.exe"`,
   },
   cargo: {
-    label: "Build from source",
+    label: "cliDownload.buildFromSource",
     lang: "bash",
     code: `# Requires Rust toolchain (https://rustup.rs)
 cargo install --git https://git.batleforc.fr/batleforc/batlehub batlehub-cli
@@ -134,23 +134,33 @@ token      = "your-api-token"`,
 );
 
 const usageSnippets = [
-  { key: "registry", label: "List registries", lang: "bash", code: "batlehub-cli registry list" },
-  { key: "whoami", label: "Check identity", lang: "bash", code: "batlehub-cli auth whoami" },
+  {
+    key: "registry",
+    label: "cliDownload.listRegistries",
+    lang: "bash",
+    code: "batlehub-cli registry list",
+  },
+  {
+    key: "whoami",
+    label: "cliDownload.checkIdentity",
+    lang: "bash",
+    code: "batlehub-cli auth whoami",
+  },
   {
     key: "list",
-    label: "List packages",
+    label: "cliDownload.listPackages",
     lang: "bash",
     code: "batlehub-cli package list --registry <name>",
   },
   {
     key: "publish",
-    label: "Publish",
+    label: "cliDownload.publish",
     lang: "bash",
     code: "batlehub-cli publish MyLib.1.0.0.nupkg --registry <name>",
   },
   {
     key: "yank",
-    label: "Yank version",
+    label: "cliDownload.yankVersion",
     lang: "bash",
     code: "batlehub-cli version yank <registry> <name> <version>",
   },
@@ -176,7 +186,7 @@ const usageSnippets = [
       <CardHeader>
         <CardTitle class="flex items-center gap-2 text-base">
           <Download class="h-4 w-4" />
-          Download
+          {{ t("common.download") }}
         </CardTitle>
         <CardDescription>{{ t("cliDownload.getThePreBuilt") }}</CardDescription>
       </CardHeader>
@@ -191,7 +201,7 @@ const usageSnippets = [
         <div class="flex flex-wrap gap-3 items-center">
           <Button class="font-mono gap-2" :disabled="downloading" @click="triggerDownload">
             <Download class="h-4 w-4" />
-            {{ downloading ? "Downloading…" : "Download batlehub-cli" }}
+            {{ downloading ? t("cliDownload.downloading") : t("cliDownload.downloadBatlehubCli") }}
           </Button>
           <span class="text-xs text-muted-foreground font-mono">{{ downloadUrl }}</span>
         </div>
@@ -207,7 +217,7 @@ const usageSnippets = [
               :value="key"
               class="font-mono text-xs"
             >
-              {{ s.label }}
+              {{ te(s.label) ? t(s.label) : s.label }}
             </TabsTrigger>
           </TabsList>
 
@@ -233,7 +243,7 @@ const usageSnippets = [
       <CardHeader>
         <CardTitle class="flex items-center gap-2 text-base">
           <Package class="h-4 w-4" />
-          Configuration
+          {{ t("common.configuration") }}
         </CardTitle>
         <CardDescription>
           <i18n-t keypath="cliDownload.createConfigOrRun" tag="span">
@@ -285,7 +295,7 @@ const usageSnippets = [
             class="relative rounded-sm border border-border bg-muted/40 overflow-hidden"
           >
             <div class="px-3 pt-2 pb-0.5 text-xs text-muted-foreground font-mono">
-              {{ s.label }}
+              {{ te(s.label) ? t(s.label) : s.label }}
             </div>
             <pre class="px-3 pb-3 pt-1 text-xs font-mono text-foreground/90 leading-relaxed">{{
               s.code

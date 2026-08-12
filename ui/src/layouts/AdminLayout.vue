@@ -1,27 +1,11 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { RouterView, RouterLink, useRoute } from "vue-router";
-import {
-  ShieldCheck,
-  LayoutDashboard,
-  Package,
-  RefreshCw,
-  HeartPulse,
-  Shield,
-  FolderKey,
-  Bell,
-} from "@lucide/vue";
+import { ShieldCheck } from "@lucide/vue";
+import { ADMIN_SIDEBAR } from "@/config/adminSections";
 
+const { t } = useI18n();
 const route = useRoute();
-
-const adminLinks = [
-  { to: "/admin/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/admin/packages", label: "Packages", icon: Package },
-  { to: "/admin/security", label: "Security & Access", icon: Shield },
-  { to: "/admin/namespaces", label: "Namespaces & Channels", icon: FolderKey },
-  { to: "/admin/operations", label: "Operations", icon: RefreshCw },
-  { to: "/admin/observability", label: "Observability", icon: HeartPulse },
-  { to: "/admin/notifications", label: "Notifications", icon: Bell },
-];
 
 function isActive(to: string) {
   return route.path === to || route.path.startsWith(to + "/");
@@ -36,11 +20,11 @@ function isActive(to: string) {
         class="flex items-center gap-2 px-3 py-2 mb-2 font-mono text-xs font-semibold uppercase tracking-wider text-copper"
       >
         <ShieldCheck class="h-3.5 w-3.5" />
-        Admin
+        {{ t("common.admin") }}
       </div>
       <nav class="flex flex-col gap-0.5">
         <RouterLink
-          v-for="link in adminLinks"
+          v-for="link in ADMIN_SIDEBAR"
           :key="link.to"
           :to="link.to"
           :class="[
@@ -51,7 +35,7 @@ function isActive(to: string) {
           ]"
         >
           <component :is="link.icon" class="h-4 w-4 shrink-0" />
-          {{ link.label }}
+          {{ t(link.label) }}
         </RouterLink>
       </nav>
     </aside>
@@ -60,10 +44,10 @@ function isActive(to: string) {
     <div class="md:hidden -mx-4 px-4 border-b border-border/60 mb-4 w-full flex flex-col">
       <div class="flex items-center gap-1 pb-1 overflow-x-auto">
         <span class="flex items-center gap-1 font-mono text-xs text-copper mr-2 shrink-0">
-          <ShieldCheck class="h-3 w-3" /> Admin
+          <ShieldCheck class="h-3 w-3" /> {{ t("common.admin") }}
         </span>
         <RouterLink
-          v-for="link in adminLinks"
+          v-for="link in ADMIN_SIDEBAR"
           :key="link.to"
           :to="link.to"
           :class="[
@@ -74,7 +58,7 @@ function isActive(to: string) {
           ]"
         >
           <component :is="link.icon" class="h-3.5 w-3.5 shrink-0" />
-          {{ link.label }}
+          {{ t(link.label) }}
         </RouterLink>
       </div>
     </div>

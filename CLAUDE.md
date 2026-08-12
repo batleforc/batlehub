@@ -39,7 +39,12 @@ task test:s3
 cargo run -p batlehub-server -- --config config.example.toml
 
 # Frontend
-cd ui && pnpm run dev         # Vite dev server (proxies /api → localhost:8080)
+# Two dev servers; there is no /api proxy, each calls VITE_API_BASE_URL directly.
+task ui:dev                   # 5173 → API via the workspace FQDN (`url back`), for a real browser
+task ui:dev:local             # 5174 → API on localhost:8080, for in-pod tools and the rendered gates
+# Both set VITE_API_BASE_URL explicitly: this Taskfile has `dotenv: [ .env ]`, and
+# Vite prioritises process.env over its own .env files, so an inherited value in
+# the repo-root .env otherwise wins and both fronts land on the same API.
 cd ui && pnpm run generate    # regenerate TypeScript client from ui/openapi.json
 task dump-spec                # refresh ui/openapi.json from running server
 

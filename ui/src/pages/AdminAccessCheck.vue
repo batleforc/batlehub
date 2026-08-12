@@ -66,13 +66,13 @@ async function simulate() {
     <SectionTabs :tabs="SECURITY_TABS" />
     <PageHeader
       :title="t('adminAccessCheck.rbacAccessCheck')"
-      description="Simulate whether an identity would be allowed to access a package resource under the current registry policy — without making a real request."
+      :description="t('adminAccessCheck.simulateWhetherAnIdentityWould')"
     />
 
     <form @submit.prevent="simulate" class="space-y-4 max-w-lg">
       <div class="grid grid-cols-2 gap-4">
         <div class="space-y-1">
-          <label for="aac-registry" class="text-sm font-medium">Registry</label>
+          <label for="aac-registry" class="text-sm font-medium">{{ t("common.registry") }}</label>
           <input
             id="aac-registry"
             v-model="registry"
@@ -94,7 +94,7 @@ async function simulate() {
           />
         </div>
         <div class="space-y-1">
-          <label for="aac-version" class="text-sm font-medium">Version</label>
+          <label for="aac-version" class="text-sm font-medium">{{ t("common.version") }}</label>
           <input
             id="aac-version"
             v-model="version"
@@ -125,7 +125,7 @@ async function simulate() {
 
       <div class="grid grid-cols-2 gap-4">
         <div class="space-y-1">
-          <label for="aac-role" class="text-sm font-medium">Role</label>
+          <label for="aac-role" class="text-sm font-medium">{{ t("common.role") }}</label>
           <select
             id="aac-role"
             v-model="role"
@@ -150,7 +150,7 @@ async function simulate() {
         </div>
         <div class="col-span-2 space-y-1">
           <label for="aac-groups" class="text-sm font-medium"
-            >Groups
+            >{{ t("common.groups") }}
             <span class="text-muted-foreground">{{
               t("adminAccessCheck.commaSeparated")
             }}</span></label
@@ -169,7 +169,7 @@ async function simulate() {
         :disabled="loading"
         class="rounded bg-primary text-primary-foreground px-4 py-1.5 text-sm font-medium disabled:opacity-50"
       >
-        {{ loading ? "Checking…" : "Check access" }}
+        {{ loading ? t("accessCheck.checking") : t("adminAccessCheck.checkAccess") }}
       </button>
     </form>
 
@@ -197,7 +197,7 @@ async function simulate() {
             : 'text-red-700 dark:text-red-400'
         "
       >
-        {{ result.decision === "allow" ? "✓ ALLOW" : "✗ DENY" }}
+        {{ result.decision === "allow" ? t("adminAccessCheck.allow") : t("adminAccessCheck.deny") }}
       </p>
       <p v-if="result.reason" class="text-sm text-muted-foreground">{{ result.reason }}</p>
       <p v-if="result.rule_matched" class="text-xs text-muted-foreground">

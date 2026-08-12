@@ -29,6 +29,7 @@ ui/dist/
 # as a diff of the contract. Refresh it with `task dump-spec`.
 ui/src/client/
 ui/.env
+ui/.env.*.local
 
 # Logs
 *.log
@@ -56,3 +57,10 @@ ui/eslint-results.sarif
 # durable design decisions, ARE tracked.
 /.claude/skills/impeccable/
 /.impeccable/
+# ...except the shared detector config. A detector waiver is a design decision
+# with a reason attached, and it has to reach CI to mean anything: the rendered
+# gate re-runs there, so an ignore that lived only on one machine would fail the
+# build for everyone else. One reviewable file; `config.local.json` stays out.
+!/.impeccable/
+/.impeccable/*
+!/.impeccable/config.json

@@ -120,11 +120,11 @@ onMounted(() => {
     <SectionTabs :tabs="SECURITY_TABS" />
     <PageHeader
       :title="t('adminUsers.userBlocks')"
-      description="Block user accounts. Blocked users receive 401 responses on all authenticated requests."
+      :description="t('adminUsers.blockUserAccountsBlockedUsers')"
     >
       <template #actions>
         <Button variant="outline" size="sm" :disabled="listLoading" @click="loadBlockedUsers">
-          {{ listLoading ? "Refreshing…" : "Refresh" }}
+          {{ listLoading ? t("adminHealth.refreshing") : t("common.refresh") }}
         </Button>
         <Button size="sm" @click="blockDialogOpen = true">{{ t("adminUsers.blockUser") }}</Button>
       </template>
@@ -144,10 +144,10 @@ onMounted(() => {
           <TableHeader>
             <TableRow>
               <TableHead>{{ t("adminUsers.userId") }}</TableHead>
-              <TableHead>Reason</TableHead>
+              <TableHead>{{ t("common.reason") }}</TableHead>
               <TableHead>{{ t("adminUsers.blockedAt") }}</TableHead>
               <TableHead>{{ t("adminUsers.blockedBy") }}</TableHead>
-              <TableHead class="text-right">Actions</TableHead>
+              <TableHead class="text-right">{{ t("common.actions") }}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -163,7 +163,7 @@ onMounted(() => {
               <TableCell class="text-xs font-mono">{{ entry.blocked_by }}</TableCell>
               <TableCell class="text-right">
                 <Button variant="outline" size="sm" @click="unblockTarget = entry.user_id">
-                  Unblock
+                  {{ t("common.unblock") }}
                 </Button>
               </TableCell>
             </TableRow>
@@ -204,7 +204,7 @@ onMounted(() => {
           />
         </div>
         <div class="space-y-1.5">
-          <Label for="userblock-reason">Reason</Label>
+          <Label for="userblock-reason">{{ t("common.reason") }}</Label>
           <Input
             id="userblock-reason"
             v-model="blockForm.reason"
@@ -223,7 +223,7 @@ onMounted(() => {
             blockError = null;
           "
         >
-          Cancel
+          {{ t("common.cancel") }}
         </Button>
         <Button
           variant="destructive"
@@ -231,7 +231,7 @@ onMounted(() => {
           :disabled="blockLoading || !blockForm.user_id.trim()"
           @click="submitBlock"
         >
-          {{ blockLoading ? "Blocking…" : "Block User" }}
+          {{ blockLoading ? t("adminIpBlocks.blocking") : t("adminUsers.blockUser") }}
         </Button>
       </div>
     </div>
@@ -250,7 +250,7 @@ onMounted(() => {
     "
   >
     <template #title
-      >Unblock <span class="font-mono">{{ unblockTarget }}</span
+      >{{ t("common.unblock") }} <span class="font-mono">{{ unblockTarget }}</span
       >?</template
     >
     <template #description>{{ t("adminUsers.thisUserWillBe") }}</template>
@@ -266,10 +266,10 @@ onMounted(() => {
             unblockError = null;
           "
         >
-          Cancel
+          {{ t("common.cancel") }}
         </Button>
         <Button size="sm" :disabled="unblockLoading" @click="confirmUnblock">
-          {{ unblockLoading ? "Unblocking…" : "Unblock" }}
+          {{ unblockLoading ? t("adminIpBlocks.unblocking") : t("common.unblock") }}
         </Button>
       </div>
     </div>

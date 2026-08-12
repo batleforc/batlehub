@@ -206,7 +206,9 @@ async function bulkUnblock() {
     <Button size="sm" variant="outline" :disabled="bulkLoading" @click="bulkUnblock">{{
       t("packageVersionsTable.unblockSelected")
     }}</Button>
-    <Button size="sm" variant="ghost" @click="selectedIds = new Set()">Clear</Button>
+    <Button size="sm" variant="ghost" @click="selectedIds = new Set()">{{
+      t("common.clearAction")
+    }}</Button>
     <span v-if="bulkMsg" class="text-xs text-muted-foreground ml-auto">{{ bulkMsg }}</span>
   </div>
 
@@ -228,16 +230,16 @@ async function bulkUnblock() {
                 @change="toggleAll"
               />
             </TableHead>
-            <TableHead>Version</TableHead>
-            <TableHead>Artifact</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead>Security</TableHead>
-            <TableHead>Cached</TableHead>
-            <TableHead>Downloads</TableHead>
-            <TableHead>Storage</TableHead>
+            <TableHead>{{ t("common.version") }}</TableHead>
+            <TableHead>{{ t("common.artifact") }}</TableHead>
+            <TableHead>{{ t("common.status") }}</TableHead>
+            <TableHead>{{ t("common.security") }}</TableHead>
+            <TableHead>{{ t("common.cached") }}</TableHead>
+            <TableHead>{{ t("common.downloads") }}</TableHead>
+            <TableHead>{{ t("common.storage") }}</TableHead>
             <TableHead>{{ t("packageVersionsTable.lastAccessed") }}</TableHead>
             <TableHead>{{ t("packageVersionsTable.lastPulledBy") }}</TableHead>
-            <TableHead class="text-right">Actions</TableHead>
+            <TableHead class="text-right">{{ t("common.actions") }}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -249,7 +251,7 @@ async function bulkUnblock() {
             <TableCell class="w-8">
               <input
                 type="checkbox"
-                :aria-label="`Select version ${v.version}`"
+                :aria-label="t('packageVersionsTable.selectVersion', { version: v.version })"
                 :checked="selectedIds.has(v.id)"
                 class="cursor-pointer"
                 @change="toggle(v)"
@@ -270,7 +272,11 @@ async function bulkUnblock() {
             <TableCell>
               <div class="space-y-0.5">
                 <Badge :variant="v.status.status === 'blocked' ? 'destructive' : 'secondary'">
-                  {{ v.status.status === "blocked" ? "Blocked" : "Available" }}
+                  {{
+                    v.status.status === "blocked"
+                      ? t("common.blocked")
+                      : t("packageVersionsTable.available")
+                  }}
                 </Badge>
                 <p
                   v-if="v.status.status === 'blocked'"
@@ -286,7 +292,7 @@ async function bulkUnblock() {
                 <span
                   v-for="vuln in v.vulnerabilities"
                   :key="vuln.osv_id"
-                  :title="`${vuln.osv_id}: ${vuln.summary}${vuln.fixed_version ? ` (fixed in ${vuln.fixed_version})` : ''}`"
+                  :title="`${vuln.osv_id}: ${vuln.summary}${vuln.fixed_version ? t('packageVersionsTable.fixedIn', { version: vuln.fixed_version }) : ''}`"
                 >
                   <Badge :variant="severityVariant(vuln.severity)" class="text-xs cursor-help">
                     {{ vuln.severity }}
@@ -310,7 +316,7 @@ async function bulkUnblock() {
             </TableCell>
             <TableCell>
               <Badge :variant="v.cached ? 'default' : 'outline'" class="text-xs">
-                {{ v.cached ? "Cached" : "Not cached" }}
+                {{ v.cached ? t("common.cached") : t("packageVersionsTable.notCached") }}
               </Badge>
               <p v-if="v.cached_at" class="text-xs text-muted-foreground mt-0.5">
                 {{ fmtDate(v.cached_at) }}
@@ -334,7 +340,9 @@ async function bulkUnblock() {
             </TableCell>
             <TableCell class="text-right">
               <div class="flex justify-end gap-2">
-                <Button variant="ghost" size="sm" @click="viewArtifact(v)">View</Button>
+                <Button variant="ghost" size="sm" @click="viewArtifact(v)">{{
+                  t("common.view")
+                }}</Button>
                 <Button v-if="v.cached" variant="outline" size="sm" @click="doInvalidate(v)">{{
                   t("packageVersionsTable.purgeCache")
                 }}</Button>
@@ -343,9 +351,11 @@ async function bulkUnblock() {
                   variant="outline"
                   size="sm"
                   @click="doUnblock(v)"
-                  >Unblock</Button
+                  >{{ t("common.unblock") }}</Button
                 >
-                <Button v-else variant="destructive" size="sm" @click="doBlock(v)">Block</Button>
+                <Button v-else variant="destructive" size="sm" @click="doBlock(v)">{{
+                  t("common.block")
+                }}</Button>
               </div>
             </TableCell>
           </TableRow>

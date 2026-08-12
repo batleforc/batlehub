@@ -209,7 +209,7 @@ const currentSnippet = computed(
   </div>
   <template v-else>
     <div class="space-y-1.5 w-60">
-      <Label for="upload-registry">Registry</Label>
+      <Label for="upload-registry">{{ t("common.registry") }}</Label>
       <Select
         id="upload-registry"
         v-model="selectedRegistry"
@@ -244,7 +244,7 @@ const currentSnippet = computed(
               />
             </div>
             <div class="space-y-1.5">
-              <Label for="upload-version-ext">Version</Label>
+              <Label for="upload-version-ext">{{ t("common.version") }}</Label>
               <Input
                 id="upload-version-ext"
                 v-model="uploadVersion"
@@ -266,7 +266,7 @@ const currentSnippet = computed(
               />
             </div>
             <div class="space-y-1.5">
-              <Label for="upload-version-module">Version</Label>
+              <Label for="upload-version-module">{{ t("common.version") }}</Label>
               <Input
                 id="upload-version-module"
                 v-model="uploadVersion"
@@ -280,7 +280,7 @@ const currentSnippet = computed(
           <div class="grid grid-cols-2 gap-3">
             <div class="space-y-1.5">
               <Label for="upload-distribution"
-                >Distribution
+                >{{ t("common.distribution") }}
                 <span class="text-muted-foreground text-xs">{{
                   t("namespaceUpload.suite")
                 }}</span></Label
@@ -293,7 +293,7 @@ const currentSnippet = computed(
               />
             </div>
             <div class="space-y-1.5">
-              <Label for="upload-component">Component</Label>
+              <Label for="upload-component">{{ t("common.component") }}</Label>
               <Input
                 id="upload-component"
                 v-model="uploadComponent"
@@ -306,7 +306,7 @@ const currentSnippet = computed(
 
         <div class="space-y-1.5">
           <Label for="upload-file"
-            >File
+            >{{ t("common.file") }}
             <span class="text-muted-foreground text-xs ml-1">{{
               acceptFor(registryType)
             }}</span></Label
@@ -322,7 +322,7 @@ const currentSnippet = computed(
 
         <div class="flex items-center gap-3">
           <Button :disabled="!uploadFile || loading" @click="doUpload">
-            {{ loading ? "Uploading…" : "Upload" }}
+            {{ loading ? t("namespaceUpload.uploading") : t("namespaceUpload.upload") }}
           </Button>
           <span v-if="success" class="text-sm text-primary">{{
             t("namespaceUpload.publishedSuccessfully")
