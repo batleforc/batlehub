@@ -17,11 +17,20 @@ const preference = ref<LocalePreference>(readPreference());
 
 const ORDER: LocalePreference[] = ["system", "en", "fr"];
 
+/* Spelled out rather than built as `t(\`locale.${preference.value}\`)`. A
+   template-literal key is invisible to the catalogue's reference gate, which is
+   how 94 keys drifted out of use with everything green (RFC 0004-bis §2.2), and
+   invisible to anyone grepping for the key they are about to delete. */
+const NAME_KEYS: Record<Exclude<LocalePreference, "system">, string> = {
+  en: "locale.en",
+  fr: "locale.fr",
+};
+
 const label = computed(() => {
   const name =
     preference.value === "system"
       ? `${t("locale.system")} (${systemLocale().toUpperCase()})`
-      : t(`locale.${preference.value}`);
+      : t(NAME_KEYS[preference.value]);
   return `${t("locale.label")}: ${name}`;
 });
 

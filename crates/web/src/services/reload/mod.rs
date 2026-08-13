@@ -138,6 +138,15 @@ pub struct PendingReloadSnapshot {
     pub expires_at: DateTime<Utc>,
     pub source: ReloadSource,
     pub diff: ReloadDiff,
+    /// Warnings the *candidate* config produces (RFC 0004-bis A4).
+    ///
+    /// `PendingReload` has held these since it was written — `apply()` promotes
+    /// them to the live store — and the snapshot dropped them, so the one
+    /// surface that exists to review a change before applying it could not show
+    /// what the change would warn about. The console worked around it by
+    /// remembering the warnings from the `validate` call that staged the
+    /// pending reload, which is lost on any reload of the page.
+    pub warnings: Vec<ConfigWarning>,
 }
 
 /// Named result of a [`HotConfigBuilder`] invocation, replacing an untyped
@@ -313,6 +322,7 @@ impl ConfigReloadService {
                 expires_at: p.expires_at,
                 source: p.source.clone(),
                 diff: p.diff.clone(),
+                warnings: p.warnings.clone(),
             })
     }
 

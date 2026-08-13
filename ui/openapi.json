@@ -357,6 +357,7 @@
           "back-office"
         ],
         "summary": "List config change history.",
+        "description": "**No restore endpoint, and deliberately so** (RFC 0004-bis A5, declined —\nsee the RFC's decision log for the recorded row).\n\n`config_changes` stores a *diff summary* — added, removed and changed\nregistry names — and never the config itself. `POST …/history/{id}/restore`\ncannot be built on that: a list of registry names does not reconstruct a\nTOML file. Making it possible means storing the full config content per\nchange, and `config.toml` carries `upstream_auth` credentials, static bearer\ntokens and OIDC client secrets. That would put every secret this instance\nhas ever been configured with into a table any admin can read through an\nAPI, retained indefinitely and surviving the rotation that was supposed to\nend their life.\n\nThe revert path that exists is the config editor: it shows the live content,\naccepts a replacement, and validates before staging. What it lacks is the\n*previous* content to paste, and closing that honestly is a question about\nwhere config history should live — a git-backed config, or an encrypted\nstore — not a field on this response.",
         "operationId": "list_config_changes",
         "parameters": [
           {
@@ -2922,6 +2923,62 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/StatsHistoryResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin role required"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/subjects": {
+      "get": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "List identities this instance has seen, for fields that name a subject.",
+        "operationId": "list_subjects",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Case-insensitive substring. `alice` matches `oidc:alice`, which is the\nmismatch this endpoint exists to make survivable.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Known subjects",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubjectsResponse"
                 }
               }
             }
@@ -10669,6 +10726,13 @@
           "resource_type"
         ],
         "properties": {
+          "client_ip": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Simulated client address, checked against the IP block list.\n\nOptional, and its absence is reported rather than assumed: a simulation\nwith no address cannot answer for the IP block layer, and answering\n\"allow\" because none was supplied is the same defect this endpoint had\none level down (RFC 0004-bis B4). See `covers` on the response."
+          },
           "groups": {
             "type": "array",
             "items": {
@@ -10849,9 +10913,25 @@
       "AccessSimulationResponse": {
         "type": "object",
         "required": [
-          "decision"
+          "decision",
+          "covers"
         ],
         "properties": {
+          "blocked_by": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BlockedBy",
+                "description": "Which layer denied, when one did."
+              }
+            ]
+          },
+          "covers": {
+            "$ref": "#/components/schemas/SimulationCoverage",
+            "description": "The layers this answer accounts for."
+          },
           "decision": {
             "type": "string",
             "description": "\"allow\" or \"deny\"."
@@ -11140,6 +11220,15 @@
             ]
           }
         }
+      },
+      "BlockedBy": {
+        "type": "string",
+        "description": "What denied the request, when something did.",
+        "enum": [
+          "account",
+          "ip",
+          "rule"
+        ]
       },
       "BlockedIpDto": {
         "type": "object",
@@ -12102,6 +12191,13 @@
               "string",
               "null"
             ]
+          },
+          "license": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The licence this version's own manifest declared, verbatim.\n\nNull means *unknown*, never \"unlicensed\": it is read out of the archive\nwhen the version is cached or published, so it is absent for anything\nfetched before extraction existed and for the registry types with no\nmanifest parser (RFC 0004-bis §13.1)."
           },
           "published_at": {
             "type": [
@@ -13156,6 +13252,13 @@
               "null"
             ]
           },
+          "license": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The licence this version's own manifest declared, verbatim.\n\nNull means *unknown*, never \"unlicensed\": the licence is read out of the\narchive when it is cached or published, so it is absent for anything\nfetched before extraction existed, and for the sixteen registry types\nwith no manifest parser. `license_gate.allow_unknown` decides how a\nnull is treated (RFC 0004-bis §13.1)."
+          },
           "socket_badge_url": {
             "type": [
               "string",
@@ -13211,7 +13314,8 @@
           "created_at",
           "expires_at",
           "source",
-          "diff"
+          "diff",
+          "warnings"
         ],
         "properties": {
           "created_at": {
@@ -13231,6 +13335,13 @@
           },
           "source": {
             "$ref": "#/components/schemas/ReloadSource"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConfigWarning"
+            },
+            "description": "Warnings the *candidate* config produces (RFC 0004-bis A4).\n\n`PendingReload` has held these since it was written — `apply()` promotes\nthem to the live store — and the snapshot dropped them, so the one\nsurface that exists to review a change before applying it could not show\nwhat the change would warn about. The console worked around it by\nremembering the warnings from the `validate` call that staged the\npending reload, which is lost on any reload of the page."
           }
         }
       },
@@ -13423,12 +13534,18 @@
           "pulls_last_hour",
           "pulls_last_day",
           "recent_errors",
-          "access"
+          "access",
+          "mode",
+          "beta_channel_enabled"
         ],
         "properties": {
           "access": {
             "$ref": "#/components/schemas/RegistryAccessInfo",
             "description": "Which roles and groups can access this registry."
+          },
+          "beta_channel_enabled": {
+            "type": "boolean",
+            "description": "Whether a beta-channel gate is configured for this registry (A2)."
           },
           "cached_artifact_count": {
             "type": "integer",
@@ -13442,6 +13559,10 @@
             ],
             "format": "date-time",
             "description": "Timestamp of the most recent successful download."
+          },
+          "mode": {
+            "type": "string",
+            "description": "`proxy`, `local` or `hybrid` (RFC 0004-bis A2).\n\nThe health page reads \"Cached artifacts: 0, last pull: never\" the same\nway for a broken proxy and for a healthy `local` registry that has\nnothing to pull by definition. Without the mode there is no way to tell\nthose apart, and the console was inferring it from a second endpoint."
           },
           "package_count": {
             "type": "integer",
@@ -13723,6 +13844,29 @@
           "critical"
         ]
       },
+      "SimulationCoverage": {
+        "type": "object",
+        "description": "Which enforcement layers the answer actually accounts for.\n\nThe simulator used to evaluate `policy.rules` and nothing else, so an admin\nwho blocked `alice` on `/admin/security/blocks` and simulated `alice` on the\nnext tab was told **allow** — the page whose entire purpose is \"would this\nidentity be allowed\" contradicted by the section it lives in.\n\nStating coverage is part of the fix rather than a nicety: two of the three\nlayers are only checkable when the caller supplies the input they key on, so\na bare `allow` is ambiguous between \"nothing denies this\" and \"nothing I\nlooked at denies this\".",
+        "required": [
+          "rules",
+          "account_blocks",
+          "ip_blocks"
+        ],
+        "properties": {
+          "account_blocks": {
+            "type": "boolean",
+            "description": "True when `user_id` was supplied, so the account block list was consulted."
+          },
+          "ip_blocks": {
+            "type": "boolean",
+            "description": "True when `client_ip` was supplied, so the IP block list was consulted."
+          },
+          "rules": {
+            "type": "boolean",
+            "description": "Always true — the registry's rule chain is evaluated in full."
+          }
+        }
+      },
       "StatsHistoryPointDto": {
         "type": "object",
         "description": "One hour of one registry's cache activity.",
@@ -13859,12 +14003,52 @@
           }
         }
       },
+      "SubjectDto": {
+        "type": "object",
+        "required": [
+          "user_id",
+          "sources"
+        ],
+        "properties": {
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Where it was seen. A subject seen in more than one place lists all of\nthem, so an operator can tell a namespace owner who has never pulled\nanything from an account that is only in the audit log."
+          },
+          "user_id": {
+            "type": "string",
+            "description": "The identity as this instance stores it — `oidc:alice`, not `alice`."
+          }
+        }
+      },
+      "SubjectsResponse": {
+        "type": "object",
+        "required": [
+          "items",
+          "truncated"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SubjectDto"
+            }
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when the limit truncated the answer, so a field can say \"keep\ntyping\" rather than implying it has shown everything."
+          }
+        }
+      },
       "TeamNamespaceDto": {
         "type": "object",
         "required": [
           "registry",
           "prefix",
-          "group_id"
+          "group_id",
+          "package_count"
         ],
         "properties": {
           "claimed_by": {
@@ -13875,6 +14059,12 @@
           },
           "group_id": {
             "type": "string"
+          },
+          "package_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many packages the namespace currently holds (RFC 0004-bis A6).\n\n`count_packages_in_namespace` has been on `TeamNamespacePort` since the\nport was written and had exactly one caller — the *delete* confirmation.\nThe list showed a row per claim with no way to tell a namespace holding\nfour hundred packages from an abandoned one, which is the question an\noperator opens this page with.",
+            "minimum": 0
           },
           "prefix": {
             "type": "string"
@@ -14098,6 +14288,30 @@
           }
         }
       },
+      "WarmFailureDto": {
+        "type": "object",
+        "description": "One package or path that did not warm (RFC 0004-bis A3).",
+        "required": [
+          "package",
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "package": {
+            "type": "string",
+            "description": "Package name, or the upstream path for a path-addressed registry."
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The version that failed. Absent when listing the versions is what failed."
+          }
+        }
+      },
       "WarmRequest": {
         "type": "object",
         "properties": {
@@ -14144,12 +14358,20 @@
         "required": [
           "warmed",
           "skipped",
-          "errors"
+          "errors",
+          "failures"
         ],
         "properties": {
           "errors": {
             "type": "integer",
             "minimum": 0
+          },
+          "failures": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WarmFailureDto"
+            },
+            "description": "One entry per named failure, as the bulk endpoints already return.\n\n`errors` remains the count: a warming task that panics is counted here\nand cannot be named, so `failures.len() <= errors`. Reporting only the\ncount left an operator with \"3 errors\" over eleven registries and no way\nto learn which three without reading the server log."
           },
           "skipped": {
             "type": "integer",

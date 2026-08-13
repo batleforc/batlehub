@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
-const { t } = useI18n();
+const { t, te } = useI18n();
 
 const router = useRouter();
 const route = useRoute();
@@ -21,8 +21,14 @@ const { isAuthenticated } = useAuth();
 
 const inputToken = ref("");
 const error = ref<string | null>(
-  // Surface errors forwarded from the OIDC callback.
-  typeof route.query.error === "string" ? route.query.error : null,
+  /* Errors forwarded from the OIDC callback. The router sends a catalogue key
+     (`loginPage.oidcStateMismatch`); the backend may forward its own sentence.
+     `te` tells the two apart, so neither has to know about the other. */
+  typeof route.query.error === "string"
+    ? te(route.query.error)
+      ? t(route.query.error)
+      : route.query.error
+    : null,
 );
 const loading = ref(false);
 const oidcLoadingProvider = ref<string | null>(null);
@@ -50,7 +56,7 @@ onMounted(async () => {
 async function submit() {
   const tok = inputToken.value.trim();
   if (!tok) {
-    error.value = "Please enter a token.";
+    error.value = t("loginPage.enterAToken");
     return;
   }
 
@@ -66,14 +72,14 @@ async function submit() {
       throw new Error("no data returned from server");
     }
     if (id.role === "anonymous") {
-      error.value = "Token is valid but grants only anonymous access.";
+      error.value = t("loginPage.anonymousOnly");
       client.setConfig({ auth: undefined });
     } else {
       storeTokens(tok); // no refresh token or expiry for static tokens
       router.push(redirect.value);
     }
   } catch {
-    error.value = "Invalid token — check the value and try again.";
+    error.value = t("loginPage.invalidToken");
     client.setConfig({ auth: undefined });
   } finally {
     loading.value = false;
@@ -104,7 +110,13 @@ function providerLabel(name: string): string {
   <div class="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
     <Card class="w-full max-w-sm">
       <CardHeader class="space-y-1">
-        <CardTitle class="font-mono text-2xl font-bold">{{ t("loginPage.signIn") }}</CardTitle>
+        <!-- The page's only heading, and its one Display element: this card
+             *is* the page. `font-display` because DESIGN.md gives every view
+             one step in the bitmap face, and an `h1` in the data face is what
+             the ramp gate reads as a page with no display element at all. -->
+        <CardTitle as="h1" class="font-display text-2xl font-bold tracking-[0.04em]">{{
+          t("loginPage.signIn")
+        }}</CardTitle>
         <CardDescription>{{ t("loginPage.authenticateToAccessProtected") }}</CardDescription>
       </CardHeader>
 
@@ -125,7 +137,7 @@ function providerLabel(name: string): string {
                 ? t("loginPage.redirecting")
                 : oidcProviders.length === 1
                   ? t("loginPage.signInWithOidc")
-                  : `Sign in with ${providerLabel(p.name)}`
+                  : t("loginPage.signInWithProvider", { provider: providerLabel(p.name) })
             }}
           </Button>
 

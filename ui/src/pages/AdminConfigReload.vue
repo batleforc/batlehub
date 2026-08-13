@@ -25,6 +25,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Announcer } from "@/components/ui/announcer";
 
 const { t } = useI18n();
 
@@ -167,7 +168,9 @@ async function validateConfigContent() {
     const body = (await res.json().catch(() => ({}))) as { warnings?: ConfigWarning[] };
     candidateWarnings.value = body.warnings ?? [];
     validatedContent.value = configContent.value;
-    editorSuccess.value = 'Config is valid. Click "Create Pending Reload" to stage it for apply.';
+    editorSuccess.value = t("adminConfigReload.configValidStageIt", {
+      action: t("adminConfigReload.createPendingReload"),
+    });
   } catch (e) {
     editorError.value = extractMessage(e);
   } finally {
@@ -197,13 +200,12 @@ async function createPendingFromContent() {
     candidateWarnings.value = body.warnings ?? [];
     validatedContent.value = null;
     if (body.pending_created) {
-      editorSuccess.value = "Pending reload created. Review it below, then apply.";
+      editorSuccess.value = t("adminConfigReload.pendingCreatedReviewIt");
     } else {
       // The server deduped: these exact bytes were the last config it loaded, so
       // there is nothing to rebuild and nothing staged. Saying "created" here is
       // what sends the admin to an Apply button that answers "no pending reload".
-      editorNotice.value =
-        "Nothing to stage — this content is identical to the config already loaded. No pending reload was created.";
+      editorNotice.value = t("adminConfigReload.nothingToStage");
     }
     await fetchPending();
   } catch (e) {
@@ -254,7 +256,10 @@ async function forceReload() {
     if (apiErr) throw new Error(extractMessage(apiErr));
     const diff = (data as { diff?: { added_registries: string[]; removed_registries: string[] } })
       ?.diff;
-    successMsg.value = `Reloaded: +${diff?.added_registries.length ?? 0} -${diff?.removed_registries.length ?? 0} registries`;
+    successMsg.value = t("adminConfigReload.reloadedDiff", {
+      added: diff?.added_registries.length ?? 0,
+      removed: diff?.removed_registries.length ?? 0,
+    });
     await Promise.all([fetchPending(), fetchHistory(), fetchWarnings()]);
   } catch (e: unknown) {
     errorMsg.value = extractMessage(e);
@@ -272,7 +277,10 @@ async function applyPending() {
     if (apiErr) throw new Error(extractMessage(apiErr));
     const diff = (data as { diff?: { added_registries: string[]; removed_registries: string[] } })
       ?.diff;
-    successMsg.value = `Applied: +${diff?.added_registries.length ?? 0} -${diff?.removed_registries.length ?? 0} registries`;
+    successMsg.value = t("adminConfigReload.appliedDiff", {
+      added: diff?.added_registries.length ?? 0,
+      removed: diff?.removed_registries.length ?? 0,
+    });
     pendingReload.value = null;
     candidateWarnings.value = [];
     await Promise.all([fetchHistory(), fetchWarnings()]);
@@ -306,7 +314,7 @@ async function setBannerAction() {
       body: { message: bannerMessage.value, level: bannerLevel.value },
     });
     if (apiErr) throw new Error(extractMessage(apiErr));
-    successMsg.value = "Banner set";
+    successMsg.value = t("adminConfigReload.bannerSet");
     bannerMessage.value = "";
   } catch (e: unknown) {
     errorMsg.value = extractMessage(e);
@@ -321,7 +329,7 @@ async function clearBannerAction() {
   try {
     const { error: apiErr } = await clearBanner();
     if (apiErr) throw new Error(extractMessage(apiErr));
-    successMsg.value = "Banner cleared";
+    successMsg.value = t("adminConfigReload.bannerCleared");
   } catch (e: unknown) {
     errorMsg.value = extractMessage(e);
   } finally {
@@ -350,6 +358,11 @@ onUnmounted(() => {
 
 <template>
   <div class="space-y-6">
+    <!-- An outcome announced, not only rendered (RFC 0004-bis §2.6). Every bulk
+         result, block, warm and cache invalidation in this console reached
+         sighted users only — on the surface whose audience includes the one
+         person able to perform destructive actions. -->
+    <Announcer :message="successMsg ?? ''" />
     <SectionTabs :tabs="OPERATIONS_TABS" />
     <PageHeader variant="display" :title="t('adminConfigReload.configReload')" />
 
@@ -407,11 +420,47 @@ onUnmounted(() => {
         </div>
         <div v-else class="space-y-3">
           <div class="flex gap-4 text-sm">
-            <span><strong>Source:</strong> {{ pendingReload.source }}</span>
-            <span><strong>Created:</strong> {{ formatDate(pendingReload.created_at) }}</span>
+            <span
+              ><strong>{{ t("adminConfigReload.sourceLabel") }}</strong>
+              {{ pendingReload.source }}</span
+            >
+            <span
+              ><strong>{{ t("adminConfigReload.createdLabel") }}</strong>
+              {{ formatDate(pendingReload.created_at) }}</span
+            >
             <span
               ><strong>{{ t("adminConfigReload.expiresIn") }}</strong> {{ expiresIn }}</span
             >
+          </div>
+
+          <!--
+            What the *candidate* would warn about (RFC 0004-bis A4).
+
+            `PendingReload` has held these since it was written — `apply()`
+            promotes them to the live store — and `PendingReloadSnapshot`
+            dropped them, so the one surface that exists to review a change
+            before applying it could not show what the change would warn about.
+            The page worked around it by remembering the warnings from the
+            `validate` call that staged the reload, which is lost the moment
+            anyone reloads the page or arrives from a file-watcher reload they
+            did not stage themselves.
+          -->
+          <div v-if="pendingReload.warnings?.length" class="space-y-1">
+            <p class="text-xs font-medium text-copper">
+              {{
+                t("adminConfigReload.candidateWarnsAbout", {
+                  count: pendingReload.warnings.length,
+                })
+              }}
+            </p>
+            <div
+              v-for="w in pendingReload.warnings"
+              :key="`pending-${w.code}@${w.path}`"
+              class="rounded-sm border border-copper/50 px-3 py-1.5 text-xs text-copper"
+            >
+              <code class="font-mono bg-muted px-1 rounded break-all">{{ w.path }}</code>
+              — {{ w.message }}
+            </div>
           </div>
           <div class="flex gap-2 flex-wrap">
             <Badge v-for="r in pendingReload.diff.added_registries" :key="r" variant="copper"
@@ -428,9 +477,7 @@ onUnmounted(() => {
               surface; it has to say what it is asking them to accept.
             -->
             <Badge v-for="r in pendingReload.diff.changed_registries" :key="r.name" variant="copper"
-              >~{{ r.name }}<span v-if="r.fields?.length">
-                ({{ r.fields.join(", ") }})</span
-              ></Badge
+              >~{{ r.name }}<span v-if="r.fields?.length"> ({{ r.fields.join(", ") }})</span></Badge
             >
             <Badge v-if="pendingReload.diff.access_config_changed" variant="copper">{{
               t("adminConfigReload.accessConfigChanged")
@@ -440,7 +487,11 @@ onUnmounted(() => {
             }}</Badge>
           </div>
           <div class="flex gap-2">
-            <Button size="sm" :disabled="loadingApply || pendingExpired" @click="confirmApply = true">
+            <Button
+              size="sm"
+              :disabled="loadingApply || pendingExpired"
+              @click="confirmApply = true"
+            >
               {{ loadingApply ? t("adminConfigReload.applying") : t("adminConfigReload.apply") }}
             </Button>
             <Button size="sm" variant="outline" :disabled="loadingDiscard" @click="discardPending">
@@ -582,7 +633,7 @@ onUnmounted(() => {
       </CardHeader>
       <CardContent class="space-y-4">
         <div v-if="banner" class="rounded-sm border px-3 py-2 text-sm">
-          <strong>Current:</strong> [{{ banner.level }}] {{ banner.message }}
+          <strong>{{ t("common.currentLabel") }}</strong> [{{ banner.level }}] {{ banner.message }}
           <span class="text-muted-foreground ml-2">
             <i18n-t keypath="adminConfigReload.setBy" tag="span">
               <template #user>{{ banner.set_by }}</template>

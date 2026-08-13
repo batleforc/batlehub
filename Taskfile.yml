@@ -674,35 +674,56 @@ tasks:
       # overflow and reflow are not.
       - '{{.BROWSER_EXEC}} sh -c {{printf "%s V=1440x900; %s" .ENV .SCAN | squote}}'
       - '{{.BROWSER_EXEC}} sh -c {{printf "%s V=390x844; %s" .ENV .SCAN | squote}}'
-      # axe reloads the page per URL, so it is batched — its own runs are stable.
-      - '{{.BROWSER_EXEC}} sh -c {{printf "%s urls=\"\"; for r in %s; do urls=\"$urls %s$r\"; done; npx --yes @axe-core/cli $urls --exit --chromedriver-path /usr/local/bin/chromedriver --chrome-path /opt/chrome/chrome --chrome-options=no-sandbox,disable-dev-shm-usage --tags wcag2a,wcag2aa,wcag21a,wcag21aa,wcag22aa" .ENV .ROUTES .BASE | squote}}'
+      # axe and the ramp check now come from `ui:design:routes`, which measures
+      # these same routes *and* the authenticated ones with one set of
+      # assertions. `@axe-core/cli` used to batch the public routes here; it
+      # does not know what a type ramp is, which is precisely how `/packages`
+      # drifted from its own design proof behind a green gate (RFC 0004-bis
+      # §4.4). Anonymous-only, so this stays runnable without credentials.
+      - task: ui:design:routes
+        vars: { PUBLIC_ONLY: "--public-only", BASE: "{{.BASE}}" }
 
-  # The 15 admin pages and the 4 account pages are the largest surface in the
-  # console and were never measured: they sit behind router guards, and both
-  # `impeccable detect` and `@axe-core/cli` scan by URL with no way to carry a
-  # session, so scanning them graded the login page over and over.
+  # One gate, every rendered route, both viewports — axe plus the type ramp and
+  # the display face (RFC 0004-bis §4.4).
+  #
+  # The 15 admin pages and the 4 account pages sit behind router guards, and
+  # both `impeccable detect` and `@axe-core/cli` scan by URL with no way to
+  # carry a session, so scanning them graded the login page over and over. This
+  # seeds a token instead. The public routes are in the same list because a
+  # separate gate for them measured contrast and hierarchy and never the ramp.
   #
   # Tokens come from the environment and are never written to a file — they are
   # credentials for a running instance. Pass them per invocation:
   #
-  #   BATLEHUB_ADMIN_TOKEN=… BATLEHUB_USER_TOKEN=… task ui:design:rendered:authed
-  ui:design:rendered:authed:
-    desc: Run axe over the routes that need a session (needs BATLEHUB_{ADMIN,USER}_TOKEN)
+  #   BATLEHUB_ADMIN_TOKEN=… BATLEHUB_USER_TOKEN=… task ui:design:routes
+  #
+  # `/packages` is pinned as an expected failure; see EXPECTED_FAIL in the
+  # script and RFC 0004-bis O3.
+  ui:design:routes:
+    desc: axe + type ramp over every rendered route (needs BATLEHUB_{ADMIN,USER}_TOKEN)
     deps: [browser:check]
     dir: ui
     vars:
       NODE_BIN:
         sh: dirname "$(readlink -f "$(command -v node)")"
       BASE: '{{.BASE | default "http://localhost:5174"}}'
+      PUBLIC_ONLY: '{{.PUBLIC_ONLY | default ""}}'
     cmds:
       - |
-        if [ -z "$BATLEHUB_ADMIN_TOKEN" ] || [ -z "$BATLEHUB_USER_TOKEN" ]; then
-          echo "set BATLEHUB_ADMIN_TOKEN and BATLEHUB_USER_TOKEN" >&2
+        if [ -z "{{.PUBLIC_ONLY}}" ] && { [ -z "$BATLEHUB_ADMIN_TOKEN" ] || [ -z "$BATLEHUB_USER_TOKEN" ]; }; then
+          echo "set BATLEHUB_ADMIN_TOKEN and BATLEHUB_USER_TOKEN (or pass PUBLIC_ONLY=--public-only)" >&2
           exit 2
         fi
         {{.BROWSER_EXEC}} sh -c "export PATH={{.NODE_BIN}}:/usr/bin:/bin BASE={{.BASE}} \
           BATLEHUB_ADMIN_TOKEN=$BATLEHUB_ADMIN_TOKEN BATLEHUB_USER_TOKEN=$BATLEHUB_USER_TOKEN; \
-          cd {{.ROOT_DIR}}/ui && node build/design-authed.mjs"
+          cd {{.ROOT_DIR}}/ui && node build/design-routes.mjs {{.PUBLIC_ONLY}}"
+
+  # Kept as an alias: RFC 0004 and the contributing docs name this target, and
+  # it is now one plan of `ui:design:routes` rather than its own script.
+  ui:design:rendered:authed:
+    desc: Alias for ui:design:routes (RFC 0004-bis §4.4 merged the two gates)
+    cmds:
+      - task: ui:design:routes
 
   ui:design:
     desc: Run the static design gates locally (detector, i18n, token drift)

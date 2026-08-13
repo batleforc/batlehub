@@ -31,8 +31,9 @@ pub use routing::{
     RegistryHostBinding, SubdomainRoutingConfig,
 };
 pub use rules::{
-    CveGateConfig, DenyLatestConfig, ExploreRbacConfig, RbacConfig, ReleaseAgeGateConfig,
-    RequireSignedReleaseConfig, RuleConfig, TrustedPublisherConfig, VersionGateConfig,
+    CveGateConfig, DenyLatestConfig, ExploreRbacConfig, LicenseGateConfig, RbacConfig,
+    ReleaseAgeGateConfig, RequireSignedReleaseConfig, RuleConfig, TrustedPublisherConfig,
+    VersionGateConfig,
 };
 pub use server::{
     default_service_name, parse_trusted_proxies, CacheConfig, DatabaseConfig, OtelConfig,
@@ -46,6 +47,7 @@ pub use storage::{
 };
 
 use anyhow::{bail, Result};
+use batlehub_core::ports::LICENSE_EXTRACTION_TYPES;
 use serde::Deserialize;
 
 // ── Top-level ─────────────────────────────────────────────────────────────────
@@ -363,7 +365,93 @@ impl AppConfig {
         self.proxy_trust_warnings(&mut out);
         self.subdomain_warnings(&mut out);
         self.cors_warnings(&mut out);
+        self.license_gate_warnings(&mut out);
         out
+    }
+
+    /// A `license_gate` on a registry type with no manifest parser.
+    ///
+    /// Licence extraction covers five of the twenty-one registry types
+    /// (`LICENSE_EXTRACTION_TYPES`). On the other sixteen the licence is
+    /// permanently unknown, so the gate either never fires or refuses
+    /// everything — and which of those it does is `allow_unknown`. Both states
+    /// are silent at runtime: nothing errors, the config is valid, and the rule
+    /// is listed in the policy like any other.
+    ///
+    /// This is the same shape as the gates RFC 0004-bis §1 is about — a rule
+    /// reporting the same green whether or not it can observe the condition it
+    /// governs — so it is named at the point where the operator wrote it down.
+    fn license_gate_warnings(&self, out: &mut Vec<ConfigWarning>) {
+        for (index, registry) in self.registries.iter().enumerate() {
+            let has_parser = LICENSE_EXTRACTION_TYPES.contains(&registry.registry_type.as_str());
+            // The licence is recorded as a side effect of SBOM generation, so
+            // SBOM being off makes even a supported registry type permanently
+            // unknown. Checked first because it is the one an operator is most
+            // likely to hit: the type is right, the rule is right, and nothing
+            // happens.
+            let sbom_on = registry.sbom.as_ref().is_some_and(|s| s.enabled);
+
+            for (rule_index, rule) in registry.rules.iter().enumerate() {
+                let RuleConfig::LicenseGate(cfg) = rule else {
+                    continue;
+                };
+                let path = format!("registries[{index}].rules[{rule_index}]");
+                let supported = LICENSE_EXTRACTION_TYPES.join(", ");
+
+                if !sbom_on {
+                    out.push(ConfigWarning::new(
+                        warnings::LICENSE_GATE_SBOM_DISABLED,
+                        path,
+                        format!(
+                            "registry '{}' has a license_gate but no enabled [registries.sbom] \
+                             block. The licence is read out of the archive during SBOM \
+                             generation, so with SBOM off nothing is ever extracted and this \
+                             rule sees an unknown licence for every version — it will {}. Add \
+                             [registries.sbom] with enabled = true.",
+                            registry.name,
+                            if cfg.block && !cfg.allow_unknown {
+                                "therefore refuse every download"
+                            } else {
+                                "therefore never deny anything"
+                            },
+                        ),
+                    ));
+                    continue;
+                }
+
+                if has_parser {
+                    continue;
+                }
+
+                if cfg.block && !cfg.allow_unknown {
+                    out.push(ConfigWarning::new(
+                        warnings::LICENSE_GATE_DENIES_EVERYTHING,
+                        path,
+                        format!(
+                            "registry '{}' has type '{}', which has no manifest parser, so the \
+                             licence of every version is unknown. With block = true and \
+                             allow_unknown = false this rule refuses every download from this \
+                             registry. Licence extraction currently covers: {supported}. Set \
+                             allow_unknown = true, or remove the rule from this registry.",
+                            registry.name, registry.registry_type,
+                        ),
+                    ));
+                } else {
+                    out.push(ConfigWarning::new(
+                        warnings::LICENSE_GATE_NO_EXTRACTOR,
+                        path,
+                        format!(
+                            "registry '{}' has type '{}', which has no manifest parser, so the \
+                             licence of every version is unknown and this rule never denies \
+                             anything. Licence extraction currently covers: {supported}. The \
+                             allow/deny lists here have no effect — remove the rule, or keep it \
+                             only as a record of intent.",
+                            registry.name, registry.registry_type,
+                        ),
+                    ));
+                }
+            }
+        }
     }
 
     /// `cors_allowed_origins = ["*"]` reopens what 1.1.0 closed by default. It is

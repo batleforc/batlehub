@@ -27,12 +27,22 @@ vi.mock("vue-router", () => ({
 
 let mockRoute: { query: Record<string, unknown> } = { query: {} };
 
+/**
+ * The registry field is a `Select` since RFC 0004-bis §6.2 — the set is closed,
+ * small and already fetched, and four pages were each guessing a different
+ * naming convention in a placeholder. Its value lives in the component's state
+ * rather than in an `<input>`, so the prefill is asserted there; the two
+ * free-text coordinates are still read off the DOM.
+ */
+const registryValue = (wrapper: ReturnType<typeof mountWith>) =>
+  (wrapper.vm as unknown as { registry: string }).registry;
+
 describe("AccessCheck prefill", () => {
   it("fills the coordinate from the query it was linked with", () => {
     mockRoute = { query: { registry: "npm1", name: "left-pad", version: "1.3.0" } };
     const wrapper = mountWith({});
 
-    expect((wrapper.find("#registry").element as HTMLInputElement).value).toBe("npm1");
+    expect(registryValue(wrapper)).toBe("npm1");
     expect((wrapper.find("#name").element as HTMLInputElement).value).toBe("left-pad");
     expect((wrapper.find("#version").element as HTMLInputElement).value).toBe("1.3.0");
   });
@@ -42,7 +52,7 @@ describe("AccessCheck prefill", () => {
     mockRoute = { query: {} };
     const wrapper = mountWith({});
 
-    expect((wrapper.find("#registry").element as HTMLInputElement).value).toBe("github");
+    expect(registryValue(wrapper)).toBe("github");
     expect((wrapper.find("#name").element as HTMLInputElement).value).toBe("");
   });
 
@@ -51,6 +61,6 @@ describe("AccessCheck prefill", () => {
     mockRoute = { query: { registry: ["npm1", "npm2"] } };
     const wrapper = mountWith({});
 
-    expect((wrapper.find("#registry").element as HTMLInputElement).value).toBe("github");
+    expect(registryValue(wrapper)).toBe("github");
   });
 });

@@ -261,7 +261,7 @@ async function copy(key: string, text: string) {
                   <label
                     :for="`setup-registry-${def.id}`"
                     class="text-xs text-muted-foreground shrink-0"
-                    >Registry:</label
+                    >{{ t("common.registryLabel") }}</label
                   >
                   <Select
                     :id="`setup-registry-${def.id}`"

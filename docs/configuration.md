@@ -1350,6 +1350,41 @@ bypass_roles = ["admin"]
 | `min_severity` | string | `"high"` | Minimum severity that triggers a block: `"low"`, `"medium"`, `"high"`, or `"critical"`. |
 | `bypass_roles` | string[] | `[]` | Roles exempt from the gate. |
 
+**`[[registries.rules]]` — Licence gate:**
+
+Denies downloads by the licence the package's **own manifest** declares. The licence is read out of the archive by the SBOM extractor when the artifact is cached or published, so this rule needs no external feed and no extra upstream call.
+
+```toml
+[[registries.rules]]
+kind          = "license_gate"
+allow         = ["MIT", "Apache-2.0", "BSD-3-Clause"]  # optional allowlist
+deny          = ["AGPL-3.0", "SSPL-1.0"]               # always refused
+allow_unknown = true                                    # default
+block         = true                                    # default false = warn-only
+bypass_roles  = ["admin"]
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | string | — | Must be `"license_gate"` |
+| `allow` | string[] | `[]` | Approved licences. When non-empty, a declared licence matching none of these is refused. Empty means "no allowlist", not "allow nothing". |
+| `deny` | string[] | `[]` | Refused licences. Checked before `allow`, so a licence in both lists is refused. |
+| `allow_unknown` | bool | `true` | How to treat a version whose licence is not known. `true` lets it through; `false` refuses it. |
+| `block` | bool | `false` | `false` = warn-only: the licence is shown in the console and nothing is ever refused. |
+| `bypass_roles` | string[] | `[]` | Roles exempt from the gate. |
+
+> **This rule requires `[registries.sbom]` with `enabled = true` on the same registry.** The licence is read out of the archive as part of SBOM generation, so with SBOM off nothing is ever extracted and the gate sees an unknown licence for every version — however good the parser for that registry type is. Configuring it without SBOM raises `license-gate.sbom-disabled`.
+>
+> **The first request for an uncached package cannot be gated.** The licence lives inside the archive, so it is recorded on the way *through* the proxy — after the first fetch, not before it. With the default `allow_unknown = true` the first download proceeds and every later one is gated; with `allow_unknown = false` nothing unknown is served, which costs one refused request per new package. This is the same trade `integrity.require_metadata` makes for checksums.
+>
+> Licence extraction currently covers **cargo, npm, maven, pypi and nuget**. Every other registry type reports an unknown licence permanently, so `allow_unknown = false` on one of those refuses everything.
+>
+> Configuring `license_gate` on a registry type with no parser raises a config warning — `license-gate.no-extractor` when the rule is merely inert, or `license-gate.denies-everything` when `block = true` and `allow_unknown = false` combine to refuse every download. Both appear on the **Config Reload** admin page and at `GET /api/v1/admin/config/warnings`, because neither state produces a runtime error: the config is valid, the rule is loaded, and it simply cannot see what it claims to govern.
+
+Comparison is case-insensitive and ignores surrounding whitespace. It is otherwise literal: `allow = ["MIT"]` does **not** match a package declaring `MIT OR Apache-2.0`, because a compound expression is a different declaration — accepting it would let any package opt out of the gate by adding an alternative.
+
+The rule gates the package's own licence, not its dependencies': BatleHub does not resolve a dependency graph, so it cannot answer a question about transitive licences and does not pretend to.
+
 **`[[registries.rules]]` — Trusted publisher:**
 
 Restricts downloads to packages published by an allowed org, user, or scope. The publisher is derived from metadata already resolved during the proxy fetch — no extra upstream calls.

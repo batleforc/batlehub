@@ -502,6 +502,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             governance::{
                 beta_channel::{add_beta_member, list_beta_members, remove_beta_member},
                 ownership::{add_package_owner, list_package_owners, remove_package_owner},
+                subjects::list_subjects,
                 team_namespaces::{
                     claim_namespace, list_namespaces, my_namespace_packages, my_namespaces,
                     release_namespace,
@@ -843,6 +844,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(unblock_ip);
     // User block admin (specific /blocked list before parameterised /{user_id}/block)
     cfg.service(list_blocked_users);
+    cfg.service(list_subjects);
     cfg.service(block_user);
     cfg.service(unblock_user);
     // Config reload admin (pending/apply before pending/delete — more specific first)

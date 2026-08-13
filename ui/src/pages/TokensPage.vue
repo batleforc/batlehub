@@ -73,7 +73,7 @@ function openCreate() {
 
 async function submitCreate() {
   if (!form.value.name.trim()) {
-    createError.value = "Token name is required.";
+    createError.value = t("tokensPage.tokenNameRequired");
     return;
   }
   creating.value = true;
@@ -195,7 +195,7 @@ const lifetimePresets = [7, 30, 90];
           </CopyButton>
         </div>
         <p v-if="newTokenExpiry" class="text-xs text-muted-foreground">
-          Expires: {{ formatDate(newTokenExpiry) }}
+          {{ t("common.expiresLabel") }} {{ formatDate(newTokenExpiry) }}
         </p>
         <Button variant="ghost" size="sm" class="h-7 text-xs" @click="dismissToken">{{
           t("tokensPage.dismissAutoClearsIn")

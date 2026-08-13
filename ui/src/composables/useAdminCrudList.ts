@@ -3,6 +3,7 @@ import { registryHealth } from "@/client/sdk.gen";
 import type { RegistryHealthDto } from "@/client/types.gen";
 import { useApi, extractMessage } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
+import { i18n } from "@/i18n";
 
 interface ApiResult {
   data?: unknown;
@@ -23,7 +24,7 @@ export interface UseAdminCrudListOptions<TItem, TAddForm> {
 }
 
 function apiErrorMessage(apiErr: unknown): string {
-  return (apiErr as { message?: string } | null)?.message ?? "API error";
+  return (apiErr as { message?: string } | null)?.message ?? i18n.global.t("common.apiError");
 }
 
 /**

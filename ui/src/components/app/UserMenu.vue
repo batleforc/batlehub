@@ -2,7 +2,7 @@
 import { useI18n } from "vue-i18n";
 import { computed } from "vue";
 import { RouterLink, useRouter } from "vue-router";
-import { User, KeyRound, FolderKey, Terminal, LogOut, ChevronDown } from "@lucide/vue";
+import { User, KeyRound, FolderKey, Terminal, Wrench, LogOut, ChevronDown } from "@lucide/vue";
 import {
   DropdownMenuRoot,
   DropdownMenuTrigger,
@@ -99,6 +99,26 @@ function handleLogout() {
           >
             <Terminal class="h-3.5 w-3.5" />
             {{ t("userMenu.downloadCli") }}
+          </RouterLink>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator class="my-1 h-px bg-border" />
+        <!-- RFC 0003 demoted diagnostics out of the primary bar on the grounds
+             that they are "reachable from the user menu" (`navigation.ts`).
+             They were not: the entry was never written, so `/tools` was
+             unreachable except by URL or from `PackageDetailPage`'s denial
+             link. Demoted, not hidden — this is the half that was owed.
+
+             Points at the first tab rather than `/tools`, which is a
+             `SECTION_INDEXES` key: nothing in a menu should lead to a
+             redirect. Labelled from `tools.title`, the hub's own name, so the
+             place is not called two different things. -->
+        <DropdownMenuItem as-child>
+          <RouterLink
+            to="/tools/access-check"
+            class="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm cursor-pointer hover:bg-accent hover:text-accent-foreground outline-none transition-colors"
+          >
+            <Wrench class="h-3.5 w-3.5" />
+            {{ t("tools.title") }}
           </RouterLink>
         </DropdownMenuItem>
         <DropdownMenuSeparator class="my-1 h-px bg-border" />

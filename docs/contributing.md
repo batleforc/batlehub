@@ -556,6 +556,23 @@ Three of the four design gates are static and run anywhere (`task ui:design`).
 The fourth needs a real browser, because contrast on painted pixels, focus-ring
 visibility and reflow at 390 px cannot be measured by reading source.
 
+`ui:design:routes` is that fourth gate, and it covers **every rendered route** —
+the 15 admin pages and 4 account pages behind router guards *and* the six public
+ones, at both viewports, with axe plus the type ramp and the display face. It
+used to be two gates: `impeccable detect` + `@axe-core/cli` over the public
+routes, and a separate authenticated harness. Neither URL-based scanner knows
+what a type ramp is, so the ramp assertions ran on `/admin/*`, `/me/*` and `/`
+and nothing else — and `/packages`, the one page with a checked-in specification
+of its own appearance (`ui/design-proof/index.html`), was the significant page
+no ramp check ran against. That is how its 104px display element became 24px
+with every gate green (RFC 0004-bis §4.4).
+
+`/packages` is pinned in the script's `EXPECTED_FAIL`: it disagrees with its own
+design proof, the disagreement is RFC 0004-bis O3's to settle, and it is
+reported as a line in the output rather than as a silence. A pinned route that
+starts *passing* fails the gate — that means one side of O3 moved and the pin
+has become the stale claim.
+
 The workspace `devfile.yaml` declares a **`browser` sidecar**
 ([che-browser](https://github.com/batleforc/WeeboDevImage/tree/main/che-browser)):
 headed Chrome behind Xvfb, in a sidecar container of the same pod. Every
@@ -565,8 +582,9 @@ Chrome reaches the dev server on `localhost:5173` with no ingress.
 
 ```bash
 task browser:check                  # is it up? prints the CDP version
-task ui:dev                         # in another terminal
-task ui:design:rendered             # detector at 2 viewports + axe
+task ui:dev:local                   # in another terminal (5174, the in-pod front)
+task ui:design:rendered             # detector at 2 viewports + the route gate
+BATLEHUB_ADMIN_TOKEN=… BATLEHUB_USER_TOKEN=… task ui:design:routes
 task browser:open URL=http://localhost:5173/   # open a tab
 task browser:tabs                   # list tabs (id, type, title, url)
 task browser:close ID=<id>          # close one

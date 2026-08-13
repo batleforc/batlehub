@@ -52,7 +52,7 @@ const confirmOpen = ref(false);
 const ready = computed(() =>
   Boolean(
     registry.value &&
-      (mode.value === "path" ? path.value.trim() : name.value.trim() && version.value.trim()),
+    (mode.value === "path" ? path.value.trim() : name.value.trim() && version.value.trim()),
   ),
 );
 
@@ -135,7 +135,12 @@ async function remove() {
       </div>
 
       <div class="flex items-center gap-3">
-        <Button size="sm" variant="destructive" :disabled="!ready || busy" @click="confirmOpen = true">
+        <Button
+          size="sm"
+          variant="destructive"
+          :disabled="!ready || busy"
+          @click="confirmOpen = true"
+        >
           {{ busy ? t("adminHealth.deleting") : t("common.delete") }}
         </Button>
         <p v-if="error" class="text-sm text-destructive">{{ error }}</p>

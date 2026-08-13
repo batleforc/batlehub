@@ -335,6 +335,20 @@ const {
                   <Badge v-if="ver.unlisted" variant="secondary" class="ml-1 text-xs">
                     unlisted
                   </Badge>
+                  <!-- Under the version rather than in a column of its own: the
+                       licence is an attribute of this version, and the table is
+                       already seven columns wide.
+
+                       A stated "unknown" rather than a blank when null —
+                       rendering nothing would make "no manifest parser for this
+                       registry type" indistinguishable from "declares no
+                       licence" (RFC 0004-bis §13.1). -->
+                  <p
+                    class="text-xs text-muted-foreground truncate max-w-[200px]"
+                    :title="ver.license ?? t('packageDetailPage.licenseUnknownHelp')"
+                  >
+                    {{ ver.license ?? t("packageDetailPage.licenseUnknown") }}
+                  </p>
                 </TableCell>
                 <TableCell>
                   <Badge
@@ -363,7 +377,8 @@ const {
                     <span
                       class="absolute bottom-full left-0 mb-1 hidden group-hover:block z-10 w-64 rounded-sm bg-popover border p-2 text-xs text-popover-foreground shadow-md"
                     >
-                      <strong>Reason:</strong> {{ (ver.firewall as any).reason }}<br />
+                      <strong>{{ t("common.reasonLabel") }}</strong>
+                      {{ (ver.firewall as any).reason }}<br />
                       <strong>By:</strong> {{ (ver.firewall as any).blocked_by }}<br />
                       <strong>At:</strong> {{ formatDate((ver.firewall as any).blocked_at) }}
                     </span>

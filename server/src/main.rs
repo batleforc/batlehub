@@ -162,12 +162,18 @@ async fn main() -> Result<()> {
     let team_namespace_store: Arc<dyn batlehub_core::ports::TeamNamespacePort> =
         Arc::new(PgTeamNamespaceStore::new(repo.pool()));
 
+    // Built before the hot bundle because `license_gate` reads the recorded
+    // licence through it; `build_sbom_service` below wraps the same repository.
+    let sbom_repo: Arc<dyn batlehub_core::ports::SbomRepository> =
+        Arc::new(batlehub_adapters::db::PgSbomRepository::new(repo.pool()));
+
     let (init_hot, init_access, registry_map, registry_mode_map, upstream_map, vuln_db_map) =
         hot_config::build_hot_bundle(
             &config,
             &beta_channel_store,
             &(repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>),
             &vuln_repo,
+            &sbom_repo,
         )?;
     let warming_clients: HashMap<String, Arc<dyn batlehub_core::ports::RegistryClient>> = init_hot
         .registries
@@ -236,6 +242,7 @@ async fn main() -> Result<()> {
         Arc::clone(&beta_channel_store),
         repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>,
         Arc::clone(&vuln_repo),
+        Arc::clone(&sbom_repo),
     );
     // Built once here so the same instance is shared with the reload service (for
     // hot-swapping) and registered as actix app_data below.

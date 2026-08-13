@@ -20,6 +20,7 @@ use utoipa_actix_web::AppExt;
 
 use batlehub_adapters::auth::StaticTokenAuthProvider;
 use batlehub_adapters::cache::InMemoryCacheStore;
+pub use batlehub_adapters::db::InMemoryUserBlockRepository;
 pub use batlehub_adapters::in_memory::InMemoryTeamNamespaceStore;
 use batlehub_adapters::in_memory::{
     InMemoryPackageRepository as InMemoryRepo, InMemoryStatsHistory,
@@ -28,11 +29,14 @@ use batlehub_adapters::in_memory::{
 };
 use batlehub_adapters::local_registry::InMemoryLocalRegistry;
 use batlehub_adapters::notification::InMemoryNotificationStore;
+pub use batlehub_adapters::rate_limit::InMemoryIpBlockStore;
 use batlehub_config::schema::{NotificationsConfig, RegistryMode};
 use batlehub_core::entities::{NamespacePackage, TeamNamespace, Visibility};
 use batlehub_core::ports::BannerPort;
 use batlehub_core::ports::NotificationPort;
-use batlehub_core::ports::{IpBlockStore, StatsHistoryRepository, TeamNamespacePort};
+use batlehub_core::ports::{
+    IpBlockStore, StatsHistoryRepository, TeamNamespacePort, UserBlockRepository,
+};
 use batlehub_core::{
     entities::{PackageId, PackageMetadata, Role},
     error::CoreError,
@@ -228,6 +232,12 @@ pub struct ConfigureAppDefaults {
     pub notifications_config: Option<NotificationsConfig>,
     pub warming_map: WarmingServiceMap,
     pub eviction_map: EvictionServiceMap,
+    /// The two block stores the *middleware* enforces and `access-check` now
+    /// consults (RFC 0004-bis A1). Registered on every test app, empty by
+    /// default, so a handler that reads them is exercised rather than 500ing —
+    /// and so a test can seed one and assert the simulator changes its answer.
+    pub user_block_repo: Arc<dyn UserBlockRepository>,
+    pub ip_block_store: Arc<dyn IpBlockStore>,
 }
 
 impl Default for ConfigureAppDefaults {
@@ -241,6 +251,8 @@ impl Default for ConfigureAppDefaults {
             notifications_config: None,
             warming_map: WarmingServiceMap::default(),
             eviction_map: EvictionServiceMap::default(),
+            user_block_repo: Arc::new(InMemoryUserBlockRepository::new()),
+            ip_block_store: Arc::new(InMemoryIpBlockStore::new()),
         }
     }
 }
@@ -289,6 +301,8 @@ pub async fn finish_test_app(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
+    let user_block_repo = Arc::clone(&defaults.user_block_repo);
+    let ip_block_store = Arc::clone(&defaults.ip_block_store);
     let (app, _) = App::new()
         .into_utoipa_app()
         .configure(configure_test_app(
@@ -301,6 +315,8 @@ pub async fn finish_test_app(
         ))
         .split_for_parts();
     let app = app
+        .app_data(actix_web::web::Data::new(user_block_repo))
+        .app_data(actix_web::web::Data::new(ip_block_store))
         .app_data(actix_web::web::Data::new(cargo_indexes))
         .app_data(actix_web::web::Data::new(local_svc))
         .app_data(actix_web::web::Data::new(mode_map))
@@ -330,6 +346,8 @@ pub async fn finish_test_app_with_extra<E: 'static>(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
+    let user_block_repo = Arc::clone(&defaults.user_block_repo);
+    let ip_block_store = Arc::clone(&defaults.ip_block_store);
     let (app, _) = App::new()
         .into_utoipa_app()
         .configure(configure_test_app(
@@ -342,6 +360,8 @@ pub async fn finish_test_app_with_extra<E: 'static>(
         ))
         .split_for_parts();
     let app = app
+        .app_data(actix_web::web::Data::new(user_block_repo))
+        .app_data(actix_web::web::Data::new(ip_block_store))
         .app_data(actix_web::web::Data::new(cargo_indexes))
         .app_data(actix_web::web::Data::new(local_svc))
         .app_data(actix_web::web::Data::new(mode_map))
@@ -361,6 +381,28 @@ pub async fn make_app(
     make_app_ext(repo, Arc::new(ProxyMetrics::new(&[]))).await
 }
 
+/// `make_app` with the two block stores the middleware enforces and
+/// `access-check` consults (RFC 0004-bis A1), so a test can seed a block and
+/// assert the simulator's answer changes.
+pub async fn make_app_with_blocks(
+    user_block_repo: Arc<dyn UserBlockRepository>,
+    ip_block_store: Arc<dyn IpBlockStore>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    make_app_with_defaults(
+        InMemoryRepo::new(),
+        ConfigureAppDefaults {
+            user_block_repo,
+            ip_block_store,
+            ..Default::default()
+        },
+    )
+    .await
+}
+
 /// Variant of `make_app` that accepts a caller-supplied `proxy_metrics` so
 /// that tests can inspect or mutate counters and verify the stats endpoint.
 pub async fn make_app_ext(
@@ -371,6 +413,26 @@ pub async fn make_app_ext(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
+    make_app_with_defaults(
+        repo,
+        ConfigureAppDefaults {
+            proxy_metrics,
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+/// The full-registry test app, with every knob in `ConfigureAppDefaults` open.
+pub async fn make_app_with_defaults(
+    repo: Arc<InMemoryRepo>,
+    defaults: ConfigureAppDefaults,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let proxy_metrics = Arc::clone(&defaults.proxy_metrics);
     let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
@@ -478,10 +540,7 @@ pub async fn make_app_ext(
         local_svc,
         RegistryModeMap::default(),
         cargo_indexes,
-        ConfigureAppDefaults {
-            proxy_metrics,
-            ..Default::default()
-        },
+        defaults,
         test_auth_providers(),
     )
     .await

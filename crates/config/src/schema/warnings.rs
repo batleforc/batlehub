@@ -71,3 +71,32 @@ pub const SUBDOMAIN_INVALID_DNS_LABEL: &str = "subdomain.invalid-dns-label";
 /// public mirror, rarely what an internal deployment wants — and since 1.1.0 it
 /// only happens when someone wrote it down, which is the point of the warning.
 pub const CORS_ANY_ORIGIN: &str = "cors.any-origin";
+
+/// A `license_gate` rule is configured on a registry whose type has no manifest
+/// parser, so the licence of every version is permanently unknown and the gate
+/// can never observe what it claims to govern.
+///
+/// This is the warning RFC 0004-bis §13.1 owes: licence extraction covers five
+/// of the twenty-one registry types, and on the other sixteen a `license_gate`
+/// with the default `allow_unknown = true` never fires. An operator who wrote
+/// an allow list and saw no errors would reasonably believe they had a licence
+/// policy. They have an inert rule.
+pub const LICENSE_GATE_NO_EXTRACTOR: &str = "license-gate.no-extractor";
+
+/// A `license_gate` on a registry whose `[registries.sbom]` block is absent or
+/// `enabled = false`.
+///
+/// The licence is recorded as a side effect of SBOM generation
+/// (`ProxyService::maybe_trigger_sbom` returns early when SBOM is off for the
+/// registry), so with SBOM disabled *nothing is ever extracted* and the gate
+/// sees an unknown licence for every version — no matter how good the parser
+/// for that registry type is. Found by running the thing rather than reading
+/// it: the parser worked, the rule was loaded, and no licence was ever stored.
+pub const LICENSE_GATE_SBOM_DISABLED: &str = "license-gate.sbom-disabled";
+
+/// The same missing parser, but with `allow_unknown = false` and `block = true`
+/// — so instead of never firing, the gate refuses **every** download from that
+/// registry. Separate code from [`LICENSE_GATE_NO_EXTRACTOR`] because the
+/// consequence is the opposite one and an operator triaging an outage needs to
+/// find this by name.
+pub const LICENSE_GATE_DENIES_EVERYTHING: &str = "license-gate.denies-everything";

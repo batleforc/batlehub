@@ -5,7 +5,9 @@ use anyhow::Context;
 
 use batlehub_config::schema::{AppConfig, RegistryConfig, RegistryMode};
 use batlehub_core::entities::RegistryKind;
-use batlehub_core::ports::{BetaChannelPort, PackageRepository, VulnerabilityRepository};
+use batlehub_core::ports::{
+    BetaChannelPort, PackageRepository, SbomRepository, VulnerabilityRepository,
+};
 use batlehub_core::services::{
     FeatureFlags, HotConfig, HotSbomConfig, IntegrityPolicy, SigningConfig as CoreSigningConfig,
     VersioningPolicy,
@@ -188,6 +190,7 @@ pub(super) fn build_hot_bundle(
     beta_channel_store: &Arc<dyn BetaChannelPort>,
     repo: &Arc<dyn PackageRepository>,
     vuln_repo: &Arc<dyn VulnerabilityRepository>,
+    sbom_repo: &Arc<dyn SbomRepository>,
 ) -> anyhow::Result<(
     HotConfig,
     AccessConfig,
@@ -208,8 +211,13 @@ pub(super) fn build_hot_bundle(
         let client = crate::builders::build_registry_client(reg, cfg.proxy.as_ref())
             .with_context(|| format!("building registry client for '{}'", reg.name))?;
         reg_clients.insert(reg.name.clone(), client);
-        let policy = crate::builders::build_policy(reg, Arc::clone(repo), Arc::clone(vuln_repo))
-            .with_context(|| format!("building policy for '{}'", reg.name))?;
+        let policy = crate::builders::build_policy(
+            reg,
+            Arc::clone(repo),
+            Arc::clone(vuln_repo),
+            Arc::clone(sbom_repo),
+        )
+        .with_context(|| format!("building policy for '{}'", reg.name))?;
         reg_policies.insert(reg.name.clone(), Arc::new(policy));
         reg_type_map.insert(reg.name.clone(), reg.registry_type.clone());
         reg_mode_map.insert(reg.name.clone(), reg.mode.clone());
@@ -302,10 +310,11 @@ pub(super) fn make_hot_builder(
     beta_channel_store: Arc<dyn BetaChannelPort>,
     repo: Arc<dyn PackageRepository>,
     vuln_repo: Arc<dyn VulnerabilityRepository>,
+    sbom_repo: Arc<dyn SbomRepository>,
 ) -> batlehub_web::services::HotConfigBuilder {
     Arc::new(move |cfg: &AppConfig| {
         let (hot, access, rm, rmm, um, vuln_db) =
-            build_hot_bundle(cfg, &beta_channel_store, &repo, &vuln_repo)?;
+            build_hot_bundle(cfg, &beta_channel_store, &repo, &vuln_repo, &sbom_repo)?;
         let mut cargo_map: HashMap<String, CargoIndexProxy> = HashMap::new();
         for reg in &cfg.registries {
             if reg.registry_type == RegistryKind::Cargo.as_str()

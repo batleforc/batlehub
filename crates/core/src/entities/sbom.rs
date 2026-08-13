@@ -72,4 +72,13 @@ pub struct ArtifactSbom {
     pub document: serde_json::Value,
     pub source: SbomSource,
     pub created_at: DateTime<Utc>,
+    /// The licence the package's own manifest declared, verbatim.
+    ///
+    /// A column rather than a read into `document`, because `LicenseGateRule`
+    /// queries it on the request path and `document` is an opaque blob whose
+    /// shape differs per format — and, for `SbomSource::Upstream`, is a
+    /// document BatleHub did not write. `None` means unknown: either the
+    /// registry type has no manifest parser, or the manifest declared nothing.
+    /// It never means "no licence" (RFC 0004-bis §13.1).
+    pub license: Option<String>,
 }

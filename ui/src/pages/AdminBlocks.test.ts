@@ -99,7 +99,12 @@ describe("AdminBlocks", () => {
     listUsers.mockResolvedValue({ data: [] });
     listIps.mockResolvedValue({
       data: [
-        { ip: "198.51.100.7", reason: "auto", blocked_at: epoch(-7_200_000), unblock_at: epoch(-60_000) },
+        {
+          ip: "198.51.100.7",
+          reason: "auto",
+          blocked_at: epoch(-7_200_000),
+          unblock_at: epoch(-60_000),
+        },
       ],
     });
     const wrapper = await mountPage();
@@ -116,7 +121,14 @@ describe("AdminBlocks", () => {
   it("explains a machine-created block rather than printing 'auto'", async () => {
     listUsers.mockResolvedValue({ data: [] });
     listIps.mockResolvedValue({
-      data: [{ ip: "198.51.100.9", reason: "auto", blocked_at: epoch(-600_000), unblock_at: epoch(600_000) }],
+      data: [
+        {
+          ip: "198.51.100.9",
+          reason: "auto",
+          blocked_at: epoch(-600_000),
+          unblock_at: epoch(600_000),
+        },
+      ],
     });
     const wrapper = await mountPage();
     expect(wrapper.text()).toMatch(/automatic/i);

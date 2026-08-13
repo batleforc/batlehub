@@ -278,9 +278,18 @@ rendition moves it toward its own opposite pole.
 - **Aged Copper** — `--copper`, **8.06:1** on near-black and **5.74:1** on paper. The second voice,
   and it means *pending or held*, never *good*: the `stale` and `held` states, the instance hostname
   in the identity strip, the pressed border on a toggled control, the "synthetic fixture data" tag,
-  and the plate's ink in the dark rendition. It is the only colour that appears as a large area
-  anywhere in the system, and only through the plate. Its lightness is re-derived per ground — see
-  The Re-Derived Lightness Rule.
+  a measured value moving the wrong way but not yet refused — a falling hit rate, a quota approaching
+  its limit — and the plate's ink in the dark rendition. It is the only colour that appears as a large
+  area anywhere in the system, and only through the plate. Its lightness is re-derived per ground —
+  see The Re-Derived Lightness Rule.
+
+  The degradation job was added after two surfaces reached for it independently — `AdminDashboard`'s
+  falling-hit-rate trend and `QuotaWidget`'s warning state — with no entry authorising either. Two
+  surfaces improvising the same absent thing is the shape of a job the system needs, and The One
+  Synthetic Rule caps the palette, so it is a job copper gains rather than a sixth hue. What stays
+  true is the negative half: copper never means *good*. What is no longer exhaustive is *pending or
+  held* — a worsening metric is neither, and it is still not a refusal, which is the distinction the
+  hue exists to carry. See RFC 0004-bis §11/O1.
 
 ### Tertiary
 

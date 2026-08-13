@@ -47,6 +47,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog } from "@/components/ui/dialog";
 import { DestructiveConfirm } from "@/components/ui/destructive-confirm";
+import { Announcer } from "@/components/ui/announcer";
 import {
   Table,
   TableHeader,
@@ -191,6 +192,10 @@ async function submitBlock() {
       formError.value = extractMessage(res.error);
       return;
     }
+    announcement.value = t(
+      dialogKind.value === "account" ? "adminBlocks.accountBlocked" : "adminBlocks.ipBlocked",
+      { subject },
+    );
     dialogOpen.value = false;
     refresh();
   } finally {
@@ -199,6 +204,15 @@ async function submitBlock() {
 }
 
 // ── Lifting one ──────────────────────────────────────────────────────────────
+
+/**
+ * Blocking and unblocking are announced (RFC 0004-bis §2.6).
+ *
+ * Both close a dialog and refresh a table, which for a screen-reader user is
+ * indistinguishable from nothing happening — on the page where the operator is
+ * the only person able to perform the action.
+ */
+const announcement = ref("");
 
 const unblockTarget = ref<BlockRow | null>(null);
 const unblockLoading = ref(false);
@@ -218,6 +232,10 @@ async function confirmUnblock() {
       unblockError.value = extractMessage(res.error);
       return;
     }
+    announcement.value = t(
+      target.kind === "account" ? "adminBlocks.accountUnblocked" : "adminBlocks.ipUnblocked",
+      { subject: target.subject },
+    );
     unblockTarget.value = null;
     refresh();
   } finally {
@@ -229,6 +247,7 @@ async function confirmUnblock() {
 <template>
   <div class="space-y-4">
     <SectionTabs :tabs="SECURITY_TABS" />
+    <Announcer :message="announcement" />
     <PageHeader
       variant="display"
       :title="t('adminBlocks.title')"
@@ -294,9 +313,9 @@ async function confirmUnblock() {
                 </TableCell>
                 <TableCell class="text-xs">
                   {{ fmtDate(row.blockedAt) }}
-                  <span v-if="row.blockedBy" class="block text-muted-foreground"
-                    >{{ t("adminBlocks.by", { who: row.blockedBy }) }}</span
-                  >
+                  <span v-if="row.blockedBy" class="block text-muted-foreground">{{
+                    t("adminBlocks.by", { who: row.blockedBy })
+                  }}</span>
                 </TableCell>
                 <TableCell class="text-xs">
                   <span v-if="row.expired" class="text-muted-foreground">{{
@@ -327,7 +346,9 @@ async function confirmUnblock() {
     <!-- One form, two shapes: the kind decides which fields apply. -->
     <Dialog v-model:open="dialogOpen">
       <template #title>
-        {{ dialogKind === "account" ? t("adminBlocks.blockAccount") : t("adminBlocks.blockAddress") }}
+        {{
+          dialogKind === "account" ? t("adminBlocks.blockAccount") : t("adminBlocks.blockAddress")
+        }}
       </template>
       <div class="space-y-4">
         <div class="space-y-1">

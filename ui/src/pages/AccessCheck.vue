@@ -10,8 +10,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Select } from "@/components/ui/select";
+import { useRegistryOptions } from "@/composables/useRegistryOptions";
+import { Combobox } from "@/components/ui/combobox";
+import { usePackageNameSuggestions, useVersionSuggestions } from "@/composables/useSuggestions";
 
 const { t } = useI18n();
+
+/** RFC 0004-bis §6.2: the registry set is closed, small and already fetched. */
+const { options: registryOptions } = useRegistryOptions();
 
 /**
  * Prefilled from the query when arriving from a denial (RFC 0003 §4.4).
@@ -29,6 +36,12 @@ const q = (key: string, fallback = ""): string => {
 const registry = ref(q("registry", "github"));
 const name = ref(q("name"));
 const version = ref(q("version"));
+
+/* Suggested from what this instance holds, never blocking a value it does not
+   — the tool exists to explain a refusal, and a refusal is often about a
+   coordinate the instance has never cached (RFC 0004-bis §6.2). */
+const packageSuggestions = usePackageNameSuggestions(name, registry);
+const versionSuggestions = useVersionSuggestions(registry, name);
 const artifact = ref(q("artifact"));
 const result = ref<AccessCheckResponse | null>(null);
 const error = ref<string | null>(null);
@@ -69,15 +82,34 @@ async function check() {
       <div class="grid gap-3">
         <div class="space-y-1">
           <Label for="registry">{{ t("common.registry") }}</Label>
-          <Input id="registry" v-model="registry" placeholder="github" />
+          <Select
+            id="registry"
+            v-model="registry"
+            :options="registryOptions"
+            :placeholder="t('adminHealth.chooseRegistry')"
+          />
         </div>
         <div class="space-y-1">
           <Label for="name">{{ t("accessCheck.nameOwnerRepo") }}</Label>
-          <Input id="name" v-model="name" placeholder="owner/repo" />
+          <Combobox
+            id="name"
+            v-model="name"
+            :options="packageSuggestions.options.value"
+            :loading="packageSuggestions.loading.value"
+            placeholder="owner/repo"
+          />
         </div>
         <div class="space-y-1">
           <Label for="version">{{ t("common.version") }}</Label>
-          <Input id="version" v-model="version" placeholder="v1.0.0" />
+          <Combobox
+            id="version"
+            v-model="version"
+            :options="versionSuggestions.options.value"
+            :loading="versionSuggestions.loading.value"
+            :disabled="!versionSuggestions.ready()"
+            :disabled-reason="t('accessCheck.versionNeedsPackage')"
+            placeholder="v1.0.0"
+          />
         </div>
         <div class="space-y-1">
           <Label for="artifact">{{ t("accessCheck.artifactOptional") }}</Label>

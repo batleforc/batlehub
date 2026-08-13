@@ -46,12 +46,7 @@ pub async fn list_registries(
         .into_iter()
         .filter(|(name, _)| accessible.contains(name.as_str()))
         .map(|(name, registry_type)| RegistryInfo {
-            mode: match modes.get(&name) {
-                batlehub_config::schema::RegistryMode::Proxy => "proxy",
-                batlehub_config::schema::RegistryMode::Local => "local",
-                batlehub_config::schema::RegistryMode::Hybrid => "hybrid",
-            }
-            .to_string(),
+            mode: modes.get(&name).as_str().to_owned(),
             public_url: hosts.as_ref().and_then(|h| h.public_url_for(&name)),
             name,
             registry_type,

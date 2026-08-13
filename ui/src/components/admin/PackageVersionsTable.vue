@@ -68,7 +68,7 @@ function viewArtifact(v: PackageVersionDetail) {
 // ── Single-item actions ──────────────────────────────────────────────────────
 
 async function doBlock(v: PackageVersionDetail) {
-  const reason = globalThis.prompt("Block reason:");
+  const reason = globalThis.prompt(t("packageVersionsTable.blockReasonPrompt"));
   if (!reason) return;
   await blockPackage({
     body: {
@@ -95,12 +95,7 @@ async function doUnblock(v: PackageVersionDetail) {
 }
 
 async function doInvalidate(v: PackageVersionDetail) {
-  if (
-    !confirm(
-      `Purge cached artifact for v${v.version}? The next download will re-fetch from upstream.`,
-    )
-  )
-    return;
+  if (!confirm(t("packageVersionsTable.purgeArtifactConfirm", { version: v.version }))) return;
   await invalidatePackage({
     body: {
       registry: props.registry,
@@ -117,6 +112,17 @@ async function doInvalidate(v: PackageVersionDetail) {
 const selectedIds = ref<Set<string>>(new Set());
 const bulkLoading = ref(false);
 const bulkMsg = ref<string | null>(null);
+
+/** The `AdminPackages` sentence, over versions rather than packages. */
+const BULK_KEYS = {
+  blocked: "packageVersionsTable.bulkBlocked",
+  unblocked: "packageVersionsTable.bulkUnblocked",
+} as const;
+
+function bulkOutcome(verb: keyof typeof BULK_KEYS, ok: number, failed: number): string {
+  const done = t(BULK_KEYS[verb], { count: ok }, ok);
+  return failed ? t("packageVersionsTable.bulkWithFailures", { done, failed }, failed) : done;
+}
 
 const allSelected = computed(
   () => props.versions.length > 0 && props.versions.every((v) => selectedIds.value.has(v.id)),
@@ -135,7 +141,13 @@ function toggle(v: PackageVersionDetail) {
 const selected = computed(() => props.versions.filter((v) => selectedIds.value.has(v.id)));
 
 async function bulkBlock() {
-  const reason = globalThis.prompt(`Block reason for ${selectedIds.value.size} version(s):`);
+  const reason = globalThis.prompt(
+    t(
+      "packageVersionsTable.bulkBlockReasonPrompt",
+      { count: selectedIds.value.size },
+      selectedIds.value.size,
+    ),
+  );
   if (!reason) return;
   bulkLoading.value = true;
   bulkMsg.value = null;
@@ -153,8 +165,7 @@ async function bulkBlock() {
     });
     const r = res.data;
     if (r) {
-      const failSuffix = r.failed_count ? `, ${r.failed_count} failed` : "";
-      bulkMsg.value = `Blocked ${r.succeeded_count} version(s)${failSuffix}.`;
+      bulkMsg.value = bulkOutcome("blocked", r.succeeded_count, r.failed_count);
     }
   } finally {
     bulkLoading.value = false;
@@ -164,7 +175,16 @@ async function bulkBlock() {
 }
 
 async function bulkUnblock() {
-  if (!confirm(`Unblock ${selectedIds.value.size} selected version(s)?`)) return;
+  if (
+    !confirm(
+      t(
+        "packageVersionsTable.bulkUnblockConfirm",
+        { count: selectedIds.value.size },
+        selectedIds.value.size,
+      ),
+    )
+  )
+    return;
   bulkLoading.value = true;
   bulkMsg.value = null;
   try {
@@ -180,8 +200,7 @@ async function bulkUnblock() {
     });
     const r = res.data;
     if (r) {
-      const failSuffix = r.failed_count ? `, ${r.failed_count} failed` : "";
-      bulkMsg.value = `Unblocked ${r.succeeded_count} version(s)${failSuffix}.`;
+      bulkMsg.value = bulkOutcome("unblocked", r.succeeded_count, r.failed_count);
     }
   } finally {
     bulkLoading.value = false;
@@ -265,6 +284,21 @@ async function bulkUnblock() {
                 class="ml-1 text-xs align-middle"
                 >pre-release</Badge
               >
+              <!-- In the version cell rather than a column of its own: RFC
+                   0004-bis §6.1's verdict on this table is that it is already
+                   too wide at 1440, so a licence that earned a twelfth column
+                   would push the row verbs further off screen.
+
+                   A dash when unknown, with the reason in the title. Rendering
+                   nothing would let "we never read a manifest for this registry
+                   type" look identical to "this package declares no licence",
+                   which is the §2.4 defect — a blank that reads as a fact. -->
+              <p
+                class="text-muted-foreground truncate max-w-[180px]"
+                :title="v.license ?? t('packageVersionsTable.licenseUnknownHelp')"
+              >
+                {{ v.license ?? t("packageVersionsTable.licenseUnknown") }}
+              </p>
             </TableCell>
             <TableCell class="font-mono text-xs text-muted-foreground">{{
               v.artifact ?? "—"

@@ -384,3 +384,28 @@ pub(super) async fn purge_events_before_impl(
         .db_err()?;
     Ok(result.rows_affected())
 }
+
+/// Distinct audit subjects, most-recently-active first (RFC 0004-bis A8).
+///
+/// Ordered by last activity rather than alphabetically: a suggesting field is
+/// answering "who has been doing things here", and the operator is almost
+/// always looking for someone recent. `ILIKE` because a subject typed as
+/// `alice` should find `oidc:alice` — matching only a prefix would reproduce
+/// the very failure this endpoint exists to fix.
+pub(super) async fn distinct_event_subjects_impl(
+    pool: &PgPool,
+    contains: Option<&str>,
+    limit: u64,
+) -> Result<Vec<String>, CoreError> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT user_id FROM access_events \
+         WHERE user_id IS NOT NULL AND ($1::text IS NULL OR user_id ILIKE '%' || $1 || '%') \
+         GROUP BY user_id ORDER BY MAX(created_at) DESC LIMIT $2",
+    )
+    .bind(contains)
+    .bind(limit as i64)
+    .fetch_all(pool)
+    .await
+    .db_err()?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}

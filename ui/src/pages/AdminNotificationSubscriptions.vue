@@ -24,7 +24,6 @@ import { AsyncState } from "@/components/ui/async-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -37,8 +36,28 @@ import {
 } from "@/components/ui/table";
 import { Dialog } from "@/components/ui/dialog";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
+import { Select } from "@/components/ui/select";
+import { Combobox } from "@/components/ui/combobox";
+import { useRegistryOptions } from "@/composables/useRegistryOptions";
+import { usePackageNameSuggestions } from "@/composables/useSuggestions";
+import { toRef } from "vue";
 
 const { t } = useI18n();
+
+/** RFC 0004-bis §6.2: the registry set is closed, small and already fetched. */
+const { options: registryOptions } = useRegistryOptions();
+
+/**
+ * The registry set plus an explicit "all registries" entry.
+ *
+ * The field is optional by contract, so blank has to be a *choosable* value —
+ * a `Select` that cannot express it would silently narrow every use that
+ * relied on leaving it empty (RFC 0004-bis §6.2).
+ */
+const registryOptionsWithAll = computed(() => [
+  { value: "", label: t("adminPackages.allRegistries") },
+  ...registryOptions.value,
+]);
 
 const { token } = useAuth();
 
@@ -55,10 +74,7 @@ const {
 // field, so a spinner or an error block for it would compete with the form it
 // exists to support. An unreadable list degrades to the "none configured"
 // hint, which is the same advice either way.
-const { data: channelsResp } = useApi<ChannelInfo[]>(
-  () => listNotificationChannels(),
-  [token],
-);
+const { data: channelsResp } = useApi<ChannelInfo[]>(() => listNotificationChannels(), [token]);
 
 /**
  * The channel list is a *dependency of this page's form*, not a peer view: the
@@ -67,6 +83,7 @@ const { data: channelsResp } = useApi<ChannelInfo[]>(
  * to fetch it anyway.
  */
 const channels = computed(() => channelsResp.value ?? []);
+const channelOptions = computed(() => channels.value.map((ch) => ({ value: ch.name })));
 
 // ── Create / edit dialog ──────────────────────────────────────────────────────
 
@@ -86,6 +103,14 @@ const form = ref({
   channel_name: "",
   enabled: true,
 });
+
+/* Suggested from `name_contains`, still accepting a package this instance has
+   never cached — subscribing *before* the first pull is a real workflow
+   (RFC 0004-bis §6.2). */
+const packageSuggestions = usePackageNameSuggestions(
+  toRef(form.value, "package_name"),
+  toRef(form.value, "registry"),
+);
 /**
  * The channel field is required but was never validated — `submitForm` checked
  * only that it was non-empty, so a typo saved cleanly and the subscription
@@ -127,6 +152,24 @@ function openEdit(sub: NotificationSubscription) {
   };
   formError.value = null;
   dialogOpen.value = true;
+}
+
+/**
+ * Event types on the subscription that this console has no chip for.
+ *
+ * `openEdit` copies `sub.event_types` verbatim and the chip row only renders
+ * `ALL_EVENT_TYPES`, so a type the server knows and the console does not was
+ * invisible in the form and re-saved on submit — an operator editing a
+ * subscription silently kept a rule they could not see, and could not remove.
+ * A server that grows an event type before the console does is the *expected*
+ * order of deployment, so this is a normal state, not a corruption.
+ */
+const unknownEventTypes = computed(() =>
+  form.value.event_types.filter((et) => !(ALL_EVENT_TYPES as string[]).includes(et as string)),
+);
+
+function dropUnknownEventType(et: string) {
+  form.value.event_types = form.value.event_types.filter((e) => (e as string) !== et);
 }
 
 function toggleEventType(et: NotificationEventType) {
@@ -223,19 +266,24 @@ async function toggleEnabled(sub: NotificationSubscription) {
 
 const testLoading = ref<string | null>(null);
 const testMsg = ref<string | null>(null);
+/* Carried separately rather than recovered from the message. The template used
+   to decide the colour with `testMsg.startsWith("Test failed")`, which is a
+   translated sentence being parsed for its own meaning — correct in English and
+   silently green in French. */
+const testFailed = ref(false);
 
 async function testSubscription(id: string) {
   testLoading.value = id;
   testMsg.value = null;
   try {
     const result = await testSubscriptionApi({ path: { id } });
-    if (result.error) {
-      testMsg.value = `Test failed: ${extractMessage(result.error)}`;
-    } else {
-      testMsg.value = "Test sent successfully.";
-    }
+    testFailed.value = !!result.error;
+    testMsg.value = result.error
+      ? t("adminNotifications.testFailed", { error: extractMessage(result.error) })
+      : t("adminNotifications.testSent");
   } catch (e) {
-    testMsg.value = `Test failed: ${extractMessage(e)}`;
+    testFailed.value = true;
+    testMsg.value = t("adminNotifications.testFailed", { error: extractMessage(e) });
   } finally {
     testLoading.value = null;
   }
@@ -258,7 +306,6 @@ async function testSubscription(id: string) {
     </PageHeader>
 
     <div class="space-y-4">
-
       <AsyncState :loading="subsLoading && !subscriptions" :error="subsError">
         <Card>
           <CardContent class="p-0">
@@ -307,7 +354,7 @@ async function testSubscription(id: string) {
                         :disabled="testLoading === sub.id"
                         @click="testSubscription(sub.id)"
                       >
-                        {{ testLoading === sub.id ? "…" : "Test" }}
+                        {{ testLoading === sub.id ? "…" : t("adminNotifications.test") }}
                       </Button>
                       <Button variant="outline" size="sm" @click="openEdit(sub)">{{
                         t("common.edit")
@@ -334,12 +381,11 @@ async function testSubscription(id: string) {
       <p
         v-if="testMsg"
         class="text-sm"
-        :class="testMsg.startsWith('Test failed') ? 'text-destructive' : 'text-foreground'"
+        :class="testFailed ? 'text-destructive' : 'text-foreground'"
       >
         {{ testMsg }}
       </p>
     </div>
-
   </div>
 
   <!-- Create/Edit Subscription dialog -->
@@ -363,10 +409,15 @@ async function testSubscription(id: string) {
               t("adminNotifications.leaveBlankForAll")
             }}</span></Label
           >
-          <Input
+          <!-- Optional by contract ("leave blank for all registries"), so the
+               blank is a real option rather than an absence — a `Select` that
+               cannot express it would silently narrow every subscription that
+               relied on it. -->
+          <Select
             id="notif-registry"
             v-model="form.registry"
-            placeholder="e.g. my-cargo"
+            :options="registryOptionsWithAll"
+            :placeholder="t('adminPackages.allRegistries')"
             class="font-mono"
           />
         </div>
@@ -377,9 +428,11 @@ async function testSubscription(id: string) {
               t("adminNotifications.leaveBlankForAll")
             }}</span></Label
           >
-          <Input
+          <Combobox
             id="notif-package-name"
             v-model="form.package_name"
+            :options="packageSuggestions.options.value"
+            :loading="packageSuggestions.loading.value"
             placeholder="e.g. serde"
             class="font-mono"
           />
@@ -406,21 +459,37 @@ async function testSubscription(id: string) {
               {{ et.replace("package_", "") }}
             </button>
           </div>
+          <!-- Named, not silently carried. -->
+          <p v-if="unknownEventTypes.length" class="text-xs text-copper">
+            {{ t("adminNotifications.unknownEventTypes") }}
+          </p>
+          <div v-if="unknownEventTypes.length" class="flex flex-wrap gap-1.5">
+            <button
+              v-for="et in unknownEventTypes"
+              :key="et"
+              type="button"
+              class="rounded-sm border border-copper/50 px-2 py-1 font-mono text-xs text-copper"
+              :aria-label="t('adminNotifications.dropEventType', { type: et })"
+              @click="dropUnknownEventType(et)"
+            >
+              {{ et }} ✕
+            </button>
+          </div>
         </fieldset>
         <div class="space-y-1.5">
           <Label for="notif-channel"
             >{{ t("common.channel") }} <span class="text-destructive">*</span></Label
           >
-          <Input
+          <!-- Was a `<datalist>`, for the same reasons as the registry field
+               above: no listbox for assistive tech, no "nothing matches", and
+               no way to style it to the surface it sits on. -->
+          <Combobox
             id="notif-channel"
             v-model="form.channel_name"
+            :options="channelOptions"
             placeholder="e.g. my-slack"
             class="font-mono"
-            list="channel-list"
           />
-          <datalist id="channel-list">
-            <option v-for="ch in channels" :key="ch.name" :value="ch.name" />
-          </datalist>
           <!--
             Inline, not behind a tab. A native `datalist` shows nothing until
             the operator types, so "does the channel I am about to type exist"
@@ -486,8 +555,8 @@ async function testSubscription(id: string) {
     :open="deleteTarget !== null"
     :title="t('adminNotifications.deleteSubscription')"
     :description="t('adminNotifications.thisActionCannotBeUndone')"
-    confirm-label="Delete"
-    loading-label="Deleting…"
+    :confirm-label="t('common.delete')"
+    :loading-label="t('common.deleting')"
     destructive
     :loading="deleteLoading"
     :error="deleteError"

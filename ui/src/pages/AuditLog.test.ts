@@ -36,7 +36,9 @@ async function mountPage() {
 
 describe("AuditLog", () => {
   beforeEach(() => {
-    auditLogMock.mockReset().mockResolvedValue({ data: envelope([event(), event({ user_id: "bob" })]) });
+    auditLogMock
+      .mockReset()
+      .mockResolvedValue({ data: envelope([event(), event({ user_id: "bob" })]) });
   });
 
   /**
@@ -73,13 +75,73 @@ describe("AuditLog", () => {
     expect(wrapper.text()).toContain("4312");
   });
 
-  it("filters by user against the envelope's items", async () => {
+  /**
+   * The filters are the *server's* (RFC 0004-bis §6.1).
+   *
+   * This page used to fetch the newest hundred rows and filter them in the
+   * browser, which answers "no events match" about a page while presenting it
+   * as an answer about the log. The endpoint has accepted
+   * `registry|user_id|from|to|denied_only|page|per_page` since it was written.
+   */
+  it("sends the user filter to the server rather than filtering the page", async () => {
     const wrapper = await mountPage();
-    const input = wrapper.findAll("input")[0];
-    await input.setValue("bob");
+    await wrapper.find("#al-user").setValue("bob");
     await flushPromises();
-    expect(wrapper.findAll("tbody tr")).toHaveLength(1);
-    expect(wrapper.text()).toContain("bob");
+
+    expect(auditLogMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ query: expect.objectContaining({ user_id: "bob" }) }),
+    );
+  });
+
+  /**
+   * `denied_only` is the single most-used audit filter and had no control at
+   * all. Filtering denials client-side is worse than not offering it: it
+   * silently answers "no denials" for anything past the newest hundred rows.
+   */
+  it("sends denied_only to the server", async () => {
+    const wrapper = await mountPage();
+    // `Switch` is a `role="switch"` button, not a checkbox — it is clicked.
+    await wrapper.find('[role="switch"]').trigger("click");
+    await flushPromises();
+
+    expect(auditLogMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ query: expect.objectContaining({ denied_only: true }) }),
+    );
+  });
+
+  it("returns to the first page when a filter changes", async () => {
+    auditLogMock.mockResolvedValue({ data: envelope([event()], { total: 450 }) });
+    const wrapper = await mountPage();
+
+    // Page forward, then narrow. Staying on page 4 of a result set that just
+    // shrank to one page is how a filter looks like it returned nothing.
+    await wrapper.findAll("nav button").at(-1)!.trigger("click");
+    await flushPromises();
+    expect(auditLogMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ query: expect.objectContaining({ page: 1 }) }),
+    );
+
+    await wrapper.find("#al-user").setValue("bob");
+    await flushPromises();
+    expect(auditLogMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ query: expect.objectContaining({ page: 0, user_id: "bob" }) }),
+    );
+  });
+
+  /**
+   * "No events match these filters" and "this instance has recorded nothing"
+   * are different facts. An audit surface that conflates them tells an operator
+   * the wrong one — the same defect as the envelope bug above, one level down.
+   */
+  it("distinguishes an empty filter result from an empty log", async () => {
+    auditLogMock.mockResolvedValue({ data: envelope([]) });
+    const wrapper = await mountPage();
+    expect(wrapper.text()).toMatch(/no events recorded/i);
+
+    await wrapper.find("#al-user").setValue("nobody");
+    await flushPromises();
+    expect(wrapper.text()).toMatch(/match/i);
+    expect(wrapper.text()).not.toMatch(/no events recorded/i);
   });
 
   /**

@@ -54,8 +54,11 @@ function meterState(state: WireState | null | undefined): MeterState {
 /**
  * The caption is the state's *word*, which DESIGN.md requires alongside the
  * hue — state is never carried by hue alone. At the limit a publish is
- * genuinely refused (under `enforcement = "block"`); copper is "waiting rather
- * than refused".
+ * genuinely refused (under `enforcement = "block"`); copper is a quota
+ * approaching its limit, which is DESIGN.md's degradation job — moving the
+ * wrong way, not yet refused. This widget and `AdminDashboard`'s trend both
+ * assumed that job before the world had an entry for it; RFC 0004-bis §11/O1
+ * added it to copper rather than growing the palette.
  *
  * It sits under the meter it describes, so which dimension it is about is
  * positional rather than something the sentence has to name.
@@ -82,7 +85,10 @@ const packagesText = (row: MyQuotaDto) =>
 <template>
   <!-- No quota anywhere the caller can reach: render nothing at all. -->
   <section v-if="loading || error || rows.length" aria-labelledby="quota-widget-heading">
-    <h2 id="quota-widget-heading" class="font-mono text-xs uppercase tracking-wider text-muted-foreground">
+    <h2
+      id="quota-widget-heading"
+      class="font-mono text-xs uppercase tracking-wider text-muted-foreground"
+    >
       {{ t("quotaWidget.title") }}
     </h2>
 

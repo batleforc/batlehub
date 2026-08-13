@@ -46,17 +46,49 @@ const ROOT = new URL("../src", import.meta.url).pathname;
  * `description` are here because a component prop is just as visible as an HTML
  * attribute: `<Facet label="Registries">` rendered the catalog's facet heading
  * in English in both locales.
+ *
+ * The second half of this list is RFC 0004-bis §4.1. Four HTML attributes and
+ * two props were not enough: `confirm-label="Clear Cache"` sat above a French
+ * confirmation sentence and this gate read zero, because a *prop* carrying the
+ * button's own text was not among the six names it knew. Adding names is the
+ * narrow fix; the rule the audit actually needs is `looksHuman` below, and this
+ * list is now only the set of names that are human text *whatever* they hold.
  */
-const HUMAN_ATTRS = ["title", "placeholder", "aria-label", "alt", "label", "description"];
+const HUMAN_ATTRS = [
+  "title",
+  "placeholder",
+  "aria-label",
+  "alt",
+  "label",
+  "description",
+  "empty-message",
+  "confirm-label",
+  "loading-label",
+  "item-noun",
+  "scope",
+  "action",
+  "value-text",
+  "message",
+  "hint",
+  "heading",
+  "summary",
+  "legend",
+];
 
 /**
- * Object keys whose string value is rendered as a label somewhere. Templates
- * are not the only place user-visible text hides: a `label:` in a `<script>`
- * array reaches the screen through `{{ link.label }}` just as directly, and
- * scanning only templates is what let the whole admin navigation sit in English
- * while this gate reported zero.
+ * The rule, rather than the list.
+ *
+ * `HUMAN_ATTRS` enumerates positions text has been *found* in before, which is
+ * why this gate has now read zero twice over live English — once for the whole
+ * admin navigation (`adminSections.ts`'s header records it) and once for five
+ * strings in two dialogs. A name ending in `-label`, `-message`, `-text`,
+ * `-title`, `-hint` or `-description` is human-readable text by construction:
+ * that is what those suffixes mean. Anything matching is scanned, and
+ * `isTranslatable` is still the one that decides whether the value is prose.
  */
-const LABEL_KEYS = ["label", "title"];
+const looksHuman = (attr) =>
+  HUMAN_ATTRS.includes(attr) ||
+  /(^|-)(label|message|text|title|hint|description|caption|tooltip|placeholder)$/.test(attr);
 
 /**
  * Files whose string data the RFC keeps as data (§6.7): registry setup snippets
@@ -82,21 +114,122 @@ function templateOf(source) {
 }
 
 /**
- * `label: "All Packages"` in a script. A value that is already a catalogue key
- * (`adminNav.users`) is the fixed form, and `isTranslatable` rejects it for
- * free — a dotted identifier is not prose.
+ * The `<script>` region, comments and imports removed.
+ *
+ * Imports carry module specifiers, JSDoc carries English by design, and neither
+ * reaches a screen — leaving them in buries the findings under the prose that
+ * explains them.
  */
-function scriptLabels(source) {
+function scriptOf(source) {
+  const region = source.includes("<template>") ? source.slice(0, source.indexOf("<template>")) : source;
+  return region
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:"'`\\])\/\/[^\n]*/g, "$1")
+    .replace(/^\s*(import|export)\s[^;\n]*(from\s*["'][^"']*["'])?;?/gm, "");
+}
+
+/**
+ * Text that reaches a human through a variable rather than through a tag.
+ *
+ * `parseError.value = "Paste some CSV content first."` renders in an alert two
+ * lines later and no template scan can see it, which is how §2.1's examples
+ * shipped behind a green gate. `isTranslatable` already returned `true` for
+ * every one of them — the audit simply never asked it about this position.
+ *
+ * Two sinks: assignment (to a ref, a property, or a plain local) and a call
+ * argument. `SILENT_SINK` is the one concession to enumeration, and it is
+ * deliberately about *destinations that are not a screen* rather than about
+ * shapes of text: a message handed to `console.error` or `new Error` is for
+ * whoever reads the log, and translating it would make a stack trace harder to
+ * search. `t(…)`/`te(…)` are excluded for the opposite reason — their argument
+ * is a catalogue key, which is the fixed form this gate is driving toward.
+ */
+const SILENT_SINK =
+  /(?:console\.\w+|new\s+Error|Error|URL|URLSearchParams|RegExp|JSON\.\w+|localStorage\.\w+|sessionStorage\.\w+|querySelector(?:All)?|getElementById|createElement|setAttribute|getAttribute|matchMedia|cva|cn|defineModel|defineEmits|\bt|\bte|\btm|\bd|\bn)\s*$/;
+
+/**
+ * Identifiers whose assigned string is machine-facing whatever it says: a route
+ * path, a storage key, a CSS class list, a sort order, a CLI invocation. Matched
+ * on the *target* rather than the value, because "asc" and "grid" are not prose
+ * either way but `"Paste some CSV content first."` is.
+ *
+ * Two forms and no third: the bare word, or the word as a camelCase suffix
+ * (`emptyPath`, `storageKey`). Matching a bare suffix would silence `valid` for
+ * ending in `id` and `monkey` for ending in `key`, which is how a denylist
+ * quietly turns into the same blind spot the list above exists to close.
+ */
+const SILENT_WORDS = [
+  "class", "className", "classes", "style", "path", "href", "src", "url", "key", "id",
+  "mode", "sort", "order", "type", "variant", "status", "state", "locale", "lang",
+  "theme", "token", "method", "format", "code", "command", "snippet", "example",
+  // HTTP header names. `Authorization: \`Bearer ${token}\`` strips to "Bearer",
+  // which is prose by shape and a protocol constant by destination.
+  "authorization", "accept", "header", "scheme",
+];
+const capitalise = (w) => w[0].toUpperCase() + w.slice(1);
+// The suffix half is case-*sensitive* on purpose: `/id$/i` matches `valid`, and
+// only the capital in `packageId` distinguishes a suffix from a coincidence.
+const SILENT_SUFFIX = new RegExp(`[a-z0-9](?:${SILENT_WORDS.map(capitalise).join("|")})$`);
+const SILENT_EXACT = new RegExp(`^(?:${SILENT_WORDS.join("|")})$`, "i");
+const SILENT_TARGET = { test: (name) => SILENT_EXACT.test(name) || SILENT_SUFFIX.test(name) };
+
+function scriptStrings(source) {
   const out = [];
-  const script = source.includes("<script") ? source.slice(0, source.indexOf("<template>") + 1) : source;
-  for (const key of LABEL_KEYS) {
-    const re = new RegExp(`(?<![\\w.])${key}\\s*:\\s*"([^"\\\\]*)"`, "g");
-    for (const [, value] of script.matchAll(re)) {
-      const text = value.trim();
-      if (isTranslatable(text)) out.push(`${key}: "${text}"`);
-    }
+  const script = scriptOf(source);
+  // A `${…}` residue is a value, not a sentence — the same rule `boundLiterals`
+  // applies. Without it a code snippet inside a backtick template reads as
+  // prose the moment it contains a quoted attribute.
+  const strip = (text) => text.replace(/\$\{[^}]*\}/g, "").trim();
+
+  // Assignment: `x = "…"`, `x.value = "…"`, `obj.prop = "…"`.
+  for (const [, target, single, double, backtick] of script.matchAll(
+    /([\w.$[\]"']+)\s*=(?!=)\s*(?:"([^"\\\n]*)"|'([^'\\\n]*)'|`([^`\\]*)`)/g,
+  )) {
+    const text = strip(single ?? double ?? backtick);
+    /* The name being assigned to, however it was reached: `parseError.value`,
+       `row.error`, `headers["Authorization"]`. The last identifier in the
+       expression is the one that names the destination. */
+    const name = target.replace(/\.value$/, "").match(/[A-Za-z_$][\w$]*/g)?.pop() ?? target;
+    if (SILENT_TARGET.test(name)) continue;
+    if (isTranslatable(text)) out.push(`${target} = "${text}"`);
   }
-  return out;
+
+  // Call argument: `setError("…")`, `announce("…")`, `ref("…")`. The callee is
+  // read from the text *before* the paren — `match.index`, not `indexOf`, which
+  // would resolve every repeat of a common call to its first occurrence.
+  for (const match of script.matchAll(/\(\s*(?:"([^"\\\n]*)"|'([^'\\\n]*)'|`([^`\\]*)`)/g)) {
+    const text = strip(match[1] ?? match[2] ?? match[3]);
+    if (SILENT_SINK.test(script.slice(Math.max(0, match.index - 40), match.index))) continue;
+    if (isTranslatable(text)) out.push(`(… "${text}")`);
+  }
+
+  /* A fallback expression: `x ?? "Unknown"`, `ok ? "Yes" : "No"`, `a || "—"`.
+     This is where default human text hides — `errorMsg.value = e instanceof
+     Error ? e.message : "Export failed"` is an assignment whose right-hand side
+     is an expression, so the assignment sink above cannot see it, and it is the
+     shape every "…or a default message" line takes. */
+  for (const match of script.matchAll(
+    /(?:\?\?|\?|\|\|)\s*(?:"([^"\\\n]*)"|'([^'\\\n]*)'|`([^`\\]*)`)/g,
+  )) {
+    const text = strip(match[1] ?? match[2] ?? match[3]);
+    if (isTranslatable(text)) out.push(`… ?? "${text}"`);
+  }
+
+  /* Object-literal value: `dark: "Theme: dark"` in a lookup table. This is the
+     §2.2 defect in its purest form — `theme.dark` was translated, correct, and
+     referenced zero times while `ThemeToggle` held the English in a `LABELS`
+     map. This replaces a pass that scanned `label:` and `title:` only, because
+     those are the two keys text had been found under before; the key's *name*
+     is not what makes the value text. */
+  for (const [, name, single, double, backtick] of script.matchAll(
+    /(?<![\w.$])([A-Za-z_$][\w$]*)\s*:\s*(?:"([^"\\\n]*)"|'([^'\\\n]*)'|`([^`\\]*)`)/g,
+  )) {
+    if (SILENT_TARGET.test(name)) continue;
+    const text = strip(single ?? double ?? backtick);
+    if (isTranslatable(text)) out.push(`${name}: "${text}"`);
+  }
+
+  return [...new Set(out)];
 }
 
 /**
@@ -117,7 +250,12 @@ function boundLiterals(template) {
   // A backtick literal may interpolate; its `${…}` parts are values, and what
   // is left around them is the sentence — `` `All registries (${n})` `` is
   // still English prose that needs a key.
-  const literal = /'([^']{3,})'|`([^`]{3,})`/g;
+  /* `*`, not `{3,}`: a minimum length here makes the engine mis-pair quotes.
+     Against `? "…" : "Save"` it skips the one-character `"…"`, resumes at that
+     literal's *closing* quote, and matches `" : "` — swallowing `"Save"`
+     entirely. Length is `isProse`'s job; this regex's only job is finding where
+     a literal starts and ends. */
+  const literal = /'([^']*)'|`([^`]*)`/g;
   const strip = (text) => text.replace(/\$\{[^}]*\}/g, "").trim();
 
   for (const [, colonAttr, directive, value] of template.matchAll(
@@ -131,20 +269,34 @@ function boundLiterals(template) {
     }
   }
 
-  // Inside an interpolation both quote styles are fair game — it is not an
-  // attribute value, so a double quote does not terminate anything.
+  /* Inside an interpolation all three quote styles are fair game — it is not an
+     attribute value, so a double quote does not terminate anything, and a
+     backtick is the one an interpolated sentence is most likely to use.
+     Omitting the backtick is how `` `Sign in with ${providerLabel(p.name)}` ``
+     rendered English on the login page with this gate reading zero. */
   for (const [, expr] of template.matchAll(/\{\{([\s\S]*?)\}\}/g)) {
-    for (const [, single, double] of expr.matchAll(/'([^']{3,})'|"([^"]{3,})"/g)) {
-      const text = strip(single ?? double);
+    for (const [, single, double, backtick] of expr.matchAll(
+      // See the note on `literal` above: a length floor here mis-pairs quotes.
+      /'([^']*)'|"([^"]*)"|`([^`]*)`/g,
+    )) {
+      const text = strip(single ?? double ?? backtick);
       if (isTranslatable(text)) out.push(`{{ … '${text}' }}`);
     }
   }
   return out;
 }
 
-function findings(path) {
-  const source = readFileSync(path, "utf8");
-  if (!path.endsWith(".vue")) return scriptLabels(source);
+/**
+ * Every untranslated string in one file's source. Exported so the gate can be
+ * tested on a fixture rather than on the tree it grades — a scanner that cannot
+ * be shown to *fail* is the same green as one that found nothing, which is the
+ * failure mode this whole file exists to close (RFC 0004-bis §2).
+ *
+ * @param source the file contents
+ * @param isVue  whether to scan a `<template>` as well as the `<script>`
+ */
+export function scanSource(source, isVue = true) {
+  if (!isVue) return scriptStrings(source);
   const template = templateOf(source)
     .replace(/<!--[\s\S]*?-->/g, "") // comments are not user-visible
     .replace(/<(pre|code)[\s\S]*?<\/\1\s*>/g, ""); // `</code\n>` is still a close tag // code samples are not prose
@@ -165,19 +317,27 @@ function findings(path) {
     out.push(text.length > 60 ? `${text.slice(0, 57)}…` : text);
   }
 
-  // Human-facing attributes with a literal (non-bound) value.
-  for (const attr of HUMAN_ATTRS) {
-    const re = new RegExp(`(?<![:\\w-])${attr}="([^"{]+)"`, "g");
-    for (const [, value] of template.matchAll(re)) {
-      const text = value.trim();
-      if (isTranslatable(text)) out.push(`${attr}="${text}"`);
-    }
+  /* Human-facing attributes with a literal (non-bound) value. Every attribute
+     is matched and `looksHuman` decides which are text — iterating a fixed list
+     of names can only ever find text where text has already been found, and
+     that is exactly how `confirm-label="Clear Cache"` shipped. */
+  for (const [, attr, value] of template.matchAll(/(?<![:\w-])([a-zA-Z][\w-]*)="([^"{]*)"/g)) {
+    if (!looksHuman(attr)) continue;
+    const text = value.trim();
+    if (isTranslatable(text)) out.push(`${attr}="${text}"`);
   }
   out.push(...boundLiterals(template));
-  out.push(...scriptLabels(source));
+  out.push(...scriptStrings(source));
   return out;
 }
 
+const findings = (path) => scanSource(readFileSync(path, "utf8"), path.endsWith(".vue"));
+
+// Importing this module must not run the report — `i18n-audit.test.ts` imports
+// `scanSource` and would otherwise walk the whole tree on every test run.
+if (process.argv[1] && process.argv[1].endsWith("i18n-audit.mjs")) main();
+
+function main() {
 const maxIndex = process.argv.indexOf("--max");
 const max = maxIndex === -1 ? null : Number(process.argv[maxIndex + 1]);
 
@@ -199,4 +359,5 @@ console.log(`\n${total} untranslated strings across ${report.length} files`);
 if (max !== null && total > max) {
   console.error(`\ni18n audit: ${total} untranslated strings exceeds the budget of ${max}`);
   process.exit(1);
+}
 }

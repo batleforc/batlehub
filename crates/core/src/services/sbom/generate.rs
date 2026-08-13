@@ -26,6 +26,7 @@ pub(super) fn generate_spdx(
     meta: &PackageMetadata,
     artifact_key: &str,
     deps: &[SbomDependency],
+    license: Option<&str>,
 ) -> serde_json::Value {
     let doc_ns = format!(
         "https://batlehub/sbom/{}/{}/{}/{}",
@@ -45,6 +46,12 @@ pub(super) fn generate_spdx(
         checksums = serde_json::json!([{"algorithm": "SHA256", "checksumValue": ck}]);
     }
 
+    // SPDX has no null: an undeclared licence is the specification's own
+    // `NOASSERTION`, which says "not examined or not stated" rather than "none".
+    // `licenseConcluded` stays `NOASSERTION` regardless — BatleHub reports what
+    // the manifest declared, it does not conclude anything about it.
+    let license_declared = license.unwrap_or("NOASSERTION");
+
     let mut packages = vec![serde_json::json!({
         "SPDXID": "SPDXRef-Package",
         "name": meta.id.name,
@@ -53,6 +60,8 @@ pub(super) fn generate_spdx(
         "filesAnalyzed": false,
         "checksums": checksums,
         "supplier": "NOASSERTION",
+        "licenseDeclared": license_declared,
+        "licenseConcluded": "NOASSERTION",
         "comment": artifact_key,
     })];
 
@@ -96,6 +105,7 @@ pub(super) fn generate_cyclonedx(
     artifact_key: &str,
     deps: &[SbomDependency],
     registry_type: &str,
+    license: Option<&str>,
 ) -> serde_json::Value {
     // `registry_type` (e.g. "maven") must come from the caller, not `meta.id.registry`:
     // the latter is the user-configured registry *instance* name (e.g. "my-maven"),
@@ -108,7 +118,12 @@ pub(super) fn generate_cyclonedx(
         hashes = serde_json::json!([{"alg": "SHA-256", "content": ck}]);
     }
 
-    let main_component = serde_json::json!({
+    // CycloneDX omits `licenses` entirely when nothing is declared: an empty
+    // array would assert "examined, and there are none". The `expression` form
+    // is used rather than `license.id` because the manifest value may be a
+    // compound expression (`MIT OR Apache-2.0`), and `id` must be a single
+    // SPDX identifier.
+    let mut main_component = serde_json::json!({
         "type": "library",
         "name": meta.id.name,
         "version": meta.id.version,
@@ -116,6 +131,9 @@ pub(super) fn generate_cyclonedx(
         "hashes": hashes,
         "comment": artifact_key,
     });
+    if let Some(expr) = license {
+        main_component["licenses"] = serde_json::json!([{ "expression": expr }]);
+    }
 
     let dep_components: Vec<_> = deps
         .iter()
@@ -211,7 +229,7 @@ mod tests {
     #[test]
     fn generate_spdx_required_fields() {
         let meta = make_meta("cargo", "tokio", "1.0.0", Some("abc123"));
-        let doc = generate_spdx(&meta, "artifact:cargo/tokio/1.0.0", &[]);
+        let doc = generate_spdx(&meta, "artifact:cargo/tokio/1.0.0", &[], None);
 
         assert_eq!(doc["spdxVersion"], "SPDX-2.3");
         assert_eq!(doc["dataLicense"], "CC0-1.0");
@@ -227,7 +245,7 @@ mod tests {
     #[test]
     fn generate_spdx_no_checksum() {
         let meta = make_meta("npm", "lodash", "4.17.21", None);
-        let doc = generate_spdx(&meta, "k", &[]);
+        let doc = generate_spdx(&meta, "k", &[], None);
         assert!(doc["packages"][0]["checksums"]
             .as_array()
             .unwrap()
@@ -242,7 +260,7 @@ mod tests {
             version_req: Some("1.3.8".into()),
             ecosystem: "npm".into(),
         }];
-        let doc = generate_spdx(&meta, "k", &deps);
+        let doc = generate_spdx(&meta, "k", &deps, None);
         // main package + 1 dep
         assert_eq!(doc["packages"].as_array().unwrap().len(), 2);
         assert_eq!(doc["relationships"].as_array().unwrap().len(), 2);
@@ -252,7 +270,7 @@ mod tests {
     #[test]
     fn generate_cyclonedx_required_fields() {
         let meta = make_meta("cargo", "serde", "1.0.0", Some("deadbeef"));
-        let doc = generate_cyclonedx(&meta, "k", &[], "cargo");
+        let doc = generate_cyclonedx(&meta, "k", &[], "cargo", None);
 
         assert_eq!(doc["bomFormat"], "CycloneDX");
         assert_eq!(doc["specVersion"], "1.4");
@@ -267,11 +285,48 @@ mod tests {
         // A registry instance named "my-maven" (type "maven") must not silently
         // fall through registry_to_purl's match to "pkg:generic".
         let meta = make_meta("my-maven", "org.example:widget", "1.0.0", None);
-        let doc = generate_cyclonedx(&meta, "k", &[], "maven");
+        let doc = generate_cyclonedx(&meta, "k", &[], "maven", None);
         assert_eq!(
             doc["components"][0]["purl"],
             "pkg:maven/org.example:widget@1.0.0"
         );
+    }
+
+    #[test]
+    fn generate_spdx_declares_the_manifest_license() {
+        let meta = make_meta("cargo", "serde", "1.0.0", None);
+        let doc = generate_spdx(&meta, "k", &[], Some("MIT OR Apache-2.0"));
+        assert_eq!(doc["packages"][0]["licenseDeclared"], "MIT OR Apache-2.0");
+        // BatleHub reports; it does not conclude.
+        assert_eq!(doc["packages"][0]["licenseConcluded"], "NOASSERTION");
+    }
+
+    /// SPDX has no null. An unknown licence is `NOASSERTION`, which the
+    /// specification defines as "not examined or not stated" — not "none".
+    #[test]
+    fn generate_spdx_unknown_license_is_noassertion() {
+        let meta = make_meta("cargo", "serde", "1.0.0", None);
+        let doc = generate_spdx(&meta, "k", &[], None);
+        assert_eq!(doc["packages"][0]["licenseDeclared"], "NOASSERTION");
+    }
+
+    #[test]
+    fn generate_cyclonedx_uses_expression_for_compound_licenses() {
+        let meta = make_meta("npm", "lodash", "4.17.21", None);
+        let doc = generate_cyclonedx(&meta, "k", &[], "npm", Some("MIT OR Apache-2.0"));
+        assert_eq!(
+            doc["components"][0]["licenses"][0]["expression"],
+            "MIT OR Apache-2.0"
+        );
+    }
+
+    /// An empty `licenses` array asserts "examined, and there are none", which
+    /// is a different claim from "we do not know".
+    #[test]
+    fn generate_cyclonedx_omits_licenses_when_unknown() {
+        let meta = make_meta("npm", "lodash", "4.17.21", None);
+        let doc = generate_cyclonedx(&meta, "k", &[], "npm", None);
+        assert!(doc["components"][0].get("licenses").is_none());
     }
 
     #[test]

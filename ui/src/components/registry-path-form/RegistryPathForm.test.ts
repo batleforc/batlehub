@@ -54,13 +54,21 @@ describe("RegistryPathForm", () => {
     expect(wrapper.find("code").exists()).toBe(true);
   });
 
-  it("lists known registry names as datalist options", () => {
+  /**
+   * A real listbox since RFC 0004-bis §6.2. The `<datalist>` this replaced
+   * exposed nothing to assistive tech, behaved differently per browser, and
+   * could not say "nothing matches" — which is the one behaviour the field
+   * needed and the reason the sweep exists.
+   */
+  it("offers known registry names as listbox options", async () => {
     const wrapper = mountForm("npm", {}, [
       { name: "npm-mirror", type: "npm" },
       { name: "other", type: "npm" },
     ]);
-    const options = wrapper.findAll("datalist option");
-    expect(options.map((o) => o.attributes("value"))).toEqual(["npm-mirror", "other"]);
+    await wrapper.find('input[role="combobox"]').trigger("focus");
+
+    const options = wrapper.findAll('[role="option"]');
+    expect(options.map((o) => o.text())).toEqual(["npm-mirrornpm", "othernpm"]);
   });
 
   it("updates the bound values object when a field is edited", async () => {

@@ -45,7 +45,7 @@ async function save() {
       path: { registry: props.registry, name: props.name },
       body: { visibility: selected.value },
     });
-    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? "API error");
+    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? t("common.apiError"));
     reload();
   } catch (e) {
     error.value = e instanceof Error ? e.message : "Unknown error";

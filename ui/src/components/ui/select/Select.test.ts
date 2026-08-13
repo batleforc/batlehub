@@ -12,6 +12,39 @@ describe("Select", () => {
     document.body.innerHTML = "";
   });
 
+  /**
+   * An option meaning "no value" — "All registries", "Any severity".
+   *
+   * radix refuses `<SelectItem value="">`, because the empty string is how a
+   * `Select` clears itself. But a genuinely optional field needs blank to be
+   * something you can *choose*: a subscription's registry is documented as
+   * "leave blank for all registries", and a `Select` that could not express
+   * blank would silently narrow every subscription that relied on it (RFC
+   * 0004-bis §6.2). The empty string is carried through radix as a sentinel and
+   * translated back at the boundary.
+   */
+  describe("an empty-valued option", () => {
+    const withAll = [{ value: "", label: "All registries" }, ...options];
+
+    it("renders rather than throwing", () => {
+      const wrapper = mount(Select, {
+        props: { options: withAll, modelValue: "" },
+        attachTo: document.body,
+      });
+      // radix would have thrown on `value=""` during setup.
+      expect(wrapper.find('[role="combobox"]').exists()).toBe(true);
+    });
+
+    /* What is *not* asserted here, stated rather than left to be assumed: the
+       round trip — choosing "All registries" and the caller receiving `""`.
+       radix renders its items into a portal that only mounts when the list
+       opens, and jsdom has no layout for the trigger to open against, so there
+       is nothing to click. Reaching past that to poke the handler directly
+       would prove the branch and not the wiring, and the wiring is the half
+       that broke. The rendered gate covers it on a real browser; nothing in
+       vitest does. */
+  });
+
   it("renders the trigger with placeholder and base classes", () => {
     const wrapper = mount(Select, {
       props: { options, placeholder: "Choose…" },

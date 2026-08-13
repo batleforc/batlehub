@@ -50,6 +50,29 @@ async fn health_without_activity_returns_zeroed_stats() {
     }
 }
 
+/// RFC 0004-bis A2: mode and beta-channel state on the health row.
+///
+/// "Cached artifacts: 0, last pull: never" reads identically for a broken proxy
+/// and for a healthy `local` registry that has nothing to pull by definition.
+/// Without the mode there is no way to tell those apart from this response, and
+/// the console was fetching a second endpoint to find out.
+#[actix_web::test]
+async fn health_states_the_mode_and_beta_channel_of_each_registry() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/health")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let body: Value = read_body_json(call_service(&app, req).await).await;
+
+    for entry in body.as_array().expect("array response") {
+        // The test app configures no explicit modes, so every registry takes
+        // the default — which must still be *stated* rather than omitted.
+        assert_eq!(entry["mode"], "proxy", "every row names its mode");
+        assert_eq!(entry["beta_channel_enabled"], serde_json::json!(false));
+    }
+}
+
 // ── /api/v1/admin/registries/{registry}/clear-cache ──────────────────────────
 
 #[actix_web::test]

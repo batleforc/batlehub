@@ -40,6 +40,7 @@ Current adapters: npm, Cargo, GitHub, Forgejo/Gitea, GitLab, OpenVSX, VS Code Ma
 - [x] Eviction policies: TTL-based expiry, "not accessed for N days", garbage-collect all versions except the latest N, storage size cap with LRU eviction
 - [x] Cache index coherence: compare what is actually in the storage backend against what the registry metadata expects, and recover from corruption or manual deletions
 - [x] Content-addressable deduplication: identical artifact bytes are stored once regardless of how many logical keys (registries, package names) reference them — ref-counted via `artifact_dedup_index` / `artifact_dedup_refs`, backwards-compatible with pre-dedup artifacts
+- [ ] **Storage-backend migration** — move stored artifacts from one configured backend to another (filesystem ↔ S3) when `[storage]` changes. Artifacts already record which backend holds them, but there is no migrate, move or rebalance operation, so changing the backend strands everything already written: it stays reachable only while the old backend remains configured. Needs a resumable walk, partial-failure tolerance and dedup ref-count awareness (RFC 0004-bis §13.3)
 - [x] Proactive cache warming: pre-fetch known versions of configured packages on startup and on demand via the admin API (`POST /api/v1/admin/registries/{registry}/warm`); configurable per registry with `warm_packages`, `warm_latest_n`, and `warm_concurrency`
 
 ---
@@ -62,6 +63,7 @@ Current adapters: npm, Cargo, GitHub, Forgejo/Gitea, GitLab, OpenVSX, VS Code Ma
 - [x] Allowlist of trusted publishers — `trusted_publisher` rule; supported for GitHub/GitLab/Forgejo (owner/group), npm (scope or publishing user), OpenVSX/VS Code Marketplace (publisher segment). **Cargo crate owners not yet supported** — crates.io ownership isn't in the sparse index and would need a separate API call
 - [x] Allowlist of approved versions; blocklist of specific versions with known issues — `version_gate` rule (`allow`/`block` with exact or semver-range matching)
 - [x] Vulnerability scanning via the [OSV API](https://osv.dev) to block or warn about packages with known CVEs — periodic SBOM re-scan plus a per-registry `cve_gate` rule (`min_severity`, `block`/warn-only, `bypass_roles`)
+- [~] **Licence policy rule** — `license_gate`: allow/deny SPDX expressions per registry, `allow_unknown` for the case where the licence is not yet known, `block` vs warn-only and `bypass_roles` like `cve_gate`. Distinct from RFC 0002's licence *flag kind*, which needs an external source to assert one; this reads what the package declares in its own manifest. Requires licence extraction first — `ArchiveSbomExtractor` already parses the manifest for dependencies in five ecosystems, so the licence comes off a parse that already runs. The licence is only known after the archive is downloaded, so the first request for an uncached package cannot be gated (RFC 0004-bis §13.1)
 - [ ] YARA rule evaluation for custom malware or policy patterns
 - [ ] Antivirus scanning for binary artifacts (VSIX, Go module zips) via a configurable external REST API
 - [x] Warn when an upstream registry is returning high error rates or slow responses and cached data may be stale — in-process EMA of upstream error rate / latency per registry (`ProxyMetrics`); a `batlehub_upstream_health_degraded{registry}` gauge plus a `tracing::warn!` on the healthy→degraded transition; also surfaced in `GET /api/v1/admin/stats` (`upstream_degraded`, `upstream_error_rate`, `upstream_latency_ms`)
@@ -126,6 +128,7 @@ Current adapters: npm, Cargo, GitHub, Forgejo/Gitea, GitLab, OpenVSX, VS Code Ma
 - [x] `RegistryInfo.public_url` on `GET /api/v1/registries`, used by the Setup Guide and namespace upload snippets — the `.netrc` block lists every host a client may authenticate against (entries are matched by hostname, so the main host alone left host-routed registries unauthenticated), and the Terraform `source` drops the registry segment on a host-routed registry, where it is no longer part of the path
 - [x] Helm `ingress.extraHosts` + documented `config.server.trusted_proxies`
 - [ ] Per-host TLS certificate management inside the server (currently the ingress's job)
+- [ ] **Instance-to-instance transfer for air-gapped estates** — export a set of approved artifacts plus their metadata as a signed bundle, and import it into a disconnected instance. `[http_proxy]` covers a *restricted* network; a genuinely offline one has no path in today except restoring a full backup, which moves the database, the config and every credential in it rather than the artifacts someone approved. Needs a bundle format, its signing, and a defined interaction with content-addressable dedup (RFC 0004-bis §13.2)
 
 ---
 
@@ -141,6 +144,8 @@ Current adapters: npm, Cargo, GitHub, Forgejo/Gitea, GitLab, OpenVSX, VS Code Ma
 ## Private registry features
 
 Applies to registries running in `local` or `hybrid` mode.
+
+- [ ] **Seed a registry from an incumbent** — import the *contents* of an existing Nexus, Artifactory or Verdaccio, not just the config for a new instance (`batlehub-cli registry suggest` already does the latter). This is the migration path for the users most likely to adopt BatleHub, and without it every adoption starts from an empty cache. Needs a per-source adapter plus an ingestion path that reuses the existing publish machinery so quotas, ownership, signing and SBOM all still apply (RFC 0004-bis §13.4)
 
 ### Per-registry additions
 

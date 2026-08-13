@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
 import { ref, computed } from "vue";
-import { useRouter } from "vue-router";
+import { RouterLink } from "vue-router";
 import { Package } from "@lucide/vue";
 import SectionTabs from "@/components/admin/SectionTabs.vue";
 import { PageHeader } from "@/components/ui/page-header";
@@ -27,6 +27,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
+import { Announcer } from "@/components/ui/announcer";
 import {
   Table,
   TableHeader,
@@ -61,7 +62,6 @@ interface AdminPackageSummary {
 
 const { token } = useAuth();
 const { authFetch } = useAuthFetch();
-const router = useRouter();
 
 interface AdminPackageListResponse {
   items: AdminPackageSummary[];
@@ -193,6 +193,26 @@ const selected = ref<Set<string>>(new Set());
 const bulkLoading = ref(false);
 const bulkResultMsg = ref<string | null>(null);
 
+/**
+ * One sentence for all three bulk verbs.
+ *
+ * These were three template literals with a hand-built `, N failed` suffix,
+ * which is a sentence assembled from fragments — the shape that cannot be
+ * translated, because the clause order is a property of the language and not of
+ * the code. The catalogue owns the whole sentence and pluralises the noun; the
+ * verb is a key so French can inflect it.
+ */
+const BULK_KEYS = {
+  blocked: "adminPackages.bulkBlocked",
+  unblocked: "adminPackages.bulkUnblocked",
+  deleted: "adminPackages.bulkDeleted",
+} as const;
+
+function bulkOutcome(verb: keyof typeof BULK_KEYS, ok: number, failed: number): string {
+  const done = t(BULK_KEYS[verb], { count: ok }, ok);
+  return failed ? t("adminPackages.bulkWithFailures", { done, failed }, failed) : done;
+}
+
 function pkgKey(pkg: AdminPackageSummary) {
   return `${pkg.package_id.registry}:${pkg.package_id.name}:${pkg.package_id.version}:${pkg.package_id.artifact ?? ""}`;
 }
@@ -249,8 +269,7 @@ async function bulkBlock() {
     }
     const r = res.data;
     if (r) {
-      const failSuffix = r.failed_count ? `, ${r.failed_count} failed` : "";
-      bulkResultMsg.value = `Blocked ${r.succeeded_count} package(s)${failSuffix}.`;
+      bulkResultMsg.value = bulkOutcome("blocked", r.succeeded_count, r.failed_count);
     }
   } finally {
     bulkLoading.value = false;
@@ -282,8 +301,7 @@ async function bulkUnblock() {
     }
     const r = res.data;
     if (r) {
-      const failSuffix = r.failed_count ? `, ${r.failed_count} failed` : "";
-      bulkResultMsg.value = `Unblocked ${r.succeeded_count} package(s)${failSuffix}.`;
+      bulkResultMsg.value = bulkOutcome("unblocked", r.succeeded_count, r.failed_count);
     }
   } finally {
     bulkLoading.value = false;
@@ -312,8 +330,7 @@ async function bulkDelete() {
       succeeded_count?: number;
       failed_count?: number;
     };
-    const failSuffix = json.failed_count ? `, ${json.failed_count} failed` : "";
-    bulkResultMsg.value = `Deleted ${json.succeeded_count ?? 0} package(s)${failSuffix}.`;
+    bulkResultMsg.value = bulkOutcome("deleted", json.succeeded_count ?? 0, json.failed_count ?? 0);
   } catch (e) {
     bulkResultMsg.value = extractMessage(e);
   } finally {
@@ -354,10 +371,14 @@ const confirmProps = computed(() => {
   if (action.kind === "delete-one") {
     const id = action.pkg.package_id;
     return {
-      action: "Delete",
+      action: t("common.delete"),
       count: 1,
-      itemNoun: "package record",
-      scope: `${id.name}@${id.version} in ${id.registry}, and its cached artifact`,
+      itemNoun: t("adminPackages.itemPackageRecord"),
+      scope: t("adminPackages.scopeDeleteOne", {
+        name: id.name,
+        version: id.version,
+        registry: id.registry,
+      }),
       reversible: false,
       confirmName: id.name,
     };
@@ -365,37 +386,41 @@ const confirmProps = computed(() => {
   if (action.kind === "block-one") {
     const id = action.pkg.package_id;
     return {
-      action: "Block",
+      action: t("common.block"),
       count: 1,
-      itemNoun: "package",
-      scope: `${id.name}@${id.version} in ${id.registry} — consumers resolving it receive 403 until unblocked`,
+      itemNoun: t("adminPackages.itemPackage"),
+      scope: t("adminPackages.scopeBlockOne", {
+        name: id.name,
+        version: id.version,
+        registry: id.registry,
+      }),
       reversible: true,
     };
   }
   if (action.kind === "bulk-block") {
     return {
-      action: "Block",
+      action: t("common.block"),
       count: selected.value.size,
-      itemNoun: "package",
-      scope: "the selection — consumers resolving them receive 403 until unblocked",
+      itemNoun: t("adminPackages.itemPackage"),
+      scope: t("adminPackages.scopeBlockSelection"),
       reversible: true,
     };
   }
   if (action.kind === "bulk-delete") {
     return {
-      action: "Delete",
+      action: t("common.delete"),
       count: selected.value.size,
-      itemNoun: "package record",
-      scope: "the selection, purging their cached artifacts",
+      itemNoun: t("adminPackages.itemPackageRecord"),
+      scope: t("adminPackages.scopeDeleteSelection"),
       reversible: false,
       confirmName: "delete",
     };
   }
   return {
-    action: "Unblock",
+    action: t("common.unblock"),
     count: selected.value.size,
-    itemNoun: "package",
-    scope: "the selection",
+    itemNoun: t("adminPackages.itemPackage"),
+    scope: t("adminPackages.scopeSelection"),
     reversible: true,
   };
 });
@@ -414,6 +439,11 @@ async function runPending(): Promise<void> {
 
 <template>
   <div class="space-y-4">
+    <!-- An outcome announced, not only rendered (RFC 0004-bis §2.6). Every bulk
+         result, block, warm and cache invalidation in this console reached
+         sighted users only — on the surface whose audience includes the one
+         person able to perform destructive actions. -->
+    <Announcer :message="bulkResultMsg ?? ''" />
     <SectionTabs :tabs="PACKAGES_TABS" />
     <PageHeader variant="display">
       <template #title>
@@ -449,9 +479,8 @@ async function runPending(): Promise<void> {
           blockReason = '';
           pending = { kind: 'bulk-block' };
         "
-        >{{
-        t("adminPackages.blockSelected")
-      }}</Button>
+        >{{ t("adminPackages.blockSelected") }}</Button
+      >
       <Button
         size="sm"
         variant="outline"
@@ -542,15 +571,24 @@ async function runPending(): Promise<void> {
                     @change="toggleAll"
                   />
                 </TableHead>
+                <!--
+                  Six columns, not ten (RFC 0004-bis §6.1).
+
+                  Measured at 1440: the table wanted ~1650px intrinsic in a
+                  1134px container, so the row verbs sat off-screen at the
+                  console's own standard width. The two links that were an
+                  unlabelled nav column are now *on* the cells they are about —
+                  the name opens the package, the version opens the artifact
+                  query — which is where a reader already points; `artifact` is
+                  folded into the name cell, and `last_accessed_by` moved to the
+                  detail page, where one row's history belongs.
+                -->
                 <TableHead>{{ t("common.registry") }}</TableHead>
                 <TableHead>{{ t("common.name") }}</TableHead>
                 <TableHead>{{ t("common.version") }}</TableHead>
-                <TableHead>{{ t("common.artifact") }}</TableHead>
                 <TableHead>{{ t("common.status") }}</TableHead>
                 <TableHead>{{ t("adminPackages.lastPulled") }}</TableHead>
-                <TableHead>{{ t("adminPackages.lastPulledBy") }}</TableHead>
                 <TableHead class="text-right"> {{ t("common.downloads") }} </TableHead>
-                <TableHead />
                 <TableHead class="text-right"> {{ t("common.actions") }} </TableHead>
               </TableRow>
             </TableHeader>
@@ -573,13 +611,35 @@ async function runPending(): Promise<void> {
                   {{ pkg.package_id.registry }}
                 </TableCell>
                 <TableCell class="font-medium">
-                  {{ pkg.package_id.name }}
+                  <RouterLink
+                    :to="`/packages/${encodeURIComponent(
+                      pkg.package_id.registry,
+                    )}/${encodeURIComponent(pkg.package_id.name)}`"
+                    class="text-primary underline underline-offset-2"
+                  >
+                    {{ pkg.package_id.name }}
+                  </RouterLink>
+                  <span
+                    v-if="pkg.package_id.artifact"
+                    class="ml-1.5 font-mono text-xs text-muted-foreground"
+                    >{{ pkg.package_id.artifact }}</span
+                  >
                 </TableCell>
                 <TableCell class="font-mono text-xs">
-                  {{ pkg.package_id.version }}
-                </TableCell>
-                <TableCell class="text-muted-foreground text-xs font-mono">
-                  {{ pkg.package_id.artifact ?? "—" }}
+                  <RouterLink
+                    :to="{
+                      path: `/packages/${encodeURIComponent(
+                        pkg.package_id.registry,
+                      )}/${encodeURIComponent(pkg.package_id.name)}`,
+                      query: {
+                        version: pkg.package_id.version,
+                        ...(pkg.package_id.artifact ? { artifact: pkg.package_id.artifact } : {}),
+                      },
+                    }"
+                    class="text-primary underline underline-offset-2"
+                  >
+                    {{ pkg.package_id.version }}
+                  </RouterLink>
                 </TableCell>
                 <TableCell>
                   <div class="space-y-0.5">
@@ -598,53 +658,8 @@ async function runPending(): Promise<void> {
                 <TableCell class="text-xs tabular-nums whitespace-nowrap">
                   {{ fmtDate(pkg.last_accessed) }}
                 </TableCell>
-                <TableCell class="text-sm">
-                  <span v-if="pkg.last_accessed_by" class="font-medium">{{
-                    pkg.last_accessed_by
-                  }}</span>
-                  <span v-else-if="pkg.access_count > 0" class="text-muted-foreground italic"
-                    >anonymous</span
-                  >
-                  <span v-else class="text-muted-foreground">—</span>
-                </TableCell>
                 <TableCell class="text-right tabular-nums">
                   {{ pkg.access_count }}
-                </TableCell>
-                <TableCell>
-                  <div class="flex gap-1">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      @click="
-                        router.push({
-                          path: `/packages/${encodeURIComponent(
-                            pkg.package_id.registry,
-                          )}/${encodeURIComponent(pkg.package_id.name)}`,
-                        })
-                      "
-                    >
-                      {{ t("common.details") }}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      @click="
-                        router.push({
-                          path: `/packages/${encodeURIComponent(
-                            pkg.package_id.registry,
-                          )}/${encodeURIComponent(pkg.package_id.name)}`,
-                          query: {
-                            version: pkg.package_id.version,
-                            ...(pkg.package_id.artifact
-                              ? { artifact: pkg.package_id.artifact }
-                              : {}),
-                          },
-                        })
-                      "
-                    >
-                      {{ t("common.artifact") }}
-                    </Button>
-                  </div>
                 </TableCell>
                 <TableCell class="text-right">
                   <div class="flex gap-1 justify-end">

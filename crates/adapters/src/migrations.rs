@@ -121,6 +121,11 @@ pub fn embedded_migrator() -> Migrator {
             "stats history rollup",
             "../migrations/031_stats_history.sql"
         ),
+        mig!(
+            32,
+            "artifact sbom license",
+            "../migrations/032_artifact_sbom_license.sql"
+        ),
     ])
 }
 

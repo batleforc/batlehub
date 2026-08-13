@@ -41,6 +41,7 @@ function version(over: Partial<PackageVersionDetail> = {}): PackageVersionDetail
     status: { status: "available" },
     storage_backend: null,
     storage_key: "npm/pkg/1.0.0",
+    license: null,
     vulnerabilities: [],
     ...over,
   } as PackageVersionDetail;
@@ -220,9 +221,9 @@ describe("PackageVersionsTable", () => {
         ],
       },
     });
-    expect((wrapper.vm as unknown as { bulkMsg: string }).bulkMsg).toContain(
-      "Blocked 1 version(s)",
-    );
+    // The catalogue owns the whole sentence and pluralises the noun, so the
+    // singular case reads "1 version" rather than the assembled "1 version(s)".
+    expect((wrapper.vm as unknown as { bulkMsg: string }).bulkMsg).toBe("Blocked 1 version.");
     expect(wrapper.emitted("reload")).toHaveLength(1);
   });
 
@@ -233,9 +234,7 @@ describe("PackageVersionsTable", () => {
     await bulkUnblockBtn.trigger("click");
     await flushPromises();
     expect(bulkUnblockPackagesMock).toHaveBeenCalled();
-    expect((wrapper.vm as unknown as { bulkMsg: string }).bulkMsg).toContain(
-      "Unblocked 1 version(s)",
-    );
+    expect((wrapper.vm as unknown as { bulkMsg: string }).bulkMsg).toBe("Unblocked 1 version.");
   });
 
   it("clears the selection via Clear", async () => {
@@ -244,5 +243,23 @@ describe("PackageVersionsTable", () => {
     const clearBtn = wrapper.findAll("button").find((b) => b.text() === "Clear")!;
     await clearBtn.trigger("click");
     expect(wrapper.text()).not.toContain("selected");
+  });
+
+  it("shows the declared licence", async () => {
+    const { wrapper } = await mountComp([version({ license: "MIT OR Apache-2.0" })]);
+    expect(wrapper.text()).toContain("MIT OR Apache-2.0");
+  });
+
+  /**
+   * RFC 0004-bis §13.1: a null licence means the manifest was never read, not
+   * that the package is unlicensed. Rendering nothing would make the two
+   * indistinguishable — the §2.4 defect, a blank that reads as a fact — so the
+   * absence is stated and the title says why.
+   */
+  it("states that an absent licence is unknown, not absent", async () => {
+    const { wrapper } = await mountComp([version({ license: null })]);
+    expect(wrapper.text()).toContain("licence unknown");
+    const cell = wrapper.findAll("p").find((p) => p.text() === "licence unknown")!;
+    expect(cell.attributes("title")).toContain("not the same as unlicensed");
   });
 });

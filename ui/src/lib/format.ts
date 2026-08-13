@@ -1,3 +1,5 @@
+import { i18n } from "@/i18n";
+
 const BYTE_UNITS = ["B", "KiB", "MiB", "GiB", "TiB"] as const;
 
 /** Formats a byte count using binary (1024) units, e.g. `1.5 MiB`. */
@@ -31,7 +33,7 @@ export function formatRelative(
   iso: string | null | undefined,
   opts?: { fallback?: string },
 ): string {
-  const fallback = opts?.fallback ?? "Never";
+  const fallback = opts?.fallback ?? i18n.global.t("common.never");
   if (!iso) return fallback;
   const time = new Date(iso).getTime();
   if (Number.isNaN(time)) return fallback;

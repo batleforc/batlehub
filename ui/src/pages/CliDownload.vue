@@ -36,7 +36,7 @@ async function triggerDownload() {
       const detail = text ? ` — ${text}` : "";
       downloadError.value =
         resp.status === 404
-          ? "The CLI binary has not been configured on this server. Ask your administrator to set `[server] cli_binary_path` in the server config."
+          ? t("cliDownload.binaryNotConfigured")
           : `Download failed: HTTP ${resp.status}${detail}`;
       return;
     }

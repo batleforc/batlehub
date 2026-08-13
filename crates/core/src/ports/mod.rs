@@ -31,7 +31,10 @@ pub use registry::{
     ArtifactStream, BulkResult, FetchedArtifact, LocalRegistryBackend, PackageRepository,
     RecentErrorRecord, RegistryClient, UpstreamPackage,
 };
-pub use sbom::{SbomDependency, SbomExtractor, SbomRepository, UpstreamSbomFetcher};
+pub use sbom::{
+    ExtractedManifest, SbomDependency, SbomExtractor, SbomRepository, UpstreamSbomFetcher,
+    LICENSE_EXTRACTION_TYPES,
+};
 pub use stats_history::{StatsHistoryRepository, StatsRollupRow};
 pub use storage::{
     collect_byte_stream, ArtifactStorageRecord, ByteStream, CacheEntry, CacheStore,

@@ -42,8 +42,7 @@ const { t } = useI18n();
 const { token } = useAuth();
 
 const { data, error, loading } = useApi<MyDownloadDto[]>(
-  () =>
-    myDownloads({ query: { limit: SHOWN } }) as Promise<{ data?: unknown; error?: unknown }>,
+  () => myDownloads({ query: { limit: SHOWN } }) as Promise<{ data?: unknown; error?: unknown }>,
   [token],
 );
 

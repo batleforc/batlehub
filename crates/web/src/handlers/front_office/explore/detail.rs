@@ -2,9 +2,30 @@ use super::{
     format_dt, get, web, AdminService, AppError, Arc, AuthIdentity, Deserialize, IntoParams,
     LocalRegistryService, PackageFilter, PackageStatus, Responder, Serialize, ToSchema,
 };
+use batlehub_core::services::SbomService;
+
 use crate::badges::socket_badge_url;
 use crate::handlers::back_office::packages::detail::VulnerabilityDto;
 use crate::RegistryMap;
+
+/// The recorded licence for one version, or `None` when it is not known.
+///
+/// A lookup failure reads as unknown rather than propagating: the licence is
+/// one field on a page whose job is showing versions, and an SBOM outage should
+/// not turn the package page into an error. `LicenseGateRule` is where a failed
+/// lookup carries weight, and it logs its own.
+async fn license_for(
+    sbom_svc: &Option<web::Data<Arc<SbomService>>>,
+    registry: &str,
+    name: &str,
+    version: &str,
+) -> Option<String> {
+    let svc = sbom_svc.as_ref()?;
+    svc.repo
+        .get_license_for_coordinate(registry, name, version)
+        .await
+        .unwrap_or(None)
+}
 
 // ── Package detail ─────────────────────────────────────────────────────────────
 
@@ -44,6 +65,13 @@ pub struct ExploreVersionDto {
     pub is_prerelease: bool,
     /// Known vulnerabilities for this version (from the periodic SBOM re-scan).
     pub vulnerabilities: Vec<VulnerabilityDto>,
+    /// The licence this version's own manifest declared, verbatim.
+    ///
+    /// Null means *unknown*, never "unlicensed": it is read out of the archive
+    /// when the version is cached or published, so it is absent for anything
+    /// fetched before extraction existed and for the registry types with no
+    /// manifest parser (RFC 0004-bis §13.1).
+    pub license: Option<String>,
     /// socket.dev badge URL when enabled for this registry; else null.
     pub socket_badge_url: Option<String>,
     /// Flagged as deprecated (still downloadable). Local versions only.
@@ -86,6 +114,7 @@ pub async fn explore_package_detail(
     local_svc: web::Data<Arc<LocalRegistryService>>,
     registry_map: web::Data<RegistryMap>,
     access: web::Data<crate::AccessConfigLock>,
+    sbom_svc: Option<web::Data<Arc<SbomService>>>,
 ) -> Result<impl Responder, AppError> {
     let registry = &path.registry;
     let name = &path.name;
@@ -205,6 +234,7 @@ pub async fn explore_package_detail(
             .map(VulnerabilityDto::from)
             .collect();
         let socket_badge_url = badge_for(&summary.package_id.version);
+        let license = license_for(&sbom_svc, registry, name, &summary.package_id.version).await;
         versions.push(ExploreVersionDto {
             version: summary.package_id.version,
             source: "proxied".to_string(),
@@ -214,6 +244,7 @@ pub async fn explore_package_detail(
             published_at: None,
             is_prerelease,
             vulnerabilities,
+            license,
             socket_badge_url,
             deprecated: false,
             deprecation_message: None,
@@ -236,6 +267,7 @@ pub async fn explore_package_detail(
             .map(VulnerabilityDto::from)
             .collect();
         let socket_badge_url = badge_for(&pkg.version);
+        let license = license_for(&sbom_svc, registry, name, &pkg.version).await;
         versions.push(ExploreVersionDto {
             version: pkg.version,
             source: "local".to_string(),
@@ -245,6 +277,7 @@ pub async fn explore_package_detail(
             published_at: Some(pkg.published_at.to_rfc3339()),
             is_prerelease,
             vulnerabilities,
+            license,
             socket_badge_url,
             deprecated: pkg.deprecated,
             deprecation_message: pkg.deprecation_message,

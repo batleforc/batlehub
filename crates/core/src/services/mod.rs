@@ -38,4 +38,4 @@ pub use quota::{
 pub use sbom::{SbomProxiedOptions, SbomPublishOptions, SbomService};
 pub use stats_rollup::{hour_start, StatsRollupService};
 pub use vulnerability::{ScanReport, VulnerabilityScanService};
-pub use warming::{WarmingReport, WarmingService};
+pub use warming::{WarmFailure, WarmingReport, WarmingService};

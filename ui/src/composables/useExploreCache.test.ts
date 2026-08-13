@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
-import { useExploreCache } from "./useExploreCache";
+import { useExploreCache, scopeExploreCacheTo } from "./useExploreCache";
 
 describe("useExploreCache", () => {
   beforeEach(() => {
@@ -81,5 +81,59 @@ describe("useExploreCache", () => {
     vi.advanceTimersByTime(4 * 60 * 1_000);
     // 4 min past the second set — should still be valid (TTL = 5 min).
     expect(get("npm", 0, "name", "")).toBe("v2");
+  });
+
+  // The case this suite never had. Every test above uses one viewer, which is
+  // precisely why a store that survived logout passed a suite written for it:
+  // the server scopes explore results by viewer and the key carries none of
+  // that, so an entry outliving its identity is readable by the next one.
+  describe("viewer scope", () => {
+    it("a different identity misses entries filled by the previous one", () => {
+      const { get, set } = useExploreCache<string>();
+      scopeExploreCacheTo("token-a::alice::user::team-a");
+      set("npm", 0, "name", "", "alice-rows");
+      expect(get("npm", 0, "name", "")).toBe("alice-rows");
+
+      scopeExploreCacheTo("token-b::bob::user::team-b");
+      expect(get("npm", 0, "name", "")).toBeUndefined();
+    });
+
+    it("signing out to anonymous drops the signed-in view", () => {
+      const { get, set } = useExploreCache<string>();
+      scopeExploreCacheTo("token-a::alice::admin::");
+      set("cargo", 0, "name", "", "private-namespace-rows");
+
+      scopeExploreCacheTo("::::anonymous::");
+      expect(get("cargo", 0, "name", "")).toBeUndefined();
+    });
+
+    it("an anonymous visitor signing in drops the anonymous view", () => {
+      const { get, set } = useExploreCache<string>();
+      scopeExploreCacheTo("::::anonymous::");
+      set("npm", 0, "name", "", "public-rows");
+
+      scopeExploreCacheTo("token-a::alice::user::team-a");
+      expect(get("npm", 0, "name", "")).toBeUndefined();
+    });
+
+    it("re-scoping to the same viewer keeps the entries", () => {
+      const { get, set } = useExploreCache<string>();
+      scopeExploreCacheTo("token-a::alice::user::team-a");
+      set("npm", 0, "name", "", "alice-rows");
+      // The auth watcher fires on both `token` and `identity`, so the identical
+      // fingerprint arriving twice is the common case, not the exception.
+      scopeExploreCacheTo("token-a::alice::user::team-a");
+      expect(get("npm", 0, "name", "")).toBe("alice-rows");
+    });
+
+    it("a group change alone is a different viewer", () => {
+      const { get, set } = useExploreCache<string>();
+      scopeExploreCacheTo("token-a::alice::user::team-a");
+      set("npm", 0, "name", "", "team-a-rows");
+      // Same token, same account, one group removed upstream — the server would
+      // answer with fewer private namespaces, so the cached rows are wrong.
+      scopeExploreCacheTo("token-a::alice::user::");
+      expect(get("npm", 0, "name", "")).toBeUndefined();
+    });
   });
 });

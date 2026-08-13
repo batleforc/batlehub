@@ -1,7 +1,7 @@
-use batlehub_core::ports::SbomDependency;
+use batlehub_core::ports::{ExtractedManifest, SbomDependency};
 use bytes::Bytes;
 
-pub(super) fn extract_cargo_deps(data: &Bytes) -> Vec<SbomDependency> {
+pub(super) fn extract_cargo_manifest(data: &Bytes) -> ExtractedManifest {
     use flate2::read::GzDecoder;
     use std::io::Read;
     use tar::Archive;
@@ -11,7 +11,7 @@ pub(super) fn extract_cargo_deps(data: &Bytes) -> Vec<SbomDependency> {
 
     let Ok(entries) = archive.entries() else {
         tracing::warn!("sbom: failed to parse cargo manifest, treating as no dependencies");
-        return vec![];
+        return ExtractedManifest::default();
     };
 
     for entry in entries.flatten() {
@@ -21,12 +21,47 @@ pub(super) fn extract_cargo_deps(data: &Bytes) -> Vec<SbomDependency> {
             let mut content = String::new();
             if reader.read_to_string(&mut content).is_err() {
                 tracing::warn!("sbom: failed to parse cargo manifest, treating as no dependencies");
-                return vec![];
+                return ExtractedManifest::default();
             }
-            return parse_cargo_toml_deps(&content);
+            return ExtractedManifest {
+                dependencies: parse_cargo_toml_deps(&content),
+                license: parse_cargo_toml_license(&content),
+            };
         }
     }
-    vec![]
+    ExtractedManifest::default()
+}
+
+/// `[package] license = "MIT OR Apache-2.0"`.
+///
+/// `license-file` is deliberately *not* a fallback: it names a file whose
+/// contents are the licence text, so the value would be `LICENSE` — a filename
+/// masquerading as an SPDX expression, which a gate would then compare against
+/// its allow list and never match. A crate that only sets `license-file` is
+/// correctly reported as unknown.
+fn parse_cargo_toml_license(content: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_package = trimmed == "[package]";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("license") {
+            let rest = rest.trim();
+            let Some(value) = rest.strip_prefix('=') else {
+                continue; // `license-file = …` and anything else starting "license"
+            };
+            let value = value.trim().trim_matches('"').trim();
+            if !value.is_empty() {
+                return Some(value.to_owned());
+            }
+        }
+    }
+    None
 }
 
 fn parse_version_from_toml_rest(rest: &str) -> String {
@@ -111,5 +146,36 @@ tokio = { version = "1.0", features = ["full"] }
         assert_eq!(deps[0].version_req.as_deref(), Some("1.0"));
         assert_eq!(deps[1].name, "tokio");
         assert_eq!(deps[1].version_req.as_deref(), Some("1.0"));
+    }
+
+    #[test]
+    fn parse_cargo_toml_license_from_package_section() {
+        let toml = "[package]\nname = \"x\"\nlicense = \"MIT OR Apache-2.0\"\n";
+        assert_eq!(
+            parse_cargo_toml_license(toml).as_deref(),
+            Some("MIT OR Apache-2.0")
+        );
+    }
+
+    /// `license-file` names a file, not an expression. Reporting `LICENSE` as
+    /// the licence would give the gate a value that matches no allow list and
+    /// reads as a real declaration.
+    #[test]
+    fn parse_cargo_toml_license_ignores_license_file() {
+        let toml = "[package]\nlicense-file = \"LICENSE\"\n";
+        assert_eq!(parse_cargo_toml_license(toml), None);
+    }
+
+    /// A `license` key under `[dependencies]` (or any other table) is not the
+    /// crate's own declaration.
+    #[test]
+    fn parse_cargo_toml_license_only_reads_package_table() {
+        let toml = "[dependencies]\nlicense = \"GPL-3.0\"\n";
+        assert_eq!(parse_cargo_toml_license(toml), None);
+    }
+
+    #[test]
+    fn parse_cargo_toml_license_absent_is_none() {
+        assert_eq!(parse_cargo_toml_license("[package]\nname = \"x\"\n"), None);
     }
 }

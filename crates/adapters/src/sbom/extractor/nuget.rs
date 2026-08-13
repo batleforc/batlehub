@@ -1,14 +1,14 @@
-use batlehub_core::ports::SbomDependency;
+use batlehub_core::ports::{ExtractedManifest, SbomDependency};
 use bytes::Bytes;
 
-pub(super) fn extract_nuget_deps(data: &Bytes) -> Vec<SbomDependency> {
+pub(super) fn extract_nuget_manifest(data: &Bytes) -> ExtractedManifest {
     use std::io::{Cursor, Read};
     use zip::ZipArchive;
 
     let cursor = Cursor::new(data.as_ref());
     let Ok(mut archive) = ZipArchive::new(cursor) else {
         tracing::warn!("sbom: failed to parse nuget manifest, treating as no dependencies");
-        return vec![];
+        return ExtractedManifest::default();
     };
 
     for i in 0..archive.len() {
@@ -20,12 +20,12 @@ pub(super) fn extract_nuget_deps(data: &Bytes) -> Vec<SbomDependency> {
             let mut content = String::new();
             if file.read_to_string(&mut content).is_err() {
                 tracing::warn!("sbom: failed to parse nuget manifest, treating as no dependencies");
-                return vec![];
+                return ExtractedManifest::default();
             }
-            return parse_nuspec_deps(&content);
+            return parse_nuspec(&content);
         }
     }
-    vec![]
+    ExtractedManifest::default()
 }
 
 fn parse_nuget_dep_from_empty<'a>(
@@ -61,12 +61,19 @@ fn parse_nuget_dep_from_empty<'a>(
     })
 }
 
-fn parse_nuspec_deps(content: &str) -> Vec<SbomDependency> {
+fn parse_nuspec(content: &str) -> ExtractedManifest {
     use quick_xml::{events::Event, Reader};
 
     let mut reader = Reader::from_str(content);
     reader.config_mut().trim_text(true);
     let mut deps = Vec::new();
+
+    // `<license type="expression">MIT</license>` is the modern form.
+    // `<licenseUrl>` is deprecated and is a URL, not an expression, so it is
+    // not read: handing the gate `https://…/LICENSE` would look like a
+    // declaration and match nothing.
+    let mut capture_license = false;
+    let mut license: Option<String> = None;
 
     // <dependency> elements in .nuspec are always self-closing:
     //   <dependency id="Newtonsoft.Json" version="[13.0,)" />
@@ -81,11 +88,44 @@ fn parse_nuspec_deps(content: &str) -> Vec<SbomDependency> {
                     }
                 }
             }
+            Ok(Event::Start(ref e)) => {
+                let ln = e.local_name();
+                let local = std::str::from_utf8(ln.as_ref()).unwrap_or("");
+                // `type="file"` points at a file inside the package, same
+                // problem as `licenseUrl`; only an expression is read.
+                if local == "license" {
+                    let is_file = e.attributes().flatten().any(|attr| {
+                        attr.key.local_name().as_ref() == b"type" && attr.value.as_ref() == b"file"
+                    });
+                    capture_license = !is_file;
+                }
+            }
+            Ok(Event::Text(ref e)) => {
+                if capture_license {
+                    capture_license = false;
+                    if let Ok(raw) = e.decode() {
+                        let text = raw.trim();
+                        if !text.is_empty() {
+                            license = Some(text.to_owned());
+                        }
+                    }
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                let ln = e.local_name();
+                if ln.as_ref() == b"license" {
+                    capture_license = false;
+                }
+            }
             Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }
     }
-    deps
+
+    ExtractedManifest {
+        dependencies: deps,
+        license,
+    }
 }
 
 #[cfg(test)]
@@ -107,7 +147,7 @@ mod tests {
     </dependencies>
   </metadata>
 </package>"#;
-        let deps = parse_nuspec_deps(nuspec);
+        let deps = parse_nuspec(nuspec).dependencies;
         assert_eq!(deps.len(), 2);
         assert_eq!(deps[0].name, "Newtonsoft.Json");
         assert_eq!(deps[0].version_req.as_deref(), Some("[13.0,)"));
@@ -121,7 +161,7 @@ mod tests {
         let nuspec = r#"<package><metadata><dependencies>
           <dependency id="SomeLib" />
         </dependencies></metadata></package>"#;
-        let deps = parse_nuspec_deps(nuspec);
+        let deps = parse_nuspec(nuspec).dependencies;
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "SomeLib");
         assert!(deps[0].version_req.is_none());
@@ -130,8 +170,38 @@ mod tests {
     #[test]
     fn parse_nuspec_deps_empty_deps() {
         let nuspec = r#"<package><metadata><id>Foo</id></metadata></package>"#;
-        let deps = parse_nuspec_deps(nuspec);
+        let deps = parse_nuspec(nuspec).dependencies;
         assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn parse_nuspec_license_expression() {
+        let nuspec = r#"<package><metadata>
+          <license type="expression">MIT</license>
+        </metadata></package>"#;
+        assert_eq!(parse_nuspec(nuspec).license.as_deref(), Some("MIT"));
+    }
+
+    /// `type="file"` names a file inside the package; `licenseUrl` is a URL.
+    /// Neither is an expression, and reporting one would look like a
+    /// declaration the gate could match.
+    #[test]
+    fn parse_nuspec_license_ignores_file_and_url_forms() {
+        let file_form = r#"<package><metadata>
+          <license type="file">LICENSE.txt</license>
+        </metadata></package>"#;
+        assert_eq!(parse_nuspec(file_form).license, None);
+
+        let url_form = r#"<package><metadata>
+          <licenseUrl>https://example.test/LICENSE</licenseUrl>
+        </metadata></package>"#;
+        assert_eq!(parse_nuspec(url_form).license, None);
+    }
+
+    #[test]
+    fn parse_nuspec_license_absent_is_none() {
+        let nuspec = r#"<package><metadata><id>Foo</id></metadata></package>"#;
+        assert_eq!(parse_nuspec(nuspec).license, None);
     }
 
     fn make_nupkg_with_nuspec(nuspec: &str) -> Bytes {
@@ -152,14 +222,16 @@ mod tests {
           <dependency id="Newtonsoft.Json" version="13.0.0" />
         </dependencies></metadata></package>"#;
         let data = make_nupkg_with_nuspec(nuspec);
-        let deps = extract_nuget_deps(&data);
+        let deps = extract_nuget_manifest(&data).dependencies;
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "Newtonsoft.Json");
     }
 
     #[test]
     fn extract_nuget_deps_invalid_zip() {
-        let deps = extract_nuget_deps(&Bytes::from_static(b"not a zip"));
-        assert!(deps.is_empty());
+        assert_eq!(
+            extract_nuget_manifest(&Bytes::from_static(b"not a zip")),
+            ExtractedManifest::default()
+        );
     }
 }

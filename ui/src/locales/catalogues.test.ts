@@ -148,6 +148,57 @@ describe("locale catalogues", () => {
     expect(offenders, "use {'@'} for a literal @").toEqual([]);
   });
 
+  /**
+   * Every key is *referenced* — RFC 0004-bis §4.2.
+   *
+   * Every other case in this file answers "is every key translated". Nobody was
+   * asking "is every key needed", and the answer had been drifting for two
+   * RFCs: `dashboard.allAnswering`, `dashboard.someDegraded` and
+   * `dashboard.healthUnknown` were translated, correct and referenced zero
+   * times while `AdminDashboard` hardcoded three English sentences — so a
+   * French operator's 3am alarm arrived in English with the correct French
+   * sitting in the catalogue. RFC 0004's own page merge then orphaned the whole
+   * `adminIpBlocks.*` family with every gate green.
+   *
+   * A substring match over the tree, deliberately: it is the same thing a
+   * person does before deleting a key, and it cannot be fooled by a key that is
+   * only *nearly* used. What it cannot see is a key assembled at runtime — so
+   * the console does not assemble them. Every lookup table in `src/` spells its
+   * keys out (`config/adminSections.ts`, `config/navigation.ts`,
+   * `config/visibility.ts`, `ThemeToggle`, `LocaleToggle`, `PackageEventsTable`),
+   * which is why `ALLOWED_UNREFERENCED` is empty rather than a list of
+   * exemptions nobody revisits.
+   *
+   * An entry here needs a reason. An allowlist that grows without one is how
+   * the condition this test exists to catch comes back.
+   */
+  const ALLOWED_UNREFERENCED: Record<string, string> = {};
+
+  it("references every key somewhere under src/", () => {
+    /* `import.meta.glob` rather than `node:fs`: this file type-checks under the
+       app's tsconfig, which has no node types, and Vite resolves the pattern at
+       transform time so the walk cannot drift from what the bundle contains. */
+    const modules = import.meta.glob("../**/*.{vue,ts}", {
+      query: "?raw",
+      import: "default",
+      eager: true,
+    }) as Record<string, string>;
+
+    const tree = Object.entries(modules)
+      // `client/` is generated and `locales/` is the catalogue itself — a key
+      // "found" in either would be matching its own definition.
+      .filter(([path]) => !path.startsWith("../client/") && !path.startsWith("./"))
+      .map(([, source]) => source)
+      .join("\n");
+
+    const orphans = enKeys.filter((key) => !tree.includes(key) && !(key in ALLOWED_UNREFERENCED));
+    expect(
+      orphans,
+      "these keys are translated in both catalogues and used nowhere — delete them, " +
+        "or add them to ALLOWED_UNREFERENCED with a reason",
+    ).toEqual([]);
+  });
+
   /** French runs longer than English; this is the budget the layouts assume. */
   it("keeps French within 60% of the English length", () => {
     const offenders = enKeys.filter((key) => {

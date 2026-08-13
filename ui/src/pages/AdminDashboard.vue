@@ -13,11 +13,7 @@ import { useI18n } from "vue-i18n";
 import { computed } from "vue";
 import { RouterLink } from "vue-router";
 import { adminStats, adminStatsHistory, registryHealth } from "@/client/sdk.gen";
-import type {
-  StatsResponse,
-  StatsHistoryResponse,
-  RegistryHealthDto,
-} from "@/client/types.gen";
+import type { StatsResponse, StatsHistoryResponse, RegistryHealthDto } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
 import { formatBytes as fmtBytes, formatCount } from "@/lib/format";
@@ -91,7 +87,10 @@ const verdict = computed(() => {
   if (healthError.value) return { tone: "unknown" as const, text: t("dashboard.healthUnknown") };
   if (isFresh.value) return null;
   if (degraded.value.length === 0) {
-    return { tone: "ok" as const, text: t("dashboard.allAnswering", { count: registries.value.length }) };
+    return {
+      tone: "ok" as const,
+      text: t("dashboard.allAnswering", { count: registries.value.length }),
+    };
   }
   return {
     tone: "bad" as const,
@@ -123,7 +122,8 @@ const fmtPct = (n: number | null): string => (n == null ? "—" : `${(n * 100).t
  * to zero. This series is bounded per hour and survives one.
  */
 const { data: history } = useApi<StatsHistoryResponse>(
-  () => adminStatsHistory({ query: { window: "30d" } }) as Promise<{ data?: unknown; error?: unknown }>,
+  () =>
+    adminStatsHistory({ query: { window: "30d" } }) as Promise<{ data?: unknown; error?: unknown }>,
   [token],
 );
 
@@ -233,7 +233,12 @@ const trendText = computed(() => {
 
       <!-- What the counters above structurally cannot say: better or worse than
            before. Absent until there is a rollup to read, rather than showing a
-           zero that would read as "no change". -->
+           zero that would read as "no change".
+
+           Copper on `down` is the degradation job DESIGN.md's Secondary entry
+           authorises — a measured value moving the wrong way but not refused.
+           This page and QuotaWidget reached for it before the world had it;
+           RFC 0004-bis §11/O1 gave copper the job rather than a sixth hue. -->
       <p
         v-if="trendText"
         class="text-sm"

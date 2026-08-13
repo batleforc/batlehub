@@ -57,9 +57,10 @@ const saving = ref<Record<string, boolean>>({});
 const saveError = ref<Record<string, string>>({});
 
 // The short form is its own message rather than the long one cut at the dash:
-// French does not put the dash where English does.
+// French does not put the dash where English does. Both keys live in
+// `config/visibility.ts` so they are greppable and the reference gate sees them.
 const visibilityOptions = computed(() =>
-  VISIBILITY_OPTIONS.map((o) => ({ value: o.value, label: t(`visibilityShort.${o.value}`) })),
+  VISIBILITY_OPTIONS.map((o) => ({ value: o.value, label: t(o.shortLabel) })),
 );
 
 function pkgKey(pkg: NamespacePackageDto) {
@@ -86,13 +87,13 @@ async function saveVis(pkg: NamespacePackageDto) {
       path: { registry: props.namespace.registry, name: pkg.name },
       body: { visibility: vis },
     });
-    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? "API error");
+    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? t("common.apiError"));
     pkg.visibility = vis;
     cancelEdit(pkg);
   } catch (e) {
     saveError.value = {
       ...saveError.value,
-      [k]: e instanceof Error ? e.message : "Unknown error",
+      [k]: e instanceof Error ? e.message : t("common.unknownError"),
     };
   } finally {
     saving.value = { ...saving.value, [k]: false };
@@ -161,7 +162,7 @@ function formatDate(iso: string) {
                   class="text-xs h-7 px-2"
                   @click="saveVis(pkg)"
                 >
-                  {{ saving[pkgKey(pkg)] ? "…" : "Save" }}
+                  {{ saving[pkgKey(pkg)] ? "…" : t("common.save") }}
                 </Button>
                 <Button
                   size="sm"

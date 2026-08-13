@@ -316,6 +316,14 @@ impl PackageRepository for PgPackageRepository {
         explore::purge_events_before_impl(&self.pool, before).await
     }
 
+    async fn distinct_event_subjects(
+        &self,
+        contains: Option<&str>,
+        limit: u64,
+    ) -> Result<Vec<String>, CoreError> {
+        explore::distinct_event_subjects_impl(&self.pool, contains, limit).await
+    }
+
     async fn explore_packages(
         &self,
         filter: ExploreFilter,

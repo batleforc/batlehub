@@ -16,9 +16,9 @@ use batlehub_config::schema::{
 };
 use batlehub_core::{
     entities::{RegistryKind, Role, Severity},
-    ports::VulnerabilityRepository,
+    ports::{SbomRepository, VulnerabilityRepository},
     rules::{
-        BlockListRule, CveGateRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule,
+        BlockListRule, CveGateRule, DenyLatestRule, LicenseGateRule, RbacRule, ReleaseAgeGateRule,
         RequireSignedReleaseRule, TrustedPublisherRule, VersionGateRule,
     },
     services::{QuotaEnforcement, QuotaService, RegistryPolicy, RegistryQuotaConfig},
@@ -237,6 +237,7 @@ pub(super) fn build_policy(
     reg: &RegistryConfig,
     repo: Arc<dyn batlehub_core::ports::PackageRepository>,
     vuln_repo: Arc<dyn VulnerabilityRepository>,
+    sbom_repo: Arc<dyn SbomRepository>,
 ) -> anyhow::Result<RegistryPolicy> {
     // Best-effort: an unrecognized `registry_type` is already rejected by config
     // validation before this runs, but rules that need the kind (e.g.
@@ -286,6 +287,17 @@ pub(super) fn build_policy(
                 rules.push(Box::new(CveGateRule::new(
                     Arc::clone(&vuln_repo),
                     min_severity,
+                    bypass,
+                    cfg.block,
+                )));
+            }
+            RuleConfig::LicenseGate(cfg) => {
+                let bypass = parse_bypass_roles(&cfg.bypass_roles)?;
+                rules.push(Box::new(LicenseGateRule::new(
+                    Arc::clone(&sbom_repo),
+                    cfg.allow.clone(),
+                    cfg.deny.clone(),
+                    cfg.allow_unknown,
                     bypass,
                     cfg.block,
                 )));
@@ -347,7 +359,7 @@ pub(super) fn build_quota_service(
 mod tests {
     use super::*;
     use batlehub_adapters::in_memory::{
-        InMemoryPackageRepository, InMemoryVulnerabilityRepository,
+        InMemoryPackageRepository, InMemoryVulnerabilityRepository, NoopSbomRepository,
     };
     use batlehub_config::schema::UpstreamProxyConfig;
 
@@ -546,7 +558,13 @@ mod tests {
         let r = make_registry("npm", "reg", "");
         let repo: Arc<dyn batlehub_core::ports::PackageRepository> =
             InMemoryPackageRepository::new();
-        let policy = build_policy(&r, repo, InMemoryVulnerabilityRepository::arc()).unwrap();
+        let policy = build_policy(
+            &r,
+            repo,
+            InMemoryVulnerabilityRepository::arc(),
+            NoopSbomRepository::arc(),
+        )
+        .unwrap();
         let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
         assert_eq!(names, vec!["rbac", "block_list"]);
         assert!(!policy.firewall_only);
@@ -584,7 +602,13 @@ mod tests {
         );
         let repo: Arc<dyn batlehub_core::ports::PackageRepository> =
             InMemoryPackageRepository::new();
-        let policy = build_policy(&r, repo, InMemoryVulnerabilityRepository::arc()).unwrap();
+        let policy = build_policy(
+            &r,
+            repo,
+            InMemoryVulnerabilityRepository::arc(),
+            NoopSbomRepository::arc(),
+        )
+        .unwrap();
         let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
         assert_eq!(
             names,
@@ -617,9 +641,43 @@ mod tests {
         );
         let repo: Arc<dyn batlehub_core::ports::PackageRepository> =
             InMemoryPackageRepository::new();
-        let policy = build_policy(&r, repo, InMemoryVulnerabilityRepository::arc()).unwrap();
+        let policy = build_policy(
+            &r,
+            repo,
+            InMemoryVulnerabilityRepository::arc(),
+            NoopSbomRepository::arc(),
+        )
+        .unwrap();
         let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
         assert_eq!(names, vec!["rbac", "block_list", "cve_gate"]);
+    }
+
+    #[test]
+    fn build_policy_appends_license_gate_rule() {
+        let r = make_registry(
+            "npm",
+            "reg",
+            r#"
+            [[registries.rules]]
+            kind = "license_gate"
+            allow = ["MIT", "Apache-2.0"]
+            deny = ["AGPL-3.0"]
+            allow_unknown = false
+            block = true
+            bypass_roles = ["admin"]
+            "#,
+        );
+        let repo: Arc<dyn batlehub_core::ports::PackageRepository> =
+            InMemoryPackageRepository::new();
+        let policy = build_policy(
+            &r,
+            repo,
+            InMemoryVulnerabilityRepository::arc(),
+            NoopSbomRepository::arc(),
+        )
+        .unwrap();
+        let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
+        assert_eq!(names, vec!["rbac", "block_list", "license_gate"]);
     }
 
     #[test]
@@ -636,7 +694,13 @@ mod tests {
         );
         let repo: Arc<dyn batlehub_core::ports::PackageRepository> =
             InMemoryPackageRepository::new();
-        let policy = build_policy(&r, repo, InMemoryVulnerabilityRepository::arc()).unwrap();
+        let policy = build_policy(
+            &r,
+            repo,
+            InMemoryVulnerabilityRepository::arc(),
+            NoopSbomRepository::arc(),
+        )
+        .unwrap();
         let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
         assert_eq!(names, vec!["rbac", "block_list", "trusted_publisher"]);
     }

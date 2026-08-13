@@ -203,7 +203,11 @@ describe("router navigation guards (integration)", () => {
       query: { oidc_access_token: "access-xyz", oidc_state: "forged-state" },
     });
     expect(path).toBe("/login");
-    expect(String(router.currentRoute.value.query.error)).toMatch(/CSRF/i);
+    /* The guard forwards a catalogue *key*, not a sentence: it has no `setup`,
+       and a rendered sentence in a query string is pinned to whichever locale
+       was active when the redirect was built — a different page load entirely,
+       for an OIDC round-trip. `LoginPage` resolves it. */
+    expect(String(router.currentRoute.value.query.error)).toBe("loginPage.oidcStateMismatch");
     // No tokens were stored from the forged callback.
     expect(localStorage.getItem("batlehub_access_token")).toBeNull();
   });

@@ -339,6 +339,44 @@ bypass_roles = ["admin"]
 # block = ["1.4.7", "1.5.0"]   # specific versions with known issues
 # bypass_roles = ["admin"]
 
+# Licence gate: block (or warn about) downloads by the licence the package's own
+# manifest declares — Cargo.toml's license, package.json's license, pom.xml's
+# <licenses>, METADATA's License-Expression, .nuspec's <license>. No external
+# feed and no extra upstream call: the licence is read out of the archive by the
+# SBOM extractor when the artifact is cached or published.
+#
+# Three things to know before enabling it:
+#
+#  0. It requires [registries.sbom] with enabled = true on THIS registry. The
+#     licence is read out of the archive as part of SBOM generation, so with
+#     SBOM off nothing is extracted and the gate sees an unknown licence for
+#     every version. Misconfiguring this raises license-gate.sbom-disabled on
+#     the Config Reload admin page.
+#
+#  1. The licence is inside the archive, so it is not known until the artifact
+#     has been fetched once. The FIRST request for an uncached package cannot be
+#     gated. allow_unknown decides what that means: true (default) lets the
+#     first download through and gates every later one; false refuses anything
+#     not already known, at the cost of one refused request per new package.
+#  2. Extraction covers cargo, npm, maven, pypi and nuget. On any other registry
+#     type the licence is permanently unknown, so this rule either never fires
+#     (allow_unknown = true) or refuses everything (block + allow_unknown =
+#     false). Configuring it there raises a config warning on the Config Reload
+#     admin page rather than failing silently.
+#
+# Matching is case-insensitive and ignores surrounding space, but is otherwise
+# literal: allow = ["MIT"] does NOT match a package declaring "MIT OR AGPL-3.0",
+# because accepting that would let any package opt out by adding an alternative.
+# The gate reads the package's own licence, not its dependencies' — BatleHub
+# does not resolve a dependency graph.
+# [[registries.rules]]
+# kind = "license_gate"
+# allow = ["MIT", "Apache-2.0", "BSD-3-Clause"]  # optional allowlist
+# deny = ["AGPL-3.0", "SSPL-1.0"]                # always refused (beats allow)
+# allow_unknown = true                            # default
+# block = true                                    # default false = warn-only
+# bypass_roles = ["admin"]
+
 # Trusted publisher: restrict downloads to packages published by an allowed
 # org/user/scope, derived from already-resolved metadata (no extra upstream
 # calls). Supported for github/gitlab/forgejo (owner/group), npm (scope, or

@@ -81,6 +81,27 @@ pub trait PackageRepository: Send + Sync {
         Ok(0)
     }
 
+    /// Distinct non-null `user_id`s the access log has seen, newest activity
+    /// first, optionally narrowed to those containing `contains`.
+    ///
+    /// RFC 0004-bis A8. Four console fields ask an operator to type a subject
+    /// and nothing can offer one: `/api/v1/admin/users/blocked` lists only the
+    /// *blocked*. The failure is silent — filtering the audit log for `alice`
+    /// on an instance that stores `oidc:alice` returns an empty table, which
+    /// reads exactly like "this user did nothing" on the surface whose entire
+    /// purpose is establishing what someone did.
+    ///
+    /// Scoped to identities this instance has actually seen, not a user
+    /// directory: this product does not have one and should not grow one here.
+    async fn distinct_event_subjects(
+        &self,
+        contains: Option<&str>,
+        limit: u64,
+    ) -> Result<Vec<String>, CoreError> {
+        let _ = (contains, limit);
+        Ok(vec![])
+    }
+
     /// Explorer: collapsed list of packages (one entry per name) from both proxied and local sources.
     async fn explore_packages(
         &self,

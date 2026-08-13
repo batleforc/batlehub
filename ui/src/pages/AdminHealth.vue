@@ -1,13 +1,8 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
 import { ref } from "vue";
-import {
-  registryHealth,
-  adminStats,
-  clearRegistryCache,
-  invalidateExploreCache,
-} from "@/client/sdk.gen";
-import type { RegistryHealthDto, StatsResponse } from "@/client/types.gen";
+import { registryHealth, clearRegistryCache, invalidateExploreCache } from "@/client/sdk.gen";
+import type { RegistryHealthDto } from "@/client/types.gen";
 import { useApi, extractMessage } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
 import {
@@ -41,11 +36,6 @@ const { token } = useAuth();
 
 const { data, error, loading, reload } = useApi<RegistryHealthDto[]>(
   () => registryHealth() as Promise<{ data?: unknown; error?: unknown }>,
-  [token],
-);
-
-const { data: statsData } = useApi<StatsResponse>(
-  () => adminStats() as Promise<{ data?: unknown; error?: unknown }>,
   [token],
 );
 
@@ -95,7 +85,7 @@ async function confirmClearCache() {
   clearError.value = null;
   try {
     const { error: apiErr } = await clearRegistryCache({ path: { registry: clearTarget.value } });
-    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? "API error");
+    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? t("common.apiError"));
     clearTarget.value = null;
     reload();
   } catch (e) {
@@ -114,10 +104,10 @@ function toggleErrors(registry: string) {
   expandedErrors.value = new Set(expandedErrors.value);
 }
 
-const ROLE_LABELS: Record<string, string> = {
-  anonymous: "Anonymous",
-  user: "Users",
-  admin: "Admins",
+const ROLE_LABEL_KEYS: Record<string, string> = {
+  anonymous: "adminHealth.roleAnonymous",
+  user: "adminHealth.roleUsers",
+  admin: "adminHealth.roleAdmins",
 };
 </script>
 
@@ -140,68 +130,20 @@ const ROLE_LABELS: Record<string, string> = {
       :loading="loading && !data"
       :error="error"
       :empty="!!data && data.length === 0"
-      empty-message="No registries configured."
+      :empty-message="t('adminHealth.noRegistriesConfigured')"
     >
-      <!-- Aggregate stats (since last restart) -->
-      <Card v-if="statsData" class="border-muted/60">
-        <CardHeader class="pb-2">
-          <div class="flex items-center justify-between">
-            <CardTitle class="text-sm font-medium text-muted-foreground uppercase tracking-wide">{{
-              t("adminHealth.cachePerformanceSinceLast")
-            }}</CardTitle>
-            <span class="text-xs text-muted-foreground"
-              >since {{ fmtRelative(statsData.since_startup) }}</span
-            >
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-              <p class="text-xs text-muted-foreground">{{ t("adminHealth.cacheHitRate") }}</p>
-              <p
-                class="text-2xl font-semibold tabular-nums"
-                :class="
-                  statsData.aggregate.hit_rate != null && statsData.aggregate.hit_rate >= 0.7
-                    ? 'text-primary'
-                    : statsData.aggregate.hit_rate != null && statsData.aggregate.hit_rate >= 0.4
-                      ? 'text-copper'
-                      : 'text-muted-foreground'
-                "
-              >
-                {{
-                  statsData.aggregate.hit_rate != null
-                    ? `${(statsData.aggregate.hit_rate * 100).toFixed(1)}%`
-                    : "—"
-                }}
-              </p>
-              <p class="text-xs text-muted-foreground">{{ t("adminHealth.artifactRequests") }}</p>
-            </div>
-            <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-              <p class="text-xs text-muted-foreground">{{ t("adminHealth.cacheHits") }}</p>
-              <p class="text-2xl font-semibold tabular-nums text-primary">
-                {{ formatCount(statsData.aggregate.artifact_hits) }}
-              </p>
-              <p class="text-xs text-muted-foreground">{{ t("adminHealth.servedFromCache") }}</p>
-            </div>
-            <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-              <p class="text-xs text-muted-foreground">{{ t("adminHealth.cacheMisses") }}</p>
-              <p class="text-2xl font-semibold tabular-nums">
-                {{ formatCount(statsData.aggregate.artifact_misses) }}
-              </p>
-              <p class="text-xs text-muted-foreground">
-                {{ t("adminHealth.fetchedFromUpstream") }}
-              </p>
-            </div>
-            <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-              <p class="text-xs text-muted-foreground">{{ t("adminHealth.totalCached") }}</p>
-              <p class="text-2xl font-semibold">
-                {{ fmtBytes(statsData.aggregate.cached_bytes) }}
-              </p>
-              <p class="text-xs text-muted-foreground">{{ t("adminHealth.inStorage") }}</p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+      <!--
+        The aggregate card is gone (RFC 0004-bis §6.1).
+
+        It restated `adminStats().aggregate` — the same four numbers
+        `AdminDashboard` states as a sentence, rendered as four tiles and
+        *without* the trend that makes them mean something. Its own Refresh
+        button did not refresh it (`useApi` was destructured without `reload`),
+        so the page had a control that lied about a card that duplicated
+        another page. Removing it also removes this page's second fetch.
+
+        What this page owns is per-registry health, which is everything below.
+      -->
 
       <!-- Registry cards grid -->
       <div
@@ -225,6 +167,16 @@ const ROLE_LABELS: Record<string, string> = {
                 >
                   {{ reg.registry_type }}
                 </Badge>
+                <!--
+                  The mode (RFC 0004-bis A2). "0 cached, last pull: never" reads
+                  identically for a broken proxy and for a healthy `local`
+                  registry that has nothing to pull by definition — this row is
+                  what tells them apart, and the page had to guess.
+                -->
+                <Badge variant="outline" class="text-xs uppercase">{{ reg.mode }}</Badge>
+                <Badge v-if="reg.beta_channel_enabled" variant="copper" class="text-xs">{{
+                  t("adminHealth.betaChannelOn")
+                }}</Badge>
                 <Button
                   variant="outline"
                   size="sm"
@@ -395,7 +347,7 @@ const ROLE_LABELS: Record<string, string> = {
                   variant="secondary"
                   class="text-xs"
                 >
-                  {{ ROLE_LABELS[role] ?? role }}
+                  {{ ROLE_LABEL_KEYS[role] ? t(ROLE_LABEL_KEYS[role]) : role }}
                 </Badge>
                 <Badge
                   v-for="group in reg.access.groups"
@@ -432,8 +384,8 @@ const ROLE_LABELS: Record<string, string> = {
   <!-- Clear cache confirmation dialog -->
   <ConfirmDialog
     :open="clearTarget !== null"
-    confirm-label="Clear Cache"
-    loading-label="Clearing…"
+    :confirm-label="t('adminHealth.clearCache')"
+    :loading-label="t('adminHealth.clearing')"
     destructive
     :loading="clearing"
     :error="clearError"

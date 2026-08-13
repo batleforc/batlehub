@@ -18,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Announcer } from "@/components/ui/announcer";
 import {
   Table,
   TableHeader,
@@ -49,6 +50,16 @@ const submitting = ref(false);
 const result = ref<BulkActionResponse | null>(null);
 const submitError = ref<string | null>(null);
 
+/** The bulk outcome as one sentence, for the live region. */
+const resultAnnouncement = computed(() =>
+  result.value
+    ? t("adminBulk.doneSummary", {
+        succeeded: result.value.succeeded_count,
+        failed: result.value.failed_count,
+      })
+    : "",
+);
+
 const validRows = computed(() => parsedRows.value.filter((r) => !r.error));
 const invalidRows = computed(() => parsedRows.value.filter((r) => !!r.error));
 
@@ -60,7 +71,7 @@ function parseCSV() {
 
   const text = csvText.value.trim();
   if (!text) {
-    parseError.value = "Paste some CSV content first.";
+    parseError.value = t("adminBulk.pasteCsvFirst");
     return;
   }
 
@@ -69,7 +80,7 @@ function parseCSV() {
   const dataLines = lines[0].toLowerCase().startsWith("registry") ? lines.slice(1) : lines;
 
   if (dataLines.length === 0 || (dataLines.length === 1 && !dataLines[0].trim())) {
-    parseError.value = "No data rows found.";
+    parseError.value = t("adminBulk.noDataRows");
     return;
   }
 
@@ -80,11 +91,11 @@ function parseCSV() {
       const [registry = "", name = "", version = "", artifact = "", reason = ""] = cols;
       const row: ParsedRow = { registry, name, version, artifact, reason };
 
-      if (!registry) row.error = "registry is required";
-      else if (!name) row.error = "name is required";
-      else if (!version) row.error = "version is required";
+      if (!registry) row.error = t("adminBulk.registryRequired");
+      else if (!name) row.error = t("adminBulk.nameRequired");
+      else if (!version) row.error = t("adminBulk.versionRequired");
       else if (action.value === "block" && !reason && !defaultReason.value) {
-        row.error = "reason is required for block (set per-row or use default reason)";
+        row.error = t("adminBulk.reasonRequiredForBlock");
       }
 
       return row;
@@ -190,6 +201,11 @@ function reset() {
 
 <template>
   <div class="space-y-6 max-w-4xl">
+    <!-- An outcome announced, not only rendered (RFC 0004-bis §2.6). Every bulk
+         result, block, warm and cache invalidation in this console reached
+         sighted users only — on the surface whose audience includes the one
+         person able to perform destructive actions. -->
+    <Announcer :message="resultAnnouncement ?? ''" />
     <SectionTabs :tabs="PACKAGES_TABS" />
     <PageHeader
       :title="t('adminBulk.bulkBlock')"

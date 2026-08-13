@@ -22,6 +22,9 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import { Dialog } from "@/components/ui/dialog";
+import { Combobox } from "@/components/ui/combobox";
+import { useSubjectSuggestions } from "@/composables/useSuggestions";
+import { toRef } from "vue";
 
 const { t } = useI18n();
 
@@ -66,6 +69,9 @@ const {
   initialAddForm: () => ({ principal_type: "user", principal_id: "", granted_by: "" }),
   canSubmitAdd: (form) => !!form.principal_id.trim(),
 });
+
+/* A8: identities this instance has seen, offered rather than typed blind. */
+const grantedBySuggestions = useSubjectSuggestions(toRef(addForm.value, "granted_by"));
 
 // computed, not a bare const: a const is evaluated once at module load and
 // would keep the English labels after a locale change.
@@ -219,9 +225,11 @@ const principalTypeOptions = computed(() => [
         </div>
         <div class="space-y-1.5">
           <Label for="beta-granted-by">{{ t("adminBetaChannel.grantedBy") }}</Label>
-          <Input
+          <Combobox
             id="beta-granted-by"
             v-model="addForm.granted_by"
+            :options="grantedBySuggestions.options.value"
+            :loading="grantedBySuggestions.loading.value"
             :placeholder="t('adminBetaChannel.optionalYourUserId')"
           />
         </div>

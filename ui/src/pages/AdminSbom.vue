@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
-import { ref } from "vue";
+import { ref, computed } from "vue";
 import { useAuthFetch } from "@/composables/useAuthFetch";
 import { API_BASE_URL } from "@/config";
 import SectionTabs from "@/components/admin/SectionTabs.vue";
@@ -10,8 +10,25 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
+import { useRegistryOptions } from "@/composables/useRegistryOptions";
 
 const { t } = useI18n();
+
+/** RFC 0004-bis §6.2: the registry set is closed, small and already fetched. */
+const { options: registryOptions } = useRegistryOptions();
+
+/**
+ * The registry set plus an explicit "all registries" entry.
+ *
+ * The field is optional by contract, so blank has to be a *choosable* value —
+ * a `Select` that cannot express it would silently narrow every use that
+ * relied on leaving it empty (RFC 0004-bis §6.2).
+ */
+const registryOptionsWithAll = computed(() => [
+  { value: "", label: t("adminPackages.allRegistries") },
+  ...registryOptions.value,
+]);
 
 const { authFetch } = useAuthFetch();
 
@@ -44,7 +61,23 @@ async function downloadBlob(url: string, defaultFilename: string) {
 
 // ── Export action ─────────────────────────────────────────────────────────────
 
+/**
+ * A backwards range is refused here rather than sent (RFC 0004-bis §4.3).
+ *
+ * `from > to` selects nothing by definition, and the endpoint answers it with a
+ * perfectly valid empty SBOM — a file that says this instance has no packages.
+ * On an export an operator may hand to an auditor, an empty answer that reads
+ * as a fact is the failure mode this whole RFC is about.
+ */
+const rangeInverted = computed(
+  () => !!fromDate.value && !!toDate.value && fromDate.value > toDate.value,
+);
+
 async function exportSbom() {
+  if (rangeInverted.value) {
+    errorMsg.value = t("adminSbom.rangeInverted");
+    return;
+  }
   loading.value = true;
   errorMsg.value = null;
   try {
@@ -61,7 +94,7 @@ async function exportSbom() {
       `sbom-export-${label}-${ts}.${ext}`,
     );
   } catch (e: unknown) {
-    errorMsg.value = e instanceof Error ? e.message : "Export failed";
+    errorMsg.value = e instanceof Error ? e.message : t("adminSbom.exportFailed");
   } finally {
     loading.value = false;
   }
@@ -98,7 +131,16 @@ async function exportSbom() {
                 t("adminSbom.optional")
               }}</span></Label
             >
-            <Input id="sbom-registry" v-model="registry" placeholder="e.g. crates-io" />
+            <!-- A closed set, already fetched: `Select`, not a box whose placeholder
+                 guesses a naming convention (RFC 0004-bis §6.2). Optional, so it
+                 carries an explicit "all registries" option — a `Select` that
+                 cannot express blank would silently narrow every export. -->
+            <Select
+              id="sbom-registry"
+              v-model="registry"
+              :options="registryOptionsWithAll"
+              :placeholder="t('adminPackages.allRegistries')"
+            />
           </div>
 
           <!-- Format -->
@@ -137,7 +179,12 @@ async function exportSbom() {
           </div>
         </div>
 
-        <Button :disabled="loading" @click="exportSbom">
+        <!-- Refused at the edge, and visibly: an operator should see why the
+             button is dark rather than press it and read an error. -->
+        <p v-if="rangeInverted" class="text-sm text-destructive">
+          {{ t("adminSbom.rangeInverted") }}
+        </p>
+        <Button :disabled="loading || rangeInverted" @click="exportSbom">
           {{ loading ? t("adminSbom.exporting") : t("adminSbom.downloadSbom") }}
         </Button>
       </CardContent>

@@ -11,9 +11,14 @@ import { cn } from "@/lib/utils";
  *
  * `h2` is the default because directly under the page `h1` is where cards
  * mostly are; pass `as="h3"` for one nested under a section heading.
+ *
+ * `h1` is allowed for the one shape where a card *is* the page: `/login` is a
+ * single centred card and nothing else, so its title had to be the document's
+ * only heading — and was an `h2`, leaving the page with no `h1` at all. The
+ * ramp gate found it the moment RFC 0004-bis §4.4 pointed it at public routes.
  */
 const props = withDefaults(
-  defineProps<{ class?: HTMLAttributes["class"]; as?: "h2" | "h3" | "h4" }>(),
+  defineProps<{ class?: HTMLAttributes["class"]; as?: "h1" | "h2" | "h3" | "h4" }>(),
   { as: "h2" },
 );
 </script>

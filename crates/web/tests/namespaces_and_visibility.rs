@@ -219,6 +219,36 @@ async fn ns_list_empty_returns_200_with_empty_array() {
     assert_eq!(body, serde_json::json!([]));
 }
 
+/// RFC 0004-bis A6: the claim list says how many packages each namespace holds.
+///
+/// `count_packages_in_namespace` had been on the port since it was written with
+/// exactly one caller — the *delete* confirmation. The list showed a row per
+/// claim with no way to tell a namespace holding four hundred packages from an
+/// abandoned one, which is the question an operator opens this page with.
+#[actix_web::test]
+async fn ns_list_states_a_package_count_per_claim() {
+    let store = InMemoryTeamNamespaceStore::new();
+    let store_dyn: Arc<dyn TeamNamespacePort> = store.clone();
+    let app = make_app_with_ns_store(store_dyn).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({"prefix": "frontend", "group_id": "team-fe"}))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 204);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/registries/my-reg/namespaces")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let body: Value = read_body_json(call_service(&app, req).await).await;
+
+    // Zero is an answer, and it is the one that distinguishes an abandoned
+    // claim — so it has to be present, not omitted.
+    assert_eq!(body[0]["package_count"], serde_json::json!(0));
+}
+
 #[actix_web::test]
 async fn ns_claim_returns_204() {
     let store: Arc<dyn TeamNamespacePort> = InMemoryTeamNamespaceStore::new();

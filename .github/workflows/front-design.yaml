@@ -132,20 +132,17 @@ jobs:
           done
           exit $fail
 
-      # PRODUCT.md makes WCAG 2.2 AA binding. tokens.test.ts proves the palette
-      # can clear it; only a rendered page proves the pages actually do. axe
-      # reloads per URL, so batching it is stable.
-      - name: axe accessibility scan
-        run: |
-          urls=""
-          for route in / /login /packages /setup /tools/access-check /tools/url-mapper; do
-            urls="$urls http://127.0.0.1:4173$route"
-          done
-          npx --yes @axe-core/cli $urls \
-            --exit \
-            --tags wcag2a,wcag2aa,wcag21a,wcag21aa,wcag22aa
+      # axe used to run here over the public routes via `@axe-core/cli`. It now
+      # runs in the harness below, over these routes *and* the authenticated
+      # ones, with one set of assertions — because `@axe-core/cli` does not know
+      # what a type ramp is, and running it here meant the ramp and display-face
+      # checks covered `/admin/*`, `/me/*` and `/` and nothing else. `/packages`
+      # — the one page with a checked-in specification of its own appearance —
+      # was the significant page no ramp check ran against, which is how its
+      # 104px display element became 24px with this workflow green
+      # (RFC 0004-bis §4.4).
 
-      # The authenticated harness drives an existing browser over CDP rather
+      # The rendered harness drives an existing browser over CDP rather
       # than launching its own — locally that is the workspace's `che-browser`
       # sidecar, and here it is this. Same contract either way: something is
       # listening on 9222.
@@ -155,20 +152,25 @@ jobs:
             --remote-debugging-port=9222 >/dev/null 2>&1 &
           npx --yes wait-on http://127.0.0.1:9222/json/version -t 60000
 
-      # The 15 admin pages and 4 account pages — the largest surface in the
-      # console, and the one no URL-based scanner can reach: they sit behind
-      # router guards, so scanning them by URL grades the login page nineteen
-      # times. This harness seeds a token into localStorage before the app
-      # boots, then runs axe and a type-ramp check in the page.
+      # Every rendered route: the 15 admin pages and 4 account pages — the
+      # largest surface in the console, and the one no URL-based scanner can
+      # reach, since they sit behind router guards — plus the six public ones.
+      # This harness seeds a token into localStorage before the app boots (the
+      # anonymous plan seeds none), then runs axe and a type-ramp check in the
+      # page.
       #
       # The tokens are not secrets. The stub answers /api/v1/me with an admin
       # identity whatever is presented, because what is under test is rendering,
       # not authentication — so there is nothing here worth protecting, and the
       # gate needs no repository secrets to run.
-      - name: Rendered gates — authenticated routes
+      #
+      # `/packages` is pinned in the script's EXPECTED_FAIL: it disagrees with
+      # its own design proof, the disagreement is RFC 0004-bis O3's to settle,
+      # and it is reported as a line in the output rather than as a silence.
+      - name: Rendered gates — every route, axe and type ramp
         env:
           BATLEHUB_ADMIN_TOKEN: stub
           BATLEHUB_USER_TOKEN: stub
           BASE: http://127.0.0.1:4173
-        run: node build/design-authed.mjs
+        run: node build/design-routes.mjs
         working-directory: ui

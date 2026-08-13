@@ -188,6 +188,41 @@ impl PackageRepository for InMemoryPackageRepository {
         Ok(result)
     }
 
+    /// Distinct subjects, most-recently-active first — the same order and the
+    /// same case-insensitive substring match the Postgres implementation uses,
+    /// so a test written against one holds against the other (RFC 0004-bis A8).
+    async fn distinct_event_subjects(
+        &self,
+        contains: Option<&str>,
+        limit: u64,
+    ) -> Result<Vec<String>, CoreError> {
+        let events = self.events.read().await;
+        let needle = contains.map(str::to_lowercase);
+
+        let mut sorted: Vec<&AccessEvent> = events.iter().collect();
+        sorted.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
+
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for event in sorted {
+            let Some(user_id) = event.user_id.as_deref() else {
+                continue;
+            };
+            if let Some(ref n) = needle {
+                if !user_id.to_lowercase().contains(n.as_str()) {
+                    continue;
+                }
+            }
+            if seen.insert(user_id.to_owned()) {
+                out.push(user_id.to_owned());
+                if limit > 0 && out.len() as u64 >= limit {
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+
     async fn list_own_downloads(
         &self,
         user_id: &str,

@@ -197,9 +197,7 @@ function terraformSource(url: string, reg: string): string {
 }
 
 const currentSnippet = computed(
-  () =>
-    cliSnippets.value[registryType.value] ??
-    "# No CLI instructions available for this registry type.",
+  () => cliSnippets.value[registryType.value] ?? t("namespaceUpload.noCliInstructions"),
 );
 </script>
 

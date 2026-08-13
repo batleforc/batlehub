@@ -69,10 +69,7 @@ async fn warm_one_version_inner(
         Ok(false) => {}
         Err(e) => {
             tracing::warn!(error = %e, key = %artifact_key, "warming: exists check failed");
-            return WarmingReport {
-                errors: 1,
-                ..Default::default()
-            };
+            return WarmingReport::failed(name, Some(version.to_owned()), e);
         }
     }
 
@@ -96,10 +93,7 @@ async fn warm_one_version_inner(
                 version = %version, error = %e,
                 "warming: fetch failed"
             );
-            return WarmingReport {
-                errors: 1,
-                ..Default::default()
-            };
+            return WarmingReport::failed(name, Some(version.to_owned()), e);
         }
     };
     // Times the whole body transfer, not just time-to-headers — warming issues
@@ -124,10 +118,7 @@ async fn warm_one_version_inner(
         Ok(o) => o,
         Err(e) => {
             tracing::warn!(error = %e, key = %artifact_key, "warming: store failed");
-            return WarmingReport {
-                errors: 1,
-                ..Default::default()
-            };
+            return WarmingReport::failed(name, Some(version.to_owned()), e);
         }
     };
     let size = outcome.size;
@@ -226,10 +217,8 @@ impl WarmingService {
                         error = %e,
                         "warming: failed to list versions"
                     );
-                    return WarmingReport {
-                        errors: 1,
-                        ..Default::default()
-                    };
+                    // No version to name: the listing itself is what failed.
+                    return WarmingReport::failed(name, None, e);
                 }
             }
         };
@@ -265,6 +254,9 @@ impl WarmingService {
             match handle.await {
                 Ok(r) => total += r,
                 Err(e) => {
+                    // A panicked task took its identity with it, so this one is
+                    // counted and unnamed. `errors` is the authority on the
+                    // count for exactly this case.
                     tracing::warn!(error = %e, "warming: task panicked");
                     total.errors += 1;
                 }

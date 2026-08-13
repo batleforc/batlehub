@@ -2,7 +2,7 @@
 import { useI18n } from "vue-i18n";
 import { ref, computed, onMounted } from "vue";
 import { RouterLink, useRouter } from "vue-router";
-import { useExploreCache } from "@/composables/useExploreCache";
+import { useExploreCache, useUpstreamCache } from "@/composables/useExploreCache";
 import { extractMessage } from "@/composables/useApi";
 import { formatCount } from "@/lib/format";
 import { sourceVariant } from "@/lib/badge-variants";
@@ -124,6 +124,26 @@ interface PageResult {
   total: number;
 }
 const exploreCache = useExploreCache<PageResult>();
+const upstreamCache = useUpstreamCache<UpstreamPackageDto[]>();
+
+/**
+ * Sequence guards (RFC 0004-bis §6.3).
+ *
+ * Neither fetch guarded its own ordering: `packages.value = body.items` was
+ * unconditional, with no sequence token and no `AbortController`, and
+ * `selectRegistry`/`onSortChange` are undebounced. So clicking registry A
+ * (uncached, slow) then B (cached, instant) let A's response overwrite the
+ * table while the sidebar showed B selected. The cache entries stayed correct
+ * throughout — it is only the *display* that was wrong, which is why the fix is
+ * a sequence number rather than a change to the keys.
+ *
+ * A late response is still written to the cache and not to the screen. That is
+ * deliberate: the response is correct for its own key, it is only stale for
+ * what is currently being looked at, and discarding it would mean re-fetching
+ * it the moment the operator clicks back.
+ */
+let packagesSeq = 0;
+let upstreamSeq = 0;
 
 // ── Data fetching ─────────────────────────────────────────────────────────────
 
@@ -163,6 +183,7 @@ async function fetchPackages() {
   const q = search.value.trim();
   const s = sort.value;
   const p = page.value;
+  const seq = ++packagesSeq;
 
   const cached = exploreCache.get(reg, p, s, q);
   if (cached) {
@@ -184,37 +205,50 @@ async function fetchPackages() {
         name: q || undefined,
       },
     });
-    if (apiErr) throw new Error("Failed to load packages");
+    if (apiErr) throw new Error(t("packageCatalog.loadFailed"));
     const body = res as ExplorePackageListResponse;
+    // Written under the coordinates captured at call time, not the current
+    // refs, so a late response cannot land under the wrong key.
+    exploreCache.set(reg, p, s, q, { items: body.items, total: body.total });
+    if (seq !== packagesSeq) return; // superseded — cached, not displayed
     packages.value = body.items;
     total.value = body.total;
-    exploreCache.set(reg, p, s, q, { items: body.items, total: body.total });
   } catch (e) {
-    error.value = extractMessage(e);
+    if (seq === packagesSeq) error.value = extractMessage(e);
   } finally {
-    loading.value = false;
+    if (seq === packagesSeq) loading.value = false;
   }
 }
 
 async function fetchUpstream() {
-  if (!search.value.trim()) return;
+  const name = search.value.trim();
+  if (!name) return;
+  const reg = selectedRegistry.value ?? "";
+  const seq = ++upstreamSeq;
+
+  // Every hit here is N third-party calls that do not happen.
+  const cached = upstreamCache.get(name, reg);
+  if (cached) {
+    upstreamResults.value = cached;
+    return;
+  }
+
   loadingUpstream.value = true;
   try {
     const { data: res } = await exploreUpstreamSearch({
-      query: {
-        name: search.value.trim(),
-        limit: 10,
-        registry: selectedRegistry.value ?? undefined,
-      },
+      query: { name, limit: 10, registry: reg || undefined },
     });
     if (res) {
       const body = res as { items?: UpstreamPackageDto[] };
-      upstreamResults.value = body.items ?? [];
+      const items = body.items ?? [];
+      upstreamCache.set(name, reg, items);
+      if (seq !== upstreamSeq) return; // superseded — cached, not displayed
+      upstreamResults.value = items;
     }
   } catch {
     // non-fatal
   } finally {
-    loadingUpstream.value = false;
+    if (seq === upstreamSeq) loadingUpstream.value = false;
   }
 }
 
@@ -276,10 +310,10 @@ onMounted(() => {
         :options="facetOptions"
         :label="t('packageCatalog.registries')"
         :all-label="
-            countsKnown
-              ? t('packageCatalog.allRegistries', { count: totalPackages })
-              : t('packageCatalog.allRegistriesUnknown')
-          "
+          countsKnown
+            ? t('packageCatalog.allRegistries', { count: totalPackages })
+            : t('packageCatalog.allRegistriesUnknown')
+        "
         @update:model-value="selectRegistry"
       />
     </aside>

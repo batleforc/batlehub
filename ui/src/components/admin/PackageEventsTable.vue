@@ -17,14 +17,18 @@ const { t } = useI18n();
 
 defineProps<{ events: PackageEventDto[] }>();
 
-const ACTION_LABELS: Record<string, string> = {
-  download: "Download",
-  view_metadata: "View metadata",
-  block: "Block",
-  unblock: "Unblock",
+/* Keys, not sentences. An action this table has never seen falls through to
+   the raw verb the server sent, which is the honest answer for a value the
+   console does not know a name for. */
+const ACTION_LABEL_KEYS: Record<string, string> = {
+  download: "common.download",
+  view_metadata: "packageEventsTable.viewMetadata",
+  block: "common.block",
+  unblock: "common.unblock",
 };
 function fmtAction(a: string) {
-  return ACTION_LABELS[a] ?? a;
+  const key = ACTION_LABEL_KEYS[a];
+  return key ? t(key) : a;
 }
 </script>
 

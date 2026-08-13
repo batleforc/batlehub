@@ -20,10 +20,13 @@ function handleOidcCallback(to: RouteLocationNormalized): RouteLocationRaw | nul
   sessionStorage.removeItem(OIDC_STATE_KEY);
 
   if (!incomingState || incomingState !== expectedState) {
-    return {
-      path: "/login",
-      query: { error: "State mismatch — possible CSRF attack. Please try again." },
-    };
+    /* A catalogue *key*, not a sentence. The router has no `setup` and the
+       destination does — and putting a rendered sentence in a query string also
+       pins it to the locale that was active when the redirect was built, which
+       for an OIDC round-trip is a different page load entirely. `LoginPage`
+       translates anything it recognises and shows the rest verbatim, so an
+       error forwarded from the backend still reads. */
+    return { path: "/login", query: { error: "loginPage.oidcStateMismatch" } };
   }
 
   const provider = to.query.oidc_provider ? String(to.query.oidc_provider) : null;
