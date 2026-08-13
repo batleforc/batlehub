@@ -60,6 +60,8 @@ const perPage = 20;
 const allRegistries = ref<RegistryInfo[]>([]);
 // Per-registry package counts (only registries that have ≥1 package)
 const registryStats = ref<Map<string, RegistryStatDto>>(new Map());
+/** True when the counts could not be read at all — not when they are zero. */
+const statsUnavailable = ref(false);
 
 const packages = ref<ExploreEntryDto[]>([]);
 const total = ref(0);
@@ -85,13 +87,16 @@ const facetOptions = computed(() =>
   sidebarRegistries.value.map((r) => ({
     value: r.name,
     label: r.name,
-    count: r.package_count,
+    count: countsKnown.value ? r.package_count : undefined,
   })),
 );
 
 const totalPackages = computed(() =>
   sidebarRegistries.value.reduce((s, r) => s + r.package_count, 0),
 );
+
+/** Counts are shown only when they were actually read. */
+const countsKnown = computed(() => !statsUnavailable.value);
 
 // Upstream-only hits (not already cached)
 const freshUpstream = computed(() => upstreamResults.value.filter((p) => !p.already_cached));
@@ -132,8 +137,19 @@ async function fetchAllRegistries() {
       );
     }
     if (statsResult.data) {
-      const body = statsResult.data as { registries?: RegistryStatDto[] };
+      const body = statsResult.data as {
+        registries?: RegistryStatDto[];
+        upstream_unavailable?: boolean;
+      };
       registryStats.value = new Map((body.registries ?? []).map((s) => [s.registry, s]));
+      // The server answers `{ registries: [], upstream_unavailable: true }`
+      // when the stats query fails, and this page discarded the flag — so a
+      // failed query rendered as every registry showing 0, indistinguishable
+      // from an instance that genuinely holds nothing. Counts unknown and
+      // counts zero are different facts.
+      statsUnavailable.value = body.upstream_unavailable === true;
+    } else if (statsResult.error) {
+      statsUnavailable.value = true;
     }
   } catch {
     // non-fatal
@@ -259,7 +275,11 @@ onMounted(() => {
         :model-value="selectedRegistry"
         :options="facetOptions"
         :label="t('packageCatalog.registries')"
-        :all-label="t('packageCatalog.allRegistries', { count: totalPackages })"
+        :all-label="
+            countsKnown
+              ? t('packageCatalog.allRegistries', { count: totalPackages })
+              : t('packageCatalog.allRegistriesUnknown')
+          "
         @update:model-value="selectRegistry"
       />
     </aside>

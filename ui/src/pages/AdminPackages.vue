@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
-import { ref, computed, watch } from "vue";
+import { ref, computed } from "vue";
 import { useRouter } from "vue-router";
 import { Package } from "@lucide/vue";
 import SectionTabs from "@/components/admin/SectionTabs.vue";
@@ -26,7 +26,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Card, CardHeader, CardContent } from "@/components/ui/card";
 import {
   Table,
   TableHeader,
@@ -70,6 +70,18 @@ interface AdminPackageListResponse {
   per_page: number;
 }
 
+/**
+ * Server-side filters, not a 1000-row fetch filtered in the browser.
+ *
+ * `GET /api/v1/admin/packages` declares `registry`, `name`, `blocked_only`,
+ * `page` and `per_page`; the page sent only `per_page: 1000`. So "what is
+ * blocked right now" — half of this page's question — was answerable by the
+ * API and unreachable in the UI, and the header count silently capped at a
+ * thousand.
+ */
+const registryFilter = ref("");
+const blockedOnly = ref(false);
+
 const {
   data: packagesResponse,
   error,
@@ -77,11 +89,17 @@ const {
   reload,
 } = useApi<AdminPackageListResponse>(
   () =>
-    listPackages({ query: { per_page: 1000 } }) as Promise<{
+    listPackages({
+      query: {
+        per_page: 1000,
+        ...(registryFilter.value ? { registry: registryFilter.value } : {}),
+        ...(blockedOnly.value ? { blocked_only: true } : {}),
+      },
+    }) as Promise<{
       data?: unknown;
       error?: unknown;
     }>,
-  [token],
+  [token, registryFilter, blockedOnly],
 );
 
 const packages = computed(() => packagesResponse.value?.items ?? null);
@@ -110,7 +128,7 @@ const filteredPackages = computed(() => {
 // ── Block existing package ────────────────────────────────────────────────────
 
 async function block(pkg: AdminPackageSummary) {
-  const reason = globalThis.prompt("Block reason:");
+  const reason = blockReason.value.trim();
   if (!reason) return;
   actionError.value = null;
   try {
@@ -206,7 +224,7 @@ const selectedPackages = computed(() =>
 );
 
 async function bulkBlock() {
-  const reason = globalThis.prompt(`Block reason for ${selected.value.size} package(s):`);
+  const reason = blockReason.value.trim();
   if (!reason) return;
   bulkLoading.value = true;
   bulkResultMsg.value = null;
@@ -222,6 +240,13 @@ async function bulkBlock() {
         })),
       },
     });
+    if (res.error) {
+      // Without this the request failed, the selection cleared, the table
+      // reloaded, and the page said nothing at all — a failed bulk action
+      // looked exactly like a successful one.
+      actionError.value = extractMessage(res.error);
+      return;
+    }
     const r = res.data;
     if (r) {
       const failSuffix = r.failed_count ? `, ${r.failed_count} failed` : "";
@@ -248,6 +273,13 @@ async function bulkUnblock() {
         })),
       },
     });
+    if (res.error) {
+      // Without this the request failed, the selection cleared, the table
+      // reloaded, and the page said nothing at all — a failed bulk action
+      // looked exactly like a successful one.
+      actionError.value = extractMessage(res.error);
+      return;
+    }
     const r = res.data;
     if (r) {
       const failSuffix = r.failed_count ? `, ${r.failed_count} failed` : "";
@@ -293,69 +325,26 @@ async function bulkDelete() {
 
 // ── Pre-block form ────────────────────────────────────────────────────────────
 
-const showPreBlock = ref(false);
-const preBlock = ref({
-  registry: "",
-  name: "",
-  version: "",
-  artifact: "",
-  reason: "",
-});
-const preBlockError = ref<string | null>(null);
-const preBlockLoading = ref(false);
-
-watch(registries, (regs) => {
-  if (regs && regs.length > 0 && !preBlock.value.registry) {
-    preBlock.value.registry = regs[0].name;
-  }
-});
-
-async function submitPreBlock() {
-  if (!preBlock.value.name || !preBlock.value.version || !preBlock.value.reason) {
-    preBlockError.value = "Name, version and reason are required.";
-    return;
-  }
-  preBlockError.value = null;
-  preBlockLoading.value = true;
-  try {
-    await blockPackage({
-      body: {
-        registry: preBlock.value.registry,
-        name: preBlock.value.name,
-        version: preBlock.value.version,
-        artifact: preBlock.value.artifact || undefined,
-        reason: preBlock.value.reason,
-      },
-    });
-    const firstReg = registries.value?.[0]?.name ?? "";
-    preBlock.value = {
-      registry: firstReg,
-      name: "",
-      version: "",
-      artifact: "",
-      reason: "",
-    };
-    showPreBlock.value = false;
-    reload();
-  } catch (e: unknown) {
-    preBlockError.value = extractMessage(e);
-  } finally {
-    preBlockLoading.value = false;
-  }
-}
-
 /**
- * Destructive actions go through the contract component, not `confirm()`.
+ * The "Block a package" form is gone (RFC 0004 Phase 5, *distill*).
  *
- * A native dialog cannot state scope, cannot distinguish reversible from
- * permanent, and cannot ask for the object's name — so all three of these read
- * the same to the operator, whether it unblocked two packages or purged forty
- * artifacts that may no longer exist upstream (RFC 0003 section 4.5).
+ * It asked an operator to type a registry, name, version and artifact by hand
+ * — while a list of packages sat on the same screen — and it was a one-row
+ * copy of `/admin/packages/bulk`, one tab away, which does the same job with
+ * validation, a preview table and a per-item failure report this page threw
+ * away. Blocking something that is *not here yet* is that page's question; the
+ * toolbar links to it rather than answering it twice.
  */
+
 type PendingAction =
   | { kind: "delete-one"; pkg: AdminPackageSummary }
+  | { kind: "block-one"; pkg: AdminPackageSummary }
+  | { kind: "bulk-block" }
   | { kind: "bulk-delete" }
   | { kind: "bulk-unblock" };
+
+/** The reason a block carries, collected by the dialog rather than a prompt. */
+const blockReason = ref("");
 
 const pending = ref<PendingAction | null>(null);
 
@@ -371,6 +360,25 @@ const confirmProps = computed(() => {
       scope: `${id.name}@${id.version} in ${id.registry}, and its cached artifact`,
       reversible: false,
       confirmName: id.name,
+    };
+  }
+  if (action.kind === "block-one") {
+    const id = action.pkg.package_id;
+    return {
+      action: "Block",
+      count: 1,
+      itemNoun: "package",
+      scope: `${id.name}@${id.version} in ${id.registry} — consumers resolving it receive 403 until unblocked`,
+      reversible: true,
+    };
+  }
+  if (action.kind === "bulk-block") {
+    return {
+      action: "Block",
+      count: selected.value.size,
+      itemNoun: "package",
+      scope: "the selection — consumers resolving them receive 403 until unblocked",
+      reversible: true,
     };
   }
   if (action.kind === "bulk-delete") {
@@ -397,6 +405,8 @@ async function runPending(): Promise<void> {
   pending.value = null;
   if (!action) return;
   if (action.kind === "delete-one") await deletePkg(action.pkg);
+  else if (action.kind === "block-one") await block(action.pkg);
+  else if (action.kind === "bulk-block") await bulkBlock();
   else if (action.kind === "bulk-delete") await bulkDelete();
   else await bulkUnblock();
 }
@@ -413,84 +423,17 @@ async function runPending(): Promise<void> {
         >
       </template>
     </PageHeader>
-    <!-- Pre-block form -->
-    <Card>
-      <CardHeader class="flex flex-row items-center justify-between space-y-0 pb-3">
-        <CardTitle class="text-base">{{ t("adminPackages.blockAPackage") }}</CardTitle>
-        <Button variant="outline" size="sm" @click="showPreBlock = !showPreBlock">
-          {{ showPreBlock ? t("common.cancel") : t("adminPackages.blockNewPackage") }}
-        </Button>
-      </CardHeader>
-
-      <CardContent v-if="showPreBlock" class="space-y-4 pt-0">
-        <p class="text-xs text-muted-foreground">{{ t("adminPackages.preEmptivelyBlockA") }}</p>
-
-        <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <div class="space-y-1">
-            <Label for="pb-registry">{{ t("common.registry") }}</Label>
-            <select
-              id="pb-registry"
-              v-model="preBlock.registry"
-              class="flex h-9 w-full rounded-sm border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring font-mono"
-            >
-              <option v-for="reg in registries" :key="reg.name" :value="reg.name">
-                {{ reg.name }}
-                <template v-if="reg.type !== reg.name"> ({{ reg.type }}) </template>
-              </option>
-            </select>
-          </div>
-          <div class="space-y-1 sm:col-span-2">
-            <Label for="pb-name">{{ t("common.name") }}</Label>
-            <Input
-              id="pb-name"
-              v-model="preBlock.name"
-              :placeholder="t('adminPackages.ownerRepoOrLodash')"
-              class="font-mono"
-            />
-          </div>
-          <div class="space-y-1">
-            <Label for="pb-version">{{ t("adminPackages.versionTag") }}</Label>
-            <Input
-              id="pb-version"
-              v-model="preBlock.version"
-              placeholder="v1.2.3"
-              class="font-mono"
-            />
-          </div>
-        </div>
-
-        <div class="grid grid-cols-2 gap-3">
-          <div class="space-y-1">
-            <Label for="pb-artifact"
-              >{{ t("common.artifact") }}
-              <span class="text-muted-foreground">{{ t("adminPackages.optional") }}</span></Label
-            >
-            <Input
-              id="pb-artifact"
-              v-model="preBlock.artifact"
-              :placeholder="t('adminPackages.tarball123456789Download')"
-              class="font-mono"
-            />
-          </div>
-          <div class="space-y-1">
-            <Label for="pb-reason">{{ t("common.reason") }}</Label>
-            <Input
-              id="pb-reason"
-              v-model="preBlock.reason"
-              placeholder="CVE-2025-XXXX or policy violation"
-            />
-          </div>
-        </div>
-
-        <p v-if="preBlockError" class="text-xs text-destructive">
-          {{ preBlockError }}
-        </p>
-
-        <Button :disabled="preBlockLoading" @click="submitPreBlock">
-          {{ preBlockLoading ? t("adminIpBlocks.blocking") : t("adminPackages.blockPackage") }}
-        </Button>
-      </CardContent>
-    </Card>
+    <!-- The form that used to sit here is `/admin/packages/bulk`, one tab
+         away and better at the job. A link, not a second implementation. -->
+    <p class="text-sm text-muted-foreground">
+      <i18n-t keypath="adminPackages.blockNotHereYet" tag="span">
+        <template #link>
+          <RouterLink to="/admin/packages/bulk" class="text-primary hover:underline">{{
+            t("adminNav.bulkBlock")
+          }}</RouterLink>
+        </template>
+      </i18n-t>
+    </p>
 
     <!-- Bulk action bar -->
     <div
@@ -498,7 +441,15 @@ async function runPending(): Promise<void> {
       class="sticky top-16 z-30 flex items-center gap-3 rounded-sm border bg-card px-4 py-2.5 shadow-sm"
     >
       <span class="text-sm font-medium">{{ selected.size }} selected</span>
-      <Button size="sm" variant="destructive" :disabled="bulkLoading" @click="bulkBlock">{{
+      <Button
+        size="sm"
+        variant="destructive"
+        :disabled="bulkLoading"
+        @click="
+          blockReason = '';
+          pending = { kind: 'bulk-block' };
+        "
+        >{{
         t("adminPackages.blockSelected")
       }}</Button>
       <Button
@@ -518,10 +469,14 @@ async function runPending(): Promise<void> {
       <Button size="sm" variant="ghost" @click="selected = new Set()">
         {{ t("common.clearAction") }}
       </Button>
-      <span v-if="bulkResultMsg" class="text-xs text-muted-foreground ml-auto">{{
-        bulkResultMsg
-      }}</span>
     </div>
+
+    <!-- Outside the selection-gated bar above: every bulk handler clears the
+         selection in its `finally`, so a message rendered inside that bar was
+         written into a node destroyed in the same tick and never seen. -->
+    <p v-if="bulkResultMsg" role="status" class="text-sm text-muted-foreground">
+      {{ bulkResultMsg }}
+    </p>
 
     <!-- Package list -->
     <Card>
@@ -529,12 +484,30 @@ async function runPending(): Promise<void> {
         <div class="flex flex-row items-center justify-end space-y-0">
           <Button variant="outline" size="sm" @click="reload"> {{ t("common.refresh") }} </Button>
         </div>
-        <Input
-          v-model="search"
-          :placeholder="t('adminPackages.filterByNameRegistry')"
-          :aria-label="t('adminPackages.filterPackages')"
-          class="max-w-sm h-8 text-sm"
-        />
+        <div class="flex flex-wrap items-center gap-2">
+          <Input
+            v-model="search"
+            :placeholder="t('adminPackages.filterByNameRegistry')"
+            :aria-label="t('adminPackages.filterPackages')"
+            class="max-w-sm h-8 text-sm"
+          />
+          <!-- Both go to the server. `blocked_only` answers half this page's
+               question and had no control at all. -->
+          <select
+            v-model="registryFilter"
+            :aria-label="t('common.registry')"
+            class="h-8 rounded-sm border border-input bg-transparent px-2 text-sm"
+          >
+            <option value="">{{ t("adminPackages.allRegistries") }}</option>
+            <option v-for="r in registries ?? []" :key="r.name" :value="r.name">
+              {{ r.name }}
+            </option>
+          </select>
+          <label class="flex items-center gap-1.5 text-sm text-muted-foreground">
+            <input v-model="blockedOnly" type="checkbox" class="h-3.5 w-3.5" />
+            {{ t("adminPackages.blockedOnly") }}
+          </label>
+        </div>
       </CardHeader>
       <CardContent class="p-0">
         <p v-if="actionError" class="px-6 pt-4 text-sm text-destructive">
@@ -683,7 +656,15 @@ async function runPending(): Promise<void> {
                     >
                       {{ t("common.unblock") }}
                     </Button>
-                    <Button v-else variant="destructive" size="sm" @click="block(pkg)">
+                    <Button
+                      v-else
+                      variant="outline"
+                      size="sm"
+                      @click="
+                        blockReason = '';
+                        pending = { kind: 'block-one', pkg };
+                      "
+                    >
                       {{ t("common.block") }}
                     </Button>
                     <Button
@@ -712,5 +693,16 @@ async function runPending(): Promise<void> {
     :error="actionError"
     @update:open="(open: boolean) => !open && (pending = null)"
     @confirm="runPending"
-  />
+  >
+    <template v-if="pending?.kind === 'block-one' || pending?.kind === 'bulk-block'">
+      <div class="space-y-1">
+        <Label for="block-reason">{{ t("common.reason") }}</Label>
+        <Input
+          id="block-reason"
+          v-model="blockReason"
+          placeholder="CVE-2025-XXXX or policy violation"
+        />
+      </div>
+    </template>
+  </DestructiveConfirm>
 </template>

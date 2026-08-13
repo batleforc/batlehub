@@ -95,6 +95,14 @@ function cancel(): void {
     <template #description>{{ consequence }}</template>
 
     <div class="space-y-4">
+      <!--
+        Some destructive actions need an input of their own — a block needs the
+        reason a consumer will read back on a 403. Collected here rather than by
+        a native `prompt()`, which cannot state count, scope or consequence and
+        is not translated.
+      -->
+      <slot />
+
       <div v-if="needsTypedName" class="space-y-2">
         <Label :for="'destructive-confirm-name'" class="text-xs text-muted-foreground">
           <i18n-t keypath="destructive.typeToConfirm" tag="span">

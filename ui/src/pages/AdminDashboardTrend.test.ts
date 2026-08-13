@@ -44,6 +44,67 @@ async function mountDashboard() {
  * asks for something a reader can act on rather than a line that only says
  * "something changed".
  */
+describe("AdminDashboard verdict", () => {
+  beforeEach(() => {
+    adminStatsMock.mockReset().mockResolvedValue({ data: stats });
+    registryHealthMock.mockReset();
+    adminStatsHistoryMock.mockReset().mockResolvedValue({ data: trend() });
+  });
+
+  /**
+   * `useApi` nulls `data` on error, so an unreadable health probe made the page
+   * conclude the instance was empty and tell a paged operator to add a
+   * `[[registries]]` block — on an instance serving real traffic.
+   */
+  it("does not call the instance empty when the health probe fails", async () => {
+    registryHealthMock.mockResolvedValue({ error: { message: "boom" } });
+    const wrapper = await mountDashboard();
+    expect(wrapper.text()).not.toMatch(/No registries configured/i);
+    expect(wrapper.text()).toMatch(/could not be read/i);
+  });
+
+  /**
+   * `error_type` is `"denied"` (RBAC refusing a developer — the policy engine
+   * working) or `"error"` (something actually broken). Alarming on the first
+   * pages an operator because the product did its job.
+   */
+  it("does not raise an alarm for policy denials", async () => {
+    registryHealthMock.mockResolvedValue({
+      data: [
+        { registry: "npm", recent_errors: [{ error_type: "denied", reason: "rbac" }] },
+        { registry: "cargo", recent_errors: [] },
+      ],
+    });
+    const wrapper = await mountDashboard();
+    expect(wrapper.text()).toMatch(/are answering/i);
+    expect(wrapper.text()).not.toMatch(/reported errors/i);
+  });
+
+  it("raises an alarm for a real fault, and names the registry", async () => {
+    registryHealthMock.mockResolvedValue({
+      data: [
+        { registry: "npm", recent_errors: [{ error_type: "error", reason: "upstream timeout" }] },
+        { registry: "cargo", recent_errors: [] },
+      ],
+    });
+    const wrapper = await mountDashboard();
+    expect(wrapper.text()).toMatch(/reported errors/i);
+    expect(wrapper.text()).toContain("npm");
+  });
+
+  /**
+   * The verdict was three hardcoded English sentences while `dashboard.*`
+   * held translated equivalents that nothing referenced — so a French
+   * operator's 3am alarm arrived in English.
+   */
+  it("resolves the verdict through the catalogue", async () => {
+    registryHealthMock.mockResolvedValue({ data: [{ registry: "npm", recent_errors: [] }] });
+    const wrapper = await mountDashboard();
+    expect(wrapper.text()).not.toContain("dashboard.allAnswering");
+    expect(wrapper.text()).toMatch(/answering/i);
+  });
+});
+
 describe("AdminDashboard trend", () => {
   beforeEach(() => {
     adminStatsMock.mockReset().mockResolvedValue({ data: stats });

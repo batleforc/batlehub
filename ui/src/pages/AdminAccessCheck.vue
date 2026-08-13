@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
-import { ref } from "vue";
-import { useAuth } from "@/composables/useAuth";
+import { onMounted, ref } from "vue";
+import { useRoute, RouterLink } from "vue-router";
+import { adminAccessCheck } from "@/client/sdk.gen";
+import { extractMessage } from "@/composables/useApi";
 import SectionTabs from "@/components/admin/SectionTabs.vue";
 import { SECURITY_TABS } from "@/config/adminSections";
 import { PageHeader } from "@/components/ui/page-header";
 
 const { t } = useI18n();
-
-const { token } = useAuth();
+const route = useRoute();
 
 const registry = ref("");
 const packageName = ref("");
@@ -24,14 +25,29 @@ const error = ref<string | null>(null);
 
 const RESOURCE_TYPES = ["releases:read", "source:read", "releases:write", "source:write"];
 
+/**
+ * Prefill from the query, as `/tools/access-check` already does.
+ *
+ * "Nobody opens an access checker for fun; they open it because something was
+ * refused" — the project's own tested premise for the public checker. This page
+ * had seven empty fields and read no query at all, so an operator who had just
+ * seen a denial in the audit log retyped every coordinate by hand.
+ */
+onMounted(() => {
+  const q = route.query;
+  const one = (v: unknown) => (typeof v === "string" ? v : "");
+  registry.value = one(q.registry) || registry.value;
+  packageName.value = one(q.name) || packageName.value;
+  version.value = one(q.version) || version.value;
+  userId.value = one(q.user_id) || userId.value;
+  role.value = one(q.role) || role.value;
+});
+
 async function simulate() {
   loading.value = true;
   error.value = null;
   result.value = null;
   try {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (token.value) headers["Authorization"] = `Bearer ${token.value}`;
-
     const body: Record<string, unknown> = {
       registry: registry.value,
       package_name: packageName.value,
@@ -46,13 +62,17 @@ async function simulate() {
       .filter(Boolean);
     if (grps.length) body.groups = grps;
 
-    const resp = await fetch("/api/v1/admin/access-check", {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-    });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
-    result.value = await resp.json();
+    // The generated client, not a bare relative `fetch`. There is no `/api`
+    // proxy in front of the SPA (CLAUDE.md), so `fetch("/api/v1/...")` POSTed
+    // to the Vite origin on both dev servers and on every deployment where the
+    // API is not same-origin. `adminAccessCheck` was already generated and
+    // typed, and carries the base URL and the auth header for free.
+    const res = await adminAccessCheck({ body: body as never });
+    if (res.error) {
+      error.value = extractMessage(res.error);
+      return;
+    }
+    result.value = (res.data ?? null) as typeof result.value;
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -194,7 +214,21 @@ async function simulate() {
       </p>
       <p v-if="result.reason" class="text-sm text-muted-foreground">{{ result.reason }}</p>
       <p v-if="result.rule_matched" class="text-xs text-muted-foreground">
-        Rule: {{ result.rule_matched }}
+        {{ t("adminAccessCheck.ruleMatched", { rule: result.rule_matched }) }}
+      </p>
+      <!--
+        State the bound. The handler evaluates registry policy *rules* only —
+        it never consults the user-block or IP-block stores, and both of those
+        reject in middleware *before* the rules run. So this page can answer
+        "allow" about an account the next tab shows as blocked. Until the
+        endpoint learns about them, the honest thing is to say what the
+        simulation covers rather than let silence imply completeness.
+      -->
+      <p class="border-t border-border pt-2 text-xs text-muted-foreground">
+        {{ t("adminAccessCheck.simulationBound") }}
+        <RouterLink to="/admin/security/blocks" class="text-primary hover:underline">{{
+          t("adminAccessCheck.seeBlocks")
+        }}</RouterLink>
       </p>
     </div>
   </div>

@@ -8,7 +8,7 @@ import SectionTabs from "@/components/admin/SectionTabs.vue";
 import { OPERATIONS_TABS } from "@/config/adminSections";
 import { PageHeader } from "@/components/ui/page-header";
 import { AsyncState } from "@/components/ui/async-state";
-import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -106,54 +106,11 @@ async function triggerWarm(name: string) {
 
 // ── Delete cached artifact ────────────────────────────────────────────────────
 
-type DeleteMode = "package" | "path";
-
-const deleteRegistry = ref("");
-const deleteMode = ref<DeleteMode>("package");
-const deleteName = ref("");
-const deleteVersion = ref("");
-const deletePath = ref("");
-const deleting = ref(false);
-const deleteResult = ref<{ deleted: boolean; artifact_key: string } | null>(null);
-const deleteError = ref<string | null>(null);
-
-async function triggerDelete() {
-  deleteResult.value = null;
-  deleteError.value = null;
-
-  if (!deleteRegistry.value.trim()) {
-    deleteError.value = "Registry name is required.";
-    return;
-  }
-
-  const body: Record<string, string> =
-    deleteMode.value === "path"
-      ? { path: deletePath.value.trim() }
-      : { name: deleteName.value.trim(), version: deleteVersion.value.trim() };
-
-  deleting.value = true;
-  try {
-    const res = await authFetch(
-      `${API_BASE_URL}/api/v1/admin/registries/${encodeURIComponent(deleteRegistry.value.trim())}/cache`,
-      {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      },
-    );
-    const json = (await res.json().catch(() => ({}))) as {
-      deleted?: boolean;
-      artifact_key?: string;
-      error?: string;
-    };
-    if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
-    deleteResult.value = { deleted: json.deleted ?? false, artifact_key: json.artifact_key ?? "" };
-  } catch (e) {
-    deleteError.value = extractMessage(e);
-  } finally {
-    deleting.value = false;
-  }
-}
+// The delete-cached-artifact card moved to `/admin/observability/health`
+// (RFC 0004 Phase 5, *split*): it read nothing this page produces — not the
+// warmable-registry list, not `latest_n`, not `concurrency` — and it is the
+// opposite verb on a different object. Health already owned "what has this
+// registry cached" and the sibling Clear Cache control.
 
 onMounted(() => void loadStatus());
 </script>
@@ -250,114 +207,5 @@ onMounted(() => void loadStatus());
       </div>
     </AsyncState>
 
-    <!-- Delete cached artifact -->
-    <Card>
-      <CardHeader>
-        <CardTitle>{{ t("adminWarming.deleteCachedArtifact") }}</CardTitle>
-        <CardDescription>
-          <i18n-t keypath="adminWarming.removeArtifactHelp" tag="span">
-            <template #path
-              ><strong>{{ t("adminWarming.pathMode") }}</strong></template
-            >
-            <template #package
-              ><strong>{{ t("adminWarming.packageMode") }}</strong></template
-            >
-          </i18n-t>
-        </CardDescription>
-      </CardHeader>
-      <CardContent class="space-y-4">
-        <!-- Registry -->
-        <div class="space-y-1.5">
-          <Label for="del-registry" class="text-xs">{{ t("common.registry") }}</Label>
-          <Input
-            id="del-registry"
-            v-model="deleteRegistry"
-            placeholder="e.g. npm, jetbrains-ide"
-            class="font-mono text-sm max-w-xs"
-          />
-        </div>
-
-        <!-- Mode toggle -->
-        <div class="flex gap-2">
-          <button
-            :class="[
-              'px-3 py-1 rounded-sm text-xs font-mono border transition-colors',
-              deleteMode === 'package'
-                ? 'bg-primary text-primary-foreground border-primary'
-                : 'border-border text-muted-foreground hover:bg-accent',
-            ]"
-            @click="deleteMode = 'package'"
-          >
-            {{ t("common.package") }}
-          </button>
-          <button
-            :class="[
-              'px-3 py-1 rounded-sm text-xs font-mono border transition-colors',
-              deleteMode === 'path'
-                ? 'bg-primary text-primary-foreground border-primary'
-                : 'border-border text-muted-foreground hover:bg-accent',
-            ]"
-            @click="deleteMode = 'path'"
-          >
-            {{ t("common.path") }}
-          </button>
-        </div>
-
-        <!-- Package mode -->
-        <div v-if="deleteMode === 'package'" class="flex gap-3 flex-wrap">
-          <div class="space-y-1.5">
-            <Label for="del-name" class="text-xs">{{ t("common.name") }}</Label>
-            <Input
-              id="del-name"
-              v-model="deleteName"
-              placeholder="lodash"
-              class="font-mono text-sm w-44"
-            />
-          </div>
-          <div class="space-y-1.5">
-            <Label for="del-version" class="text-xs">{{ t("common.version") }}</Label>
-            <Input
-              id="del-version"
-              v-model="deleteVersion"
-              placeholder="4.17.21"
-              class="font-mono text-sm w-36"
-            />
-          </div>
-        </div>
-
-        <!-- Path mode -->
-        <div v-else class="space-y-1.5">
-          <Label for="del-path" class="text-xs">{{ t("common.path") }}</Label>
-          <Input
-            id="del-path"
-            v-model="deletePath"
-            placeholder="idea/idea-2026.1.3.tar.gz"
-            class="font-mono text-sm max-w-sm"
-          />
-        </div>
-
-        <!-- Feedback -->
-        <p v-if="deleteError" class="text-xs text-destructive">{{ deleteError }}</p>
-        <div v-if="deleteResult" class="space-y-1">
-          <Badge
-            :class="deleteResult.deleted ? 'text-foreground' : 'bg-muted text-muted-foreground'"
-            class="text-xs"
-          >
-            {{
-              deleteResult.deleted
-                ? t("adminWarming.deleted")
-                : t("adminWarming.notCachedNothingToRemove")
-            }}
-          </Badge>
-          <p class="text-xs text-muted-foreground font-mono break-all">
-            {{ deleteResult.artifact_key }}
-          </p>
-        </div>
-
-        <Button variant="destructive" size="sm" :disabled="deleting" @click="triggerDelete">
-          {{ deleting ? t("adminWarming.deleting") : t("adminWarming.deleteFromCache") }}
-        </Button>
-      </CardContent>
-    </Card>
   </div>
 </template>

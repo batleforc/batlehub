@@ -148,8 +148,17 @@ const {
             </TableRow>
           </TableBody>
         </Table>
+        <p v-if="namespacesLoading" class="p-6 text-center text-sm text-muted-foreground">
+          {{ t("common.loading") }}
+        </p>
+        <!--
+          `&& !namespacesLoading`: the empty state rendered while the request was still
+          in flight, so an operator read "none for this registry", opened the
+          dialog and claimed something that already existed. Empty must mean
+          empty, not "we have not looked yet".
+        -->
         <p
-          v-if="!namespacesError && (!namespaces || namespaces.length === 0)"
+          v-if="!namespacesError && !namespacesLoading && (!namespaces || namespaces.length === 0)"
           class="p-6 text-sm text-muted-foreground text-center"
         >
           {{

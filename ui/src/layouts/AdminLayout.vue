@@ -13,7 +13,18 @@ function isActive(to: string) {
 </script>
 
 <template>
-  <div class="flex gap-6 min-h-[calc(100vh-3.5rem-1px)]">
+  <!--
+    Column on mobile, row from `md` up.
+
+    It was a row at every width, and the mobile tab strip below is `w-full` —
+    so under `md` the strip and the content sat *side by side* in the same flex
+    row and the document came out 496–705px wide on a 390px viewport. Every one
+    of the fifteen admin pages scrolled sideways, and none of the design gates
+    could see it: the rendered detector runs 390x844 but only over the
+    unauthenticated routes, and the authenticated gate covers `/admin/*` at
+    1440x900 only. `design-authed.mjs` now measures both widths (RFC 0004 §10).
+  -->
+  <div class="flex flex-col md:flex-row md:gap-6 min-h-[calc(100vh-3.5rem-1px)]">
     <!-- Sidebar (desktop) -->
     <aside class="hidden md:flex flex-col w-52 shrink-0 border-r border-border/60 pr-4 pt-2">
       <div

@@ -4,7 +4,6 @@ import { ref, computed } from "vue";
 import {
   listSubscriptions,
   listNotificationChannels,
-  listInboundEvents,
   createSubscription,
   updateSubscription,
   deleteSubscription,
@@ -14,17 +13,17 @@ import type {
   NotificationSubscription,
   NotificationEventType,
   ChannelInfo,
-  InboundEventsResponse,
 } from "@/client/types.gen";
 import { useApi, extractMessage } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
-import { formatDate as fmtTs } from "@/lib/format";
 import { eventBadgeVariant } from "@/lib/badge-variants";
+import SectionTabs from "@/components/admin/SectionTabs.vue";
+import { NOTIFICATIONS_TABS } from "@/config/adminSections";
 import { PageHeader } from "@/components/ui/page-header";
 import { AsyncState } from "@/components/ui/async-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -43,11 +42,7 @@ const { t } = useI18n();
 
 const { token } = useAuth();
 
-type Tab = "subscriptions" | "inbound" | "channels";
-
 // ── State ─────────────────────────────────────────────────────────────────────
-
-const activeTab = ref<Tab>("subscriptions");
 
 const {
   data: subscriptions,
@@ -56,21 +51,22 @@ const {
   reload: reloadSubs,
 } = useApi<NotificationSubscription[]>(() => listSubscriptions(), [token]);
 
-const {
-  data: channelsResp,
-  error: channelsError,
-  loading: channelsLoading,
-} = useApi<ChannelInfo[]>(() => listNotificationChannels(), [token]);
+// Only the data: the channel list is supplementary reference beside a form
+// field, so a spinner or an error block for it would compete with the form it
+// exists to support. An unreadable list degrades to the "none configured"
+// hint, which is the same advice either way.
+const { data: channelsResp } = useApi<ChannelInfo[]>(
+  () => listNotificationChannels(),
+  [token],
+);
 
-const {
-  data: inboundResp,
-  error: inboundError,
-  loading: inboundLoading,
-  reload: reloadInbound,
-} = useApi<InboundEventsResponse>(() => listInboundEvents(), [token]);
-
+/**
+ * The channel list is a *dependency of this page's form*, not a peer view: the
+ * `datalist` on the required Channel field is populated from it (RFC 0004 R8).
+ * That is why channels stayed on this route — a separate route would have had
+ * to fetch it anyway.
+ */
 const channels = computed(() => channelsResp.value ?? []);
-const inboundEvents = computed(() => inboundResp.value?.events ?? []);
 
 // ── Create / edit dialog ──────────────────────────────────────────────────────
 
@@ -90,6 +86,20 @@ const form = ref({
   channel_name: "",
   enabled: true,
 });
+/**
+ * The channel field is required but was never validated — `submitForm` checked
+ * only that it was non-empty, so a typo saved cleanly and the subscription
+ * silently never dispatched. A warning rather than a block: channels come from
+ * `config.toml`, and an operator may legitimately be creating a subscription
+ * for a channel they are about to add.
+ */
+const channelWarning = computed(
+  () =>
+    form.value.channel_name.trim().length > 0 &&
+    channels.value.length > 0 &&
+    !channels.value.some((c) => c.name === form.value.channel_name.trim()),
+);
+
 const formLoading = ref(false);
 const formError = ref<string | null>(null);
 
@@ -240,34 +250,14 @@ async function testSubscription(id: string) {
       :description="t('adminNotifications.manageOutboundNotificationSubscriptionsAnd')"
     />
 
-    <!-- Tab switcher -->
-    <div class="flex gap-1 border-b">
-      <button
-        v-for="tab in ['subscriptions', 'channels', 'inbound'] as Tab[]"
-        :key="tab"
-        class="px-4 py-2 text-sm font-medium capitalize transition-colors"
-        :class="
-          activeTab === tab
-            ? 'border-b-2 border-foreground text-foreground'
-            : 'text-muted-foreground hover:text-foreground'
-        "
-        @click="activeTab = tab"
-      >
-        {{
-          tab === "inbound"
-            ? t("adminNotifications.inboundEvents")
-            : tab === "channels"
-              ? t("adminNotifications.channels")
-              : t("adminNotifications.subscriptions")
-        }}
-      </button>
-    </div>
-
-    <!-- ── Subscriptions tab ── -->
-    <div v-if="activeTab === 'subscriptions'" class="space-y-4">
-      <div class="flex justify-end">
+    <SectionTabs :tabs="NOTIFICATIONS_TABS" />
+    <PageHeader variant="display" :title="t('adminNav.subscriptions')">
+      <template #actions>
         <Button size="sm" @click="openCreate">{{ t("adminNotifications.newSubscription") }}</Button>
-      </div>
+      </template>
+    </PageHeader>
+
+    <div class="space-y-4">
 
       <AsyncState :loading="subsLoading && !subscriptions" :error="subsError">
         <Card>
@@ -350,89 +340,6 @@ async function testSubscription(id: string) {
       </p>
     </div>
 
-    <!-- ── Channels tab ── -->
-    <div v-if="activeTab === 'channels'" class="space-y-4">
-      <AsyncState :loading="channelsLoading && !channelsResp" :error="channelsError">
-        <Card>
-          <CardHeader>
-            <CardTitle class="text-base">{{
-              t("adminNotifications.configuredChannels")
-            }}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p class="text-xs text-muted-foreground mb-4">
-              <i18n-t keypath="adminNotifications.channelsDefinedIn" tag="span">
-                <template #file><code class="font-mono text-xs">config.toml</code></template>
-                <template #block
-                  ><code class="font-mono text-xs">[[notifications.channels]]</code></template
-                >
-              </i18n-t>
-            </p>
-            <div v-if="channels.length === 0" class="text-sm text-muted-foreground">
-              <i18n-t keypath="adminNotifications.noChannelsConfigured" tag="span">
-                <template #block
-                  ><code class="font-mono text-xs">[[notifications.channels]]</code></template
-                >
-              </i18n-t>
-            </div>
-            <div v-else class="flex flex-wrap gap-2">
-              <Badge v-for="ch in channels" :key="ch.name" variant="outline">{{ ch.name }}</Badge>
-            </div>
-          </CardContent>
-        </Card>
-      </AsyncState>
-    </div>
-
-    <!-- ── Inbound Events tab ── -->
-    <div v-if="activeTab === 'inbound'" class="space-y-4">
-      <div class="flex justify-end">
-        <Button variant="outline" size="sm" :disabled="inboundLoading" @click="reloadInbound">
-          {{ inboundLoading ? t("adminHealth.refreshing") : t("common.refresh") }}
-        </Button>
-      </div>
-
-      <AsyncState :loading="inboundLoading && !inboundResp" :error="inboundError">
-        <Card>
-          <CardContent class="p-0">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>{{ t("common.webhook") }}</TableHead>
-                  <TableHead>{{ t("adminNotifications.receivedAt") }}</TableHead>
-                  <TableHead>{{ t("adminNotifications.sourceIp") }}</TableHead>
-                  <TableHead>{{ t("common.signature") }}</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                <TableRow v-for="ev in inboundEvents" :key="ev.id">
-                  <TableCell class="font-mono text-sm">{{ ev.webhook_name }}</TableCell>
-                  <TableCell class="text-xs">{{ fmtTs(ev.received_at) }}</TableCell>
-                  <TableCell class="font-mono text-xs">{{ ev.source_ip ?? "—" }}</TableCell>
-                  <TableCell>
-                    <Badge v-if="ev.signature_valid === true" variant="default" class="text-xs">{{
-                      t("common.valid")
-                    }}</Badge>
-                    <Badge
-                      v-else-if="ev.signature_valid === false"
-                      variant="destructive"
-                      class="text-xs"
-                      >{{ t("common.invalid") }}</Badge
-                    >
-                    <span v-else class="text-xs text-muted-foreground">—</span>
-                  </TableCell>
-                </TableRow>
-              </TableBody>
-            </Table>
-            <p
-              v-if="inboundEvents.length === 0"
-              class="p-6 text-sm text-muted-foreground text-center"
-            >
-              {{ t("adminNotifications.noInboundEventsReceived") }}
-            </p>
-          </CardContent>
-        </Card>
-      </AsyncState>
-    </div>
   </div>
 
   <!-- Create/Edit Subscription dialog -->
@@ -514,6 +421,37 @@ async function testSubscription(id: string) {
           <datalist id="channel-list">
             <option v-for="ch in channels" :key="ch.name" :value="ch.name" />
           </datalist>
+          <!--
+            Inline, not behind a tab. A native `datalist` shows nothing until
+            the operator types, so "does the channel I am about to type exist"
+            was answerable only by leaving the form. This is the whole of what
+            the Channels tab rendered — one sentence and a row of badges, with
+            no actions — moved to where its question is actually asked.
+          -->
+          <div v-if="channels.length" class="flex flex-wrap items-center gap-1.5 pt-1">
+            <span class="text-xs text-muted-foreground">{{
+              t("adminNotifications.configuredChannels")
+            }}</span>
+            <button
+              v-for="ch in channels"
+              :key="ch.name"
+              type="button"
+              class="rounded-sm border border-border px-2 py-0.5 font-mono text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              @click="form.channel_name = ch.name"
+            >
+              {{ ch.name }}
+            </button>
+          </div>
+          <p v-else class="pt-1 text-xs text-muted-foreground">
+            <i18n-t keypath="adminNotifications.noChannelsConfigured" tag="span">
+              <template #block
+                ><code class="font-mono text-xs">[[notifications.channels]]</code></template
+              >
+            </i18n-t>
+          </p>
+          <p v-if="channelWarning" class="pt-1 text-xs text-copper">
+            {{ t("adminNotifications.unknownChannel", { name: form.channel_name }) }}
+          </p>
         </div>
         <div class="flex items-center gap-2">
           <Switch id="notif-enabled" v-model="form.enabled" />

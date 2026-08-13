@@ -27,6 +27,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Alert } from "@/components/ui/alert";
 import AdvisoriesWidget from "@/components/home/AdvisoriesWidget.vue";
 import QuotaWidget from "@/components/home/QuotaWidget.vue";
+import RecentPullsWidget from "@/components/home/RecentPullsWidget.vue";
 
 const { t } = useI18n();
 
@@ -126,6 +127,11 @@ const name = computed(() => identity.value?.user_id ?? "");
            (RFC 0004 §4.2). -->
       <template v-if="isAuthenticated">
         <QuotaWidget />
+        <!-- Before advisories: "what did I pull" is the ordinary question and
+             is always answerable, where "is any of it known-bad" is silent
+             most of the time. A widget that says nothing most days should not
+             be the one above the one that always says something. -->
+        <RecentPullsWidget />
         <AdvisoriesWidget />
       </template>
     </template>

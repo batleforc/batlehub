@@ -37,9 +37,14 @@ export const PACKAGES_TABS = [
   { to: "/admin/packages/bulk", label: "adminNav.bulkBlock" },
 ];
 
+/**
+ * RFC 0004 Phase 5 (*merge*): three tabs became two. "Who is blocked, and why"
+ * was split across an account page and an address page, and an operator arrives
+ * with a symptom rather than a mechanism — so answering it meant visiting both,
+ * with neither page mentioning the other.
+ */
 export const SECURITY_TABS = [
-  { to: "/admin/security/users", label: "adminNav.users" },
-  { to: "/admin/security/ip-blocks", label: "adminNav.ipBlocks" },
+  { to: "/admin/security/blocks", label: "adminNav.blocks" },
   { to: "/admin/security/access-check", label: "adminNav.accessCheck" },
 ];
 
@@ -51,11 +56,28 @@ export const NAMESPACES_TABS = [
 export const OPERATIONS_TABS = [
   { to: "/admin/operations/config-reload", label: "adminNav.configReload" },
   { to: "/admin/operations/warming", label: "adminNav.warming" },
-  { to: "/admin/operations/explore-cache", label: "adminNav.exploreCache" },
+  // RFC 0004 Phase 5: the SBOM export observes nothing — it has no server-state
+  // read at all, and nothing on it changes when the instance changes. It is an
+  // operation you perform, which is this section, not something you watch.
+  { to: "/admin/operations/sbom", label: "adminNav.sbomExport" },
+];
+
+/**
+ * RFC 0004 Phase 5 (*split*): `/admin/notifications` carried three nouns and
+ * two questions behind a hand-rolled tab strip that had no `role`, no
+ * `aria-selected`, no arrow-key navigation and no URL state — so an operator
+ * could not send a colleague the inbound view.
+ *
+ * Two routes, not three. Channels stayed with subscriptions because the
+ * subscription form's channel `datalist` is populated from the channel list
+ * (R8, verified in the source); inbound events read nothing either produces.
+ */
+export const NOTIFICATIONS_TABS = [
+  { to: "/admin/notifications/subscriptions", label: "adminNav.subscriptions" },
+  { to: "/admin/notifications/inbound", label: "adminNav.inboundEvents" },
 ];
 
 export const OBSERVABILITY_TABS = [
   { to: "/admin/observability/health", label: "adminNav.health" },
-  { to: "/admin/observability/sbom", label: "adminNav.sbomExport" },
   { to: "/admin/observability/audit-log", label: "adminNav.auditLog" },
 ];

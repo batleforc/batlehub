@@ -39,24 +39,35 @@ const TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
  * being an assertion the moment it is measured.
  */
 const RAMP = new Set([12, 13, 15, 16, 20, 24, 56, 72, 88, 104]);
+
+/**
+ * Both widths, because for fifteen pages neither gate looked at the narrow one.
+ *
+ * The rendered detector runs 390x844 but only over the *unauthenticated*
+ * routes; this gate covered `/admin/*` but at 1440x900 only. So the entire
+ * admin surface — the largest in the console — was never measured on a phone,
+ * and every one of its pages scrolled sideways: `AdminLayout` held the mobile
+ * tab strip and the page content as siblings of one flex row, and documents
+ * came out 496-705px wide on a 390px viewport (RFC 0004 Phase 5).
+ */
+const VIEWPORTS = [1440, 390];
 const DISPLAY_FACE = "Silkscreen";
 
 const ADMIN_ROUTES = [
   "/admin/dashboard",
   "/admin/packages/all",
   "/admin/packages/bulk",
-  "/admin/security/users",
-  "/admin/security/ip-blocks",
+  "/admin/security/blocks",
   "/admin/security/access-check",
   "/admin/namespaces/team-namespaces",
   "/admin/namespaces/beta-channel",
   "/admin/operations/config-reload",
   "/admin/operations/warming",
-  "/admin/operations/explore-cache",
   "/admin/observability/health",
-  "/admin/observability/sbom",
+  "/admin/operations/sbom",
   "/admin/observability/audit-log",
-  "/admin/notifications",
+  "/admin/notifications/subscriptions",
+  "/admin/notifications/inbound",
 ];
 
 // `/me/tokens` needs `auth_provider` set, which a static token satisfies.
@@ -81,7 +92,11 @@ const plans = [
  * dropped from the arrays above would make the gate pass by measuring less,
  * which reads identically to measuring clean.
  */
-const EXPECTED_COMBINATIONS = 25;
+// RFC 0004 Phase 5 moved this twice, both deliberately: -1 for the removed
+// `/admin/operations/explore-cache` (its control went to the health page),
+// then +2 for the notifications split. The number tracks real coverage, which
+// is the point — it may only change in the commit that changes the routes.
+const EXPECTED_COMBINATIONS = 24;
 const planned = plans.reduce((n, p) => n + p.routes.length, 0);
 if (planned < EXPECTED_COMBINATIONS) {
   console.error(
@@ -103,8 +118,9 @@ let scanned = 0;
 
 for (const { role, token, routes } of plans) {
   for (const route of routes) {
+   for (const width of VIEWPORTS) {
     const page = await browser.newPage();
-    await page.setViewport({ width: 1440, height: 900 });
+    await page.setViewport({ width, height: 900 });
     const pageErrors = [];
     page.on("pageerror", (e) => pageErrors.push(String(e.message).split("\n")[0].slice(0, 120)));
 
@@ -124,7 +140,7 @@ for (const { role, token, routes } of plans) {
       if (landed !== route) {
         // A redirect means the session did not take, so whatever axe measured
         // would be the login page. Reported rather than counted as a pass.
-        console.log(`✗ ${role} ${route} → redirected to ${landed} (session not applied)`);
+        console.log(`✗ ${role} ${route} @${width} → redirected to ${landed} (session not applied)`);
         failures++;
         continue;
       }
@@ -153,20 +169,53 @@ for (const { role, token, routes } of plans) {
       }, DISPLAY_FACE);
 
       const offRamp = type.sizes.filter((s) => !RAMP.has(s));
+      // The document must never scroll sideways. This is the assertion the
+      // whole admin surface failed silently until RFC 0004 Phase 5, because
+      // nothing measured these routes narrow.
+      const overflow = await page.evaluate(() => {
+        const vw = window.innerWidth;
+        const doc = document.documentElement.scrollWidth;
+        if (doc <= vw) return null;
+        // Name a culprit that is not already inside its own scroll container —
+        // a wide table that scrolls in its own wrapper is correct, per
+        // DESIGN.md's Own-Container Overflow Rule.
+        const clipped = (el) => {
+          for (let n = el.parentElement; n; n = n.parentElement) {
+            const o = getComputedStyle(n).overflowX;
+            if (o === "auto" || o === "hidden" || o === "scroll") return true;
+          }
+          return false;
+        };
+        const culprit = [...document.querySelectorAll("body *")]
+          .find((el) => el.getBoundingClientRect().right > vw + 1 && !clipped(el));
+        return {
+          doc,
+          vw,
+          culprit: culprit
+            ? `${culprit.tagName.toLowerCase()}.${(culprit.className || "").toString().split(" ").slice(0, 4).join(".")}`
+            : "(inside a scroll container — check the wrapper)",
+        };
+      });
+
       const typeProblems = [];
+      if (overflow) {
+        typeProblems.push(
+          `document scrolls sideways: ${overflow.doc}px on a ${overflow.vw}px viewport — ${overflow.culprit}`,
+        );
+      }
       if (offRamp.length) typeProblems.push(`sizes off the ramp: ${offRamp.join(", ")}px`);
       if (!type.h1) typeProblems.push("no h1");
       else if (!type.h1.display) typeProblems.push(`h1 not in the display face (${type.h1.size}px)`);
 
       if (typeProblems.length) {
         failures++;
-        console.log(`✗ ${role} ${route}`);
+        console.log(`✗ ${role} ${route} @${width}`);
         for (const p of typeProblems) console.log(`    [type] ${p}`);
       }
 
       if (results.violations.length) {
         failures++;
-        if (!typeProblems.length) console.log(`✗ ${role} ${route}`);
+        if (!typeProblems.length) console.log(`✗ ${role} ${route} @${width}`);
         for (const v of results.violations) {
           console.log(`    [${v.id}] ${v.help} — ${v.nodes.length} node(s)`);
           for (const n of v.nodes.slice(0, 3)) {
@@ -178,7 +227,7 @@ for (const { role, token, routes } of plans) {
           }
         }
       } else if (!typeProblems.length) {
-        console.log(`✓ ${role} ${route}`);
+        console.log(`✓ ${role} ${route} @${width}`);
       }
       if (pageErrors.length) {
         failures++;
@@ -187,6 +236,7 @@ for (const { role, token, routes } of plans) {
     } finally {
       await page.close();
     }
+   }
   }
 }
 

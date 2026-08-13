@@ -179,11 +179,28 @@ export const router = createRouter({
       component: () => import("@/layouts/AdminLayout.vue"),
       meta: { requiresAdmin: true },
       children: [
+        /**
+         * Real redirect routes for the section roots, not just `SECTION_INDEXES`.
+         *
+         * That table is consumed by a `beforeEach` guard, which runs on
+         * *navigation*. `RouterLink` resolves its `href` statically, so a link
+         * to `/admin/packages` — which had no route — logged
+         * `[VUE_ROUTER_R0004] No match found` on every render and produced a
+         * wrong `href`: clicking worked because the guard caught it, but
+         * middle-click, open-in-new-tab and copy-link-address did not.
+         *
+         * Generated from the same table so the two can never disagree; the
+         * guard stays as the fallback for typed URLs and old bookmarks.
+         */
+        { path: "", redirect: SECTION_INDEXES["/admin"] },
+        ...Object.entries(SECTION_INDEXES)
+          .filter(([from]) => from.startsWith("/admin/"))
+          .map(([from, to]) => ({ path: from.slice("/admin/".length), redirect: to })),
+
         { path: "dashboard", component: () => import("@/pages/AdminDashboard.vue") },
         { path: "packages/all", component: () => import("@/pages/AdminPackages.vue") },
         { path: "packages/bulk", component: () => import("@/pages/AdminBulk.vue") },
-        { path: "security/users", component: () => import("@/pages/AdminUsers.vue") },
-        { path: "security/ip-blocks", component: () => import("@/pages/AdminIpBlocks.vue") },
+        { path: "security/blocks", component: () => import("@/pages/AdminBlocks.vue") },
         { path: "security/access-check", component: () => import("@/pages/AdminAccessCheck.vue") },
         {
           path: "namespaces/team-namespaces",
@@ -198,14 +215,17 @@ export const router = createRouter({
           component: () => import("@/pages/AdminConfigReload.vue"),
         },
         { path: "operations/warming", component: () => import("@/pages/AdminWarming.vue") },
-        {
-          path: "operations/explore-cache",
-          component: () => import("@/pages/AdminExploreCache.vue"),
-        },
         { path: "observability/health", component: () => import("@/pages/AdminHealth.vue") },
-        { path: "observability/sbom", component: () => import("@/pages/AdminSbom.vue") },
+        { path: "operations/sbom", component: () => import("@/pages/AdminSbom.vue") },
         { path: "observability/audit-log", component: () => import("@/pages/AuditLog.vue") },
-        { path: "notifications", component: () => import("@/pages/AdminNotifications.vue") },
+        {
+          path: "notifications/subscriptions",
+          component: () => import("@/pages/AdminNotificationSubscriptions.vue"),
+        },
+        {
+          path: "notifications/inbound",
+          component: () => import("@/pages/AdminInboundEvents.vue"),
+        },
       ],
     },
   ],

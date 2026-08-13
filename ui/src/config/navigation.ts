@@ -80,16 +80,29 @@ export const LEGACY_REDIRECTS: Record<string, string> = {
 
   // Admin pages that moved when the sections were introduced.
   "/admin/bulk": "/admin/packages/bulk",
-  "/admin/users": "/admin/security/users",
-  "/admin/ip-blocks": "/admin/security/ip-blocks",
+  // RFC 0004 Phase 5 (*merge*). The two pre-section aliases are re-pointed at
+  // the destination in the same change as the two section paths: a redirect
+  // that lands on another redirect key is a chain, which `navigation.test.ts`
+  // refuses.
+  "/admin/users": "/admin/security/blocks",
+  "/admin/ip-blocks": "/admin/security/blocks",
+  "/admin/security/users": "/admin/security/blocks",
+  "/admin/security/ip-blocks": "/admin/security/blocks",
   "/admin/access-check": "/admin/security/access-check",
   "/admin/team-namespaces": "/admin/namespaces/team-namespaces",
   "/admin/beta-channel": "/admin/namespaces/beta-channel",
   "/admin/config-reload": "/admin/operations/config-reload",
   "/admin/warming": "/admin/operations/warming",
-  "/admin/explore-cache": "/admin/operations/explore-cache",
+  // RFC 0004 Phase 5 (*remove*): the explore-cache page's one job was pressing
+  // a button, and the control now sits beside Clear Cache on the health page —
+  // where an operator actually notices the explorer is stale. Both entries
+  // point at the destination directly: a redirect that lands on another
+  // redirect key is a chain, and `navigation.test.ts` refuses those.
+  "/admin/explore-cache": "/admin/observability/health",
+  "/admin/operations/explore-cache": "/admin/observability/health",
   "/admin/health": "/admin/observability/health",
-  "/admin/sbom": "/admin/observability/sbom",
+  "/admin/sbom": "/admin/operations/sbom",
+  "/admin/observability/sbom": "/admin/operations/sbom",
   "/admin/audit-log": "/admin/observability/audit-log",
 };
 
@@ -99,8 +112,12 @@ export const SECTION_INDEXES: Record<string, string> = {
   "/tools": "/tools/access-check",
   "/admin": "/admin/dashboard",
   "/admin/packages": "/admin/packages/all",
-  "/admin/security": "/admin/security/users",
+  "/admin/security": "/admin/security/blocks",
   "/admin/namespaces": "/admin/namespaces/team-namespaces",
   "/admin/operations": "/admin/operations/config-reload",
   "/admin/observability": "/admin/observability/health",
+  // Not a LEGACY_REDIRECTS entry: `/admin/notifications` is not removed, it
+  // becomes a section root like `/admin/packages`. The sidebar still points at
+  // it, and `AdminLayout`'s `isActive` matches by prefix.
+  "/admin/notifications": "/admin/notifications/subscriptions",
 };

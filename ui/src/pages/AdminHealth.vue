@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
 import { ref } from "vue";
-import { registryHealth, adminStats, clearRegistryCache } from "@/client/sdk.gen";
+import {
+  registryHealth,
+  adminStats,
+  clearRegistryCache,
+  invalidateExploreCache,
+} from "@/client/sdk.gen";
 import type { RegistryHealthDto, StatsResponse } from "@/client/types.gen";
 import { useApi, extractMessage } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
@@ -28,6 +33,7 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
+import DeleteCachedArtifact from "@/components/admin/DeleteCachedArtifact.vue";
 
 const { t } = useI18n();
 
@@ -46,6 +52,40 @@ const { data: statsData } = useApi<StatsResponse>(
 const expandedErrors = ref<Set<string>>(new Set());
 
 const clearTarget = ref<string | null>(null);
+
+/**
+ * The explore-cache invalidation, relocated from `/admin/operations/explore-cache`
+ * (RFC 0004 Phase 5, *remove*).
+ *
+ * It was a whole route whose one job was pressing a button. Nobody navigates
+ * Admin → Operations → Explore Cache; they arrive at a registry noticing its
+ * package list looks wrong — which is this page. The control belongs where the
+ * symptom is seen, beside the sibling destructive control that was already
+ * here.
+ */
+const explorePending = ref<string | null>(null);
+const exploreBusy = ref(false);
+const exploreError = ref<string | null>(null);
+const exploreDone = ref<string | null>(null);
+
+async function confirmInvalidateExplore() {
+  if (!explorePending.value) return;
+  exploreBusy.value = true;
+  exploreError.value = null;
+  try {
+    const { error: apiErr } = await invalidateExploreCache({
+      body: { registry: explorePending.value },
+    });
+    if (apiErr) {
+      exploreError.value = extractMessage(apiErr);
+      return;
+    }
+    exploreDone.value = explorePending.value;
+    explorePending.value = null;
+  } finally {
+    exploreBusy.value = false;
+  }
+}
 const clearing = ref(false);
 const clearError = ref<string | null>(null);
 
@@ -168,13 +208,17 @@ const ROLE_LABELS: Record<string, string> = {
         v-if="data && data.length > 0"
         class="grid gap-4 sm:grid-cols-1 lg:grid-cols-2 xl:grid-cols-2"
       >
-        <Card v-for="reg in data" :key="reg.registry" class="flex flex-col">
+        <!-- `min-w-0`: a grid item defaults to `min-width: auto` and will not
+             shrink below its content, so the errors table inside it pushed the
+             whole document sideways instead of scrolling in its own box
+             (DESIGN.md, The Own-Container Overflow Rule). -->
+        <Card v-for="reg in data" :key="reg.registry" class="flex min-w-0 flex-col">
           <CardHeader class="pb-2">
-            <div class="flex items-center justify-between gap-2">
-              <CardTitle class="text-base font-mono">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle class="min-w-0 text-base font-mono">
                 {{ reg.registry }}
               </CardTitle>
-              <div class="flex items-center gap-2 shrink-0">
+              <div class="flex flex-wrap items-center gap-2">
                 <Badge
                   :variant="variantFromMap(reg.registry_type, REGISTRY_TYPE_VARIANTS)"
                   class="text-xs uppercase"
@@ -187,6 +231,13 @@ const ROLE_LABELS: Record<string, string> = {
                   class="text-xs h-6 px-2"
                   @click="clearTarget = reg.registry"
                   >{{ t("adminHealth.clearCache") }}</Button
+                >
+                <Button
+                  variant="outline"
+                  size="sm"
+                  class="text-xs h-6 px-2"
+                  @click="explorePending = reg.registry"
+                  >{{ t("adminHealth.refreshExplore") }}</Button
                 >
               </div>
             </div>
@@ -372,6 +423,9 @@ const ROLE_LABELS: Record<string, string> = {
           </CardContent>
         </Card>
       </div>
+      <!-- Split out of `/admin/operations/warming`: the two cache-eviction
+           controls now sit on one route instead of two sections apart. -->
+      <DeleteCachedArtifact :registries="(data ?? []).map((r) => r.registry)" />
     </AsyncState>
   </div>
 
@@ -401,5 +455,34 @@ const ROLE_LABELS: Record<string, string> = {
       </i18n-t>
     </template>
     <template #description>{{ t("adminHealth.allCachedArtifactsFor") }}</template>
+  </ConfirmDialog>
+
+  <!-- Explore-cache invalidation, relocated here from its own route. Confirmed
+       like its neighbour: it is cheap and self-healing, but it is still a
+       control that acts on what other people are reading. -->
+  <ConfirmDialog
+    :open="explorePending !== null"
+    :confirm-label="t('adminHealth.refreshExplore')"
+    :loading-label="t('adminHealth.refreshingExplore')"
+    :loading="exploreBusy"
+    :error="exploreError"
+    @update:open="
+      (v) => {
+        if (!v) {
+          explorePending = null;
+          exploreError = null;
+        }
+      }
+    "
+    @confirm="confirmInvalidateExplore"
+  >
+    <template #title>
+      <i18n-t keypath="adminHealth.refreshExploreFor" tag="span">
+        <template #registry
+          ><span class="font-mono">{{ explorePending }}</span></template
+        >
+      </i18n-t>
+    </template>
+    <template #description>{{ t("adminHealth.exploreRepopulates") }}</template>
   </ConfirmDialog>
 </template>

@@ -6,6 +6,8 @@ import SectionTabs from "@/components/admin/SectionTabs.vue";
 import { PACKAGES_TABS } from "@/config/adminSections";
 import { PageHeader } from "@/components/ui/page-header";
 import { bulkBlockPackages, bulkUnblockPackages } from "@/client/sdk.gen";
+import { extractMessage } from "@/composables/useApi";
+import { DestructiveConfirm } from "@/components/ui/destructive-confirm";
 import type {
   BulkActionResponse,
   BulkBlockRequestItem,
@@ -102,6 +104,11 @@ async function submit() {
   submitError.value = null;
   result.value = null;
 
+  // `res.error`, not `catch`. The generated client is built without
+  // `throwOnError`, so an HTTP failure resolves rather than throws: the
+  // `catch` below never fired, `result` was set to `null`, and a bulk block
+  // that returned 405 rendered *nothing at all* — no error, no result, the
+  // button simply re-enabled. Verified in a browser before this fix.
   try {
     if (action.value === "block") {
       const items: BulkBlockRequestItem[] = validRows.value.map((r) => ({
@@ -112,6 +119,10 @@ async function submit() {
         reason: r.reason || defaultReason.value,
       }));
       const res = await bulkBlockPackages({ body: { items } });
+      if (res.error) {
+        submitError.value = extractMessage(res.error);
+        return;
+      }
       result.value = res.data ?? null;
     } else {
       const items: BulkUnblockRequestItem[] = validRows.value.map((r) => ({
@@ -121,6 +132,10 @@ async function submit() {
         artifact: r.artifact || null,
       }));
       const res = await bulkUnblockPackages({ body: { items } });
+      if (res.error) {
+        submitError.value = extractMessage(res.error);
+        return;
+      }
       result.value = res.data ?? null;
     }
   } catch (e) {
@@ -128,6 +143,39 @@ async function submit() {
   } finally {
     submitting.value = false;
   }
+}
+
+/**
+ * The destructive contract (PRODUCT.md principle 2): scope, count and
+ * consequence before confirmation.
+ *
+ * Neither bulk path had one — a single click blocked or released an arbitrary
+ * number of coordinates. `DestructiveConfirm` is the primitive RFC 0003 built
+ * for exactly this, and the sibling tab already routes three actions through
+ * it, so an operator was getting a typed-name confirmation for unblocking on
+ * one route and nothing at all for the same verb on this one.
+ *
+ * `reversible: true` for both: a block is undone by an unblock and vice versa,
+ * so the typed-name step would be ceremony rather than protection. The count
+ * and the scope are what matter here.
+ */
+const confirmOpen = ref(false);
+
+/** The registries the pending action touches, for the dialog's scope line. */
+const affectedScope = computed(() => {
+  const registries = [...new Set(validRows.value.map((r) => r.registry))].sort();
+  if (registries.length === 1) return registries[0];
+  return t("adminBulk.acrossRegistries", { count: registries.length });
+});
+
+function requestSubmit() {
+  if (validRows.value.length === 0) return;
+  confirmOpen.value = true;
+}
+
+async function confirmSubmit() {
+  confirmOpen.value = false;
+  await submit();
 }
 
 function reset() {
@@ -157,7 +205,20 @@ function reset() {
         }}</CardTitle>
       </CardHeader>
       <CardContent>
-        <pre class="text-xs font-mono bg-muted rounded p-3 overflow-x-auto">
+        <!--
+          A scroll container must be reachable by keyboard: a mouse user can
+          drag it sideways, and without `tabindex` a keyboard user cannot read
+          the part that is off-screen at all. `<pre>` holds no focusable
+          content of its own, so it takes the focus itself and is announced as
+          a group. Only visible at 390px, which is why it appeared the moment
+          the gate started measuring narrow.
+        -->
+        <pre
+          tabindex="0"
+          role="group"
+          :aria-label="t('adminBulk.csvFormat')"
+          class="text-xs font-mono bg-muted rounded p-3 overflow-x-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
 registry,name,version,artifact,reason
 npm,lodash,4.17.21,,CVE-2021-23337
 cargo,serde,1.0.0,,License issue
@@ -264,7 +325,7 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
               </i18n-t>
             </span>
           </CardTitle>
-          <Button :disabled="validRows.length === 0 || submitting" @click="submit">
+          <Button :disabled="validRows.length === 0 || submitting" @click="requestSubmit">
             {{
               submitting
                 ? t("adminBulk.processing")
@@ -318,11 +379,29 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
       </CardContent>
     </Card>
 
+    <DestructiveConfirm
+      :open="confirmOpen"
+      :action="action === 'block' ? t('adminBulk.block') : t('adminBulk.unblock')"
+      :count="validRows.length"
+      :item-noun="t('adminBulk.packageNoun')"
+      :scope="affectedScope"
+      reversible
+      :loading="submitting"
+      :error="submitError"
+      @confirm="confirmSubmit"
+      @update:open="confirmOpen = $event"
+    />
+
     <!-- Results -->
     <Card v-if="result">
       <CardHeader class="pb-3">
         <CardTitle class="text-base flex items-center gap-2">
-          <CheckCircle2 class="h-4 w-4 text-primary" />
+          <!-- Not unconditional: this rendered a crimson success check over
+               "0 succeeded, 30 failed". The icon is the first thing read, and
+               it was reporting the opposite of what happened. -->
+          <XCircle v-if="result.succeeded_count === 0" class="h-4 w-4 text-destructive" />
+          <CheckCircle2 v-else-if="result.failed_count === 0" class="h-4 w-4 text-primary" />
+          <XCircle v-else class="h-4 w-4 text-copper" />
           <i18n-t keypath="adminBulk.doneSummary" tag="span">
             <template #succeeded>{{ result.succeeded_count }}</template>
             <template #failed>{{ result.failed_count }}</template>

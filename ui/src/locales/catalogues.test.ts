@@ -5,6 +5,7 @@ import fr from "./fr.json";
 import {
   ADMIN_SIDEBAR,
   NAMESPACES_TABS,
+  NOTIFICATIONS_TABS,
   OBSERVABILITY_TABS,
   OPERATIONS_TABS,
   PACKAGES_TABS,
@@ -111,6 +112,7 @@ describe("locale catalogues", () => {
       ...SECURITY_TABS,
       ...NAMESPACES_TABS,
       ...OPERATIONS_TABS,
+      ...NOTIFICATIONS_TABS,
       ...OBSERVABILITY_TABS,
       ...TOOLS_TABS,
       ...VISIBILITY_OPTIONS,

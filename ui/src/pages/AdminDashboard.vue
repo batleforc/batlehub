@@ -59,24 +59,47 @@ const {
 );
 
 const registries = computed<RegistryHealthDto[]>(() => health.value ?? []);
-const degraded = computed(() => registries.value.filter((r) => (r.recent_errors?.length ?? 0) > 0));
-const isFresh = computed(() => !healthLoading.value && registries.value.length === 0);
+
+/**
+ * A *fault*, not a refusal.
+ *
+ * `recent_errors[].error_type` is `"denied"` or `"error"`: the first is RBAC
+ * turning a developer away, which is the policy engine doing its job. Counting
+ * both meant the page could raise an alarm because the product worked — and at
+ * 3am an alarm that fires on correct behaviour is worse than none.
+ */
+const degraded = computed(() =>
+  registries.value.filter((r) => r.recent_errors?.some((e) => e.error_type === "error")),
+);
+
+/**
+ * Empty is only empty when we could actually read.
+ *
+ * `useApi` sets `data = null` on error, so an unreadable health probe made
+ * `registries` empty and this true — and the page then told an operator whose
+ * instance was serving 205k downloads that they had no registries configured,
+ * with a "add a [[registries]] block" call to action. A probe fault is not an
+ * empty instance.
+ */
+const isFresh = computed(
+  () => !healthLoading.value && !healthError.value && registries.value.length === 0,
+);
 
 /** One sentence, and it is the first thing on the page. */
 const verdict = computed(() => {
   if (healthLoading.value) return null;
-  if (healthError.value) return { tone: "unknown" as const, text: "Health could not be read." };
+  if (healthError.value) return { tone: "unknown" as const, text: t("dashboard.healthUnknown") };
   if (isFresh.value) return null;
   if (degraded.value.length === 0) {
-    return {
-      tone: "ok" as const,
-      text: `All ${registries.value.length} registries are answering.`,
-    };
+    return { tone: "ok" as const, text: t("dashboard.allAnswering", { count: registries.value.length }) };
   }
-  const names = degraded.value.map((r) => r.registry).join(", ");
   return {
     tone: "bad" as const,
-    text: `${degraded.value.length} of ${registries.value.length} registries reported errors: ${names}.`,
+    text: t("dashboard.someDegraded", {
+      failing: degraded.value.length,
+      total: registries.value.length,
+      names: degraded.value.map((r) => r.registry).join(", "),
+    }),
   };
 });
 

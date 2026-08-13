@@ -131,13 +131,31 @@
   "/api/v1/admin/config/pending": {
     "id": "ac4cdcf3-d8d9-4645-8a9d-2dccffa21735",
     "created_at": "2026-08-12T11:48:15.709712327Z",
-    "expires_at": "2026-08-12T11:58:15.709712327Z",
+    "expires_at": "2099-01-01T00:00:00Z",
     "source": "file_watcher",
     "diff": {
-      "added_registries": [],
-      "removed_registries": [],
-      "changed_registries": [],
-      "access_config_changed": false,
+      "added_registries": [
+        "conda-forge"
+      ],
+      "removed_registries": [
+        "legacy-npm"
+      ],
+      "changed_registries": [
+        {
+          "name": "npm",
+          "fields": [
+            "upstream_url",
+            "release_age_gate"
+          ]
+        },
+        {
+          "name": "cargo",
+          "fields": [
+            "cache_policy"
+          ]
+        }
+      ],
+      "access_config_changed": true,
       "limits_changed": false
     }
   },
@@ -369,7 +387,29 @@
     }
   ],
   "/api/v1/admin/notifications/inbound": {
-    "events": []
+    "events": [
+      {
+        "id": "6f1c2f3a-1111-4a2b-9c11-000000000001",
+        "webhook_name": "github-releases",
+        "received_at": "2026-08-12T09:41:02Z",
+        "source_ip": "140.82.115.10",
+        "signature_valid": true
+      },
+      {
+        "id": "6f1c2f3a-1111-4a2b-9c11-000000000002",
+        "webhook_name": "forgejo-mirror",
+        "received_at": "2026-08-12T08:12:44Z",
+        "source_ip": "10.42.7.19",
+        "signature_valid": false
+      },
+      {
+        "id": "6f1c2f3a-1111-4a2b-9c11-000000000003",
+        "webhook_name": "internal-audit",
+        "received_at": "2026-08-11T23:05:10Z",
+        "source_ip": null,
+        "signature_valid": null
+      }
+    ]
   },
   "/api/v1/admin/notifications/subscriptions": [
     {
@@ -399,8 +439,54 @@
     }
   ],
   "/api/v1/admin/packages": {
-    "items": [],
-    "total": 0,
+    "items": [
+      {
+        "id": "a1000000-0000-4000-8000-000000000001",
+        "package_id": {
+          "registry": "npm",
+          "name": "@acme/build-tools",
+          "version": "3.14.2"
+        },
+        "status": {
+          "status": "available"
+        },
+        "last_accessed": "2026-08-12T09:58:00Z",
+        "last_accessed_by": "svc-ci-runner",
+        "access_count": 18432
+      },
+      {
+        "id": "a1000000-0000-4000-8000-000000000002",
+        "package_id": {
+          "registry": "cargo",
+          "name": "serde_yaml",
+          "version": "0.9.34"
+        },
+        "status": {
+          "status": "blocked",
+          "reason": "RUSTSEC-2024-0320: unmaintained, no security fixes",
+          "blocked_by": "alice",
+          "blocked_at": "2026-08-10T14:22:00Z"
+        },
+        "last_accessed": "2026-08-11T16:04:00Z",
+        "last_accessed_by": "bob",
+        "access_count": 211
+      },
+      {
+        "id": "a1000000-0000-4000-8000-000000000003",
+        "package_id": {
+          "registry": "maven",
+          "name": "org.apache.commons:commons-text",
+          "version": "1.10.0"
+        },
+        "status": {
+          "status": "available"
+        },
+        "last_accessed": "2026-08-12T07:30:00Z",
+        "last_accessed_by": null,
+        "access_count": 97
+      }
+    ],
+    "total": 3,
     "page": 0,
     "per_page": 1000
   },
@@ -641,12 +727,40 @@
     }
   ],
   "/api/v1/banner": null,
+  "/api/v1/explore/registries": {
+    "registries": [
+      {
+        "registry": "npm",
+        "package_count": 128,
+        "total_downloads": 18432
+      },
+      {
+        "registry": "cargo",
+        "package_count": 41,
+        "total_downloads": 2210
+      },
+      {
+        "registry": "jetbrains-ide",
+        "package_count": 1,
+        "total_downloads": 7
+      },
+      {
+        "registry": "go",
+        "package_count": 16,
+        "total_downloads": 540
+      }
+    ],
+    "upstream_unavailable": false
+  },
   "/api/v1/me": {
     "user_id": "admin",
     "role": "admin",
     "auth_provider": "static-token",
     "has_registry_access": true,
-    "groups": []
+    "groups": [
+      "oidc1:platform",
+      "oidc1:release-managers"
+    ]
   },
   "/api/v1/me/advisories": {
     "advisories": [
@@ -688,6 +802,33 @@
     "window_days": 7,
     "scanning_available": true
   },
+  "/api/v1/me/downloads": [
+    {
+      "registry": "npm",
+      "name": "@acme/build-tools",
+      "version": "3.14.2",
+      "downloaded_at": "2026-08-13T09:58:00Z"
+    },
+    {
+      "registry": "npm",
+      "name": "left-pad",
+      "version": "1.3.0",
+      "artifact": "tarball",
+      "downloaded_at": "2026-08-13T09:41:12Z"
+    },
+    {
+      "registry": "cargo",
+      "name": "serde",
+      "version": "1.0.203",
+      "downloaded_at": "2026-08-13T08:22:40Z"
+    },
+    {
+      "registry": "maven",
+      "name": "org.apache.commons:commons-text",
+      "version": "1.12.0",
+      "downloaded_at": "2026-08-12T18:04:00Z"
+    }
+  ],
   "/api/v1/me/namespaces": [
     {
       "registry": "cargo",

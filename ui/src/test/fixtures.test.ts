@@ -67,8 +67,27 @@ describe("stub API fixtures", () => {
    * backend renders every list empty, and an empty page is what the CI gate was
    * already scanning when it reported six clean pages that never rendered.
    */
-  it("leaves no collection empty", () => {
-    const empty = paths.filter((p) => Array.isArray(fixtures[p]) && !(fixtures[p] as []).length);
+  /**
+   * Nested collections too, not just top-level arrays.
+   *
+   * The original check only looked at `Array.isArray(fixtures[p])`, so a
+   * paginated envelope like `{"items": [], "total": 0}` or `{"events": []}`
+   * passed while rendering nothing — and the rendered gates were scoring the
+   * empty state of `/admin/packages` (the largest page in the console) and of
+   * the inbound-events view. Exactly the failure this file was written to stop,
+   * one level of nesting down.
+   */
+  it("leaves no collection empty, at any depth", () => {
+    const emptyCollections = (value: unknown, trail: string): string[] => {
+      if (Array.isArray(value)) return value.length ? [] : [trail];
+      if (value && typeof value === "object") {
+        return Object.entries(value as Node).flatMap(([k, v]) =>
+          emptyCollections(v, `${trail}.${k}`),
+        );
+      }
+      return [];
+    };
+    const empty = paths.flatMap((p) => emptyCollections(fixtures[p], p));
     expect(empty, "empty fixtures put the gate back to measuring empty states").toEqual([]);
   });
 

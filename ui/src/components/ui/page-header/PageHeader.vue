@@ -12,8 +12,18 @@ withDefaults(
 </script>
 
 <template>
-  <div class="flex items-start justify-between gap-4">
-    <div>
+  <!--
+    Wraps, and the title block may shrink.
+
+    The actions row is `shrink-0` — correct, because a button that shrinks
+    below its label is worse than one that moves — but with a non-wrapping
+    parent and no `min-w-0` on the title, a header carrying two or three
+    actions pushed the document past the viewport on a phone. Four admin pages
+    scrolled sideways for this reason alone, after the layout row above them
+    was fixed.
+  -->
+  <div class="flex flex-wrap items-start justify-between gap-4">
+    <div class="min-w-0">
       <h1
         :class="
           cn(

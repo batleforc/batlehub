@@ -140,16 +140,24 @@ describe("router navigation guards (integration)", () => {
   it.each([
     ["/admin/packages", "/admin/packages/all"],
     ["/admin/bulk", "/admin/packages/bulk"],
-    ["/admin/users", "/admin/security/users"],
-    ["/admin/ip-blocks", "/admin/security/ip-blocks"],
+    // RFC 0004 Phase 5 (*merge*): one route answers "who is blocked, and why".
+    ["/admin/users", "/admin/security/blocks"],
+    ["/admin/ip-blocks", "/admin/security/blocks"],
+    ["/admin/security/users", "/admin/security/blocks"],
+    ["/admin/security/ip-blocks", "/admin/security/blocks"],
     ["/admin/access-check", "/admin/security/access-check"],
     ["/admin/team-namespaces", "/admin/namespaces/team-namespaces"],
     ["/admin/beta-channel", "/admin/namespaces/beta-channel"],
     ["/admin/config-reload", "/admin/operations/config-reload"],
     ["/admin/warming", "/admin/operations/warming"],
-    ["/admin/explore-cache", "/admin/operations/explore-cache"],
+    // RFC 0004 Phase 5 (*remove*): the explore-cache page is gone and its
+    // control lives on the health page, so both former paths land there.
+    ["/admin/explore-cache", "/admin/observability/health"],
+    ["/admin/operations/explore-cache", "/admin/observability/health"],
     ["/admin/health", "/admin/observability/health"],
-    ["/admin/sbom", "/admin/observability/sbom"],
+    // RFC 0004 Phase 5: SBOM moved to Operations — it performs, it does not observe.
+    ["/admin/sbom", "/admin/operations/sbom"],
+    ["/admin/observability/sbom", "/admin/operations/sbom"],
     ["/admin/audit-log", "/admin/observability/audit-log"],
   ])("redirects the old admin path %s to %s", async (oldPath, newPath) => {
     await setAuth(ADMIN, "tok");
@@ -158,7 +166,7 @@ describe("router navigation guards (integration)", () => {
 
   it.each([
     ["/admin", "/admin/dashboard"],
-    ["/admin/security", "/admin/security/users"],
+    ["/admin/security", "/admin/security/blocks"],
     ["/admin/namespaces", "/admin/namespaces/team-namespaces"],
     ["/admin/operations", "/admin/operations/config-reload"],
     ["/admin/observability", "/admin/observability/health"],
@@ -243,18 +251,17 @@ describe("router navigation guards (integration)", () => {
       "/admin/dashboard",
       "/admin/packages/all",
       "/admin/packages/bulk",
-      "/admin/security/users",
-      "/admin/security/ip-blocks",
+      "/admin/security/blocks",
       "/admin/security/access-check",
       "/admin/namespaces/team-namespaces",
       "/admin/namespaces/beta-channel",
       "/admin/operations/config-reload",
       "/admin/operations/warming",
-      "/admin/operations/explore-cache",
       "/admin/observability/health",
-      "/admin/observability/sbom",
+      "/admin/operations/sbom",
       "/admin/observability/audit-log",
-      "/admin/notifications",
+      "/admin/notifications/subscriptions",
+      "/admin/notifications/inbound",
     ];
 
     for (const p of paths) {
@@ -301,16 +308,20 @@ describe("information architecture", () => {
 
     const ADMIN_ALIASES: [string, string][] = [
       ["/admin/bulk", "/admin/packages/bulk"],
-      ["/admin/users", "/admin/security/users"],
-      ["/admin/ip-blocks", "/admin/security/ip-blocks"],
+      ["/admin/users", "/admin/security/blocks"],
+      ["/admin/ip-blocks", "/admin/security/blocks"],
+      ["/admin/security/users", "/admin/security/blocks"],
+      ["/admin/security/ip-blocks", "/admin/security/blocks"],
       ["/admin/access-check", "/admin/security/access-check"],
       ["/admin/team-namespaces", "/admin/namespaces/team-namespaces"],
       ["/admin/beta-channel", "/admin/namespaces/beta-channel"],
       ["/admin/config-reload", "/admin/operations/config-reload"],
       ["/admin/warming", "/admin/operations/warming"],
-      ["/admin/explore-cache", "/admin/operations/explore-cache"],
+      ["/admin/explore-cache", "/admin/observability/health"],
+      ["/admin/operations/explore-cache", "/admin/observability/health"],
       ["/admin/health", "/admin/observability/health"],
-      ["/admin/sbom", "/admin/observability/sbom"],
+      ["/admin/sbom", "/admin/operations/sbom"],
+      ["/admin/observability/sbom", "/admin/operations/sbom"],
       ["/admin/audit-log", "/admin/observability/audit-log"],
     ];
 
@@ -343,15 +354,29 @@ describe("information architecture", () => {
       ["/tools", "/tools/access-check"],
       ["/admin", "/admin/dashboard"],
       ["/admin/packages", "/admin/packages/all"],
-      ["/admin/security", "/admin/security/users"],
+      ["/admin/security", "/admin/security/blocks"],
       ["/admin/namespaces", "/admin/namespaces/team-namespaces"],
       ["/admin/operations", "/admin/operations/config-reload"],
       ["/admin/observability", "/admin/observability/health"],
+      // RFC 0004 Phase 5 (*split*): the sidebar still points here, and it lands
+      // on the first tab like every other section root.
+      ["/admin/notifications", "/admin/notifications/subscriptions"],
     ];
 
     it.each(SECTIONS)("section index %s lands on %s", async (from, to) => {
       await setAuth(ADMIN, "tok");
       expect(await go(from)).toBe(to);
+    });
+
+    /**
+     * A section root needs a real *route*, not only an entry in the guard's
+     * table. `RouterLink` resolves its `href` statically, so every sidebar link
+     * to a guard-only path logged `[VUE_ROUTER_R0004] No match found` on each
+     * render and produced a wrong `href` — clicking worked because the guard
+     * caught it, middle-click and copy-link-address did not.
+     */
+    it.each(SECTIONS)("%s resolves to a real route, not just a guard", (from) => {
+      expect(router.resolve(from).matched, `${from} has no matching route`).not.toHaveLength(0);
     });
   });
 

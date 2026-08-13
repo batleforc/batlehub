@@ -2,8 +2,9 @@
 import { useI18n } from "vue-i18n";
 import { ref, computed } from "vue";
 import { auditLog } from "@/client/sdk.gen";
-import type { PackageIdentifierDto } from "@/client/types.gen";
+import type { AuditLogResponse } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
+import { API_BASE_URL } from "@/config";
 import { useAuth } from "@/composables/useAuth";
 import { formatDate } from "@/lib/format";
 import SectionTabs from "@/components/admin/SectionTabs.vue";
@@ -24,22 +25,30 @@ import {
 
 const { t } = useI18n();
 
-interface AccessEvent {
-  id: string;
-  package_id: PackageIdentifierDto;
-  user_id?: string;
-  user_role: string;
-  action: string;
-  result: { outcome: "allowed" } | { outcome: "denied"; reason: string };
-  timestamp: string;
-}
-
 const { token } = useAuth();
 
-const { data, error, loading, reload } = useApi<AccessEvent[]>(
+/**
+ * `GET /api/v1/admin/audit-log` answers with the paginated envelope
+ * `{ items, total, page, per_page }` — not a bare array.
+ *
+ * This page declared `useApi<AccessEvent[]>` against a hand-written local
+ * interface, so `data.value` held the envelope, `data.value.length` was
+ * `undefined`, and the page rendered "No events recorded yet." over a full
+ * page of events. On an *audit* surface that is the worst failure mode there
+ * is: it does not look broken, it looks like nothing happened.
+ *
+ * The hand-written interface is gone with it. RFC 0004 R5 deleted four of
+ * these mirrors from `registry-types.ts`; this one survived because it lived
+ * in a page rather than in `lib/`, and the `as Promise<{ data?: unknown }>`
+ * cast below is what let it disagree with the server in silence.
+ */
+const { data, error, loading, reload } = useApi<AuditLogResponse>(
   () => auditLog() as Promise<{ data?: unknown; error?: unknown }>,
   [token],
 );
+
+/** The events themselves, out of the envelope. */
+const events = computed(() => data.value?.items ?? []);
 
 const exportFormat = ref<"json" | "csv">("csv");
 const exporting = ref(false);
@@ -49,7 +58,14 @@ async function exportAuditLog() {
   try {
     const headers: Record<string, string> = {};
     if (token.value) headers["Authorization"] = `Bearer ${token.value}`;
-    const url = `/api/v1/admin/audit-log/export?format=${exportFormat.value}`;
+    // `API_BASE_URL`, not a relative path: there is no `/api` proxy in front of
+    // the SPA (CLAUDE.md), so a relative URL downloads the SPA's own index.html
+    // on every deployment where the API is not same-origin.
+    const params = new URLSearchParams({ format: exportFormat.value });
+    // Export what is on screen. Handing someone a file that disagrees with the
+    // table they were reading is worse than offering no export.
+    if (userFilter.value.trim()) params.set("user_id", userFilter.value.trim());
+    const url = `${API_BASE_URL}/api/v1/admin/audit-log/export?${params}`;
     const resp = await fetch(url, { headers });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const blob = await resp.blob();
@@ -69,8 +85,7 @@ const userFilter = ref("");
 const actionFilter = ref("");
 
 const filteredItems = computed(() => {
-  if (!data.value?.length) return [];
-  return data.value.filter((ev) => {
+  return events.value.filter((ev) => {
     const uq = userFilter.value.toLowerCase().trim();
     const aq = actionFilter.value.toLowerCase().trim();
     if (uq && !(ev.user_id ?? "").toLowerCase().includes(uq)) return false;
@@ -79,10 +94,9 @@ const filteredItems = computed(() => {
   });
 });
 
-const actionOptions = computed(() => {
-  if (!data.value?.length) return [];
-  return [...new Set(data.value.map((e) => e.action))].sort((a, b) => a.localeCompare(b));
-});
+const actionOptions = computed(() =>
+  [...new Set(events.value.map((e) => e.action))].sort((a, b) => a.localeCompare(b)),
+);
 </script>
 
 <template>
@@ -91,8 +105,10 @@ const actionOptions = computed(() => {
     <PageHeader variant="display">
       <template #title>
         {{ t("adminNav.auditLog") }}
-        <span v-if="data?.length" class="font-mono text-base font-normal text-muted-foreground"
-          >({{ data.length }})</span
+        <!-- `total`, not the loaded page: the endpoint returns 100 rows by
+             default and the count must not silently mean "the first 100". -->
+        <span v-if="data?.total" class="font-mono text-base font-normal text-muted-foreground"
+          >({{ data.total }})</span
         >
       </template>
     </PageHeader>
@@ -165,14 +181,25 @@ const actionOptions = computed(() => {
                   >anonymous</span
                 >
               </TableCell>
+              <!--
+                `package_id` is null for account- and network-wide actions —
+                blocking a user, blocking an IP, purging the trail itself.
+                The hand-written interface this page used to carry declared it
+                required, so the template dereferenced it unguarded; the
+                generated type is honest about it, and those rows would have
+                thrown on render once the envelope fix let them through.
+              -->
               <TableCell class="font-mono text-xs">
-                {{ ev.package_id.registry }}
+                {{ ev.package_id?.registry ?? "—" }}
               </TableCell>
               <TableCell class="font-mono text-xs">
-                {{ ev.package_id.name }}@{{ ev.package_id.version }}
-                <span v-if="ev.package_id.artifact" class="text-muted-foreground">
-                  ({{ ev.package_id.artifact }})
-                </span>
+                <template v-if="ev.package_id">
+                  {{ ev.package_id.name }}@{{ ev.package_id.version }}
+                  <span v-if="ev.package_id.artifact" class="text-muted-foreground">
+                    ({{ ev.package_id.artifact }})
+                  </span>
+                </template>
+                <span v-else class="text-muted-foreground">{{ t("auditLog.accountWide") }}</span>
               </TableCell>
               <TableCell class="text-xs font-mono">
                 {{ ev.action }}
