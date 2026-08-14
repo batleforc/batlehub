@@ -64,3 +64,12 @@ ui/eslint-results.sarif
 !/.impeccable/
 /.impeccable/*
 !/.impeccable/config.json
+# ...and the surface briefs, by the same argument one paragraph up. A brief is
+# the recorded intent for a surface — which direction was chosen, what was
+# measured, what is still open — and RFC 0005 leans on it to stop each change
+# re-arguing the design from scratch. A record only its author can read does not
+# do that job, any more than a waiver that never reaches CI does. Everything else
+# under `.impeccable/` stays per-developer state: `live/` (port, token, inject
+# journal), `shots/`, `questions/`, `quality-bar/` and the generated `design.json`
+# sidecar, which is rebuilt from the tracked DESIGN.md.
+!/.impeccable/surfaces/

@@ -388,9 +388,12 @@ at integer multiples of 8, so every Silkscreen size is one: 16 / 24 / 56 / 72 / 
   list row (0.02em), the primary action's label (0.04em, uppercase), a panel heading, the settings
   popover's own heading, a page number. This is the size at which the bitmap face is still a label
   and not yet an image.
-- **Head** (JetBrains Mono, 20px) and **Sub** (16px): declared in the ramp but not exercised by this
-  surface. Phase 2 inherits them as the section-title steps; treat their usage as unset, not as
-  established.
+- **Head** (JetBrains Mono, 20px): declared in the ramp; the section-title step. Still unset by a
+  shipped surface — treat its usage as open.
+- **Reading** (JetBrains Mono, 16px — the Sub step — line-height 1.7, max 68ch): long-form prose, on
+  the documentation site. This is the one role authored for *reading for minutes* rather than
+  scanning for seconds, and it is the step the ramp had been holding open. See The Reading Role Rule
+  below for why its leading is not the system's usual 1.6.
 - **Row** (JetBrains Mono, 15px, line-height 1.6): the scanning size — package names, list rows,
   search input. The densest text a reader is expected to read every line of.
 - **Body** (JetBrains Mono, 13px, line-height 1.6): prose — the specimen caption (max 72ch), denial
@@ -411,6 +414,17 @@ bitmap face.
 from its content: 0.06em inside a segment cell (where the label *is* its own content and the cell is
 narrow), 0.10em for inline chrome and state words, 0.14em for table column heads and preference
 labels, 0.16em for a standalone section label. Lowercase text is never tracked.
+
+**The Reading Role Rule.** Prose read for minutes takes 16px at **line-height 1.7 and a 68ch
+measure**, not the 13px/1.6 the console spends on a caption. Three things compound to earn the extra
+leading, and none of them applies to a list row: a 67-character line is long, light ink on a dark
+ground needs compensation, and a monospace face offers no word-shape cue for the return sweep.
+**Tracking is not part of that compensation** — the Tracking Ladder Rule ends at "lowercase text is
+never tracked", and it wins; the leading carries it alone. Weight stays 400, because weight
+compensation answers low contrast and ink measures 16.88:1 here. Measured, not estimated: JetBrains
+Mono's advance is exactly 0.6em (9.0px at 15px, 9.6px at 16px), so `ch` is a true character count in
+this world and the 45–75 band applies literally. The three candidates and why 16/1.7/68 won are
+recorded in the documentation site's surface brief.
 
 **The Data Face Rule.** Every number a reader might compare — counts, sizes, versions, page numbers
 — is `font-variant-numeric: tabular-nums`, right-aligned when it sits in a column, and formatted
