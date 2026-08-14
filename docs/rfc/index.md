@@ -27,6 +27,7 @@ product that is not true.
 | [0004 — Admin composition and API surface](/rfc/0004-admin-composition-and-api-surface) | The API the console was missing |
 | [0004-bis — What RFC 0004 left](/rfc/0004-bis-what-rfc-0004-left) | The parts 0004 did not finish, and why they were not visible |
 | [0005 — One documentation tree](/rfc/0005-docs-site-design-system) | Merging the two documentation trees, and putting the design system on the result |
+| [0005-bis — Two readers, one home each](/rfc/0005-bis-audience-split-and-one-home) | Splitting the guide by audience, giving every instruction one home, cutting each page down to one subject, and turning the showcase back into an introduction |
 
 They read in order: each one argues with the state the previous one left.
 

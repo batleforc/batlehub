@@ -37,6 +37,6 @@ are prioritized ahead of feature work.
 
 This policy covers the BatleHub server, CLI, and web UI in this repository.
 Vulnerability scanning of BatleHub's own dependencies and container images
-is continuous — see [`docs/guide/security-scanning.md`](docs/guide/security-scanning.md)
+is continuous — see [`docs/contributing/security-scanning.md`](docs/contributing/security-scanning.md)
 for the full matrix of automated checks (`cargo audit`, `cargo deny`,
 `npm audit`, CodeQL, Semgrep, gitleaks, Trivy).

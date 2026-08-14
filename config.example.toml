@@ -4,7 +4,7 @@
 # Optional: pins this file to a config schema version. Absent means "current"
 # (whatever this binary's default schema is), so existing configs keep working
 # unchanged after an upgrade. Only set this if you need to pin against future
-# schema changes; see "Config versioning" in docs/configuration.md.
+# schema changes; see "Config versioning" in docs/guide/configuration.md.
 # config_version = 1
 
 [server]

@@ -2289,7 +2289,7 @@ curl -X POST \
 
 .cg-section {
   border: 1px solid var(--vp-c-divider);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 1rem 1.2rem;
 }
 
@@ -2325,7 +2325,7 @@ select,
 textarea {
   padding: 0.35rem 0.6rem;
   border: 1px solid var(--vp-c-divider);
-  border-radius: 5px;
+  border-radius: var(--radius);
   background: var(--vp-c-bg);
   color: var(--vp-c-text-1);
   font-size: var(--t-body);
@@ -2400,7 +2400,7 @@ textarea {
 /* ── List items ──────────────────────────────────────────────────── */
 .cg-list-item {
   border: 1px solid var(--vp-c-divider);
-  border-radius: 6px;
+  border-radius: var(--radius);
   padding: 0.75rem;
   margin-bottom: 0.75rem;
   background: var(--vp-c-bg-soft);
@@ -2408,7 +2408,7 @@ textarea {
 
 .cg-subitem {
   border: 1px solid var(--vp-c-divider);
-  border-radius: 5px;
+  border-radius: var(--radius);
   padding: 0.6rem;
   margin-bottom: 0.5rem;
   background: var(--vp-c-bg);
@@ -2416,7 +2416,7 @@ textarea {
 
 .cg-condition-item {
   border: 1px dashed var(--vp-c-divider);
-  border-radius: 4px;
+  border-radius: var(--radius);
   padding: 0.5rem;
   margin-bottom: 0.4rem;
   background: var(--vp-c-bg-soft);
@@ -2468,7 +2468,7 @@ textarea {
   padding: 0.3rem 0.8rem;
   font-size: var(--t-body);
   border: 1px dashed var(--vp-c-brand-2);
-  border-radius: 5px;
+  border-radius: var(--radius);
   color: var(--vp-c-brand-1);
   background: transparent;
   cursor: pointer;
@@ -2482,9 +2482,9 @@ textarea {
   font-size: var(--t-meta);
   padding: 0.2rem 0.6rem;
   margin-top: 0.3rem;
-  border: 1px solid var(--vp-c-danger-1, #e53e3e);
-  border-radius: 4px;
-  color: var(--vp-c-danger-1, #e53e3e);
+  border: 1px solid var(--vp-c-danger-1);
+  border-radius: var(--radius);
+  color: var(--vp-c-danger-1);
   background: transparent;
   cursor: pointer;
   transition: background 0.15s;
@@ -2492,7 +2492,7 @@ textarea {
 .cg-btn-remove:hover {
   background: color-mix(
     in srgb,
-    var(--vp-c-danger-1, #e53e3e) 10%,
+    var(--vp-c-danger-1) 10%,
     transparent
   );
 }
@@ -2503,7 +2503,7 @@ textarea {
   padding: 0.2rem 0.6rem;
   font-size: var(--t-meta);
   border: 1px solid var(--vp-c-divider);
-  border-radius: 4px;
+  border-radius: var(--radius);
   background: transparent;
   color: var(--vp-c-text-2);
   cursor: pointer;
@@ -2536,7 +2536,7 @@ textarea {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--vp-c-divider);
-  border-radius: 8px;
+  border-radius: var(--radius);
   overflow: hidden;
 }
 
@@ -2565,7 +2565,7 @@ textarea {
   font-size: var(--t-meta);
   padding: 0.25rem 0.7rem;
   border: 1px solid var(--vp-c-divider);
-  border-radius: 5px;
+  border-radius: var(--radius);
   background: var(--vp-c-bg);
   color: var(--vp-c-text-1);
   cursor: pointer;
@@ -2597,7 +2597,7 @@ textarea {
 .cg-registry-hint {
   border: 1px solid var(--vp-c-brand-soft);
   border-left: 1px solid var(--vp-c-brand-1);
-  border-radius: 0;
+  border-radius: var(--radius);
   padding: 0.65rem 0.8rem;
   margin: 0.5rem 0;
   background: var(--vp-c-brand-soft);
@@ -2627,7 +2627,7 @@ textarea {
   font-family: var(--vp-font-family-mono);
   background: var(--vp-c-bg);
   border: 1px solid var(--vp-c-divider);
-  border-radius: 4px;
+  border-radius: var(--radius);
   padding: 0.5rem 0.65rem;
   margin: 0.25rem 0 0;
   white-space: pre;
@@ -2693,46 +2693,55 @@ textarea {
   color: var(--vp-c-text-2);
 }
 
+/* Ready is a fact and takes ink; "not hashed yet" is waiting, which is copper's
+   whole job. Neither needs a `.dark` twin — the tokens flip with the rendition,
+   which is what the two hard-coded greens and yellows were doing by hand. */
 .cg-hash-ready {
-  color: var(--vp-c-green-2, #4ade80);
-}
-.dark .cg-hash-ready {
-  color: var(--vp-c-green-3, #86efac);
+  color: var(--ink);
 }
 
 .cg-hash-warn {
-  color: var(--vp-c-yellow-2, #ca8a04);
-}
-.dark .cg-hash-warn {
-  color: var(--vp-c-yellow-3, #fde047);
+  color: var(--copper);
 }
 
 .cg-hash-status code {
   font-size: var(--t-meta);
   background: var(--vp-code-bg);
   padding: 0.1em 0.3em;
-  border-radius: 3px;
+  border-radius: var(--radius);
 }
 </style>
 
 <style>
-/* TOML syntax token colours — light mode */
-.cg-hl-comment  { color: #6e7781; font-style: italic; }
-.cg-hl-bracket  { color: #0969da; }
-.cg-hl-table    { color: #0969da; font-weight: 600; }
-.cg-hl-key      { color: #0550ae; }
-.cg-hl-eq       { color: #57606a; }
-.cg-hl-string   { color: #116329; }
-.cg-hl-number   { color: #953800; }
-.cg-hl-bool     { color: #8250df; }
+/* TOML syntax tokens.
+   ────────────────────────────────────────────────────────────────────────────
+   This is the site's one hand-rolled highlighter — every other code block goes
+   through Shiki. It carried sixteen literal hex values, a GitHub-derived
+   palette in two hand-maintained renditions, and one of the eight failed AA
+   against this pane's own background (`--vp-c-bg` → `--ground`, paper):
+   comment #6e7781 at 4.15:1. The other seven measured 4.60 to 6.93 and passed.
+   `#6e7781` is the same value rejected when the Shiki theme was chosen for the
+   rest of the site; it survived here because nothing had ever looked, and the
+   rendered gate could not look — the default form state emits no comment, so
+   that span never rendered on the scanned page (see docs/build/design-routes.mjs).
 
-/* dark mode overrides */
-.dark .cg-hl-comment { color: #8b949e; }
-.dark .cg-hl-bracket { color: #58a6ff; }
-.dark .cg-hl-table   { color: #58a6ff; }
-.dark .cg-hl-key     { color: #79c0ff; }
-.dark .cg-hl-eq      { color: #8b949e; }
-.dark .cg-hl-string  { color: #7ee787; }
-.dark .cg-hl-number  { color: #ffa657; }
-.dark .cg-hl-bool    { color: #d2a8ff; }
+   Ratios are axe's, measured in the browser against the painted pixels, not
+   computed from the token values. Calibrated first: axe returns 5.63:1 for
+   --accent and 7.24:1 for --ink-dim, the two figures tokens.css asserts.
+
+   Four colours now, not eight, because the palette has four and The One
+   Synthetic Rule caps it. TOML has few enough token classes that the
+   distinctions that matter survive: a section header is the accent, a key is
+   ink, a value is copper, and the punctuation and comments recede into dim ink.
+   Every ratio below is one `tokens.css` already asserts in both renditions, so
+   there is nothing left here to measure separately — and no `.dark` twin to
+   keep in step, since the tokens flip with the ground. */
+.cg-hl-comment  { color: var(--ink-dim); font-style: italic; }
+.cg-hl-bracket  { color: var(--ink-dim); }
+.cg-hl-table    { color: var(--accent); font-weight: 600; }
+.cg-hl-key      { color: var(--ink); }
+.cg-hl-eq       { color: var(--ink-dim); }
+.cg-hl-string   { color: var(--copper); }
+.cg-hl-number   { color: var(--copper); }
+.cg-hl-bool     { color: var(--accent); }
 </style>

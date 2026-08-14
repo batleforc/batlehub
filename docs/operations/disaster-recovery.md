@@ -2,6 +2,13 @@
 
 This document describes what data lives where, how to back it up, and how to restore a BatleHub instance after a failure.
 
+::: warning Guidance, not a commitment
+The data inventory is a fact about the software; the procedures are a starting
+point for yours. Backups are not taken for you, no recovery point or recovery
+time objective stated here is guaranteed, and the restore path below is only as
+good as the last backup you actually verified.
+:::
+
 ## Data inventory
 
 | Store | What lives there | Loss impact |

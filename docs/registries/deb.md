@@ -78,5 +78,5 @@ On older systems, use `/etc/apt/auth.conf` with the same `machine / login / pass
 
 ## See also
 
-- [User Guide → per-registry setup](/guide/user#registries)
+- [Using BatleHub](/use/) — tokens, publishing prerequisites, the CLI
 - [Registries overview](/registries/) · [Caching](/guide/caching) · [Access Control](/guide/access-control)

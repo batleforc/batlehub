@@ -6,8 +6,8 @@ This directory contains everything needed to measure throughput, latency, and re
 
 1. [Prerequisites](#prerequisites)
 2. [Architecture of the test environment](#architecture-of-the-test-environment)
-3. [Quick start — filesystem + memory (default)](#quick-start--filesystem--memory-default)
-4. [Quick start — S3 + Redis](#quick-start--s3--redis)
+3. [Quick start — filesystem + memory (default)](#quick-start-—-filesystem-memory-default)
+4. [Quick start — S3 + Redis](#quick-start-—-s3-redis)
 5. [Comparing backends head-to-head](#comparing-backends-head-to-head)
 6. [Scenarios](#scenarios)
 7. [Tuning the mock upstream](#tuning-the-mock-upstream)

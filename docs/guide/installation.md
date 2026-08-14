@@ -1,8 +1,14 @@
 # Installation
 
-BatleHub is a single binary backed by PostgreSQL. Choose the installation method that fits your environment.
+BatleHub is a single binary backed by PostgreSQL.
 
-[[toc]]
+**If you have no reason to prefer otherwise, use [Docker Compose](#docker-compose).**
+It brings up the server and its database together, needs nothing installed but a
+container runtime, and is the shortest path from nothing to a registry you can
+point a package manager at. The other three methods below are for when your
+environment has already decided for you: a pre-built binary when you do not run
+containers, a build from source when you are changing the code, and the
+[Helm chart](#helm-chart) when you are deploying to Kubernetes.
 
 ---
 
@@ -48,7 +54,7 @@ chmod +x batlehub
 
 ---
 
-## Docker Compose (quickest path)
+## Docker Compose — start here {#docker-compose}
 
 The fastest way to get a running instance for local development or evaluation.
 

@@ -1,6 +1,23 @@
 # SOC 2 Trust Service Criteria — BatleHub Controls
 
-This document maps each relevant SOC 2 Trust Service Criterion (TSC) to the controls implemented in BatleHub. Use it as the basis for a Type I or Type II audit.
+This document maps each relevant SOC 2 Trust Service Criterion (TSC) to the controls implemented in BatleHub.
+
+::: warning A mapping, not an audit result
+**BatleHub has not been audited, and software cannot be.** The certified entity
+in any SOC 2 report is the organisation running a service, not the software it
+runs — so this page exists to give *your* auditor somewhere to start, and
+nothing on it is a claim about the project's compliance status.
+
+"✅ Implemented" below means exactly one thing: the control exists in the code,
+at the file or endpoint named in the Evidence column. It says nothing about
+whether it is enabled in your deployment, configured correctly, monitored, or
+operating effectively over a period — which is the whole of what a Type II audit
+examines. Several rows say "Manual process", and those are processes *you* would
+have to run.
+
+Use this as evidence to submit and as a gap list to work from. Do not cite it as
+a result.
+:::
 
 **Scope**: BatleHub proxy-cache server (package proxy, local registry, admin API).
 
@@ -18,7 +35,7 @@ This document maps each relevant SOC 2 Trust Service Criterion (TSC) to the cont
 | CC6.3 – Remove access | Token revocation API; user-block API disables all requests from a user | ✅ Implemented | `POST /api/v1/admin/users/{id}/block` |
 | CC6.6 – Network access restriction | IP allowlist/blocklist enforced in request middleware | ✅ Implemented | `crates/web/src/middleware/ip_block.rs` |
 | CC6.7 – Transmission encryption | TLS terminated at load balancer; internal requests use HTTPS clients | Manual process | Deploy with TLS termination |
-| CC6.8 – Prevent unauthorized software | Registry type allowlist in config; SBOM generation and vuln scanning | ✅ Implemented | `docs/guide/security-scanning.md` |
+| CC6.8 – Prevent unauthorized software | Registry type allowlist in config; SBOM generation and vuln scanning | ✅ Implemented | `docs/contributing/security-scanning.md` |
 
 ---
 
@@ -49,7 +66,7 @@ This document maps each relevant SOC 2 Trust Service Criterion (TSC) to the cont
 
 | Criterion | Control | Status | Evidence |
 |-----------|---------|--------|---------|
-| CC9.1 – Identify risks | CVE scanning via `cargo audit` + Trivy + OSV | ✅ Implemented | `docs/guide/security-scanning.md` |
+| CC9.1 – Identify risks | CVE scanning via `cargo audit` + Trivy + OSV | ✅ Implemented | `docs/contributing/security-scanning.md` |
 | CC9.2 – Vendor risk | SBOM generated per release (CycloneDX); supply-chain scanning via socket.dev badge | ✅ Implemented | `GET /api/v1/admin/sbom/export` |
 
 ---

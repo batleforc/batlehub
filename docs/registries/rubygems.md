@@ -30,22 +30,101 @@ end
 
 ## Publishing (local / hybrid)
 
-The registry must be in `local` or `hybrid` mode.
+### Server configuration
 
-```sh
-GEM_HOST_API_KEY="Bearer $BATLEHUB_TOKEN" \
-  gem push my-gem-1.0.0.gem --host https://batlehub.example.com/proxy/<registry>/
+```toml
+[[registries]]
+type = "rubygems"
+name = "internal-gems"
+mode = "local"          # or "hybrid" to fall back to rubygems.org
+
+[registries.rbac]
+anonymous = []
+user      = ["source:read"]
+admin     = ["*"]
 ```
 
-Yank or unyank a version:
+For hybrid mode add `upstreams = ["https://rubygems.org"]`.
+
+### Client setup
+
+**Option A — environment variable (recommended for CI):**
 
 ```sh
-curl -X DELETE -H "Authorization: Bearer $BATLEHUB_TOKEN" \
-  "https://batlehub.example.com/proxy/<registry>/api/v1/gems/yank?gem_name=my-gem&version=1.0.0"
-
-curl -X PUT -H "Authorization: Bearer $BATLEHUB_TOKEN" \
-  "https://batlehub.example.com/proxy/<registry>/api/v1/gems/unyank?gem_name=my-gem&version=1.0.0"
+export GEM_HOST_API_KEY="Bearer <your-token>"
 ```
+
+gem sends the value of `GEM_HOST_API_KEY` verbatim as the `Authorization` header, so the `Bearer ` prefix is required.
+
+**Option B — `~/.gem/credentials` (create if absent, `chmod 600` after):**
+
+```yaml
+---
+:batlehub: "Bearer <your-token>"
+```
+
+The symbol (`:batlehub:`) is an arbitrary name you choose. The value must include the `Bearer ` prefix because gem sends it verbatim as the `Authorization` header. Reference the entry by name with `--key` when pushing.
+
+### Publish
+
+```sh
+# Using GEM_HOST_API_KEY (no --key needed)
+GEM_HOST_API_KEY="Bearer <your-token>" \
+  gem push my-gem-1.0.0.gem --host https://batlehub.example.com/proxy/internal-gems/
+
+# Using ~/.gem/credentials with a named key
+gem push my-gem-1.0.0.gem \
+  --host https://batlehub.example.com/proxy/internal-gems/ \
+  --key batlehub
+```
+
+### Install
+
+```sh
+# Using GEM_HOST_API_KEY
+GEM_HOST_API_KEY="Bearer <your-token>" \
+  gem install my-gem --source https://batlehub.example.com/proxy/internal-gems/
+
+# Using a named credentials key
+gem install my-gem \
+  --source https://batlehub.example.com/proxy/internal-gems/ \
+  --key batlehub
+```
+
+Or in a `Gemfile`:
+
+```ruby
+source "https://batlehub.example.com/proxy/internal-gems" do
+  gem "my-gem"
+end
+```
+
+### Yank / unyank
+
+```sh
+# Yank
+curl -X DELETE \
+  -H "Authorization: Bearer <your-token>" \
+  "https://batlehub.example.com/proxy/internal-gems/api/v1/gems/yank?gem_name=my-gem&version=1.0.0"
+
+# Unyank
+curl -X PUT \
+  -H "Authorization: Bearer <your-token>" \
+  "https://batlehub.example.com/proxy/internal-gems/api/v1/gems/unyank?gem_name=my-gem&version=1.0.0"
+```
+
+### Endpoint reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/proxy/{registry}/api/v1/gems` | `gem push` |
+| `DELETE` | `/proxy/{registry}/api/v1/gems/yank` | Yank version |
+| `PUT` | `/proxy/{registry}/api/v1/gems/unyank` | Unyank version |
+| `GET` | `/proxy/{registry}/gems/{name}-{version}.gem` | Download gem |
+| `GET` | `/proxy/{registry}/api/v1/gems/{name}.json` | Gem info |
+| `GET` | `/proxy/{registry}/api/v1/versions/{name}.json` | All versions |
+
+---
 
 ## Authentication
 
@@ -69,5 +148,5 @@ Alternatively, store it in `~/.gem/credentials` (`chmod 600`) under a key name a
 
 ## See also
 
-- [User Guide → RubyGems](/guide/user#registries)
+- [Using BatleHub](/use/) — tokens, publishing prerequisites, the CLI
 - [Registries overview](/registries/) · [Caching](/guide/caching) · [Access Control](/guide/access-control)

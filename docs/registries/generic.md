@@ -64,5 +64,5 @@ Embedding HTTP Basic credentials in the mirror URL works as a fallback, but the 
 
 ## See also
 
-- [User Guide → Generic mirror](/guide/user#registries)
+- [Using BatleHub](/use/) — tokens, publishing prerequisites, the CLI
 - [Registries overview](/registries/) · [Caching](/guide/caching) · [Access Control](/guide/access-control)

@@ -33,17 +33,106 @@ dotnet restore
 
 ## Publishing (local / hybrid)
 
-The registry must be in `local` or `hybrid` mode. Pack and push:
+NuGet packages are `.nupkg` files (ZIP archives containing a `.nuspec` manifest). BatleHub implements the [NuGet v3 protocol](https://learn.microsoft.com/en-us/nuget/api/overview), compatible with `dotnet` CLI, `nuget.exe`, and any NuGet v3 client.
 
-```sh
+### Config
+
+```toml
+[[registries]]
+type = "nuget"
+name = "internal-nuget"
+mode = "local"          # or "hybrid" to fall back to api.nuget.org
+
+[registries.rbac]
+user  = ["releases:read"]
+admin = ["*"]
+```
+
+For hybrid mode add `upstreams = ["https://api.nuget.org"]`.
+
+### Configure dotnet / nuget.config
+
+**CLI (one-time):**
+```bash
+dotnet nuget add source \
+  https://batlehub.example.com/proxy/internal-nuget/nuget/v3/index.json \
+  --name internal-nuget \
+  --username __token__ --password <api-token>
+```
+
+**`nuget.config` (project-level):**
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <add key="internal-nuget"
+         value="https://batlehub.example.com/proxy/internal-nuget/nuget/v3/index.json" />
+  </packageSources>
+  <packageSourceCredentials>
+    <internal-nuget>
+      <add key="Username" value="__token__" />
+      <add key="ClearTextPassword" value="<api-token>" />
+    </internal-nuget>
+  </packageSourceCredentials>
+</configuration>
+```
+
+### Publish with dotnet nuget push
+
+Pack your project first, then push:
+
+```bash
 dotnet pack MyLib.csproj -c Release
 
 dotnet nuget push bin/Release/MyLib.1.0.0.nupkg \
-  --api-key $BATLEHUB_TOKEN \
-  --source https://batlehub.example.com/proxy/<registry>/nuget/v3/index.json
+  --api-key <api-token> \
+  --source https://batlehub.example.com/proxy/internal-nuget/nuget/v3/index.json
 ```
 
-`dotnet nuget push` sends `multipart/form-data`; BatleHub returns **201 Created** on success and **409 Conflict** if the version already exists. Yank a version with `DELETE …/nuget/v2/package/{id}/{version}`.
+The publish endpoint accepts `multipart/form-data` (as sent by `dotnet nuget push`). On success it returns **201 Created**.
+
+### Yank a version
+
+```bash
+curl -X DELETE \
+  -H "Authorization: Bearer <api-token>" \
+  "https://batlehub.example.com/proxy/internal-nuget/nuget/v2/package/mylib/1.0.0"
+```
+
+### Consume a package
+
+```bash
+# Add the package — dotnet fetches the index, resolves the version, downloads the .nupkg
+dotnet add package MyLib --version 1.0.0 --source internal-nuget
+
+# Restore all project dependencies
+dotnet restore
+```
+
+### Verify
+
+```bash
+# Service index should return JSON with "version": "3.0.0"
+curl -s https://batlehub.example.com/proxy/internal-nuget/nuget/v3/index.json | jq '.version'
+
+# Flat container version list after publish
+curl -s https://batlehub.example.com/proxy/internal-nuget/nuget/v3/flat/mylib/index.json
+# → {"versions":["1.0.0"]}
+```
+
+### Endpoint reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/proxy/{registry}/nuget/v3/index.json` | Generated service index |
+| `GET` | `/proxy/{registry}/nuget/v3/flat/{id}/index.json` | Version list |
+| `GET` | `/proxy/{registry}/nuget/v3/flat/{id}/{ver}/{file}` | Download `.nupkg` / `.nuspec` |
+| `GET` | `/proxy/{registry}/nuget/v3/registration5/{id}/index.json` | Package metadata |
+| `GET` | `/proxy/{registry}/nuget/v3/query` | Search |
+| `PUT` | `/proxy/{registry}/nuget/api/v2/package` | Publish `.nupkg` |
+| `DELETE` | `/proxy/{registry}/nuget/v2/package/{id}/{ver}` | Yank |
+
+---
 
 ## Authentication
 
@@ -51,10 +140,10 @@ Pass the BatleHub token as the source password (username `__token__`), or as `--
 
 ## Notes
 
-- `dotnet list package --vulnerable` works automatically — BatleHub advertises a `VulnerabilitiesUrl` resource in the v3 service index and proxies the upstream vulnerability catalogue. See [User Guide → Check for vulnerable packages](/guide/user#registries).
+- `dotnet list package --vulnerable` works automatically — BatleHub advertises a `VulnerabilitiesUrl` resource in the v3 service index and proxies the upstream vulnerability catalogue. See [Using BatleHub → security auditing](/use/#security-audit).
 - A `401` on push usually means the token lacks `releases:write` (or admin) on the registry.
 
 ## See also
 
-- [User Guide → NuGet (.NET)](/guide/user#registries)
+- [Using BatleHub](/use/) — tokens, publishing prerequisites, the CLI
 - [Registries overview](/registries/) · [Caching](/guide/caching) · [Access Control](/guide/access-control)

@@ -2,8 +2,6 @@
 
 BatleHub sits between your build tools and upstream registries. This page explains exactly how caching works: from the moment a client sends a request, through the cache lookup, to the response — and how to tune every part of that path.
 
-[[toc]]
-
 ---
 
 ## How the cache works

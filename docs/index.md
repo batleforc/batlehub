@@ -13,59 +13,29 @@ hero:
       text: Get Started
       link: /guide/installation
     - theme: alt
-      text: View on Forgejo
-      link: https://git.batle.dev/batlehub/batlehub
+      text: View on Git
+      link: https://github.com/batleforc/batlehub
 
 features:
   - icon: ⚡
-    title: Artifact Caching
-    details: First download is fetched from upstream and stored locally or in S3. Every subsequent request is served from cache — fast and bandwidth-free.
+    title: Cache what you already pull
+    details: Every artifact is fetched from upstream once and served from disk or S3 after that. Twenty-one ecosystems, one server, no change to how your build tools are invoked.
+    link: /guide/caching
+    linkText: How caching works
   - icon: 🔒
-    title: Private Registries
-    details: Publish private npm packages, Cargo crates, Go modules, VS Code extensions, Python wheels, conda packages, NuGet packages, and more directly to BatleHub. Use local or hybrid mode per registry.
+    title: Publish what is yours
+    details: Private npm packages, Cargo crates, Go modules, Python wheels, NuGet packages and more — on the same server, in the same URL space, published with the tool you already use.
+    link: /use/publishing
+    linkText: Publishing guide
   - icon: 🛡️
-    title: Role-Based Access Control
-    details: Per-registry permissions for anonymous, user, and admin roles. Group-based access from OIDC claims, Kubernetes service accounts, or GitHub/Forgejo Actions OIDC tokens.
-  - icon: 🤖
-    title: Actions OIDC Auth
-    details: Validate GitHub and Forgejo workflow JWTs without long-lived secrets. Map any claim — repo, branch, environment — to groups and roles via glob/regex rules. Dynamic group names like "{name}/{repository}/{ref_name}" enable wildcard RBAC grants across all CI jobs.
-  - icon: ⏱️
-    title: Release Age Gate
-    details: Block packages published less than N seconds ago. Creates a delay window against supply-chain attacks without blocking known-good versions.
-  - icon: 🔀
-    title: Multi-Upstream Fanout
-    details: List multiple upstreams per registry. A 404 from one automatically falls through to the next — no single point of failure.
-  - icon: 🚦
-    title: Distributed Rate Limiting
-    details: Fixed-window per-user and per-group rate limits. Back counters with InMemory, PostgreSQL, or Redis — shared limits survive restarts and scale across replicas.
-  - icon: 📊
-    title: OpenTelemetry
-    details: Optional distributed tracing via OTLP/gRPC. Works out of the box with Jaeger, Tempo, or any OTLP-compatible backend.
-  - icon: 🔥
-    title: Cache Warming & Eviction
-    details: Pre-fetch packages at startup to eliminate cold-start latency. Evict by TTL, idle time, version count, or storage size cap — mix and match per registry.
-  - icon: 🧪
-    title: Beta/Pre-Release Channel
-    details: Gate pre-release versions (e.g. 1.0.0-beta.1) to approved users or groups. Non-members see only stable versions — no separate publish step needed.
-  - icon: 🚫
-    title: IP-Based Blocking
-    details: Fail2ban-style auto-blocking. IPs that exceed a violation threshold (rate-limit hits, auth failures) are blocked automatically. Manual ban/unban via admin API.
-  - icon: 🗄️
-    title: Storage Deduplication
-    details: Identical artifact bytes are stored once, regardless of how many registries or package names reference them. Ref-counted and backwards-compatible.
-  - icon: 🔑
-    title: Hashed Static Tokens
-    details: Store Argon2id PHC hashes in config instead of raw token strings. Run `batlehub hash-token <value>` to generate a hash. Plain-text tokens keep working — both formats coexist.
+    title: Decide who gets what
+    details: Per-registry permissions for anonymous, user and admin roles, groups from OIDC or CI tokens, and gates on what may be pulled at all — by age, by advisory, by licence.
+    link: /guide/access-control
+    linkText: Access control
 ---
 
-## Supported registries
-
-BatleHub proxies, caches, and privately hosts **21 registry types**. Each runs as a pure cache (**proxy**), a fully private registry (**local**), or a **hybrid** of both — except the source forges, JetBrains IDE archives, and the Generic mirror, which are proxy-only.
-
-- **Language packages** — npm · Cargo · Go · Maven · PyPI · Conda · Composer · RubyGems · NuGet · Terraform
-- **Editor extensions** — OpenVSX · VS Code Marketplace · JetBrains Marketplace
-- **OS packages** — Debian/APT · RPM/YUM/DNF · Pacman/Arch
-- **Source forges** — GitHub · Forgejo/Gitea · GitLab
-- **Binaries & mirrors** — JetBrains IDE archives · Generic file mirror
-
-👉 See the **[Registries reference](/registries/)** for the full feature matrix and a dedicated setup page for every registry.
+BatleHub proxies, caches and privately hosts **21 registry types** — from npm and
+Cargo to Debian, Terraform and the VS Code marketplace. See the
+**[Registries reference](/registries/)** for the feature matrix and a setup page
+for each one, or the **[full feature list](/guide/features)** for everything the
+server does.

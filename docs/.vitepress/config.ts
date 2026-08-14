@@ -244,17 +244,29 @@ export default defineConfig({
     // page tree for each section lives in the sidebar, so the two don't repeat
     // the same items. Reference topics (Caching, Access Control, Package
     // Explorer, SBOM, HA) and Config Generator are reached via the guide sidebar.
+    // No "Home" entry: the wordmark to its left already links there, and the
+    // navbar has exactly as much room as it has. Spending a slot on the one
+    // destination every visitor can already reach is what pushed the appearance
+    // toggle off the edge when the Config Generator was added.
     nav: [
-      { text: "Home", link: "/" },
       {
-        text: "Installation",
+        text: "Install",
         link: "/guide/installation",
         activeMatch: "/guide/installation",
       },
+      // The one page that is a tool rather than a document. It is in the navbar
+      // because a visitor who has decided to install needs a `config.toml`
+      // next, and generating one beats reading a 12 000-word reference to
+      // write it by hand — which is where it was buried until now.
+      {
+        text: "Config Generator",
+        link: "/guide/config-generator",
+        activeMatch: "/guide/config-generator",
+      },
       {
         text: "User Guide",
-        link: "/guide/user",
-        activeMatch: "/guide/user",
+        link: "/use/",
+        activeMatch: "/use/",
       },
       {
         text: "Registries",
@@ -262,7 +274,7 @@ export default defineConfig({
         activeMatch: "/registries/",
       },
       {
-        text: "Administration",
+        text: "Admin",
         link: "/guide/administration",
         activeMatch: "/guide/admin",
       },
@@ -342,22 +354,16 @@ export default defineConfig({
           ],
         },
       ],
+      // I run this server.
       "/guide/": [
         {
           text: "Getting started",
           items: [
+            { text: "What it does", link: "/guide/features" },
             { text: "Installation", link: "/guide/installation" },
             { text: "Configuration", link: "/guide/configuration" },
-            { text: "User Guide", link: "/guide/user" },
+            { text: "Worked examples", link: "/guide/configuration-examples" },
             { text: "Config Generator", link: "/guide/config-generator" },
-          ],
-        },
-        {
-          text: "Publishing & clients",
-          items: [
-            { text: "Publishing packages", link: "/guide/publishing" },
-            { text: "Command-line client", link: "/guide/cli" },
-            { text: "Checking registries", link: "/guide/check-registries" },
           ],
         },
         {
@@ -376,25 +382,45 @@ export default defineConfig({
             { text: "Caching", link: "/guide/caching" },
             { text: "Access Control", link: "/guide/access-control" },
             { text: "Host-based routing", link: "/guide/host-routing" },
-            {
-              text: "Package Explorer",
-              link: "/guide/package-explorer",
-              items: [
-                { text: "Upstream search", link: "/guide/package-explorer-search" },
-                { text: "Access control", link: "/guide/package-explorer-access" },
-                { text: "Cache & API", link: "/guide/package-explorer-cache" },
-              ],
-            },
+            { text: "Private upstreams", link: "/guide/private-upstreams" },
+            { text: "Hot reload", link: "/guide/hot-reload" },
             { text: "SBOM", link: "/guide/sbom" },
             { text: "High Availability", link: "/guide/high-availability" },
-            { text: "Vulnerability proxy", link: "/guide/vulnerability-proxy" },
-            { text: "Security scanning", link: "/guide/security-scanning" },
-            { text: "Troubleshooting", link: "/guide/troubleshooting" },
+            { text: "Server binary subcommands", link: "/guide/server-cli" },
+            { text: "Capacity planning", link: "/guide/capacity-planning" },
           ],
         },
         {
           text: "Project",
           items: [{ text: "Roadmap", link: "/guide/roadmap" }],
+        },
+      ],
+
+      // I have a package manager and a token, and I need this to work.
+      "/use/": [
+        {
+          text: "Using BatleHub",
+          items: [
+            { text: "Overview", link: "/use/" },
+            { text: "Publishing packages", link: "/use/publishing" },
+            { text: "Command-line client", link: "/use/cli" },
+          ],
+        },
+        {
+          text: "Package Explorer",
+          items: [
+            { text: "Overview", link: "/use/package-explorer" },
+            { text: "Upstream search", link: "/use/package-explorer-search" },
+            { text: "Access control", link: "/use/package-explorer-access" },
+            { text: "Cache & API", link: "/use/package-explorer-cache" },
+          ],
+        },
+        {
+          text: "When something is wrong",
+          items: [
+            { text: "Vulnerability proxy", link: "/use/vulnerability-proxy" },
+            { text: "Troubleshooting", link: "/use/troubleshooting" },
+          ],
         },
       ],
 
@@ -413,6 +439,7 @@ export default defineConfig({
               text: "Production hardening",
               link: "/operations/production-hardening",
             },
+            { text: "Registry health check", link: "/operations/check-registries" },
           ],
         },
         {
@@ -432,6 +459,7 @@ export default defineConfig({
             { text: "Overview", link: "/contributing/" },
             { text: "Working on BatleHub", link: "/contributing/contributing" },
             { text: "Testing", link: "/contributing/testing" },
+            { text: "Vulnerability scanning & SBOMs", link: "/contributing/security-scanning" },
           ],
         },
         {
@@ -470,6 +498,10 @@ export default defineConfig({
             {
               text: "0005 — One documentation tree",
               link: "/rfc/0005-docs-site-design-system",
+            },
+            {
+              text: "0005-bis — Two readers, one home each",
+              link: "/rfc/0005-bis-audience-split-and-one-home",
             },
           ],
         },

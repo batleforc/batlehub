@@ -1,6 +1,16 @@
 # Change Management Policy — BatleHub
 
-This document defines how changes to BatleHub code, configuration, and dependencies are reviewed, approved, and deployed. It satisfies the SOC 2 CC8 (Change Management) trust service criteria.
+This document describes how changes to BatleHub code, configuration, and dependencies are reviewed, approved, and deployed **in this project's own repository**.
+
+::: warning Guidance, not a commitment
+Two audiences read this and they need different things from it. If you are
+looking for evidence against SOC 2 CC8, this is what the project offers — a
+description of its own practice, not an attestation that it has been verified
+(see the [SOC 2 mapping](/operations/soc2-checklist)). If you are running
+BatleHub, this is a worked example to adapt: your change process is yours, and
+nothing here binds the project to a release cadence, a review turnaround or a
+deprecation window.
+:::
 
 ---
 

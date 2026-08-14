@@ -122,6 +122,58 @@
   --vp-c-default-3: var(--rule-strong);
   --vp-c-default-soft: var(--ground-raised);
 
+  /* ── The raw palette ──────────────────────────────────────────────────────
+     `vars.css` also ships six literal hues — gray, green, yellow, red, indigo,
+     purple — which the semantic tiers above are built from. Nothing in the
+     default theme reaches past the semantic layer, so these were left unmapped
+     until `ConfigGenerator.vue` turned out to use `--vp-c-green-2` and
+     `--vp-c-yellow-2` for a status indicator: two hues that do not exist in
+     this world, painting VitePress's own values in the published config
+     generator, behind the claim that the bridge repainted that component for
+     free (RFC 0005 §6.9 — it did not).
+
+     The names are VitePress's and cannot be changed; the values are this
+     world's, chosen by the *job* each hue conventionally carries rather than by
+     its name. Green means "done, known" and that is `--ink`. Yellow means
+     "waiting, not yet a refusal" and DESIGN.md gives copper exactly that. Red
+     is the one that maps by hue as well as by job.
+
+     Mapping the whole tier rather than the two in use is the same reasoning as
+     the sponsor button below: an unmapped token is one edit away from
+     painting. */
+  --vp-c-gray-1: var(--ink-dim);
+  --vp-c-gray-2: var(--rule-strong);
+  --vp-c-gray-3: var(--rule-soft);
+  --vp-c-gray-soft: var(--ground-raised);
+
+  --vp-c-green-1: var(--ink);
+  --vp-c-green-2: var(--ink);
+  --vp-c-green-3: var(--ink);
+  --vp-c-green-soft: var(--ground-raised);
+
+  --vp-c-yellow-1: var(--copper);
+  --vp-c-yellow-2: var(--copper);
+  --vp-c-yellow-3: var(--copper);
+  --vp-c-yellow-soft: color-mix(in oklab, var(--copper) 10%, var(--ground));
+
+  --vp-c-red-1: var(--accent);
+  --vp-c-red-2: var(--accent);
+  --vp-c-red-3: var(--accent);
+  --vp-c-red-soft: color-mix(in oklab, var(--accent) 10%, var(--ground));
+
+  /* Indigo and purple have no job in this world at all; they resolve to ink so
+     that a component reaching for one gets a legible neutral rather than a hue
+     the palette never authorised. */
+  --vp-c-indigo-1: var(--ink);
+  --vp-c-indigo-2: var(--ink);
+  --vp-c-indigo-3: var(--ink);
+  --vp-c-indigo-soft: var(--ground-raised);
+
+  --vp-c-purple-1: var(--ink);
+  --vp-c-purple-2: var(--ink);
+  --vp-c-purple-3: var(--ink);
+  --vp-c-purple-soft: var(--ground-raised);
+
   /* ── Callouts ─────────────────────────────────────────────────────────────
      The One Synthetic Rule caps this palette, so a callout does not get a hue
      per category. Three tiers, each derived from a colour that already has a

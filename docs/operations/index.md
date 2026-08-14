@@ -6,6 +6,19 @@ Everything here assumes BatleHub is already running. If you are still setting it
 up, start with [Installation](/guide/installation) and
 [Configuration](/guide/configuration).
 
+::: warning Guidance, not a commitment
+BatleHub is self-hosted software under the Apache 2.0 licence, and **you are the
+operator**. Every page in this space is material to help you run your own
+instance: what the software makes possible, what the project itself does, and
+what a sensible procedure looks like.
+
+None of it is a service-level agreement, a support commitment, a warranty or a
+certification. There is no one on call but you. Severity thresholds,
+notification recipients, retention periods and recovery objectives are examples
+to adapt, not obligations the project takes on — adapt them to your own policies
+and to what your organisation has actually agreed with its own users.
+:::
+
 ## Runbooks
 
 - **[Incident response](/operations/incident-response)** — what to do when
@@ -25,4 +38,4 @@ up, start with [Installation](/guide/installation) and
   asks about, mapped onto what BatleHub actually does.
 
 Related reading in the guide: [High Availability](/guide/high-availability),
-[SBOM](/guide/sbom) and [Security scanning](/guide/security-scanning).
+[SBOM](/guide/sbom) and [Security scanning](/contributing/security-scanning).

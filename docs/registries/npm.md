@@ -40,13 +40,65 @@ npmScopes:
 
 ## Publishing (local / hybrid)
 
-The registry must be in `local` or `hybrid` mode — ask your administrator.
+### Server configuration
 
-```bash
-npm publish --registry https://batlehub.example.com/proxy/<registry>/
+```toml
+[[registries]]
+type = "npm"
+name = "internal-npm"
+mode = "local"          # or "hybrid" to fall back to registry.npmjs.org
+
+[registries.rbac]
+anonymous = []
+user      = ["source:read"]
+admin     = ["*"]
 ```
 
-With `.npmrc` already pointed at the registry, plain `npm publish` works too.
+For hybrid mode add `upstreams = ["https://registry.npmjs.org"]` under the registry block.
+
+### Client setup
+
+Create or update `.npmrc` (per-project or `~/.npmrc`):
+
+```ini
+# Scope all @myorg packages to the private registry
+@myorg:registry=https://batlehub.example.com/proxy/internal-npm/
+
+# Auth token for that registry host
+//batlehub.example.com/proxy/internal-npm/:_authToken=<your-token>
+```
+
+To use the registry for all packages (unscoped), set the global registry:
+
+```ini
+registry=https://batlehub.example.com/proxy/internal-npm/
+//batlehub.example.com/proxy/internal-npm/:_authToken=<your-token>
+```
+
+### Publish
+
+```sh
+npm publish --registry https://batlehub.example.com/proxy/internal-npm/
+# or, with .npmrc configured:
+npm publish
+```
+
+### Verify
+
+```sh
+npm view @myorg/my-package --registry https://batlehub.example.com/proxy/internal-npm/
+npm install @myorg/my-package
+```
+
+### Endpoint reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `PUT` | `/proxy/{registry}/{package}` | `npm publish` |
+| `GET` | `/proxy/{registry}/{package}` | Packument (all versions) |
+| `GET` | `/proxy/{registry}/{package}/{version}/tarball` | Tarball download |
+
+---
 
 ## Authentication
 
@@ -63,5 +115,5 @@ npm audit --fix
 
 ## See also
 
-- [User Guide → npm](/guide/user#registries)
+- [Using BatleHub](/use/) — tokens, publishing prerequisites, the CLI
 - [Registries overview](/registries/) · [Caching](/guide/caching) · [Access Control](/guide/access-control)

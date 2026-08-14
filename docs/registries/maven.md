@@ -40,30 +40,136 @@ dependencyResolutionManagement {
 
 ## Publishing (local / hybrid)
 
-The registry must be in `local` or `hybrid` mode. Declare the deploy target in `pom.xml` — the `<id>` must match a `<server>` entry in `settings.xml`:
+Maven artifacts are published by uploading individual files (`PUT`) using the Maven 2 repository layout. When the `.pom` file is uploaded, BatleHub parses it and creates a version record — subsequent GET requests will include it in `maven-metadata.xml`.
+
+### Server configuration
+
+```toml
+[[registries]]
+type = "maven"
+name = "internal-maven"
+mode = "local"          # or "hybrid" to fall back to repo1.maven.org
+
+[registries.rbac]
+anonymous = []
+user      = ["source:read"]
+admin     = ["*"]
+```
+
+For hybrid mode add `upstreams = ["https://repo1.maven.org/maven2"]`.
+
+### Client setup — Maven (`~/.m2/settings.xml`)
+
+```xml
+<settings>
+  <servers>
+    <server>
+      <id>internal-maven</id>
+      <username>token</username>
+      <password>YOUR_TOKEN</password>
+    </server>
+  </servers>
+
+  <!-- Optional: use as a download mirror for all artifacts -->
+  <mirrors>
+    <mirror>
+      <id>internal-maven</id>
+      <mirrorOf>*</mirrorOf>
+      <url>https://batlehub.example.com/proxy/internal-maven/maven2</url>
+    </mirror>
+  </mirrors>
+</settings>
+```
+
+### Client setup — Gradle (`build.gradle.kts`)
+
+```kotlin
+repositories {
+    maven {
+        name = "internalMaven"
+        url  = uri("https://batlehub.example.com/proxy/internal-maven/maven2")
+        credentials {
+            username = "token"
+            password = System.getenv("BATLEHUB_TOKEN") ?: ""
+        }
+    }
+}
+```
+
+### Publish — Maven
+
+Add to your project's `pom.xml`:
 
 ```xml
 <distributionManagement>
   <repository>
     <id>internal-maven</id>
-    <url>https://batlehub.example.com/proxy/<registry>/maven2</url>
+    <url>https://batlehub.example.com/proxy/internal-maven/maven2</url>
   </repository>
   <snapshotRepository>
     <id>internal-maven</id>
-    <url>https://batlehub.example.com/proxy/<registry>/maven2</url>
+    <url>https://batlehub.example.com/proxy/internal-maven/maven2</url>
   </snapshotRepository>
 </distributionManagement>
 ```
 
 Then deploy:
 
-```bash
+```sh
 mvn deploy
-# or override the repository URL without editing pom.xml:
-mvn deploy -DaltDeploymentRepository=internal-maven::https://batlehub.example.com/proxy/<registry>/maven2
+# or, overriding the repository URL without editing pom.xml:
+mvn deploy -DaltDeploymentRepository=internal-maven::default::https://batlehub.example.com/proxy/internal-maven/maven2
 ```
 
-Maven uploads the `.jar`, `-sources.jar`, `.pom`, and checksum files individually; BatleHub records the version when the `.pom` arrives. For Gradle, add a credentialed `maven { … }` repository under `publishing { repositories { … } }` and run `./gradlew publish`.
+Maven uploads the `.jar`, `-sources.jar`, `.pom`, and checksum files individually. BatleHub accepts all of them and records the version when the `.pom` arrives.
+
+### Publish — Gradle
+
+Add to `build.gradle.kts`:
+
+```kotlin
+publishing {
+    repositories {
+        maven {
+            name = "internalMaven"
+            url  = uri("https://batlehub.example.com/proxy/internal-maven/maven2")
+            credentials {
+                username = "token"
+                password = System.getenv("BATLEHUB_TOKEN") ?: ""
+            }
+        }
+    }
+}
+```
+
+Then publish:
+
+```sh
+./gradlew publish
+```
+
+### Verify
+
+```sh
+# Download maven-metadata.xml (should list the published version)
+curl -H "Authorization: Bearer <your-token>" \
+  "https://batlehub.example.com/proxy/internal-maven/maven2/com/example/mylib/maven-metadata.xml"
+
+# Resolve the artifact (Maven)
+mvn dependency:get -Dartifact=com.example:mylib:1.0.0
+```
+
+### Endpoint reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `PUT` | `/proxy/{registry}/maven2/{group}/{artifact}/{version}/{file}` | Upload artifact (`.pom` triggers version record) |
+| `GET` | `/proxy/{registry}/maven2/{group}/{artifact}/maven-metadata.xml` | Generated version list XML |
+| `GET` | `/proxy/{registry}/maven2/{group}/{artifact}/{version}/{file}` | Download artifact |
+
+`{group}` uses path segments: `com/example` maps to groupId `com.example`.
+
+---
 
 ## Authentication
 
@@ -92,5 +198,5 @@ curl -H "Authorization: Bearer $BATLEHUB_TOKEN" \
 
 ## See also
 
-- [User Guide → Maven](/guide/user#registries)
+- [Using BatleHub](/use/) — tokens, publishing prerequisites, the CLI
 - [Registries overview](/registries/) · [Caching](/guide/caching) · [Access Control](/guide/access-control)

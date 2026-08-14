@@ -99,10 +99,10 @@ Legend: **Ver.** version listing · **Src** source archive · **Bin** binary/ext
 >
 > ³ **Path-addressed** type: artifacts are fetched by file path with no per-package version model, so the structural axes show `—`. These types don't enumerate versions but can pre-warm specific files via `cache.warm_paths`, and are gated with a mandatory `path_allow` allowlist. Deb/RPM/Pacman additionally support signed private hosting (`local`/`hybrid`); JetBrains IDE archives and Generic are proxy-only.
 >
-> Package Explorer upstream ("Not Yet Proxied") search: Go uses pkg.go.dev; PyPI is exact-name lookup; Terraform combines module search with namespace/exact provider lookup. The release proxies (GitHub/Forgejo/GitLab), VS Code Marketplace, Conda, and the path-addressed types have no upstream search API — see the [Package Explorer guide](/guide/package-explorer-search#upstream-search).
+> Package Explorer upstream ("Not Yet Proxied") search: Go uses pkg.go.dev; PyPI is exact-name lookup; Terraform combines module search with namespace/exact provider lookup. The release proxies (GitHub/Forgejo/GitLab), VS Code Marketplace, Conda, and the path-addressed types have no upstream search API — see the [Package Explorer guide](/use/package-explorer-search#upstream-search).
 
 ## See also
 
-- [User Guide](/guide/user) — task-oriented walkthroughs for the most common registries.
+- [User Guide](/use/) — task-oriented walkthroughs for the most common registries.
 - [Administration → Configuration](/guide/admin-config#configuration) — how to declare registries in `config.toml`.
-- [Caching](/guide/caching) · [Access Control](/guide/access-control) · [Roadmap](/guide/roadmap#new-registries).
+- [Caching](/guide/caching) · [Access Control](/guide/access-control) · [Roadmap](/guide/roadmap#new-registry-types).

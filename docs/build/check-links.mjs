@@ -56,6 +56,27 @@ function markdownFiles(dir, acc = []) {
   return acc;
 }
 
+/**
+ * Files that are not documentation but point at it.
+ *
+ * A path to a page is a link wherever it is written, and the two that had gone
+ * stale were not in markdown at all: `config.example.toml` sent a reader to
+ * `docs/configuration.md` and `mise.toml` to `docs/cli.md`, months after both
+ * moved. Neither was reachable by a checker that only opened `.md`, which is
+ * the same shape as the code-span gap this file already closes one level down.
+ */
+const ALSO_SCAN = /\.(toml|ya?ml|rs|sh|ts|mjs|js|json|properties|txt)$/;
+
+function pathBearingFiles(dir, acc = []) {
+  for (const entry of readdirSync(dir)) {
+    if (SKIP.has(entry)) continue;
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) pathBearingFiles(full, acc);
+    else if (ALSO_SCAN.test(entry)) acc.push(full);
+  }
+  return acc;
+}
+
 /** Published pages: every markdown file under docs/ that VitePress builds. */
 function publishedPages() {
   return markdownFiles(DOCS)
@@ -73,7 +94,7 @@ function publishedPages() {
  */
 function resolveTarget(fromFile, target) {
   const clean = target.split("#")[0].split("?")[0];
-  if (!clean) return { ok: true };
+  if (!clean) return { ok: true, file: fromFile };
 
   const inDocs = !relative(DOCS, fromFile).startsWith("..");
   const base = clean.startsWith("/")
@@ -89,7 +110,78 @@ function resolveTarget(fromFile, target) {
     // pointing at `docs/guide/installation.md`.
     base.replace(/\.html$/, ".md"),
   ];
-  return { ok: candidates.some((c) => existsSync(c)) };
+  const file = candidates.find((c) => existsSync(c));
+  return { ok: Boolean(file), file };
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Anchors.
+
+   RFC 0005 phase 8 established that every cross-reference resolves — to a
+   *file*. Nothing read the fragment, and two were already wrong: README.md
+   linked twice to `configuration.md#9-self-hosted--private-registries` after
+   that section was renumbered to 10, so the repository's front page sent
+   readers to the top of an 87-minute page and left them to find the section.
+
+   The slug rules are VitePress's own, transcribed rather than approximated —
+   `slugify` in its `chunk-*.js`, which is `@mdit-vue/shared`'s. Approximating
+   would produce a gate that is wrong in exactly the cases that matter: a
+   heading with a colon, an em dash, or a leading digit. The `^(\d)` → `_$1`
+   rule is why `## 3.7 [otel]` is reached as `#_3-7-otel-optional`.
+   ──────────────────────────────────────────────────────────────────────────── */
+const R_CONTROL = /[\u0000-\u001f]/g;
+const R_SPECIAL = /[\s~`!@#$%^&*()\-_+=[\]{}|\\;:"'“”‘’<>,.?/]+/g;
+const R_COMBINING = /[\u0300-\u036F]/g;
+
+function slugify(str) {
+  return str
+    .normalize("NFKD")
+    .replace(R_COMBINING, "")
+    .replace(R_CONTROL, "")
+    .replace(R_SPECIAL, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/^(\d)/, "_$1")
+    .toLowerCase();
+}
+
+/**
+ * The anchors a page offers. `markdown-it-anchor` slugifies the heading's
+ * *rendered text*, so the inline markup goes first; an explicit `{#id}` wins
+ * outright, and a repeated slug gets `-1`, `-2`, … the way the plugin numbers
+ * them.
+ */
+const anchorCache = new Map();
+function anchorsOf(file) {
+  if (anchorCache.has(file)) return anchorCache.get(file);
+  const src = readFileSync(file, "utf8").replace(/```[\s\S]*?```/g, "");
+  const seen = new Map();
+  const anchors = new Set();
+  for (const [, , raw] of src.matchAll(/^(#{1,6})\s+(.+?)\s*$/gm)) {
+    const explicit = raw.match(/\{#([^}]+)\}\s*$/);
+    let slug;
+    if (explicit) {
+      slug = explicit[1];
+    } else {
+      const text = raw
+        .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+        // Tag-stripping happens outside code spans only: `<name>` in
+        // `registry info <name>` is a placeholder a reader types, not markup,
+        // and VitePress keeps it — which is the difference between
+        // `#registry-info-name` and `#registry-info`.
+        .split("`")
+        .map((seg, i) => (i % 2 ? seg : seg.replace(/<[^>]+>/g, "").replace(/[*~]/g, "")))
+        .join("")
+        .trim();
+      slug = slugify(text);
+      const n = seen.get(slug) ?? 0;
+      seen.set(slug, n + 1);
+      if (n) slug = `${slug}-${n}`;
+    }
+    anchors.add(slug);
+  }
+  anchorCache.set(file, anchors);
+  return anchors;
 }
 
 /**
@@ -110,7 +202,11 @@ function resolveTarget(fromFile, target) {
  * even its `[text](target)` links are quotations of text that no longer exists.
  */
 const QUOTES_HISTORY = [/^CHANGELOG\.md$/, /^todo\.md$/, /^docs\/rfc\//];
-const GENERATED = [/^docs\/internal\/rfc-0005-merge-conflicts\.md$/];
+const GENERATED = [
+  /^docs\/internal\/rfc-0005-bis-publishing-overlap\.md$/,
+  /^docs\/internal\/rfc-0005-merge-conflicts\.md$/,
+  /^docs\/internal\/rfc-0005-bis-sbom-overlap\.md$/,
+];
 
 const findings = [];
 const linkedFromPages = new Set();
@@ -127,13 +223,32 @@ for (const file of markdownFiles(REPO)) {
   const rel = relative(REPO, file).split(sep).join("/");
   if (GENERATED.some((p) => p.test(rel))) continue;
 
+  // A record may point at an anchor that was accurate when it was written; the
+  // same argument as the code-span carve-out below.
+  const quotes = QUOTES_HISTORY.some((p) => p.test(rel));
+
   // Markdown links, minus the ones that do not name a file in this repository.
   for (const [, , target] of src.matchAll(/\[([^\]]*)\]\(([^)\s]+)\)/g)) {
-    if (/^(https?:|mailto:|#|<)/.test(target)) continue;
-    if (!resolveTarget(file, target).ok) {
+    if (/^(https?:|mailto:|<)/.test(target)) continue;
+    const { ok, file: targetFile } = resolveTarget(file, target);
+    if (!ok) {
       findings.push({ rel, kind: "dead link", target });
+      continue;
     }
     if (target.startsWith("/")) linkedFromPages.add(target.split("#")[0]);
+
+    // The fragment. A `#` that names no heading lands the reader at the top of
+    // the page it was meant to skip to — silently, which is why two of these
+    // survived on the repository's front page.
+    const fragment = target.split("#")[1];
+    if (!fragment || quotes || !targetFile?.endsWith(".md")) continue;
+    if (!anchorsOf(targetFile).has(fragment)) {
+      findings.push({
+        rel,
+        kind: "dead anchor",
+        target: `${relative(REPO, targetFile).split(sep).join("/")}#${fragment}`,
+      });
+    }
   }
 
   // Inline code that is a path to a markdown file. Both of the references this
@@ -153,11 +268,33 @@ for (const file of markdownFiles(REPO)) {
   }
 }
 
+/* Paths to documentation written outside documentation — a config example's
+   comment, a tool's manifest, a script's header. Only `docs/…md` shapes: a bare
+   filename in a shell script is not a claim about this tree. The scripts in
+   `docs/build/` are exempt because they quote the dead references they exist to
+   catch, which is the same carve-out records get above. */
+for (const file of pathBearingFiles(REPO)) {
+  const rel = relative(REPO, file).split(sep).join("/");
+  if (rel.startsWith("docs/build/")) continue;
+  const src = readFileSync(file, "utf8");
+  for (const [, target] of src.matchAll(/\b(docs\/[\w./-]+\.md)\b/g)) {
+    if (!existsSync(join(REPO, target))) {
+      findings.push({ rel, kind: "dead path outside markdown", target });
+    }
+  }
+}
+
 // Orphans. A published page nothing points at is unreachable, which is a dead
 // link seen from the other end.
 for (const page of publishedPages()) {
   const rel = relative(DOCS, page).split(sep).join("/");
   if (rel === "index.md") continue; // the home page is the entry point
+  // A stub is a redirect this host cannot otherwise issue (RFC 0005-bis §6.5).
+  // It is deliberately in no sidebar — it exists for an address, not a reader —
+  // so it is not an orphan. Its target is checked like any other link above,
+  // which is what stops a stub outliving the page it points at.
+  const head = readFileSync(page, "utf8").slice(0, 400);
+  if (/^moved:\s*\S/m.test(head)) continue;
   const url = "/" + rel.replace(/(index)?\.md$/, "").replace(/\/$/, "/");
   const bare = "/" + rel.replace(/\.md$/, "");
   if (

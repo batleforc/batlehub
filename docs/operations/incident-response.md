@@ -1,6 +1,13 @@
 # Incident Response Playbook — BatleHub
 
-This playbook covers security and availability incidents for BatleHub deployments. Follow the phases in order. Adapt severity thresholds and notification recipients to your organization's policies.
+This playbook covers security and availability incidents for BatleHub deployments. Follow the phases in order.
+
+::: warning Guidance, not a commitment
+A template for the playbook *you* write, not a service the project runs. The
+severity levels, response times and notification recipients below are examples —
+replace them with your organisation's, because the only people who can meet them
+are yours. Nobody is paged by this page.
+:::
 
 ---
 

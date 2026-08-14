@@ -2,24 +2,6 @@
 
 This guide walks through every change needed to wire a new upstream registry into batlehub. The OpenVSX adapter (`crates/adapters/src/registry/openvsx.rs`) is used as the reference implementation throughout.
 
----
-
-## Table of Contents
-
-1. [Architecture Overview](#1-architecture-overview)
-2. [Checklist](#2-checklist)
-3. [Step 1 — Implement the adapter](#3-step-1--implement-the-adapter)
-4. [Step 2 — Export the adapter](#4-step-2--export-the-adapter)
-5. [Step 3 — Add a Cargo feature flag](#5-step-3--add-a-cargo-feature-flag)
-6. [Step 4 — Register the type in config validation](#6-step-4--register-the-type-in-config-validation)
-7. [Step 5 — Wire up the server](#7-step-5--wire-up-the-server)
-8. [Step 6 — Add HTTP handlers](#8-step-6--add-http-handlers)
-9. [Step 7 — Register routes and update OpenAPI](#9-step-7--register-routes-and-update-openapi)
-10. [Step 8 — Update the Setup Guide](#10-step-8--update-the-setup-guide)
-11. [Testing](#11-testing)
-
----
-
 ## 1. Architecture Overview
 
 ```

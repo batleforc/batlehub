@@ -44,7 +44,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   two viewports in both renditions: axe at WCAG 2.2 AA, the type ramp, and the
   material rules.
 
+- **The guide is split by audience, and every instruction has one home**
+  (RFC 0005-bis). `docs/guide/` is now the operator's space — install, configure,
+  administer — and the new `docs/use/` is for the person whose package manager
+  talks to BatleHub: tokens, publishing, the CLI, the Package Explorer,
+  troubleshooting. Pages that moved leave a redirect behind.
+
+  Publishing instructions used to exist twice, sliced two ways: eleven numbered
+  walkthroughs in one 1 118-line page, and a three-line section on each of the 21
+  registry pages, with neither marked as the one to trust. The registry page is
+  now the home and carries the walkthrough; the publishing page keeps only what
+  is the same whatever you are publishing.
+
+  The configuration reference gave up the six other documents it had become:
+  worked examples, the server binary's subcommands, hot reload, private
+  upstreams and capacity planning are pages now, and the SBOM section it
+  duplicated is gone in favour of the SBOM page. It is 24% shorter and is only
+  the reference.
+
+  The home page opens with three cards instead of thirteen. Nothing was deleted
+  — the full feature list is at [`docs/guide/features.md`](docs/guide/features.md).
+
 ### Fixed
+
+- **Every hand-written table of contents in the documentation was broken, and
+  had always been.** VitePress prefixes an anchor that starts with a digit with
+  `_`, so every entry pointing at a numbered section — `#1-prerequisites` and its
+  115 siblings — resolved to nothing and silently dropped the reader at the top
+  of the page. Nothing checked fragments. All sixteen typed contents lists are
+  gone (the theme draws the outline from the headings), the surviving
+  cross-references were repaired, and `task docs:links` now checks anchors.
 
 - Two documentation cross-references that had been dead
   (`docs/post-mortem-template.md`, `docs/monitoring.md`), an accessibility

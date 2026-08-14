@@ -66,5 +66,5 @@ password <your-token>
 
 ## See also
 
-- [User Guide → Conda](/guide/user#registries)
+- [Using BatleHub](/use/) — tokens, publishing prerequisites, the CLI
 - [Registries overview](/registries/) · [Caching](/guide/caching) · [Access Control](/guide/access-control)

@@ -6,8 +6,6 @@ BatleHub provides three complementary access-control features for private and hy
 - **IP-Based Blocking** — automatically block abusive IPs (fail2ban-style) and manage manual bans
 - **Team Namespaces & Package Visibility** — assign package name prefixes to auth-provider groups and control per-package download visibility
 
-[[toc]]
-
 ---
 
 ## Beta/Pre-Release Channel {#beta-channel}
@@ -454,4 +452,4 @@ Once claims are in place, users can manage their own packages without needing ad
 Spaces in group names are stripped before matching — `"oidc:my team"` and `"oidc:myteam"` are treated as the same group. Set `group_id` without spaces when creating claims to avoid ambiguity.
 :::
 
-See the [Team Namespace dashboard section in the User Guide](./user#team-namespace) for end-user instructions.
+See the [Team Namespace dashboard section in the User Guide](/use/#team-namespace) for end-user instructions.

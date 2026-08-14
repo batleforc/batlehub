@@ -29,24 +29,83 @@ The `index` / `registry` URL uses the `sparse+` prefix and must end with `/regis
 
 ## Publishing (local / hybrid)
 
-The registry must be in `local` or `hybrid` mode. Declare it as a named registry:
+### Server configuration
 
 ```toml
-# .cargo/config.toml
+[[registries]]
+type = "cargo"
+name = "internal"
+mode = "local"          # or "hybrid" to fall back to crates.io
+
+[registries.rbac]
+anonymous = []
+user      = ["source:read"]
+admin     = ["*"]
+```
+
+For hybrid mode add:
+```toml
+upstreams = ["https://static.crates.io/crates"]
+index_url = "https://index.crates.io"
+```
+
+### Client setup
+
+Edit `~/.cargo/config.toml` or `.cargo/config.toml` in the project root:
+
+```toml
 [registries.internal]
-index = "sparse+https://batlehub.example.com/proxy/<registry>/registry/"
+index = "sparse+https://batlehub.example.com/proxy/internal/registry/"
 token = "<your-token>"
 ```
 
-Then publish (and yank) against that registry:
+Alternatively export the token as an environment variable (useful in CI):
 
-```bash
+```sh
+export CARGO_REGISTRIES_INTERNAL_TOKEN=<your-token>
+```
+
+### Publish
+
+```sh
 cargo publish --registry internal
+```
+
+Cargo serialises crate metadata + the `.crate` archive into a single binary payload and sends it to `PUT /proxy/internal/api/v1/crates/new`. The checksum is verified server-side.
+
+### Depend on a privately published crate
+
+```toml
+# Cargo.toml
+[dependencies]
+my-lib = { version = "0.1", registry = "internal" }
+```
+
+### Yank / unyank a version
+
+```sh
 cargo yank --registry internal my-lib@0.1.0
 cargo yank --undo --registry internal my-lib@0.1.0
 ```
 
-Depend on a privately published crate with `my-lib = { version = "0.1", registry = "internal" }`.
+### Verify
+
+```sh
+cargo add my-lib --registry internal
+```
+
+### Endpoint reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `PUT` | `/proxy/{registry}/api/v1/crates/new` | `cargo publish` |
+| `DELETE` | `/proxy/{registry}/api/v1/crates/{name}/{version}/yank` | `cargo yank` |
+| `PUT` | `/proxy/{registry}/api/v1/crates/{name}/{version}/unyank` | `cargo yank --undo` |
+| `GET` | `/proxy/{registry}/registry/config.json` | Sparse index config |
+| `GET` | `/proxy/{registry}/registry/{path}` | Sparse index entries |
+| `GET` | `/proxy/{registry}/{name}/{version}/download` | `.crate` download |
+
+---
 
 ## Authentication
 
@@ -58,5 +117,5 @@ If `cargo publish` fails with "invalid token", verify the `index` URL ends with 
 
 ## See also
 
-- [User Guide → Cargo](/guide/user#registries)
+- [Using BatleHub](/use/) — tokens, publishing prerequisites, the CLI
 - [Registries overview](/registries/) · [Caching](/guide/caching) · [Access Control](/guide/access-control)

@@ -47,5 +47,5 @@ Add `-H "Authorization: Bearer $BATLEHUB_TOKEN"` when the registry requires auth
 
 ## See also
 
-- [User Guide → JetBrains IDE archives](/guide/user#registries)
+- [Using BatleHub](/use/) — tokens, publishing prerequisites, the CLI
 - [Registries overview](/registries/) · [Caching](/guide/caching) · [Access Control](/guide/access-control)

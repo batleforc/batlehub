@@ -140,7 +140,7 @@ The two invariants above are now also enforced by `cargo-deny`: `rsa`, `sqlx-mys
 
 ### Vulnerability scanning
 
-CVE detection runs continuously across every layer; see `docs/guide/security-scanning.md` for the full matrix and the SBOM re-scan workflow. Reproduce the dependency/SBOM gate locally with `task security` (runs `cargo audit`, `cargo deny`, `pnpm audit` for `ui/` + `docs/`, and the Rust SBOM). Scanner tooling is provisioned by `mise install`.
+CVE detection runs continuously across every layer; see `docs/contributing/security-scanning.md` for the full matrix and the SBOM re-scan workflow. Reproduce the dependency/SBOM gate locally with `task security` (runs `cargo audit`, `cargo deny`, `pnpm audit` for `ui/` + `docs/`, and the Rust SBOM). Scanner tooling is provisioned by `mise install`.
 
 - **Rust deps**: `cargo audit` (RUSTSEC) + `cargo deny` (advisories/bans/licenses/sources) — `.github/workflows/back-dep-audit.yaml`.
 - **JS deps**: `pnpm audit --audit-level high` — `.github/workflows/dep-audit-frontend.yaml`.
@@ -178,12 +178,18 @@ home is chosen by **who reads it**:
 
 | Space | "I am here because…" |
 | --- | --- |
-| `docs/guide/` | I am setting this up or running it |
+| `docs/guide/` | I run this server — install, configure, administer |
+| `docs/use/` | my package manager talks to it — tokens, publishing, the CLI |
 | `docs/registries/` | I need the snippet for *my* package manager |
 | `docs/operations/` | something is broken, or an auditor is asking |
 | `docs/contributing/` | I am changing the code |
 | `docs/rfc/` | I want to know why it works this way |
 | `docs/internal/` | not published — generated artifacts, dated security findings, the RFC template (`srcExclude`d) |
+
+A page belongs to exactly one space and appears in exactly one sidebar
+(`task docs:audience`), a page over 4 000 words declares `reference: true`
+(`task docs:structure`), and an instruction has one home — the others link to it.
+Publishing lives on the registry page, not in a per-ecosystem walkthrough.
 
 Two files in the tree are **generated and must not be hand-edited**:
 `docs/.vitepress/theme/tokens.css` (`task ui:tokens`, from

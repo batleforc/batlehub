@@ -2,8 +2,6 @@
 
 BatleHub is a **stateless HTTP server** — all durable state lives in PostgreSQL and an object store, not in the process. Running multiple replicas safely requires swapping two single-instance defaults for shared backends: the in-memory cache store and the local filesystem storage.
 
-[[toc]]
-
 ---
 
 ## Architecture overview {#overview}

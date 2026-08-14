@@ -43,7 +43,7 @@ Multiple instances of the same registry type can run in parallel (e.g. a private
 
 > ² **GitHub**: publish timestamp (and therefore the age gate) is only populated for specific-tag release requests. Raw file, source tarball, and release-listing requests return no timestamp and the rule is skipped.
 >
-> ³ **Private publish**: set `mode = "local"` to use BatleHub as the authoritative registry (no upstream needed), or `mode = "hybrid"` to serve locally published packages first and fall through to an upstream for everything else. See [Private registries](#private-registries-local--hybrid-mode) below.
+> ³ **Private publish**: set `mode = "local"` to use BatleHub as the authoritative registry (no upstream needed), or `mode = "hybrid"` to serve locally published packages first and fall through to an upstream for everything else. See [Private registries](#private-registries-local-hybrid-mode) below.
 >
 > ⁴ **Terraform publish timestamp**: the module version detail endpoint (`/v1/modules/{ns}/{name}/{prov}/{ver}`) is part of the official Terraform Module Registry Protocol and always provides `published_at`. The provider version detail endpoint (`/v1/providers/{ns}/{type}/{ver}`) is supported by `registry.terraform.io` but is not in the official spec — other Terraform registries may omit `published_at`. When absent, the release age gate is skipped rather than blocking access.
 >
@@ -208,7 +208,7 @@ user  = ["releases:read", "source:read"]
 admin = ["*"]
 ```
 
-Three auth schemes are supported: `bearer`, `basic`, and `header` (custom header such as `X-API-Key`). See [docs/guide/configuration.md § Self-Hosted / Private Registries](docs/guide/configuration.md#9-self-hosted--private-registries) for the full reference.
+Three auth schemes are supported: `bearer`, `basic`, and `header` (custom header such as `X-API-Key`). See [docs/guide/private-upstreams.md](docs/guide/private-upstreams.md) for the full reference.
 
 ```sh
 export GONOSUMCHECK="*"
@@ -1023,7 +1023,7 @@ Key settings can be overridden at runtime without editing the config file:
 | `PROXY_CACHE__STORAGE__PATH` | `storage.path` (single filesystem backend) |
 | `PROXY_CACHE__OTEL__ENDPOINT` | `otel.endpoint` |
 
-Full list in [`docs/guide/configuration.md § Environment Variable Overrides`](docs/guide/configuration.md#5-environment-variable-overrides).
+Full list in [`docs/guide/configuration.md § Environment Variable Overrides`](docs/guide/configuration.md#_5-environment-variable-overrides).
 
 ---
 
@@ -1034,11 +1034,11 @@ Full list in [`docs/guide/configuration.md § Environment Variable Overrides`](d
 | [`docs/`](docs/) | VitePress documentation site — run `task docs:dev` to browse locally |
 | [`docs/guide/installation.md`](docs/guide/installation.md) | Installation guide: Docker Compose, binary, Helm chart |
 | [`docs/guide/administration.md`](docs/guide/administration.md) | Administration: config, auth, S3, health, package management |
-| [`docs/guide/user.md`](docs/guide/user.md) | User guide: client setup and publishing for all registry types |
+| [`docs/use/index.md`](docs/use/index.md) | User guide: client setup and publishing for all registry types |
 | [`docs/guide/configuration.md`](docs/guide/configuration.md) | Full TOML reference, permissions, worked examples |
 | [`docs/guide/configuration.md § Registry modes`](docs/guide/configuration.md#registry-modes) | Private registry modes (local / hybrid) |
-| [`docs/guide/configuration.md § Self-Hosted`](docs/guide/configuration.md#9-self-hosted--private-registries) | Upstream auth (Bearer / Basic / header) and custom CA certificates |
-| [`docs/guide/publishing.md`](docs/guide/publishing.md) | Step-by-step guide for publishing packages (npm, Cargo, VSIX, Go modules, gems, Maven artifacts, Terraform modules/providers, PyPI wheels, conda packages) |
+| [`docs/guide/private-upstreams.md`](docs/guide/private-upstreams.md) | Upstream auth (Bearer / Basic / header) and custom CA certificates |
+| [`docs/use/publishing.md`](docs/use/publishing.md) | Step-by-step guide for publishing packages (npm, Cargo, VSIX, Go modules, gems, Maven artifacts, Terraform modules/providers, PyPI wheels, conda packages) |
 | [`docs/guide/sbom.md`](docs/guide/sbom.md) | SBOM configuration, format reference, API endpoints, and export guide |
 | [`docs/contributing/adding-a-registry.md`](docs/contributing/adding-a-registry.md) | Step-by-step guide for implementing a new registry adapter |
 | `/swagger-ui/` (runtime) | Interactive API docs |

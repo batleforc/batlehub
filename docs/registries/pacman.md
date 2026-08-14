@@ -70,5 +70,5 @@ Server = https://<user>:<token>@batlehub.example.com/proxy/<registry>/pacman/$ar
 
 ## See also
 
-- [User Guide → Pacman (Arch Linux)](/guide/user#registries)
+- [Using BatleHub](/use/) — tokens, publishing prerequisites, the CLI
 - [Registries overview](/registries/) · [Caching](/guide/caching) · [Access Control](/guide/access-control)

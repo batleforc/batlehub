@@ -2,23 +2,6 @@
 
 This guide is the starting point for developers working on the BatleHub codebase. It covers the project layout, key architectural patterns, how to run the tests, and known design limitations you need to be aware of before touching specific areas.
 
----
-
-## Table of contents
-
-1. [Prerequisites](#1-prerequisites)
-2. [Workspace layout](#2-workspace-layout)
-3. [Architecture: ports and adapters](#3-architecture-ports-and-adapters)
-4. [Request lifecycle](#4-request-lifecycle)
-5. [Database and migrations](#5-database-and-migrations)
-6. [Adding a new feature — checklist](#6-adding-a-new-feature--checklist)
-7. [Running tests](#7-running-tests)
-8. [Code conventions](#8-code-conventions)
-9. [Known limitations and accepted trade-offs](#9-known-limitations-and-accepted-trade-offs)
-10. [Frontend design workflow (Impeccable)](#10-frontend-design-workflow-impeccable)
-
----
-
 ## 1. Prerequisites
 
 | Tool | Minimum version | Notes |

@@ -6,7 +6,7 @@ first run works with no configuration. Production is where you trade that conven
 
 For the availability side (replicas, shared cache backend, rolling updates) see
 [High availability](/guide/high-availability). For the automated scanning that runs on the
-codebase itself, see [Security scanning](/guide/security-scanning).
+codebase itself, see [Security scanning](/contributing/security-scanning).
 
 ---
 

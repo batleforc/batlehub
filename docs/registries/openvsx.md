@@ -34,17 +34,68 @@ code --install-extension ms-python.python-2024.2.1.vsix
 
 ## Publishing (local / hybrid)
 
-The registry must be in `local` or `hybrid` mode. Both `openvsx` and `vscode-marketplace` types share the same upload endpoint; extension IDs follow `{publisher}.{name}`:
+Both registry types (`openvsx` and `vscode-marketplace`) use the same upload endpoint. There is no dedicated CLI tool — extensions are published with a plain `PUT` request carrying the raw VSIX bytes.
+
+### Server configuration
+
+```toml
+[[registries]]
+type = "openvsx"        # or "vscode-marketplace"
+name = "internal-ext"
+mode = "local"
+
+[registries.rbac]
+anonymous = []
+user      = ["source:read"]
+admin     = ["*"]
+```
+
+### Extension ID convention
+
+Extension IDs follow the `{publisher}.{name}` format used by the VS Code Marketplace, e.g. `my-org.my-extension`.
+
+### Upload
 
 ```sh
 curl -X PUT \
-  -H "Authorization: Bearer $BATLEHUB_TOKEN" \
+  -H "Authorization: Bearer <your-token>" \
   -H "Content-Type: application/octet-stream" \
   --data-binary @my-org.my-extension-1.0.0.vsix \
-  "https://batlehub.example.com/proxy/<registry>/my-org.my-extension/1.0.0/vsix"
+  "https://batlehub.example.com/proxy/internal-ext/my-org.my-extension/1.0.0/vsix"
 ```
 
-Download it back the same way (`GET …/{publisher}.{name}/{version}/vsix`), then `code --install-extension`.
+The server reads the publisher and extension name from the URL path. The `{extension_id}` segment is the full `{publisher}.{name}` identifier.
+
+### Download / install
+
+```sh
+# Download the VSIX
+curl -H "Authorization: Bearer <your-token>" \
+  "https://batlehub.example.com/proxy/internal-ext/my-org.my-extension/1.0.0/vsix" \
+  -o my-org.my-extension-1.0.0.vsix
+
+# Install into VS Code
+code --install-extension my-org.my-extension-1.0.0.vsix
+```
+
+### Verify
+
+```sh
+# Confirm the ZIP magic bytes (PK\x03\x04) to validate the upload was accepted
+curl -s -H "Authorization: Bearer <your-token>" \
+  "https://batlehub.example.com/proxy/internal-ext/my-org.my-extension/1.0.0/vsix" \
+  | xxd | head -1
+# Should show: 50 4b 03 04 ...
+```
+
+### Endpoint reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `PUT` | `/proxy/{registry}/{extension_id}/{version}/vsix` | Upload VSIX |
+| `GET` | `/proxy/{registry}/{extension_id}/{version}/vsix` | Download VSIX |
+
+---
 
 ## Authentication
 
@@ -58,5 +109,5 @@ Pass a BatleHub token as a Bearer header on the VSIX request. Anonymous access w
 
 ## See also
 
-- [User Guide → VS Code Extensions](/guide/user#registries)
+- [Using BatleHub](/use/) — tokens, publishing prerequisites, the CLI
 - [Registries overview](/registries/) · [Caching](/guide/caching) · [Access Control](/guide/access-control)

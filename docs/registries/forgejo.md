@@ -53,5 +53,5 @@ Pass a BatleHub token as a Bearer header (`-H "Authorization: Bearer $BATLEHUB_T
 
 ## See also
 
-- [User Guide → Forgejo / Gitea releases](/guide/user#registries)
+- [Using BatleHub](/use/) — tokens, publishing prerequisites, the CLI
 - [Registries overview](/registries/) · [Caching](/guide/caching) · [Access Control](/guide/access-control)

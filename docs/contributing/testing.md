@@ -11,25 +11,6 @@ for how to add a test when you add a registry, see
 > grows. Treat them as orders of magnitude, not contract. The file lists and the
 > *shape* of coverage are the stable part.
 
----
-
-## Table of Contents
-
-1. [Test taxonomy](#1-test-taxonomy)
-2. [Running the tests](#2-running-the-tests)
-3. [Unit tests](#3-unit-tests)
-4. [In-process integration tests](#4-in-process-integration-tests)
-5. [Per-registry local-registry tests](#5-per-registry-local-registry-tests)
-6. [Path-traversal guard tests](#6-path-traversal-guard-tests)
-7. [External integration tests (real infra)](#7-external-integration-tests-real-infra)
-8. [CLI integration tests](#8-cli-integration-tests)
-9. [Example-project tests](#9-example-project-tests)
-10. [Fuzz targets](#10-fuzz-targets)
-11. [Coverage](#11-coverage)
-12. [CI wiring](#12-ci-wiring)
-
----
-
 ## 1. Test taxonomy
 
 BatleHub's tests fall into five layers, in increasing order of infrastructure cost:

@@ -43,58 +43,83 @@ To persist any of these, use `go env -w`, e.g. `go env -w GOPROXY="https://batle
 
 ## Publishing (local / hybrid)
 
-The go toolchain has no `go mod zip` command — the canonical way to build a proxy-compatible module zip is [`golang.org/x/mod/zip`](https://pkg.go.dev/golang.org/x/mod/zip), the same package `go mod download` uses. A four-line helper is enough:
+Go modules are published by uploading a module zip archive. BatleHub extracts `go.mod` from the zip and generates version metadata automatically — there is no separate metadata upload step.
 
-```go
-// zipmod.go — go run zipmod.go <module> <version> <dir> <out.zip>
-package main
+### Server configuration
 
-import (
-	"log"
-	"os"
+```toml
+[[registries]]
+type = "goproxy"
+name = "internal-go"
+mode = "local"
 
-	"golang.org/x/mod/module"
-	"golang.org/x/mod/zip"
-)
-
-func main() {
-	mod, ver, dir, out := os.Args[1], os.Args[2], os.Args[3], os.Args[4]
-	f, err := os.Create(out)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer f.Close()
-	if err := zip.CreateFromDir(f, module.Version{Path: mod, Version: ver}, dir); err != nil {
-		log.Fatal(err)
-	}
-}
+[registries.rbac]
+anonymous = []
+user      = ["source:read"]
+admin     = ["*"]
 ```
 
-The helper needs `golang.org/x/mod` on hand, so run it from a Go module that already
-depends on it — or create a throwaway one:
+For hybrid mode add `upstreams = ["https://proxy.golang.org"]`.
 
-```bash
-mkdir -p /tmp/zipmod && cd /tmp/zipmod
-# save the zipmod.go above in this directory
-go mod init zipmod
-go get golang.org/x/mod@latest
+### Build the module zip
+
+Use the standard `go mod zip` command from the module's source directory:
+
+```sh
+# From the root of your module (where go.mod lives)
+go mod zip example.com/mymod@v1.0.0 . --mod-zip /tmp/mymod-v1.0.0.zip
 ```
 
-Then build and upload it. Pass the module source directory explicitly (the helper's own
-directory is not the module you are packaging). The module path may contain slashes;
-BatleHub extracts `go.mod` from the zip and generates version metadata automatically:
+The zip must contain every file under a single top-level directory named `{module}@{version}/` (e.g. `example.com/mymod@v1.0.0/`). `go mod zip` produces this layout automatically. If you build the zip manually, all entry paths must use this prefix.
 
-```bash
-go run zipmod.go example.com/mymod v1.0.0 /path/to/mymod /tmp/mymod-v1.0.0.zip
+### Upload
 
+```sh
 curl -X PUT \
-  -H "Authorization: Bearer $BATLEHUB_TOKEN" \
+  -H "Authorization: Bearer <your-token>" \
   -H "Content-Type: application/zip" \
   --data-binary @/tmp/mymod-v1.0.0.zip \
-  "https://batlehub.example.com/proxy/<registry>/example.com/mymod/@v/v1.0.0.zip"
+  "https://batlehub.example.com/proxy/internal-go/example.com/mymod/@v/v1.0.0.zip"
 ```
 
-Every entry inside the zip must be prefixed with `{module}@{version}/` (here `example.com/mymod@v1.0.0/`) — `zip.CreateFromDir` produces exactly that layout, and also enforces the module-zip rules (no symlinks, no nested modules, size limits), so a zip it accepts is one the go tool will accept.
+Module paths may contain slashes — the URL pattern captures everything before `/@v/` as the module path.
+
+### Configure the go toolchain
+
+```sh
+export GONOSUMCHECK="*"
+export GONOSUMDB="*"
+export GOPROXY="https://batlehub.example.com/proxy/internal-go,direct"
+```
+
+Or save permanently with `go env -w`:
+
+```sh
+go env -w GONOSUMCHECK="*"
+go env -w GONOSUMDB="*"
+go env -w GOPROXY="https://batlehub.example.com/proxy/internal-go,direct"
+```
+
+`GONOSUMCHECK` and `GONOSUMDB` disable the checksum database for private modules. The `,direct` fallback tells the go tool to reach the internet directly if the proxy returns a 404 — remove it if BatleHub should be the only source.
+
+### Verify
+
+```sh
+go get example.com/mymod@v1.0.0
+```
+
+### Endpoint reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `PUT` | `/proxy/{registry}/{module}/@v/{version}.zip` | Upload module zip |
+| `GET` | `/proxy/{registry}/{module}/@latest` | Latest version info JSON |
+| `GET` | `/proxy/{registry}/{module}/@v/list` | All version list |
+| `GET` | `/proxy/{registry}/{module}/@v/{version}.info` | Version metadata JSON |
+| `GET` | `/proxy/{registry}/{module}/@v/{version}.mod` | `go.mod` content |
+| `GET` | `/proxy/{registry}/{module}/@v/{version}.zip` | Module source zip |
+
+---
 
 ## Authentication
 
@@ -120,5 +145,5 @@ The upstream vuln DB URL defaults to `https://vuln.go.dev` and can be overridden
 
 ## See also
 
-- [User Guide → Go Modules](/guide/user#registries)
+- [Using BatleHub](/use/) — tokens, publishing prerequisites, the CLI
 - [Registries overview](/registries/) · [Caching](/guide/caching) · [Access Control](/guide/access-control)

@@ -54,5 +54,5 @@ Pass a BatleHub token as a Bearer header on the VSIX request. Anonymous access w
 
 ## See also
 
-- [User Guide → VS Code Marketplace](/guide/user#registries)
+- [Using BatleHub](/use/) — tokens, publishing prerequisites, the CLI
 - [Registries overview](/registries/) · [Caching](/guide/caching) · [Access Control](/guide/access-control)

@@ -21,6 +21,36 @@
  * It talks to an already-running Chrome over CDP (`puppeteer-core`, so no
  * second browser is downloaded) — in this workspace, the `che-browser` sidecar.
  * BASE points at a `vitepress preview` of the build under test.
+ *
+ * ── What this gate cannot see ───────────────────────────────────────────────
+ *
+ * Both of these were found by asking why it had passed the config generator
+ * while that page carried a colour measuring 4.15:1. Neither is a bug in the
+ * script; both are limits worth stating, because a gate whose blind spots are
+ * undocumented gets trusted for things it never checked.
+ *
+ * 1. ONE STATE PER PAGE — closed, for the one page it applied to. Every page is
+ *    loaded once, in whatever state it opens in, and for prose that is the
+ *    whole page. `/guide/config-generator` is a form, and its preview only
+ *    emits the token classes the current form state produces: with the defaults
+ *    there are twelve `.cg-hl-bracket` spans and *zero* `.cg-hl-comment`, which
+ *    is where the failing colour was hiding. `SEEDS` below now drives that page
+ *    before measuring it, and asserts the classes it meant to produce actually
+ *    appeared. Verified by reintroducing the colour: the gate reports
+ *    `4.15:1 (#6e7781 on #faf3f3)` at 1440·light, where it used to report
+ *    nothing. Any *other* page whose appearance depends on interaction is still
+ *    measured in its opening state — the mechanism exists, the entry does not.
+ *
+ * 2. AXE SKIPS PUNCTUATION-ONLY TEXT. `color-contrast` returns no verdict at
+ *    all — not a pass, not an incomplete — for a node whose visible text has no
+ *    word characters. Proven by swapping one span's text on a live page and
+ *    changing nothing else: `"["` gets no verdict, `"section"` is judged at
+ *    4.74:1. A syntax highlighter is mostly brackets and equals signs, so a
+ *    large share of its tokens are invisible to the contrast rule.
+ *
+ * The ramp and material assertions below have neither limit — they walk every
+ * element with its own text, whatever that text is. It is specifically the
+ * contrast half that is axe's, and axe's rules are axe's.
  */
 import puppeteer from "puppeteer-core";
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -161,7 +191,64 @@ if (!routes.length) {
   console.error(`no built pages under ${DIST} — run \`vitepress build\` first`);
   process.exit(2);
 }
-console.log(`${routes.length} pages × ${PLANS.length} plans`);
+/* ────────────────────────────────────────────────────────────────────────────
+   Pages that have to be driven before they are worth measuring.
+
+   Limit 1 in the header above: a page is loaded once, in the state it opens in.
+   For every page on this site that is prose, that is the whole page. For the
+   config generator it is not — it is a form, and its output pane only emits the
+   token classes the current form state produces. With the defaults it renders
+   twelve `.cg-hl-bracket` spans and zero `.cg-hl-comment`, which is how a
+   colour measuring 4.15:1 sat in it behind a green gate.
+
+   So the generator gets driven first. Each seed returns the selectors it means
+   to have produced, and the gate fails if they are still absent — a seed that
+   silently stops working would restore the blind spot it exists to close,
+   which is the failure mode RFC 0003 named when six console pages reported
+   clean while none of them had rendered.
+   ──────────────────────────────────────────────────────────────────────────── */
+const SEEDS = {
+  "/guide/config-generator.html": {
+    /** Requests to abort before the page loads, and why. */
+    block: [
+      // `hash-wasm` is a dynamic import, so it is its own chunk and can be
+      // refused. The component's documented fallback then writes the two `#`
+      // lines that are the only path to `.cg-hl-comment` in the whole
+      // generator — and it is a path a real reader on an old browser gets.
+      /hash-wasm/,
+    ],
+    async drive(page) {
+      // A token, because `[[auth.tokens]]` only emits for a non-empty value.
+      const token = await page.$('input[placeholder="my-secret-token"]');
+      if (token) {
+        await token.click();
+        await token.type("gate-seed-token");
+      }
+      // Every checkbox, because the booleans in the output are all optional
+      // sections and flags. Ticking them by hand would encode this form's
+      // current shape into the gate; ticking all of them does not.
+      const boxes = await page.$$(".cg-root input[type=checkbox]");
+      for (const box of boxes) await box.click().catch(() => {});
+      // The preview is reactive; give Vue a frame to re-render it.
+      await page.evaluate(
+        () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+      );
+    },
+    /** What driving it was for. Absent → the seed has stopped working. */
+    expect: [".cg-hl-comment", ".cg-hl-bool", ".cg-hl-bracket", ".cg-hl-string"],
+  },
+};
+
+/** Built pages that are only a `meta refresh` to somewhere else. */
+const STUBS = new Set(
+  routes.filter((r) =>
+    /http-equiv="refresh"/i.test(readFileSync(join(DIST, r.slice(1)), "utf8")),
+  ),
+);
+console.log(
+  `${routes.length - STUBS.size} pages × ${PLANS.length} plans` +
+    (STUBS.size ? ` (${STUBS.size} redirect stubs skipped)` : ""),
+);
 
 /** Anything the page fetches from off-box. The Google Fonts import this RFC
  *  removed was invisible to `pnpm audit` and to the postmortem gate, because it
@@ -188,19 +275,64 @@ for (const plan of PLANS) {
   );
 
   for (const route of routes) {
-    await page.goto(BASE + route, { waitUntil: "networkidle0" });
-    const rendition = await page.evaluate(() =>
+    // Redirect stubs (RFC 0005-bis §6.5) carry a `meta refresh` and would be
+    // measured as whatever they redirect to — the same page, twice, under the
+    // wrong name. They are three lines of prose behind an instant redirect;
+    // their target is in the sweep on its own account.
+    if (STUBS.has(route)) continue;
+
+    // A seeded route gets its own page: request interception is per-page and
+    // has to be armed before the navigation it affects.
+    const seed = SEEDS[route];
+    const view = seed ? await browser.newPage() : page;
+    if (seed) {
+      await view.setViewport({ width: plan.width, height: plan.height });
+      await view.setRequestInterception(true);
+      view.on("request", (req) => {
+        const u = new URL(req.url());
+        if (u.protocol !== "data:" && u.hostname !== new URL(BASE).hostname)
+          OFFBOX.add(u.origin);
+        if (seed.block.some((p) => p.test(req.url()))) req.abort().catch(() => {});
+        else req.continue().catch(() => {});
+      });
+      await view.goto(BASE + "/", { waitUntil: "domcontentloaded" });
+      await view.evaluate(
+        (t) => localStorage.setItem("vitepress-theme-appearance", t),
+        plan.theme,
+      );
+    }
+
+    await view.goto(BASE + route, { waitUntil: "networkidle0" });
+
+    if (seed) {
+      await seed.drive(view);
+      const missing = await view.evaluate(
+        (sel) => sel.filter((s) => !document.querySelector(s)),
+        seed.expect,
+      );
+      if (missing.length) {
+        failures.push({
+          plan: plan.name,
+          route,
+          rule: "seed",
+          detail: `driving the page produced no ${missing.join(", ")} — the gate is measuring less than it thinks`,
+        });
+      }
+    }
+
+    const rendition = await view.evaluate(() =>
       document.documentElement.getAttribute("data-theme"),
     );
     if (rendition !== plan.theme)
       failures.push({ plan: plan.name, route, rule: "rendition", detail: rendition });
 
-    const findings = await page.evaluate(assertions, [...TEXT_RAMP], [...DISPLAY_RAMP]);
-    await page.evaluate(AXE_SOURCE);
-    const axe = await page.evaluate(
+    const findings = await view.evaluate(assertions, [...TEXT_RAMP], [...DISPLAY_RAMP]);
+    await view.evaluate(AXE_SOURCE);
+    const axe = await view.evaluate(
       async (tags) => (await window.axe.run(document, { runOnly: { type: "tag", values: tags } })).violations,
       TAGS,
     );
+    if (seed) await view.close();
 
     for (const f of findings) {
       if (SURVEY) {

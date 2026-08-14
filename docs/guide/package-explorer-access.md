@@ -1,45 +1,21 @@
-# Package Explorer — Access control
+---
+title: Package Explorer — access control — moved
+moved: /use/package-explorer-access
+head:
+  - - meta
+    - http-equiv: refresh
+      content: 0; url=/use/package-explorer-access
+---
 
-## Access control {#access-control}
+# This page moved
 
-### Proxy access vs. explore access {#access-separation}
+**Package Explorer — access control** now lives at [/use/package-explorer-access](/use/package-explorer-access).
 
-By default, any user who can proxy from a registry can also browse it in the Explorer. You can restrict browsing independently of proxying using `[registries.rbac.explore]`.
+It moved when the guide was split by audience: `guide/` is for the person who
+runs BatleHub, and `use/` is for the person whose package manager talks to it
+(RFC 0005-bis). Your browser should follow automatically.
 
-This is useful when:
-
-- You want CI/CD tokens to be able to download packages but not enumerate what's in the registry.
-- You have a sensitive internal registry that should be accessible by tooling but not visible in the UI.
-
-### Configuration {#rbac-config}
-
-Add an `explore` block inside `[registries.rbac]`:
-
-```toml
-[[registries]]
-name = "internal-cargo"
-type = "cargo"
-mode = "hybrid"
-upstreams = ["https://index.crates.io"]
-
-[registries.rbac]
-user  = ["read"]    # regular users can proxy/download
-admin = ["read"]    # admins can proxy/download
-
-[registries.rbac.explore]
-anonymous = false   # anonymous users cannot browse
-user      = false   # regular users cannot browse (proxy-only)
-admin     = true    # admins can browse
-```
-
-All three fields default to `true`, so omitting the `explore` block (or omitting individual fields) grants browse access to every role that already has proxy access.
-
-### Inheritance {#rbac-inheritance}
-
-Explore access is always capped by proxy access. A role that cannot proxy from a registry cannot explore it either, regardless of the `explore` flags:
-
-```txt
-effective explore access = proxy access AND explore permission
-```
-
-Group-level explore permissions are not separately configurable — group members inherit the explore access of their role (user or anonymous).
+<!-- Stub, written 2026-08-14. `git-pages` serves static files and cannot issue
+     a redirect, so this is the redirect. It is not permanent furniture: remove
+     it in the release after next, and `docs:links` will tell you if anything
+     still points here. -->

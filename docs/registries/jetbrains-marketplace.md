@@ -43,24 +43,83 @@ curl -fL -o plugin.zip \
 
 ## Publishing (local / hybrid)
 
-The registry must be in `local` or `hybrid` mode. The upload endpoint is marketplace-compatible: plain `curl`, JetBrains' `plugin-repository-rest-client`, and the Gradle `publishPlugin` task all work with a BatleHub Bearer token. The plugin id/version are read from `META-INF/plugin.xml` inside the archive:
+`jetbrains-marketplace` registries in `local`/`hybrid` mode accept the same multipart upload as plugins.jetbrains.com, so both plain `curl` and JetBrains' own publishing tooling work.
 
-```bash
-curl -X POST -H "Authorization: Bearer $BATLEHUB_TOKEN" \
-  -F "xmlId=com.example.myplugin" \
-  -F "file=@my-plugin-1.0.0.zip" \
-  "https://batlehub.example.com/proxy/<registry>/api/updates/upload"
+### Server configuration
+
+```toml
+[[registries]]
+type = "jetbrains-marketplace"
+name = "internal-plugins"
+mode = "local"
+
+[registries.rbac]
+anonymous = []
+user      = ["releases:read"]
+admin     = ["*"]
 ```
 
+### Upload (curl)
+
+The plugin id and version are read from `META-INF/plugin.xml` inside the archive (`.jar`, or `.zip` distribution with `lib/*.jar`). An `xmlId` form field, when present, must match the descriptor.
+
+```sh
+curl -X POST \
+  -H "Authorization: Bearer <your-token>" \
+  -F "xmlId=com.example.myplugin" \
+  -F "channel=" \
+  -F "file=@my-plugin-1.0.0.zip" \
+  "https://batlehub.example.com/proxy/internal-plugins/api/updates/upload"
+# → 201 {"id":"com.example.myplugin","pluginId":"com.example.myplugin","version":"1.0.0","channel":""}
+```
+
+Pass `-F "isHidden=true"` to publish a version hidden from listings (still downloadable by exact coordinate).
+
+### Upload (Gradle / plugin-repository-rest-client)
+
+Point the tooling's host at the proxy and use your BatleHub token:
+
 ```kotlin
-// Gradle (intellij-platform plugin)
+// build.gradle.kts (org.jetbrains.intellij / intellij-platform plugin)
 tasks.publishPlugin {
-    host.set("https://batlehub.example.com/proxy/<registry>")
+    host.set("https://batlehub.example.com/proxy/internal-plugins")
     token.set(providers.environmentVariable("BATLEHUB_TOKEN"))
 }
 ```
 
-Publish with `-F "isHidden=true"` to keep a version out of every listing while remaining downloadable by exact coordinate.
+### Install from the IDE
+
+Settings → Plugins → ⚙ → **Manage Plugin Repositories…** → add
+`https://batlehub.example.com/proxy/internal-plugins/updatePlugins.xml`.
+For a full marketplace replacement instead, set `idea.plugins.host=https://batlehub.example.com/proxy/internal-plugins` in Help → Edit Custom Properties….
+
+### Verify
+
+```sh
+# The custom-repo XML lists the published plugin
+curl -s -H "Authorization: Bearer <your-token>" \
+  "https://batlehub.example.com/proxy/internal-plugins/updatePlugins.xml"
+
+# Download it back
+curl -s -H "Authorization: Bearer <your-token>" \
+  "https://batlehub.example.com/proxy/internal-plugins/plugin/download?pluginId=com.example.myplugin&version=1.0.0" \
+  -o roundtrip.zip
+```
+
+### Endpoint reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/proxy/{registry}/api/updates/upload` | Publish a plugin archive (multipart) |
+| `GET` | `/proxy/{registry}/updatePlugins.xml` | Custom-repository XML (local content) |
+| `GET` | `/proxy/{registry}/plugins/list?pluginId={xmlId}` | Plugin-repository XML (all versions) |
+| `GET` | `/proxy/{registry}/plugin/download?pluginId=&version=[&channel=]` | Download a plugin archive |
+| `GET` | `/proxy/{registry}/pluginManager?action=download&id=&build=` | Newest build-compatible download |
+| `GET` | `/proxy/{registry}/api/searchPlugins?search=` | Search (`{plugins, total}` shape) |
+| `POST` | `/proxy/{registry}/api/search/updates/compatible` | Compatible updates for a build |
+| `GET` | `/proxy/{registry}/files/{xmlId}/{version}/{file}` | Artifact passthrough |
+
+---
 
 ## Authentication
 
@@ -73,5 +132,5 @@ Pass a BatleHub token as a Bearer header on upload requests. Read access is gove
 
 ## See also
 
-- [User Guide → JetBrains Marketplace](/guide/user#registries)
+- [Using BatleHub](/use/) — tokens, publishing prerequisites, the CLI
 - [Registries overview](/registries/) · [Caching](/guide/caching) · [Access Control](/guide/access-control)

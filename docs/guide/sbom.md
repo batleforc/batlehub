@@ -4,8 +4,6 @@ BatleHub automatically generates Software Bills of Materials (SBOMs) for every a
 
 SBOM support is driven by compliance requirements such as the EU Cyber Resilience Act and US Executive Order 14028.
 
-[[toc]]
-
 ---
 
 ## Supported formats {#formats}
@@ -154,7 +152,7 @@ The admin panel at **`/admin/sbom`** provides a point-and-click interface for th
 - **Format** — SPDX 2.3 or CycloneDX 1.4
 - **Download** button — triggers the export and saves the file directly to your browser
 
-Per-artifact SBOMs are accessible from the **[Package Explorer](/guide/package-explorer)** (`/explore`). Open any package's detail page, find a version row, and click the **SPDX** or **CDX** button. If no SBOM was generated for that version the button is replaced with a "No SBOM" label.
+Per-artifact SBOMs are accessible from the **[Package Explorer](/use/package-explorer)** (`/explore`). Open any package's detail page, find a version row, and click the **SPDX** or **CDX** button. If no SBOM was generated for that version the button is replaced with a "No SBOM" label.
 
 ---
 
