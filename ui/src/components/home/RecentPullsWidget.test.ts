@@ -88,3 +88,40 @@ describe("RecentPullsWidget", () => {
     expect(wrapper.findAll("li")).toHaveLength(2);
   });
 });
+
+/**
+ * RFC 0004-bis §5/A9. `/api/v1/me/downloads` returns successful downloads only,
+ * so `blocked: true` always means "something you already have was refused after
+ * you took it". Before the field existed the endpoint could not describe it and
+ * this widget rendered a blocked pull identically to any other — the §2.2
+ * argument on the one surface a non-admin opens.
+ */
+describe("RecentPullsWidget — blocked after the pull", () => {
+  it("marks a pull that is blocked now", async () => {
+    myDownloadsMock.mockReset().mockResolvedValue({
+      data: [pull({ blocked: true }), pull({ name: "serde", blocked: false })],
+    });
+    const wrapper = await mountWidget();
+    const marks = wrapper.findAll('[data-testid="resolution-matrix"]');
+    expect(marks).toHaveLength(1);
+    expect(wrapper.text()).toContain("Blocked");
+  });
+
+  /** The ordinary case must stay quiet: a mark on every row says nothing. */
+  it("says nothing when no pull is blocked", async () => {
+    myDownloadsMock.mockReset().mockResolvedValue({ data: [pull({ blocked: false })] });
+    const wrapper = await mountWidget();
+    expect(wrapper.findAll('[data-testid="resolution-matrix"]')).toHaveLength(0);
+  });
+
+  /**
+   * An older client, or a row the server could not classify, must not be
+   * asserted as clean — `undefined` is falsy and renders nothing, which is the
+   * honest default here because the endpoint is the only thing that knows.
+   */
+  it("treats an absent flag as unmarked rather than blocked", async () => {
+    myDownloadsMock.mockReset().mockResolvedValue({ data: [pull()] });
+    const wrapper = await mountWidget();
+    expect(wrapper.findAll('[data-testid="resolution-matrix"]')).toHaveLength(0);
+  });
+});

@@ -28,6 +28,7 @@ import { useAuth } from "@/composables/useAuth";
 import { formatRelative } from "@/lib/format";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Resolution } from "@/components/ui/resolution";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -92,6 +93,17 @@ const packageHref = (row: MyDownloadDto) =>
           {{ pull.name }}<span class="text-muted-foreground">@{{ pull.version }}</span>
         </RouterLink>
         <div class="flex items-center gap-2">
+          <!-- Retroactive, always: this endpoint returns successful downloads
+               only, so a blocked row means something you already have was
+               refused after you took it. Worth stating on the surface a
+               non-admin actually opens — the catalog carries the same fact, but
+               only if you go looking for the package (RFC 0004-bis §5/A9). -->
+          <Resolution
+            v-if="pull.blocked"
+            state="blocked"
+            :label="t('common.blocked')"
+            :title="t('recentPullsWidget.blockedSincePull')"
+          />
           <Badge variant="outline" class="text-xs">{{ pull.registry }}</Badge>
           <!-- `title` carries the absolute time; the relative one is what a
                reader is actually asking for at a glance. -->

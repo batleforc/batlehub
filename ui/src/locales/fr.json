@@ -501,7 +501,6 @@
     "preview": "Aperçu",
     "previous": "Précédent",
     "proxied": "Via proxy",
-    "proxy": "Proxy",
     "published": "Publié",
     "reason": "Motif",
     "reasonLabel": "Motif :",
@@ -518,6 +517,7 @@
     "save": "Enregistrer",
     "security": "Sécurité",
     "signature": "Signature",
+    "size": "Taille",
     "source": "Source",
     "state": "État",
     "status": "Statut",
@@ -644,6 +644,7 @@
   },
   "nav": {
     "admin": "Administration",
+    "aria": "Principale",
     "packages": "Paquets",
     "setup": "Configuration"
   },
@@ -658,21 +659,28 @@
   },
   "packageCatalog": {
     "allRegistries": "Tous les registres ({count})",
+    "allRegistriesTitle": "Tous les registres",
     "allRegistriesUnknown": "Tous les registres",
     "cachedPackagesTotal": "{count} paquet en cache au total | {count} paquets en cache au total",
+    "cachedSize": "{size} en cache",
     "clearSearch": "Effacer la recherche",
-    "hasBlocked": "Contient des versions bloquées",
+    "lastFetch": "Dernier appel",
     "loadFailed": "Échec du chargement des paquets.",
     "mostDownloaded": "Les plus téléchargés",
     "nameAZ": "Nom A–Z",
-    "notYetProxied": "Pas encore proxifié",
+    "noteDetails": "Détails",
+    "packageCount": "{count} paquets",
     "pointAToolAt": "Configurer un outil pour cette instance",
     "recentlyAccessed": "Accédés récemment",
     "registries": "Registres",
+    "registryCount": "{count} registres",
     "searchPackages": "Rechercher des paquets…",
     "searchPackages2": "Rechercher des paquets",
     "searchingUpstreamRegistries": "Recherche dans les registres upstream…",
-    "sortPackages": "Trier les paquets"
+    "sortPackages": "Trier les paquets",
+    "tableCaption": "{count} paquets · triés par {sort}",
+    "tableLabel": "Catalogue de paquets",
+    "upstreamRow": "amont"
   },
   "packageDetailPage": {
     "accessGate": "Contrôle d'accès",
@@ -682,6 +690,8 @@
     "downloadCyclonedx14": "Télécharger CycloneDX 1.4",
     "downloadSpdx23": "Télécharger SPDX 2.3",
     "downloadViaProxy": "Télécharger {version} via le proxy",
+    "firewallClear": "Sain",
+    "firewallYanked": "Retirée",
     "fixedIn": "Corrigé dans :",
     "knownVersions": "{count} version connue | {count} versions connues",
     "lastAccessed": "Dernier accès",
@@ -755,6 +765,7 @@
     "versions": "Versions"
   },
   "recentPullsWidget": {
+    "blockedSincePull": "Bloquée après votre récupération — cette version est désormais refusée.",
     "nothingYet": "Aucun téléchargement pour l'instant",
     "nothingYetBody": "Dès qu'un gestionnaire de paquets passera par cette instance avec votre jeton, ce qu'il récupère apparaîtra ici.",
     "title": "Téléchargements récents"
@@ -766,6 +777,17 @@
     "fillInTheFields": "Renseignez les champs ci-dessus pour voir les chemins du proxy.",
     "needsMoreFields": "champs manquants",
     "proxyPaths": "Chemins du proxy"
+  },
+  "resolution": {
+    "blocked": "Bloqué",
+    "cached": "En cache",
+    "held": "Retenu",
+    "noteBlocked": "Bloqué par un administrateur — refusé à tous tant que le blocage n'est pas levé.",
+    "noteHeld": "Fenêtre de quarantaine — cette version est encore dans son délai de rétention.",
+    "noteYanked": "Retiré par son propriétaire — résolvable uniquement par version exacte.",
+    "pending": "En cours",
+    "stale": "Périmé",
+    "yanked": "Retiré"
   },
   "setup": {
     "noToolMatch": "Aucun outil ne correspond à « {query} »."

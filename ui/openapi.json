@@ -3458,7 +3458,7 @@
           {
             "name": "sort",
             "in": "query",
-            "description": "Sort order: `downloads` (default), `name`, or `recent`.",
+            "description": "Sort order: `downloads` (default), `name`, `recent`, or `fetched`.\n\n`recent` is when a client last downloaded a package *from* this\ninstance; `fetched` is when this instance last pulled one *from\nupstream*. The catalog is ordered on the latter.",
             "required": false,
             "schema": {
               "type": [
@@ -12019,20 +12019,58 @@
           "version_count",
           "total_downloads",
           "source",
-          "has_blocked"
+          "has_blocked",
+          "has_yanked",
+          "state",
+          "cached_versions"
         ],
         "properties": {
+          "cached_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Bytes held across those versions. `null` means unknown, not zero: sizes\nwere not recorded for artifacts cached before migration 004.",
+            "minimum": 0
+          },
+          "cached_versions": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many versions this instance currently holds bytes for.",
+            "minimum": 0
+          },
           "has_blocked": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "An administrator has blocked at least one version."
+          },
+          "has_yanked": {
+            "type": "boolean",
+            "description": "An owner has yanked at least one locally published version.\n\nPreviously reported inside `has_blocked`, which conflated an operator's\nrefusal with an owner's withdrawal."
           },
           "last_accessed": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "When a client last downloaded this package from us (RFC 3339)."
+          },
+          "last_fetched_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When this instance last fetched any version from upstream (RFC 3339)."
           },
           "name": {
             "type": "string"
+          },
+          "newest_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The version most recently obtained, by `cached_at` for a proxied\nartifact or `published_at` for a local one. `null` when nothing is held."
           },
           "registry": {
             "type": "string"
@@ -12040,6 +12078,10 @@
           "source": {
             "type": "string",
             "description": "`\"proxied\"` | `\"local\"` | `\"both\"`"
+          },
+          "state": {
+            "type": "string",
+            "description": "This package's standing here, in DESIGN.md's resolution vocabulary:\n`\"cached\"` | `\"stale\"` | `\"held\"` | `\"pending\"` | `\"yanked\"` |\n`\"blocked\"`.\n\nDerived server-side rather than in the client because two of the six\nneed configuration the browser has no business holding — the registry's\nartifact TTL, and the release-age gate's window and bypass roles — and\nbecause `\"held\"` depends on *who is asking*."
           },
           "total_downloads": {
             "type": "integer",
@@ -12556,7 +12598,8 @@
           "registry",
           "name",
           "version",
-          "downloaded_at"
+          "downloaded_at",
+          "blocked"
         ],
         "properties": {
           "artifact": {
@@ -12565,6 +12608,10 @@
               "null"
             ],
             "description": "The sub-artifact within the coordinate, where the registry has one\n(a GitHub asset id, `tarball`, `vsix`, …)."
+          },
+          "blocked": {
+            "type": "boolean",
+            "description": "Whether this exact coordinate is blocked **now**.\n\nThe pull succeeded — this endpoint only returns successful downloads —\nso this is always retroactive: something you have was refused after you\ntook it. That is the fact worth surfacing, and it is the miniature of\nthe question RFC 0002 asks at org scale (\"which consumers pulled a\nflagged version\"), asked about yourself.\n\nWithout it the home page can list a pull it cannot describe, which is\nRFC 0004 §2.2's argument reappearing on the one surface a non-admin\nactually opens (RFC 0004-bis §5/A9)."
           },
           "downloaded_at": {
             "type": "string",
@@ -13625,6 +13672,13 @@
           },
           "type": {
             "type": "string"
+          },
+          "upstream": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The upstream this registry proxies (`https://registry.npmjs.org`), or\n`null` for a local-only registry that has none.\n\nThe design proof's catalog caption names it — *\"hybrid ·\nregistry.npmjs.org · 1,284 packages · 6.1 GB cached\"* — because \"which\nupstream is behind this\" is the first thing an operator asks of a\nregistry they did not configure themselves.\n\nVisible to anonymous callers on the same terms as `public_url` above,\nand for the same reason: this endpoint already filters by\n`accessible_registries_for`, so a caller only ever sees registries they\ncan already pull through — and pulling through one reveals the upstream\nanyway, in the artifacts it returns."
           }
         }
       },
@@ -13636,6 +13690,15 @@
           "total_downloads"
         ],
         "properties": {
+          "cached_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Bytes held for this registry. `null` means unknown, not zero: sizes were\nnot recorded for artifacts cached before migration 004.",
+            "minimum": 0
+          },
           "package_count": {
             "type": "integer",
             "format": "int64",

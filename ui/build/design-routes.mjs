@@ -160,22 +160,26 @@ const plans = [
 /**
  * Failures that are a known, *owned* disagreement rather than a regression.
  *
- * RFC 0004-bis §4.4 lands this gate knowing it goes red on one route, and says
- * so: `/packages` diverges from the design proof that was built to settle what
- * this world looks like. The proof spends the Display step (104px Silkscreen)
- * on the registry being viewed; the shipped page spends 24px on the word
- * "Packages". Closing that is a world-level decision — what the Display step is
- * for, and whether "resolution as state" ships as a component — and RFC
- * 0004-bis §3 declares re-cutting the page a non-goal. O3 owns it.
+ * **Currently empty, and that is a result rather than a default.**
  *
- * So the failure is a line in the output rather than a silence, and every other
- * route is genuinely green. A pinned route that *starts passing* fails the
- * gate: that means one side of O3 moved and the pin is now the stale claim.
+ * RFC 0004-bis §4.4 landed this gate knowing it went red on `/packages`: the
+ * proof spends the Display step (104px Silkscreen) on the registry being
+ * viewed, and the page spent 24px on the word "Packages". O3 owned it, and the
+ * pin held the disagreement visible instead of letting a green gate cover a
+ * page nobody was comparing to anything.
+ *
+ * O3 was then decided in favour of the page moving (§14.9): `--t-display` was
+ * mapped to a utility for the first time, the specimen replaced `PageHeader`
+ * on that route, and the plate and the resolution matrix were ported from the
+ * proof — which is runnable source, not a screenshot. `/packages` began
+ * passing, this gate failed *because it was still pinned*, and the pin came out
+ * in the commit that moved the page. That inverse assertion is the reason to
+ * keep the mechanism: a pin nobody removes is a claim that quietly goes stale.
+ *
+ * A pinned route that *starts passing* fails the gate, by design. Add an entry
+ * only with an owner named in the string.
  */
-const EXPECTED_FAIL = {
-  "/packages":
-    "RFC 0004-bis O3 — diverges from ui/design-proof/index.html (Display step, resolution-as-state)",
-};
+const EXPECTED_FAIL = {};
 
 /**
  * Coverage is asserted, not merely regenerated (RFC 0004 §10).
@@ -198,6 +202,12 @@ const EXPECTED_FAIL = {
 //
 // The number tracks real coverage, which is the point — it may only change in
 // the commit that changes the routes.
+//
+// It counts route/role pairs, NOT scans: every pair is measured at both
+// viewports, so the summary line at the end of a run reports twice this figure
+// (30 pairs → "60 route/role/viewport combination(s) scanned"). Two numbers 2×
+// apart in one run's output invite someone to "fix" the wrong one, so: this is
+// the coverage floor, that is the work done.
 const EXPECTED_COMBINATIONS = publicOnly ? PUBLIC_ROUTES.length : 30;
 const planned = plans.reduce((n, p) => n + p.routes.length, 0);
 if (planned < EXPECTED_COMBINATIONS) {

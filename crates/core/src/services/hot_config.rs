@@ -5,7 +5,7 @@ use std::time::Duration;
 use regex::Regex;
 use tokio::sync::RwLock;
 
-use crate::entities::Role;
+use crate::entities::{ResolutionPolicy, Role};
 use crate::ports::{BetaChannelPort, RegistryClient};
 use crate::rules::Rule;
 
@@ -136,6 +136,18 @@ pub struct HotConfig {
     pub integrity: HashMap<String, IntegrityPolicy>,
     /// Per-registry beta-channel gate ports.
     pub beta_channel: HashMap<String, Arc<dyn BetaChannelPort>>,
+    /// Per-registry inputs for naming a package's resolution state, as plain
+    /// data (Clone, cheap).
+    ///
+    /// The numbers here are already expressed twice over in `policies` —
+    /// `artifact_ttl_secs` in the cache config, `min_age`/`bypass_roles` inside
+    /// a `ReleaseAgeGateRule`. Neither is readable back out: the rule is a
+    /// `Box<dyn Rule>` with no accessors, by design. The catalog has to answer
+    /// "is this quarantined, is this past its TTL" without running the download
+    /// path, so the builder records the same values in a shape it can read.
+    /// They are built from the identical config fields in one place
+    /// (`server/src/builders.rs`) so the two cannot say different things.
+    pub resolution: HashMap<String, ResolutionPolicy>,
     /// Maximum artifact size when buffering from upstream; None = 500 MiB default.
     pub max_artifact_size_bytes: Option<u64>,
 }
@@ -154,6 +166,7 @@ impl Default for HotConfig {
             feature_flags: HashMap::new(),
             integrity: HashMap::new(),
             beta_channel: HashMap::new(),
+            resolution: HashMap::new(),
             max_artifact_size_bytes: None,
         }
     }

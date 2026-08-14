@@ -501,7 +501,6 @@
     "preview": "Preview",
     "previous": "Previous",
     "proxied": "Proxied",
-    "proxy": "Proxy",
     "published": "Published",
     "reason": "Reason",
     "reasonLabel": "Reason:",
@@ -518,6 +517,7 @@
     "save": "Save",
     "security": "Security",
     "signature": "Signature",
+    "size": "Size",
     "source": "Source",
     "state": "State",
     "status": "Status",
@@ -644,6 +644,7 @@
   },
   "nav": {
     "admin": "Admin",
+    "aria": "Primary",
     "packages": "Packages",
     "setup": "Setup"
   },
@@ -658,21 +659,28 @@
   },
   "packageCatalog": {
     "allRegistries": "All registries ({count})",
+    "allRegistriesTitle": "All registries",
     "allRegistriesUnknown": "All registries",
     "cachedPackagesTotal": "{count} cached package total | {count} cached packages total",
+    "cachedSize": "{size} cached",
     "clearSearch": "Clear search",
-    "hasBlocked": "Has blocked",
+    "lastFetch": "Last fetch",
     "loadFailed": "Failed to load packages.",
     "mostDownloaded": "Most Downloaded",
     "nameAZ": "Name A–Z",
-    "notYetProxied": "Not Yet Proxied",
+    "noteDetails": "Details",
+    "packageCount": "{count} packages",
     "pointAToolAt": "Point a tool at this instance",
     "recentlyAccessed": "Recently Accessed",
     "registries": "Registries",
+    "registryCount": "{count} registries",
     "searchPackages": "Search packages…",
     "searchPackages2": "Search packages",
     "searchingUpstreamRegistries": "Searching upstream registries…",
-    "sortPackages": "Sort packages"
+    "sortPackages": "Sort packages",
+    "tableCaption": "{count} packages · sorted by {sort}",
+    "tableLabel": "Package catalog",
+    "upstreamRow": "upstream"
   },
   "packageDetailPage": {
     "accessGate": "Access Gate",
@@ -682,6 +690,8 @@
     "downloadCyclonedx14": "Download CycloneDX 1.4",
     "downloadSpdx23": "Download SPDX 2.3",
     "downloadViaProxy": "Download {version} via proxy",
+    "firewallClear": "Clear",
+    "firewallYanked": "Yanked",
     "fixedIn": "Fixed in:",
     "knownVersions": "{count} known version | {count} known versions",
     "lastAccessed": "Last Accessed",
@@ -755,6 +765,7 @@
     "versions": "Versions"
   },
   "recentPullsWidget": {
+    "blockedSincePull": "Blocked after you pulled it — this version is now refused.",
     "nothingYet": "Nothing pulled yet",
     "nothingYetBody": "Once a package manager resolves through this instance with your token, what it fetched appears here.",
     "title": "Recently pulled"
@@ -766,6 +777,17 @@
     "fillInTheFields": "Fill in the fields above to see the proxy paths.",
     "needsMoreFields": "needs more fields",
     "proxyPaths": "Proxy paths"
+  },
+  "resolution": {
+    "blocked": "Blocked",
+    "cached": "Cached",
+    "held": "Held",
+    "noteBlocked": "Blocked by an administrator — refused to every caller until the block is lifted.",
+    "noteHeld": "Release-age gate — this release is still inside its quarantine window.",
+    "noteYanked": "Yanked by its owner — resolvable only by exact version.",
+    "pending": "Pending",
+    "stale": "Stale",
+    "yanked": "Yanked"
   },
   "setup": {
     "noToolMatch": "No tool matches “{query}”."

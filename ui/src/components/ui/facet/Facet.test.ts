@@ -38,9 +38,37 @@ describe("Facet", () => {
   it("carries selection on ink and a lit edge, not on fill alone", () => {
     const w = mount(Facet, { props: { modelValue: "npm1", options, label: "Registries" } });
     const selected = w.findAll("button")[0];
-    expect(selected.classes()).toContain("border-l-primary");
+    // The edge rotates with the layout — bottom in the scrolling row below
+    // `md`, left in the rail above it — so both are asserted. A regression that
+    // dropped either one would leave that breakpoint carrying selection on the
+    // undependable fill alone, which is the failure this test exists for.
+    expect(selected.classes()).toContain("border-b-primary");
+    expect(selected.classes()).toContain("md:border-l-primary");
     expect(selected.classes()).toContain("text-foreground");
     expect(selected.classes()).toContain("font-semibold");
+  });
+
+  /**
+   * The bay was `hidden md:block` on the page, so a phone had no way to change
+   * registry at all: the filter existed and its only control did not. The proof
+   * turns it into a horizontal scroller instead of hiding it
+   * (`@media (max-width:900px){ .bay ul{display:flex;overflow-x:auto} }`).
+   */
+  it("lays the options out as a scrolling row below md and a rail above it", () => {
+    const w = mount(Facet, { props: { modelValue: null, options, label: "Registries" } });
+    const list = w.find("ul").classes();
+    expect(list).toContain("flex");
+    expect(list).toContain("overflow-x-auto");
+    expect(list).toContain("md:block");
+  });
+
+  /** An unselected cell must not be wearing a lit edge in either orientation. */
+  it("leaves unselected options unlit", () => {
+    const w = mount(Facet, { props: { modelValue: "npm1", options, label: "Registries" } });
+    const other = w.findAll("button")[1];
+    expect(other.classes()).toContain("border-b-transparent");
+    expect(other.classes()).toContain("md:border-l-transparent");
+    expect(other.classes()).not.toContain("border-b-primary");
   });
 
   it("labels the group and formats counts for the reader's locale", () => {

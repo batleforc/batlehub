@@ -21,9 +21,20 @@ onMounted(async () => {
 </script>
 
 <template>
-  <footer class="border-t border-border/60 mt-8">
+  <footer class="border-t border-rule-soft mt-8">
+    <!-- The masthead's twin: both are ruled bars framing the sheet, so they
+         take the same edge. Left centred while the masthead went full-bleed,
+         the two disagreed by ~260px at 1920 — the frame's top rail flush to the
+         window and its bottom rail inset. The hairline is `--rule-soft`, the
+         separator token, rather than `--border` (`--rule-strong`) at an
+         opacity: the same substitution the masthead's rule was making.
+
+         The comment sits inside the element on purpose: a template whose first
+         node is a comment makes the component multi-root, and `$el` is then a
+         fragment anchor rather than the <footer> — which is exactly how the
+         contentinfo-landmark test caught this. -->
     <div
-      class="container mx-auto flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-xs font-mono text-muted-foreground"
+      class="flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-xs text-muted-foreground md:px-6"
     >
       <span v-if="appVersion">{{ t("appFooter.version", { version: appVersion }) }}</span>
       <span v-else />

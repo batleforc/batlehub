@@ -15,7 +15,7 @@ use batlehub_config::schema::{
     QuotaEnforcement as ConfigQuotaEnforcement, RegistryConfig, RuleConfig, UpstreamAuthConfig,
 };
 use batlehub_core::{
-    entities::{RegistryKind, Role, Severity},
+    entities::{RegistryKind, ReleaseAgeGateParams, ResolutionPolicy, Role, Severity},
     ports::{SbomRepository, VulnerabilityRepository},
     rules::{
         BlockListRule, CveGateRule, DenyLatestRule, LicenseGateRule, RbacRule, ReleaseAgeGateRule,
@@ -324,6 +324,38 @@ pub(super) fn build_policy(
         serve_stale_metadata: reg.cache.serve_stale,
         artifact_ttl: reg.cache.artifact_ttl_secs.map(Duration::from_secs),
         rules,
+    })
+}
+
+/// The same two settings `build_registry_policy` just consumed, kept as plain
+/// data so the catalog can read them back.
+///
+/// `RegistryPolicy` puts `artifact_ttl` behind a field the web layer does not
+/// hold, and folds the release-age gate into a `Box<dyn Rule>` that exposes
+/// nothing. Both are right for the download path — a rule should be opaque to
+/// its caller — and both make it impossible to answer "would this be
+/// quarantined, is this past its TTL" for a *listing*, which never runs a rule.
+///
+/// Deliberately built here, in the same function body's neighbourhood as the
+/// rule itself and off the identical `RegistryConfig`: the failure mode this
+/// shape invites is the two drifting, and the defence is that changing
+/// `min_age_secs` or `bypass_roles` means editing one config block that both
+/// read. If a third caller ever needs these, it takes them from here rather
+/// than re-deriving them.
+pub(super) fn build_resolution_policy(reg: &RegistryConfig) -> anyhow::Result<ResolutionPolicy> {
+    let mut release_age = None;
+    for rule_cfg in &reg.rules {
+        if let RuleConfig::ReleaseAgeGate(cfg) = rule_cfg {
+            release_age = Some(ReleaseAgeGateParams {
+                min_age: Duration::from_secs(cfg.min_age_secs),
+                bypass_roles: parse_bypass_roles(&cfg.bypass_roles)?,
+                deny_missing_timestamp: cfg.deny_missing_timestamp,
+            });
+        }
+    }
+    Ok(ResolutionPolicy {
+        artifact_ttl: reg.cache.artifact_ttl_secs.map(Duration::from_secs),
+        release_age,
     })
 }
 

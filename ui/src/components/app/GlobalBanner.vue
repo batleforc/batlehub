@@ -6,10 +6,14 @@ const { banner } = useBanner();
 </script>
 
 <template>
+  <!-- Ruled below, not above: this is now the topmost strip on the page, so the
+       hairline it needs is the one separating it from the masthead underneath.
+       Edge padding matches the bars it sits with (`px-4 md:px-6`), so the three
+       full-bleed rows of the shell share one margin. -->
   <div
     v-if="banner"
     :class="[
-      'border-t px-4 py-1.5 flex items-center gap-2 text-sm font-mono font-medium',
+      'border-b px-4 md:px-6 py-1.5 flex items-center gap-2 text-sm font-medium',
       banner.level === 'error'
         ? 'border-destructive/40 text-destructive'
         : banner.level === 'warning'

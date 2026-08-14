@@ -108,7 +108,17 @@ const name = computed(() => identity.value?.user_id ?? "");
 
       <div class="flex flex-wrap gap-2">
         <Button as-child size="sm">
-          <RouterLink to="/explore">{{ t("homePage.browsePackages") }}</RouterLink>
+          <!-- `/packages`, not `/explore`. `/explore` is a legacy address kept
+               alive by a `beforeEach` guard for old bookmarks and links in
+               `docs/`; it is not a *route*, so `RouterLink` could not resolve
+               it and logged `[VUE_ROUTER_R0004] No match found` on every render
+               of this page. The click still worked — the guard caught it — which
+               is why a broken link sat on the home page looking fine.
+
+               It is also the rule `navigation.ts` states for the nav bar, one
+               level in: nothing the console links to should land on a redirect.
+               Incoming legacy URLs are what the guard is for. -->
+          <RouterLink to="/packages">{{ t("homePage.browsePackages") }}</RouterLink>
         </Button>
         <Button as-child size="sm" variant="outline">
           <RouterLink to="/setup">{{ t("homePage.pointAToolAt") }}</RouterLink>

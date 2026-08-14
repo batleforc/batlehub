@@ -20,6 +20,21 @@ pub struct RegistryInfo {
     /// Guide while hiding a name that is in public DNS anyway.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_url: Option<String>,
+    /// The upstream this registry proxies (`https://registry.npmjs.org`), or
+    /// `null` for a local-only registry that has none.
+    ///
+    /// The design proof's catalog caption names it — *"hybrid ·
+    /// registry.npmjs.org · 1,284 packages · 6.1 GB cached"* — because "which
+    /// upstream is behind this" is the first thing an operator asks of a
+    /// registry they did not configure themselves.
+    ///
+    /// Visible to anonymous callers on the same terms as `public_url` above,
+    /// and for the same reason: this endpoint already filters by
+    /// `accessible_registries_for`, so a caller only ever sees registries they
+    /// can already pull through — and pulling through one reveals the upstream
+    /// anyway, in the artifacts it returns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
 }
 
 /// List configured registries visible to the current user.
@@ -37,6 +52,7 @@ pub async fn list_registries(
     map: web::Data<RegistryMap>,
     modes: web::Data<RegistryModeMap>,
     hosts: Option<web::Data<RegistryHostMap>>,
+    upstreams: Option<web::Data<crate::UpstreamMap>>,
     access: web::Data<crate::AccessConfigLock>,
     identity: AuthIdentity,
 ) -> impl Responder {
@@ -48,6 +64,7 @@ pub async fn list_registries(
         .map(|(name, registry_type)| RegistryInfo {
             mode: modes.get(&name).as_str().to_owned(),
             public_url: hosts.as_ref().and_then(|h| h.public_url_for(&name)),
+            upstream: upstreams.as_ref().and_then(|u| u.upstream_for(&name)),
             name,
             registry_type,
         })

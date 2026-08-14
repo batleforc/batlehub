@@ -530,6 +530,7 @@ fn sample_entry() -> ExploreEntry {
         last_accessed: None,
         source: PackageSource::Proxied,
         has_blocked: false,
+        ..Default::default()
     }
 }
 
@@ -538,6 +539,7 @@ fn sample_stat() -> RegistryStat {
         registry: "npm".into(),
         package_count: 1,
         total_downloads: 10,
+        ..Default::default()
     }
 }
 

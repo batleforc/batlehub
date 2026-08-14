@@ -128,6 +128,10 @@ pub(super) fn sort_order_for(sort_by: &ExploreSortBy) -> &'static str {
         ExploreSortBy::Name => "package_name ASC",
         ExploreSortBy::Downloads => "total_downloads DESC NULLS LAST",
         ExploreSortBy::Recent => "last_accessed DESC NULLS LAST",
+        // The proof's catalog ordering: what this instance most recently
+        // fetched from upstream, which is a different question from `Recent`
+        // (what a client most recently downloaded from us).
+        ExploreSortBy::Fetched => "last_fetched_at DESC NULLS LAST",
     }
 }
 
@@ -144,6 +148,10 @@ pub(super) fn map_explore_entry(r: PgRow) -> ExploreEntry {
     let has_local: bool = r.get("has_local");
     let source = determine_package_source(has_proxied, has_local);
     let downloads: i64 = r.get("total_downloads");
+    // Postgres has no unsigned integers, so every count arrives as i64. A
+    // negative one is impossible for COUNT/SUM, but `as u64` on a negative
+    // would wrap to something enormous rather than fail, so the sizes clamp.
+    let cached_bytes: Option<i64> = r.get("cached_bytes");
     ExploreEntry {
         registry: r.get("registry"),
         name: r.get("package_name"),
@@ -152,6 +160,12 @@ pub(super) fn map_explore_entry(r: PgRow) -> ExploreEntry {
         last_accessed: r.get("last_accessed"),
         source,
         has_blocked: r.get("has_blocked"),
+        has_yanked: r.get("has_yanked"),
+        cached_versions: r.get::<i64, _>("cached_versions").max(0) as u64,
+        cached_bytes: cached_bytes.map(|b| b.max(0) as u64),
+        last_fetched_at: r.get("last_fetched_at"),
+        newest_version: r.get("newest_version"),
+        newest_published_at: r.get("newest_published_at"),
     }
 }
 

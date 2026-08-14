@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use actix_web::{get, web, HttpResponse, Responder};
@@ -5,7 +6,10 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use batlehub_core::{entities::PackageId, services::AdminService};
+use batlehub_core::{
+    entities::{PackageFilter, PackageId},
+    services::AdminService,
+};
 
 use super::require_user_id;
 use crate::{error::AppError, extractors::AuthIdentity};
@@ -16,6 +20,11 @@ const DEFAULT_WINDOW_DAYS: i64 = 30;
 const MAX_WINDOW_DAYS: i64 = 365;
 const DEFAULT_LIMIT: u64 = 50;
 const MAX_LIMIT: u64 = 200;
+/// Ceiling on the blocked-package scan used to mark rows. An instance with more
+/// blocked coordinates than this marks the overflow as unblocked rather than
+/// slowing the home page — stated here because a silent cap is the failure this
+/// RFC keeps finding.
+const MAX_BLOCKED_SCAN: u64 = 1000;
 
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct MyDownloadsQuery {
@@ -36,6 +45,18 @@ pub struct MyDownloadDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub artifact: Option<String>,
     pub downloaded_at: DateTime<Utc>,
+    /// Whether this exact coordinate is blocked **now**.
+    ///
+    /// The pull succeeded — this endpoint only returns successful downloads —
+    /// so this is always retroactive: something you have was refused after you
+    /// took it. That is the fact worth surfacing, and it is the miniature of
+    /// the question RFC 0002 asks at org scale ("which consumers pulled a
+    /// flagged version"), asked about yourself.
+    ///
+    /// Without it the home page can list a pull it cannot describe, which is
+    /// RFC 0004 §2.2's argument reappearing on the one surface a non-admin
+    /// actually opens (RFC 0004-bis §5/A9).
+    pub blocked: bool,
 }
 
 /// What the caller has downloaded, most recent first.
@@ -77,21 +98,49 @@ pub async fn my_downloads(
         .await
         .map_err(AppError::from)?;
 
+    // One query for every blocked coordinate, not one per row: the caller's
+    // recent pulls are capped at 200 and blocked packages are typically a
+    // handful, so a set lookup beats N round trips by a wide margin. A failure
+    // here reports "not blocked" rather than failing the page — the widget's
+    // job is to list your pulls, and losing the block flag is a smaller harm
+    // than losing the list.
+    let blocked: HashSet<String> = admin_svc
+        .list_packages(PackageFilter {
+            registry: None,
+            registries: vec![],
+            name_exact: None,
+            name_contains: None,
+            blocked_only: true,
+            limit: MAX_BLOCKED_SCAN,
+            offset: 0,
+        })
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| p.package_id.cache_key())
+        .collect();
+
     let rows: Vec<MyDownloadDto> = events
         .into_iter()
         .filter_map(|e| {
+            let package_id = e.package_id?;
+            // Keyed on the full coordinate including the artifact, so blocking
+            // one asset of a path-addressed registry does not mark every other
+            // file under the same synthetic package name.
+            let is_blocked = blocked.contains(&package_id.cache_key());
             let PackageId {
                 registry,
                 name,
                 version,
                 artifact,
-            } = e.package_id?;
+            } = package_id;
             Some(MyDownloadDto {
                 registry,
                 name,
                 version,
                 artifact,
                 downloaded_at: e.timestamp,
+                blocked: is_blocked,
             })
         })
         .collect();

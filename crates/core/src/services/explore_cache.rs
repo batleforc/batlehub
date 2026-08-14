@@ -156,6 +156,7 @@ pub fn packages_cache_key(filter: &ExploreFilter) -> String {
         ExploreSortBy::Downloads => "dl",
         ExploreSortBy::Name => "name",
         ExploreSortBy::Recent => "recent",
+        ExploreSortBy::Fetched => "fetched",
     };
     format!(
         "exp:pkg:{}:{}:{}:{}:{}:{}:{}",
@@ -228,6 +229,7 @@ mod tests {
             last_accessed: None,
             source: PackageSource::Proxied,
             has_blocked: false,
+            ..Default::default()
         }]
     }
 
@@ -236,6 +238,7 @@ mod tests {
             registry: "npm".into(),
             package_count: 5,
             total_downloads: 200,
+            ..Default::default()
         }]
     }
 

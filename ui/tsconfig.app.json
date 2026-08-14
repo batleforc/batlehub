@@ -32,6 +32,7 @@
   ],
   "exclude": [
     "src/design/tokens.test.ts",
-    "src/test/fixtures.test.ts"
+    "src/test/fixtures.test.ts",
+    "src/test/link-targets.test.ts"
   ]
 }

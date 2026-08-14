@@ -36,17 +36,19 @@ function handleLogout() {
 <template>
   <template v-if="isAuthenticated">
     <DropdownMenuRoot>
+      <!-- The bar's grammar (AppNav, the design proof's `.masthead`): a ruled
+           cell, meta type, state on ink and rule weight. The tinted hover it
+           replaces rode on `bg-accent`, which resolves to `--ground-raised` at
+           1.06:1 — a fill nobody can see is not a hover state. -->
       <DropdownMenuTrigger
-        class="hidden sm:flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-sm hover:bg-accent/60 transition-colors outline-none"
+        class="hidden sm:flex items-center gap-2 border border-border px-2 py-1 text-xs text-muted-foreground transition-colors outline-none hover:border-muted-foreground hover:text-foreground"
       >
         <div
-          class="h-7 w-7 rounded-sm bg-primary text-primary-foreground flex items-center justify-center text-xs font-mono font-bold shrink-0"
+          class="h-6 w-6 bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold shrink-0"
         >
           {{ userInitials }}
         </div>
-        <span
-          class="text-muted-foreground hidden lg:inline max-w-[10rem] truncate font-mono text-xs"
-        >
+        <span class="hidden lg:inline max-w-[10rem] truncate tracking-[0.1em]">
           {{ identity?.user_id }}
         </span>
         <Badge v-if="isAdmin" variant="copper" class="text-xs">admin</Badge>
@@ -132,10 +134,12 @@ function handleLogout() {
       </DropdownMenuContent>
     </DropdownMenuRoot>
   </template>
+  <!-- The one action an anonymous viewer has, cut as the bar's `.ctl` so it
+       reads as a control beside Docs rather than as loose prose in a ruled bar. -->
   <RouterLink
     v-else
     to="/login"
-    class="font-mono text-sm text-muted-foreground hover:text-primary transition-colors"
+    class="shrink-0 whitespace-nowrap border border-border px-3 py-2 text-xs uppercase tracking-[0.1em] text-muted-foreground transition-colors hover:border-muted-foreground hover:text-foreground"
     >{{ t("userMenu.signIn") }}</RouterLink
   >
 </template>

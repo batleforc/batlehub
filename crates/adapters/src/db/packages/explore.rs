@@ -180,6 +180,10 @@ pub(super) async fn explore_packages_impl(
                 ps.package_name,
                 COUNT(DISTINCT ps.package_version)::bigint AS version_count,
                 BOOL_OR(ps.status = 'blocked') AS has_blocked,
+                -- Only a local publish can be yanked; a proxied artifact is
+                -- withdrawn upstream, which this instance learns about as an
+                -- absent version rather than as a flag.
+                false AS has_yanked,
                 true AS has_proxied,
                 false AS has_local
             FROM package_statuses ps
@@ -193,7 +197,12 @@ pub(super) async fn explore_packages_impl(
                 lp.registry,
                 lp.name AS package_name,
                 COUNT(DISTINCT lp.version)::bigint AS version_count,
-                BOOL_OR(lp.yanked) AS has_blocked,
+                -- A yank used to be reported in this column, which made an
+                -- owner withdrawing a version indistinguishable from an
+                -- operator blocking one. Two different facts, two different
+                -- remedies; they now travel separately.
+                false AS has_blocked,
+                BOOL_OR(lp.yanked) AS has_yanked,
                 false AS has_proxied,
                 true AS has_local
             FROM local_packages lp
@@ -215,6 +224,7 @@ pub(super) async fn explore_packages_impl(
                 package_name,
                 SUM(version_count)::bigint AS version_count,
                 BOOL_OR(has_blocked) AS has_blocked,
+                BOOL_OR(has_yanked) AS has_yanked,
                 BOOL_OR(has_proxied) AS has_proxied,
                 BOOL_OR(has_local) AS has_local
             FROM combined
@@ -225,16 +235,64 @@ pub(super) async fn explore_packages_impl(
             agg.package_name,
             agg.version_count,
             agg.has_blocked,
+            agg.has_yanked,
             agg.has_proxied,
             agg.has_local,
             COALESCE(ae.total_downloads, 0)::bigint AS total_downloads,
-            ae.last_accessed
+            ae.last_accessed,
+            COALESCE(cm.cached_versions, 0)::bigint AS cached_versions,
+            cm.cached_bytes,
+            cm.last_fetched_at,
+            nv.newest_version,
+            nv.newest_published_at
         FROM agg
         LEFT JOIN LATERAL (
             SELECT COUNT(*)::bigint AS total_downloads, MAX(created_at) AS last_accessed
             FROM access_events
             WHERE registry = agg.registry AND package_name = agg.package_name
         ) ae ON true
+        -- What this instance actually holds. `agg` is built from
+        -- `package_statuses` and `local_packages`, both of which record that a
+        -- version is *known*; only `artifact_cache_meta` records that its bytes
+        -- are here. The difference between those two is exactly the Pending
+        -- state, so it needs its own join rather than an inference from
+        -- `version_count`.
+        --
+        -- SUM over a column that is NULL for every row is NULL, not 0, which is
+        -- what carries "size unknown" through to the DTO: artifacts cached
+        -- before 004 added `size_bytes` have no number, and reporting 0 for
+        -- them would claim we hold empty files.
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*)::bigint AS cached_versions,
+                   SUM(acm.size_bytes)::bigint AS cached_bytes,
+                   MAX(acm.cached_at) AS last_fetched_at
+            FROM artifact_cache_meta acm
+            WHERE acm.registry = agg.registry AND acm.package_name = agg.package_name
+        ) cm ON true
+        -- The version we most recently obtained, from either source, ordered by
+        -- the timestamp that means "we got it": `cached_at` for a proxied
+        -- artifact, `published_at` for a local one. NOT `MAX(version)` — version
+        -- strings sort lexically, where '1.10.0' precedes '1.9.0', and no
+        -- semantic ordering is available in SQL here.
+        --
+        -- `published_at` is carried out alongside because the release-age gate
+        -- needs it for this specific version; it is NULL for proxied artifacts,
+        -- which is a case the gate already defines behaviour for.
+        LEFT JOIN LATERAL (
+            SELECT v.version AS newest_version, v.published_at AS newest_published_at
+            FROM (
+                SELECT acm.version, NULL::timestamptz AS published_at, acm.cached_at AS obtained_at
+                FROM artifact_cache_meta acm
+                WHERE acm.registry = agg.registry AND acm.package_name = agg.package_name
+                UNION ALL
+                SELECT lp.version, lp.published_at, lp.published_at AS obtained_at
+                FROM local_packages lp
+                WHERE lp.registry = agg.registry AND lp.name = agg.package_name
+                  AND lp.status = 'published'
+            ) v
+            ORDER BY v.obtained_at DESC NULLS LAST
+            LIMIT 1
+        ) nv ON true
         ORDER BY {order}
         LIMIT $7 OFFSET $8
         "#
@@ -342,13 +400,25 @@ pub(super) async fn registry_explore_stats_impl(
             FROM access_events
             WHERE ($1::text[] IS NULL OR registry = ANY($1::text[]))
             GROUP BY registry
+        ),
+        -- SUM over all-NULL sizes is NULL, which is how "we hold artifacts but
+        -- recorded no sizes for them" stays distinguishable from "we hold
+        -- nothing". A registry with no cached artifacts at all has no row here
+        -- and the LEFT JOIN leaves it NULL too — both are honestly unknown.
+        cached_sizes AS (
+            SELECT registry, SUM(size_bytes)::bigint AS cached_bytes
+            FROM artifact_cache_meta
+            WHERE ($1::text[] IS NULL OR registry = ANY($1::text[]))
+            GROUP BY registry
         )
         SELECT
             pc.registry,
             pc.package_count,
-            COALESCE(dc.total_downloads, 0) AS total_downloads
+            COALESCE(dc.total_downloads, 0) AS total_downloads,
+            cs.cached_bytes
         FROM pkg_counts pc
         LEFT JOIN download_counts dc ON dc.registry = pc.registry
+        LEFT JOIN cached_sizes cs ON cs.registry = pc.registry
         ORDER BY pc.package_count DESC
         "#,
     )
@@ -362,10 +432,12 @@ pub(super) async fn registry_explore_stats_impl(
         .map(|r| {
             let pkg_count: i64 = r.get("package_count");
             let downloads: i64 = r.get("total_downloads");
+            let cached_bytes: Option<i64> = r.get("cached_bytes");
             RegistryStat {
                 registry: r.get("registry"),
                 package_count: pkg_count as u64,
                 total_downloads: downloads as u64,
+                cached_bytes: cached_bytes.map(|b| b.max(0) as u64),
             }
         })
         .collect();

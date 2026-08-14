@@ -27,8 +27,9 @@ import { useAuthFetch } from "@/composables/useAuthFetch";
 import { useApi, extractMessage } from "@/composables/useApi";
 import { API_BASE_URL } from "@/config";
 import { formatCount } from "@/lib/format";
-import { firewallVariant, severityVariant } from "@/lib/badge-variants";
+import { severityVariant } from "@/lib/badge-variants";
 import { Badge } from "@/components/ui/badge";
+import { Resolution, type ResolutionState } from "@/components/ui/resolution";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -123,10 +124,28 @@ function goBack() {
   });
 }
 
+/**
+ * These three returned English literals shipped past a green i18n audit: §4.1
+ * taught the scanner about component props and `ref` assignments, and a string
+ * literal returned from a function is neither. The rule it was supposed to learn
+ * was "human-readable text is text that reaches a human, wherever it is
+ * written", so this is the same class again, one position over.
+ */
 function firewallLabel(fw: FirewallDto) {
-  if (fw.status === "blocked") return "Blocked";
-  if (fw.status === "yanked") return "Yanked";
-  return "Clear";
+  if (fw.status === "blocked") return t("common.blocked");
+  if (fw.status === "yanked") return t("packageDetailPage.firewallYanked");
+  return t("packageDetailPage.firewallClear");
+}
+
+/**
+ * Firewall status in DESIGN.md's resolution vocabulary. Three of the six states
+ * map one-to-one: a clear version is held and verified, and blocked/yanked are
+ * named identically in both.
+ */
+function firewallResolution(fw: FirewallDto): ResolutionState {
+  if (fw.status === "blocked") return "blocked";
+  if (fw.status === "yanked") return "yanked";
+  return "cached";
 }
 
 function formatDate(iso: string | null) {
@@ -383,9 +402,15 @@ const {
                       <strong>At:</strong> {{ formatDate((ver.firewall as any).blocked_at) }}
                     </span>
                   </span>
-                  <Badge v-else :variant="firewallVariant(ver.firewall?.status)" class="text-xs">
-                    {{ firewallLabel(ver.firewall) }}
-                  </Badge>
+                  <!-- Resolution as state (DESIGN.md; RFC 0004-bis §7 item 7).
+                       The blocked branch above keeps its crimson badge and its
+                       hover note: a refusal has to state its rule, which is the
+                       denial note's job, not this mark's. -->
+                  <Resolution
+                    v-else
+                    :state="firewallResolution(ver.firewall)"
+                    :label="firewallLabel(ver.firewall)"
+                  />
                 </TableCell>
                 <TableCell class="text-right text-sm text-muted-foreground">
                   {{ formatCount(ver.download_count) }}

@@ -206,6 +206,8 @@ pub(super) fn build_hot_bundle(
     let mut reg_type_map: HashMap<String, String> = HashMap::new();
     let mut reg_mode_map: HashMap<String, RegistryMode> = HashMap::new();
     let mut upstream_map: HashMap<String, String> = HashMap::new();
+    let mut reg_resolution: HashMap<String, batlehub_core::entities::ResolutionPolicy> =
+        HashMap::new();
 
     for reg in &cfg.registries {
         let client = crate::builders::build_registry_client(reg, cfg.proxy.as_ref())
@@ -219,6 +221,13 @@ pub(super) fn build_hot_bundle(
         )
         .with_context(|| format!("building policy for '{}'", reg.name))?;
         reg_policies.insert(reg.name.clone(), Arc::new(policy));
+        // Built from the same `reg` in the same pass as the policy above, so a
+        // registry can never end up with a rule the catalog cannot see.
+        reg_resolution.insert(
+            reg.name.clone(),
+            crate::builders::build_resolution_policy(reg)
+                .with_context(|| format!("building resolution policy for '{}'", reg.name))?,
+        );
         reg_type_map.insert(reg.name.clone(), reg.registry_type.clone());
         reg_mode_map.insert(reg.name.clone(), reg.mode.clone());
         if let Some(url) = upstream_url_for(reg) {
@@ -235,6 +244,7 @@ pub(super) fn build_hot_bundle(
         feature_flags: build_feature_flags_map(&cfg.registries),
         integrity: build_integrity_map(&cfg.registries),
         beta_channel: build_beta_channel_map(Arc::clone(beta_channel_store), &cfg.registries),
+        resolution: reg_resolution,
         max_artifact_size_bytes: cfg.limits.max_artifact_size_bytes,
     };
 

@@ -2,7 +2,7 @@
 
 | Field       | Value                                                                 |
 | ----------- | --------------------------------------------------------------------- |
-| Status      | Draft                                                                 |
+| Status      | **Implemented** — all six phases landed; see the implementation notes in §14 |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                                |
 | Co-author   | Claude Opus 5 (1M context) <noreply@anthropic.com>                     |
 | Created     | 2026-08-13                                                            |
@@ -455,11 +455,17 @@ superseded, but not by nobody knowing they disagree.
 | A5 | No revert path for config | a `POST …/config/history/{id}/restore` | endpoint |
 | A6 | `count_packages_in_namespace` exists on the port, unexposed | a count on the namespace list response | field |
 | A7 | No UI for audit retention purge (`DELETE …/audit-log?before=`) | UI only — the endpoint exists | UI |
+| A9 | **`/api/v1/me/downloads` cannot say a pull is now blocked.** `MyDownloadDto` carries registry, name, version, artifact and a timestamp, so `RecentPullsWidget` renders a blocked pull identically to any other — on `/`, the one surface a non-admin opens. Reported from a live instance, not review: an operator blocked an artifact, saw it flagged in the catalog, and found the home page silent | a `blocked` field, set from one `blocked_only` scan rather than a lookup per row | field |
 | A8 | **No way to list known subjects.** `/api/v1/admin/users/blocked` returns only the blocked, so four subject fields (§2.8) can neither suggest nor validate | a `GET /api/v1/admin/subjects?q=` over the identities the audit log and ownership tables have actually seen | endpoint |
 
-**A1 is the only correctness defect**; the rest are absences. Five of the eight
+**A1 is the only correctness defect**; the rest are absences. Six of the nine
 are a field on a response that already exists, which is why they are one RFC
-rather than eight.
+rather than nine.
+
+A9 was added after the rest shipped, from a user report rather than a reading of
+the tree — which is the point of it: §2.2's "the console cannot show what the
+API does not describe" was argued about admin pages, and the surface it was
+actually true of was the home page.
 
 A8 is the only gap here whose absence is currently *invisible*: a subject field
 with no source does not error, it returns an empty result set that reads as an
@@ -609,19 +615,22 @@ the rest are consequences of it.
    real shadow anywhere someone types it.
 6. **`Button` keeps its crimson fill when `:disabled`**, against "crimson never
    appears in a disabled state".
-7. **"Resolution as State" is unimplemented.** DESIGN.md's organising idea — the
-   3×3 dot matrix for what is held and verified, the coarse 2×2 for what is not
-   — exists nowhere in `ui/src`. It should land once, as one shared component,
-   rather than being invented per page. This is no longer an inference from
-   reading: §2.7 measures it absent from the very page whose design proof
-   contains it, alongside the halftone plate. Two independent findings — a
-   Phase 5 reviewer's and a direct comparison against the proof — reach it from
-   different directions.
+7. ~~**"Resolution as State" is unimplemented.**~~ **Resolved — it shipped as a
+   component (§14.6).** DESIGN.md's organising idea — the 3×3 dot matrix for
+   what is held and verified, the coarse 2×2 for what is not — existed nowhere
+   in `ui/src`. It was found twice independently, by a Phase 5 reviewer and by
+   §2.7's direct measurement against the proof. It now lives once, in
+   `ui/src/components/ui/resolution/`, transcribed from DESIGN.md's own
+   six-state table and consumed by `/packages` and the package detail page —
+   rather than being invented per page, which is what produced eleven crimson
+   row-verbs and two `<datalist>`s. The Display step (item 9) followed in
+   §14.9, which closed O3 and emptied the pin.
 8. **No grammar for a text field that suggests.** §6.2 lands one, and the world
    has no entry for it — the same gap as items 3 and 4, found the same way. It
    is written into `DESIGN.md` as part of that work rather than after it.
-9. **What the Display step is spent on.** The proof gives it to the registry
-   being viewed; every shipped page gives it to the page's own name
+9. ~~**What the Display step is spent on.**~~ **Resolved for `/packages`
+   (§14.9); still open for every other page.** The proof gives it to the registry
+   being viewed; every shipped page gave it to the page's own name
    ("Dashboard", "Packages", "Bulk Block"). A Phase 5 reviewer raised the same
    question from the admin side: the loudest element in the system currently
    carries a nav label while the page's actual content — an alarm, a destructive
@@ -728,6 +737,7 @@ the rest are consequences of it.
 | B9 | Is A5 (a config revert path) buildable as specified? | **No — declined, with the row §3 requires.** `config_changes` stores a *diff summary* — added, removed and changed registry names — and never the config itself, so `POST …/history/{id}/restore` cannot be built on it: a list of registry names does not reconstruct a TOML file. Making it possible means storing full config content per change, and `config.toml` carries `upstream_auth` credentials, static bearer tokens and OIDC client secrets — every secret this instance has ever been configured with, in a table any admin can read through an API, retained indefinitely and surviving the rotation that was supposed to end their life. The revert path that exists is the config editor; what it lacks is the *previous* content to paste, and closing that honestly is a question about where config history should live (a git-backed config, an encrypted store), not a field on this response. Recorded at `handlers/back_office/config.rs`. |
 | B7 | Does the `DESIGN.md` migration belong here? | **No — but the copper token decision might.** Retiring `Card` is mechanical and enormous; the missing "degraded" token is a decision the system has now improvised around twice, and every further surface that needs it improvises again. The token decision may be taken in this RFC's window; the migration may not. |
 | O1 | Does the "degraded but not refused" job get a new token, or an existing one gains a job? | **Copper gains the job**, taken in this RFC's window per B7. `DESIGN.md`'s Secondary entry now authorises *a measured value moving the wrong way but not yet refused*, naming the falling hit rate and the approaching quota, which makes both improvisations legal rather than tolerated. The alternative — a fifth condition carried by the dot pattern instead of a hue — was rejected on subject: the matrix's six states all describe one artifact's resolution, and an instance-wide metric is not one of them, so it would have needed a seventh row that does not fit the table's own subject *and* a component that does not exist (§7 item 7). Copper's negative half is unchanged: never *good*. |
+| O3 | When the ramp gate goes red on `/packages`, which side moves? | **The page moved.** Both halves are closed: "resolution as state" shipped as a component (§14.6), and the Display step is now spent on the registry being viewed (§14.9). The deciding fact was that the cost argument was false — the proof is runnable source, and `--t-display` had simply never been mapped to a utility, so the page had been reaching for the largest step that existed. The `EXPECTED_FAIL` pin came out in the same change, on the gate's own instruction: it failed *because* `/packages` had started passing while still pinned. |
 | O4 | Does the package-name combobox ever query upstream implicitly, and where does that cache live? | **No, and client-side** — ratifying what §6.2 and §6.3 built. Typing never leaves the instance: `useSuggestions.ts` binds only local sources and `Combobox.vue` renders the upstream search as an explicit affordance below them. The cache is per-operator (`_upstream` in `useExploreCache.ts`, 1-minute TTL against the listing's five). A server-side cache was rejected because it inverts who the upstream sees the query from and makes one operator's typo everyone's cached answer; a per-registry setting re-enabling the implicit form was rejected because it reintroduces exactly the 5N third-party calls §2.9 measured, and would cost a config field and a `CURRENT_CONFIG_VERSION` move this RFC otherwise avoids. |
 
 ### Still open
@@ -737,7 +747,6 @@ RFC that owns it. Neither blocks anything in §12.
 
 | # | Question | Why it is open |
 | --- | --- | --- |
-| O3 | When the ramp gate goes red on `/packages`, which side moves? | Either the page is re-cut to the proof, or the proof is superseded and `DESIGN.md` records what replaced it. Both are legitimate; picking one requires deciding whether an Operate page carries the Display step at all (§7 item 9) and whether "resolution as state" ships as a component (§7 item 7) — the same two questions, which is why they are one decision and not three. It belongs to the RFC that takes the `DESIGN.md` findings, not to this one. The `EXPECTED_FAIL` pin in `ui/build/design-routes.mjs` holds the disagreement visible until then, and fails if `/packages` starts passing — because that means one side moved and the pin has become the stale claim. |
 | O2 | Is `AdminSbom` in the right section at all? | Phase 5 moved it from Observability to Operations because it observes nothing. If a future advisories surface lands under Security & Access, it may belong there instead — and that surface is RFC 0002's, not this one's. |
 
 ---
@@ -770,11 +779,16 @@ Phase 1 is first and alone. The other four are all measured by gates that
 currently cannot see what they claim to, and finishing work under an
 unobservant gate is how this RFC's contents accumulated in the first place.
 
-§4.4 lands with one known failure — `/packages` against its own proof — and it
-stays red until O3 is decided. That is the correct state: an unclosed gap that
-everyone can see beats a green gate over a page nobody was comparing to
-anything. It is the only place in this RFC where landing a gate does not also
-land its fix, and it is deliberate.
+§4.4 landed with one known failure — `/packages` against its own proof — pinned
+rather than hidden, on the argument that an unclosed gap everyone can see beats
+a green gate over a page nobody was comparing to anything. It was the only place
+in this RFC where landing a gate did not also land its fix.
+
+It has since been closed (§14.9): the page moved, the pin came out, and the gate
+is green on all 60 combinations. The pin earned its keep on the way out — the
+gate failed *because* the route had started passing while still pinned, which is
+the assertion §4.4 wrote on the theory that a stale pin is its own kind of
+silence.
 
 ---
 
@@ -917,3 +931,262 @@ optional and its absence is the current behaviour.
 
 The three specified-only items get roadmap entries in the same commit as this
 addendum, so they are tracked whether or not their RFCs are ever written.
+
+---
+
+## 14. What execution caught
+
+This RFC's argument is that a gate reporting green over a condition it cannot
+observe is indistinguishable from one that looked. That argument applies to the
+RFC itself, so this section separates what was *verified by running it* from
+what was only read. Four findings; none of them came from review.
+
+### 14.1 The licence gate did nothing, and nothing said so
+
+§13.1 was written, tested (2612 unit and integration tests), clippy-clean and
+merged into the phase table before it was ever executed against a server. On
+first run against a real Postgres and a real npm upstream, the licence came back
+`null` for every version — four times in a row, for three different packages.
+
+The parser was fine. `ProxyService::maybe_trigger_sbom`
+(`services/proxy/resolve.rs:139`) returns early unless the registry has an
+enabled `[registries.sbom]` block, and **the licence is recorded as a side
+effect of SBOM generation**. With SBOM off, nothing is extracted, so a
+`license_gate` sees an unknown licence for every version however good its
+parser — and says nothing about it, because the config is valid and the rule
+loads like any other.
+
+That is this RFC's own §1 defect, reproduced inside the feature §13 added. It
+was fixed the way §4 fixes gates: `license-gate.sbom-disabled`, whose message
+changes according to whether the combination makes the rule inert or makes it
+refuse every download. Confirmed live — the running server reported it at
+`registries[2].rules[0]`.
+
+**No amount of unit testing would have found this.** Every test supplied its own
+extractor or its own repository; none of them went through the call site that
+decides whether extraction happens at all.
+
+### 14.2 The chain, once it worked
+
+Recorded because "it compiles" and "it serves a 403" are different claims:
+
+| Step | Observed |
+| --- | --- |
+| `GET /proxy/npm/ansi-regex/6.2.2/tarball` | 200, artifact cached, licence extracted |
+| `GET /api/v1/admin/packages/detail` | `license = "MIT"` |
+| `GET /api/v1/explore/packages/npm/ansi-regex` | `license = "MIT"` |
+| `GET /api/v1/sbom/export?format=cyclonedx` | `strip-ansi → MIT`, `is-odd → MIT` |
+| gate flipped to `deny = ["MIT"]`, re-request | **403** `blocked: licence 'MIT' is on the deny list` |
+
+### 14.3 A coordinate mismatch the licence inherits
+
+A request for `/proxy/npm/{name}` with no version records the package row under
+the *requested* version — the literal string `latest` — while the SBOM is
+recorded under the *resolved* one (`7.2.0`). The licence lookup is by
+coordinate, so it joins nothing for those rows and the version reads unknown.
+
+This is **pre-existing and not introduced here**: `list_vulnerabilities` on both
+detail handlers is keyed the same way and has the same hole. It is recorded
+rather than fixed, because changing what a `latest` request writes is a change
+to the cache's own identity model and belongs in its own RFC.
+
+### 14.4 §4.4's gate, on first execution
+
+The merged ramp/display-face gate was wired, committed and described in this
+document before it had run once — the same "wired but unexecuted" state RFC 0003
+§13 exists to close. Run against the `che-browser` sidecar over CDP:
+
+```
+60 route/role/viewport combination(s) scanned, 0 with unexpected findings, 1 pinned
+```
+
+Every route passes at both viewports across anonymous, user and admin — except
+`/packages`, which failed exactly as §2.7 measured by hand:
+
+```
+⚠ anonymous /packages @1440
+    [type] spends 24px on its largest Silkscreen element;
+    ui/design-proof/index.html spends 104px at this width, on the registry being viewed
+⚠ /packages failed as expected — RFC 0004-bis O3
+```
+
+So §2.7's central claim is now machine-measured rather than eyeballed, and the
+disagreement is a line in CI output owned by name. The pin is the designed end
+state, not an outstanding task: it is un-pinned by whichever side of O3 moves.
+
+One rough edge worth a follow-up: `EXPECTED_COMBINATIONS` is 30 and counts
+route/role pairs, while the summary line reports 60 because it counts viewports
+too. The guard (`planned < EXPECTED`) is correct and coverage still cannot
+silently shrink, but two numbers 2× apart in the same output invite someone to
+"fix" the wrong one.
+
+### 14.5 What is still not verified
+
+- **Line coverage.** `task coverage-check` enforces 80% and needs Podman, which
+  is absent from the environment this was implemented in. §13.1 added a fair
+  amount of Rust; its effect on the number is unmeasured.
+- **§13.2–13.4** are specified only, by design, with roadmap entries.
+- **O2** belongs to RFC 0002 and is the only question still open. O3 closed
+  (§14.9) and `EXPECTED_FAIL` is now empty.
+
+### 14.6 Resolution as State, and what reading the proof changed
+
+§7 item 7 and O3 both rested on a premise this document asserted twice and never
+checked: that re-cutting `/packages` means reproducing a **screenshot** by eye,
+which §8 and B8 both call "how a specimen becomes a pastiche".
+
+`ui/design-proof/index.html` is not a screenshot. It is 707 lines of runnable,
+self-contained source with `fonts/` and `halftone-plate.png` checked in beside
+it. The three pieces §2.7 measured as missing cost, in the proof's own code:
+
+| Piece | Actual cost in the proof |
+| --- | --- |
+| Resolution matrix | ~12 lines of CSS (`.matrix.fine` 3×3 @5px, `.coarse` 2×2 @8px, `currentColor`, `.18` unlit) plus a six-entry state table |
+| Display step | `--t-display:56px`, stepping 72/88/104 at 640/880/1140, on one `<h1>` |
+| Halftone plate | ~10 lines, PNG already committed, including the `@supports` guard that stops a dropped mask painting a solid copper block |
+
+So the cost argument was wrong, and it had been deterring the work. **The
+resolution matrix — the system's signature, absent for two RFCs — is one of the
+smallest components in the console.** It landed as
+`ui/src/components/ui/resolution/`, transcribed from DESIGN.md's table rather
+than from the proof's CSS, with 17 tests asserting against that table: cell
+counts, lit counts, which cell is dark for `stale` (the spec says "centre out",
+so *which* is the specification and not merely *how many*), the hue per state,
+`aria-hidden` on the matrix with the word carrying it for assistive tech, and
+`bg-current` so the mark takes its context's ink.
+
+Deliberately **not** in the component: the `resolve` animation. DESIGN.md
+forbids it "on load of unchanged content", and a component cannot know whether
+it just changed — only the list rendering it can. Putting it there would make it
+fire on every render, which is the one thing the spec names.
+
+Consumers: `/packages` (cached → fine 3×3; an upstream hit never fetched →
+`pending`, "not yet resolved") and the package detail page (clear → cached,
+plus blocked and yanked one-to-one). The words stay each page's own — the
+pattern and hue carry the resolution grammar, and "Not yet proxied" tells an
+operator more than "Pending" would.
+
+**The gate is unchanged at 60 scanned / 0 unexpected / 1 pinned**, correctly:
+§4.4 measures the Display step, which this did not touch. O3 is now one question
+rather than two.
+
+### 14.7 §4.1's rule is still narrower than its own statement
+
+Wiring the component surfaced three more untranslated strings, in
+`PackageDetailPage.firewallLabel`:
+
+```js
+if (fw.status === "blocked") return "Blocked";
+if (fw.status === "yanked")  return "Yanked";
+return "Clear";
+```
+
+`pnpm run i18n:check` reported `0 untranslated strings` over them. §4.1 taught
+the scanner component props and `ref` assignments; a string literal **returned
+from a function** is neither, so it is the §2.1 class again, one position over —
+and §4.1's own text claims the fix was "a rule, not another case".
+
+The three strings are translated. **The scanner still cannot see the position**,
+which means this is a known open blind spot rather than a closed finding. It is
+recorded here rather than fixed because widening the scan to `return` needs
+`isTranslatable` to hold the line against non-prose returns (class names, keys,
+route paths), and that deserves its own change with its own false-positive
+review — not a patch tacked onto a component landing.
+
+### 14.8 A9, and where §2.2 was actually true
+
+A9 did not come from reading the tree. An operator blocked an artifact
+(`jetbrains-ide` / `repo` / `_` / `idea/idea-2026.1.3.tar.gz`), saw the catalog
+mark it, and reported that the home page did not.
+
+Every layer below the DTO was already correct.
+`GET /api/v1/admin/packages?blocked_only=true` returned it;
+`GET /api/v1/explore/packages` returned `has_blocked: true`; `/packages`
+rendered it. `GET /api/v1/me/downloads` returned:
+
+```json
+{ "registry": "jetbrains-ide", "name": "repo", "version": "_",
+  "artifact": "idea/idea-2026.1.3.tar.gz", "downloaded_at": "…" }
+```
+
+— five fields, none of which is the answer. `RecentPullsWidget` was not wrong;
+it had nothing to render.
+
+**This is §2.2's argument landing on a surface it was never aimed at.** RFC 0004
+made that case about admin pages, and this RFC inherited the framing: §5's eight
+gaps are all admin or explore reads. The `me` endpoints were treated as finished
+because Phase 2 built them with their scoping and their absence tests. They were
+finished as *reads of what you did*, and incomplete as *reads of what is true of
+it now*.
+
+Two details worth keeping:
+
+- **Keyed on the full coordinate**, `PackageId::cache_key()`, which includes the
+  artifact. A path-addressed registry stores its whole tree under one synthetic
+  package name (`repo`, version `_`), so keying on name alone would mark every
+  JetBrains download blocked the moment one file was.
+- **One `blocked_only` query, not one per row**, capped at `MAX_BLOCKED_SCAN`
+  with the cap named in the source. A failed lookup reports "not blocked" rather
+  than failing the widget — losing the flag is a smaller harm than losing the
+  list — and an absent flag on an older client renders nothing rather than
+  asserting clean.
+
+It was verified against the reporting instance's own data before being called
+done: `"blocked": true`, on that exact artifact.
+
+### 14.9 O3, and a token that was never adopted
+
+`/packages` now matches its proof, the pin is gone, and the gate is green on all
+60 combinations. The reason it was tractable at all is §14.6's finding, and the
+root cause turned out to be one line.
+
+**`--t-display` was mapped to no utility.** `ui/src/design/tokens.css` declares
+it correctly — 56px stepping to 72/88/104 at 640/880/1140 — and `ui/src` had
+**zero consumers**. The `@theme` block in `assets/index.css` maps `--text-xs`
+through `--text-2xl` onto the ramp and stops there, so the largest utility that
+existed was `text-2xl` at 24px, and every page reached for it. 24 *is* a
+declared Silkscreen step, so nothing looked wrong to any check that asks whether
+a size is on the ramp.
+
+This is RFC 0003 §13 finding 4 again — `--font-family-*` generating no utility,
+so the design's text face never painted. **A token that generates no utility is
+a token that was never adopted**, and neither the token tests nor a source scan
+can see the difference, because both inspect declarations rather than what a
+page actually reaches for. `--t-sub` / `--t-px-sm` (16px) was unmapped for the
+same reason and is now mapped too.
+
+What landed:
+
+- `--text-display` and `--text-sub` in `@theme`.
+- The specimen replaces `PageHeader` on this route only. Its `<h1>` is the
+  selected registry, or "All registries" when the facet is on all — a blank
+  specimen would be §2.4's defect in a headline. The caption carries type, mode
+  and counts on one ruled line; the proof also shows a cached size, which no
+  endpoint on this page returns, so it is omitted rather than estimated.
+- The halftone plate, `@supports` guard included: without it a dropped mask
+  paints solid copper over half the specimen and `--ink-dim` on that composite
+  falls to 3.21:1.
+- The page's one action moved into the toolbar, where the proof keeps its own,
+  leaving the specimen as the route's only `h1`.
+
+**The long-name worry was real and had the wrong cause.** Predicted: a 13-char
+registry name at 104px would wrap badly. Measured over CDP at three widths, it
+did — `jetbrains-ide` came to **312px of headline, two lines**. The cause was
+not the name: the `.display` rule in the proof sets `line-height:.92`,
+`letter-spacing:.02em` and `text-transform:uppercase`, and the port had picked
+up the body's 1.625 instead. With the proof's own rule the same name is **96px,
+one line**, at the full Display step, with no horizontal overflow at 1440, 880
+or 390. Setting a display face tight is most of what makes it read as display
+rather than as a very large heading — and it is the kind of thing that only a
+measurement finds, because both versions are "on the ramp".
+
+**The pin removed itself, in effect.** With the page moved, the gate failed —
+not on `/packages`, but on the *pin*: `✗ /packages is pinned in EXPECTED_FAIL
+and now passes. One side of the disagreement moved — remove the pin in the
+commit that moved it.` That inverse assertion was written in §4.4 on the theory
+that a stale pin is its own kind of silence. It is the one part of this RFC that
+has now been proven by being triggered rather than by being reasoned about.
+
+`EXPECTED_FAIL` is empty, and §7 item 9 stays open for every page that is not
+`/packages`: whether an admin surface carries the Display step at all is still
+a world-level question, and this settled it only for the proving surface.
