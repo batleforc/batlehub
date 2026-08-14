@@ -11,7 +11,7 @@ name: Supply chain (postmortem)
 #
 # One job per dependency root — postmortem's `detect()` only looks at lockfiles
 # sitting directly in the scanned directory, it does not recurse, so each root
-# (Cargo.lock, ui/pnpm-lock.yaml, website/pnpm-lock.yaml) needs its own run.
+# (Cargo.lock, ui/pnpm-lock.yaml, docs/pnpm-lock.yaml) needs its own run.
 #
 # These are three *separate jobs* rather than one matrix, and that is load
 # bearing for Code Scanning, not a style choice. postmortem emits every result
@@ -30,8 +30,8 @@ on:
       - "**/Cargo.lock"
       - "ui/package.json"
       - "ui/pnpm-lock.yaml"
-      - "website/package.json"
-      - "website/pnpm-lock.yaml"
+      - "docs/package.json"
+      - "docs/pnpm-lock.yaml"
       - ".github/workflows/postmortem.yaml"
   pull_request:
     branches: ["main"]
@@ -40,8 +40,8 @@ on:
       - "**/Cargo.lock"
       - "ui/package.json"
       - "ui/pnpm-lock.yaml"
-      - "website/package.json"
-      - "website/pnpm-lock.yaml"
+      - "docs/package.json"
+      - "docs/pnpm-lock.yaml"
       - ".github/workflows/postmortem.yaml"
   # Daily, same slot as the other dependency audits: reputation and vulnerability
   # data are fetched live, so a dependency that goes archived — or gets an
@@ -148,7 +148,7 @@ jobs:
           CODE: ${{ steps.scan.outputs.exit-code }}
         run: exit "${CODE:-1}"
 
-  website:
+  docs:
     name: postmortem — Website
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -162,7 +162,7 @@ jobs:
         id: scan
         uses: mlab-sh/postmortem@1ef19477f79b71738f53fe38b3b6b1d1325e9028 # v2.0.1
         with:
-          path: website
+          path: docs
           version: v2.0.0
           online: "true"
           vulns: "true"
@@ -172,7 +172,7 @@ jobs:
           github-token: ${{ github.token }}
           vuln-token: ${{ secrets.VULN_MLAB_TOKEN }}
       # Report-only, for the same reason `dep-audit-frontend.yaml` runs the
-      # website audit with `--prod`: vitepress and its transitive build tooling
+      # documentation-site audit with `--prod`: vitepress and its transitive build tooling
       # carry advisories with no upstream fix for 1.x, and none of it ships or
       # runs as a service. postmortem has no prod-only filter, so a non-blocking
       # gate is the equivalent expression — findings still land in the Security
@@ -181,4 +181,4 @@ jobs:
         if: ${{ steps.scan.outputs.exit-code != '0' }}
         env:
           CODE: ${{ steps.scan.outputs.exit-code }}
-        run: echo "::warning::postmortem exited ${CODE} for website — reported, not blocking"
+        run: echo "::warning::postmortem exited ${CODE} for the docs site — reported, not blocking"

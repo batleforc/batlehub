@@ -74,7 +74,7 @@ bothers with, like Pacman, JetBrains plugins, and Conda.
 - **Deployment**: container images and a Helm chart; PostgreSQL plus filesystem or S3-compatible
   storage; Prometheus `/metrics` and `/healthz` already exist.
 - **Two web surfaces, one product**: the Vue SPA in `ui/` (a task surface — Operate) and the
-  VitePress documentation site in `website/` (a comprehension surface — Read). They currently share
+  VitePress documentation site in `docs/` (a comprehension surface — Read). They currently share
   a hand-copied design language, not a shared token package.
 - **Registries can be reached two ways**: `/proxy/{registry}/…` and, since RFC 0001, at the root of
   a dedicated hostname. Any URL the UI shows a user must reflect the ingress they actually used.
@@ -96,7 +96,7 @@ bothers with, like Pacman, JetBrains plugins, and Conda.
   dependency and no message catalogue.
 - **Registry-type knowledge is data, not markup.** `ui/src/config/registryTypes.ts` holds the
   per-type definitions and setup snippets; new registry types are expected to appear there.
-- **Undecided:** whether `ui/` and `website/` should share one published token package or keep
+- **Undecided:** whether `ui/` and `docs/` should share one published token package or keep
   parallel copies of the same values.
 
 ## Brand Commitments
@@ -104,20 +104,20 @@ bothers with, like Pacman, JetBrains plugins, and Conda.
 - **The name and wordmark `BatleHub.` are binding**, trailing period included. How it is drawn is
   open.
 - **Monofolio lineage is binding.** Monofolio is the author's cross-project design language, used
-  here and in `website/`. A redesign may replace this instance's expression of it, but the result
+  here and in `docs/`. A redesign may replace this instance's expression of it, but the result
   must stay recognisably part of that family. Current expression, for reference and as evidence of
   the lineage: OKLCH crimson primary with a copper accent, 2 px corner radius, JetBrains Mono +
   IBM Plex Sans, cyber-grid background, glow utilities (`--cyber-glow`, `--steam-glow`).
-- **Existing asset:** `website/public/logo.svg`.
+- **Existing asset:** `docs/public/logo.svg`.
 - **Voice is deliberately not frozen.** Today's copy is terse and technical ("Release age gate",
   "Deny latest tag", "Access Check"); the author declined to make that binding, so tone is an open
   decision rather than a constraint.
 
 ## Evidence on Hand
 
-- Real, checked-in: `README.md` (registry and feature matrices), `docs/` (21 documents, including
+- Real, checked-in: `README.md` (registry and feature matrices), `docs/` (the documentation site and tree, including
   `configuration.md` at 150 kB), `ROADMAP.md`, `CHANGELOG.md`, the RFC series in
-  `docs/future-feature/`, and `ui/openapi.json` as the authoritative API surface.
+  `docs/rfc/`, and `ui/openapi.json` as the authoritative API surface.
 - The docs site's existing hero line: *"Your package hub. Proxy, cache, and host."*
 - **Absent, and not to be fabricated:** customers, testimonials, case studies, named adopters,
   benchmark numbers, download counts, uptime figures, pricing, and any security certification.

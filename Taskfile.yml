@@ -343,9 +343,9 @@ tasks:
       # pnpm-lock.yaml, so it needs no install. Exits non-zero on high/critical.
       - pnpm audit --audit-level high
 
-  website:audit:
-    desc: Check docs-website pnpm dependencies for security vulnerabilities
-    dir: website
+  docs:audit:
+    desc: Check the documentation site pnpm dependencies for security vulnerabilities
+    dir: docs
     cmds:
       # --prod: vitepress (and its transitive vite/esbuild) are build-only
       # tooling for the static site, never shipped or run as a service. Their
@@ -377,11 +377,11 @@ tasks:
     cmds:
       - postmortem tree . --online --vulns --fail-on-vuln high
 
-  postmortem:website:
-    desc: "Dependency supply-chain report for the docs website (report-only, like `task website:audit`'s --prod carve-out)"
-    dir: website
+  postmortem:docs:
+    desc: "Dependency supply-chain report for the documentation site (report-only, like `task docs:audit`'s --prod carve-out)"
+    dir: docs
     cmds:
-      # No --fail-on-vuln, for the same reason website:audit runs with --prod:
+      # No --fail-on-vuln, for the same reason docs:audit runs with --prod:
       # vitepress and its transitive build tooling carry advisories with no
       # upstream fix for 1.x, and none of it ships or runs as a service.
       # postmortem has no prod-only filter, so report-only is the equivalent.
@@ -392,7 +392,7 @@ tasks:
     cmds:
       - task: postmortem:rust
       - task: postmortem:ui
-      - task: postmortem:website
+      - task: postmortem:docs
 
   sbom:rust:
     desc: "Generate a CycloneDX SBOM of the shipped server (sbom-rust.cdx.json) — feed to `trivy sbom` / `grype sbom:` to match future CVEs against a shipped build"
@@ -409,7 +409,7 @@ tasks:
       - task: audit
       - task: deny
       - task: ui:audit
-      - task: website:audit
+      - task: docs:audit
       # Needs network (reputation + vuln lookups); the advisory-only audits above
       # can't see an upstream that went archived or got taken over.
       - task: postmortem
@@ -489,16 +489,16 @@ tasks:
   ui:tokens:
     desc: Copy the design tokens to the docs site (single source is ui/src/design/tokens.css)
     cmds:
-      - cp ui/src/design/tokens.css website/.vitepress/theme/tokens.css
+      - cp ui/src/design/tokens.css docs/.vitepress/theme/tokens.css
 
   ui:tokens:check:
     desc: Fail if the docs site's token copy has drifted from ui/src/design/tokens.css
     cmds:
       - task: ui:tokens
       - |
-        if ! git diff --quiet -- website/.vitepress/theme/tokens.css; then
-          echo "website token copy is stale — run 'task ui:tokens' and commit the result" >&2
-          git --no-pager diff -- website/.vitepress/theme/tokens.css >&2
+        if ! git diff --quiet -- docs/.vitepress/theme/tokens.css; then
+          echo "the docs site's token copy is stale — run 'task ui:tokens' and commit the result" >&2
+          git --no-pager diff -- docs/.vitepress/theme/tokens.css >&2
           exit 1
         fi
 
@@ -726,11 +726,12 @@ tasks:
       - task: ui:design:routes
 
   ui:design:
-    desc: Run the static design gates locally (detector, i18n, token drift)
+    desc: Run the console's static design gates locally (detector, i18n)
     cmds:
-      - npx --yes impeccable detect ui/src website/.vitepress
+      # The docs site's half of this scan moved to `docs:design`, together with
+      # the token-drift check it belongs with (RFC 0005 phase 4).
+      - npx --yes impeccable detect ui/src
       - task: ui:i18n:check
-      - task: ui:tokens:check
 
   ui:i18n:review:
     desc: Regenerate the French review sheet from the catalogues
@@ -816,7 +817,7 @@ tasks:
   impeccable:detect:
     desc: Scan the UI and docs site for design anti-patterns (no LLM, no API key)
     cmds:
-      - npx --yes impeccable detect ui/src website/.vitepress
+      - npx --yes impeccable detect ui/src docs/.vitepress
 
   dev:
     desc: Start Rust backend and Vite frontend in parallel (requires postgres)
@@ -919,25 +920,125 @@ tasks:
       - mc alias set local http://localhost:9900 rustfsadmin rustfsadmin
       - mc mb --ignore-existing local/artifacts
 
-  # ── Docs website (VitePress) ──────────────────────────────────────────────────
+  # ── The documentation site (VitePress) ──────────────────────────────────────────────────
 
-  website:dev:
+  docs:dev:
     desc: Start the VitePress documentation dev server
-    dir: website
+    dir: docs
     cmds:
       - pnpm run docs:dev
 
-  website:build:
+  docs:build:
     desc: Build the VitePress documentation site for production
-    dir: website
+    dir: docs
     cmds:
       - pnpm run docs:build
 
-  website:preview:
+  docs:preview:
     desc: Preview the built VitePress documentation site
-    dir: website
+    dir: docs
     cmds:
       - pnpm run docs:preview
+
+  # ── The published roadmap (RFC 0005 Q5) ──────────────────────────────────────
+  # ROADMAP.md and docs/guide/roadmap.md were two hand-edited documents that
+  # had drifted by 393 lines, with nothing watching. The roadmap is a project
+  # artifact that happens to be worth publishing, so the root file is canonical
+  # and the page is generated from it — the same arrangement, and the same pair
+  # of tasks, as the design tokens.
+
+  docs:roadmap:
+    desc: Regenerate the published roadmap page from the canonical ROADMAP.md
+    cmds:
+      - |
+        {
+          echo '<!-- Generated from ROADMAP.md by `task docs:roadmap`. Do not edit this file. -->'
+          echo
+          cat ROADMAP.md
+        } > docs/guide/roadmap.md
+
+  docs:roadmap:check:
+    desc: Fail if the published roadmap page has drifted from ROADMAP.md
+    cmds:
+      - task: docs:roadmap
+      - |
+        if ! git diff --quiet -- docs/guide/roadmap.md; then
+          echo "published roadmap is stale — run 'task docs:roadmap' and commit the result" >&2
+          git --no-pager diff -- docs/guide/roadmap.md >&2
+          exit 1
+        fi
+
+  # ── The docs site's design gates (RFC 0005 phase 4) ──────────────────────────
+  # Until these existed the public site's entire design coverage was one static
+  # source scan, while the internal console had axe plus a type-ramp check over
+  # 30 rendered route/role pairs at two viewports. The surface every prospective
+  # user sees was the one nobody measured in a browser.
+
+  docs:design:
+    desc: Static design gates for the docs site (detector + token drift)
+    cmds:
+      - npx --yes impeccable detect docs/.vitepress
+      # Now load-bearing. Before the token copy was imported by anything, this
+      # check guarded the freshness of a file no stylesheet read.
+      - task: ui:tokens:check
+      - task: docs:roadmap:check
+      - task: docs:links
+
+  docs:links:
+    desc: Every documentation cross-reference resolves, and no published page is orphaned
+    dir: docs
+    cmds:
+      # Wider than VitePress's own dead-link check on purpose — it covers
+      # `internal/` and the repository's own markdown, treats a code span
+      # naming a `.md` path as the link it is, and knows what an orphan is.
+      # See the header of the script.
+      - node build/check-links.mjs
+
+  docs:design:rendered:
+    desc: axe + type ramp + material over every built page, 2 viewports, both renditions
+    deps: [browser:check]
+    dir: docs
+    vars:
+      PORT: '{{.PORT | default "4173"}}'
+    cmds:
+      # Builds, serves the build, measures it, and takes the server down again —
+      # the gate has to run against the artifact that ships, not against a dev
+      # server with different asset handling.
+      #
+      # `vitepress preview` maps the output directory once at startup, so a
+      # server left running from an earlier build serves the earlier build. That
+      # is not a hypothetical: it is how three of this gate's own findings first
+      # read as fixed when they were not.
+      - |
+        set -e
+        pnpm run docs:build
+        pnpm exec vitepress preview --port {{.PORT}} >/tmp/docs-preview.log 2>&1 &
+        preview=$!
+        trap 'kill $preview 2>/dev/null || true' EXIT
+        for _ in $(seq 1 100); do
+          curl -sf "http://localhost:{{.PORT}}/" -o /dev/null && break
+          sleep 0.2
+        done
+        BASE="http://localhost:{{.PORT}}" node build/design-routes.mjs
+
+  docs:design:survey:
+    desc: Same measurements as docs:design:rendered, reported and never failing
+    deps: [browser:check]
+    dir: docs
+    vars:
+      PORT: '{{.PORT | default "4173"}}'
+    cmds:
+      - |
+        set -e
+        pnpm run docs:build
+        pnpm exec vitepress preview --port {{.PORT}} >/tmp/docs-preview.log 2>&1 &
+        preview=$!
+        trap 'kill $preview 2>/dev/null || true' EXIT
+        for _ in $(seq 1 100); do
+          curl -sf "http://localhost:{{.PORT}}/" -o /dev/null && break
+          sleep 0.2
+        done
+        BASE="http://localhost:{{.PORT}}" node build/design-routes.mjs --survey
 
   # ── Performance testing ───────────────────────────────────────────────────────
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate docs/i18n-review-fr.md from the message catalogues.
+"""Regenerate docs/internal/i18n-review-fr.md from the message catalogues.
 
 The French catalogue needs human review (RFC 0003 open question 3 rules out
 machine translation for domain terms), and reviewing raw JSON side by side is
@@ -161,8 +161,8 @@ def main() -> int:
         "§4.6 keeps verbatim anyway.",
         "",
     ]
-    (ROOT / "docs/i18n-review-fr.md").write_text("\n".join(lines))
-    print(f"docs/i18n-review-fr.md — {len(rows)} strings")
+    (ROOT / "docs/internal/i18n-review-fr.md").write_text("\n".join(lines))
+    print(f"docs/internal/i18n-review-fr.md — {len(rows)} strings")
     return 0
 
 

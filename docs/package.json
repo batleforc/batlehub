@@ -1,0 +1,21 @@
+{
+  "name": "batlehub-docs",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.20.0",
+  "scripts": {
+    "docs:dev": "vitepress dev",
+    "docs:build": "node build/build.mjs",
+    "docs:build:raw": "vitepress build",
+    "docs:preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "axe-core": "4.13.0",
+    "puppeteer-core": "25.6.0",
+    "vitepress": "^1.6.4"
+  },
+  "dependencies": {
+    "hash-wasm": "^4.12.0"
+  }
+}

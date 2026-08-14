@@ -55,7 +55,7 @@ use serde::Deserialize;
 /// The current config schema version this binary understands. Bump this only
 /// for changes that would silently break an existing config file if applied
 /// unchanged (removing/renaming a field, changing a default's meaning) — see
-/// "Config versioning" in `docs/configuration.md`.
+/// "Config versioning" in `docs/guide/configuration.md`.
 pub const CURRENT_CONFIG_VERSION: u32 = 1;
 
 #[derive(Debug, Deserialize)]

@@ -1,0 +1,257 @@
+#!/usr/bin/env node
+/**
+ * The documentation site's rendered design gate (RFC 0005 §10, phase 4).
+ *
+ * Until this existed, `impeccable detect ui/src website/.vitepress` was the
+ * site's entire design coverage: a *static source* scan. The console has had a
+ * rendered gate since RFC 0003 — axe plus the type ramp and the display face,
+ * over 30 route/role pairs at two viewports — and the surface every prospective
+ * user actually sees had nothing measured in a browser at all.
+ *
+ * This is the console's `ui/build/design-routes.mjs` pointed at a static site,
+ * with the differences that follow from that: there is no session to seed, so
+ * the route list is not a hand-maintained array but *every page in the build*,
+ * read off `.vitepress/dist`. A page that is added and never listed anywhere is
+ * exactly the page that drifts, so the list cannot be a list.
+ *
+ *   node build/design-routes.mjs                 # every page, every plan
+ *   node build/design-routes.mjs --survey        # report, never fail
+ *   ROUTES=/,/guide/installation.html node build/design-routes.mjs
+ *
+ * It talks to an already-running Chrome over CDP (`puppeteer-core`, so no
+ * second browser is downloaded) — in this workspace, the `che-browser` sidecar.
+ * BASE points at a `vitepress preview` of the build under test.
+ */
+import puppeteer from "puppeteer-core";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join, relative, sep } from "node:path";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+
+const require = createRequire(import.meta.url);
+const AXE_SOURCE = readFileSync(require.resolve("axe-core/axe.min.js"), "utf8");
+
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
+const DIST = join(ROOT, ".vitepress", "dist");
+const BASE = process.env.BASE ?? "http://localhost:4173";
+const CDP = process.env.CDP_URL ?? "http://localhost:9222";
+const SURVEY = process.argv.includes("--survey");
+
+/** WCAG 2.2 AA — the same tag set the console's gate uses. */
+const TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
+
+/**
+ * DESIGN.md's two ramps. JetBrains Mono runs 12 / 13 / 15 / 16 / 20; Silkscreen
+ * is drawn on an 8px em and only ever appears at a multiple of it.
+ *
+ * The display set is not `--t-display`'s four steps. This surface spends 24 on
+ * a page title, 16 on a section heading and 40 / 72 on the home hero — every
+ * one an integer multiple, which is the rule that actually governs the face
+ * (The Integer Em Rule). `--t-display`'s own 56 / 88 / 104 are a property of
+ * the console's full-bleed specimen head, not of Silkscreen.
+ */
+const TEXT_RAMP = new Set([12, 13, 15, 16, 20]);
+const DISPLAY_RAMP = new Set([16, 24, 40, 56, 72, 88, 104]);
+
+/**
+ * The two plans. Contrast and hierarchy are width-blind; overflow and reflow
+ * are not — and a rendition change moves every ratio on the page, so the light
+ * ground is a plan rather than a spot check. 390 runs dark only: it is the
+ * viewport where reflow is measured, and reflow does not depend on the ground.
+ */
+const PLANS = [
+  { name: "1440·dark", width: 1440, height: 900, theme: "dark" },
+  { name: "1440·light", width: 1440, height: 900, theme: "light" },
+  { name: "390·dark", width: 390, height: 844, theme: "dark" },
+];
+
+/** Every page in the build. Not a list — see the header. */
+function builtRoutes(dir = DIST, acc = []) {
+  for (const entry of readdirSync(dir)) {
+    if (entry === "assets" || entry === "fonts") continue;
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) builtRoutes(full, acc);
+    else if (entry.endsWith(".html"))
+      acc.push("/" + relative(DIST, full).split(sep).join("/"));
+  }
+  return acc.sort();
+}
+
+/**
+ * What the page must be true of, measured in the page rather than inferred from
+ * the stylesheet. Returns findings; an empty array is a pass.
+ */
+function assertions(textRampArr, displayRampArr) {
+  // The ramps arrive as arrays: this function is serialised into the page, so
+  // it closes over nothing from this module.
+  const TEXT_RAMP = new Set(textRampArr);
+  const DISPLAY_RAMP = new Set(displayRampArr);
+  const findings = [];
+  const add = (rule, detail) => findings.push({ rule, detail });
+
+  // 1. The specimen faces actually painted. This is the defect `ui/` shipped:
+  //    a Google Fonts import its own CSP refused, so every surface fell back to
+  //    `ui-monospace` while every gate stayed green. A self-hosted face that
+  //    404s fails exactly the same way and looks exactly as fine.
+  for (const spec of ['700 16px "Silkscreen"', '400 16px "JetBrains Mono"']) {
+    if (!document.fonts.check(spec)) add("face-not-painted", spec);
+  }
+
+  // 2. The body never scrolls horizontally. Wide content scrolls inside its own
+  //    container (The Own-Container Overflow Rule).
+  const de = document.documentElement;
+  if (de.scrollWidth > de.clientWidth)
+    add("body-overflow", `${de.scrollWidth} > ${de.clientWidth}`);
+
+  const label = (el) =>
+    `${el.tagName.toLowerCase()}${el.className && typeof el.className === "string" ? "." + el.className.trim().split(/\s+/).slice(0, 2).join(".") : ""}`;
+
+  for (const el of document.querySelectorAll("body *")) {
+    const cs = getComputedStyle(el);
+    if (cs.display === "none" || cs.visibility === "hidden") continue;
+    const r = el.getBoundingClientRect();
+    if (!r.width && !r.height) continue;
+
+    // 3. Nothing glows, and depth is inked rather than lit. Blur is what the
+    //    Flat-At-Rest Rule is actually about — the system's own two shadows are
+    //    box-shadows, and both are zero-blur. A zero-blur shadow is a hairline
+    //    drawn with the shadow property (which is how the default theme draws
+    //    the code-group tab rule); a blurred one is elevation, and this world
+    //    has none.
+    for (const shadow of (cs.boxShadow === "none" ? [] : cs.boxShadow.split(/,(?![^(]*\))/))) {
+      const lengths = shadow.replace(/\w+\([^)]*\)/g, "").match(/-?[\d.]+px/g) ?? [];
+      const blur = parseFloat(lengths[2] ?? "0");
+      if (blur > 0) add("shadow-at-rest", `${label(el)} blur ${blur}px`);
+    }
+    if (cs.textShadow !== "none") add("text-shadow", `${label(el)} ${cs.textShadow}`);
+
+    // 4. Zero radius everywhere. The world has no rounded corner.
+    for (const corner of [
+      cs.borderTopLeftRadius,
+      cs.borderTopRightRadius,
+      cs.borderBottomLeftRadius,
+      cs.borderBottomRightRadius,
+    ]) {
+      if (corner !== "0px" && corner !== "0%")
+        add("non-zero-radius", `${label(el)} ${corner}`);
+    }
+
+    // 5. The type ramp, per face. A size outside the ramp is a step nobody
+    //    declared; a Silkscreen size off the 8px em is a pixel that is no
+    //    longer square.
+    const hasOwnText = [...el.childNodes].some(
+      (n) => n.nodeType === 3 && n.textContent.trim(),
+    );
+    if (!hasOwnText) continue;
+    const size = Math.round(parseFloat(cs.fontSize) * 100) / 100;
+    const isDisplay = /silkscreen/i.test(cs.fontFamily);
+    if (isDisplay) {
+      if (size % 8 !== 0 || !DISPLAY_RAMP.has(size))
+        add("off-display-ramp", `${label(el)} ${size}px`);
+    } else if (!TEXT_RAMP.has(size)) {
+      add("off-text-ramp", `${label(el)} ${size}px`);
+    }
+  }
+  return findings;
+}
+
+const browser = await puppeteer.connect({ browserURL: CDP });
+const routes = process.env.ROUTES ? process.env.ROUTES.split(",") : builtRoutes();
+if (!routes.length) {
+  console.error(`no built pages under ${DIST} — run \`vitepress build\` first`);
+  process.exit(2);
+}
+console.log(`${routes.length} pages × ${PLANS.length} plans`);
+
+/** Anything the page fetches from off-box. The Google Fonts import this RFC
+ *  removed was invisible to `pnpm audit` and to the postmortem gate, because it
+ *  is not a package — the only place it shows up is here. */
+const OFFBOX = new Set();
+const failures = [];
+const surveyed = new Map();
+
+for (const plan of PLANS) {
+  const page = await browser.newPage();
+  await page.setViewport({ width: plan.width, height: plan.height });
+  page.on("request", (req) => {
+    const u = new URL(req.url());
+    if (u.protocol !== "data:" && u.hostname !== new URL(BASE).hostname)
+      OFFBOX.add(u.origin);
+  });
+  // VitePress stores `system|light|dark` and resolves it before first paint;
+  // the gate sets the stored preference rather than emulating the OS, so it
+  // measures the same code path a reader's toggle does.
+  await page.goto(BASE + "/", { waitUntil: "domcontentloaded" });
+  await page.evaluate(
+    (t) => localStorage.setItem("vitepress-theme-appearance", t),
+    plan.theme,
+  );
+
+  for (const route of routes) {
+    await page.goto(BASE + route, { waitUntil: "networkidle0" });
+    const rendition = await page.evaluate(() =>
+      document.documentElement.getAttribute("data-theme"),
+    );
+    if (rendition !== plan.theme)
+      failures.push({ plan: plan.name, route, rule: "rendition", detail: rendition });
+
+    const findings = await page.evaluate(assertions, [...TEXT_RAMP], [...DISPLAY_RAMP]);
+    await page.evaluate(AXE_SOURCE);
+    const axe = await page.evaluate(
+      async (tags) => (await window.axe.run(document, { runOnly: { type: "tag", values: tags } })).violations,
+      TAGS,
+    );
+
+    for (const f of findings) {
+      if (SURVEY) {
+        const k = `${f.rule} ${f.detail}`;
+        surveyed.set(k, (surveyed.get(k) ?? 0) + 1);
+      } else failures.push({ plan: plan.name, route, ...f });
+    }
+    for (const v of axe) {
+      for (const n of v.nodes) {
+        const f = {
+          rule: `axe:${v.id}`,
+          detail: `${n.target.join(" ")} — ${(n.failureSummary ?? v.help).replace(/\s+/g, " ").slice(0, 160)}`,
+        };
+        if (SURVEY) {
+          const k = `${f.rule} ${f.detail}`;
+          surveyed.set(k, (surveyed.get(k) ?? 0) + 1);
+        } else failures.push({ plan: plan.name, route, ...f });
+      }
+    }
+  }
+  await page.close();
+  console.log(`  ${plan.name} done`);
+}
+
+if (OFFBOX.size) {
+  const detail = [...OFFBOX].join(", ");
+  if (SURVEY) surveyed.set(`offbox-request ${detail}`, 1);
+  else failures.push({ plan: "-", route: "-", rule: "offbox-request", detail });
+}
+
+await browser.disconnect();
+
+if (SURVEY) {
+  for (const [k, n] of [...surveyed].sort((a, b) => b[1] - a[1]))
+    console.log(`${String(n).padStart(5)}  ${k}`);
+  process.exit(0);
+}
+
+if (failures.length) {
+  const byRule = new Map();
+  for (const f of failures) {
+    if (!byRule.has(f.rule)) byRule.set(f.rule, []);
+    byRule.get(f.rule).push(f);
+  }
+  console.error(`\n${failures.length} findings:\n`);
+  for (const [rule, fs] of [...byRule].sort((a, b) => b[1].length - a[1].length)) {
+    console.error(`${rule} — ${fs.length}`);
+    for (const f of fs.slice(0, 8))
+      console.error(`    ${f.plan} ${f.route} — ${f.detail}`);
+    if (fs.length > 8) console.error(`    … ${fs.length - 8} more`);
+  }
+  process.exit(1);
+}
+console.log("clean");

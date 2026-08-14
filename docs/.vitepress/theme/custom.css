@@ -1,0 +1,609 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   BatleHub docs — component rules.
+
+   THIS FILE CONTAINS NO COLOUR AND NO `--vp-*` DECLARATION. Colours are decided
+   once, in `ui/src/design/tokens.css`, copied here by `task ui:tokens`, and
+   handed to VitePress by `vp-bridge.css`. A component that needs a colour
+   reaches for a design token; a default-theme rule that needs one gets it from
+   the bridge. What used to live here — 12 `--bh-*` tokens declared over the top
+   of the ones `tokens.css` already decides, an out-of-gamut crimson, six glows,
+   four shadows, eight rounded corners and a Google Fonts import — was the world
+   DESIGN.md replaced, still in production. See RFC 0005 §2.
+
+   Load order is `tokens.css` → `vp-bridge.css` → this file: declare, map, use.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Reading ─────────────────────────────────────────────────────────────────
+   The Reading Role Rule. Prose read for minutes takes 16px at line-height 1.7
+   over a 68ch measure — not the 13px/1.6 the console spends on a caption, and
+   not the console's 15px Row step either: three things compound to earn the
+   extra leading, and none of them applies to a list row. A 67-character line is
+   long, light ink on a dark ground needs compensation, and a monospace face
+   offers no word-shape cue for the return sweep.
+
+   The measure is set on the text elements rather than on the column, so tables
+   and code blocks keep the full width and scroll inside themselves (The
+   Own-Container Overflow Rule) instead of being squeezed to prose width.
+
+   JetBrains Mono's advance is exactly 0.6em, so `ch` here is a literal
+   character count: 68ch = 652.8px at 16px.
+   ────────────────────────────────────────────────────────────────────────── */
+.vp-doc p,
+.vp-doc li,
+.vp-doc blockquote p,
+.vp-doc dd,
+.vp-doc summary {
+  font-size: var(--t-sub);
+  line-height: 1.7;
+  max-width: 68ch;
+}
+
+.vp-doc ul,
+.vp-doc ol {
+  padding-left: var(--s5);
+}
+
+/* Tracking is NOT part of the light-on-dark compensation. The Tracking Ladder
+   Rule ends at "lowercase text is never tracked", and it wins over the generic
+   advice; the leading carries it alone. Stated as a declaration rather than as
+   an omission so a future edit has to argue with it. */
+.vp-doc p {
+  letter-spacing: 0;
+}
+
+/* ── Headings ────────────────────────────────────────────────────────────────
+   Two faces, and the rank is not carried by size. A Silkscreen 16px h2 renders
+   a 27.2px box while the JetBrains Mono 20px h3 under it renders 34px, so the
+   subordinate heading is physically larger — accepted, because the face
+   changes, the case changes and the tracking changes, and those three read as a
+   level before size is consulted at all (RFC 0005 Q12).
+
+   The page title takes Pixel Medium (24px) rather than the Display step, which
+   is the one place this surface departs from the console. Display is 56 → 104px
+   and is spent on "the registry name at the top of the sheet" — a short word in
+   a full-bleed sheet. A docs title is an arbitrary technical phrase inside a
+   688px measure, and Silkscreen has no hyphenation: "Vulnerability" at 104px is
+   about 1000px wide and cannot wrap, which would put a horizontal scrollbar on
+   the body. The Display step is still spent once on this site — on the home
+   hero, where the word is short and the column is the viewport.
+
+   Every Silkscreen size below is an integer multiple of 8 (The Integer Em
+   Rule); the mono steps are the data ramp's.
+   ────────────────────────────────────────────────────────────────────────── */
+.vp-doc h1 {
+  font-family: var(--face-display);
+  font-weight: 700;
+  font-size: var(--t-px-md);
+  line-height: 1.2;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+}
+
+.vp-doc h2 {
+  font-family: var(--face-display);
+  font-weight: 700;
+  font-size: var(--t-px-sm);
+  line-height: 1.3;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  /* The No-Container Rule: regions are separated by a full-width hairline, not
+     by a box. This is the docs site's section edge. */
+  border-top: 1px solid var(--rule-soft);
+  padding-top: var(--s5);
+  margin-top: var(--s6);
+}
+
+/* Several pages already separate their sections with a `---` in the markdown.
+   That rule and the heading's own rule are the same rule drawn twice, 40px
+   apart, with nothing between them — the section edge belongs to the heading,
+   so the heading yields when the author has already drawn one. */
+.vp-doc hr + h2 {
+  border-top: 0;
+  padding-top: 0;
+  margin-top: var(--s5);
+}
+
+.vp-doc h3 {
+  font-family: var(--face-text);
+  font-weight: 600;
+  font-size: var(--t-head);
+  line-height: 1.4;
+  letter-spacing: 0;
+  color: var(--ink);
+  margin-top: var(--s5);
+}
+
+/* Meta, uppercase, tracked at 0.10em — the Tracking Ladder's step for inline
+   chrome, which is what a fourth-level heading is by the time a page needs one. */
+.vp-doc h4,
+.vp-doc h5,
+.vp-doc h6 {
+  font-family: var(--face-text);
+  font-weight: 600;
+  font-size: var(--t-meta);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-dim);
+  margin-top: var(--s5);
+}
+
+/* ── Links ───────────────────────────────────────────────────────────────────
+   Underlined at rest, and this is a correction rather than a preference. No
+   element changes state on colour alone, and the console's own rendered gate
+   caught the failure this rule prevents: crimson on dim ink measured 1.28:1
+   against the surrounding text, so a link that announced itself by colour only
+   announced itself to nobody. Chrome links (nav, sidebar, outline) are exempt —
+   they are not embedded in a text block, which is the condition the rule is
+   about.
+   ────────────────────────────────────────────────────────────────────────── */
+.vp-doc a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+
+.vp-doc a:hover {
+  text-decoration-thickness: 2px;
+}
+
+/* ── Focus ───────────────────────────────────────────────────────────────────
+   Signal amber, 2px solid at 2px offset, and nothing else in the system is
+   allowed to use this colour. 13.07:1 on near-black, 4.48:1 on paper.
+   ────────────────────────────────────────────────────────────────────────── */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+
+/* ── Flat at rest ────────────────────────────────────────────────────────────
+   Zero radius everywhere — the world has no rounded corner — restated on the
+   elements the default theme rounds with a literal rather than through a token.
+   The five `--vp-shadow-*` tokens are neutralised in `vp-bridge.css`, which is
+   where every `--vp-*` declaration lives.
+   ────────────────────────────────────────────────────────────────────────── */
+/* This is the file's only `!important`, and it earns it. "Zero radius
+   everywhere. The world has no rounded corner" is an absolute rule, and the
+   default theme rounds fourteen things from inside single-file components —
+   the copy button, the search field and its key caps, the appearance toggle and
+   its knob, the outline marker, the skip link, the nav links, the social icons,
+   the hero image's backdrop. Every one carries a `[data-v-…]` on top of its
+   class, so overriding them by name means naming them all, at raised
+   specificity, and re-checking the list on every VitePress upgrade. A law that
+   applies to every box is shorter and cannot go stale.
+   `docs:design:rendered` measures the result rather than trusting it. */
+*,
+*::before,
+*::after {
+  border-radius: var(--radius) !important;
+}
+
+/* ── Navbar ──────────────────────────────────────────────────────────────────
+   A hairline rule instead of the default's shadow, and no backdrop texture: a
+   texture may only occupy a box that holds nothing, and this one holds the
+   whole navigation.
+   ────────────────────────────────────────────────────────────────────────── */
+.VPNav {
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.VPNavBarTitle .title {
+  font-family: var(--face-display);
+  font-weight: 700;
+  font-size: var(--t-px-sm);
+  letter-spacing: 0.04em;
+  color: var(--ink);
+}
+
+/* The label lives in a span inside the link, and the span carries its own size,
+   so setting it on the anchor alone leaves the ramp unchanged. Measured. */
+:root .VPNavBarMenuLink,
+:root .VPNavBarMenuLink > span,
+:root .VPNavBarMenuGroup .button .text,
+:root .VPNavBarMenuGroup .button .text > span,
+:root .VPNavScreenMenuLink {
+  font-size: var(--t-meta);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+/* The pager and the mobile local-nav dropdown — chrome, so Meta. */
+:root .pager-link .title,
+:root .pager-link .desc,
+:root .VPLocalNavOutlineDropdown button .menu-text {
+  font-size: var(--t-meta);
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────────────────
+   A standalone section label is the Tracking Ladder's widest step, 0.16em.
+   ────────────────────────────────────────────────────────────────────────── */
+.VPSidebar {
+  border-right: 1px solid var(--rule-soft);
+}
+
+.VPSidebarItem.level-0 > .item > .text {
+  font-size: var(--t-meta);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--ink-dim);
+}
+
+.VPSidebarItem .link .text {
+  font-size: var(--t-body);
+}
+
+.VPSidebarItem.is-active > .item > .link .text {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Fill is not a dependable state channel in either rendition, so the active
+   item is carried by an inked edge and the ink itself, not by a tint. */
+.VPSidebarItem.is-active > .item {
+  border-left: 2px solid var(--accent);
+  padding-left: calc(var(--s3) - 2px);
+  margin-left: calc(var(--s3) * -1);
+}
+
+/* ── Inline code and code blocks ─────────────────────────────────────────── */
+.vp-doc :not(pre) > code {
+  border: 1px solid var(--rule-soft);
+  padding: 1px var(--s1);
+}
+
+/* The default theme sizes inline code inside a heading at 0.9em, which lands on
+   14.4px under a 16px heading and 18px under a 20px one — two steps nobody
+   declared. A quoted identifier is data, so it takes a data step. */
+:root .vp-doc h1 code,
+:root .vp-doc h2 code,
+:root .vp-doc h3 code {
+  font-size: var(--t-sub);
+}
+
+:root .vp-doc h4 code,
+:root .vp-doc h5 code,
+:root .vp-doc h6 code {
+  font-size: var(--t-meta);
+}
+
+.vp-doc div[class*="language-"] {
+  border: 1px solid var(--rule-soft);
+}
+
+/* A code-group tab is a filename — data, not chrome — so it takes the Body step
+   and keeps its case. Lowercase text is never tracked. */
+:root .vp-code-group .tabs label {
+  font-size: var(--t-body);
+}
+
+.vp-doc div[class*="language-"] .lang {
+  font-size: var(--t-meta);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+/* ── Tables ──────────────────────────────────────────────────────────────────
+   Own-container overflow: the table scrolls inside itself so the body never
+   does. The Data Face Rule: every number a reader might compare is tabular.
+   ────────────────────────────────────────────────────────────────────────── */
+.vp-doc table {
+  display: block;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  width: max-content;
+  max-width: 100%;
+  border: 1px solid var(--rule-soft);
+  border-collapse: collapse;
+  font-size: var(--t-row);
+}
+
+.vp-doc th,
+.vp-doc td {
+  font-size: var(--t-row);
+  font-variant-numeric: tabular-nums;
+  border: 1px solid var(--rule-soft);
+}
+
+/* Column heads take the Tracking Ladder's 0.14em step. */
+.vp-doc th {
+  font-size: var(--t-meta);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--ink-dim);
+  text-align: left;
+  border-bottom: 1px solid var(--rule-strong);
+}
+
+/* Zebra striping is a fill, and no fill step separates two surfaces in either
+   rendition. The hairline grid above does the separating. */
+.vp-doc tr,
+.vp-doc tbody tr:nth-child(2n) {
+  background: transparent;
+}
+
+/* ── Blockquotes and callouts ────────────────────────────────────────────────
+   The default theme ships `--vp-custom-block-*-border: transparent`, which
+   leaves a callout separated from the page by its soft fill alone — exactly
+   what The Undependable Fill Rule forbids. Each block gets a rule of its own
+   category's colour, so hue, word and edge all say the same thing.
+   ────────────────────────────────────────────────────────────────────────── */
+.vp-doc blockquote {
+  border-left: 2px solid var(--rule-strong);
+  padding-left: var(--s4);
+  color: var(--ink-dim);
+}
+
+.custom-block {
+  border-left: 2px solid var(--rule-strong);
+}
+
+.custom-block.warning,
+.custom-block.important {
+  border-left-color: var(--copper);
+}
+
+.custom-block.danger,
+.custom-block.caution {
+  border-left-color: var(--accent);
+}
+
+.custom-block .custom-block-title {
+  font-size: var(--t-meta);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────────────────
+   The primary action's label is Pixel Small, uppercase, tracked 0.04em. Hover
+   is an inked ring rather than a fill change, because fill is a secondary cue
+   that confirms what another channel already said.
+
+   The `:root` prefix is not decoration. The default theme's own rules are
+   single-file-component styles, so every one of them carries a `[data-v-…]`
+   attribute selector on top of its class — `.VPButton.medium[data-v-…]` is
+   three, and a two-class override loses to it silently. Where a rule below
+   competes with a scoped one, the prefix is what makes it land; where it does
+   not, it is left off. Which is which was measured in a browser, not guessed
+   (`docs:design:rendered`).
+   ────────────────────────────────────────────────────────────────────────── */
+:root .VPButton {
+  font-family: var(--face-display);
+  font-weight: 700;
+  font-size: var(--t-px-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: var(--radius);
+  transition: box-shadow var(--resolve);
+}
+
+/* The default theme sets both the pill and a 14px label on the size modifier,
+   and 14px is not a multiple of the 8px em — the bitmap face's pixel stops
+   being square. Pixel Small is what DESIGN.md spends on "the primary action's
+   label", and both modifiers take it. */
+:root .VPButton.medium,
+:root .VPButton.big {
+  border-radius: var(--radius);
+  font-size: var(--t-px-sm);
+}
+
+/* One of the system's two permitted box-shadows: hard-edged, zero-blur, and
+   belonging to the primary action. It is a ring, not a glow. */
+.VPButton.brand:hover,
+.VPButton.alt:hover {
+  box-shadow:
+    0 0 0 2px var(--ground),
+    0 0 0 3px var(--accent);
+}
+
+/* ── Home ────────────────────────────────────────────────────────────────────
+   The one poster-scale element on the site, and its steps are measured rather
+   than inherited. `--t-display` is 56 → 72 → 88 → 104, authored for a
+   full-bleed specimen head; this hero is a two-column box whose text side is
+   592px wide at 1440 once the logo takes its column, and 336px at 390.
+   Silkscreen's advance is 0.848em, so "BatleHub" needs 706px at 104 and 380px
+   at 56 — and Silkscreen has no hyphenation, so a word that does not fit breaks
+   between glyphs rather than wrapping. Both of those measured as an overflow.
+
+   9× at 640 and up, 5× below it. Both are integer multiples of the 8px em,
+   which is the rule that actually governs this face; the Display ramp's own
+   steps are a property of the surface it was authored for.
+   ────────────────────────────────────────────────────────────────────────── */
+:root .VPHero .name {
+  font-family: var(--face-display);
+  font-weight: 700;
+  font-size: 40px; /* 5× */
+  line-height: 0.92;
+  /* The display step's leading is 0.92, and Silkscreen has no descenders, so
+     the name sits hard against whatever follows it unless the space is stated. */
+  margin-bottom: var(--s5);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+@media (min-width: 640px) {
+  :root .VPHero .name {
+    font-size: 72px; /* 9× */
+  }
+}
+
+.VPHero .text {
+  font-family: var(--face-text);
+  font-weight: 600;
+  font-size: var(--t-head);
+  line-height: 1.4;
+  letter-spacing: 0;
+  color: var(--ink);
+}
+
+.VPHero .tagline {
+  font-family: var(--face-text);
+  font-size: var(--t-sub);
+  line-height: 1.7;
+  color: var(--ink-dim);
+}
+
+:root .VPFeature {
+  border: 1px solid var(--rule-soft);
+  border-radius: var(--radius);
+  transition: border-color var(--resolve);
+}
+
+:root .VPFeature:hover {
+  border-color: var(--rule-strong);
+}
+
+:root .VPFeature .icon {
+  border: 1px solid var(--rule-soft);
+  background: var(--ground-raised);
+  /* The feature glyphs are emoji, so this is an icon size rather than a step in
+     the ramp; it takes the Head step so it is still a size the system names. */
+  font-size: var(--t-head);
+}
+
+.VPFeature .title {
+  font-family: var(--face-display);
+  font-weight: 700;
+  font-size: var(--t-px-sm);
+  letter-spacing: 0.02em;
+  color: var(--ink);
+}
+
+.VPFeature .details {
+  font-size: var(--t-body);
+  line-height: 1.6;
+  color: var(--ink-dim);
+}
+
+.VPHome .vp-doc.container {
+  padding-top: var(--s4);
+  padding-bottom: var(--s6);
+}
+
+.VPHome .vp-doc h2 {
+  margin-top: 0;
+  padding-top: var(--s6);
+}
+
+/* ── 404 ─────────────────────────────────────────────────────────────────────
+   A built page like any other, and one the gate reaches, so it wears the same
+   ramp: the code takes a Display step, the rest the reading and chrome ones.
+   ────────────────────────────────────────────────────────────────────────── */
+:root .NotFound .code {
+  font-family: var(--face-display);
+  font-weight: 700;
+  font-size: 56px; /* 7× */
+  letter-spacing: 0.02em;
+  color: var(--ink-dim);
+}
+
+:root .NotFound .title {
+  font-family: var(--face-display);
+  font-weight: 700;
+  font-size: var(--t-px-sm);
+  letter-spacing: 0.02em;
+}
+
+:root .NotFound .quote {
+  font-size: var(--t-sub);
+  line-height: 1.7;
+  border-left: 2px solid var(--rule-strong);
+  color: var(--ink-dim);
+}
+
+:root .NotFound .action .link {
+  font-size: var(--t-meta);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+/* ── Footer and outline ──────────────────────────────────────────────────── */
+.VPFooter {
+  border-top: 1px solid var(--rule-soft);
+}
+
+.VPFooter .message,
+.VPFooter .copyright {
+  font-size: var(--t-meta);
+  color: var(--ink-dim);
+}
+
+.VPDocOutlineItem a,
+:root .outline-link,
+:root .outline-title {
+  font-size: var(--t-body);
+}
+
+/* Meta, uppercase, tracked at 0.16em — a standalone section label. */
+:root .outline-title {
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: var(--t-meta);
+}
+
+.VPDocOutlineItem.is-active a {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* ── The inline [[toc]] ──────────────────────────────────────────────────────
+   Hidden where the right rail already shows it; visible below 960px, where the
+   rail is not rendered at all.
+   ────────────────────────────────────────────────────────────────────────── */
+@media (min-width: 960px) {
+  nav.table-of-contents {
+    display: none;
+  }
+}
+
+/* ── The config generator ────────────────────────────────────────────────────
+   The one page that is a tool rather than a document, and the only one that
+   opts out of the 688px measure. Its own styling is entirely `--vp-*`-driven,
+   so the bridge repaints it without it being touched.
+   ────────────────────────────────────────────────────────────────────────── */
+.page-config-gen .VPDoc .container,
+.page-config-gen .VPDoc .content,
+.page-config-gen .VPDoc .content-container {
+  max-width: none;
+}
+
+/* ── Scrollbars (Chromium/WebKit) ────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--ground-sunk);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--rule-strong);
+  border-radius: var(--radius);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
+
+/* ── Reduced motion ──────────────────────────────────────────────────────────
+   A blanket neutraliser rather than per-component opt-outs, for the same reason
+   `ui/` uses one: the animations that matter come from the default theme's own
+   transitions, which no rule of ours can reach individually. Near-zero rather
+   than `none` so transition-end events still fire. WCAG 2.2 AA, 2.3.3.
+   ────────────────────────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

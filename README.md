@@ -73,7 +73,7 @@ Multiple instances of the same registry type can run in parallel (e.g. a private
 - **Package Explorer** — browse and search all cached and locally-published packages across every registry from a single `/explore` page. Filter by registry, sort by downloads, name, or last access. The per-package detail view shows every version alongside its firewall status (Clear / Blocked / Yanked) and beta-channel gate state. An upstream search surfaces packages not yet cached. Fine-grained RBAC lets you grant explore access independently of proxy/download access (e.g. read-only CI tokens cannot browse, but developer accounts can).
 - **Hot reload** — update registries, RBAC, and policies without restarting. A file watcher loads a pending reload when `config.toml` changes; the admin confirms it via the UI or `POST /api/v1/admin/config/pending/apply`. The immediate-reload endpoint (`POST /api/v1/admin/config/reload`) covers automation pipelines. Disable with `BATLEHUB_DISABLE_HOT_RELOAD=1` (e.g. read-only Kubernetes ConfigMaps). All reloads are recorded in an audit trail.
 - **Global admin banner** — broadcast an info / warning / error message to all website visitors from the `/admin/config-reload` UI page or `PUT /api/v1/admin/banner`. The banner is automatically set during a config reload and cleared on completion. Backed by in-memory, Redis, or PostgreSQL depending on your cache backend — all replicas see the same message in HA deployments.
-- **SBOM generation** — automatically generate SPDX 2.3 and CycloneDX 1.4 Software Bills of Materials for every cached and locally-published artifact. Dependency manifests are extracted from archives (`go.mod`, `Cargo.toml`, `package.json`, `pom.xml`, `requirements.txt`) or fetched from upstream APIs (GitHub, npm). Export a merged org-level SBOM covering all artifacts served in a time window via `GET /api/v1/sbom/export`; per-artifact SBOMs are available from the Package Explorer and via `GET /api/v1/sbom/{registry}/{name}/{version}`. Enable with `[registries.sbom]` in `config.toml`; optionally deny publishing if no manifest is found (`required = true`). See [`docs/sbom.md`](docs/sbom.md).
+- **SBOM generation** — automatically generate SPDX 2.3 and CycloneDX 1.4 Software Bills of Materials for every cached and locally-published artifact. Dependency manifests are extracted from archives (`go.mod`, `Cargo.toml`, `package.json`, `pom.xml`, `requirements.txt`) or fetched from upstream APIs (GitHub, npm). Export a merged org-level SBOM covering all artifacts served in a time window via `GET /api/v1/sbom/export`; per-artifact SBOMs are available from the Package Explorer and via `GET /api/v1/sbom/{registry}/{name}/{version}`. Enable with `[registries.sbom]` in `config.toml`; optionally deny publishing if no manifest is found (`required = true`). See [`docs/guide/sbom.md`](docs/guide/sbom.md).
 - **OpenAPI** — full Swagger UI at `/swagger-ui/` and spec dump via `batlehub dump-spec`.
 
 ---
@@ -138,7 +138,7 @@ cargo install --git https://github.com/batleforc/batlehub batlehub-cli
 
 ## Configuration at a glance
 
-The server is configured with a single TOML file (`config.toml` by default, override with `--config`). See [`docs/configuration.md`](docs/configuration.md) for the full reference and worked examples.
+The server is configured with a single TOML file (`config.toml` by default, override with `--config`). See [`docs/guide/configuration.md`](docs/guide/configuration.md) for the full reference and worked examples.
 
 ### Minimal example
 
@@ -208,7 +208,7 @@ user  = ["releases:read", "source:read"]
 admin = ["*"]
 ```
 
-Three auth schemes are supported: `bearer`, `basic`, and `header` (custom header such as `X-API-Key`). See [docs/configuration.md § Self-Hosted / Private Registries](docs/configuration.md#9-self-hosted--private-registries) for the full reference.
+Three auth schemes are supported: `bearer`, `basic`, and `header` (custom header such as `X-API-Key`). See [docs/guide/configuration.md § Self-Hosted / Private Registries](docs/guide/configuration.md#9-self-hosted--private-registries) for the full reference.
 
 ```sh
 export GONOSUMCHECK="*"
@@ -473,7 +473,7 @@ curl -X POST -H "Authorization: Bearer <token>" \
 
 Artifact signing is supported on both module and provider manifest uploads — attach `X-Artifact-Signature` (base64) and `X-Signature-Type` headers. The signature is stored and returned on every artifact download or provider download-info response.
 
-See [`docs/configuration.md § Registry modes`](docs/configuration.md#registry-modes) for the full reference including hybrid mode and client-side setup.
+See [`docs/guide/configuration.md § Registry modes`](docs/guide/configuration.md#registry-modes) for the full reference including hybrid mode and client-side setup.
 
 ### Composer (private PHP package registry)
 
@@ -970,7 +970,7 @@ Corpus and crash inputs are saved under `fuzz/corpus/<target>/` and `fuzz/artifa
 
 ### Adding a new registry type
 
-See [`docs/adding-a-registry.md`](docs/adding-a-registry.md) for a step-by-step guide with code templates.
+See [`docs/contributing/adding-a-registry.md`](docs/contributing/adding-a-registry.md) for a step-by-step guide with code templates.
 
 ---
 
@@ -1008,7 +1008,7 @@ helm install batlehub ./helm/batlehub \
   --set "auth.tokens[0].role=admin"
 ```
 
-See [`website/guide/installation.md`](website/guide/installation.md) for the full Helm reference including values, S3 storage, and GitOps patterns.
+See [`docs/guide/installation.md`](docs/guide/installation.md) for the full Helm reference including values, S3 storage, and GitOps patterns.
 
 The image uses a multi-stage build (Rust builder → Node UI builder → Debian slim runtime). The compiled binary and built SPA are copied into the final stage.
 
@@ -1023,7 +1023,7 @@ Key settings can be overridden at runtime without editing the config file:
 | `PROXY_CACHE__STORAGE__PATH` | `storage.path` (single filesystem backend) |
 | `PROXY_CACHE__OTEL__ENDPOINT` | `otel.endpoint` |
 
-Full list in [`docs/configuration.md § Environment Variable Overrides`](docs/configuration.md#5-environment-variable-overrides).
+Full list in [`docs/guide/configuration.md § Environment Variable Overrides`](docs/guide/configuration.md#5-environment-variable-overrides).
 
 ---
 
@@ -1031,25 +1031,25 @@ Full list in [`docs/configuration.md § Environment Variable Overrides`](docs/co
 
 | Document | Contents |
 |----------|---------|
-| [`website/`](website/) | VitePress documentation site — run `task website:dev` to browse locally |
-| [`website/guide/installation.md`](website/guide/installation.md) | Installation guide: Docker Compose, binary, Helm chart |
-| [`website/guide/administration.md`](website/guide/administration.md) | Administration: config, auth, S3, health, package management |
-| [`website/guide/user.md`](website/guide/user.md) | User guide: client setup and publishing for all registry types |
-| [`docs/configuration.md`](docs/configuration.md) | Full TOML reference, permissions, worked examples |
-| [`docs/configuration.md § Registry modes`](docs/configuration.md#registry-modes) | Private registry modes (local / hybrid) |
-| [`docs/configuration.md § Self-Hosted`](docs/configuration.md#9-self-hosted--private-registries) | Upstream auth (Bearer / Basic / header) and custom CA certificates |
-| [`docs/publishing.md`](docs/publishing.md) | Step-by-step guide for publishing packages (npm, Cargo, VSIX, Go modules, gems, Maven artifacts, Terraform modules/providers, PyPI wheels, conda packages) |
-| [`docs/sbom.md`](docs/sbom.md) | SBOM configuration, format reference, API endpoints, and export guide |
-| [`docs/adding-a-registry.md`](docs/adding-a-registry.md) | Step-by-step guide for implementing a new registry adapter |
+| [`docs/`](docs/) | VitePress documentation site — run `task docs:dev` to browse locally |
+| [`docs/guide/installation.md`](docs/guide/installation.md) | Installation guide: Docker Compose, binary, Helm chart |
+| [`docs/guide/administration.md`](docs/guide/administration.md) | Administration: config, auth, S3, health, package management |
+| [`docs/guide/user.md`](docs/guide/user.md) | User guide: client setup and publishing for all registry types |
+| [`docs/guide/configuration.md`](docs/guide/configuration.md) | Full TOML reference, permissions, worked examples |
+| [`docs/guide/configuration.md § Registry modes`](docs/guide/configuration.md#registry-modes) | Private registry modes (local / hybrid) |
+| [`docs/guide/configuration.md § Self-Hosted`](docs/guide/configuration.md#9-self-hosted--private-registries) | Upstream auth (Bearer / Basic / header) and custom CA certificates |
+| [`docs/guide/publishing.md`](docs/guide/publishing.md) | Step-by-step guide for publishing packages (npm, Cargo, VSIX, Go modules, gems, Maven artifacts, Terraform modules/providers, PyPI wheels, conda packages) |
+| [`docs/guide/sbom.md`](docs/guide/sbom.md) | SBOM configuration, format reference, API endpoints, and export guide |
+| [`docs/contributing/adding-a-registry.md`](docs/contributing/adding-a-registry.md) | Step-by-step guide for implementing a new registry adapter |
 | `/swagger-ui/` (runtime) | Interactive API docs |
 
 ## Roadmap
 
-See [`ROADMAP.md`](ROADMAP.md) for the full list of planned features, or browse the [Roadmap page on the documentation site](website/guide/roadmap.md).
+See [`ROADMAP.md`](ROADMAP.md) for the full list of planned features, or browse the [Roadmap page on the documentation site](docs/guide/roadmap.md).
 
 ## Contributing, security, and license
 
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — contributor guide (points to [`docs/contributing.md`](docs/contributing.md))
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — contributor guide (points to [`docs/contributing/contributing.md`](docs/contributing/contributing.md))
 - [`SECURITY.md`](SECURITY.md) — supported versions and how to report a vulnerability
 - [`LICENSE`](LICENSE) — Apache License 2.0
 

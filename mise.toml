@@ -24,7 +24,7 @@ semgrep = "latest"                  # static analysis (Rust / TS / secrets rules
 "github:mlab-sh/postmortem" = "2.0.0"
 uv = "latest"
 python = "latest"
-pnpm = "11" # package manager for ui/ and website/ (settings in pnpm-workspace.yaml + packageManager field)
+pnpm = "11" # package manager for ui/ and docs/ (settings in pnpm-workspace.yaml + packageManager field)
 
 #"github:batleforc/batlehub" = { version = "latest", asset_pattern = "batlehub-cli-*" }
 
