@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod blocking;
 pub mod cache_control;
 pub mod eviction;
 pub mod explore_cache;
@@ -15,6 +16,7 @@ pub mod vulnerability;
 pub mod warming;
 
 pub use admin::{AdminService, BulkActionResult, BulkBlockItem};
+pub use blocking::strip_blocked_from_packument;
 pub use cache_control::{parse_cache_control, CacheControlDirectives};
 pub use eviction::{CoherenceReport, EvictionConfig, EvictionReport, EvictionService};
 pub use explore_cache::ExploreCache;

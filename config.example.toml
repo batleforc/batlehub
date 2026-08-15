@@ -789,6 +789,74 @@ anonymous = ["releases:read"]
 # startup. A registry name that is not a valid DNS label simply gets no wildcard
 # host, with a warning at GET /api/v1/admin/config/warnings.
 
+# ── Notifications ─────────────────────────────────────────────────────────────
+#
+# Outbound channels for package lifecycle events (package_published,
+# package_yanked, package_unyanked, package_deleted), plus inbound endpoints
+# external systems can post their own events to.
+#
+# Declaring a channel here does not send anything on its own: a channel is a
+# *destination*, and which events reach it is a subscription, managed at runtime
+# via /api/v1/admin/notifications/subscriptions (or the Notifications page in
+# the UI). Channels declared here are what those subscriptions can point at —
+# GET /api/v1/admin/notifications/channels lists them.
+#
+# Secrets accept ${VAR_NAME} like every other sensitive value in this file.
+#
+# [notifications]
+# enabled = true                    # default: true when the section is present
+#
+# --- Slack / Teams incoming webhook (the URL is the credential) ---
+# [[notifications.channels]]
+# name         = "ops-slack"
+# type         = "slack"            # slack | teams
+# url          = "${SLACK_WEBHOOK_URL}"
+# timeout_secs = 10                 # default: 10
+#
+# --- Generic HTTP webhook (the only channel type that signs its payloads) ---
+# [[notifications.channels]]
+# name         = "ci-webhook"
+# type         = "webhook"
+# url          = "https://ci.example.com/hooks/batlehub"
+# secret       = "${CI_WEBHOOK_SECRET}"  # adds X-BatleHub-Signature-256: sha256=<hex>
+# timeout_secs = 10
+#
+# --- Email over SMTP ---
+# [[notifications.channels]]
+# name          = "release-mail"
+# type          = "email"
+# smtp_host     = "smtp.example.com"
+# smtp_port     = 587               # default: 587
+# smtp_user     = "batlehub"        # optional
+# smtp_password = "${SMTP_PASSWORD}"  # optional
+# from          = "batlehub@example.com"
+# to            = ["ops@example.com", "sec@example.com"]
+# tls           = true              # STARTTLS; default: true
+# timeout_secs  = 10
+#
+# --- Inbound webhooks: POST /api/v1/webhooks/inbound/{name} ---
+# The endpoint is public (no admin auth). Without a secret any payload is
+# accepted, which is only safe on an internal network; with one, the request
+# must carry X-Hub-Signature-256: sha256=<hmac-hex> over the raw body.
+# Received events are listed at GET /api/v1/admin/notifications/inbound.
+#
+# [[notifications.inbound]]
+# name   = "ci-scanner"
+# secret = "${INBOUND_WEBHOOK_SECRET}"
+
+# ── Egress proxy (optional) ───────────────────────────────────────────────────
+#
+# Route every upstream fetch through an HTTP proxy. Set once here for the whole
+# server; any registry may override it with its own [registries.proxy] table
+# using the same four keys (useful when one upstream is reachable directly and
+# the rest are not).
+#
+# [proxy]
+# url      = "http://proxy.corp.example.com:3128"
+# username = "batlehub"                    # optional
+# password = "${PROXY_PASSWORD}"           # optional
+# no_proxy = "localhost,127.0.0.1,.internal"  # comma-separated hosts/suffixes
+
 # ── Vulnerability scanning ────────────────────────────────────────────────────
 #
 # Periodically re-check every cached SBOM against the OSV vulnerability database

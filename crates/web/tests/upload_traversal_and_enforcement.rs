@@ -160,7 +160,7 @@ async fn make_ns_upload_app(
         team_namespace: Some(Arc::clone(&ns_store)),
         sbom: None,
         explore_cache: None,
-        access_log: None,
+        package_repo: None,
     });
 
     let proxy_svc = Arc::new(ProxyService {

@@ -215,7 +215,15 @@ const SEEDS = {
       // refused. The component's documented fallback then writes the two `#`
       // lines that are the only path to `.cg-hl-comment` in the whole
       // generator — and it is a path a real reader on an old browser gets.
+      //
+      // Rollup names that chunk after the *file* it resolved, not the package,
+      // and hash-wasm's ESM entry is `dist/index.esm.js` — so the chunk ships as
+      // `index.esm.<hash>.js` and `/hash-wasm/` alone matched nothing. The
+      // import then succeeded, the fallback never ran, and `expect` below caught
+      // it. Keep both patterns: the package name in case the entry is ever
+      // renamed, and the entry name for what actually ships today.
       /hash-wasm/,
+      /\bindex\.esm\.[\w-]+\.js\b/,
     ],
     async drive(page) {
       // A token, because `[[auth.tokens]]` only emits for a non-empty value.

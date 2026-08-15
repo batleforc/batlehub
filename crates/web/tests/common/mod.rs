@@ -96,6 +96,40 @@ impl RegistryClient for FixedRegistry {
             cache_control: None,
         })
     }
+
+    /// A minimal but realistically-shaped npm packument: two stable versions and
+    /// a newer pre-release, `latest` on the newest stable, and `dist.tarball`
+    /// URLs pointing at the *upstream* — so a test can tell whether the proxy
+    /// rewrote them.
+    async fn fetch_version_document(&self, package: &str) -> Result<serde_json::Value, CoreError> {
+        if self.registry_type != "npm" {
+            return Err(CoreError::NotSupported(format!(
+                "{} has no version document",
+                self.registry_type
+            )));
+        }
+        let tarball = |v: &str| {
+            serde_json::json!({
+                "version": v,
+                "dist": { "tarball": format!("https://upstream.invalid/{package}/-/{package}-{v}.tgz") }
+            })
+        };
+        Ok(serde_json::json!({
+            "name": package,
+            "dist-tags": { "latest": "1.1.0", "next": "2.0.0-beta.1" },
+            "versions": {
+                "1.0.0": tarball("1.0.0"),
+                "1.1.0": tarball("1.1.0"),
+                "2.0.0-beta.1": tarball("2.0.0-beta.1"),
+            },
+            "time": {
+                "created": "2020-01-01T00:00:00.000Z",
+                "1.0.0": "2020-01-02T00:00:00.000Z",
+                "1.1.0": "2020-02-01T00:00:00.000Z",
+                "2.0.0-beta.1": "2020-03-01T00:00:00.000Z",
+            }
+        }))
+    }
 }
 pub const ADMIN_TOKEN: &str = "admin-token";
 pub const USER_TOKEN: &str = "user-token";
@@ -159,6 +193,21 @@ pub fn test_auth_providers() -> Vec<Arc<dyn AuthProvider>> {
     ]))]
 }
 pub fn make_local_svc(storage: Arc<dyn StorageBackend>) -> Arc<LocalRegistryService> {
+    make_local_svc_with_repo(storage, None)
+}
+
+/// `make_local_svc` with the admin package store attached, as `server/src/main.rs`
+/// wires it in production.
+///
+/// Without it the local service cannot see administrative blocks, so version
+/// listings would happily advertise a blocked version. Note this does **not**
+/// merge the two in-memory stores (`InMemoryLocalRegistry` holds published
+/// packages, `InMemoryPackageRepository` holds statuses — see CLAUDE.md); it
+/// only lets the local service ask the second one which versions are blocked.
+pub fn make_local_svc_with_repo(
+    storage: Arc<dyn StorageBackend>,
+    package_repo: Option<Arc<dyn PackageRepository>>,
+) -> Arc<LocalRegistryService> {
     Arc::new(LocalRegistryService {
         backend: Arc::new(InMemoryLocalRegistry::new()),
         storage,
@@ -172,7 +221,7 @@ pub fn make_local_svc(storage: Arc<dyn StorageBackend>) -> Arc<LocalRegistryServ
         team_namespace: None,
         sbom: None,
         explore_cache: None,
-        access_log: None,
+        package_repo,
     })
 }
 pub fn rbac_policy(repo: Arc<dyn PackageRepository>) -> RegistryPolicy {
@@ -498,7 +547,7 @@ pub async fn make_app_with_defaults(
     ]
     .into();
 
-    let local_svc = make_local_svc(storage.clone());
+    let local_svc = make_local_svc_with_repo(storage.clone(), Some(repo_dyn.clone()));
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
             registries,
@@ -573,7 +622,7 @@ pub fn local_registry_app_parts(
     let policies: HashMap<String, Arc<RegistryPolicy>> =
         [(name.to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
 
-    let local_svc = make_local_svc(storage.clone());
+    let local_svc = make_local_svc_with_repo(storage.clone(), Some(repo_dyn.clone()));
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
             registries,
@@ -659,7 +708,7 @@ pub fn empty_app_parts() -> EmptyAppParts {
     let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let local_svc = make_local_svc(storage.clone());
+    let local_svc = make_local_svc_with_repo(storage.clone(), Some(repo_dyn.clone()));
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig::default()),
         storage,
@@ -767,7 +816,7 @@ pub async fn make_app_with_eviction(
     let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let local_svc = make_local_svc(storage.clone());
+    let local_svc = make_local_svc_with_repo(storage.clone(), Some(repo_dyn.clone()));
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig::default()),
         storage: storage.clone(),
@@ -819,7 +868,7 @@ pub async fn make_app_with_warming(
     let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let local_svc = make_local_svc(storage.clone());
+    let local_svc = make_local_svc_with_repo(storage.clone(), Some(repo_dyn.clone()));
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig::default()),
         storage: storage.clone(),
@@ -1018,7 +1067,7 @@ pub async fn make_local_nuget_app(
     )]
     .into();
 
-    let local_svc = make_local_svc(storage.clone());
+    let local_svc = make_local_svc_with_repo(storage.clone(), Some(repo_dyn.clone()));
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
             registries,

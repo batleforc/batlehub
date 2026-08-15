@@ -218,6 +218,21 @@ tasks:
     cmds:
       - bash tests/interop/verify.sh
 
+  test:real-proxy:
+    desc: "Layer 4 smoke tests through a real proxy to real upstreams (needs mise + network; ~30 min)"
+    env:
+      # Turns every unmet prerequisite into a failure instead of a printed skip.
+      # Without it these tests return early when a toolchain or the network is
+      # missing, and libtest counts that as a pass — a suite of 17 could report
+      # "17 passed" having reached no upstream at all. A run that asks for them
+      # is asserting the prerequisites exist, so say so.
+      REAL_PROXY_REQUIRE: "1"
+    cmds:
+      # `--ignored` rather than `--include-ignored`: this file is entirely
+      # ignored-by-default scenarios, and there is nothing else in the binary to
+      # run alongside them.
+      - cargo test -p batlehub-examples --test real_proxy -- --ignored --nocapture {{.CLI_ARGS}}
+
   test:marketplace-heavy:
     desc: "Heavy marketplace integration: install weebo-bridge-notify into headless VS Code + IntelliJ from a local BatleHub instance (needs DATABASE_URL; downloads the IDEs on first run)"
     cmds:

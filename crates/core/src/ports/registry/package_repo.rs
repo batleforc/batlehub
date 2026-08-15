@@ -22,6 +22,12 @@ pub struct RecentErrorRecord {
     pub deny_reason: Option<String>,
 }
 
+/// Page size the default [`PackageRepository::blocked_versions`] asks for. A
+/// package with more blocked versions than this would have the excess treated as
+/// unblocked, so it is set far above any plausible real count rather than at a
+/// display-friendly page size.
+pub const MAX_BLOCKED_VERSIONS_PER_PACKAGE: u64 = 10_000;
+
 /// Persistent store for package statuses and access audit logs.
 ///
 /// Backed by a relational database (PostgreSQL, MySQL, …).
@@ -33,6 +39,36 @@ pub trait PackageRepository: Send + Sync {
     /// Get the current administrative status of a package.
     /// Returns `PackageStatus::Available` if the package has never been seen.
     async fn get_status(&self, pkg: &PackageId) -> Result<PackageStatus, CoreError>;
+
+    /// Every blocked version of one package, in no particular order.
+    ///
+    /// The bulk counterpart to [`Self::get_status`], for the version *listing*
+    /// paths: a packument or version index has to know which of a package's
+    /// versions are blocked before it can leave them out, and asking per version
+    /// would be one query per version on a hot metadata path.
+    ///
+    /// The default implementation derives the answer from
+    /// [`Self::list_packages`] so every existing implementor keeps working;
+    /// backends with a cheaper query (a single indexed `SELECT` rather than the
+    /// listing query's audit-count joins) should override it.
+    async fn blocked_versions(&self, registry: &str, name: &str) -> Result<Vec<String>, CoreError> {
+        // `PackageFilter::default()` leaves `limit` at 0, which the SQL renders
+        // as `LIMIT 0` — an explicit page size is required or this silently
+        // returns nothing and every version reads as unblocked.
+        let filter = PackageFilter {
+            registry: Some(registry.to_owned()),
+            name_exact: Some(name.to_owned()),
+            blocked_only: true,
+            limit: MAX_BLOCKED_VERSIONS_PER_PACKAGE,
+            ..Default::default()
+        };
+        Ok(self
+            .list_packages(filter)
+            .await?
+            .into_iter()
+            .map(|p| p.package_id.version)
+            .collect())
+    }
 
     /// Update the administrative status of a package.
     async fn set_status(&self, pkg: &PackageId, status: PackageStatus) -> Result<(), CoreError>;

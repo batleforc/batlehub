@@ -143,6 +143,18 @@ impl RegistryClient for NpmRegistryClient {
         Ok(versions)
     }
 
+    /// The packument, deserialized as untyped JSON rather than through
+    /// [`NpmPackument`].
+    ///
+    /// Deliberate: the typed struct keeps only the four fields the rule engine
+    /// needs, and a client resolving against this document needs all the rest —
+    /// `dependencies`, `engines`, `deprecated`, whatever npm adds next. Round-
+    /// tripping through `Value` preserves fields this proxy has never heard of,
+    /// which is the difference between a usable packument and a lossy one.
+    async fn fetch_version_document(&self, package: &str) -> Result<serde_json::Value, CoreError> {
+        self.fetch_packument_json(package).await
+    }
+
     async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
         // Resolve the tarball URL for this version.
         let packument = self.fetch_packument(&pkg.name).await?;
@@ -249,6 +261,15 @@ fn pick_checksum(dist: &NpmDist) -> Option<String> {
 
 impl NpmRegistryClient {
     async fn fetch_packument(&self, name: &str) -> Result<NpmPackument, CoreError> {
+        let doc = self.fetch_packument_json(name).await?;
+        serde_json::from_value(doc)
+            .map_err(|e| CoreError::Registry(format!("malformed npm packument for {name}: {e}")))
+    }
+
+    /// The upstream packument as raw JSON. Both the typed read above and
+    /// [`RegistryClient::fetch_version_document`] go through here so the request
+    /// shape — encoding, `Accept`, 404 handling — is stated once.
+    async fn fetch_packument_json(&self, name: &str) -> Result<serde_json::Value, CoreError> {
         // Scoped packages: @scope/pkg → must be percent-encoded as @scope%2Fpkg
         let encoded = encode_npm_name(name);
         let url = format!("{}/{}", self.base_url, encoded);
@@ -266,7 +287,7 @@ impl NpmRegistryClient {
 
         resp.error_for_status()
             .map_err(to_registry_error)?
-            .json::<NpmPackument>()
+            .json::<serde_json::Value>()
             .await
             .map_err(to_registry_error)
     }

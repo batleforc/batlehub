@@ -293,6 +293,10 @@ impl PackageRepository for PgPackageRepository {
         crud::get_status_impl(&self.pool, pkg).await
     }
 
+    async fn blocked_versions(&self, registry: &str, name: &str) -> Result<Vec<String>, CoreError> {
+        crud::blocked_versions_impl(&self.pool, registry, name).await
+    }
+
     async fn set_status(&self, pkg: &PackageId, status: PackageStatus) -> Result<(), CoreError> {
         crud::set_status_impl(&self.pool, pkg, status).await
     }

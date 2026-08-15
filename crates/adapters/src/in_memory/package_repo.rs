@@ -80,6 +80,24 @@ impl PackageRepository for InMemoryPackageRepository {
             .unwrap_or(PackageStatus::Available))
     }
 
+    /// Overrides the port's default (which pages through `list_packages`) with a
+    /// direct scan — the map is already in memory, and the default would build
+    /// and sort a whole `PackageSummary` page to read one field off each row.
+    async fn blocked_versions(&self, registry: &str, name: &str) -> Result<Vec<String>, CoreError> {
+        Ok(self
+            .summaries
+            .read()
+            .await
+            .values()
+            .filter(|s| {
+                s.status.is_blocked()
+                    && s.package_id.registry == registry
+                    && s.package_id.name == name
+            })
+            .map(|s| s.package_id.version.clone())
+            .collect())
+    }
+
     async fn set_status(&self, pkg: &PackageId, status: PackageStatus) -> Result<(), CoreError> {
         let mut sums = self.summaries.write().await;
         let entry = sums

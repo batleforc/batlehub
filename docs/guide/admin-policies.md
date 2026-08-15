@@ -111,15 +111,38 @@ curl -H "Authorization: Bearer <admin-token>" \
 
 ### Block a package version
 
-Blocked packages return `403 Forbidden` to all clients, regardless of role.
+A block does two things, and both matter:
+
+1. **The version disappears from version listings.** It is removed from the npm
+   packument and from local/hybrid version indexes, and `dist-tags.latest` is
+   recomputed to the newest version that is still allowed. A client asking for
+   `latest`, or for a range like `^4.17.0`, therefore resolves to an allowed
+   version and installs successfully — it never selects the blocked one.
+2. **Downloading it returns `403 Forbidden`** to all clients regardless of role,
+   with the reason you recorded. Hiding governs which version a resolver
+   *picks*; this governs whether someone who names the version explicitly may
+   have it. Pinning `lodash@4.17.20` in a lockfile fails with a message that
+   says why, rather than looking like a missing package.
+
+A block recorded against a version covers every file in it — the npm tarball,
+a Maven classifier, a Terraform provider binary. Blocking one specific artifact
+(by passing `artifact`) leaves the version's other files alone.
 
 ```sh
 curl -X POST \
   -H "Authorization: Bearer <admin-token>" \
   -H "Content-Type: application/json" \
-  -d '{"registry": "npm", "name": "lodash", "version": "4.17.20"}' \
+  -d '{"registry": "npm", "name": "lodash", "version": "4.17.20", "reason": "CVE-2021-23337"}' \
   http://localhost:8080/api/v1/admin/packages/block
 ```
+
+::: warning Listing filtering covers npm and local/hybrid registries
+Every **local/hybrid** registry filters its version listings (npm, Maven, NuGet,
+RubyGems, Go, JetBrains, Terraform, Composer). For **proxied** registries the
+filtering currently applies to npm packuments; other proxied ecosystems still
+list the blocked version in their upstream index, and the block takes effect at
+download time with a `403`.
+:::
 
 ### Unblock
 

@@ -98,6 +98,20 @@ npm install @myorg/my-package
 | `GET` | `/proxy/{registry}/{package}` | Packument (all versions) |
 | `GET` | `/proxy/{registry}/{package}/{version}/tarball` | Tarball download |
 
+The packument is BatleHub's own answer, not a copy of the upstream's. Two things
+are rewritten before it reaches the client:
+
+- **`dist.tarball` points back at BatleHub**, so downloads go through the proxy —
+  its cache, its audit trail and its policy gates — instead of straight to the
+  upstream CDN.
+- **Blocked versions are removed**, and `dist-tags.latest` is recomputed to the
+  newest version that is still allowed. See
+  [blocking a package version](/guide/admin-policies#block-a-package-version).
+
+The upstream document is cached for the registry's `metadata_ttl`; blocks are
+applied on top of the cached copy on every request, so blocking a version takes
+effect immediately rather than when the cache expires.
+
 ---
 
 ## Authentication

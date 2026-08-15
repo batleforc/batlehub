@@ -216,12 +216,12 @@ impl LocalRegistryService {
         Ok(bytes)
     }
 
-    /// Record a download attempt through `access_log`, when configured.
+    /// Record a download attempt through `package_repo`, when configured.
     ///
     /// Mirrors `ProxyService::handle`'s `AccessEvent::allowed_download`/`denied_download`
     /// recording so Local/Hybrid-mode reads produce the same audit trail as the
     /// proxy-fallback path, instead of the audit gap this closes: no-op when
-    /// `access_log` is `None` (audit logging is opt-in, matching `quota`/`ownership`).
+    /// `package_repo` is `None` (audit logging is opt-in, matching `quota`/`ownership`).
     async fn record_download(
         &self,
         registry: &str,
@@ -230,7 +230,7 @@ impl LocalRegistryService {
         identity: &Identity,
         denial_reason: Option<String>,
     ) {
-        let Some(repo) = self.access_log.as_ref() else {
+        let Some(repo) = self.package_repo.as_ref() else {
             return;
         };
         let pkg = PackageId::new(registry, name, version);
@@ -453,7 +453,55 @@ impl LocalRegistryService {
         versions.into_iter().filter(|p| !p.unlisted).collect()
     }
 
-    /// Convenience wrapper: `check_visibility` → `get_versions` → `filter_for_identity`.
+    /// Drop versions an administrator has blocked.
+    ///
+    /// Sits alongside `filter_unlisted` and applies the same rule: hidden from
+    /// listings, still reachable by exact coordinate — where `get_artifact` runs
+    /// the block gate and returns the operator's stated reason. Hiding governs
+    /// which version a resolver *picks*; the download gate governs whether it
+    /// may have the one it asked for.
+    ///
+    /// Fails **open** on a repository error, matching
+    /// [`crate::rules::BlockListRule`]: a database blip should degrade to
+    /// showing more versions than intended, not to reporting every package as
+    /// missing. The download gate is the backstop — it re-checks the concrete
+    /// coordinate, and denies when the store recovers.
+    async fn filter_blocked(
+        &self,
+        registry: &str,
+        name: &str,
+        versions: Vec<PublishedPackage>,
+    ) -> Vec<PublishedPackage> {
+        let Some(repo) = self.package_repo.as_ref() else {
+            return versions;
+        };
+        let blocked = match repo.blocked_versions(registry, name).await {
+            Ok(b) if b.is_empty() => return versions,
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(
+                    registry = %registry,
+                    package = %name,
+                    error = %e,
+                    "failed to load blocked versions for listing, failing open"
+                );
+                return versions;
+            }
+        };
+        let blocked: std::collections::HashSet<&str> = blocked.iter().map(String::as_str).collect();
+        versions
+            .into_iter()
+            .filter(|p| !blocked.contains(p.version.as_str()))
+            .collect()
+    }
+
+    /// Convenience wrapper: `check_visibility` → `get_versions` →
+    /// `filter_unlisted` → `filter_blocked` → `filter_for_identity`.
+    ///
+    /// The single chokepoint every local/hybrid version listing goes through —
+    /// npm packument, Maven, NuGet, RubyGems, Go, JetBrains, Terraform and
+    /// Composer all resolve their version sets here, so a filter added here
+    /// applies to every ecosystem at once.
     ///
     /// Returns the filtered list (may be empty — callers decide whether that is an error).
     pub(super) async fn load_visible_versions(
@@ -465,6 +513,7 @@ impl LocalRegistryService {
         self.check_visibility(registry, name, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
         let versions = Self::filter_unlisted(versions);
+        let versions = self.filter_blocked(registry, name, versions).await;
         self.filter_for_identity(registry, versions, identity).await
     }
 

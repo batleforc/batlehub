@@ -503,6 +503,14 @@ export default defineConfig({
               text: "0005-bis — Two readers, one home each",
               link: "/rfc/0005-bis-audience-split-and-one-home",
             },
+            {
+              text: "0006 — A block every ecosystem can see",
+              link: "/rfc/0006-blocked-versions-hidden-everywhere",
+            },
+            {
+              text: "0007 — The README, per version",
+              link: "/rfc/0007-package-readmes",
+            },
           ],
         },
       ],

@@ -147,6 +147,13 @@ impl From<CoreError> for AppError {
                 status: StatusCode::SERVICE_UNAVAILABLE,
                 message: msg,
             },
+            // Reaching HTTP at all means a handler asked a registry type for
+            // something its protocol has no answer for; 501 says that plainly
+            // rather than dressing a capability gap up as a server fault.
+            CoreError::NotSupported(msg) => Self {
+                status: StatusCode::NOT_IMPLEMENTED,
+                message: msg,
+            },
             other => {
                 tracing::error!(error = %other, "internal error");
                 Self::internal("internal server error")

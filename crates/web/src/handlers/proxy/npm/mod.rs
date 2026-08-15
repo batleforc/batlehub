@@ -8,8 +8,8 @@ use batlehub_core::{
 };
 
 use super::common::{
-    proxy_stream, registry_public_base, serve_local_or_proxy_artifact, serve_local_or_proxy_json,
-    LocalOrProxyArtifactOpts,
+    proxy_stream, registry_public_base, serve_local_or_proxy_artifact,
+    serve_local_or_proxy_document, serve_local_or_proxy_json, LocalOrProxyArtifactOpts,
 };
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
 

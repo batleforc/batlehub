@@ -289,4 +289,206 @@ impl ProxyService {
             _ => Ok(()),
         }
     }
+
+    /// Serve a proxied registry's version-listing document — for npm, the
+    /// packument — with blocked versions removed and artifact URLs pointed back
+    /// at this proxy.
+    ///
+    /// The two rewrites are what make the document *this* proxy's answer rather
+    /// than a copy of the upstream's:
+    ///
+    /// - **Blocked versions are stripped** and `dist-tags.latest` recomputed, so
+    ///   a resolver asking for `latest` or a range never selects a version the
+    ///   operator has blocked. Without this the resolver picks the blocked
+    ///   version from the upstream listing and the install fails at download —
+    ///   the block reads as breakage rather than policy.
+    /// - **`dist.tarball` is rewritten** to this proxy's own download route.
+    ///   The upstream document points at the upstream CDN; served unchanged it
+    ///   would route every download around the proxy, past its cache, its audit
+    ///   trail and the download-time gate that is the block's other half.
+    ///
+    /// Only RBAC is evaluated here, not the whole rule chain. The chain judges a
+    /// *concrete* version and still runs on the download that follows; applying
+    /// it to the listing would deny the entire document because one version in
+    /// it is gated, which is the opposite of letting a client resolve past that
+    /// version to one it may have.
+    pub async fn version_document(
+        &self,
+        req: &ProxyRequest,
+        public_base: &str,
+    ) -> Result<serde_json::Value, CoreError> {
+        let prelude = self.request_prelude(req).await?;
+        if let Err(e) = self
+            .authorize_read(&req.package_id, &req.identity, &req.resource_type)
+            .await
+        {
+            // Audited on both outcomes, as the artifact path is: a listing is an
+            // access to the registry by an identity, and this route is how a
+            // client discovers what a registry holds.
+            if let CoreError::AccessDenied(reason) = &e {
+                super::warn_if_audit_failed(
+                    self.repo
+                        .record_access(AccessEvent::denied_download(
+                            req.package_id.clone(),
+                            req.identity.user_id.clone(),
+                            req.identity.role.clone(),
+                            reason.clone(),
+                        ))
+                        .await,
+                    "denied version document",
+                );
+            }
+            return Err(e);
+        }
+
+        let name = req.package_id.name.as_str();
+        let mut doc = self.cached_version_document(&prelude, req, name).await?;
+
+        let blocked = self
+            .repo
+            .blocked_versions(&req.package_id.registry, name)
+            .await
+            .unwrap_or_else(|e| {
+                // Fail open, as `BlockListRule` does: a database blip should not
+                // make every package look empty. The download gate re-checks the
+                // concrete version and denies once the store is back.
+                tracing::warn!(
+                    registry = %req.package_id.registry,
+                    package = %name,
+                    error = %e,
+                    "failed to load blocked versions for listing, failing open"
+                );
+                Vec::new()
+            });
+
+        let removed = crate::services::blocking::strip_blocked_from_packument(
+            &mut doc,
+            &blocked.into_iter().collect(),
+        );
+        if !removed.is_empty() {
+            tracing::debug!(
+                registry = %req.package_id.registry,
+                package = %name,
+                removed = removed.len(),
+                "hid blocked versions from version listing"
+            );
+        }
+
+        rewrite_tarball_urls(&mut doc, public_base, name);
+
+        super::warn_if_audit_failed(
+            self.repo
+                .record_access(AccessEvent::allowed_download(
+                    req.package_id.clone(),
+                    req.identity.user_id.clone(),
+                    req.identity.role.clone(),
+                ))
+                .await,
+            "allowed version document",
+        );
+
+        Ok(doc)
+    }
+
+    /// The upstream version document, from the metadata cache when fresh.
+    ///
+    /// What is cached is the document **as the upstream sent it** — before
+    /// blocks are applied and before tarball URLs are rewritten. Both of those
+    /// must vary per request, and caching them would be wrong in two distinct
+    /// ways:
+    ///
+    /// - A cached *filtered* document would keep serving a version for the rest
+    ///   of the TTL after an operator blocked it. Blocks have to take effect on
+    ///   the next request, not eventually.
+    /// - A cached *rewritten* document would pin one ingress. The same registry
+    ///   is reachable at `npm.acme.io` and at `hub.example.com/proxy/npm1`, and
+    ///   whichever host warmed the cache would hand its own URLs to clients of
+    ///   the other.
+    ///
+    /// On an upstream failure a stale entry is served when the registry's policy
+    /// allows it, matching `resolve_metadata_cached`: an upstream outage should
+    /// degrade to slightly old version lists, not to a broken registry.
+    async fn cached_version_document(
+        &self,
+        prelude: &RequestPrelude,
+        req: &ProxyRequest,
+        name: &str,
+    ) -> Result<serde_json::Value, CoreError> {
+        // Distinct from the `meta:` namespace: that key holds a `PackageMetadata`
+        // for one version, this holds a whole package's upstream document.
+        let key = format!("doc:{}/{}", req.package_id.registry, name);
+
+        // `get` returns only entries the store still considers fresh, so freshness
+        // is the store's job here exactly as it is in `resolve_metadata_cached` —
+        // hence `expires_at: None` below rather than a second, independently
+        // clocked expiry that could disagree with the backing store's own.
+        if let Ok(Some(entry)) = self.cache.get(&key).await {
+            return Ok(entry.metadata.extra);
+        }
+
+        match prelude.client.fetch_version_document(name).await {
+            Ok(doc) => {
+                let entry = crate::ports::CacheEntry {
+                    metadata: crate::entities::PackageMetadata {
+                        id: req.package_id.clone(),
+                        published_at: None,
+                        download_url: None,
+                        checksum: None,
+                        is_signed: None,
+                        extra: doc.clone(),
+                        cache_control: None,
+                    },
+                    cached_at: chrono::Utc::now(),
+                    expires_at: None,
+                };
+                if let Err(e) = self.cache.set(&key, entry, prelude.ttl).await {
+                    tracing::warn!(key = %key, error = %e, "caching version document failed");
+                }
+                Ok(doc)
+            }
+            Err(e) => {
+                let serve_stale = prelude
+                    .policy
+                    .as_ref()
+                    .map(|p| p.serve_stale_metadata)
+                    .unwrap_or(false);
+                if serve_stale {
+                    if let Ok(Some(stale)) = self.cache.get_stale(&key).await {
+                        tracing::warn!(
+                            key = %key,
+                            error = %e,
+                            "upstream version document unavailable, serving stale"
+                        );
+                        return Ok(stale.metadata.extra);
+                    }
+                }
+                Err(e)
+            }
+        }
+    }
+}
+
+/// Point every `versions.*.dist.tarball` at this proxy's download route,
+/// matching the URL shape the local registry already serves
+/// (`{base}/{name}/{version}/tarball`).
+fn rewrite_tarball_urls(doc: &mut serde_json::Value, public_base: &str, name: &str) {
+    let base = public_base.trim_end_matches('/');
+    let Some(versions) = doc
+        .get_mut("versions")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    for (version, meta) in versions.iter_mut() {
+        let Some(obj) = meta.as_object_mut() else {
+            continue;
+        };
+        let dist = obj.entry("dist").or_insert_with(|| serde_json::json!({}));
+        if let Some(d) = dist.as_object_mut() {
+            d.insert(
+                "tarball".to_owned(),
+                serde_json::Value::String(format!("{base}/{name}/{version}/tarball")),
+            );
+        }
+    }
 }

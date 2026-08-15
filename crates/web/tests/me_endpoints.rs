@@ -156,7 +156,7 @@ fn me_app_parts() -> MeApp {
         team_namespace: None,
         sbom: None,
         explore_cache: None,
-        access_log: None,
+        package_repo: None,
     });
     MeApp {
         repo: InMemoryRepo::new(),

@@ -22,8 +22,10 @@ type RegistryType =
   | "nuget"
   | "deb"
   | "rpm"
+  | "pacman"
   | "jetbrains"
-  | "jetbrains-marketplace";
+  | "jetbrains-marketplace"
+  | "generic";
 type AuthRole = "admin" | "user" | "anonymous";
 type StorageBackendType = "filesystem" | "s3";
 type StorageMode = "single" | "multi";
@@ -68,6 +70,58 @@ interface ActionsRule {
   conditions: Condition[];
 }
 
+/// One `claim value -> proxy role` entry of an OIDC/Kubernetes `role_mappings`
+/// table. Without at least one of these every federated identity lands on
+/// `anonymous`, so a generated SSO config would have no administrator at all.
+interface RoleMapping {
+  id: number;
+  claim: string;
+  role: string;
+}
+
+/// One entry of `[registries.rbac.groups]` — a group name (`"oidc:team-a"`, or
+/// `"*:team-a"` to match the group across every provider) and its permissions.
+interface RbacGroup {
+  id: number;
+  name: string;
+  perms: string;
+}
+
+/// One `[[registries.rate_limit.groups]]` override: a group whose members get a
+/// different budget from the registry-wide one.
+interface RateLimitGroup {
+  id: number;
+  name: string;
+  requests_per_window: number;
+  window_secs: number;
+  enforcement: "" | Enforcement;
+}
+
+type NotifChannelType = "webhook" | "slack" | "teams" | "email";
+
+interface NotifChannel {
+  id: number;
+  type: NotifChannelType;
+  name: string;
+  url: string;
+  secret: string;
+  timeout_secs: number;
+  // email only
+  smtp_host: string;
+  smtp_port: number;
+  smtp_user: string;
+  smtp_password: string;
+  from: string;
+  to: string;
+  tls: boolean;
+}
+
+interface InboundHook {
+  id: number;
+  name: string;
+  secret: string;
+}
+
 interface AuthProvider {
   id: number;
   type: AuthType;
@@ -83,12 +137,14 @@ interface AuthProvider {
   oidc_user_id_claim: string;
   oidc_role_claim: string;
   oidc_scopes: string;
+  oidc_role_mappings: RoleMapping[];
   // kubernetes
   k8s_name: string;
   k8s_api_server: string;
   k8s_ca_cert_path: string;
   k8s_token_path: string;
   k8s_audiences: string;
+  k8s_role_mappings: RoleMapping[];
   // actions-oidc
   actions_name: string;
   actions_issuer: string;
@@ -106,7 +162,20 @@ interface Registry {
   rbac_anonymous: string;
   rbac_user: string;
   rbac_admin: string;
+  rbac_groups: RbacGroup[];
+  rbac_explore_anonymous: boolean;
+  rbac_explore_user: boolean;
+  rbac_explore_admin: boolean;
   showAdvanced: boolean;
+  // routing / addressing
+  hosts: string;
+  path_routing: boolean;
+  path_allow: string;
+  index_url: string;
+  search_url: string;
+  search_url_disabled: boolean;
+  vuln_db_url: string;
+  vuln_db_url_disabled: boolean;
   // upstream auth
   upstream_auth_type: UpstreamAuthType;
   upstream_auth_token: string;
@@ -116,6 +185,12 @@ interface Registry {
   upstream_auth_header_value: string;
   // tls
   tls_ca_cert_path: string;
+  // per-registry egress proxy
+  proxy_enabled: boolean;
+  proxy_url: string;
+  proxy_username: string;
+  proxy_password: string;
+  proxy_no_proxy: string;
   // firewall
   firewall_only: boolean;
   // cache policy
@@ -124,15 +199,22 @@ interface Registry {
   cache_idle_days: string;
   cache_max_size_bytes: string;
   cache_keep_latest_n: string;
+  cache_serve_stale: boolean;
+  cache_warm_packages: string;
+  cache_warm_paths: string;
+  cache_warm_latest_n: number;
+  cache_warm_concurrency: number;
   // rate limit
   rate_limit_enabled: boolean;
   rate_limit_rps: number;
   rate_limit_window: number;
   rate_limit_enforcement: Enforcement;
+  rate_limit_groups: RateLimitGroup[];
   // quota (local/hybrid)
   quota_enabled: boolean;
   quota_max_bytes: string;
   quota_max_packages: string;
+  quota_warn_threshold_pct: number;
   quota_enforcement: Enforcement;
   // beta channel (local/hybrid)
   beta_channel_enabled: boolean;
@@ -145,12 +227,45 @@ interface Registry {
   signing_enabled: boolean;
   signing_required: boolean;
   signing_allowed_types: string;
+  signing_verify_on_download: boolean;
+  signing_trusted_keys: string;
+  // repo metadata signing (deb/rpm)
+  repo_signing_enabled: boolean;
+  repo_signing_seed_hex: string;
+  repo_signing_user_id: string;
+  repo_signing_created: string;
+  // sbom
+  sbom_enabled: boolean;
+  sbom_formats: string;
+  sbom_required: boolean;
+  sbom_fetch_upstream: boolean;
+  // integrity
+  integrity_customised: boolean;
+  integrity_enabled: boolean;
+  integrity_block_on_mismatch: boolean;
+  integrity_require_metadata: boolean;
+  integrity_bypass_roles: string;
+  integrity_verify_on_serve: boolean;
   // rules
   rule_age_gate_enabled: boolean;
   rule_age_gate_min_age: number;
   rule_age_gate_bypass_roles: string;
+  rule_age_gate_deny_missing_timestamp: boolean;
   rule_deny_latest_enabled: boolean;
   rule_deny_latest_bypass_roles: string;
+  rule_signed_release_enabled: boolean;
+  rule_signed_release_bypass_roles: string;
+  rule_signed_release_deny_missing: boolean;
+  rule_license_gate_enabled: boolean;
+  rule_license_gate_allow: string;
+  rule_license_gate_deny: string;
+  rule_license_gate_allow_unknown: boolean;
+  rule_license_gate_block: boolean;
+  rule_license_gate_bypass_roles: string;
+  rule_version_gate_enabled: boolean;
+  rule_version_gate_allow: string;
+  rule_version_gate_block: string;
+  rule_version_gate_bypass_roles: string;
   rule_cve_gate_enabled: boolean;
   rule_cve_gate_min_severity: string;
   rule_cve_gate_block: boolean;
@@ -164,8 +279,30 @@ interface Registry {
 
 // ── State ───────────────────────────────────────────────────────────────────
 
-const server = ref({ host: "0.0.0.0", port: 8080, static_dir: "", cors_allowed_origins: "" });
-const database = ref({ url: "", max_connections: 10 });
+// Mirrors `CURRENT_CONFIG_VERSION` in crates/config/src/schema/mod.rs. Bump both
+// together: a config declaring a version the binary does not know is rejected.
+const CONFIG_VERSION = 1;
+
+const server = ref({
+  host: "0.0.0.0",
+  port: 8080,
+  static_dir: "",
+  cli_binary_path: "",
+  cors_allowed_origins: "",
+  // `[server].trusted_proxies` supersedes the deprecated `[ip_blocking]` key of
+  // the same name; setting it here is what stops the server logging the
+  // deprecation warning at startup. Unlike the old key an empty *list* is a
+  // policy ("trust nobody"), so the checkbox decides whether the key is written
+  // at all and the text decides its contents.
+  trusted_proxies_set: false,
+  trusted_proxies: "",
+});
+const database = ref({
+  url: "",
+  max_connections: 10,
+  min_connections: 1,
+  acquire_timeout_secs: 30,
+});
 
 const metaCache = ref({ type: "memory", url: "" });
 
@@ -177,13 +314,45 @@ const ipBlocking = ref({
   violation_window_secs: 300,
   ban_duration_secs: 3600,
   trigger_on_status: "429, 401",
-  trusted_proxies: "",
 });
 
 const vulnerabilityScan = ref({
   enabled: false,
   interval_secs: 86400,
   osv_api_url: "",
+  batch_size: 100,
+});
+
+const stats = ref({
+  history_enabled: true,
+  // 30, matching `default_history_retention_days` — showing any other number
+  // here would promise a retention the server does not apply, since the key is
+  // only written when it differs from the default.
+  history_retention_days: 30,
+  metrics_enabled: true,
+});
+
+const subdomainRouting = ref({
+  enabled: false,
+  base_domain: "",
+  scheme: "https",
+});
+
+// Global egress proxy — inherited by every registry that does not set its own.
+const upstreamProxy = ref({
+  enabled: false,
+  url: "",
+  username: "",
+  password: "",
+  no_proxy: "",
+});
+
+let channelSeq = 0;
+let inboundSeq = 0;
+const notifications = ref({
+  enabled: false,
+  channels: [] as NotifChannel[],
+  inbound: [] as InboundHook[],
 });
 
 // Storage
@@ -233,6 +402,7 @@ let authSeq = 0;
 let tokenSeq = 0;
 let ruleSeq = 0;
 let condSeq = 0;
+let mappingSeq = 0;
 
 function blankAuthProvider(): AuthProvider {
   return {
@@ -248,11 +418,15 @@ function blankAuthProvider(): AuthProvider {
     oidc_user_id_claim: "sub",
     oidc_role_claim: "role",
     oidc_scopes: "",
+    oidc_role_mappings: [{ id: mappingSeq++, claim: "batlehub-admins", role: "admin" }],
     k8s_name: "",
     k8s_api_server: "",
     k8s_ca_cert_path: "",
     k8s_token_path: "",
     k8s_audiences: "batlehub",
+    k8s_role_mappings: [
+      { id: mappingSeq++, claim: "system:serviceaccount:ci:builder", role: "user" },
+    ],
     actions_name: "",
     actions_issuer: "",
     actions_user_id_claim: "sub",
@@ -365,13 +539,32 @@ const defaultUpstream: Record<RegistryType, string> = {
   pypi: "https://pypi.org",
   conda: "https://conda.anaconda.org",
   nuget: "https://api.nuget.org",
-  // Deb has a canonical Debian mirror; RPM has no universal default upstream,
-  // so it is left blank for the user to fill in (e.g. a Fedora/openSUSE mirror).
+  // Deb has a canonical Debian mirror; RPM and generic have no universal default
+  // upstream, so they are left blank for the user to fill in (e.g. a
+  // Fedora/openSUSE mirror). The backend rejects those two at startup when the
+  // list is empty rather than falling back to an unreachable placeholder.
   deb: "https://deb.debian.org",
   rpm: "",
+  pacman: "https://geo.mirror.pkgbuild.com",
   jetbrains: "https://download.jetbrains.com",
   "jetbrains-marketplace": "https://plugins.jetbrains.com",
+  generic: "",
 };
+
+// Kinds addressed purely by upstream file path — the only ones for which
+// `path_allow` and `cache.warm_paths` mean anything (the backend rejects
+// `path_allow` on any other kind). Mirrors `RegistryKind::is_path_addressed`.
+const PATH_ADDRESSED_TYPES = new Set<RegistryType>([
+  "deb",
+  "rpm",
+  "pacman",
+  "jetbrains",
+  "generic",
+]);
+const isPathAddressed = (reg: Registry) => PATH_ADDRESSED_TYPES.has(reg.type);
+
+// `deb`/`rpm` registries are the ones that publish signed repository metadata.
+const REPO_SIGNING_TYPES = new Set<RegistryType>(["deb", "rpm"]);
 
 function defaultRegistry(type: RegistryType = "npm"): Registry {
   return {
@@ -384,7 +577,22 @@ function defaultRegistry(type: RegistryType = "npm"): Registry {
     rbac_anonymous: "releases:read, source:read",
     rbac_user: "releases:read, source:read",
     rbac_admin: "*",
+    rbac_groups: [],
+    rbac_explore_anonymous: true,
+    rbac_explore_user: true,
+    rbac_explore_admin: true,
     showAdvanced: false,
+    hosts: "",
+    path_routing: true,
+    // `generic` is the one kind the backend refuses to start without an
+    // allowlist, so it is seeded with the explicit mirror-everything opt-out
+    // rather than a blank field that fails validation.
+    path_allow: type === "generic" ? "**" : "",
+    index_url: "",
+    search_url: "",
+    search_url_disabled: false,
+    vuln_db_url: "",
+    vuln_db_url_disabled: false,
     upstream_auth_type: "",
     upstream_auth_token: "",
     upstream_auth_username: "",
@@ -392,19 +600,31 @@ function defaultRegistry(type: RegistryType = "npm"): Registry {
     upstream_auth_header_name: "",
     upstream_auth_header_value: "",
     tls_ca_cert_path: "",
+    proxy_enabled: false,
+    proxy_url: "",
+    proxy_username: "",
+    proxy_password: "",
+    proxy_no_proxy: "",
     firewall_only: false,
     cache_metadata_ttl: 300,
     cache_artifact_ttl: "",
     cache_idle_days: "",
     cache_max_size_bytes: "",
     cache_keep_latest_n: "",
+    cache_serve_stale: true,
+    cache_warm_packages: "",
+    cache_warm_paths: "",
+    cache_warm_latest_n: 1,
+    cache_warm_concurrency: 2,
     rate_limit_enabled: false,
     rate_limit_rps: 100,
     rate_limit_window: 60,
     rate_limit_enforcement: "block",
+    rate_limit_groups: [],
     quota_enabled: false,
     quota_max_bytes: "",
     quota_max_packages: "",
+    quota_warn_threshold_pct: 80,
     quota_enforcement: "block",
     beta_channel_enabled: false,
     versioning_enabled: false,
@@ -414,11 +634,41 @@ function defaultRegistry(type: RegistryType = "npm"): Registry {
     signing_enabled: false,
     signing_required: false,
     signing_allowed_types: "",
+    signing_verify_on_download: false,
+    signing_trusted_keys: "",
+    repo_signing_enabled: false,
+    repo_signing_seed_hex: "",
+    repo_signing_user_id: "",
+    repo_signing_created: "",
+    sbom_enabled: false,
+    sbom_formats: "spdx, cyclonedx",
+    sbom_required: false,
+    sbom_fetch_upstream: true,
+    integrity_customised: false,
+    integrity_enabled: true,
+    integrity_block_on_mismatch: true,
+    integrity_require_metadata: false,
+    integrity_bypass_roles: "admin",
+    integrity_verify_on_serve: false,
     rule_age_gate_enabled: false,
     rule_age_gate_min_age: 3600,
     rule_age_gate_bypass_roles: "admin",
+    rule_age_gate_deny_missing_timestamp: false,
     rule_deny_latest_enabled: false,
     rule_deny_latest_bypass_roles: "admin",
+    rule_signed_release_enabled: false,
+    rule_signed_release_bypass_roles: "admin",
+    rule_signed_release_deny_missing: false,
+    rule_license_gate_enabled: false,
+    rule_license_gate_allow: "",
+    rule_license_gate_deny: "",
+    rule_license_gate_allow_unknown: true,
+    rule_license_gate_block: false,
+    rule_license_gate_bypass_roles: "admin",
+    rule_version_gate_enabled: false,
+    rule_version_gate_allow: "",
+    rule_version_gate_block: "",
+    rule_version_gate_bypass_roles: "admin",
     rule_cve_gate_enabled: false,
     rule_cve_gate_min_severity: "high",
     rule_cve_gate_block: false,
@@ -452,6 +702,32 @@ function csvToList(csv: string): string[] {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+/// Splits a textarea's contents into one entry per line. Used where an entry may
+/// legitimately contain a comma (glob patterns, semver ranges like
+/// `">=1.2.0, <2.0.0"`), which rules out the comma-separated inputs.
+function linesToList(text: string): string[] {
+  return text
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function tomlArray(items: string[]): string {
+  return `[${items.map(q).join(", ")}]`;
+}
+
+/// Comma-separated numbers as an *unquoted* TOML array. `trigger_on_status` is
+/// a `Vec<u16>` on the Rust side, so quoting the entries makes the whole config
+/// fail to parse ("invalid type: string, expected u16"). Non-numeric input is
+/// dropped rather than passed through, for the same reason.
+function numListToToml(csv: string): string {
+  const nums = csv
+    .split(",")
+    .map((n) => n.trim())
+    .filter((n) => /^\d+$/.test(n));
+  return `[${nums.join(", ")}]`;
 }
 
 function listToToml(csv: string): string {
@@ -491,14 +767,24 @@ function backendFields(b: {
 const toml = computed(() => {
   const lines: string[] = [];
 
+  // Declares which schema generation this file targets. The server refuses a
+  // version newer than it understands instead of silently ignoring keys.
+  lines.push(`config_version = ${CONFIG_VERSION}`);
+  lines.push("");
+
   // [server]
   lines.push("[server]");
   lines.push(`host = ${q(server.value.host)}`);
   lines.push(`port = ${server.value.port}`);
   if (server.value.static_dir)
     lines.push(`static_dir = ${q(server.value.static_dir)}`);
+  if (server.value.cli_binary_path)
+    lines.push(`cli_binary_path = ${q(server.value.cli_binary_path)}`);
   if (server.value.cors_allowed_origins) {
     lines.push(`cors_allowed_origins = ${listToToml(server.value.cors_allowed_origins)}`);
+  }
+  if (server.value.trusted_proxies_set) {
+    lines.push(`trusted_proxies = ${listToToml(server.value.trusted_proxies)}`);
   }
 
   // [database]
@@ -510,6 +796,10 @@ const toml = computed(() => {
   );
   if (database.value.max_connections !== 10)
     lines.push(`max_connections = ${database.value.max_connections}`);
+  if (database.value.min_connections !== 1)
+    lines.push(`min_connections = ${database.value.min_connections}`);
+  if (database.value.acquire_timeout_secs !== 30)
+    lines.push(`acquire_timeout_secs = ${database.value.acquire_timeout_secs}`);
 
   // [cache]
   if (metaCache.value.type !== "memory" || metaCache.value.url) {
@@ -573,6 +863,16 @@ const toml = computed(() => {
         const scopes = auth.oidc_scopes.split(",").map((s) => s.trim()).filter(Boolean);
         if (scopes.length) lines.push(`scopes = [${scopes.map(q).join(", ")}]`);
       }
+      // Claim values with no mapping fall back to `anonymous`, so a provider
+      // with no entries here authenticates people into having no rights at all.
+      const oidcMappings = auth.oidc_role_mappings.filter((m) => m.claim.trim());
+      if (oidcMappings.length) {
+        lines.push("");
+        lines.push("[auth.role_mappings]");
+        for (const m of oidcMappings) {
+          lines.push(`${q(m.claim.trim())} = ${q(m.role)}`);
+        }
+      }
     } else if (auth.type === "kubernetes") {
       if (auth.k8s_name) lines.push(`name = ${q(auth.k8s_name)}`);
       if (auth.k8s_api_server)
@@ -587,6 +887,16 @@ const toml = computed(() => {
           .map((a) => a.trim())
           .filter(Boolean);
         lines.push(`audiences = [${auds.map(q).join(", ")}]`);
+      }
+      // Keys are Kubernetes usernames (`system:serviceaccount:<ns>:<name>`) or
+      // group names; unmapped identities land on `anonymous`.
+      const k8sMappings = auth.k8s_role_mappings.filter((m) => m.claim.trim());
+      if (k8sMappings.length) {
+        lines.push("");
+        lines.push("[auth.role_mappings]");
+        for (const m of k8sMappings) {
+          lines.push(`${q(m.claim.trim())} = ${q(m.role)}`);
+        }
       }
     } else if (auth.type === "actions-oidc") {
       if (auth.actions_name) lines.push(`name = ${q(auth.actions_name)}`);
@@ -647,6 +957,30 @@ const toml = computed(() => {
     if (storageMode.value === "multi" && reg.storage_backend) {
       lines.push(`storage = ${q(reg.storage_backend)}`);
     }
+    if (reg.type === "cargo" && reg.index_url) {
+      lines.push(`index_url = ${q(reg.index_url)}`);
+    }
+    // `search_url`/`vuln_db_url` are three-state: absent (built-in default), a
+    // URL, or `""` — the explicit way to switch the feature off.
+    if (reg.search_url_disabled) {
+      lines.push(`search_url = ""`);
+    } else if (reg.search_url) {
+      lines.push(`search_url = ${q(reg.search_url)}`);
+    }
+    if (reg.type === "goproxy") {
+      if (reg.vuln_db_url_disabled) {
+        lines.push(`vuln_db_url = ""`);
+      } else if (reg.vuln_db_url) {
+        lines.push(`vuln_db_url = ${q(reg.vuln_db_url)}`);
+      }
+    }
+    const regHosts = csvToList(reg.hosts);
+    if (regHosts.length) lines.push(`hosts = ${tomlArray(regHosts)}`);
+    if (!reg.path_routing) lines.push(`path_routing = false`);
+    if (isPathAddressed(reg)) {
+      const allow = linesToList(reg.path_allow);
+      if (allow.length) lines.push(`path_allow = ${tomlArray(allow)}`);
+    }
 
     // [registries.rbac]
     lines.push("");
@@ -654,19 +988,46 @@ const toml = computed(() => {
     lines.push(`anonymous = ${permsToToml(reg.rbac_anonymous)}`);
     lines.push(`user = ${permsToToml(reg.rbac_user)}`);
     lines.push(`admin = ${permsToToml(reg.rbac_admin)}`);
+    // Both sub-tables must follow the scalar keys above — once a sub-table is
+    // opened, any further `anonymous = …` would land inside it.
+    const groups = reg.rbac_groups.filter((g) => g.name.trim());
+    if (groups.length) {
+      lines.push("");
+      lines.push("[registries.rbac.groups]");
+      for (const g of groups) {
+        lines.push(`${q(g.name.trim())} = ${permsToToml(g.perms)}`);
+      }
+    }
+    if (
+      !reg.rbac_explore_anonymous ||
+      !reg.rbac_explore_user ||
+      !reg.rbac_explore_admin
+    ) {
+      lines.push("");
+      lines.push("[registries.rbac.explore]");
+      if (!reg.rbac_explore_anonymous) lines.push(`anonymous = false`);
+      if (!reg.rbac_explore_user) lines.push(`user = false`);
+      if (!reg.rbac_explore_admin) lines.push(`admin = false`);
+    }
 
     // [registries.cache]
+    const warmPackages = csvToList(reg.cache_warm_packages);
+    const warmPaths = isPathAddressed(reg) ? linesToList(reg.cache_warm_paths) : [];
+    const warmingOn = warmPackages.length > 0 || warmPaths.length > 0;
     const nonDefaultCache =
       reg.cache_metadata_ttl !== 300 ||
       reg.cache_artifact_ttl ||
       reg.cache_idle_days ||
       reg.cache_max_size_bytes ||
-      reg.cache_keep_latest_n;
+      reg.cache_keep_latest_n ||
+      !reg.cache_serve_stale ||
+      warmingOn;
     if (nonDefaultCache) {
       lines.push("");
       lines.push("[registries.cache]");
       if (reg.cache_metadata_ttl !== 300)
         lines.push(`metadata_ttl_secs = ${reg.cache_metadata_ttl}`);
+      if (!reg.cache_serve_stale) lines.push(`serve_stale = false`);
       if (reg.cache_artifact_ttl)
         lines.push(`artifact_ttl_secs = ${reg.cache_artifact_ttl}`);
       if (reg.cache_idle_days) lines.push(`idle_days = ${reg.cache_idle_days}`);
@@ -674,6 +1035,15 @@ const toml = computed(() => {
         lines.push(`max_size_bytes = ${reg.cache_max_size_bytes}`);
       if (reg.cache_keep_latest_n)
         lines.push(`keep_latest_n = ${reg.cache_keep_latest_n}`);
+      if (warmPackages.length)
+        lines.push(`warm_packages = ${tomlArray(warmPackages)}`);
+      if (warmPaths.length) lines.push(`warm_paths = ${tomlArray(warmPaths)}`);
+      // Only meaningful once there is something to warm, so they stay out of the
+      // file until then rather than pinning defaults for a disabled feature.
+      if (warmingOn && reg.cache_warm_latest_n !== 1)
+        lines.push(`warm_latest_n = ${reg.cache_warm_latest_n}`);
+      if (warmingOn && reg.cache_warm_concurrency !== 2)
+        lines.push(`warm_concurrency = ${reg.cache_warm_concurrency}`);
     }
 
     // [registries.rate_limit]
@@ -684,6 +1054,16 @@ const toml = computed(() => {
       lines.push(`window_secs = ${reg.rate_limit_window}`);
       if (reg.rate_limit_enforcement !== "block")
         lines.push(`enforcement = ${q(reg.rate_limit_enforcement)}`);
+      // Per-group overrides of the registry-wide budget above.
+      for (const g of reg.rate_limit_groups) {
+        if (!g.name.trim()) continue;
+        lines.push("");
+        lines.push("[[registries.rate_limit.groups]]");
+        lines.push(`name = ${q(g.name.trim())}`);
+        lines.push(`requests_per_window = ${g.requests_per_window}`);
+        lines.push(`window_secs = ${g.window_secs}`);
+        if (g.enforcement) lines.push(`enforcement = ${q(g.enforcement)}`);
+      }
     }
 
     // [registries.quota]
@@ -694,6 +1074,8 @@ const toml = computed(() => {
         lines.push(`max_storage_bytes_per_user = ${reg.quota_max_bytes}`);
       if (reg.quota_max_packages)
         lines.push(`max_packages_per_user = ${reg.quota_max_packages}`);
+      if (reg.quota_warn_threshold_pct !== 80)
+        lines.push(`warn_threshold_pct = ${reg.quota_warn_threshold_pct}`);
       if (reg.quota_enforcement !== "block")
         lines.push(`enforcement = ${q(reg.quota_enforcement)}`);
     }
@@ -732,6 +1114,49 @@ const toml = computed(() => {
         const types = reg.signing_allowed_types.split(",").map((t) => t.trim()).filter(Boolean);
         if (types.length) lines.push(`allowed_types = [${types.map(q).join(", ")}]`);
       }
+      if (reg.signing_verify_on_download) lines.push(`verify_on_download = true`);
+      const trustedKeys = csvToList(reg.signing_trusted_keys);
+      if (trustedKeys.length)
+        lines.push(`trusted_keys = ${tomlArray(trustedKeys)}`);
+    }
+
+    // [registries.repo_signing] — deb/rpm repository metadata signing
+    if (reg.repo_signing_enabled && REPO_SIGNING_TYPES.has(reg.type)) {
+      lines.push("");
+      lines.push("[registries.repo_signing]");
+      lines.push(`seed_hex = ${q(reg.repo_signing_seed_hex)}`);
+      if (reg.repo_signing_user_id)
+        lines.push(`user_id = ${q(reg.repo_signing_user_id)}`);
+      if (reg.repo_signing_created)
+        lines.push(`created = ${reg.repo_signing_created}`);
+    }
+
+    // [registries.sbom]
+    if (reg.sbom_enabled) {
+      lines.push("");
+      lines.push("[registries.sbom]");
+      lines.push(`enabled = true`);
+      const formats = csvToList(reg.sbom_formats);
+      if (formats.length) lines.push(`formats = ${tomlArray(formats)}`);
+      if (reg.sbom_required) lines.push(`required = true`);
+      if (!reg.sbom_fetch_upstream) lines.push(`fetch_upstream = false`);
+    }
+
+    // [registries.integrity] — omitted entirely unless the operator changed
+    // something, since the absent section already means "verify and block on
+    // mismatch, warn when no checksum is advertised".
+    if (reg.integrity_customised) {
+      lines.push("");
+      lines.push("[registries.integrity]");
+      if (!reg.integrity_enabled) lines.push(`enabled = false`);
+      if (!reg.integrity_block_on_mismatch)
+        lines.push(`block_on_mismatch = false`);
+      if (reg.integrity_require_metadata) lines.push(`require_metadata = true`);
+      if (reg.integrity_verify_on_serve) lines.push(`verify_on_serve = true`);
+      if (reg.integrity_require_metadata) {
+        const bypass = csvToList(reg.integrity_bypass_roles);
+        if (bypass.length) lines.push(`bypass_roles = ${tomlArray(bypass)}`);
+      }
     }
 
     // [[registries.rules]]
@@ -744,6 +1169,8 @@ const toml = computed(() => {
       lines.push("[[registries.rules]]");
       lines.push(`kind = "release_age_gate"`);
       lines.push(`min_age_secs = ${reg.rule_age_gate_min_age}`);
+      if (reg.rule_age_gate_deny_missing_timestamp)
+        lines.push(`deny_missing_timestamp = true`);
       pushBypassRoles(reg.rule_age_gate_bypass_roles);
     }
     if (reg.rule_deny_latest_enabled) {
@@ -751,6 +1178,42 @@ const toml = computed(() => {
       lines.push("[[registries.rules]]");
       lines.push(`kind = "deny_latest"`);
       pushBypassRoles(reg.rule_deny_latest_bypass_roles);
+    }
+    if (reg.rule_signed_release_enabled) {
+      lines.push("");
+      lines.push("[[registries.rules]]");
+      lines.push(`kind = "require_signed_release"`);
+      lines.push(`enabled = true`);
+      if (reg.rule_signed_release_deny_missing)
+        lines.push(`deny_missing_signature = true`);
+      pushBypassRoles(reg.rule_signed_release_bypass_roles);
+    }
+    if (reg.rule_license_gate_enabled) {
+      lines.push("");
+      lines.push("[[registries.rules]]");
+      lines.push(`kind = "license_gate"`);
+      const licAllow = csvToList(reg.rule_license_gate_allow);
+      const licDeny = csvToList(reg.rule_license_gate_deny);
+      if (licAllow.length) lines.push(`allow = ${tomlArray(licAllow)}`);
+      if (licDeny.length) lines.push(`deny = ${tomlArray(licDeny)}`);
+      if (!reg.rule_license_gate_allow_unknown)
+        lines.push(`allow_unknown = false`);
+      if (reg.rule_license_gate_block) lines.push(`block = true`);
+      pushBypassRoles(reg.rule_license_gate_bypass_roles);
+    }
+    if (reg.rule_version_gate_enabled) {
+      // Each entry may itself contain a comma (">=1.2.0, <2.0.0"), so these two
+      // are one-per-line fields rather than comma-separated ones.
+      const verAllow = linesToList(reg.rule_version_gate_allow);
+      const verBlock = linesToList(reg.rule_version_gate_block);
+      if (verAllow.length || verBlock.length) {
+        lines.push("");
+        lines.push("[[registries.rules]]");
+        lines.push(`kind = "version_gate"`);
+        if (verAllow.length) lines.push(`allow = ${tomlArray(verAllow)}`);
+        if (verBlock.length) lines.push(`block = ${tomlArray(verBlock)}`);
+        pushBypassRoles(reg.rule_version_gate_bypass_roles);
+      }
     }
     if (reg.rule_cve_gate_enabled) {
       lines.push("");
@@ -804,6 +1267,16 @@ const toml = computed(() => {
       lines.push("[registries.tls]");
       lines.push(`ca_cert_path = ${q(reg.tls_ca_cert_path)}`);
     }
+
+    // [registries.proxy] — overrides the global [proxy] for this registry only.
+    if (reg.proxy_enabled && reg.proxy_url) {
+      lines.push("");
+      lines.push("[registries.proxy]");
+      lines.push(`url = ${q(reg.proxy_url)}`);
+      if (reg.proxy_username) lines.push(`username = ${q(reg.proxy_username)}`);
+      if (reg.proxy_password) lines.push(`password = ${q(reg.proxy_password)}`);
+      if (reg.proxy_no_proxy) lines.push(`no_proxy = ${q(reg.proxy_no_proxy)}`);
+    }
   }
 
   // [ip_blocking]
@@ -817,11 +1290,8 @@ const toml = computed(() => {
     );
     lines.push(`ban_duration_secs = ${ipBlocking.value.ban_duration_secs}`);
     lines.push(
-      `trigger_on_status = ${listToToml(ipBlocking.value.trigger_on_status)}`,
+      `trigger_on_status = ${numListToToml(ipBlocking.value.trigger_on_status)}`,
     );
-    if (ipBlocking.value.trusted_proxies) {
-      lines.push(`trusted_proxies = ${listToToml(ipBlocking.value.trusted_proxies)}`);
-    }
   }
 
   // [vulnerability_scan]
@@ -832,6 +1302,83 @@ const toml = computed(() => {
     lines.push(`interval_secs = ${vulnerabilityScan.value.interval_secs}`);
     if (vulnerabilityScan.value.osv_api_url) {
       lines.push(`osv_api_url = ${q(vulnerabilityScan.value.osv_api_url)}`);
+    }
+    if (vulnerabilityScan.value.batch_size !== 100) {
+      lines.push(`batch_size = ${vulnerabilityScan.value.batch_size}`);
+    }
+  }
+
+  // [stats]
+  if (
+    !stats.value.history_enabled ||
+    !stats.value.metrics_enabled ||
+    stats.value.history_retention_days !== 30
+  ) {
+    lines.push("");
+    lines.push("[stats]");
+    if (!stats.value.history_enabled) lines.push(`history_enabled = false`);
+    if (stats.value.history_retention_days !== 30)
+      lines.push(`history_retention_days = ${stats.value.history_retention_days}`);
+    if (!stats.value.metrics_enabled) lines.push(`metrics_enabled = false`);
+  }
+
+  // [subdomain_routing]
+  if (subdomainRouting.value.enabled) {
+    lines.push("");
+    lines.push("[subdomain_routing]");
+    lines.push(`enabled = true`);
+    lines.push(`base_domain = ${q(subdomainRouting.value.base_domain)}`);
+    if (subdomainRouting.value.scheme !== "https")
+      lines.push(`scheme = ${q(subdomainRouting.value.scheme)}`);
+  }
+
+  // [proxy] — global egress proxy for every upstream fetch.
+  if (upstreamProxy.value.enabled && upstreamProxy.value.url) {
+    lines.push("");
+    lines.push("[proxy]");
+    lines.push(`url = ${q(upstreamProxy.value.url)}`);
+    if (upstreamProxy.value.username)
+      lines.push(`username = ${q(upstreamProxy.value.username)}`);
+    if (upstreamProxy.value.password)
+      lines.push(`password = ${q(upstreamProxy.value.password)}`);
+    if (upstreamProxy.value.no_proxy)
+      lines.push(`no_proxy = ${q(upstreamProxy.value.no_proxy)}`);
+  }
+
+  // [notifications]
+  if (notifications.value.enabled) {
+    lines.push("");
+    lines.push("[notifications]");
+    lines.push(`enabled = true`);
+    for (const ch of notifications.value.channels) {
+      if (!ch.name.trim()) continue;
+      lines.push("");
+      lines.push("[[notifications.channels]]");
+      lines.push(`name = ${q(ch.name.trim())}`);
+      lines.push(`type = ${q(ch.type)}`);
+      if (ch.type === "email") {
+        lines.push(`smtp_host = ${q(ch.smtp_host)}`);
+        if (ch.smtp_port !== 587) lines.push(`smtp_port = ${ch.smtp_port}`);
+        if (ch.smtp_user) lines.push(`smtp_user = ${q(ch.smtp_user)}`);
+        if (ch.smtp_password) lines.push(`smtp_password = ${q(ch.smtp_password)}`);
+        lines.push(`from = ${q(ch.from)}`);
+        lines.push(`to = ${listToToml(ch.to)}`);
+        if (!ch.tls) lines.push(`tls = false`);
+      } else {
+        lines.push(`url = ${q(ch.url)}`);
+        // Only the generic webhook channel signs its payloads; Slack and Teams
+        // authenticate by the secrecy of the hook URL itself.
+        if (ch.type === "webhook" && ch.secret)
+          lines.push(`secret = ${q(ch.secret)}`);
+      }
+      if (ch.timeout_secs !== 10) lines.push(`timeout_secs = ${ch.timeout_secs}`);
+    }
+    for (const hook of notifications.value.inbound) {
+      if (!hook.name.trim()) continue;
+      lines.push("");
+      lines.push("[[notifications.inbound]]");
+      lines.push(`name = ${q(hook.name.trim())}`);
+      if (hook.secret) lines.push(`secret = ${q(hook.secret)}`);
     }
   }
 
@@ -960,6 +1507,70 @@ function removeCondition(rule: ActionsRule, id: number) {
   rule.conditions = rule.conditions.filter((c) => c.id !== id);
 }
 
+function addRoleMapping(list: RoleMapping[]) {
+  list.push({ id: mappingSeq++, claim: "", role: "user" });
+}
+function removeRoleMapping(auth: AuthProvider, key: "oidc" | "k8s", id: number) {
+  if (key === "oidc") {
+    auth.oidc_role_mappings = auth.oidc_role_mappings.filter((m) => m.id !== id);
+  } else {
+    auth.k8s_role_mappings = auth.k8s_role_mappings.filter((m) => m.id !== id);
+  }
+}
+
+let groupSeq = 0;
+function addRbacGroup(reg: Registry) {
+  reg.rbac_groups.push({ id: groupSeq++, name: "", perms: "releases:read" });
+}
+function removeRbacGroup(reg: Registry, id: number) {
+  reg.rbac_groups = reg.rbac_groups.filter((g) => g.id !== id);
+}
+
+let rlGroupSeq = 0;
+function addRateLimitGroup(reg: Registry) {
+  reg.rate_limit_groups.push({
+    id: rlGroupSeq++,
+    name: "",
+    requests_per_window: reg.rate_limit_rps,
+    window_secs: reg.rate_limit_window,
+    enforcement: "",
+  });
+}
+function removeRateLimitGroup(reg: Registry, id: number) {
+  reg.rate_limit_groups = reg.rate_limit_groups.filter((g) => g.id !== id);
+}
+
+function addChannel() {
+  notifications.value.channels.push({
+    id: channelSeq++,
+    type: "slack",
+    name: "",
+    url: "",
+    secret: "",
+    timeout_secs: 10,
+    smtp_host: "",
+    smtp_port: 587,
+    smtp_user: "",
+    smtp_password: "",
+    from: "",
+    to: "",
+    tls: true,
+  });
+}
+function removeChannel(id: number) {
+  notifications.value.channels = notifications.value.channels.filter(
+    (c) => c.id !== id,
+  );
+}
+function addInboundHook() {
+  notifications.value.inbound.push({ id: inboundSeq++, name: "", secret: "" });
+}
+function removeInboundHook(id: number) {
+  notifications.value.inbound = notifications.value.inbound.filter(
+    (h) => h.id !== id,
+  );
+}
+
 function addRegistry() {
   registries.value.push(defaultRegistry("npm"));
 }
@@ -973,6 +1584,7 @@ const PROXY_ONLY_TYPES = new Set<RegistryType>([
   "forgejo",
   "gitlab",
   "jetbrains",
+  "generic",
 ]);
 const isProxyOnly = (reg: Registry) => PROXY_ONLY_TYPES.has(reg.type);
 
@@ -980,6 +1592,15 @@ function onTypeChange(reg: Registry) {
   reg.upstreams = defaultUpstream[reg.type];
   // Proxy-only types can't run in local/hybrid mode; force proxy.
   if (isProxyOnly(reg)) reg.mode = "proxy";
+  // `path_allow` is rejected outright on kinds that aren't path-addressed, and
+  // is mandatory on `generic` — so it follows the type rather than persisting
+  // across a switch.
+  if (!isPathAddressed(reg)) {
+    reg.path_allow = "";
+    reg.cache_warm_paths = "";
+  } else if (reg.type === "generic" && !reg.path_allow.trim()) {
+    reg.path_allow = "**";
+  }
 }
 
 function addBackend() {
@@ -1002,6 +1623,23 @@ function removeBackend(id: number) {
 const backendNames = computed(() =>
   storageBackends.value.map((b) => b.name).filter(Boolean),
 );
+
+// Registry types whose manifests the SBOM extractor can read a licence out of.
+// Everywhere else the licence is permanently unknown, so a blocking gate that
+// also refuses unknowns denies every download — the backend emits a
+// `license-gate.denies-everything` warning for exactly this shape.
+const LICENSE_AWARE_TYPES = new Set<RegistryType>([
+  "cargo",
+  "maven",
+  "npm",
+  "nuget",
+  "pypi",
+]);
+const licenseGateDeniesEverything = (reg: Registry) =>
+  reg.rule_license_gate_enabled &&
+  reg.rule_license_gate_block &&
+  !reg.rule_license_gate_allow_unknown &&
+  !LICENSE_AWARE_TYPES.has(reg.type);
 
 const isLocalOrHybrid = (reg: Registry) =>
   reg.mode === "local" || reg.mode === "hybrid";
@@ -1057,12 +1695,37 @@ const composerAuthSnippet = `{
             placeholder="./ui/dist"
         /></label>
         <label
+          >CLI binary directory (optional)<input
+            v-model="server.cli_binary_path"
+            placeholder="./dist/cli"
+          /><span class="cg-field-hint"
+            >Directory of pre-built <code>batlehub-cli</code> binaries served by
+            the in-app CLI download page. Leave blank to disable it.</span
+          ></label
+        >
+        <label
           >CORS allowed origins (optional, comma-separated)<input
             v-model="server.cors_allowed_origins"
             placeholder="https://batlehub.example.com"
           /><span class="cg-field-hint"
             >Leave blank to allow all origins (fine for development). Restrict in
             production.</span
+          ></label
+        >
+        <label class="cg-check cg-mb">
+          <input type="checkbox" v-model="server.trusted_proxies_set" />
+          Declare a trusted-proxy policy
+        </label>
+        <label v-if="server.trusted_proxies_set"
+          >Trusted proxy IPs (comma-separated)<input
+            v-model="server.trusted_proxies"
+            placeholder="10.0.0.1, 10.0.0.2"
+          /><span class="cg-field-hint"
+            >IPs of reverse proxies trusted to forward
+            <code>X-Forwarded-For</code>. An empty list is a policy in itself —
+            it means trust nobody and always use the TCP peer address. This
+            supersedes the deprecated <code>[ip_blocking].trusted_proxies</code>,
+            which logs a warning at startup.</span
           ></label
         >
       </section>
@@ -1077,14 +1740,37 @@ const composerAuthSnippet = `{
             placeholder="postgresql://batlehub:changeme@localhost:5432/batlehub"
           />
         </label>
+        <div class="cg-two-col">
+          <label>
+            Max connections
+            <input
+              v-model.number="database.max_connections"
+              type="number"
+              min="1"
+            />
+            <span class="cg-field-hint">Connection pool size (default: 10)</span>
+          </label>
+          <label>
+            Min connections
+            <input
+              v-model.number="database.min_connections"
+              type="number"
+              min="0"
+            />
+            <span class="cg-field-hint">Idle connections kept warm (default: 1)</span>
+          </label>
+        </div>
         <label>
-          Max connections
+          Acquire timeout (s)
           <input
-            v-model.number="database.max_connections"
+            v-model.number="database.acquire_timeout_secs"
             type="number"
             min="1"
           />
-          <span class="cg-field-hint">Connection pool size (default: 10)</span>
+          <span class="cg-field-hint"
+            >How long a request waits for a free connection before failing
+            (default: 30)</span
+          >
         </label>
       </section>
 
@@ -1408,6 +2094,52 @@ const composerAuthSnippet = `{
                 blank.</span
               ></label
             >
+
+            <p class="cg-subsection-label" style="margin-top: 0.75rem">
+              Role mappings
+            </p>
+            <span
+              class="cg-field-hint"
+              style="margin-bottom: 0.5rem; display: block"
+              >Maps values of the <code>{{ auth.oidc_role_claim || "role" }}</code>
+              claim to proxy roles. <strong>A claim value with no entry here
+              falls back to <code>anonymous</code></strong> — without at least
+              one <code>admin</code> mapping nobody who logs in through this
+              provider can administer the server.</span
+            >
+            <div
+              v-for="m in auth.oidc_role_mappings"
+              :key="m.id"
+              class="cg-condition-item"
+            >
+              <div class="cg-two-col">
+                <label
+                  >Claim value<input
+                    v-model="m.claim"
+                    placeholder="batlehub-admins"
+                /></label>
+                <label>
+                  Role
+                  <select v-model="m.role">
+                    <option value="admin">admin</option>
+                    <option value="user">user</option>
+                    <option value="anonymous">anonymous</option>
+                  </select>
+                </label>
+              </div>
+              <button
+                class="cg-btn-remove"
+                @click="removeRoleMapping(auth, 'oidc', m.id)"
+              >
+                Remove mapping
+              </button>
+            </div>
+            <button
+              class="cg-btn-add"
+              @click="addRoleMapping(auth.oidc_role_mappings)"
+            >
+              + Add role mapping
+            </button>
           </template>
 
           <!-- Kubernetes auth -->
@@ -1450,6 +2182,51 @@ const composerAuthSnippet = `{
                 v-model="auth.k8s_audiences"
                 placeholder="batlehub"
             /></label>
+
+            <p class="cg-subsection-label" style="margin-top: 0.75rem">
+              Role mappings
+            </p>
+            <span
+              class="cg-field-hint"
+              style="margin-bottom: 0.5rem; display: block"
+              >Keys are Kubernetes usernames
+              (<code>system:serviceaccount:&lt;ns&gt;:&lt;name&gt;</code>) or
+              group names. <strong>An identity with no entry here falls back to
+              <code>anonymous</code>.</strong></span
+            >
+            <div
+              v-for="m in auth.k8s_role_mappings"
+              :key="m.id"
+              class="cg-condition-item"
+            >
+              <div class="cg-two-col">
+                <label
+                  >Username or group<input
+                    v-model="m.claim"
+                    placeholder="system:serviceaccount:ci:builder"
+                /></label>
+                <label>
+                  Role
+                  <select v-model="m.role">
+                    <option value="admin">admin</option>
+                    <option value="user">user</option>
+                    <option value="anonymous">anonymous</option>
+                  </select>
+                </label>
+              </div>
+              <button
+                class="cg-btn-remove"
+                @click="removeRoleMapping(auth, 'k8s', m.id)"
+              >
+                Remove mapping
+              </button>
+            </div>
+            <button
+              class="cg-btn-add"
+              @click="addRoleMapping(auth.k8s_role_mappings)"
+            >
+              + Add role mapping
+            </button>
           </template>
 
           <!-- GitHub Actions OIDC auth -->
@@ -1629,8 +2406,10 @@ const composerAuthSnippet = `{
                 <option value="gitlab">GitLab</option>
                 <option value="deb">Deb (APT)</option>
                 <option value="rpm">RPM (YUM/DNF)</option>
+                <option value="pacman">Pacman (Arch)</option>
                 <option value="jetbrains">JetBrains IDE</option>
                 <option value="jetbrains-marketplace">JetBrains Marketplace</option>
+                <option value="generic">Generic (raw file mirror)</option>
               </select>
             </label>
           </div>
@@ -1796,6 +2575,37 @@ curl -X POST \
             /></label>
           </div>
 
+          <!-- RBAC groups -->
+          <div
+            v-for="g in reg.rbac_groups"
+            :key="g.id"
+            class="cg-condition-item"
+          >
+            <div class="cg-two-col">
+              <label
+                >Group name<input
+                  v-model="g.name"
+                  placeholder="oidc:team-a"
+                /><span class="cg-field-hint"
+                  >Prefixed with the provider name; use
+                  <code>*:team-a</code> to match the group from any
+                  provider.</span
+                ></label
+              >
+              <label
+                >Permissions<input
+                  v-model="g.perms"
+                  placeholder="releases:read, releases:write"
+              /></label>
+            </div>
+            <button class="cg-btn-remove" @click="removeRbacGroup(reg, g.id)">
+              Remove group
+            </button>
+          </div>
+          <button class="cg-btn-add" @click="addRbacGroup(reg)">
+            + Add group permission
+          </button>
+
           <!-- Advanced toggle + remove row -->
           <div class="cg-registry-actions">
             <button
@@ -1810,6 +2620,97 @@ curl -X POST \
           </div>
 
           <div v-if="reg.showAdvanced" class="cg-advanced">
+            <!-- Routing & addressing -->
+            <p class="cg-subsection-label">Routing &amp; addressing</p>
+            <label
+              >Vanity hosts (optional, comma-separated)<input
+                v-model="reg.hosts"
+                placeholder="npm.acme.io"
+              /><span class="cg-field-hint"
+                >Hostnames whose <em>root</em> serves this registry, in addition
+                to <code>/proxy/{{ reg.name }}/…</code>. DNS and TLS for them are
+                yours to arrange.</span
+              ></label
+            >
+            <label class="cg-check cg-mb">
+              <input type="checkbox" v-model="reg.path_routing" />
+              Also serve under <code>/proxy/{{ reg.name }}/…</code>
+            </label>
+            <span
+              v-if="!reg.path_routing"
+              class="cg-field-hint"
+              style="display: block; margin-bottom: 0.5rem"
+              >The subpath returns <code>404</code> — a disabled ingress should
+              look absent, not forbidden. Give the registry at least one host
+              above (or enable subdomain routing) or nothing can reach it.</span
+            >
+            <template v-if="isPathAddressed(reg)">
+              <label
+                >Allowed upstream paths (one glob per line)
+                <textarea v-model="reg.path_allow" rows="3" />
+                <span class="cg-field-hint"
+                  >Matched against the upstream-relative path, where
+                  <code>*</code> also crosses <code>/</code>. Use
+                  <code>**</code> to mirror everything.
+                  <template v-if="reg.type === 'generic'"
+                    ><strong>Required for generic registries</strong> — the
+                    server refuses to start without it.</template
+                  ></span
+                >
+              </label>
+            </template>
+            <label v-if="reg.type === 'cargo'"
+              >Sparse index URL (optional)<input
+                v-model="reg.index_url"
+                placeholder="https://index.crates.io"
+              /><span class="cg-field-hint"
+                >Set for self-hosted Cargo registries (e.g. a Forgejo package
+                feed).</span
+              ></label
+            >
+            <label class="cg-check">
+              <input type="checkbox" v-model="reg.search_url_disabled" />
+              Disable upstream search for this registry
+            </label>
+            <label v-if="!reg.search_url_disabled"
+              >Search URL (optional)<input
+                v-model="reg.search_url"
+                placeholder="https://search.maven.org"
+              /><span class="cg-field-hint"
+                >Overrides the built-in default (Maven and Composer have one;
+                other types ignore this).</span
+              ></label
+            >
+            <template v-if="reg.type === 'goproxy'">
+              <label class="cg-check">
+                <input type="checkbox" v-model="reg.vuln_db_url_disabled" />
+                Disable the Go vulnerability database passthrough
+              </label>
+              <label v-if="!reg.vuln_db_url_disabled"
+                >govulndb URL (optional)<input
+                  v-model="reg.vuln_db_url"
+                  placeholder="https://vuln.go.dev"
+              /></label>
+            </template>
+
+            <!-- Package explorer visibility -->
+            <p class="cg-subsection-label">Package explorer</p>
+            <span class="cg-field-hint" style="display: block; margin-bottom: 0.5rem"
+              >Who may browse this registry's cached package list in the UI.
+              Independent of download permissions — all three are on by
+              default.</span
+            >
+            <label class="cg-check">
+              <input type="checkbox" v-model="reg.rbac_explore_anonymous" />
+              anonymous
+            </label>
+            <label class="cg-check">
+              <input type="checkbox" v-model="reg.rbac_explore_user" /> user
+            </label>
+            <label class="cg-check cg-mb">
+              <input type="checkbox" v-model="reg.rbac_explore_admin" /> admin
+            </label>
+
             <!-- Firewall mode -->
             <p class="cg-subsection-label">Firewall</p>
             <label class="cg-check cg-mb">
@@ -1857,6 +2758,53 @@ curl -X POST \
                 v-model="reg.cache_keep_latest_n"
                 placeholder="keep all"
             /></label>
+            <label class="cg-check cg-mb">
+              <input type="checkbox" v-model="reg.cache_serve_stale" />
+              Serve stale metadata when the upstream is unreachable
+            </label>
+            <span
+              v-if="!reg.cache_serve_stale"
+              class="cg-field-hint"
+              style="display: block; margin-bottom: 0.5rem"
+              >An upstream outage will surface as an error instead of an
+              expired-but-usable answer.</span
+            >
+
+            <!-- Cache warming -->
+            <p class="cg-subsection-label">Cache warming</p>
+            <label
+              >Packages to keep warm (comma-separated)<input
+                v-model="reg.cache_warm_packages"
+                placeholder="express, lodash"
+              /><span class="cg-field-hint"
+                >Fetched ahead of the first request so a cold cache never costs a
+                user a round trip upstream.</span
+              ></label
+            >
+            <label v-if="isPathAddressed(reg)"
+              >Paths to keep warm (one per line)
+              <textarea v-model="reg.cache_warm_paths" rows="2" />
+              <span class="cg-field-hint"
+                >Path-addressed registries warm by upstream path rather than
+                package name.</span
+              >
+            </label>
+            <div class="cg-two-col">
+              <label
+                >Warm latest N versions<input
+                  v-model.number="reg.cache_warm_latest_n"
+                  type="number"
+                  min="1"
+                /><span class="cg-field-hint">Default: 1</span></label
+              >
+              <label
+                >Warm concurrency<input
+                  v-model.number="reg.cache_warm_concurrency"
+                  type="number"
+                  min="1"
+                /><span class="cg-field-hint">Default: 2</span></label
+              >
+            </div>
 
             <!-- Rate limit -->
             <p class="cg-subsection-label">Rate limiting</p>
@@ -1886,6 +2834,53 @@ curl -X POST \
                   <option value="warn">warn (header only)</option>
                 </select>
               </label>
+              <p class="cg-subsection-label">Per-group overrides</p>
+              <span
+                class="cg-field-hint"
+                style="display: block; margin-bottom: 0.5rem"
+                >Members of these groups get their own budget instead of the
+                registry-wide one above.</span
+              >
+              <div
+                v-for="g in reg.rate_limit_groups"
+                :key="g.id"
+                class="cg-condition-item"
+              >
+                <label
+                  >Group name<input v-model="g.name" placeholder="oidc:ci"
+                /></label>
+                <div class="cg-two-col">
+                  <label
+                    >Requests per window<input
+                      v-model.number="g.requests_per_window"
+                      type="number"
+                      min="1"
+                  /></label>
+                  <label
+                    >Window (s)<input
+                      v-model.number="g.window_secs"
+                      type="number"
+                      min="1"
+                  /></label>
+                </div>
+                <label>
+                  Enforcement
+                  <select v-model="g.enforcement">
+                    <option value="">— inherit —</option>
+                    <option value="block">block (429)</option>
+                    <option value="warn">warn (header only)</option>
+                  </select>
+                </label>
+                <button
+                  class="cg-btn-remove"
+                  @click="removeRateLimitGroup(reg, g.id)"
+                >
+                  Remove group
+                </button>
+              </div>
+              <button class="cg-btn-add" @click="addRateLimitGroup(reg)">
+                + Add group override
+              </button>
             </template>
 
             <!-- Quota (local/hybrid only) -->
@@ -1908,6 +2903,17 @@ curl -X POST \
                       placeholder="e.g. 100"
                   /></label>
                 </div>
+                <label
+                  >Warn threshold (%)<input
+                    v-model.number="reg.quota_warn_threshold_pct"
+                    type="number"
+                    min="1"
+                    max="100"
+                  /><span class="cg-field-hint"
+                    >Percentage of the quota at which a warning header is
+                    returned (default: 80).</span
+                  ></label
+                >
                 <label>
                   Enforcement
                   <select v-model="reg.quota_enforcement">
@@ -1976,7 +2982,140 @@ curl -X POST \
                     >Leave blank to accept any type.</span
                   ></label
                 >
+                <label class="cg-check cg-mb">
+                  <input
+                    type="checkbox"
+                    v-model="reg.signing_verify_on_download"
+                  />
+                  Verify stored signatures on every download
+                </label>
+                <label v-if="reg.signing_verify_on_download"
+                  >Trusted Ed25519 public keys (comma-separated hex)<input
+                    v-model="reg.signing_trusted_keys"
+                    placeholder="3b6a27bcceb6a42d62a3a8d02a6f0d73…"
+                  /><span class="cg-field-hint"
+                    >Verification fails closed: a stored signature that matches
+                    no key here — or whose type cannot be verified — fails the
+                    download with <code>502</code>. Only unsigned artifacts are
+                    exempt.</span
+                  ></label
+                >
               </template>
+            </template>
+
+            <!-- Repository metadata signing (deb/rpm) -->
+            <template v-if="reg.type === 'deb' || reg.type === 'rpm'">
+              <p class="cg-subsection-label">Repository metadata signing</p>
+              <label class="cg-check cg-mb">
+                <input type="checkbox" v-model="reg.repo_signing_enabled" />
+                Sign the generated repository metadata
+              </label>
+              <template v-if="reg.repo_signing_enabled">
+                <label
+                  >Ed25519 seed (64 hex chars)<input
+                    v-model="reg.repo_signing_seed_hex"
+                    placeholder="0123456789abcdef…"
+                  /><span class="cg-field-hint"
+                    >Keep this stable — it is the identity APT/DNF clients pin
+                    to. Treat it as a secret.</span
+                  ></label
+                >
+                <div class="cg-two-col">
+                  <label
+                    >User ID (optional)<input
+                      v-model="reg.repo_signing_user_id"
+                      placeholder="BatleHub Repo &lt;repo@example.com&gt;"
+                  /></label>
+                  <label
+                    >Created (unix seconds, optional)<input
+                      v-model="reg.repo_signing_created"
+                      placeholder="1700000000"
+                    /><span class="cg-field-hint"
+                      >Part of the key fingerprint, so it must not change.</span
+                    ></label
+                  >
+                </div>
+              </template>
+            </template>
+
+            <!-- SBOM -->
+            <p class="cg-subsection-label">SBOM</p>
+            <label class="cg-check cg-mb">
+              <input type="checkbox" v-model="reg.sbom_enabled" />
+              Generate an SBOM for cached and published artifacts
+            </label>
+            <template v-if="reg.sbom_enabled">
+              <label
+                >Formats (comma-separated)<input
+                  v-model="reg.sbom_formats"
+                  placeholder="spdx, cyclonedx"
+              /></label>
+              <label class="cg-check">
+                <input type="checkbox" v-model="reg.sbom_required" />
+                Reject publishes with no discoverable dependency manifest
+              </label>
+              <label class="cg-check cg-mb">
+                <input type="checkbox" v-model="reg.sbom_fetch_upstream" />
+                Prefer a pre-built SBOM from the upstream when one exists
+              </label>
+            </template>
+
+            <!-- Integrity -->
+            <p class="cg-subsection-label">Artifact integrity</p>
+            <label class="cg-check cg-mb">
+              <input type="checkbox" v-model="reg.integrity_customised" />
+              Customise checksum verification
+            </label>
+            <span
+              v-if="!reg.integrity_customised"
+              class="cg-field-hint"
+              style="display: block; margin-bottom: 0.5rem"
+              >Defaults apply: verify against any advertised checksum and block
+              on a mismatch; warn (never block) when the upstream advertises
+              none.</span
+            >
+            <template v-if="reg.integrity_customised">
+              <label class="cg-check">
+                <input type="checkbox" v-model="reg.integrity_enabled" />
+                Verify advertised checksums
+              </label>
+              <label class="cg-check">
+                <input
+                  type="checkbox"
+                  v-model="reg.integrity_block_on_mismatch"
+                />
+                Fail the download on a mismatch
+              </label>
+              <label class="cg-check">
+                <input
+                  type="checkbox"
+                  v-model="reg.integrity_require_metadata"
+                />
+                Block downloads with no advertised checksum
+              </label>
+              <label class="cg-check cg-mb">
+                <input
+                  type="checkbox"
+                  v-model="reg.integrity_verify_on_serve"
+                />
+                Re-hash cached bytes on every serve
+              </label>
+              <span
+                v-if="reg.integrity_verify_on_serve"
+                class="cg-field-hint"
+                style="display: block; margin-bottom: 0.5rem"
+                >Catches storage corruption or tampering after caching, at the
+                cost of hashing the bytes on each serve.</span
+              >
+              <label v-if="reg.integrity_require_metadata"
+                >Bypass roles (comma-separated, optional)<input
+                  v-model="reg.integrity_bypass_roles"
+                  placeholder="admin"
+                /><span class="cg-field-hint"
+                  >Roles exempt from the missing-checksum gate. A mismatch is
+                  never bypassable.</span
+                ></label
+              >
             </template>
 
             <!-- Rules -->
@@ -1995,6 +3134,21 @@ curl -X POST \
                   >Reject downloads of packages younger than this many
                   seconds.</span
                 ></label
+              >
+              <label class="cg-check cg-mb">
+                <input
+                  type="checkbox"
+                  v-model="reg.rule_age_gate_deny_missing_timestamp"
+                />
+                Deny packages whose upstream publishes no timestamp
+              </label>
+              <span
+                v-if="reg.rule_age_gate_deny_missing_timestamp"
+                class="cg-field-hint"
+                style="display: block; margin-bottom: 0.5rem"
+                >Otherwise the check is skipped for those packages and the
+                download is allowed. Worth enabling on registries where the
+                field is optional (e.g. conda).</span
               >
               <label
                 >Bypass roles (comma-separated, optional)<input
@@ -2021,6 +3175,132 @@ curl -X POST \
                   >Roles that can bypass the gate. Leave blank for
                   none.</span
                 ></label
+              >
+            </template>
+            <label class="cg-check">
+              <input type="checkbox" v-model="reg.rule_signed_release_enabled" />
+              Require a signed release
+            </label>
+            <template v-if="reg.rule_signed_release_enabled">
+              <span class="cg-field-hint" style="display: block; margin-bottom: 0.5rem"
+                >Gates on the upstream's best-effort signature signal (a
+                <code>.asc</code>/<code>.sig</code> asset, an extension
+                signature blob) — <strong>not</strong> cryptographic
+                verification. Use <em>Artifact signing</em> above for that.</span
+              >
+              <label class="cg-check cg-mb">
+                <input
+                  type="checkbox"
+                  v-model="reg.rule_signed_release_deny_missing"
+                />
+                Deny registries that report no signature signal at all
+              </label>
+              <span
+                v-if="reg.rule_signed_release_deny_missing"
+                class="cg-field-hint"
+                style="display: block; margin-bottom: 0.5rem"
+                >npm, PyPI, crates.io and Maven report no signal, so this denies
+                them outright rather than skipping the check.</span
+              >
+              <label
+                >Bypass roles (comma-separated, optional)<input
+                  v-model="reg.rule_signed_release_bypass_roles"
+                  type="text"
+                  placeholder="admin"
+              /></label>
+            </template>
+            <label class="cg-check">
+              <input type="checkbox" v-model="reg.rule_license_gate_enabled" />
+              Licence gate
+            </label>
+            <template v-if="reg.rule_license_gate_enabled">
+              <span class="cg-field-hint" style="display: block; margin-bottom: 0.5rem"
+                >The licence is read from the archive, so it is unknown until
+                the artifact has been fetched once — the first request for an
+                uncached package is governed by
+                <em>Allow unknown licences</em>, not by the lists. Matching is
+                case-insensitive but literal:
+                <code>MIT</code> does not match <code>MIT OR Apache-2.0</code>.</span
+              >
+              <label
+                >Allowed licences (comma-separated, optional)<input
+                  v-model="reg.rule_license_gate_allow"
+                  placeholder="MIT, Apache-2.0, BSD-3-Clause"
+                /><span class="cg-field-hint"
+                  >When set, a declared licence matching none of these is
+                  refused.</span
+                ></label
+              >
+              <label
+                >Denied licences (comma-separated, optional)<input
+                  v-model="reg.rule_license_gate_deny"
+                  placeholder="AGPL-3.0, SSPL-1.0"
+                /><span class="cg-field-hint"
+                  >Checked first, so a deny entry always wins.</span
+                ></label
+              >
+              <label class="cg-check">
+                <input
+                  type="checkbox"
+                  v-model="reg.rule_license_gate_allow_unknown"
+                />
+                Allow unknown licences
+              </label>
+              <label class="cg-check cg-mb">
+                <input type="checkbox" v-model="reg.rule_license_gate_block" />
+                Block downloads (otherwise warn-only, surfaced in the UI)
+              </label>
+              <p v-if="licenseGateDeniesEverything(reg)" class="cg-hint">
+                <strong>This combination denies every download.</strong>
+                <code>{{ reg.type }}</code> has no manifest parser, so the
+                licence is always unknown — and unknown licences are being
+                blocked. Licence extraction covers cargo, maven, npm, nuget and
+                pypi. Allow unknown licences, or drop the rule here.
+              </p>
+              <label
+                >Bypass roles (comma-separated, optional)<input
+                  v-model="reg.rule_license_gate_bypass_roles"
+                  type="text"
+                  placeholder="admin"
+              /></label>
+            </template>
+            <label class="cg-check">
+              <input type="checkbox" v-model="reg.rule_version_gate_enabled" />
+              Version gate
+            </label>
+            <template v-if="reg.rule_version_gate_enabled">
+              <label
+                >Allowed versions (one per line, optional)
+                <textarea v-model="reg.rule_version_gate_allow" rows="2" />
+                <span class="cg-field-hint"
+                  >Exact versions or semver ranges
+                  (<code>&gt;=1.2.0, &lt;2.0.0</code>). When set, anything
+                  matching none of them is rejected. One per line because a
+                  range contains commas.</span
+                >
+              </label>
+              <label
+                >Blocked versions (one per line, optional)
+                <textarea v-model="reg.rule_version_gate_block" rows="2" />
+                <span class="cg-field-hint"
+                  >Specific versions or ranges with known issues.</span
+                >
+              </label>
+              <label
+                >Bypass roles (comma-separated, optional)<input
+                  v-model="reg.rule_version_gate_bypass_roles"
+                  type="text"
+                  placeholder="admin"
+              /></label>
+              <span
+                v-if="
+                  !reg.rule_version_gate_allow.trim() &&
+                  !reg.rule_version_gate_block.trim()
+                "
+                class="cg-field-hint"
+                style="display: block; margin-bottom: 0.5rem"
+                >Both lists are empty, so the rule is left out of the config —
+                it would gate nothing.</span
               >
             </template>
             <label class="cg-check">
@@ -2143,6 +3423,39 @@ curl -X POST \
                 needed for self-signed certificates.</span
               ></label
             >
+
+            <!-- Per-registry egress proxy -->
+            <p class="cg-subsection-label">Egress proxy</p>
+            <label class="cg-check cg-mb">
+              <input type="checkbox" v-model="reg.proxy_enabled" />
+              Use a different proxy from the global one
+            </label>
+            <template v-if="reg.proxy_enabled">
+              <label
+                >Proxy URL<input
+                  v-model="reg.proxy_url"
+                  placeholder="http://proxy.corp:3128"
+              /></label>
+              <div class="cg-two-col">
+                <label
+                  >Username (optional)<input v-model="reg.proxy_username"
+                /></label>
+                <label
+                  >Password (optional)<input
+                    v-model="reg.proxy_password"
+                    type="password"
+                /></label>
+              </div>
+              <label
+                >No-proxy list (optional)<input
+                  v-model="reg.proxy_no_proxy"
+                  placeholder="localhost,127.0.0.1,.internal"
+                /><span class="cg-field-hint"
+                  >Comma-separated hosts or suffixes that bypass the
+                  proxy.</span
+                ></label
+              >
+            </template>
           </div>
 
         </div>
@@ -2188,16 +3501,11 @@ curl -X POST \
               >Comma-separated HTTP status codes that count as violations.</span
             ></label
           >
-          <label
-            >Trusted proxy IPs (optional, comma-separated)<input
-              v-model="ipBlocking.trusted_proxies"
-              placeholder="10.0.0.1, 10.0.0.2"
-            /><span class="cg-field-hint"
-              >IPs of reverse proxies trusted to forward
-              <code>X-Forwarded-For</code>. Leave blank to always use the TCP
-              peer address.</span
-            ></label
-          >
+          <p class="cg-hint">
+            Trusted proxies are configured once for the whole server, under
+            <strong>Server</strong> above — this section's own
+            <code>trusted_proxies</code> key is deprecated.
+          </p>
         </template>
       </section>
 
@@ -2226,6 +3534,246 @@ curl -X POST \
               >Leave blank to use the public OSV API.</span
             ></label
           >
+          <label
+            >Batch size<input
+              v-model.number="vulnerabilityScan.batch_size"
+              type="number"
+              min="1"
+            /><span class="cg-field-hint"
+              >SBOMs processed per page. Default 100.</span
+            ></label
+          >
+        </template>
+      </section>
+
+      <!-- Statistics -->
+      <section class="cg-section">
+        <h3>Statistics</h3>
+        <label class="cg-check">
+          <input type="checkbox" v-model="stats.metrics_enabled" />
+          Expose Prometheus metrics on <code>/metrics</code>
+        </label>
+        <label class="cg-check cg-mb">
+          <input type="checkbox" v-model="stats.history_enabled" />
+          Record request history for the dashboard trends
+        </label>
+        <label v-if="stats.history_enabled"
+          >History retention (days)<input
+            v-model.number="stats.history_retention_days"
+            type="number"
+            min="0"
+          /><span class="cg-field-hint"
+            >Rows older than this are pruned. Default 30.
+            <code>0</code> disables pruning rather than disabling history —
+            untick the box above for that.</span
+          ></label
+        >
+        <span
+          v-else
+          class="cg-field-hint"
+          style="display: block"
+          >The dashboard's trend charts stay empty; live counters still
+          work.</span
+        >
+      </section>
+
+      <!-- Subdomain routing -->
+      <section class="cg-section">
+        <h3>Subdomain routing</h3>
+        <label class="cg-check cg-mb">
+          <input type="checkbox" v-model="subdomainRouting.enabled" />
+          Derive a host for every registry from its name
+        </label>
+        <template v-if="subdomainRouting.enabled">
+          <label
+            >Base domain<input
+              v-model="subdomainRouting.base_domain"
+              placeholder="hub.example.com"
+            /><span class="cg-field-hint"
+              >A registry named <code>npm1</code> is then served at
+              <code>npm1.hub.example.com</code>. Required — the server refuses to
+              start with wildcard routing on and no base domain. Registry names
+              must be valid DNS labels.</span
+            ></label
+          >
+          <label>
+            Advertised scheme
+            <select v-model="subdomainRouting.scheme">
+              <option value="https">https</option>
+              <option value="http">http</option>
+            </select>
+            <span class="cg-field-hint"
+              >Only used when rendering public URLs in the API and UI; a
+              request's own scheme decides routing.</span
+            >
+          </label>
+        </template>
+      </section>
+
+      <!-- Egress proxy -->
+      <section class="cg-section">
+        <h3>Egress proxy</h3>
+        <label class="cg-check cg-mb">
+          <input type="checkbox" v-model="upstreamProxy.enabled" />
+          Route upstream fetches through an HTTP proxy
+        </label>
+        <template v-if="upstreamProxy.enabled">
+          <label
+            >Proxy URL<input
+              v-model="upstreamProxy.url"
+              placeholder="http://proxy.corp:3128"
+            /><span class="cg-field-hint"
+              >Applies to every registry that does not override it in its
+              advanced options.</span
+            ></label
+          >
+          <div class="cg-two-col">
+            <label
+              >Username (optional)<input v-model="upstreamProxy.username"
+            /></label>
+            <label
+              >Password (optional)<input
+                v-model="upstreamProxy.password"
+                type="password"
+            /></label>
+          </div>
+          <label
+            >No-proxy list (optional)<input
+              v-model="upstreamProxy.no_proxy"
+              placeholder="localhost,127.0.0.1,.internal"
+            /><span class="cg-field-hint"
+              >Comma-separated hosts or suffixes that bypass the proxy.</span
+            ></label
+          >
+        </template>
+      </section>
+
+      <!-- Notifications -->
+      <section class="cg-section">
+        <h3>Notifications</h3>
+        <label class="cg-check cg-mb">
+          <input type="checkbox" v-model="notifications.enabled" />
+          Send notifications on registry events
+        </label>
+        <template v-if="notifications.enabled">
+          <p class="cg-subsection-label">Outbound channels</p>
+          <div
+            v-for="ch in notifications.channels"
+            :key="ch.id"
+            class="cg-list-item"
+          >
+            <div class="cg-two-col">
+              <label
+                >Name<input v-model="ch.name" placeholder="ops-slack"
+              /></label>
+              <label>
+                Type
+                <select v-model="ch.type">
+                  <option value="slack">Slack</option>
+                  <option value="teams">Microsoft Teams</option>
+                  <option value="webhook">Generic webhook</option>
+                  <option value="email">Email (SMTP)</option>
+                </select>
+              </label>
+            </div>
+            <template v-if="ch.type === 'email'">
+              <div class="cg-two-col">
+                <label
+                  >SMTP host<input v-model="ch.smtp_host" placeholder="smtp.example.com"
+                /></label>
+                <label
+                  >SMTP port<input
+                    v-model.number="ch.smtp_port"
+                    type="number"
+                    min="1"
+                    max="65535"
+                /></label>
+              </div>
+              <div class="cg-two-col">
+                <label
+                  >SMTP user (optional)<input v-model="ch.smtp_user"
+                /></label>
+                <label
+                  >SMTP password (optional)<input
+                    v-model="ch.smtp_password"
+                    type="password"
+                /></label>
+              </div>
+              <label
+                >From<input v-model="ch.from" placeholder="batlehub@example.com"
+              /></label>
+              <label
+                >To (comma-separated)<input
+                  v-model="ch.to"
+                  placeholder="ops@example.com"
+              /></label>
+              <label class="cg-check cg-mb">
+                <input type="checkbox" v-model="ch.tls" /> Use STARTTLS
+              </label>
+            </template>
+            <template v-else>
+              <label
+                >Webhook URL<input
+                  v-model="ch.url"
+                  placeholder="https://hooks.slack.com/services/…"
+              /></label>
+              <label v-if="ch.type === 'webhook'"
+                >HMAC secret (optional)<input
+                  v-model="ch.secret"
+                  type="password"
+                /><span class="cg-field-hint"
+                  >When set, each POST carries an
+                  <code>X-BatleHub-Signature-256</code> header so the receiver
+                  can verify it.</span
+                ></label
+              >
+            </template>
+            <label
+              >Timeout (s)<input
+                v-model.number="ch.timeout_secs"
+                type="number"
+                min="1"
+              /><span class="cg-field-hint">Default: 10</span></label
+            >
+            <button class="cg-btn-remove" @click="removeChannel(ch.id)">
+              Remove channel
+            </button>
+          </div>
+          <button class="cg-btn-add" @click="addChannel">+ Add channel</button>
+
+          <p class="cg-subsection-label" style="margin-top: 1rem">
+            Inbound webhooks
+          </p>
+          <span class="cg-field-hint" style="display: block; margin-bottom: 0.5rem"
+            >Endpoints external systems can POST events to, at
+            <code>/api/v1/webhooks/inbound/&lt;name&gt;</code>.</span
+          >
+          <div
+            v-for="hook in notifications.inbound"
+            :key="hook.id"
+            class="cg-condition-item"
+          >
+            <div class="cg-two-col">
+              <label
+                >Name<input v-model="hook.name" placeholder="ci-scanner"
+              /></label>
+              <label
+                >HMAC secret (optional)<input
+                  v-model="hook.secret"
+                  type="password"
+                /><span class="cg-field-hint"
+                  >Verifies <code>X-Hub-Signature-256</code>. Without it any
+                  payload is accepted.</span
+                ></label
+              >
+            </div>
+            <button class="cg-btn-remove" @click="removeInboundHook(hook.id)">
+              Remove webhook
+            </button>
+          </div>
+          <button class="cg-btn-add" @click="addInboundHook">
+            + Add inbound webhook
+          </button>
         </template>
       </section>
 

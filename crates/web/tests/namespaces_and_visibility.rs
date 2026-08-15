@@ -163,7 +163,7 @@ async fn make_ns_cargo_app_with_backend(
         team_namespace: Some(Arc::clone(&ns_store)),
         sbom: None,
         explore_cache: None,
-        access_log: None,
+        package_repo: None,
     });
 
     let proxy_svc = Arc::new(ProxyService {

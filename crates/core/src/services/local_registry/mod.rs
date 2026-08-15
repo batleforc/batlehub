@@ -212,12 +212,20 @@ pub struct LocalRegistryService {
     pub sbom: Option<Arc<SbomService>>,
     /// Optional explore cache; invalidated automatically on successful publish.
     pub explore_cache: Option<Arc<ExploreCache>>,
-    /// Optional access-log sink for local/hybrid downloads. When `None`, local
-    /// reads produce no audit trail (matches the pre-existing behavior); when
-    /// set, `get_artifact` records the same `AccessEvent::allowed_download`/
-    /// `denied_download` shape `ProxyService::handle` already records for the
-    /// proxy-fallback path, so Local-mode registries aren't a silent audit gap.
-    pub access_log: Option<Arc<dyn PackageRepository>>,
+    /// The admin package store, serving two purposes for local/hybrid reads.
+    ///
+    /// 1. **Audit.** `get_artifact` records the same
+    ///    `AccessEvent::allowed_download`/`denied_download` shape
+    ///    `ProxyService::handle` records on the proxy-fallback path, so
+    ///    Local-mode registries aren't a silent audit gap.
+    /// 2. **Blocks.** Version listings ask it which versions an administrator
+    ///    has blocked, so a blocked version is left out of what clients resolve
+    ///    against (see [`crate::services::blocking`]).
+    ///
+    /// `None` disables both. That is safe rather than a silent hole for (2):
+    /// this is the very store `AdminService` writes blocks to, so a deployment
+    /// without it has nowhere for a block to exist in the first place.
+    pub package_repo: Option<Arc<dyn PackageRepository>>,
 }
 
 /// OS/architecture pair identifying a specific Terraform provider binary.
