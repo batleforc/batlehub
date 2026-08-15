@@ -163,16 +163,23 @@ pub(super) async fn count_events_impl(
     Ok(count as u64)
 }
 
-pub(super) async fn explore_packages_impl(
-    pool: &PgPool,
-    filter: ExploreFilter,
-) -> Result<Vec<ExploreEntry>, CoreError> {
-    let order = sort_order_for(&filter.sort_by);
-    let registries = prepare_registries_param(&filter.registries);
-    let groups = filter.viewer.normalised_groups();
-    let visibility = LOCAL_VISIBILITY_PREDICATE;
-
-    let sql = format!(
+/// Assemble the catalog query, splicing in the sort order and the viewer's
+/// visibility predicate.
+///
+/// Separate from [`explore_packages_impl`] so the tests at the bottom of this
+/// file can inspect the SQL without a database. Both spliced fragments are
+/// trusted, statically-known strings — `visibility` is
+/// [`LOCAL_VISIBILITY_PREDICATE`] and `order` comes from [`sort_order_for`]'s
+/// closed match — which is what makes the `AssertSqlSafe` at the call site true.
+///
+/// **Every literal brace in this string must be doubled**, comments included: a
+/// `{visibility}` written inside a `--` comment still expands, and because the
+/// predicate is multi-line only its first line stays commented out — the rest
+/// lands in the query as live SQL. That produced a `syntax error at or near
+/// "AND"` that no amount of type-checking catches, which is what
+/// `no_placeholder_survives_into_live_sql` now guards.
+fn explore_sql(order: &str, visibility: &str) -> String {
+    format!(
         r#"
         WITH proxied AS (
             SELECT
@@ -290,7 +297,7 @@ pub(super) async fn explore_packages_impl(
                 FROM artifact_cache_meta acm
                 WHERE acm.registry = agg.registry AND acm.package_name = agg.package_name
                 UNION ALL
-                -- The same `{visibility}` predicate the `local_pkgs` CTE
+                -- The same `{{visibility}}` predicate the `local_pkgs` CTE
                 -- applies. A row can reach `agg` through `package_statuses`
                 -- alone (`record_access` writes one on any allowed download or
                 -- metadata read, including on the local path), so without it
@@ -309,7 +316,16 @@ pub(super) async fn explore_packages_impl(
         ORDER BY {order}
         LIMIT $7 OFFSET $8
         "#
-    );
+    )
+}
+
+pub(super) async fn explore_packages_impl(
+    pool: &PgPool,
+    filter: ExploreFilter,
+) -> Result<Vec<ExploreEntry>, CoreError> {
+    let registries = prepare_registries_param(&filter.registries);
+    let groups = filter.viewer.normalised_groups();
+    let sql = explore_sql(sort_order_for(&filter.sort_by), LOCAL_VISIBILITY_PREDICATE);
 
     // $4/$5/$6 are the viewer parameters consumed by LOCAL_VISIBILITY_PREDICATE.
     // They sit before limit/offset so the same fragment can be spliced into this
@@ -332,18 +348,14 @@ pub(super) async fn explore_packages_impl(
     Ok(rows.into_iter().map(map_explore_entry).collect())
 }
 
-pub(super) async fn count_explore_packages_impl(
-    pool: &PgPool,
-    filter: ExploreFilter,
-) -> Result<u64, CoreError> {
-    let registries = prepare_registries_param(&filter.registries);
-    let groups = filter.viewer.normalised_groups();
-    let visibility = LOCAL_VISIBILITY_PREDICATE;
-
-    // Must apply exactly the same visibility predicate as
-    // `explore_packages_impl`, or the pagination total would count rows the page
-    // itself filters out — the UI would show "37 packages" over an empty page.
-    let sql = format!(
+/// The row count [`explore_sql`]'s page is drawn from.
+///
+/// Must apply exactly the same visibility predicate as [`explore_sql`], or the
+/// pagination total would count rows the page itself filters out — the UI would
+/// show "37 packages" over an empty page. The brace-doubling rule from
+/// [`explore_sql`] applies here too.
+fn count_explore_sql(visibility: &str) -> String {
+    format!(
         r#"
         WITH proxied AS (
             SELECT registry, package_name
@@ -367,7 +379,16 @@ pub(super) async fn count_explore_packages_impl(
             SELECT registry, package_name FROM local_pkgs
         ) combined
         "#
-    );
+    )
+}
+
+pub(super) async fn count_explore_packages_impl(
+    pool: &PgPool,
+    filter: ExploreFilter,
+) -> Result<u64, CoreError> {
+    let registries = prepare_registries_param(&filter.registries);
+    let groups = filter.viewer.normalised_groups();
+    let sql = count_explore_sql(LOCAL_VISIBILITY_PREDICATE);
 
     let row = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(&filter.registry)
@@ -493,4 +514,145 @@ pub(super) async fn distinct_event_subjects_impl(
     .await
     .db_err()?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// Structural checks on the two `format!`-assembled catalog queries.
+///
+/// The rest of this module is only exercised against a real database
+/// (`crates/adapters/tests/pg_explore_*.rs`, opt-in via `DATABASE_URL`), which
+/// means a malformed query reaches CI's Postgres job and nothing before it.
+/// These tests need no database: they assert the *shape* of the generated SQL,
+/// and they exist because of a specific failure.
+///
+/// A comment reading ``-- The same `{visibility}` predicate …`` was added to
+/// `explore_sql`'s format string. `format!` expanded it like any other
+/// placeholder, and since `LOCAL_VISIBILITY_PREDICATE` is multi-line, only its
+/// first line stayed behind the `--`; the remainder landed directly after a
+/// `UNION ALL` as live SQL. The result compiled, type-checked, and failed every
+/// pg_explore test with `syntax error at or near "AND"`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use batlehub_core::entities::ExploreSortBy;
+
+    /// Every ordering the sort selector can splice in, so a new
+    /// [`ExploreSortBy`] variant is covered by whichever of these fails first.
+    const ALL_SORTS: &[ExploreSortBy] = &[
+        ExploreSortBy::Name,
+        ExploreSortBy::Downloads,
+        ExploreSortBy::Recent,
+        ExploreSortBy::Fetched,
+    ];
+
+    /// A stand-in for the visibility predicate, shaped like the real one: it
+    /// leads with a newline and spans several lines, which is exactly what made
+    /// the original leak partially invisible. Distinctive enough to count.
+    const SENTINEL: &str =
+        "\n              AND (\n                  sentinel_visibility\n              )";
+
+    /// The query with `--` comments removed — what Postgres would actually
+    /// parse. Line-wise stripping is only exact while no string literal in these
+    /// queries contains `--`, so the parity check enforces that precondition
+    /// rather than trusting it.
+    fn live_sql(sql: &str) -> String {
+        sql.lines()
+            .map(|line| {
+                let code = match line.find("--") {
+                    Some(i) => &line[..i],
+                    None => line,
+                };
+                assert!(
+                    code.matches('\'').count() % 2 == 0,
+                    "`--` inside a string literal — live_sql() can no longer strip \
+                     comments line-wise, and these guards would silently weaken: {line}"
+                );
+                code
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The word following each `UNION` / `UNION ALL` in the live SQL. Every one
+    /// must be `SELECT`; the leak put an `AND` here.
+    fn union_followers(sql: &str) -> Vec<String> {
+        let live = live_sql(sql);
+        let tokens: Vec<&str> = live.split_whitespace().collect();
+        tokens
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.eq_ignore_ascii_case("UNION"))
+            .map(|(i, _)| {
+                let mut next = i + 1;
+                if tokens
+                    .get(next)
+                    .is_some_and(|t| t.eq_ignore_ascii_case("ALL"))
+                {
+                    next += 1;
+                }
+                tokens
+                    .get(next)
+                    .copied()
+                    .unwrap_or("<end of query>")
+                    .to_uppercase()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn visibility_predicate_reaches_live_sql_exactly_at_its_two_splice_points() {
+        // `local_pkgs`, and the lateral join that picks the newest version.
+        for sort in ALL_SORTS {
+            let sql = explore_sql(sort_order_for(sort), SENTINEL);
+            assert_eq!(
+                live_sql(&sql).matches("sentinel_visibility").count(),
+                2,
+                "the visibility predicate is spliced somewhere it should not be \
+                 (a `{{visibility}}` in a comment?) or has stopped being applied"
+            );
+        }
+    }
+
+    #[test]
+    fn count_query_applies_the_visibility_predicate_exactly_once() {
+        // One splice site, and it must exist: a count that skips the predicate
+        // reports a total the page it paginates cannot show.
+        assert_eq!(
+            live_sql(&count_explore_sql(SENTINEL))
+                .matches("sentinel_visibility")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn every_union_is_followed_by_a_select() {
+        for sort in ALL_SORTS {
+            let sql = explore_sql(sort_order_for(sort), LOCAL_VISIBILITY_PREDICATE);
+            for follower in union_followers(&sql) {
+                assert_eq!(follower, "SELECT", "malformed UNION in the explore query");
+            }
+        }
+        for follower in union_followers(&count_explore_sql(LOCAL_VISIBILITY_PREDICATE)) {
+            assert_eq!(follower, "SELECT", "malformed UNION in the count query");
+        }
+    }
+
+    #[test]
+    fn no_placeholder_survives_into_live_sql() {
+        // The other direction of the same mistake: doubled braces render as
+        // literal `{…}`, which is fine in a comment and a syntax error anywhere
+        // Postgres can see it.
+        let mut queries: Vec<String> = ALL_SORTS
+            .iter()
+            .map(|sort| explore_sql(sort_order_for(sort), LOCAL_VISIBILITY_PREDICATE))
+            .collect();
+        queries.push(count_explore_sql(LOCAL_VISIBILITY_PREDICATE));
+        for sql in queries {
+            let live = live_sql(&sql);
+            assert!(
+                !live.contains('{') && !live.contains('}'),
+                "a format placeholder escaped into executable SQL"
+            );
+        }
+    }
 }
